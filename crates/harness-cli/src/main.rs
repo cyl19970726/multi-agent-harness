@@ -50,6 +50,7 @@ mod kimi_acp;
 mod legacy_export;
 mod mcp;
 mod native_session;
+mod pi_rpc;
 mod project;
 mod resident;
 #[cfg(unix)]
@@ -9758,7 +9759,8 @@ fn append_team_run_event(
 /// One member spec for team-run creation, parsed from either the CLI
 /// `--member name:role:provider[/mode][:model][@path1,path2]` spelling or the
 /// HTTP JSON body. `/mode` selects the execution mode; the driven Agent Team
-/// modes are `codex_app_server`, `kimi_acp`, and `claude_agent_sdk`, and
+/// modes are `codex_app_server`, `kimi_acp`, `claude_agent_sdk`,
+/// `pi_rpc`, and
 /// `external_interactive` declares the user's own already-open interactive
 /// session that Harness never spawns or drives (it polls its own inbox).
 struct TeamMemberSpec {
@@ -9855,7 +9857,10 @@ fn validate_team_member_execution_mode(member: &TeamMemberSpec) -> CliResult<()>
     if let Some(mode) = member.execution_mode.as_deref() {
         let allowed = matches!(
             (member.provider.as_str(), mode),
-            ("codex", "codex_app_server") | ("kimi", "kimi_acp") | ("claude", "claude_agent_sdk")
+            ("codex", "codex_app_server")
+                | ("kimi", "kimi_acp")
+                | ("claude", "claude_agent_sdk")
+                | ("pi", "pi_rpc")
         );
         if !allowed {
             return Err(CliError::Usage(format!(
@@ -9979,6 +9984,41 @@ fn team_member_provider_profile_for_mode(
             ordinary_message_boundary: OrdinaryMessageBoundary::NextRound,
             plan_mode: ProviderFeatureMode::Native,
             goal_mode: ProviderFeatureMode::Native,
+            tool_event_fidelity: ProviderEventFidelity::Structured,
+            artifact_event_fidelity: ProviderEventFidelity::Structured,
+            supports_cancel: true,
+            supports_resume: true,
+            observes_native_subagents: false,
+            observes_background_tasks: false,
+            thinking_transient_only: true,
+        };
+    }
+    // Agent Team Pi members use RPC mode (`pi --mode rpc`), a persistent
+    // bidirectional JSONL-over-stdio protocol. `pi -p` (print mode) remains
+    // available to bounded Dynamic Workflow adapters, but is not a second
+    // Team Member product mode.
+    if provider == "pi" && matches!(requested_mode, Some("pi_rpc") | None) {
+        return ProviderIntegrationProfile {
+            provider: provider.to_string(),
+            execution_mode: "pi_rpc".to_string(),
+            execution_driver: MemberExecutionDriver::HostDriven,
+            provider_version: None,
+            adapter_contract_version: Some("pi-rpc-v1".to_string()),
+            reviewed_provider_versions: vec!["0.83.0".to_string()],
+            compatibility_status: ProviderCompatibilityStatus::Unknown,
+            adapter_reviewed_at: Some("2026-08-05".to_string()),
+            compatibility_note: Some(
+                "Pi RPC-mode persistent Agent Team member. Session is a JSONL file; \
+                 resume via --session <path> after a fail-closed thinking scan. \
+                 Persistent Team sessions force --thinking off. Built-in tools: \
+                 read, write, edit, bash, grep, find, ls. Agent_settled is the \
+                 turn-completion signal."
+                    .to_string(),
+            ),
+            interaction_mode: ProviderInteractionMode::EndRoundAndFollowUp,
+            ordinary_message_boundary: OrdinaryMessageBoundary::NextRound,
+            plan_mode: ProviderFeatureMode::Emulated,
+            goal_mode: ProviderFeatureMode::Emulated,
             tool_event_fidelity: ProviderEventFidelity::Structured,
             artifact_event_fidelity: ProviderEventFidelity::Structured,
             supports_cancel: true,
@@ -10216,6 +10256,7 @@ fn provider_version_output(provider: &str) -> Result<String, String> {
         "kimi" => resolve_kimi_bin(),
         "codex" => "codex".to_string(),
         "claude" => "claude".to_string(),
+        "pi" => resolve_pi_bin(),
         other => other.to_string(),
     };
     let output = Command::new(&binary)
@@ -17226,6 +17267,10 @@ fn run_member_orchestration(
             && matches!(execution_mode, Some("claude_agent_sdk") | None)
         {
             run_claude_agent_sdk_team_member(ledger, objective, &current, &context)
+        } else if current.provider.eq_ignore_ascii_case("pi")
+            && matches!(execution_mode, Some("pi_rpc") | None)
+        {
+            run_pi_team_member(ledger, objective, &current, &context)
         } else {
             Err(CliError::Usage(format!(
                 "team member adapter not implemented for provider {}",
@@ -20059,6 +20104,437 @@ fn run_kimi_member(
                     &member_row,
                     MemberRunStatus::Idle,
                     final_summary,
+                ));
+            }
+        }
+    }
+}
+
+/// Resolve the `pi` executable path. Order: `PI_BIN` env override, then
+/// `pi` on PATH, then npm global install path, then bare `pi` as fallback.
+fn resolve_pi_bin() -> String {
+    if let Ok(explicit) = std::env::var("PI_BIN") {
+        if !explicit.trim().is_empty() {
+            return explicit;
+        }
+    }
+    let on_path = Command::new("which")
+        .arg("pi")
+        .output()
+        .ok()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if on_path {
+        return "pi".into();
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        // Check nvm node versions for npm global pi install.
+        let nvm_bin = Path::new(&home).join(".nvm/versions/node");
+        if let Ok(entries) = std::fs::read_dir(&nvm_bin) {
+            for entry in entries.flatten() {
+                let candidate = entry.path().join("bin/pi");
+                if candidate.is_file() {
+                    return candidate.display().to_string();
+                }
+            }
+        }
+    }
+    "pi".into()
+}
+
+/// Drive one Pi Team Member through one pi RPC process and native session.
+/// Bounded `pi -p` print mode remains a Dynamic Workflow substrate, not an
+/// alternative Agent Team Member mode.
+fn run_pi_team_member(
+    ledger: &TeamRunLedger,
+    objective: &str,
+    member: &MemberRun,
+    context: &MemberRuntimeContext,
+) -> CliResult<MemberOutcome> {
+    ledger.require_supervisor_lease()?;
+    let project_id = context.project_id.as_deref();
+    let project_selector = context.project_selector.as_deref();
+    let cwd = &context.cwd;
+    let idle_timeout = context.idle_timeout;
+    let live_sink = context.live_sink.clone();
+    let turn_leases = &context.turn_leases;
+
+    let mut member_row = member.clone();
+    member_row.status = MemberRunStatus::Starting;
+    if let Some(profile) = member_row.provider_profile.as_mut() {
+        ledger.require_supervisor_lease()?;
+        apply_provider_version(profile, provider_version_output("pi").ok());
+    }
+    member_row.last_event_at = Some(now_string());
+    ledger.save_member_run(&member_row)?;
+    ledger.fold_event(
+        TeamRunEventSourceKind::Member,
+        Some(member.id.clone()),
+        "member_run",
+        &member.id,
+        "updated",
+        &format!(
+            "member {} starting (pi rpc, cwd {})",
+            member.name,
+            cwd.display()
+        ),
+    )?;
+
+    let envelope = member_work_collaboration_envelope(
+        ledger,
+        context.execution_space_id.as_deref(),
+        project_id,
+        project_selector,
+        &member_row,
+        None,
+    )?;
+    let collaboration_env = envelope.environment();
+
+    // Build the session directory path: <store_root>/pi_sessions/<member_run_id>/
+    let session_base = ledger.store.root().join("pi_sessions");
+    let session_dir = session_base.join(&member.id);
+    std::fs::create_dir_all(&session_dir).map_err(|error| {
+        CliError::Usage(format!(
+            "failed to create pi session directory {}: {error}",
+            session_dir.display()
+        ))
+    })?;
+
+    if member_row
+        .provider_controls
+        .reasoning_effort
+        .requested
+        .as_deref()
+        .is_some_and(|effort| effort != "off")
+    {
+        member_row
+            .provider_controls
+            .reasoning_effort
+            .mark_unsupported(
+                "Pi persistent sessions replay provider thinking from native JSONL; the Team adapter forces --thinking off to satisfy the transient-only product policy",
+            );
+    } else if member_row
+        .provider_controls
+        .reasoning_effort
+        .requested
+        .as_deref()
+        == Some("off")
+    {
+        member_row
+            .provider_controls
+            .reasoning_effort
+            .mark_effective(
+                Some("off".to_string()),
+                "enforced by the reviewed Pi RPC launch contract",
+            );
+    }
+
+    let pi_bin = resolve_pi_bin();
+
+    // Fence immediately before pi process start/resume.
+    ledger.require_supervisor_lease()?;
+    let mut pi_client = pi_rpc::PiRpcClient::spawn(
+        &pi_bin,
+        pi_rpc::PiSpawnOptions {
+            cwd,
+            model: member.model.as_deref(),
+            resume_session_file: member.native_session.as_ref().and_then(|session| {
+                let path = &session.native_session_id;
+                if Path::new(path).is_file() {
+                    Some(path.as_str())
+                } else {
+                    None
+                }
+            }),
+            session_dir: &session_dir,
+            member_name: &member.name,
+            collaboration_env: &collaboration_env,
+        },
+    )?;
+
+    member_row.native_session = Some(native_session_ref(
+        &member_row,
+        pi_client.session_file(),
+        "pi_session",
+    ));
+
+    let (live_control, registration) = register_live_member_control(&member_row, 16);
+    let mut live_control_registration = Some(registration);
+
+    member_row.status = MemberRunStatus::Idle;
+    member_row.last_event_at = Some(now_string());
+    ledger.save_member_run(&member_row)?;
+
+    let mut round = 0u32;
+    let mut prompt_text;
+    let mut accepted_messages = Vec::new();
+    let mut active_work: Option<ClaimedWork> = None;
+
+    match wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
+        ledger.require_supervisor_lease()?;
+        pi_client.ensure_transport_alive()
+    })? {
+        IdleMemberWake::Work(claimed) => {
+            let work_envelope = member_work_collaboration_envelope(
+                ledger,
+                context.execution_space_id.as_deref(),
+                project_id,
+                project_selector,
+                &member_row,
+                Some(&claimed.work),
+            )?;
+            prompt_text =
+                work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope);
+            active_work = Some(*claimed);
+        }
+        IdleMemberWake::ActiveWorkContinuation(work) => {
+            let work_envelope = member_work_collaboration_envelope(
+                ledger,
+                context.execution_space_id.as_deref(),
+                project_id,
+                project_selector,
+                &member_row,
+                Some(&work),
+            )?;
+            prompt_text =
+                active_work_continuation_prompt(objective, &member_row, &work, &work_envelope);
+            active_work = None;
+        }
+        IdleMemberWake::Messages(messages) => {
+            prompt_text = String::from(
+                "TEAM MESSAGES arrived. They are conversation, not Work ownership. \
+                 Address the question or coordination request, and use the Works \
+                 board for any durable responsibility.\n\n",
+            );
+            for message in &messages {
+                prompt_text.push_str(&format!(
+                    "--- {} ({}, correlation_id={}) ---\n{}\n\n",
+                    message.from_member_id,
+                    team_message_kind_label(&message.kind),
+                    message.correlation_id,
+                    message.body
+                ));
+            }
+            accepted_messages = messages;
+        }
+        IdleMemberWake::Closed => {
+            return Ok(MemberOutcome::new(
+                &member_row,
+                MemberRunStatus::Stopped,
+                "Pi member runtime closed by Host".to_string(),
+            ));
+        }
+        IdleMemberWake::TestRetired => {
+            return Ok(MemberOutcome::new(
+                &member_row,
+                MemberRunStatus::Idle,
+                "Pi member test runtime retired while idle".to_string(),
+            ));
+        }
+    }
+
+    loop {
+        round += 1;
+        let prompt = prompt_text.clone();
+        let member_id_clone = member.id.clone();
+        let member_provider = member.provider.clone();
+
+        let turn = {
+            let _turn_lease = turn_leases.acquire();
+            ledger.require_supervisor_lease()?;
+            pi_client.prompt(
+                &prompt,
+                idle_timeout,
+                |event| {
+                    if let Some(preview) = pi_rpc::PiRpcClient::project_live(event) {
+                        if let Some(sink) = &live_sink {
+                            sink(LiveMemberActivityPreview {
+                                team_run_id: ledger.run_id.clone(),
+                                member_run_id: member_id_clone.clone(),
+                                provider: member_provider.clone(),
+                                preview,
+                            });
+                        }
+                    }
+                },
+                || {
+                    while let Ok(command) = live_control.try_recv() {
+                        match command {
+                            MemberControlCommand::Close { .. } => return (true, true),
+                            MemberControlCommand::Interrupt { .. } => return (false, true),
+                            _ => {}
+                        }
+                    }
+                    (false, false)
+                },
+            )?
+        };
+
+        ledger.require_supervisor_lease()?;
+        // Update native session ref with current session file.
+        member_row.native_session = Some(native_session_ref(
+            &member_row,
+            pi_client.session_file(),
+            "pi_session",
+        ));
+        ledger.save_member_run(&member_row)?;
+
+        let receipt = format!("pi:{}:round-{round}", pi_client.session_file());
+        if let Some(claimed) = active_work.as_ref() {
+            ledger.complete_work_delivery(claimed, &receipt)?;
+        }
+        drop(active_work.take());
+        for message in &accepted_messages {
+            mark_message_delivered(ledger, message, &member.id, &member.name, &receipt)?;
+        }
+        accepted_messages.clear();
+
+        if turn.interrupted {
+            let interruption_summary = if turn.close_requested_by_harness {
+                "The Host explicitly closed the Pi member runtime."
+            } else {
+                "The operator or Lead interrupted the active Pi turn."
+            };
+            if turn.close_requested_by_harness {
+                member_row.coordination_status = MemberCoordinationStatus::Closed;
+            }
+            member_row.status = if turn.close_requested_by_harness {
+                MemberRunStatus::Stopped
+            } else {
+                MemberRunStatus::Idle
+            };
+            member_row.finished_at = turn.close_requested_by_harness.then(now_string);
+            member_row.last_event_at = Some(now_string());
+            ledger.save_member_run(&member_row)?;
+            ledger.append_action(
+                &member.id,
+                if turn.close_requested_by_harness {
+                    "closed"
+                } else {
+                    "interrupted"
+                },
+                MemberActionStatus::Cancelled,
+                if turn.close_requested_by_harness {
+                    "member runtime closed"
+                } else {
+                    "provider turn interrupted"
+                },
+                interruption_summary,
+            )?;
+            if turn.close_requested_by_harness {
+                drop(live_control_registration.take());
+                return Ok(MemberOutcome::new(
+                    &member_row,
+                    MemberRunStatus::Stopped,
+                    "Pi member runtime closed by Host".to_string(),
+                ));
+            }
+        } else {
+            let final_text = turn.final_text;
+            if final_text.trim().is_empty() {
+                return Err(CliError::Usage(format!(
+                    "pi member {} completed without an agent message",
+                    member.name
+                )));
+            }
+            let result = parse_round_result(&final_text);
+            let action_status = if result == MemberRoundResult::Done {
+                MemberActionStatus::Succeeded
+            } else {
+                MemberActionStatus::Failed
+            };
+            let round_summary = extract_report_section(&final_text, "SUMMARY")
+                .unwrap_or_else(|| final_text.lines().take(3).collect::<Vec<_>>().join("\n"));
+            let action = ledger.append_action(
+                &member.id,
+                "turn_completed",
+                action_status,
+                &format!("Pi provider round {round} completed"),
+                &round_summary,
+            )?;
+            ledger.fold_event(
+                TeamRunEventSourceKind::Member,
+                Some(member.id.clone()),
+                "action",
+                &action.id,
+                "created",
+                &format!("{} completed provider round {round}", member.name),
+            )?;
+
+            member_row.status = MemberRunStatus::Idle;
+            member_row.finished_at = None;
+            member_row.last_event_at = Some(now_string());
+            ledger.save_member_run(&member_row)?;
+            ledger.fold_event(
+                TeamRunEventSourceKind::Member,
+                Some(member.id.clone()),
+                "member_run",
+                &member.id,
+                "updated",
+                &format!("member {} idle after round {round}", member.name),
+            )?;
+        }
+
+        match wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
+            ledger.require_supervisor_lease()?;
+            pi_client.ensure_transport_alive()
+        })? {
+            IdleMemberWake::Work(claimed) => {
+                let work_envelope = member_work_collaboration_envelope(
+                    ledger,
+                    context.execution_space_id.as_deref(),
+                    project_id,
+                    project_selector,
+                    &member_row,
+                    Some(&claimed.work),
+                )?;
+                prompt_text =
+                    work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope);
+                active_work = Some(*claimed);
+            }
+            IdleMemberWake::ActiveWorkContinuation(work) => {
+                let work_envelope = member_work_collaboration_envelope(
+                    ledger,
+                    context.execution_space_id.as_deref(),
+                    project_id,
+                    project_selector,
+                    &member_row,
+                    Some(&work),
+                )?;
+                prompt_text =
+                    active_work_continuation_prompt(objective, &member_row, &work, &work_envelope);
+                active_work = None;
+            }
+            IdleMemberWake::Messages(messages) => {
+                prompt_text = String::from(
+                    "TEAM MESSAGES arrived. They are conversation, not Work ownership. \
+                     Address the question or coordination request, and use the Works \
+                     board for any durable responsibility.\n\n",
+                );
+                for message in &messages {
+                    prompt_text.push_str(&format!(
+                        "--- {} ({}, correlation_id={}) ---\n{}\n\n",
+                        message.from_member_id,
+                        team_message_kind_label(&message.kind),
+                        message.correlation_id,
+                        message.body
+                    ));
+                }
+                accepted_messages = messages;
+                active_work = None;
+            }
+            IdleMemberWake::Closed => {
+                return Ok(MemberOutcome::new(
+                    &member_row,
+                    MemberRunStatus::Stopped,
+                    "Pi member runtime closed by Host".to_string(),
+                ));
+            }
+            IdleMemberWake::TestRetired => {
+                return Ok(MemberOutcome::new(
+                    &member_row,
+                    MemberRunStatus::Idle,
+                    "Pi member test runtime retired while idle".to_string(),
                 ));
             }
         }
@@ -31812,6 +32288,7 @@ trait ProviderAdapter: Sync {
 struct CodexAdapter;
 struct ClaudeAdapter;
 struct KimiAdapter;
+struct PiAdapter;
 
 impl ProviderAdapter for CodexAdapter {
     fn name(&self) -> &'static str {
@@ -32456,9 +32933,77 @@ impl ProviderAdapter for KimiAdapter {
     }
 }
 
+impl ProviderAdapter for PiAdapter {
+    fn name(&self) -> &'static str {
+        "pi"
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            streaming: true,
+            resume: true,
+            mid_turn_approval: false,
+            subagents: false,
+            mcp: false,
+            hooks: false,
+            schema: false,
+            cost: false,
+            enforces_read_only: false,
+        }
+    }
+
+    fn live_ndjson_file_name(&self) -> &'static str {
+        "pi.stream-json.ndjson"
+    }
+
+    fn map_permission(&self, perm: LaunchPermission) -> &'static str {
+        match perm {
+            // pi print mode: limit tools to read-only operations.
+            LaunchPermission::ReadOnly => "--tools read,grep,find,ls",
+            LaunchPermission::WorkspaceWrite => "",
+            LaunchPermission::FullAccess => "",
+        }
+    }
+
+    fn start_runtime(
+        &self,
+        _store: &HarnessStore,
+        _member: &AgentMember,
+    ) -> CliResult<AgentRuntime> {
+        Err(CliError::Usage(
+            "pi persistent Team Member is orchestrated by run_pi_team_member, not start_provider_runtime"
+                .to_string(),
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_delivery(
+        &self,
+        _store: &HarnessStore,
+        _member: &AgentMember,
+        _runtime: &AgentRuntime,
+        _message: &Message,
+        _delivery_id: &str,
+        _timeout_ms: u64,
+        _project: &ProjectContext,
+    ) -> CliResult<DeliveryOutcome> {
+        Err(CliError::Usage(
+            "pi one-shot delivery is not yet implemented; use the persistent Team Member path"
+                .to_string(),
+        ))
+    }
+
+    fn spawn_ephemeral(&self, _ctx: &EphemeralSpawnContext<'_>) -> CliResult<EphemeralSpawn> {
+        Err(CliError::Usage(
+            "pi ephemeral spawn is not yet implemented; use the persistent Team Member path"
+                .to_string(),
+        ))
+    }
+}
+
 /// All providers the harness recognises, in canonical display order.
 fn provider_registry() -> &'static [&'static dyn ProviderAdapter] {
-    &[&CodexAdapter, &ClaudeAdapter, &KimiAdapter]
+    &[&CodexAdapter, &ClaudeAdapter, &KimiAdapter, &PiAdapter]
 }
 
 /// The adapter for a provider id, or `None` if unrecognised.
@@ -39144,11 +39689,11 @@ package:com.tencent.mm
         let message = error.to_string();
         // Assert the EXACT message: the supported list is now derived from the
         // provider registry, so this guards against ordering/spacing/list drift
-        // (which a substring check would silently miss). kimi is the third
-        // registered provider (goal-provider-neutral S4).
+        // (which a substring check would silently miss). Pi is the fourth
+        // registered provider.
         assert_eq!(
             message,
-            "unknown provider \"gemini\" for runtime start; supported providers: codex, claude, kimi"
+            "unknown provider \"gemini\" for runtime start; supported providers: codex, claude, kimi, pi"
         );
 
         let _ = std::fs::remove_dir_all(root);
