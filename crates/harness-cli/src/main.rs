@@ -1398,6 +1398,11 @@ fn run() -> CliResult<()> {
     if args.first().map(String::as_str) == Some("legacy-goal-task") {
         return legacy_goal_task_command(&mut args);
     }
+    // `cheatsheet` is store-LESS: it prints operating knowledge for the Host
+    // and must not require a store, project, or space.
+    if args.first().map(String::as_str) == Some("cheatsheet") {
+        return cheatsheet_command(&args[1..]);
+    }
     // Resolve the store root FIRST (strips a global `--store`/`--project` from
     // `args` so the subcommand parsers never see them). `serve` and `run-script`
     // started from different working directories converge on ONE store via the
@@ -34049,6 +34054,114 @@ fn print_json<T: serde::Serialize>(value: &T) -> CliResult<()> {
     Ok(())
 }
 
+fn cheatsheet_command(args: &[String]) -> CliResult<()> {
+    let scope = args.first().map(String::as_str).unwrap_or("all");
+    match scope {
+        "team" => print!("{}", CHEATSHEET_TEAM),
+        "work" => print!("{}", CHEATSHEET_WORK),
+        "mission" => print!("{}", CHEATSHEET_MISSION),
+        "all" => print!("{}", CHEATSHEET_ALL),
+        other => {
+            return Err(CliError::Usage(format!(
+            "unknown cheatsheet scope: {other}; usage: harness cheatsheet [team|work|mission|all]"
+        )))
+        }
+    }
+    Ok(())
+}
+
+// Each cheatsheet is a hand-curated plain-text one-pager of EXACT invocation
+// forms used by the orchestrate-mission-waves skill. Every flag is derived from
+// the real CLI definitions in this file. Length budgets are enforced by the
+// anti-drift test (cheatsheet_length_budgets).
+
+const CHEATSHEET_TEAM: &str = r#"team-run create     --objective <text> [--agent-team-id <id>] [--budget-usd <n>]
+                    [--mission-id <id>] [--wave-id <id>] [--previous <id>]
+                    --member name:role:provider[/mode][:model][@paths]
+team-run start      --id <id> [--max-concurrency <n>] [--idle-timeout-s <n>]
+team-run add-member --id <id> --member <spec> [--initial-work <text>]
+team-run status     --id <id> [--json]
+team-run wait       --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
+team-run send       --id <id> --from <actor> --kind message|report --body <text>
+                    [--to <csv>] [--response-required|--informational]
+                    [--work-id <id>] [--correlation-id <id>] [--json]
+team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]
+team-run ack        --id <id> [--message-id <csv>|--all-delivered]
+                    [--member-id <id>] [--json]
+team-run events     --id <id> [--after-seq <n>] [--json]
+team-run board-summary --id <id>
+"#;
+
+const CHEATSHEET_WORK: &str = r#"work create          --team-run-id <id> --title <text>
+                    --completion-criteria <text>
+                    [--owner-member-run-id <id> --claim-mode host_assign]
+                    [--claim-mode team_claim --eligible-member-id <id>]
+                    [--priority normal|high|urgent] [--context <md>]
+                    [--prerequisite-work-id <id>]
+work list            --team-run-id <id> [--brief] [--since <cursor>]
+                    [--status <status>] [--member-run-id <id>]
+work show            --work-id <id>
+work assign          --work-id <id> --expected-version <n>
+                    --member-run-id <id>
+work accept          --work-id <id> --expected-version <n>
+work request-changes --work-id <id> --expected-version <n>
+                    --reason <text>
+"#;
+
+const CHEATSHEET_MISSION: &str = r#"mission create        --title <text> --objective <text> [--id <id>]
+                      [--desired-outcome <text>] [--context <text>] [--json]
+mission show          --id <id>
+mission update-context --id <id> --context <text>
+mission create-team   --id <id> --name <text> --description <text>
+                      [--lead <id>] [--member <id>] [--team-id <id>]
+mission close         --id <id> --outcome <text> [--completed-by <actor>]
+wave create  --mission-id <id> --title <text> --objective <text> [--id <id>]
+             [--index <n>] [--executor-kind host|team] [--context <text>] [--json]
+wave show    --id <id>
+wave list    [--mission-id <id>]
+wave update  --id <id> --context <text>
+wave advance --id <id> --outcome <text> [--artifact <ref>]
+wave gate    --id <id> --status <status> [--note <text>]
+"#;
+
+const CHEATSHEET_ALL: &str = r#"team-run create     --objective <text> [--mission-id <id>] [--wave-id <id>]
+                    --member name:role:provider[/mode][:model][@paths]
+team-run start      --id <id> [--max-concurrency <n>]
+team-run add-member --id <id> --member <spec> [--initial-work <text>]
+team-run status     --id <id> [--json]
+team-run wait       --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
+team-run send       --id <id> --from <actor> --kind message|report
+                    --body <text> [--to <csv>] [--work-id <id>] [--json]
+team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]
+team-run ack        --id <id> [--message-id <csv>|--all-delivered] [--json]
+team-run events     --id <id> [--json]
+team-run board-summary --id <id>
+
+work create  --team-run-id <id> --title <text> --completion-criteria <text>
+             [--owner-member-run-id <id> --claim-mode host_assign]
+             [--claim-mode team_claim --eligible-member-id <id>]
+work list    --team-run-id <id> [--brief] [--since <cursor>]
+work show    --work-id <id>
+work assign  --work-id <id> --expected-version <n> --member-run-id <id>
+work accept  --work-id <id> --expected-version <n>
+work request-changes --work-id <id> --expected-version <n> --reason <text>
+
+mission create        --title <text> --objective <text> [--id <id>]
+                      [--context <text>] [--json]
+mission show          --id <id>
+mission update-context --id <id> --context <text>
+mission create-team   --id <id> --name <text> --description <text>
+                      [--lead <id>] [--member <id>]
+mission close         --id <id> --outcome <text>
+wave create  --mission-id <id> --title <text> --objective <text>
+             [--executor-kind host|team] [--context <text>] [--json]
+wave show    --id <id>
+wave list    [--mission-id <id>]
+wave update  --id <id> --context <text>
+wave advance --id <id> --outcome <text> [--artifact <ref>]
+wave gate    --id <id> --status <status> [--note <text>]
+"#;
+
 fn print_help() {
     println!(
         r#"harness commands:
@@ -34107,6 +34220,7 @@ fn print_help() {
   serve [--addr 127.0.0.1:8787] [--once]
   mcp
   daemon start|status|stop
+  cheatsheet [team|work|mission|all]
 
 Retired coordination commands fail explicitly. Historical rows are available only
 through legacy-goal-task export|verify.
@@ -42837,5 +42951,121 @@ invalid json line
                 .and_then(extract_json_object),
             Some(serde_json::json!({"ok": true}))
         );
+    }
+
+    // --- cheatsheet anti-drift tests ---
+
+    /// Extract every `--flag-name` from a cheatsheet string.
+    fn extract_flags(text: &str) -> Vec<&str> {
+        text.split_whitespace()
+            .filter(|s| s.starts_with("--") || s.starts_with("-["))
+            .map(|s| {
+                // strip leading punctuation and value descriptions to get the flag base
+                s.trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .trim_end_matches(',')
+            })
+            .filter(|s| s.starts_with("--"))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    #[test]
+    fn cheatsheet_length_budgets() {
+        // `all` ≤ 2000 chars; each scoped page ≤ 1200 chars.
+        assert!(
+            CHEATSHEET_ALL.len() <= 2000,
+            "CHEATSHEET_ALL length {} exceeds 2000",
+            CHEATSHEET_ALL.len()
+        );
+        assert!(
+            CHEATSHEET_TEAM.len() <= 1200,
+            "CHEATSHEET_TEAM length {} exceeds 1200",
+            CHEATSHEET_TEAM.len()
+        );
+        assert!(
+            CHEATSHEET_WORK.len() <= 1200,
+            "CHEATSHEET_WORK length {} exceeds 1200",
+            CHEATSHEET_WORK.len()
+        );
+        assert!(
+            CHEATSHEET_MISSION.len() <= 1200,
+            "CHEATSHEET_MISSION length {} exceeds 1200",
+            CHEATSHEET_MISSION.len()
+        );
+    }
+
+    #[test]
+    fn cheatsheet_flags_parse() {
+        // Every flag in the all-up cheatsheet must be parseable by the CLI's
+        // flag-parsing primitives without a panic or unrelated error.
+        let all_flags = extract_flags(CHEATSHEET_ALL);
+        assert!(
+            !all_flags.is_empty(),
+            "cheatsheet must carry at least a few flags"
+        );
+        for flag_name in &all_flags {
+            let args = vec![
+                "ignored".to_string(),
+                flag_name.to_string(),
+                "placeholder".to_string(),
+            ];
+            // every flag must be reachable via value()
+            let val = value(&args, flag_name);
+            match val {
+                Some(v) => assert_eq!(
+                    v, "placeholder",
+                    "flag {} should extract its value",
+                    flag_name
+                ),
+                None => {
+                    // bare flags (booleans) are found by has_flag, not value
+                    let bare = vec!["ignored".to_string(), flag_name.to_string()];
+                    let found = has_flag(&bare, flag_name);
+                    assert!(
+                        found,
+                        "flag {} must be found by value() or has_flag()",
+                        flag_name
+                    );
+                }
+            }
+            // many() must not panic
+            let _ = many(&args, flag_name);
+        }
+    }
+
+    #[test]
+    fn cheatsheet_scoped_each_parse() {
+        for (scope, text) in &[
+            ("team", CHEATSHEET_TEAM),
+            ("work", CHEATSHEET_WORK),
+            ("mission", CHEATSHEET_MISSION),
+        ] {
+            let flags = extract_flags(text);
+            assert!(!flags.is_empty(), "{scope} cheatsheet must carry flags");
+            for flag_name in &flags {
+                let args = vec![
+                    "ignored".to_string(),
+                    flag_name.to_string(),
+                    "placeholder".to_string(),
+                ];
+                let val = value(&args, flag_name);
+                match val {
+                    Some(v) => assert_eq!(
+                        v, "placeholder",
+                        "[{scope}] flag {flag_name} should extract its value"
+                    ),
+                    None => {
+                        let bare = vec!["ignored".to_string(), flag_name.to_string()];
+                        assert!(
+                            has_flag(&bare, flag_name),
+                            "[{scope}] flag {flag_name} must be found by value() or has_flag()",
+                        );
+                    }
+                }
+                let _ = many(&args, flag_name);
+            }
+        }
     }
 }
