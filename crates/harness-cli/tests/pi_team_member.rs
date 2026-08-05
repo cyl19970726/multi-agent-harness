@@ -349,4 +349,17 @@ fn pi_rpc_provider_profile_validation() {
             .and_then(|v| v.as_bool()),
         Some(true)
     );
+    assert_eq!(
+        team_profile
+            .get("provider_version")
+            .and_then(|v| v.as_str()),
+        Some("0.83.0"),
+        "the fake Pi must satisfy the same reviewed-version gate as a real persistent member"
+    );
+    assert_eq!(
+        team_profile
+            .get("compatibility_status")
+            .and_then(|v| v.as_str()),
+        Some("current")
+    );
 }

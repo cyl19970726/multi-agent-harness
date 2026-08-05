@@ -749,6 +749,10 @@ pub fn install_pi_rpc_shim(
         r##"#!/usr/bin/env python3
 import sys, json, os, subprocess
 
+if '--version' in sys.argv[1:]:
+    print('0.83.0')
+    raise SystemExit(0)
+
 RESULT = os.environ.get('FAKE_PI_RESULT', 'DONE')
 
 with open('{cwd_marker}', 'w') as f:
