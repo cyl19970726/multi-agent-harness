@@ -12971,6 +12971,24 @@ fn team_run_recover(
             && lease.expires_unix_ms > current_unix_ms_u64()
     });
 
+    // ── Mandatory reader: Mission Log tail (ADR 0051) ────────────────
+    // A recovering Host must re-read judgment before it re-derives intent
+    // from provider-native state a compaction can destroy — the recovery
+    // entrypoint prints the current Mission Log tail before any mutation
+    // (Phase 2 below is the first phase that writes). Read-only and
+    // non-fatal: a lookup failure (e.g. a store inconsistency) is reported
+    // inline instead of blocking recovery.
+    if !json {
+        if let Some(mission_id) = run.mission_id.as_deref() {
+            println!("── mission log (last 3) ──");
+            match store.mission_log_tail(mission_id, 3) {
+                Ok(entries) => println!("{}", format_mission_log_entries_text(&entries)),
+                Err(error) => println!("mission log unavailable: {error}"),
+            }
+            println!();
+        }
+    }
+
     // ── Phase 1: orientation (read-only) ────────────────────────────
     if !json {
         println!(
@@ -31152,6 +31170,10 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     let workflow_artifact_manifests = latest_workflow_artifact_manifests_in_append_order(store)?;
     let missions = store.latest_missions()?;
     let waves = store.latest_waves()?;
+    // Unlike Wave/Mission, a MissionLogEntry is never revised in place — every
+    // row is a permanent entry, so the whole-snapshot projection reads the raw
+    // append-order ledger (`mission_log()`), not a latest-wins fold.
+    let mission_log = store.mission_log()?;
     // Agent Team v0 ledger projections (append-only, latest-wins). The folded
     // event log is capped per run so a chatty run cannot bloat the snapshot.
     let team_runs = latest_team_runs_in_append_order(store)?;
@@ -31249,6 +31271,7 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "workflow_artifact_manifests": workflow_artifact_manifests,
         "missions": missions,
         "waves": waves,
+        "mission_log": mission_log,
         "team_runs": team_runs,
         "member_runs": member_runs,
         "team_messages": team_messages,
@@ -31396,6 +31419,11 @@ fn dashboard_team_run_snapshot(
             .is_some_and(|id| json_field_eq(row, "id", id))
     });
     retain_json_rows(&mut snapshot, "waves", |row| {
+        mission_id
+            .as_deref()
+            .is_some_and(|id| json_field_eq(row, "mission_id", id))
+    });
+    retain_json_rows(&mut snapshot, "mission_log", |row| {
         mission_id
             .as_deref()
             .is_some_and(|id| json_field_eq(row, "mission_id", id))
