@@ -1,9 +1,10 @@
 # Company OS Wave 3 Independent Release Audit
 
-Status: independent candidate audit complete. All four recorded P1s are closed
-on committed candidates and the three implementation Works are Host-accepted.
-Release integration, live projection reconciliation, remote delivery, and
-post-integration gates have not been performed by this reviewer.
+Status: independent integrated-candidate audit complete. All five recorded P1s
+are closed, the three implementation Works are Host-accepted, and repaired
+release candidate `22e09bf915bac835c284d399522bf34935490465` passes the
+post-integration gate. Live projection reconciliation, report integration,
+remote delivery/readback, and new PR CI remain Host actions.
 
 Reviewer: `IndependentReleaseReviewer`
 (`member-run-1785898628397-p33412-4`, provider-native session
@@ -21,12 +22,11 @@ They must be refreshed again immediately before integration and delivery.
 
 ## Independent judgment
 
-The three Wave 3 implementation candidates pass their independently reviewed
-boundaries. They are not yet a release: the exact integration sequence, live
-append-only repair, final integrated matrix, fast-forward delivery, remote
-readback, and new CI remain Host release gates. Four P1 findings were recorded;
-all are closed on committed candidates and all ownership/closure facts are
-Work-linked:
+The three Wave 3 implementation candidates and repaired integration candidate
+pass their independently reviewed boundaries. They are not yet delivered: live
+append-only repair, report integration, authorized fast-forward delivery,
+remote readback, and new CI remain Host release gates. Five P1 findings were
+recorded; all are closed and all ownership/closure facts are Work-linked:
 
 1. **Closed in `5565999e8a09367bc73c1f53801b375d57f409ee`.** The
    cancelled `review_required` Kimi 0.32 recovery run had been actively driven
@@ -64,10 +64,19 @@ Work-linked:
    AtomicityBuilder `member-run-1785898628239-p33412-1`. Message:
    `tmsg-1785900416858-p62518-1`; causal review pass:
    `tmsg-1785901127950-p89275-0`.
+5. **Closed in `22e09bf915bac835c284d399522bf34935490465`.** The first
+   integrated head `2a50d88f7a4a9ca5370e6ad0577921c8f184e19b`
+   contained current master but not exact PR 302 head `7296354`; pushing it to
+   the existing PR branch would have required a forbidden non-fast-forward
+   update. Owner: Host. Finding and repair recommendation:
+   `tmsg-1785902137385-p72571-0`. The repaired line begins at `8539a33` and
+   merge commit `77f1b2aa501ae5eb085bdede1146d9ff37f3927c` has exact
+   parents `8539a33` and `a2fc58b`; both required ancestor checks now pass.
+   Host repair response: `tmsg-1785902902930-p74133-1`.
 
-There is no open or unowned P0/P1 at this snapshot. Candidate closure is not
-final integrated acceptance; every causal check must be rerun after conflict
-resolution at the integration hash.
+There is no open or unowned P0/P1 at this snapshot. The causal matrix was rerun
+on the exact repaired integration hash. Provider completion was not used as
+acceptance evidence.
 
 ## Remote and ancestry baseline
 
@@ -79,6 +88,7 @@ Read-only remote inspection produced:
 | PR 302 head | `729635451d73c24710cd1c6138cc04713495bff6` | Open PR `codex/nested-org-agent-teams-spec-v1` -> `master`; CI rows shown by GitHub are green but predate Wave 3. |
 | PR 302 merge ref | `ec7ac8d97df7150e7f7579a2b0bc4c3b3c31dc6d` | Stale test merge of `7296354` into old base `52c0864`, not current master. GitHub reports mergeability/merge-state `UNKNOWN`. |
 | Wave 3 base | `8539a336dbf2da79d3d86504191db68710930e39` | Contains PR 302 head as an exact ancestor. |
+| Repaired release candidate | `22e09bf915bac835c284d399522bf34935490465` | Local `codex/company-os-recursive-release-v1`; contains exact master and PR 302 head ancestry. Not pushed. |
 
 `7296354` is an ancestor of `8539a33`; it is not an ancestor of current
 `origin/master`. Neither `8539a33` nor `origin/master` is an ancestor of the
@@ -128,6 +138,27 @@ before mutation, and `started_at` refresh) while also retaining master's
 Goal-stack deletion, `board-summary`, cheatsheet, help, and anti-drift surface.
 Pairwise textual cleanliness does not remove the requirement to rerun the
 causal matrix after that resolution.
+
+### Repaired integration truth
+
+The Host's first rebased integration `2a50d88` failed the exact PR 302
+ancestor check. Directly merging `7296354` into that line produced 15 textual
+documentation conflicts, so the lower-risk repair rebuilt from `8539a33`.
+The accepted local release lineage is:
+
+| Object | Purpose |
+| --- | --- |
+| `77f1b2aa501ae5eb085bdede1146d9ff37f3927c` | Merge commit with exact parents `8539a33` and `a2fc58b`; preserves PR 302 and master histories. |
+| `ea4acf7`, `44fda1a` | Resolve the ADR collision: master retains ADR 0051 Single Intent; Nested Agent Teams becomes ADR 0052 with references updated. |
+| `207355841ceadff8d60b7c829f19075bdadb6a07` | Atomicity integration; stable patch id equals candidate `3b269d4`. |
+| `108b1e848c9322f54247d8c8d6b2df2031e74c23` | Runtime-only integration; stable patch id equals exact candidate `5565999e8a09367bc73c1f53801b375d57f409ee`. |
+| `76392f94ff574de18b7eb6308c9a56cbbb70515c`, `5a4716ecc056d3fab2c23b8006b7ea9091bdc393` | Dashboard implementation/correction; stable patch ids equal `8e23241` and `5ca2563`. |
+| `0934f4867229147c53c45993daf37e7fe9226c36` | Integration-only correction: refuse Team-scoped use of a TeamRun-local `--since` cursor, and supply `/v1/meta` in the self-heal browser harness. |
+| `22e09bf915bac835c284d399522bf34935490465` | Pins the successful MCP rebind fixture to reviewed fake Kimi rather than inheriting an installed `review_required` version. |
+
+All four implementation stable patch ids match their integrated counterparts
+exactly. The release candidate and this report contain only Git-resolved
+Runtime object ids, never a guessed expansion of a short hash.
 
 ## Wave 3 native-session provenance
 
@@ -237,81 +268,67 @@ not silently repair live state, and this reviewer did not mutate the Works.
 | Atomicity | `company-os-wave3-atomicity` / `codex/company-os-wave3-atomicity` | `3b269d4bc3e9625562eee8bb5768b1a4cd1bf344` | `harness-core`, `harness-store`, `team_run_work_command`, and WorkOperation/rebind semantics overlap current master/PR 310. Candidate includes the authorized `reconcile-projection` CLI hunk and same-MemberRun higher-generation rebind primitive. Against `a2fc58b`, textual conflict is only `docs/decisions/README.md`. | committed; Work Host-accepted v4 |
 | Runtime | `company-os-wave3-runtime` / `codex/company-os-wave3-runtime` | unique `5565999e8a09367bc73c1f53801b375d57f409ee`; dependencies `b21917b` (semantic PR 310 replay) then `d5f468f` (patch-identical Atomicity replay) | `main.rs`, SSE/provider and TeamRun tests overlap master. Against `a2fc58b`, textual conflicts are `main.rs` and `docs/decisions/README.md`. Final integration already gets PR 310 from master and Atomicity from its lane, so transplant only commits strictly above `d5f468f`. | committed; Work Host-accepted v5 |
 | Dashboard | `company-os-wave3-dashboard` / `codex/company-os-wave3-dashboard` | `5ca256355dc1566726f718c8d49368071c5ecfc3` (`8e23241` implementation + `5ca2563` audit correction) | Dashboard API, Workbench, types, Vite/browser checks overlap provenance changes. Against `a2fc58b`, textual conflict is only `docs/decisions/README.md`; semantic composition with `6617929` still needs integrated checks. | committed; Work Host-accepted v7 |
+| Release | `company-os-recursive-implementation-v1` / `codex/company-os-recursive-release-v1` | `22e09bf915bac835c284d399522bf34935490465` | Conflicts are resolved with both histories retained; ADRs are 0051 Single Intent and 0052 Nested Teams. Four candidate patch ids match exactly; integration-only cursor and test-fixture corrections are explicit. | clean local candidate; both ancestry checks and final gate pass; not pushed |
 | Audit | `company-os-wave3-review` / `codex/company-os-wave3-review` | this report only | `docs/research` only; merge after implementation/report resnapshot. | in progress |
 
-All candidate hashes and exact current-master textual conflicts are frozen
-above. Any remote movement invalidates this map.
+All candidate, integration, and exact current-master hashes are frozen above.
+Any remote movement invalidates this map.
 
 ## Acceptance matrix
 
 | Boundary | Required independent proof | Snapshot result |
 | --- | --- | --- |
-| Cross-store cutover | Concurrent conflicting transitions are fenced/refused; retry/restart is idempotent; no dual mutable responsibility; rebound preserves Team scope. | **PASS on Atomicity candidate** — independent `harness-core` 65/65 + 13/13 and `harness-store` 54/54 + 15/15 + 4/4 pass. The one-way fence, crash/retry, crash-gap Work advance, sparse mixed-writer recovery/refusal, explicit append-only reconciliation, and higher-generation rebind tests are present. Final integrated rerun and live reconciliation remain required. |
-| Provider compatibility | `review_required` cannot start, reopen/resume, recover/rebind, or rebound delivery before native drive; reviewed Codex/Claude modes still work. | **PASS on Runtime candidate** — five independent exact-tree regressions prove Kimi 0.32 refusal before ACP across start, HTTP rebound, reopen and recovery; Claude refusal before runner; reviewed recovery preserves one stable MemberRun/session and no duplicate Work. Final integrated rerun remains required. |
-| Runtime recovery | Honest cursor or explicitly bounded snapshot contract; same-size replace and deletion invalidate/recover without stale scope or duplicate Work. | **PASS on Runtime candidate** — contract explicitly rejects durable cursor/`Last-Event-ID` claims and uses authoritative scoped snapshot on open/reconnect; independent replace/delete/reconnect regression passed. Final integrated rerun remains required. |
-| Company selection | Tab-local selection does not mutate CLI/global Company; externally created Company appears; stale scope cannot overwrite current scope. | **PASS on Dashboard candidate** — independent real-browser rerun selected non-default B and read server default A, refreshed external C without changing tab scope, and rejected delayed B after switching to A. Final integrated rerun remains required. |
-| Domain freshness | Works, Docs, Org, and Runtime/read-model freshness are independently truthful and accessible. | **PASS on Dashboard candidate** — real browser exposed one accessible scoped group and four independent domain states; Work/Docs/Org invalidations left unrelated domains live. Final integrated rerun remains required. |
-| Real Runtime/browser E2E | Real in-process Runtime/SSE plus real browser; external Work, Docs, Org writes; reconnect, visibility/background, stale selector; no fixture-only substitute. | **PASS on Dashboard candidate** — `pnpm check:dashboard:runtime-e2e` independently passed 17/17. Source builds and spawns the real `harness serve`, proxies through Vite, drives Chromium, writes native isolated stores, kills/restarts Runtime, and performs no snapshot/SSE/business-row fixture injection. Final integrated rerun remains required. |
-| Master/PR integration | Candidate contains current master and exact PR 302 head ancestry; merge conflicts semantically resolved; full gates at final hash. | **PENDING HOST INTEGRATION.** Exact `a2fc58b` ancestry and two-file maximum conflict map recorded; no integrated hash exists yet. |
+| Cross-store cutover | Concurrent conflicting transitions are fenced/refused; retry/restart is idempotent; no dual mutable responsibility; rebound preserves Team scope. | **PASS on integrated `22e09bf`** — `harness-core` 65 + 13 and `harness-store` 58 + 15 + 4 all pass. The one-way fence, crash/retry, crash-gap Work advance, sparse mixed-writer recovery/refusal, append-only reconciliation, and higher-generation rebind are present. Live reconciliation remains a Host data action. |
+| Provider compatibility | `review_required` cannot start, reopen/resume, recover/rebind, or rebound delivery before native drive; reviewed Codex/Claude modes still work. | **PASS on integrated `22e09bf`** — serial `team_run_api` passes 45/45, including Kimi 0.32 pre-ACP refusals and reviewed stable recovery; `team_run_start` passes 10 with 2 documented historical `claude_cli` ignores. Claude live sessions remain honest 403 history, not a positive live-provider claim. |
+| Runtime recovery | Honest cursor or explicitly bounded snapshot contract; same-size replace and deletion invalidate/recover without stale scope or duplicate Work. | **PASS on integrated `22e09bf`** — bounded snapshot contract remains explicit; `serve_sse_projects` passes 7/7, including typed replace/delete/reconnect selected-scope recovery. |
+| Company selection | Tab-local selection does not mutate CLI/global Company; externally created Company appears; stale scope cannot overwrite current scope. | **PASS on integrated `22e09bf`** — real browser selected non-default B while server default remained A, refreshed external C, and rejected a delayed stale response. |
+| Domain freshness | Works, Docs, Org, and Runtime/read-model freshness are independently truthful and accessible. | **PASS on integrated `22e09bf`** — exact-tree dashboard gate exposes and exercises all four independent domain states. |
+| Real Runtime/browser E2E | Real in-process Runtime/SSE plus real browser; external Work, Docs, Org writes; reconnect, visibility/background, stale selector; no fixture-only substitute. | **PASS on integrated `22e09bf`** — independent isolated Runtime/Chromium rerun passes 17/17 and the full dashboard TypeScript/browser/a11y/production-build gate passes. No snapshot/SSE/business-row fixture injection. |
+| Master/PR integration | Candidate contains current master and exact PR 302 head ancestry; merge conflicts semantically resolved; full gates at final hash. | **PASS on local release candidate `22e09bf`** — exact master and PR 302 ancestor checks both exit 0, four implementation patch ids match, ADR 0051/0052 coexist, `git diff --check` passes, and `pnpm acceptance:mission-wave` passes. |
 | Remote delivery | Authorized fast-forward update, remote hash readback, PR 302 recomputed CI/merge state. | Not authorized/executed by reviewer. |
 
 ## Exact integration and delivery sequence
 
-The release must preserve the exact PR 302 ancestry and must not force-push.
-Rebasing the entire `8539a33` history onto master would rewrite PR 302's three
-commits and destroy the exact-ancestor proof. Use a release integration branch
-that merges master once, then rebase only the new Wave 3 lane commits.
+The first rebased integration proved why the release must preserve exact PR 302
+ancestry: it could not fast-forward the existing PR branch. The repaired local
+branch now has the correct topology and must not be rebased again.
 
-Host sequence with all three implementation Works now committed and accepted:
+Verified current state and remaining Host sequence:
 
 ```bash
-BASE=8539a336dbf2da79d3d86504191db68710930e39
 MASTER=a2fc58b3a446c7814d555e16990d443ff1dd8a04
 PR302=729635451d73c24710cd1c6138cc04713495bff6
-INT=codex/company-os-recursive-implementation-v1
-RUNTIME_DEP=d5f468f07ff66af5b2b50a52b3113273633d24ff # after PR 310 + Atomicity replays
+REL=codex/company-os-recursive-release-v1
+REL_HEAD=22e09bf915bac835c284d399522bf34935490465
 
 # 0. Abort if the remote moved; substitute no guessed hash.
 git ls-remote origin refs/heads/master refs/heads/codex/nested-org-agent-teams-spec-v1
-test "$(git rev-parse "$INT")" = "$BASE"
+test "$(git rev-parse "$REL")" = "$REL_HEAD"
 
-# 1. Preserve both histories. Resolve docs/decisions/README.md by retaining
-# both truthful ADR entries, then commit the merge. The Runtime transplant later
-# also conflicts in main.rs: compose provider preflight/recovery with master's
-# Goal deletion, board-summary, cheatsheet and help surface; choose neither side.
-git switch "$INT"
-git merge --no-ff "$MASTER"
-
-# 2. For each lane, rebase only commits above the fixed Wave 3 base onto the
-# current integration tip, review conflicts, then fast-forward integrate.
-# Ordered dependency: Atomicity -> Runtime -> Dashboard -> independent report.
-git -C <atomicity-worktree> rebase --onto "$INT" "$BASE" codex/company-os-wave3-atomicity
-git merge --ff-only codex/company-os-wave3-atomicity
-# Current master already contributes PR 310 and Atomicity was integrated first.
-# Exclude both Runtime-lane dependency replays and transplant only its unique
-# Wave 3 commits above d5f468f.
-git -C <runtime-worktree> rebase --onto "$INT" "$RUNTIME_DEP" codex/company-os-wave3-runtime
-git merge --ff-only codex/company-os-wave3-runtime
-git -C <dashboard-worktree> rebase --onto "$INT" "$BASE" codex/company-os-wave3-dashboard
-git merge --ff-only codex/company-os-wave3-dashboard
-git -C <review-worktree> rebase --onto "$INT" "$BASE" codex/company-os-wave3-review
-git merge --ff-only codex/company-os-wave3-review
-
-# 3. Prove both remote lines remain ancestors before any delivery.
+# 1. Reprove both histories and the exact-tree gate.
+git switch "$REL"
 git merge-base --is-ancestor "$PR302" HEAD
 git merge-base --is-ancestor "$MASTER" HEAD
 git diff --check "$MASTER"..HEAD
-
-# 4. Run the focused matrix from this report plus the repository release gate.
-# Record commands and actual counts at the final hash.
 pnpm acceptance:mission-wave
 
-# 5. Reviewer recommends a dry-run first. Only an explicitly authorized Host
-# may perform the actual fast-forward push that updates existing PR 302.
+# 2. Integrate both audit-only commits after this Work submits. Replace the
+# placeholder with the exact new report commit from the Work artifact refs.
+git cherry-pick 1f88429ad19be4b3defa923cef1f69948e6d7a1e \
+  <updated-report-commit-from-Work>
+git diff --check "$MASTER"..HEAD
+pnpm check:docs-governance
+git merge-base --is-ancestor "$PR302" HEAD
+git merge-base --is-ancestor "$MASTER" HEAD
+
+# 3. Run the explicit versioned append-only Work projection reconciliation and
+# dual TeamRun/Team-scope readback described in this report. Do not edit rows.
+
+# 4. Only an explicitly authorized Host may update the existing PR branch.
 git push --dry-run origin HEAD:codex/nested-org-agent-teams-spec-v1
 git push origin HEAD:codex/nested-org-agent-teams-spec-v1
 
-# 6. Read remote truth back; do not infer delivery from local push output.
+# 5. Read remote truth back; do not infer delivery from local push output.
 git ls-remote origin refs/heads/master refs/heads/codex/nested-org-agent-teams-spec-v1
 gh pr view 302 --repo cyl19970726/multi-agent-harness \
   --json headRefOid,baseRefOid,mergeable,mergeStateStatus,statusCheckRollup,url
@@ -342,6 +359,11 @@ git merge-tree --write-tree 8539a33 a2fc58b
 git merge-tree --write-tree 3b269d4 a2fc58b
 git merge-tree --write-tree 5565999 a2fc58b
 git merge-tree --write-tree 5ca2563 a2fc58b
+git show -s --format='%H %P' 77f1b2a
+git merge-base --is-ancestor a2fc58b 22e09bf
+git merge-base --is-ancestor 7296354 22e09bf
+git diff --check a2fc58b..22e09bf
+# `git show <commit> | git patch-id --stable` for all four candidate/integrated pairs
 ```
 
 Independent candidate checks:
@@ -370,7 +392,25 @@ cargo test -p harness-cli --test claude_agent_sdk_member      # 10/10 passed
 # Dashboard candidate 5ca2563
 pnpm check:dashboard:runtime-e2e  # 17/17 passed
 pnpm check:dashboard              # full component/browser/a11y/build gate passed
+
+# Exact repaired release candidate 22e09bf
+cargo test -p harness-core -p harness-store
+# core: 65 + 13; store: 58 + 15 + 4; all passed
+cargo test -p harness-cli --test team_run_api -- --test-threads=1
+# 45/45 passed
+pnpm acceptance:mission-wave
+# MCP 4/4; Mission/Wave 4/4; TeamRun API 45/45;
+# Team start 10 passed + 2 documented historical ignores;
+# full Dashboard TypeScript/browser/a11y/real Runtime 17/17/build passed
 ```
+
+One preliminary `cargo test --workspace` used default parallel test threads and
+hit an ephemeral-port collision: `team_run_api` was 44/45 and
+`kimi_model_switch_uses_only_the_new_models_advertised_effort_controls` failed
+before `harness serve` became ready with `Address already in use`. The complete
+suite then passed 45/45 under the repository's serial acceptance setting. This
+is recorded as test-harness flake evidence, not hidden or treated as a product
+failure.
 
 Final report branch: `codex/company-os-wave3-review`. Its commit is recorded in
 the submitted Review Work, avoiding a self-referential commit hash in this
@@ -381,15 +421,20 @@ file.
 - The live store has demonstrated projection loss on rebound. Candidate reads
   recover it, but the existing rows still require the explicit versioned
   append-only reconciliation plus dual-scope readback after integration.
-- The provider gate passes on `5565999`, but the Runtime rebase has a semantic
-  `main.rs` conflict with current master; only final-hash causal reruns prove
-  the composed gate.
-- Master moved during review. The exact `a2fc58b` map has one baseline/Atomicity/
-  Dashboard conflict and two Runtime conflicts, but every lane still overlaps
-  master semantically.
+- The provider gate and scoped Runtime contract pass at integrated `22e09bf`.
+  Claude's two original live sessions remain honest HTTP 403 evidence, and
+  installed Kimi 0.32 remains `review_required`; neither is a positive live
+  provider canary claim.
+- Master moved during review and the first integration rewrote PR 302 ancestry.
+  The repaired line fixes both, but any new remote movement or rebase invalidates
+  the ancestry and gate evidence.
+- Default-parallel `team_run_api` can collide on an ephemeral port; the official
+  serial acceptance passed. This is a non-blocking test-harness reliability
+  risk, not an excuse to weaken or skip the serial gate.
 - The stopped Kimi worktrees contain large dirty implementations. Accidental
   staging, copying, cleanup, or authorship reassignment would destroy evidence
   or contaminate Wave 3 provenance.
 - PR 302's published merge ref remains stale against old master and its GitHub
-  mergeability is unknown. Remote delivery is not proven until fast-forward
-  readback and new CI complete at the delivered head.
+  mergeability is unknown. Remote delivery is not proven until the report and
+  live repair evidence are integrated, fast-forward readback matches, and new
+  CI completes at the delivered head.
