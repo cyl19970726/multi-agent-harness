@@ -295,10 +295,14 @@ try {
   await page.getByLabel("Active company").selectOption("company-a");
   await waitForDomain(page, "runtime", "live");
   await waitForText(page, "Seed document company-a");
-  const defaultAfter = await requestJson(apiBase, "/v1/companies/current");
-  check(defaultBefore.current === "company-a" && defaultAfter.current === "company-a", "ordinary page selection does not mutate the CLI/server Company default");
   await page.getByLabel("Active company").selectOption("company-b");
   await waitForDomain(page, "runtime", "live");
+  await waitForText(page, "Seed document company-b");
+  const defaultAfterNonDefaultSelection = await requestJson(apiBase, "/v1/companies/current");
+  check(
+    defaultBefore.current === "company-a" && defaultAfterNonDefaultSelection.current === "company-a",
+    "non-default Company B page selection does not mutate the CLI/server Company A default",
+  );
 
   // Every write below is external to the browser and lands in the real Company
   // Store. The Runtime watcher emits freshness-only invalidations; the browser
