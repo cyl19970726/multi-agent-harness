@@ -8,7 +8,7 @@ canonical_for: recursive Organization, global Works, Member Focus, Team War
   responsive acceptance
 ```
 
-This slice freezes the implementation-ready UX contract for the ADR 0051
+This slice freezes the implementation-ready UX contract for the ADR 0052
 recursive Agent Team Organization era. It covers exactly five surfaces:
 
 1. **Organization** — the recursive AgentTeam tree (root Team, child Teams,
@@ -30,7 +30,7 @@ Scope rules that bind every later implementation Wave:
 
 - **No invented fields.** Every rendered value is classified in
   [data-provenance.md](data-provenance.md) as IMPLEMENTED (schema + store
-  today), TARGET (PR #302 / ADR 0051 design contract, not yet shipped), or
+  today), TARGET (PR #302 / ADR 0052 design contract, not yet shipped), or
   RESEARCH (directional candidate only). Production UI renders IMPLEMENTED
   fields plainly and must not show TARGET or RESEARCH fields until the
   corresponding store/API lands.
@@ -86,7 +86,7 @@ geometry probes at the four baselines above.
 Opened as `company-os-v6` because the repository opens a new design area when
 the canonical product model moves (v3 native trademark closure, v4 Standing
 Agent workspace, v5 AgentOS self-hosting loop). The recursive AgentTeam
-Organization model (ADR 0051; commits `b01df88`, `b23b7ac`) is the same class
+Organization model (ADR 0052; commits `b01df88`, `b23b7ac`) is the same class
 of change, and the v5 slice stays scoped to the self-hosting loop. The Host
 was notified on the Work thread; relocation into `company-os-v5/` remains
 trivial while this slice is self-contained.

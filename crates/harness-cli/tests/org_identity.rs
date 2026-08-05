@@ -1,4 +1,4 @@
-//! ADR 0051 durable AgentMember identity and explicit root Lead bootstrap.
+//! ADR 0052 durable AgentMember identity and explicit root Lead bootstrap.
 
 mod harness_env;
 

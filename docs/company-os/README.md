@@ -100,7 +100,7 @@ and may each receive an accepted result. The current Codex task can act as a
 Supervising Operator, while the Company-owned AgentOS Lead remains an
 independent durable AgentMember and root Team Host. See the
 [AgentOS self-hosting dogfood loop](agentos-self-hosting-loop.md) and
-[ADR 0051](../decisions/0051-nested-agent-teams-are-the-agent-organization.md).
+[ADR 0052](../decisions/0052-nested-agent-teams-are-the-agent-organization.md).
 
 The current product slice prioritizes the Docs + Work + Organization loop.
 Agents may discover gaps in documents, code, external gateway events, or Work
@@ -148,7 +148,7 @@ rules live in [Documentation Governance](../documentation-governance.md).
 | --- | --- |
 | Product thesis and whole-system orientation | [Vision](vision.md), [Product system map](product-system-map.md), [Concept model](concept-model.md) |
 | Docs and business modules | [Document system](document-system.md), [Docs operating surface matrix](docs-operating-surface-matrix.md), [Module design](module-design.md) |
-| Organization and collaboration | [Nested Agent Team organization](nested-agent-team-organization.md), [Organization and actors](organization-and-actors.md), [Collaboration and Agent work](collaboration-and-agent-work.md), [ADR 0051](../decisions/0051-nested-agent-teams-are-the-agent-organization.md) |
+| Organization and collaboration | [Nested Agent Team organization](nested-agent-team-organization.md), [Organization and actors](organization-and-actors.md), [Collaboration and Agent work](collaboration-and-agent-work.md), [ADR 0052](../decisions/0052-nested-agent-teams-are-the-agent-organization.md) |
 | AgentOS self-hosting | [AgentOS self-hosting dogfood loop](agentos-self-hosting-loop.md), [ADR 0046](../decisions/0046-supervised-agentos-self-hosting-loop.md) |
 | Work and Approval | [WorkItems and approvals](work-items-and-approvals.md), [Work Operating System](work-operating-system.md) |
 | Finance | [Financial relations](financial-relations.md) |

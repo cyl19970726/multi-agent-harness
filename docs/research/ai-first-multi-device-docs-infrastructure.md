@@ -72,10 +72,10 @@ Work discovery = every Member may turn observations into self-owned,
                  unassigned, or direct-child Work within Team topology
 ```
 
-ADR 0051 supersedes the two-identity and two-responsibility target while keeping
+ADR 0052 supersedes the two-identity and two-responsibility target while keeping
 the current `StandingAgent -> AgentMember` join and Company `WorkItem` -> Agent
 Team `Work` rows as compatibility implementation truth until verified cutover.
-This Docs research must use ADR 0051's exact objects and cannot introduce an
+This Docs research must use ADR 0052's exact objects and cannot introduce an
 additional Team-membership, Agent, Work, Session, or Lease authority. It is
 stacked on PR #302 because the target links and terminology do not exist on
 master independently; merge PR #302 first, then retarget this research PR to
@@ -142,7 +142,7 @@ replaceable.
 
 ## Target ownership map
 
-This table consumes ADR 0051's accepted target. Its schemas and cutover remain
+This table consumes ADR 0052's accepted target. Its schemas and cutover remain
 implementation pending.
 
 | System | Owns | Docs may store |
@@ -220,7 +220,7 @@ the Agent identity nor the Team membership.
 
 ### Docs observations participate in recursive Work discovery
 
-ADR 0051 does not make the root Lead the only source of demand. Every Member
+ADR 0052 does not make the root Lead the only source of demand. Every Member
 may discover a missing decision, stale fact, structural gap, defect, or next
 action while reading or changing Docs. Docs should make that observation easy
 to preserve as Work without becoming the Work scheduler.
@@ -548,7 +548,7 @@ revision only through Docs permission and command checks; owning a Work does
 not grant implicit write access to every referenced document.
 
 Optional company links such as Milestone, BusinessModule, Approval, Finance,
-Mission, or external delivery use ADR 0051 `WorkRelation` kinds; they do not
+Mission, or external delivery use ADR 0052 `WorkRelation` kinds; they do not
 create another `WorkItem` lifecycle.
 Deterministic Workflow steps may carry their own typed Document input/output
 refs, but neither Workflow nor Docs creates a second Work responsibility.
@@ -837,7 +837,7 @@ durable, while search/index freshness is reported separately.
 
 ### Phase 0 — contract and gap audit
 
-- merge ADR 0051 and freeze its target AgentMember, AgentTeam, Work, and
+- merge ADR 0052 and freeze its target AgentMember, AgentTeam, Work, and
   WorkRelation fields before changing Docs cross-system schemas;
 - inventory current Document/Block/Action append semantics and atomicity;
 - define normalized snapshot serialization and digest rules;
@@ -904,7 +904,7 @@ durable, while search/index freshness is reported separately.
 
 The proposal may become canonical only after separate review answers:
 
-1. Has ADR 0051 merged, and does the Docs design consume its exact AgentMember,
+1. Has ADR 0052 merged, and does the Docs design consume its exact AgentMember,
    AgentTeam, Work, and WorkRelation fields without another membership or Work
    authority?
 2. Is `DocumentRevision` the right product object, and is the snapshot format

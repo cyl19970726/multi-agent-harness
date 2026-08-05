@@ -1,4 +1,4 @@
-# ADR 0051: Nested Agent Teams Are The Agent Organization
+# ADR 0052: Nested Agent Teams Are The Agent Organization
 
 ```text
 status: accepted target contract; implementation pending

@@ -4054,7 +4054,7 @@
     "PR #302 b23b7ac over origin/master 52c0864",
     "official upstream repositories reviewed 2026-08-04"
    ],
-   "reorgTrigger": "ADR 0051 AgentMember/AgentTeam/Work fields, independent review, remote Docs API PoC evidence, a canonical Docs storage ADR, or a material change to ADR 0035/0050/0051.",
+   "reorgTrigger": "ADR 0052 AgentMember/AgentTeam/Work fields, independent review, remote Docs API PoC evidence, a canonical Docs storage ADR, or a material change to ADR 0035/0050/0052.",
    "authorityClass": "research",
    "implementationState": "design_only",
    "truthRefs": [
@@ -4841,7 +4841,7 @@
     "docs/company-os/organization-and-actors.md",
     "docs/company-os/collaboration-and-agent-work.md",
     "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
-    "docs/decisions/0051-nested-agent-teams-are-the-agent-organization.md",
+    "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md",
     "specs/nested-agent-team-organization/requirements.md",
     "specs/nested-agent-team-organization/design.md",
     "specs/nested-agent-team-organization/tasks.md"
@@ -4860,12 +4860,12 @@
    "truthRefs": [
     {
      "kind": "decision",
-     "ref": "docs/decisions/0051-nested-agent-teams-are-the-agent-organization.md"
+     "ref": "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md"
     }
    ]
   },
   {
-   "path": "docs/decisions/0051-nested-agent-teams-are-the-agent-organization.md",
+   "path": "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md",
    "ownerRole": "product-architecture",
    "status": "stable",
    "lifecycle": "stable",
@@ -4903,7 +4903,7 @@
    ],
    "dependsOn": [
     "docs/company-os/nested-agent-team-organization.md",
-    "docs/decisions/0051-nested-agent-teams-are-the-agent-organization.md"
+    "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md"
    ],
    "machineConsumers": [
     "check-doc-links",
@@ -4919,7 +4919,7 @@
    "truthRefs": [
     {
      "kind": "decision",
-     "ref": "docs/decisions/0051-nested-agent-teams-are-the-agent-organization.md"
+     "ref": "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md"
     }
    ]
   },
@@ -4934,7 +4934,7 @@
    "dependsOn": [
     "specs/nested-agent-team-organization/requirements.md",
     "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
-    "docs/decisions/0051-nested-agent-teams-are-the-agent-organization.md"
+    "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md"
    ],
    "machineConsumers": [
     "check-doc-links",

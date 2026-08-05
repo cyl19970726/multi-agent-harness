@@ -84,7 +84,7 @@ child Team, delegate child Work, and remain accountable for its parent Work.
 Role names are company choices rather than required architecture. The
 Supervising Operator can inspect all Teams, create unassigned intake Work, and
 message the Lead, but it does not impersonate a Member or become the hidden
-scheduler. See [ADR 0051](../decisions/0051-nested-agent-teams-are-the-agent-organization.md).
+scheduler. See [ADR 0052](../decisions/0052-nested-agent-teams-are-the-agent-organization.md).
 
 ## One company operation
 
@@ -168,7 +168,7 @@ after the GitHub path proves the contract.
 | --- | --- | --- |
 | Company / execution identity | ADR 0042 is implemented across independent Company Store, Execution Space, and Project Binding registries/selectors; TeamRun and Workflow pin their binding; current blended snapshots still join compatibility StandingAgent rows to execution participation | recursive AgentMember organization cutover, legacy-store retirement, and durable cross-process Team Supervisor |
 | Docs substrate | native schemas, stores, APIs, standard views, and Store-live evidence exist | deeper document authoring and governed module evolution |
-| Organization substrate | actor kinds, OrgUnit membership, StandingAgent compatibility join, and mixed-actor UI exist | ADR 0051 recursive AgentTeam topology, truthful hierarchy, and shared Member/Team views |
+| Organization substrate | actor kinds, OrgUnit membership, StandingAgent compatibility join, and mixed-actor UI exist | ADR 0052 recursive AgentTeam topology, truthful hierarchy, and shared Member/Team views |
 | Work read model | Team Works plus current Company WorkItem/Milestone projections exist | one persistent Team-scoped Work kernel, recursive Global Works, and explicit compatibility cutover |
 | Finance/Approval | native records, separation of Commitment and Payment, and governed action slices exist | actor-bound product sessions and broader operator controls |
 | Agent roles | current governance-role records and decision contracts exist | role-neutral AgentMembers organized by recursive Teams instead of a fixed governance hierarchy |

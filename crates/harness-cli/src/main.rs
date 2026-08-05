@@ -8968,7 +8968,7 @@ fn agent_command(
 }
 
 // ---------------------------------------------------------------------------
-// Organization durable AgentMember identity (ADR 0051).
+// Organization durable AgentMember identity (ADR 0052).
 //
 // This surface is intentionally CLI/store-only in this slice. HTTP/MCP wiring
 // belongs to the application-service follow-up and must not create a second
@@ -9193,7 +9193,7 @@ fn team_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             }
             team.updated_at = now_string();
             // Removing a member must not strand a child Team whose durable
-            // host is that member (ADR 0051 direct-host invariant).
+            // host is that member (ADR 0052 direct-host invariant).
             let mut projected = latest_teams(store)?;
             projected.insert(team.id.clone(), team.clone());
             validate_agent_team_topology(&projected)
@@ -25208,7 +25208,7 @@ fn persist_new_team(store: &HarnessStore, team: &AgentTeam) -> CliResult<()> {
         }
     }
     // The store guard re-checks the duplicate id under the write lock and
-    // enforces the recursive topology invariants (ADR 0051).
+    // enforces the recursive topology invariants (ADR 0052).
     store.insert_agent_team(team)?;
     Ok(())
 }

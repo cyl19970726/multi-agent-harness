@@ -1,4 +1,4 @@
-//! Integration coverage for the recursive AgentTeam topology slice (ADR 0051):
+//! Integration coverage for the recursive AgentTeam topology slice (ADR 0052):
 //! `harness team create --parent-team/--host-member` persists the durable
 //! parent/host relations, the store guard enforces the direct-host and
 //! acyclic invariants on every creation path, and `team remove-member`

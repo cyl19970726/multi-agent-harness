@@ -208,4 +208,4 @@ This collaboration model is accepted only when native state can reconstruct:
 
 See [Nested Agent Team organization](nested-agent-team-organization.md),
 [ADR 0050](../decisions/0050-agent-team-work-board-and-message-boundary.md),
-and [ADR 0051](../decisions/0051-nested-agent-teams-are-the-agent-organization.md).
+and [ADR 0052](../decisions/0052-nested-agent-teams-are-the-agent-organization.md).

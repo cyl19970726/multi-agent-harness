@@ -30,7 +30,7 @@ its parent Host while managing its own direct children.
 
 ## Implemented identity foundation
 
-The first ADR 0051 cutover slice is intentionally additive:
+The first ADR 0052 cutover slice is intentionally additive:
 
 - `DurableAgentMember` is the slim Organization identity and is stored in
   `durable_agent_members.jsonl`;
@@ -215,4 +215,4 @@ task board.
 - [Requirements](../../specs/nested-agent-team-organization/requirements.md)
 - [Technical design](../../specs/nested-agent-team-organization/design.md)
 - [Implementation plan](../../specs/nested-agent-team-organization/tasks.md)
-- [ADR 0051](../decisions/0051-nested-agent-teams-are-the-agent-organization.md)
+- [ADR 0052](../decisions/0052-nested-agent-teams-are-the-agent-organization.md)

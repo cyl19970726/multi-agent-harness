@@ -5,7 +5,7 @@ name, its source contract, and one of three classes:
 
 ```text
 IMPLEMENTED  schema + store exist today; production UI may render it now
-TARGET       PR #302 / ADR 0051 design contract; not shipped; UI may plan
+TARGET       PR #302 / ADR 0052 design contract; not shipped; UI may plan
              the slot but must not render it as live data before the
              store/API lands
 RESEARCH     directional candidate (ai-first Docs infrastructure); informs

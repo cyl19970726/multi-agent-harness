@@ -34,7 +34,7 @@ AgentTeamRun -> MemberRun -> provider-native session
 of the Host's current plan and judgment — not an executor container or
 synchronization barrier. An AgentTeamRun may span multiple Waves while its
 MemberRuns and native sessions continue. Docs plus recursive AgentTeam
-Organization is the accepted target product direction (ADR 0051); current
+Organization is the accepted target product direction (ADR 0052); current
 StandingAgent and Company WorkItem stores remain compatibility implementation
 truth until an explicit verified cutover. Repository self-hosting remains the
 first execution-foundation scenario.
@@ -120,7 +120,7 @@ doc carries the contract behind each rule.
     being implemented; do not claim planned objects or fields exist until
     schemas, stores, APIs, and acceptance checks prove them. Keep the
     design-contract vs implemented-schema distinction explicit. In particular,
-    ADR 0051's AgentMember identity, recursive AgentTeam Organization, and
+    ADR 0052's AgentMember identity, recursive AgentTeam Organization, and
     unified Work kernel are accepted target contracts, not shipped Store/API/UI
     claims. Do not extend the compatibility StandingAgent-to-AgentMember join or
     create a dual-write Company WorkItem/Team Work path.

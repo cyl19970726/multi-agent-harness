@@ -463,12 +463,12 @@ pub struct AgentTeam {
     #[serde(default = "default_agent_team_status")]
     pub status: AgentTeamStatus,
     pub member_ids: Vec<String>,
-    /// Recursive Organization relation (ADR 0051): parent AgentTeam id.
+    /// Recursive Organization relation (ADR 0052): parent AgentTeam id.
     /// `None` means a root team. Rows written before the recursive-topology
     /// slice predate this field and read as roots.
     #[serde(default)]
     pub parent_team_id: Option<String>,
-    /// Recursive Organization relation (ADR 0051): durable AgentMember that
+    /// Recursive Organization relation (ADR 0052): durable AgentMember that
     /// Hosts this team. A non-root team must name one and it must be a direct
     /// member of the parent team; a member hosts at most one team in V1.
     /// Optional only so compatibility rows carrying `owner_agent_id` alone
@@ -479,7 +479,7 @@ pub struct AgentTeam {
     pub updated_at: String,
 }
 
-/// Durable Company/Organization identity of one Agent (ADR 0051).
+/// Durable Company/Organization identity of one Agent (ADR 0052).
 ///
 /// Mutable execution state deliberately does not live here. A durable member
 /// binds to zero or more replaceable [`MemberRun`] generations, and each run
@@ -608,7 +608,7 @@ pub fn validate_host_authority_cutover(
 }
 
 // ---------------------------------------------------------------------------
-// Recursive AgentTeam topology (ADR 0051, target contract slice).
+// Recursive AgentTeam topology (ADR 0052, target contract slice).
 //
 // Organization is the persistent recursive projection of Agent Teams: every
 // non-root team names its `parent_team_id` and the durable `host_member_id`
@@ -646,7 +646,7 @@ pub enum TeamTopologyError {
 }
 
 /// Validate the recursive AgentTeam graph invariants over the latest-row-wins
-/// team projection (ADR 0051):
+/// team projection (ADR 0052):
 ///
 /// 1. every `parent_team_id` resolves to an existing team;
 /// 2. every non-root team names a durable `host_member_id` that is a direct
@@ -3219,7 +3219,7 @@ pub struct WorkCommandContext {
 pub struct Work {
     pub id: String,
     pub team_run_id: String,
-    /// Durable AgentTeam scope (ADR 0051). `None` reads as a compatibility
+    /// Durable AgentTeam scope (ADR 0052). `None` reads as a compatibility
     /// TeamRun-scoped Work written before the Team-scope promotion slice.
     /// When set, `team_run_id` names only the current execution attempt: the
     /// Work's responsibility survives that TeamRun's completion and a later
@@ -3249,7 +3249,7 @@ pub struct Work {
     pub prerequisite_work_ids: Vec<String>,
     pub priority: WorkPriority,
     pub created_by_actor: TeamActorRef,
-    /// Durable AgentMember identity of the creator (ADR 0051 provenance).
+    /// Durable AgentMember identity of the creator (ADR 0052 provenance).
     /// `None` for Host, Supervising Operator, or external intake; populated
     /// from the bound MemberRun's stable identity when a Member creates Work.
     #[serde(default)]
@@ -3299,7 +3299,7 @@ impl Work {
         self.is_claim_ready(works)
     }
 
-    /// Whether this Work carries a durable AgentTeam scope (ADR 0051) rather
+    /// Whether this Work carries a durable AgentTeam scope (ADR 0052) rather
     /// than only a compatibility TeamRun scope.
     pub fn is_team_scoped(&self) -> bool {
         self.team_id.is_some()
@@ -3337,7 +3337,7 @@ pub enum WorkEventKind {
     TeamScopePromoted,
     /// The execution attempt (`team_run_id`) of a Team-scoped Work moved to a
     /// successor TeamRun of the same AgentTeam. Durable scope (`team_id`),
-    /// owner, and provenance are unchanged (ADR 0051).
+    /// owner, and provenance are unchanged (ADR 0052).
     ExecutionRetargeted,
 }
 
@@ -3374,7 +3374,7 @@ pub struct WorkCutoverReport {
     pub issues: Vec<WorkCutoverIssue>,
 }
 
-/// Validate the breaking responsibility cutover required by ADR 0051.
+/// Validate the breaking responsibility cutover required by ADR 0052.
 ///
 /// A source-linked persistent Work is accepted only after the compatibility
 /// Company WorkItem is no longer live. This prevents two mutable owner/status

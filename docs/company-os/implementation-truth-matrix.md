@@ -6,11 +6,11 @@ owner_role: AgentOS Lead with direct Team Hosts
 canonical_for: Docs, Organization, Work, Finance, and Company authority contract-to-acceptance status and the trademark closure gap
 ```
 
-> **Target versus current truth:** ADR 0051 adopts AgentMember as the durable
+> **Target versus current truth:** ADR 0052 adopts AgentMember as the durable
 > agent identity, recursive AgentTeams as Organization, and one shared Work
 > responsibility kernel. The Organization and Work rows below intentionally
 > describe the currently shipped `StandingAgent` / Company `WorkItem`
-> compatibility implementation. They do not prove the ADR 0051 target. The
+> compatibility implementation. They do not prove the ADR 0052 target. The
 > target now has an additive identity/topology foundation: a slim
 > `DurableAgentMember` ledger, explicit root Lead bootstrap, deterministic
 > compatibility mapping, and a refusal-first Host cutover audit. The shipped

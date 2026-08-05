@@ -278,7 +278,7 @@ pub fn snapshot_with_execution(
             "org_units": store.latest_org_units()?,
             "memberships": store.latest_organization_memberships()?,
         },
-        // ADR 0051 Organization identity is execution-space truth even when
+        // ADR 0052 Organization identity is execution-space truth even when
         // this Company Store is joined to a separately selected Execution
         // Space. Keep it distinct from the compatibility runtime `members`
         // projection in the outer Dashboard snapshot.

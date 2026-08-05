@@ -87,7 +87,7 @@ MemberRuns and provider-native sessions. Runtime lifecycle never creates or
 retires the durable Member identity.
 
 Current `StandingAgent.execution_agent_member_ref` rows are compatibility
-implementation truth pending ADR 0051 migration. New target architecture must
+implementation truth pending ADR 0052 migration. New target architecture must
 not add another identity join or infer identity from equal ids.
 
 ```text

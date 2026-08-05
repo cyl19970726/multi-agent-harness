@@ -193,5 +193,5 @@ The next dogfood acceptance must therefore use a fresh explicit slice:
    follow-up Works, proving that the next cycle arises from actual operation.
 
 Until that path passes Store, CLI/API, Dashboard, recovery, and provider-live
-checks, [ADR 0051](../decisions/0051-nested-agent-teams-are-the-agent-organization.md)
+checks, [ADR 0052](../decisions/0052-nested-agent-teams-are-the-agent-organization.md)
 remains an accepted target rather than an implemented claim.

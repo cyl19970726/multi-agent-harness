@@ -8,7 +8,7 @@ import type {
 } from "../types";
 
 /**
- * Recursive Organization model (ADR 0051) derived only from real snapshot
+ * Recursive Organization model (ADR 0052) derived only from real snapshot
  * fields. Topology edges come from `AgentTeam.parent_team_id` /
  * `host_member_id` (wire names frozen by the core topology slice). Rows
  * pre-dating that slice read as hostless roots; ancestry is never inferred
@@ -52,7 +52,7 @@ export interface OrgTeamNode {
   host?: OrgMemberIdentity;
   /**
    * Compatibility lead label from `owner_agent_id` when no `host_member_id`
-   * is recorded. Labelled as compatibility, never presented as the ADR 0051
+   * is recorded. Labelled as compatibility, never presented as the ADR 0052
    * Host relation.
    */
   compatLeadLabel?: string;
@@ -99,7 +99,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-/** Read the additive ADR 0051 projection while accepting a future top-level
+/** Read the additive ADR 0052 projection while accepting a future top-level
  * lift. An explicitly present top-level field wins, including an empty list. */
 export function durableAgentMembers(snapshot: DashboardSnapshot): DurableAgentMember[] {
   if (snapshot.durable_agent_members) return snapshot.durable_agent_members;

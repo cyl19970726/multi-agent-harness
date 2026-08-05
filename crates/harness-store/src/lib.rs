@@ -333,7 +333,7 @@ impl HarnessStore {
 
     /// Insert a new AgentTeam under the store lock. Rejects a
     /// concurrently-created duplicate id and enforces the recursive topology
-    /// invariants (ADR 0051) against the latest projection plus the candidate
+    /// invariants (ADR 0052) against the latest projection plus the candidate
     /// before appending. Member-existence checks stay with the caller; this
     /// guard owns graph integrity only.
     pub fn insert_agent_team(&self, value: &AgentTeam) -> StoreResult<()> {
@@ -356,7 +356,7 @@ impl HarnessStore {
 
     /// Insert one slim, durable Organization identity under the store lock.
     /// Provider/runtime/session state belongs to MemberRun and native sessions,
-    /// never to this ledger (ADR 0051).
+    /// never to this ledger (ADR 0052).
     pub fn insert_durable_member(&self, value: &DurableAgentMember) -> StoreResult<()> {
         value
             .validate()
@@ -3670,7 +3670,7 @@ impl HarnessStore {
     }
 
     /// Latest-row-wins AgentTeam projection keyed by team id. This is the
-    /// input for recursive topology validation and queries (ADR 0051).
+    /// input for recursive topology validation and queries (ADR 0052).
     pub fn latest_teams(&self) -> StoreResult<std::collections::BTreeMap<String, AgentTeam>> {
         Ok(latest_by_id(self.teams()?, |team| team.id.clone()))
     }
@@ -3755,7 +3755,7 @@ impl HarnessStore {
         Ok(self.latest_works_unlocked()?.into_values().collect())
     }
 
-    /// Read-only ADR 0051 cutover gate across the independently selected
+    /// Read-only ADR 0052 cutover gate across the independently selected
     /// Execution Space and Company Store. It does not migrate or dual-write
     /// either side; callers decide whether a reported snapshot may advance.
     pub fn work_cutover_report(

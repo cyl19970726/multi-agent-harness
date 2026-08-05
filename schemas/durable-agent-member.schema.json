@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agent-harness.local/schemas/durable-agent-member.schema.json",
   "title": "DurableAgentMember",
-  "description": "ADR 0051 Organization identity. Runtime state belongs to MemberRun and provider-native Session.",
+  "description": "ADR 0052 Organization identity. Runtime state belongs to MemberRun and provider-native Session.",
   "type": "object",
   "additionalProperties": false,
   "required": [

@@ -12,7 +12,7 @@ started but never submitted; that session is historical evidence only).
 |---|---|---|
 | Frozen integration base (PR 302 HEAD) | `7296354` | `origin/codex/nested-org-agent-teams-spec-v1`, tip = docs proposals for recursive org |
 | `origin/master` | `52c0864` | PR 301 merged; PR 302 not yet merged |
-| Shared lane base above PR 302 | `b9e91cd` | `feat(agent-team): add recursive topology foundation (ADR 0051)`, parent `7296354` |
+| Shared lane base above PR 302 | `b9e91cd` | `feat(agent-team): add recursive topology foundation (ADR 0052)`, parent `7296354` |
 
 `b9e91cd` is contained in Core, Docs, and Runtime branches and is the correct
 merge base between them; it contributes no cross-lane conflicts.

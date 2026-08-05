@@ -34,7 +34,7 @@ domain are roles that a company may choose, not hard-coded product layers.
 
 The full target contract and transition are defined by
 [Nested Agent Team organization](nested-agent-team-organization.md),
-[ADR 0051](../decisions/0051-nested-agent-teams-are-the-agent-organization.md),
+[ADR 0052](../decisions/0052-nested-agent-teams-are-the-agent-organization.md),
 and the [implementation Spec](../../specs/nested-agent-team-organization/requirements.md).
 
 ## Native actor identities
@@ -216,7 +216,7 @@ The repository currently implements Company `StandingAgent`, `OrgUnit`,
 stores, CLI commands, and UI projections remain current implementation truth
 until an explicit migration/reset lands.
 
-ADR 0051 changes the target architecture; it does not pretend that cutover is
+ADR 0052 changes the target architecture; it does not pretend that cutover is
 already complete. During transition:
 
 - existing rows remain readable and honestly labelled compatibility data;
