@@ -1,11 +1,12 @@
 {
   "schema": "star_harness.company_os_implementation_truth.v1",
-  "auditedAt": "2026-07-31",
+  "auditedAt": "2026-08-05",
   "states": [
     "design_only",
     "partial",
     "implemented",
-    "verified"
+    "verified",
+    "retired_contract_dormant_code"
   ],
   "systems": [
     {
@@ -140,10 +141,11 @@
     },
     {
       "id": "finance",
-      "implementationState": "partial",
+      "implementationState": "retired_contract_dormant_code",
+      "retirementNote": "ADR 0053 two-stage retirement: contract layer retired 2026-08-05; Commitment/Payment code remains dormant (append-only ledgers may hold rows); finance vocabulary enters retired_vocabulary only after code removal.",
       "truthRefs": {
         "contract": [
-          "docs/company-os/financial-relations.md"
+          "docs/decisions/0053-finance-contract-layer-retirement.md"
         ],
         "schema": [
           "schemas/company-os/finance.schema.json"
@@ -157,13 +159,9 @@
         "ui": [
           "apps/agent-dashboard/src/company-os/operations/pages.tsx"
         ],
-        "skills": [
-          "skills/company-finance-operator/SKILL.md"
-        ],
         "acceptance": [
           "crates/harness-cli/tests/company_os_api.rs",
-          "crates/harness-store/tests/company_os.rs",
-          "scripts/check-company-os-finance-cli-smoke.mjs"
+          "crates/harness-store/tests/company_os.rs"
         ]
       },
       "verifiedSlices": [
