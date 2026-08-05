@@ -1397,7 +1397,12 @@ fn mcp_stdio_work_rebind_and_successor_delivery_reconcile() {
         .expect("stable Agent id")
         .to_string();
 
-    let mut mcp = McpClient::spawn(&home, &project_id, &[]);
+    // This is the successful rebind path, so pin the provider probe to the
+    // reviewed fake Kimi version instead of inheriting a developer machine's
+    // potentially review_required installation.
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let mut mcp = McpClient::spawn(&home, &project_id, &[("KIMI_CODE_BIN", fake_kimi.as_str())]);
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
