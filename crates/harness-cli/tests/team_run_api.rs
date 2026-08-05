@@ -1332,6 +1332,13 @@ fn get_host_inbox_is_scoped_to_exact_native_thread() {
         exact["runs"][0]["messages"].as_array().map(Vec::len),
         Some(1)
     );
+    // Attentions field must exist alongside messages (wave-4 #341)
+    assert!(
+        exact["runs"][0]["attentions"]
+            .as_array()
+            .is_some_and(|a| a.is_empty()),
+        "attentions should be present (empty here — no work transitions)"
+    );
 
     let (status, other) =
         serve.get_json("/v1/team-runs/host-inbox?surface=codex-app&thread_id=another-thread");
