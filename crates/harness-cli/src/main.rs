@@ -55,6 +55,7 @@ mod resident;
 #[cfg(unix)]
 mod resident_daemon;
 mod sse;
+mod supervisor_wake;
 mod workflow;
 
 #[derive(Debug, Error)]
@@ -15362,6 +15363,7 @@ enum IdleMemberWake {
     Messages(Vec<TeamMessage>),
     Closed,
     TestRetired,
+    Degraded(String),
 }
 
 #[derive(Clone, Copy)]
@@ -16561,6 +16563,10 @@ fn wait_for_idle_member_wake(
     member_row: &mut MemberRun,
     controls: &ControlReceiver<MemberControlCommand>,
     mut ensure_transport_alive: impl FnMut() -> CliResult<()>,
+    zero_output_streak: u32,
+    last_consumed_work_version: Option<u64>,
+    policy: &supervisor_wake::WakePolicy,
+    backoff: &mut supervisor_wake::WakeBackoff,
 ) -> CliResult<IdleMemberWake> {
     let idle_since = Instant::now();
     loop {
@@ -16642,43 +16648,189 @@ fn wait_for_idle_member_wake(
                 route_agent_inbox_messages(&ledger.store, agent_member_id, None, None)?;
             }
         }
-        if let Some(claimed) = ledger.claim_next_work_for(&member_row.id)? {
-            member_row.status = MemberRunStatus::Running;
-            member_row.finished_at = None;
-            member_row.last_event_at = Some(now_string());
-            ledger.save_member_run(member_row)?;
-            return Ok(IdleMemberWake::Work(Box::new(claimed)));
-        }
-        // The deterministic idle-grace harness intentionally retires fake
-        // providers after one turn. Production runtimes have no such grace
-        // and continue active Work until its durable state changes.
-        if member_supervisor_test_idle_grace().is_none() {
-            if let Some(work) = ledger.active_work_continuation_for(&member_row.id)? {
-                member_row.status = MemberRunStatus::Running;
+
+        // Build pure views from the store for the decision function.
+        let member_view = build_member_wake_view(
+            ledger,
+            member_row,
+            zero_output_streak,
+            last_consumed_work_version,
+        )?;
+        let board_view = build_board_wake_view(ledger, member_row)?;
+
+        let decision = supervisor_wake::decide_wake(&member_view, &board_view, policy, backoff);
+        match decision {
+            supervisor_wake::WakeDecision::DeliverPending => {
+                // Try work deliveries first (work contract prompt).
+                if let Some(claimed) = ledger.claim_next_work_for(&member_row.id)? {
+                    backoff.reset();
+                    member_row.status = MemberRunStatus::Running;
+                    member_row.finished_at = None;
+                    member_row.last_event_at = Some(now_string());
+                    ledger.save_member_run(member_row)?;
+                    return Ok(IdleMemberWake::Work(Box::new(claimed)));
+                }
+                // Then try active-work continuation.
+                if member_supervisor_test_idle_grace().is_none() {
+                    if let Some(work) = ledger.active_work_continuation_for(&member_row.id)? {
+                        backoff.reset();
+                        member_row.status = MemberRunStatus::Running;
+                        member_row.finished_at = None;
+                        member_row.last_event_at = Some(now_string());
+                        ledger.save_member_run(member_row)?;
+                        return Ok(IdleMemberWake::ActiveWorkContinuation(Box::new(work)));
+                    }
+                }
+                // Then response-required messages.
+                let claimed = ledger.claim_round_triggering_messages_for(&member_row.id)?;
+                if !claimed.is_empty() {
+                    backoff.reset();
+                    member_row.status = MemberRunStatus::Running;
+                    member_row.finished_at = None;
+                    member_row.last_event_at = Some(now_string());
+                    ledger.save_member_run(member_row)?;
+                    return Ok(IdleMemberWake::Messages(claimed));
+                }
+                // DeliverPending predicted but nothing claimable — fall through to Sleep.
+            }
+            supervisor_wake::WakeDecision::Continue(_work_id) => {
+                // Active Work version changed → re-inject continuation.
+                if member_supervisor_test_idle_grace().is_none() {
+                    if let Some(work) = ledger.active_work_continuation_for(&member_row.id)? {
+                        backoff.reset();
+                        member_row.status = MemberRunStatus::Running;
+                        member_row.finished_at = None;
+                        member_row.last_event_at = Some(now_string());
+                        ledger.save_member_run(member_row)?;
+                        return Ok(IdleMemberWake::ActiveWorkContinuation(Box::new(work)));
+                    }
+                }
+                // Work version changed but continuation candidate disappeared — fall through to Sleep.
+            }
+            supervisor_wake::WakeDecision::ClaimHint(_work_ids) => {
+                // Board-discovery hint for idle members: the wake is only a
+                // discovery hint; ownership starts at the atomic claim.
+                // Inject a lightweight prompt so the member can discover and
+                // claim eligible Works.
+                if let Some(work) = ledger.active_work_continuation_for(&member_row.id)? {
+                    backoff.reset();
+                    member_row.status = MemberRunStatus::Running;
+                    member_row.finished_at = None;
+                    member_row.last_event_at = Some(now_string());
+                    ledger.save_member_run(member_row)?;
+                    return Ok(IdleMemberWake::ActiveWorkContinuation(Box::new(work)));
+                }
+            }
+            supervisor_wake::WakeDecision::Sleep(_duration) => {
+                if member_supervisor_test_idle_grace()
+                    .is_some_and(|grace| idle_since.elapsed() >= grace)
+                {
+                    return Ok(IdleMemberWake::TestRetired);
+                }
+                backoff.sleep_and_tick(policy);
+                continue;
+            }
+            supervisor_wake::WakeDecision::Degraded(reason) => {
+                // Mark the member blocked so continuation stops.
+                // The Host must intervene (message, steer, or recover).
+                member_row.status = MemberRunStatus::Blocked;
                 member_row.finished_at = None;
                 member_row.last_event_at = Some(now_string());
                 ledger.save_member_run(member_row)?;
-                return Ok(IdleMemberWake::ActiveWorkContinuation(Box::new(work)));
+                ledger.append_action(
+                    &member_row.id,
+                    "degraded",
+                    MemberActionStatus::Failed,
+                    "member degraded — zero-output spiral",
+                    &reason,
+                )?;
+                ledger.fold_event(
+                    TeamRunEventSourceKind::Member,
+                    Some(member_row.id.clone()),
+                    "member_run",
+                    &member_row.id,
+                    "degraded",
+                    &format!("member {} degraded: {reason}", member_row.name),
+                )?;
+                return Ok(IdleMemberWake::Degraded(reason));
             }
         }
-        // Response-intent gate (ADR 0046 §4): informational or
-        // acknowledgement-only mail stays durable and queued but never wakes
-        // an idle member into a new provider round. When response-required
-        // mail triggers a round, the whole queued batch is claimed so every
-        // message is delivered exactly once with that round's receipt.
-        let claimed = ledger.claim_round_triggering_messages_for(&member_row.id)?;
-        if !claimed.is_empty() {
-            member_row.status = MemberRunStatus::Running;
-            member_row.finished_at = None;
-            member_row.last_event_at = Some(now_string());
-            ledger.save_member_run(member_row)?;
-            return Ok(IdleMemberWake::Messages(claimed));
-        }
-        if member_supervisor_test_idle_grace().is_some_and(|grace| idle_since.elapsed() >= grace) {
-            return Ok(IdleMemberWake::TestRetired);
-        }
-        std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// Build a pure `MemberWakeView` from store reads.
+fn build_member_wake_view(
+    ledger: &TeamRunLedger,
+    member_row: &MemberRun,
+    zero_output_streak: u32,
+    last_consumed_work_version: Option<u64>,
+) -> CliResult<supervisor_wake::MemberWakeView> {
+    let stable_member_id = member_row
+        .agent_member_id
+        .as_deref()
+        .or(member_row.slot_id.as_deref())
+        .unwrap_or(member_row.id.as_str())
+        .to_string();
+    let is_idle = matches!(member_row.status, MemberRunStatus::Idle);
+
+    let all_works = ledger.store.latest_works()?;
+    let active_work = all_works.iter().find(|work| {
+        work.team_run_id == ledger.run_id
+            && is_active_work_continuation_candidate(work, &member_row.id, &all_works)
+    });
+
+    let delivery_count = ledger.queued_works_for(&member_row.id)?.len() as u32;
+
+    let message_count = ledger
+        .queued_messages_for(&member_row.id)?
+        .iter()
+        .filter(|message| message.requires_response())
+        .count() as u32;
+
+    Ok(supervisor_wake::MemberWakeView {
+        member_id: member_row.id.clone(),
+        stable_member_id,
+        status: member_row.status,
+        is_idle,
+        active_work_id: active_work.map(|work| work.id.clone()),
+        active_work_version: active_work.map(|work| work.version),
+        last_consumed_work_version,
+        unconsumed_delivery_count: delivery_count,
+        unconsumed_message_count: message_count,
+        zero_output_streak,
+    })
+}
+
+/// Build a pure `BoardWakeView` from store reads.
+fn build_board_wake_view(
+    ledger: &TeamRunLedger,
+    member_row: &MemberRun,
+) -> CliResult<supervisor_wake::BoardWakeView> {
+    let all_works = ledger.store.latest_works()?;
+    let stable_member_id = member_row
+        .agent_member_id
+        .as_deref()
+        .or(member_row.slot_id.as_deref())
+        .unwrap_or(member_row.id.as_str());
+    let eligible_claim_work_ids: Vec<String> = all_works
+        .iter()
+        .filter(|work| {
+            work.team_run_id == ledger.run_id
+                && work.status == harness_core::WorkStatus::Open
+                && work.owner_member_id.is_none()
+                && work.claim_mode == harness_core::WorkClaimMode::TeamClaim
+                && work.prerequisites_satisfied(all_works.iter())
+                && (work.eligible_member_ids.is_empty()
+                    || work
+                        .eligible_member_ids
+                        .iter()
+                        .any(|eligible| eligible == stable_member_id))
+        })
+        .map(|work| work.id.clone())
+        .collect();
+    Ok(supervisor_wake::BoardWakeView {
+        eligible_claim_work_ids,
+    })
 }
 
 /// Terminal outcome of one member's orchestration, for the run summary.
@@ -17397,10 +17549,24 @@ fn run_codex_member(
     let mut active_work: Option<ClaimedWork> = None;
     let mut active_assignment: Option<TeamMessage> = None;
     let mut final_summary = String::new();
-    match wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
-        ledger.require_supervisor_lease()?;
-        app_server.ensure_transport_alive()
-    })? {
+    // Supervisor wake-policy tracking.
+    let wake_policy = supervisor_wake::WakePolicy::default();
+    let mut wake_backoff = supervisor_wake::WakeBackoff::new();
+    let mut zero_output_streak: u32 = 0;
+    let mut last_consumed_work_version: Option<u64> = None;
+    match wait_for_idle_member_wake(
+        ledger,
+        &mut member_row,
+        &live_control,
+        || {
+            ledger.require_supervisor_lease()?;
+            app_server.ensure_transport_alive()
+        },
+        zero_output_streak,
+        last_consumed_work_version,
+        &wake_policy,
+        &mut wake_backoff,
+    )? {
         IdleMemberWake::Work(claimed) => {
             let work_envelope = member_work_collaboration_envelope(
                 ledger,
@@ -17454,6 +17620,13 @@ fn run_codex_member(
                 &member_row,
                 MemberRunStatus::Idle,
                 "Codex member test runtime retired while idle".to_string(),
+            ));
+        }
+        IdleMemberWake::Degraded(reason) => {
+            return Ok(MemberOutcome::new(
+                &member_row,
+                MemberRunStatus::Blocked,
+                format!("Codex member degraded: {reason}"),
             ));
         }
     }
@@ -17597,11 +17770,21 @@ fn run_codex_member(
             final_summary = round_summary;
         }
 
-        match wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
-            ledger.require_supervisor_lease()?;
-            app_server.ensure_transport_alive()
-        })? {
+        match wait_for_idle_member_wake(
+            ledger,
+            &mut member_row,
+            &live_control,
+            || {
+                ledger.require_supervisor_lease()?;
+                app_server.ensure_transport_alive()
+            },
+            zero_output_streak,
+            last_consumed_work_version,
+            &wake_policy,
+            &mut wake_backoff,
+        )? {
             IdleMemberWake::Work(claimed) => {
+                wake_backoff.reset();
                 let work_envelope = member_work_collaboration_envelope(
                     ledger,
                     context.execution_space_id.as_deref(),
@@ -17660,6 +17843,13 @@ fn run_codex_member(
                     &member_row,
                     MemberRunStatus::Idle,
                     final_summary,
+                ));
+            }
+            IdleMemberWake::Degraded(reason) => {
+                return Ok(MemberOutcome::new(
+                    &member_row,
+                    MemberRunStatus::Blocked,
+                    format!("Codex member degraded: {reason}"),
                 ));
             }
         }
@@ -19688,6 +19878,11 @@ fn run_kimi_member(
     let mut accepted_messages = Vec::new();
     let mut active_work: Option<ClaimedWork> = None;
     let mut final_summary = String::new();
+    // Supervisor wake-policy tracking.
+    let wake_policy = supervisor_wake::WakePolicy::default();
+    let mut wake_backoff = supervisor_wake::WakeBackoff::new();
+    let zero_output_streak: u32 = 0;
+    let last_consumed_work_version: Option<u64> = None;
     let initial_wake = if resumed_native_session {
         ledger
             .interrupted_active_work_for(&member_row.id)?
@@ -19723,10 +19918,19 @@ fn run_kimi_member(
     }
     let wake = match initial_wake {
         Some(wake) => wake,
-        None => wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
-            ledger.require_supervisor_lease()?;
-            client.ensure_transport_alive()
-        })?,
+        None => wait_for_idle_member_wake(
+            ledger,
+            &mut member_row,
+            &live_control,
+            || {
+                ledger.require_supervisor_lease()?;
+                client.ensure_transport_alive()
+            },
+            zero_output_streak,
+            last_consumed_work_version,
+            &wake_policy,
+            &mut wake_backoff,
+        )?,
     };
     match wake {
         IdleMemberWake::Work(claimed) => {
@@ -19791,6 +19995,14 @@ fn run_kimi_member(
                 &member_row,
                 MemberRunStatus::Idle,
                 "Kimi member test runtime retired while idle".to_string(),
+            ));
+        }
+        IdleMemberWake::Degraded(reason) => {
+            client.shutdown();
+            return Ok(MemberOutcome::new(
+                &member_row,
+                MemberRunStatus::Blocked,
+                format!("Kimi member degraded: {reason}"),
             ));
         }
     }
@@ -19998,11 +20210,21 @@ fn run_kimi_member(
             final_summary = summary;
         }
 
-        match wait_for_idle_member_wake(ledger, &mut member_row, &live_control, || {
-            ledger.require_supervisor_lease()?;
-            client.ensure_transport_alive()
-        })? {
+        match wait_for_idle_member_wake(
+            ledger,
+            &mut member_row,
+            &live_control,
+            || {
+                ledger.require_supervisor_lease()?;
+                client.ensure_transport_alive()
+            },
+            zero_output_streak,
+            last_consumed_work_version,
+            &wake_policy,
+            &mut wake_backoff,
+        )? {
             IdleMemberWake::Work(claimed) => {
+                wake_backoff.reset();
                 let work_envelope = member_work_collaboration_envelope(
                     ledger,
                     context.execution_space_id.as_deref(),
@@ -20061,6 +20283,14 @@ fn run_kimi_member(
                     &member_row,
                     MemberRunStatus::Idle,
                     final_summary,
+                ));
+            }
+            IdleMemberWake::Degraded(reason) => {
+                client.shutdown();
+                return Ok(MemberOutcome::new(
+                    &member_row,
+                    MemberRunStatus::Blocked,
+                    format!("Kimi member degraded: {reason}"),
                 ));
             }
         }
@@ -21382,12 +21612,8 @@ fn dashboard_command(
     resolved: &ResolvedStore,
     args: &[String],
 ) -> CliResult<()> {
-    require_subcommand(
-        args,
-        "dashboard snapshot | dashboard doctor --team-run-id <id> --api <base-url>",
-    )?;
+    require_subcommand(args, "dashboard snapshot")?;
     match args[0].as_str() {
-        "doctor" => dashboard_doctor_command(store, &args[1..])?,
         "snapshot" => {
             let company_store = if let Ok(home) = company_store::harness_home() {
                 match company_store::active_company_id(&home).map_err(company_store_err)? {
@@ -21419,419 +21645,6 @@ fn dashboard_command(
         }
     }
     Ok(())
-}
-
-/// `harness dashboard doctor --team-run-id <id> --api <base-url>` (issue #307,
-/// item 3) — a read-only, operator-facing check that a dashboard pointed at
-/// `--api` would show Store truth for the given TeamRun. It fetches the exact
-/// two things the Workbench itself fetches (`GET /v1/meta` and
-/// `GET /v1/team-runs/{id}/snapshot`) and compares them against THIS process's
-/// own direct store reads (bypassing HTTP entirely) plus this CLI binary's own
-/// build rev (embedded the same way the server's is — `build_git_rev`, or an
-/// explicit `--expected-git-rev` override for CI that deploys a different
-/// commit than it runs doctor from). It performs no writes. A count mismatch
-/// or a git_rev disagreement both fail non-zero.
-fn dashboard_doctor_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let team_run_id = required(args, "--team-run-id")?;
-    let api = required(args, "--api")?;
-    // Owned (not `Option<&str>`) so defaulting to this binary's own compiled-in
-    // rev is a plain value fallback, not a borrow that has to outlive `args`.
-    let expected_git_rev =
-        value(args, "--expected-git-rev").unwrap_or_else(|| build_git_rev().to_string());
-
-    let store_counts = DoctorStoreCounts {
-        works: store
-            .latest_works()?
-            .into_iter()
-            .filter(|work| work.team_run_id == team_run_id)
-            .count(),
-        members: latest_member_runs_in_append_order(store)?
-            .into_iter()
-            .filter(|member| member.team_run_id == team_run_id)
-            .count(),
-        messages: latest_team_messages_in_append_order(store)?
-            .into_iter()
-            .filter(|message| message.team_run_id == team_run_id)
-            .count(),
-    };
-
-    let (meta_status, meta) = http_get_json(&api, "/v1/meta")?;
-    if meta_status != 200 {
-        return Err(CliError::Usage(format!(
-            "GET {api}/v1/meta returned HTTP {meta_status}: {meta}"
-        )));
-    }
-    // `--team-run-id` is an operator-supplied CLI flag, not untrusted web
-    // input, and Harness's own generated ids are always plain
-    // alphanumeric/hyphen — no percent-encoding needed for this path segment.
-    let snapshot_path = format!("/v1/team-runs/{team_run_id}/snapshot");
-    let (snapshot_status, snapshot) = http_get_json(&api, &snapshot_path)?;
-    if snapshot_status != 200 {
-        return Err(CliError::Usage(format!(
-            "GET {api}{snapshot_path} returned HTTP {snapshot_status}: {snapshot}"
-        )));
-    }
-
-    let report = doctor_report(&store_counts, &meta, &snapshot, &expected_git_rev);
-    print_doctor_report(&team_run_id, &api, &report);
-    if report.all_pass() {
-        Ok(())
-    } else {
-        Err(CliError::Usage(
-            "dashboard doctor: the API disagrees with direct store reads or the server build; see table above"
-                .to_string(),
-        ))
-    }
-}
-
-/// Direct-store Work/member/message counts for one TeamRun — bypasses HTTP
-/// entirely, so it is the ground truth `dashboard doctor` compares the API
-/// against.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct DoctorStoreCounts {
-    works: usize,
-    members: usize,
-    messages: usize,
-}
-
-/// One row of the printed `dashboard doctor` table.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct DoctorCheck {
-    label: &'static str,
-    expected: String,
-    observed: String,
-    pass: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-struct DoctorReport {
-    checks: Vec<DoctorCheck>,
-}
-
-impl DoctorReport {
-    fn all_pass(&self) -> bool {
-        self.checks.iter().all(|check| check.pass)
-    }
-}
-
-/// Pure comparison, no I/O, so it is unit-testable without a live server.
-/// `store_counts` and `expected_git_rev` are this process's own ground truth;
-/// `meta` and `snapshot` are exactly the JSON bodies a dashboard client would
-/// receive from `GET /v1/meta` and `GET /v1/team-runs/{id}/snapshot`.
-fn doctor_report(
-    store_counts: &DoctorStoreCounts,
-    meta: &serde_json::Value,
-    snapshot: &serde_json::Value,
-    expected_git_rev: &str,
-) -> DoctorReport {
-    let api_works = json_array_len(snapshot, "works");
-    let api_members = json_array_len(snapshot, "member_runs");
-    let api_messages = json_array_len(snapshot, "team_messages");
-    let server_git_rev = meta
-        .get("git_rev")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-
-    // Plain string equality, deliberately with no special-case for "unknown":
-    // a build that could not embed its own rev (no git available) failing to
-    // match a concrete rev is itself a real provenance gap worth surfacing,
-    // not something to silently wave through. Two builds that both landed on
-    // "unknown" register as equal — no false alarm — but the printed table
-    // still shows the raw "unknown" value so a human notices neither side
-    // could actually prove anything.
-    let rev_pass = expected_git_rev == server_git_rev;
-
-    DoctorReport {
-        checks: vec![
-            DoctorCheck {
-                label: "works count (store vs API)",
-                expected: store_counts.works.to_string(),
-                observed: api_works.to_string(),
-                pass: store_counts.works == api_works,
-            },
-            DoctorCheck {
-                label: "members count (store vs API)",
-                expected: store_counts.members.to_string(),
-                observed: api_members.to_string(),
-                pass: store_counts.members == api_members,
-            },
-            DoctorCheck {
-                label: "messages count (store vs API)",
-                expected: store_counts.messages.to_string(),
-                observed: api_messages.to_string(),
-                pass: store_counts.messages == api_messages,
-            },
-            DoctorCheck {
-                label: "git_rev (this build vs server)",
-                expected: expected_git_rev.to_string(),
-                observed: server_git_rev.to_string(),
-                pass: rev_pass,
-            },
-        ],
-    }
-}
-
-fn json_array_len(value: &serde_json::Value, key: &str) -> usize {
-    value
-        .get(key)
-        .and_then(serde_json::Value::as_array)
-        .map(Vec::len)
-        .unwrap_or(0)
-}
-
-fn print_doctor_report(team_run_id: &str, api: &str, report: &DoctorReport) {
-    println!("harness dashboard doctor — team-run {team_run_id} against {api}");
-    for check in &report.checks {
-        println!(
-            "  {:<32} expected={:<24} observed={:<24} {}",
-            check.label,
-            check.expected,
-            check.observed,
-            if check.pass { "PASS" } else { "FAIL" },
-        );
-    }
-    if report.all_pass() {
-        println!("PASS — API and this store agree; server build matches.");
-    } else {
-        println!(
-            "FAIL — the API (what a dashboard renders) disagrees with direct store reads or the server build. See rows above."
-        );
-    }
-}
-
-/// Strip an optional `http(s)://` scheme, returning the bare `host:port`
-/// `TcpStream::connect` needs. `dashboard doctor` only ever talks to a
-/// local/plain-HTTP `harness serve` (the same transport `serve` itself
-/// speaks) — no TLS.
-fn http_authority(base_url: &str) -> CliResult<String> {
-    let trimmed = base_url.trim().trim_end_matches('/');
-    let authority = trimmed
-        .strip_prefix("http://")
-        .or_else(|| trimmed.strip_prefix("https://"))
-        .unwrap_or(trimmed);
-    if authority.is_empty() {
-        return Err(CliError::Usage("--api must not be empty".to_string()));
-    }
-    Ok(authority.to_string())
-}
-
-/// A minimal blocking HTTP/1.1 GET over a raw TCP socket — `dashboard doctor`'s
-/// only network call. This workspace has no HTTP client crate (`serve` itself
-/// is hand-rolled TCP/HTTP — see `handle_http_connection`), and adding one for
-/// a single CLI diagnostic is not worth a new dependency. Returns
-/// `(status_code, parsed_json_body)`.
-fn http_get_json(base_url: &str, path: &str) -> CliResult<(u16, serde_json::Value)> {
-    let authority = http_authority(base_url)?;
-    let mut stream = TcpStream::connect(&authority).map_err(|error| {
-        CliError::Usage(format!(
-            "cannot reach --api {base_url} ({authority}): {error}"
-        ))
-    })?;
-    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    write!(
-        stream,
-        "GET {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n"
-    )?;
-    let mut raw = String::new();
-    read_http_response_to_string(&mut stream, &mut raw)?;
-    let (header_part, body) = raw
-        .split_once("\r\n\r\n")
-        .ok_or_else(|| CliError::Usage(format!("malformed HTTP response from {base_url}{path}")))?;
-    let status = header_part
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|code| code.parse::<u16>().ok())
-        .ok_or_else(|| CliError::Usage(format!("malformed HTTP status from {base_url}{path}")))?;
-    let json = serde_json::from_str(body.trim()).map_err(|error| {
-        CliError::Usage(format!("{base_url}{path} did not return JSON: {error}"))
-    })?;
-    Ok((status, json))
-}
-
-/// Linux may report `ECONNRESET` after the peer has already written a
-/// complete `Connection: close` response (the same transport quirk the serve
-/// integration test harness works around). Accept that ending only when the
-/// declared Content-Length is fully present; any other read error propagates.
-fn read_http_response_to_string(stream: &mut TcpStream, raw: &mut String) -> CliResult<()> {
-    match stream.read_to_string(raw) {
-        Ok(_) => Ok(()),
-        Err(error)
-            if error.kind() == std::io::ErrorKind::ConnectionReset
-                && http_response_looks_complete(raw) =>
-        {
-            Ok(())
-        }
-        Err(error) => Err(CliError::Io(error)),
-    }
-}
-
-fn http_response_looks_complete(raw: &str) -> bool {
-    let Some((headers, body)) = raw.split_once("\r\n\r\n") else {
-        return false;
-    };
-    let Some(content_length) = headers.lines().find_map(|line| {
-        let (name, value) = line.split_once(':')?;
-        name.eq_ignore_ascii_case("content-length")
-            .then(|| value.trim().parse::<usize>().ok())
-            .flatten()
-    }) else {
-        return false;
-    };
-    body.len() >= content_length
-}
-
-#[cfg(test)]
-mod dashboard_doctor_tests {
-    use super::*;
-
-    fn counts(works: usize, members: usize, messages: usize) -> DoctorStoreCounts {
-        DoctorStoreCounts {
-            works,
-            members,
-            messages,
-        }
-    }
-
-    fn snapshot(works: usize, members: usize, messages: usize) -> serde_json::Value {
-        serde_json::json!({
-            "works": vec![serde_json::json!({}); works],
-            "member_runs": vec![serde_json::json!({}); members],
-            "team_messages": vec![serde_json::json!({}); messages],
-        })
-    }
-
-    fn meta(git_rev: &str) -> serde_json::Value {
-        serde_json::json!({"git_rev": git_rev})
-    }
-
-    #[test]
-    fn all_matching_counts_and_revs_pass() {
-        let report = doctor_report(
-            &counts(2, 1, 3),
-            &meta("abc1234"),
-            &snapshot(2, 1, 3),
-            "abc1234",
-        );
-        assert!(report.all_pass(), "{report:?}");
-        assert!(report.checks.iter().all(|check| check.pass));
-    }
-
-    #[test]
-    fn works_count_mismatch_fails_only_that_row() {
-        let report = doctor_report(
-            &counts(2, 1, 3),
-            &meta("abc1234"),
-            &snapshot(1, 1, 3),
-            "abc1234",
-        );
-        assert!(!report.all_pass());
-        let works_row = &report.checks[0];
-        assert_eq!(works_row.label, "works count (store vs API)");
-        assert!(!works_row.pass);
-        assert!(report.checks[1].pass, "members row should be unaffected");
-        assert!(report.checks[2].pass, "messages row should be unaffected");
-    }
-
-    #[test]
-    fn members_count_mismatch_fails() {
-        let report = doctor_report(
-            &counts(2, 1, 3),
-            &meta("abc1234"),
-            &snapshot(2, 0, 3),
-            "abc1234",
-        );
-        assert!(!report.all_pass());
-        assert!(!report.checks[1].pass);
-    }
-
-    #[test]
-    fn messages_count_mismatch_fails() {
-        let report = doctor_report(
-            &counts(2, 1, 3),
-            &meta("abc1234"),
-            &snapshot(2, 1, 0),
-            "abc1234",
-        );
-        assert!(!report.all_pass());
-        assert!(!report.checks[2].pass);
-    }
-
-    #[test]
-    fn git_rev_mismatch_fails_the_rev_row_even_when_counts_match() {
-        let report = doctor_report(
-            &counts(0, 0, 0),
-            &meta("stale0ff"),
-            &snapshot(0, 0, 0),
-            "fresh999",
-        );
-        assert!(!report.all_pass());
-        let rev_row = report.checks.last().expect("rev row");
-        assert_eq!(rev_row.label, "git_rev (this build vs server)");
-        assert!(!rev_row.pass);
-        assert_eq!(rev_row.expected, "fresh999");
-        assert_eq!(rev_row.observed, "stale0ff");
-    }
-
-    #[test]
-    fn both_sides_reporting_unknown_git_rev_counts_as_equal_not_a_failure() {
-        // Two builds that both landed on "unknown" (no git at build time) are
-        // literally equal strings, so this must not register as a mismatch —
-        // even though neither side actually proved a commit (the printed
-        // table still shows "unknown" so a human can notice that).
-        let report = doctor_report(
-            &counts(0, 0, 0),
-            &meta("unknown"),
-            &snapshot(0, 0, 0),
-            "unknown",
-        );
-        assert!(report.all_pass(), "{report:?}");
-    }
-
-    #[test]
-    fn missing_meta_git_rev_field_defaults_to_unknown_and_fails_against_a_known_expected_rev() {
-        // A server that cannot even report SOME git_rev while this build
-        // knows its own concrete rev is a real provenance gap, not something
-        // to silently pass.
-        let report = doctor_report(
-            &counts(0, 0, 0),
-            &serde_json::json!({}),
-            &snapshot(0, 0, 0),
-            "abc1234",
-        );
-        let rev_row = report.checks.last().expect("rev row");
-        assert_eq!(rev_row.observed, "unknown");
-        assert!(
-            !rev_row.pass,
-            "a concrete expected rev vs an unreported server rev must fail"
-        );
-    }
-
-    #[test]
-    fn missing_snapshot_arrays_count_as_zero_not_a_panic() {
-        let report = doctor_report(
-            &counts(0, 0, 0),
-            &meta("abc1234"),
-            &serde_json::json!({}),
-            "abc1234",
-        );
-        assert!(report.all_pass(), "{report:?}");
-    }
-
-    #[test]
-    fn http_authority_strips_scheme_and_trailing_slash() {
-        assert_eq!(
-            http_authority("http://127.0.0.1:8787/").unwrap(),
-            "127.0.0.1:8787"
-        );
-        assert_eq!(
-            http_authority("https://example.com").unwrap(),
-            "example.com"
-        );
-        assert_eq!(http_authority("127.0.0.1:8787").unwrap(), "127.0.0.1:8787");
-        assert!(http_authority("   ").is_err());
-    }
 }
 
 fn hook_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
@@ -22721,11 +22534,6 @@ fn handle_http_connection(
                         .map(|(_, company_store)| company_store),
                 )?,
             )?,
-            // GET /v1/meta — server build/data provenance (issue #307). Always
-            // the coordination store (`store_owned`), never the Company OS
-            // store: it answers "which build served this, which store did it
-            // read, how far has that store's op log advanced".
-            "/v1/meta" => write_http_json(&mut stream, "200 OK", &dashboard_meta(&store_owned)?)?,
             // GET /v1/projects — enumerate known projects (registry + on-disk stores
             // + reserved `_global`) for the dashboard picker. `current` marks the
             // active project (multi-project P6 / project-api task).
@@ -30836,34 +30644,6 @@ fn dashboard_snapshot_with_company(
     Ok(snapshot)
 }
 
-/// `GET /v1/meta` — server build/data provenance (issue #307, 2nd occurrence of
-/// "panel shows something other than Store truth"). Every dashboard surface can
-/// cross-check itself against this without reading server logs:
-///   - `git_rev` / `built_at`: which commit and when this *server* binary was
-///     built (embedded at compile time by `build.rs`, never shelled out here);
-///   - `store_root`: which coordination store this response actually read;
-///   - `latest_op_seq`: how far that store's Work operation log has advanced.
-///
-/// The store has no single field named "seq"; `work_operations.jsonl` is an
-/// append-only per-store log (one row per create/assign/start/accept/...), so
-/// its row count is a monotonic cursor over every WorkOperation the store has
-/// recorded — the "newest event cursor" the store exposes (see
-/// `HarnessStore::work_operations`). It only ever grows.
-fn dashboard_meta(store: &HarnessStore) -> CliResult<serde_json::Value> {
-    let store_root = std::fs::canonicalize(store.root())
-        .unwrap_or_else(|_| store.root().to_path_buf())
-        .display()
-        .to_string();
-    let latest_op_seq = store.work_operations()?.len() as u64;
-    Ok(serde_json::json!({
-        "git_rev": build_git_rev(),
-        "built_at": build_built_at(),
-        "store_root": store_root,
-        "latest_op_seq": latest_op_seq,
-        "server_version": env!("CARGO_PKG_VERSION"),
-    }))
-}
-
 /// A bounded canonical projection for a Team deep link. It contains only
 /// Harness coordination state belonging to the selected TeamRun plus its
 /// Mission, Team, members, and Waves. Provider-native transcript/activity is
@@ -34005,22 +33785,6 @@ fn now_string() -> String {
     format!("unix-ms:{millis}")
 }
 
-/// The commit this binary was built from, embedded by `build.rs` at compile
-/// time (issue #307 — `/v1/meta` must never shell out to `git` per-request).
-/// "unknown" only when the build environment had no git / was not a checkout.
-fn build_git_rev() -> &'static str {
-    option_env!("HARNESS_BUILD_GIT_REV").unwrap_or("unknown")
-}
-
-/// When this binary was compiled, in the same `unix-ms:<millis>` convention as
-/// every other timestamp this server emits. `None` only if the build
-/// environment's clock could not be read (see `build.rs`).
-fn build_built_at() -> Option<String> {
-    option_env!("HARNESS_BUILD_AT_MS")
-        .and_then(|value| value.parse::<u128>().ok())
-        .map(|millis| format!("unix-ms:{millis}"))
-}
-
 fn current_unix_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -34102,7 +33866,6 @@ fn print_help() {
   agent create|list|show|start|health|send|route-inbox|deliver|retry-delivery|reconcile-delivery|gateway|close
   workflow list|run|run-script|get-output|patch|gc-worktrees|reap-workers
   dashboard snapshot
-  dashboard doctor --team-run-id <id> --api <base-url> [--expected-git-rev <rev>]
   hook record --agent <agent> [--runtime <runtime>]
   serve [--addr 127.0.0.1:8787] [--once]
   mcp
