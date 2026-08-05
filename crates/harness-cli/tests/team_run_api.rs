@@ -6519,3 +6519,215 @@ fn team_run_board_summary_is_bounded_and_reports_counts_and_member_state() {
         String::from_utf8_lossy(&missing.stderr)
     );
 }
+
+/// ADR 0051 mandatory reader: `team-run recover` must print the linked
+/// Mission's Log tail before its recovery report, so a recovering Host
+/// re-reads judgment before it re-derives intent from provider-native state.
+/// A freshly created run's members default to `MemberCoordinationStatus::Active`
+/// (`classify_member_recovery_path`'s first check), so recovery is a clean
+/// no-op pass here -- this test is only about what gets printed and in what
+/// order, not about the member-reopen/rebind machinery covered elsewhere.
+#[test]
+fn team_run_recover_prints_mission_log_tail_before_the_report() {
+    let home = TempHome::new("team-run-recover-mission-log");
+    let project_id = init_project(&home, "alpha");
+
+    command_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "create",
+            "--id",
+            "mission-recover",
+            "--title",
+            "Recovering mission",
+            "--objective",
+            "Prove team-run recover reads judgment first",
+            "--json",
+        ],
+    );
+    for (kind, body) in [
+        ("judgment", "First judgment before recovery."),
+        ("replan", "Re-planned after review."),
+        ("recovery", "Most recent judgment entry."),
+    ] {
+        command_json(
+            &home,
+            &project_id,
+            &[
+                "mission",
+                "log",
+                "append",
+                "--mission-id",
+                "mission-recover",
+                "--kind",
+                kind,
+                "--body",
+                body,
+                "--json",
+            ],
+        );
+    }
+
+    let create_out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "Recoverable run",
+            "--mission-id",
+            "mission-recover",
+            "--member",
+            "lead:coordinator:kimi#Coordinate the delivery",
+        ],
+    );
+    assert!(
+        create_out.status.success(),
+        "team-run create failed: {}",
+        String::from_utf8_lossy(&create_out.stderr)
+    );
+    let run_id = String::from_utf8_lossy(&create_out.stdout)
+        .trim()
+        .to_string();
+    assert!(run_id.starts_with("team-run-"), "run id: {run_id}");
+
+    let recover_out = run_harness(
+        &home,
+        home.base(),
+        &["--project", &project_id, "team-run", "recover", "--id", &run_id],
+    );
+    assert!(
+        recover_out.status.success(),
+        "team-run recover failed: {}",
+        String::from_utf8_lossy(&recover_out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&recover_out.stdout).to_string();
+    let log_header_pos = stdout
+        .find("mission log (last 3)")
+        .unwrap_or_else(|| panic!("mission log tail header missing: {stdout}"));
+    let report_pos = stdout
+        .find("recovery complete")
+        .unwrap_or_else(|| panic!("recovery report missing: {stdout}"));
+    assert!(
+        log_header_pos < report_pos,
+        "mission log tail must print before the recovery report: {stdout}"
+    );
+    // Exactly 3 entries exist, so tail(3) shows all three, oldest first.
+    let judgment_pos = stdout
+        .find("First judgment before recovery.")
+        .unwrap_or_else(|| panic!("revision 1 body missing from tail: {stdout}"));
+    let replan_pos = stdout
+        .find("Re-planned after review.")
+        .unwrap_or_else(|| panic!("revision 2 body missing from tail: {stdout}"));
+    let recovery_pos = stdout
+        .find("Most recent judgment entry.")
+        .unwrap_or_else(|| panic!("revision 3 body missing from tail: {stdout}"));
+    assert!(
+        judgment_pos < replan_pos && replan_pos < recovery_pos,
+        "tail must render oldest-of-the-tail first: {stdout}"
+    );
+    assert!(stdout.contains("[judgment]"), "stdout: {stdout}");
+    assert!(stdout.contains("[replan]"), "stdout: {stdout}");
+    assert!(stdout.contains("[recovery]"), "stdout: {stdout}");
+
+    // A team-run linked to a Mission with no Log entries yet prints the
+    // explicit sentinel instead of an empty section.
+    command_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "create",
+            "--id",
+            "mission-recover-empty",
+            "--title",
+            "Fresh mission",
+            "--objective",
+            "No judgment recorded yet",
+            "--json",
+        ],
+    );
+    let empty_create_out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "Recoverable run with no log",
+            "--mission-id",
+            "mission-recover-empty",
+            "--member",
+            "lead:coordinator:kimi#Coordinate the delivery",
+        ],
+    );
+    assert!(empty_create_out.status.success());
+    let empty_run_id = String::from_utf8_lossy(&empty_create_out.stdout)
+        .trim()
+        .to_string();
+    let empty_recover_out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "recover",
+            "--id",
+            &empty_run_id,
+        ],
+    );
+    assert!(empty_recover_out.status.success());
+    let empty_stdout = String::from_utf8_lossy(&empty_recover_out.stdout);
+    assert!(
+        empty_stdout.contains("no mission log yet"),
+        "stdout: {empty_stdout}"
+    );
+
+    // A team-run with no linked Mission at all prints no mission-log section
+    // -- the mandatory reader is conditional on `run.mission_id`, not
+    // unconditional narration.
+    let unlinked_create_out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "create",
+            "--objective",
+            "Standalone run with no Mission",
+            "--member",
+            "lead:coordinator:kimi#Coordinate the delivery",
+        ],
+    );
+    assert!(unlinked_create_out.status.success());
+    let unlinked_run_id = String::from_utf8_lossy(&unlinked_create_out.stdout)
+        .trim()
+        .to_string();
+    let unlinked_recover_out = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team-run",
+            "recover",
+            "--id",
+            &unlinked_run_id,
+        ],
+    );
+    assert!(unlinked_recover_out.status.success());
+    let unlinked_stdout = String::from_utf8_lossy(&unlinked_recover_out.stdout);
+    assert!(
+        !unlinked_stdout.contains("mission log"),
+        "a run with no linked Mission must not print a mission-log section: {unlinked_stdout}"
+    );
+}

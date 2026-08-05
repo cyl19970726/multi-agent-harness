@@ -68,13 +68,7 @@ fn run_member_json(
         .unwrap_or_else(|error| panic!("member harness {args:?} stdout was not JSON ({error})"))
 }
 
-fn force_team_run_reviewing(
-    home: &TempHome,
-    project_id: &str,
-    run_id: &str,
-    mission_id: &str,
-    wave_id: &str,
-) {
+fn force_team_run_reviewing(home: &TempHome, project_id: &str, run_id: &str, mission_id: &str) {
     use std::io::Write as _;
 
     let path = home.spaces_dir().join(project_id).join("team_runs.jsonl");
@@ -88,7 +82,6 @@ fn force_team_run_reviewing(
         serde_json::json!({
             "id": run_id,
             "mission_id": mission_id,
-            "wave_id": wave_id,
             "host_surface": "test",
             "objective": "accepted attempt",
             "status": "reviewing",
@@ -97,6 +90,46 @@ fn force_team_run_reviewing(
         })
     )
     .expect("append reviewing team run");
+}
+
+/// Seed one historical Wave row directly, bypassing the retired `wave
+/// create` write path (ADR 0051), so tests can prove reads,
+/// `origin_wave_id` navigation, and existing cross-Mission/executor-kind
+/// validation still resolve a pre-cutover Wave row without exercising a
+/// live write. Every field with `#[serde(default)]` is omitted;
+/// `executor_kind`/`created_at`/`updated_at` have no default and are set
+/// explicitly.
+fn seed_historical_wave(
+    home: &TempHome,
+    project_id: &str,
+    id: &str,
+    mission_id: &str,
+    index: u64,
+    executor_kind: &str,
+) {
+    use std::io::Write as _;
+
+    let path = home.spaces_dir().join(project_id).join("waves.jsonl");
+    let mut ledger = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .expect("open wave ledger");
+    writeln!(
+        ledger,
+        "{}",
+        serde_json::json!({
+            "id": id,
+            "mission_id": mission_id,
+            "index": index,
+            "title": "Historical Wave",
+            "objective": "Seeded pre-cutover row for read/navigation coverage",
+            "executor_kind": executor_kind,
+            "created_at": "unix-ms:1",
+            "updated_at": "unix-ms:1",
+        })
+    )
+    .expect("append historical wave");
 }
 
 #[test]
@@ -240,27 +273,25 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
         linked["agent_team_ids"],
         serde_json::json!(["team-platform"])
     );
-    let wave_1 = run_json(
+    // Host plan judgment is now a Mission Log entry, not a Wave (ADR 0051).
+    let judgment_1 = run_json(
         &home,
         &project_id,
         &[
-            "wave",
-            "create",
-            "--id",
-            "wave-plan-1",
+            "mission",
+            "log",
+            "append",
             "--mission-id",
             "mission-host-plan",
-            "--title",
-            "Baseline",
-            "--objective",
-            "Start concurrent lanes",
-            "--context",
-            "# Wave 1\n\nTwo lanes start; review may carry forward.",
+            "--kind",
+            "judgment",
+            "--body",
+            "# Baseline\n\nTwo lanes start; review may carry forward.",
             "--json",
         ],
     );
-    assert_eq!(wave_1["executor_kind"].as_str(), Some("host"));
-    assert_eq!(wave_1["revision"].as_u64(), Some(1));
+    assert_eq!(judgment_1["kind"].as_str(), Some("judgment"));
+    assert_eq!(judgment_1["revision"].as_u64(), Some(1));
 
     let created = run_json(
         &home,
@@ -342,38 +373,44 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
         Some("codex-session-1")
     );
 
-    run_json(
+    let judgment_2 = run_json(
         &home,
         &project_id,
         &[
-            "wave",
-            "advance",
-            "--id",
-            "wave-plan-1",
-            "--outcome",
-            "Baseline lane is ready; review continues",
-        ],
-    );
-    let wave_2 = run_json(
-        &home,
-        &project_id,
-        &[
-            "wave",
-            "create",
-            "--id",
-            "wave-plan-2",
+            "mission",
+            "log",
+            "append",
             "--mission-id",
             "mission-host-plan",
-            "--title",
-            "Repair if needed",
-            "--objective",
-            "Integrate completed work while review continues",
-            "--context",
-            "# Wave 2\n\nCarry ReviewPartner forward and add RepairFixer.",
+            "--kind",
+            "judgment",
+            "--body",
+            "Baseline lane is ready; review continues",
             "--json",
         ],
     );
-    assert_eq!(wave_2["index"].as_u64(), Some(2));
+    assert_eq!(judgment_2["revision"].as_u64(), Some(2));
+    // wave-plan-2 is seeded as a historical row (not created -- `wave create`
+    // is retired) purely so the origin_wave_id navigation check below has a
+    // real pre-cutover Wave id to cite.
+    seed_historical_wave(&home, &project_id, "wave-plan-2", "mission-host-plan", 2, "host");
+    let replan = run_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "log",
+            "append",
+            "--mission-id",
+            "mission-host-plan",
+            "--kind",
+            "replan",
+            "--body",
+            "# Repair if needed\n\nIntegrate completed work while review continues; carry ReviewPartner forward and add RepairFixer.",
+            "--json",
+        ],
+    );
+    assert_eq!(replan["revision"].as_u64(), Some(3));
     run_json(
         &home,
         &project_id,
@@ -458,7 +495,7 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
     assert_eq!(
         builder["member_run"]["native_session"]["native_session_id"].as_str(),
         Some("codex-session-1"),
-        "Wave advance must not replace the MemberRun or provider-native session"
+        "Recording Mission Log judgment must not replace the MemberRun or provider-native session"
     );
 
     // Explicit retry lineage cannot jump to another stable Team or Mission.
@@ -530,23 +567,9 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
             "--json",
         ],
     );
-    run_json(
-        &home,
-        &project_id,
-        &[
-            "wave",
-            "create",
-            "--id",
-            "wave-other",
-            "--mission-id",
-            "mission-other",
-            "--title",
-            "Other Mission plan",
-            "--objective",
-            "Prove origin references cannot cross Missions",
-            "--json",
-        ],
-    );
+    // Seeded historical, not created -- proves origin_wave_id cross-Mission
+    // validation still works against a pre-cutover row.
+    seed_historical_wave(&home, &project_id, "wave-other", "mission-other", 1, "host");
     let cross_mission_origin = run_harness(
         &home,
         home.base(),
@@ -607,19 +630,28 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
         String::from_utf8_lossy(&cross_mission_retry.stderr).contains("not in the same mission")
     );
 
-    run_json(
+    let closeout = run_json(
         &home,
         &project_id,
         &[
-            "wave",
-            "advance",
-            "--id",
-            "wave-plan-2",
-            "--outcome",
+            "mission",
+            "log",
+            "append",
+            "--mission-id",
+            "mission-host-plan",
+            "--kind",
+            "closeout_evidence",
+            "--body",
             "Host plan complete",
+            "--json",
         ],
     );
-    run_json(
+    assert_eq!(closeout["revision"].as_u64(), Some(4));
+    // Mission close no longer requires a Wave gate (ADR 0051): this Mission's
+    // wave_ids is empty (wave create is retired, and the historical rows
+    // above were seeded directly, not through insert_wave_and_update_mission),
+    // yet close still succeeds on its own outcome.
+    let closed_mission = run_json(
         &home,
         &project_id,
         &[
@@ -632,6 +664,7 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
             "--json",
         ],
     );
+    assert_eq!(closed_mission["wave_ids"], serde_json::json!([]));
     let team = run_json(
         &home,
         &project_id,
@@ -657,7 +690,7 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
 }
 
 #[test]
-fn host_wave_accepts_direct_outcome_without_fake_run() {
+fn mission_close_no_longer_gates_on_wave_and_wave_writes_are_retired_everywhere() {
     let home = TempHome::new("host-wave-gate");
     let project_id = init_project(&home, "host-wave");
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
@@ -676,77 +709,26 @@ fn host_wave_accepts_direct_outcome_without_fake_run() {
             "--json",
         ],
     );
-    let (status, body) = serve.post_json(
-        "/v1/missions/mission-host/close",
-        &serde_json::json!({"outcome": "too early"}),
-    );
-    assert_eq!(status, 400, "body: {body}");
+
+    // By convention the Host records closeout evidence in the Mission Log
+    // before closing, but the store does not gate on it (ADR 0051: closeout
+    // no longer depends on any Wave -- or Wave-equivalent -- acceptance).
     run_json(
         &home,
         &project_id,
         &[
-            "wave",
-            "create",
-            "--id",
-            "wave-host",
+            "mission",
+            "log",
+            "append",
             "--mission-id",
             "mission-host",
-            "--title",
-            "Host slice",
-            "--objective",
-            "Finish without a fake executor run",
-            "--executor-kind",
-            "host",
+            "--kind",
+            "closeout_evidence",
+            "--body",
+            "Direct work verified without a fake executor run.",
             "--json",
         ],
     );
-    let (status, body) = serve.post_json(
-        "/v1/missions/mission-host/close",
-        &serde_json::json!({"outcome": "still too early"}),
-    );
-    assert_eq!(status, 400, "body: {body}");
-    let accepted = run_json(
-        &home,
-        &project_id,
-        &[
-            "wave",
-            "gate",
-            "--id",
-            "wave-host",
-            "--status",
-            "accepted",
-            "--accepted-by",
-            "host",
-            "--outcome",
-            "Direct work verified",
-            "--artifact",
-            "check:host",
-            "--json",
-        ],
-    );
-    assert_eq!(accepted["gate_status"].as_str(), Some("accepted"));
-    assert_eq!(accepted["status"].as_str(), Some("completed"));
-    assert!(accepted["accepted_run_id"].is_null());
-
-    // Host acceptance remains immutable even though its honest accepted run
-    // id is null.
-    let out = run_harness(
-        &home,
-        home.base(),
-        &[
-            "--project",
-            &project_id,
-            "wave",
-            "gate",
-            "--id",
-            "wave-host",
-            "--status",
-            "blocked",
-        ],
-    );
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("already accepted"));
-
     let (status, body) = serve.post_json(
         "/v1/missions/mission-host/close",
         &serde_json::json!({
@@ -761,9 +743,14 @@ fn host_wave_accepts_direct_outcome_without_fake_run() {
         Some("dashboard-host")
     );
     assert!(body["result"]["completed_at"].is_string());
+    assert_eq!(
+        body["result"]["wave_ids"],
+        serde_json::json!([]),
+        "no Wave was ever created for this Mission -- wave create is retired"
+    );
 
-    // Identical closeout is idempotent; a conflicting actor/outcome and any
-    // new Wave after completion are rejected.
+    // Identical closeout is idempotent; a conflicting actor/outcome is
+    // rejected, exactly as before this cutover.
     let repeated = run_json(
         &home,
         &project_id,
@@ -797,35 +784,88 @@ fn host_wave_accepts_direct_outcome_without_fake_run() {
         ],
     );
     assert!(!conflict.status.success());
-    let late_wave = run_harness(
+
+    // Wave write commands are retired on every surface (ADR 0051), regardless
+    // of Mission state or whether the referenced Wave exists at all.
+    for (command, extra) in [
+        ("create", vec!["--mission-id", "mission-host", "--title", "Too late", "--objective", "Must be rejected"]),
+        ("update", vec!["--id", "wave-does-not-exist", "--context", "x"]),
+        ("advance", vec!["--id", "wave-does-not-exist", "--outcome", "x"]),
+        ("gate", vec!["--id", "wave-does-not-exist", "--status", "accepted"]),
+    ] {
+        let mut args = vec!["--project", project_id.as_str(), "wave", command];
+        args.extend(extra);
+        let out = run_harness(&home, home.base(), &args);
+        assert!(!out.status.success(), "wave {command} must fail: {args:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("retired") && stderr.contains("mission log append"),
+            "wave {command} stderr: {stderr}"
+        );
+    }
+
+    // ...and over HTTP, the same four routes.
+    for (path, payload) in [
+        (
+            "/v1/waves",
+            serde_json::json!({"mission_id": "mission-host", "title": "x", "objective": "y", "executor_kind": "host"}),
+        ),
+        (
+            "/v1/waves/wave-does-not-exist/context",
+            serde_json::json!({"context": "x"}),
+        ),
+        (
+            "/v1/waves/wave-does-not-exist/advance",
+            serde_json::json!({"outcome": "x"}),
+        ),
+        (
+            "/v1/waves/wave-does-not-exist/gate",
+            serde_json::json!({"status": "accepted"}),
+        ),
+    ] {
+        let (status, body) = serve.post_json(path, &payload);
+        assert_eq!(status, 400, "{path} body: {body}");
+        let error = body["error"].as_str().unwrap_or_default();
+        assert!(
+            error.contains("retired") && error.contains("mission log append"),
+            "{path} error: {error}"
+        );
+    }
+
+    // Historical reads remain functional: seed one pre-cutover Wave row
+    // directly (the only way a Wave can exist post-cutover) and prove
+    // `wave list`/`show`/`history` still see it.
+    seed_historical_wave(&home, &project_id, "wave-host-historical", "mission-host", 1, "host");
+    let waves = run_json(
         &home,
-        home.base(),
-        &[
-            "--project",
-            &project_id,
-            "wave",
-            "create",
-            "--mission-id",
-            "mission-host",
-            "--title",
-            "Too late",
-            "--objective",
-            "Must be rejected",
-            "--executor-kind",
-            "host",
-        ],
+        &project_id,
+        &["wave", "list", "--mission-id", "mission-host"],
     );
-    assert!(!late_wave.status.success());
+    assert_eq!(waves.as_array().map(Vec::len), Some(1));
+    let shown = run_json(
+        &home,
+        &project_id,
+        &["wave", "show", "--id", "wave-host-historical"],
+    );
+    assert_eq!(shown["id"].as_str(), Some("wave-host-historical"));
+    let history = run_json(
+        &home,
+        &project_id,
+        &["wave", "history", "--id", "wave-host-historical"],
+    );
+    assert_eq!(history.as_array().map(Vec::len), Some(1));
 }
 
 #[test]
-fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
+fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
     let home = TempHome::new("mission-wave-api");
     let project_id = init_project(&home, "alpha");
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
 
     // Public JSON parsing and domain validation reject malformed TeamRuns
-    // before any run/member/message/event row is appended.
+    // before any run/member/message/event row is appended. Unaffected by
+    // ADR 0051: `wave_index` was already retired compatibility, separately
+    // from the Wave-write retirement this test now exercises below.
     let (status, body) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
@@ -860,54 +900,50 @@ fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
     assert_eq!(snapshot["member_runs"].as_array().map(Vec::len), Some(0));
     assert_eq!(snapshot["team_messages"].as_array().map(Vec::len), Some(0));
 
-    // HTTP authoring: a native Mission and Wave appear in the product snapshot;
-    // no Goal or Task graph is created as a side effect.
+    // HTTP authoring: a native Mission appears in the product snapshot; no
+    // Goal or Task graph is created as a side effect. Wave no longer owns
+    // execution attempts (ADR 0051): the Host records judgment as a Mission
+    // Log entry instead, and nothing populates the Wave ledger for a fresh
+    // Mission anymore.
     let (status, body) = serve.post_json(
         "/v1/missions",
         &serde_json::json!({
             "id": "mission-alpha",
             "title": "Ship agent team retry semantics",
-            "objective": "Prove a Wave owns its execution attempts",
-            "desired_outcome": "One accepted team attempt",
+            "objective": "Prove TeamRun retry lineage survives the Mission Log cutover",
+            "desired_outcome": "A completed retry attempt",
         }),
     );
     assert_eq!(status, 200, "body: {body}");
     assert_eq!(body["result"]["id"].as_str(), Some("mission-alpha"));
-
-    let (status, body) = serve.post_json(
-        "/v1/waves",
-        &serde_json::json!({
-            "id": "wave-invalid-index",
-            "mission_id": "mission-alpha",
-            "index": "not-a-number",
-            "title": "Invalid",
-            "objective": "must not be appended",
-            "executor_kind": "agent_team",
-        }),
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "log",
+            "append",
+            "--mission-id",
+            "mission-alpha",
+            "--kind",
+            "judgment",
+            "--body",
+            "Two lanes will run concurrently; integration follows the first completed attempt.",
+            "--json",
+        ],
     );
-    assert_eq!(status, 400, "body: {body}");
-    let (status, snapshot) = serve.get_json("/v1/snapshot");
-    assert_eq!(status, 200);
-    assert_eq!(snapshot["waves"].as_array().map(Vec::len), Some(0));
-
-    let (status, body) = serve.post_json(
-        "/v1/waves",
-        &serde_json::json!({
-            "id": "wave-alpha",
-            "mission_id": "mission-alpha",
-            "title": "Run and accept the team",
-            "objective": "Create two team attempts and accept the second",
-            "executor_kind": "agent_team",
-            "exit_criteria": "A completed attempt is accepted",
-        }),
-    );
-    assert_eq!(status, 200, "body: {body}");
-    assert_eq!(body["result"]["index"].as_u64(), Some(1));
     let (_, snapshot) = serve.get_json("/v1/snapshot");
     assert_eq!(snapshot["missions"].as_array().map(Vec::len), Some(1));
-    assert_eq!(snapshot["waves"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        snapshot["waves"].as_array().map(Vec::len),
+        Some(0),
+        "wave create is retired: nothing populates this ledger for a new Mission"
+    );
+    assert_eq!(snapshot["mission_log"].as_array().map(Vec::len), Some(1));
+    assert_eq!(snapshot["mission_log"][0]["kind"].as_str(), Some("judgment"));
 
-    // CLI list returns native Mission rows and carries ordered Wave membership.
+    // CLI list returns native Mission rows; wave_ids stays empty -- there is
+    // no live write path left to populate it.
     let missions = run_json(&home, &project_id, &["mission", "list"]);
     let native = missions
         .as_array()
@@ -915,72 +951,47 @@ fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
         .iter()
         .find(|mission| mission["id"].as_str() == Some("mission-alpha"))
         .expect("native mission");
-    assert_eq!(native["wave_ids"], serde_json::json!(["wave-alpha"]));
+    assert_eq!(native["wave_ids"], serde_json::json!([]));
+
+    // Historical Wave rows remain readable (ADR 0051): seeded directly
+    // (never through `wave create`, which is retired), they still project
+    // through `wave list`/the snapshot in index order, and the existing
+    // cross-Mission / executor-kind validation on TeamRun creation still
+    // runs against them -- only the *write* path retired, not reads or the
+    // validation logic that resolves a Wave id.
+    seed_historical_wave(&home, &project_id, "wave-alpha", "mission-alpha", 1, "agent_team");
+    seed_historical_wave(
+        &home,
+        &project_id,
+        "wave-alpha-later",
+        "mission-alpha",
+        2,
+        "agent_team",
+    );
     let waves = run_json(
         &home,
         &project_id,
         &["wave", "list", "--mission-id", "mission-alpha"],
     );
-    assert_eq!(waves.as_array().map(Vec::len), Some(1));
-
-    // Reject a TeamRun that tries to bind a Wave from another Mission. The
-    // request must be atomic: no run is recorded on either Mission/Wave.
-    let (status, body) = serve.post_json(
-        "/v1/missions",
-        &serde_json::json!({"id": "mission-beta", "title": "Other", "objective": "isolation"}),
-    );
-    assert_eq!(status, 200, "body: {body}");
-    let (status, body) = serve.post_json(
-        "/v1/waves",
-        &serde_json::json!({
-            "id": "wave-beta",
-            "mission_id": "mission-beta",
-            "title": "Other team wave",
-            "objective": "must remain isolated",
-            "executor_kind": "agent_team",
-        }),
-    );
-    assert_eq!(status, 200, "body: {body}");
-
-    // Explicitly inserted indexes remain product-ordered in both Wave reads
-    // and the owning Mission's membership list.
-    for (id, index) in [("wave-beta-later", 3), ("wave-beta-middle", 2)] {
-        let (status, body) = serve.post_json(
-            "/v1/waves",
-            &serde_json::json!({
-                "id": id,
-                "mission_id": "mission-beta",
-                "index": index,
-                "title": id,
-                "objective": "ordered membership",
-                "executor_kind": "host",
-            }),
-        );
-        assert_eq!(status, 200, "body: {body}");
-    }
-    let mission_beta = run_json(
-        &home,
-        &project_id,
-        &["mission", "show", "--id", "mission-beta"],
-    );
     assert_eq!(
-        mission_beta["wave_ids"],
-        serde_json::json!(["wave-beta", "wave-beta-middle", "wave-beta-later"])
-    );
-    let beta_waves = run_json(
-        &home,
-        &project_id,
-        &["wave", "list", "--mission-id", "mission-beta"],
-    );
-    assert_eq!(
-        beta_waves
+        waves
             .as_array()
             .unwrap()
             .iter()
             .map(|wave| wave["index"].as_u64().unwrap())
             .collect::<Vec<_>>(),
-        vec![1, 2, 3]
+        vec![1, 2],
+        "wave list still orders historical rows by index"
     );
+
+    // Reject a TeamRun that tries to bind a historical Wave from another
+    // Mission. The request must be atomic: no run is recorded.
+    let (status, body) = serve.post_json(
+        "/v1/missions",
+        &serde_json::json!({"id": "mission-beta", "title": "Other", "objective": "isolation"}),
+    );
+    assert_eq!(status, 200, "body: {body}");
+    seed_historical_wave(&home, &project_id, "wave-beta", "mission-beta", 1, "agent_team");
     let (status, body) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
@@ -995,18 +1006,10 @@ fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
     assert_eq!(status, 200);
     assert_eq!(snapshot["team_runs"].as_array().map(Vec::len), Some(0));
 
-    // A non-AgentTeam Wave cannot be used as an AgentTeamRun executor target.
-    let (status, body) = serve.post_json(
-        "/v1/waves",
-        &serde_json::json!({
-            "id": "wave-host",
-            "mission_id": "mission-alpha",
-            "title": "Host-only step",
-            "objective": "prove executor boundary",
-            "executor_kind": "host",
-        }),
-    );
-    assert_eq!(status, 200, "body: {body}");
+    // A non-AgentTeam historical Wave cannot be used as an AgentTeamRun
+    // executor target -- the boundary check is unaffected by whether the row
+    // is fresh or historical.
+    seed_historical_wave(&home, &project_id, "wave-host", "mission-alpha", 3, "host");
     let (status, body) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
@@ -1017,14 +1020,14 @@ fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
     );
     assert_eq!(status, 400, "body: {body}");
 
-    // Attempt A is cancelled. Attempt B is a retry in the same Wave; `previous`
-    // is only attempt lineage, while Wave.executor_run_ids is the canonical list.
+    // Attempt A is cancelled. Attempt B is a retry via `previous_run_id`.
+    // Mission-only (no wave_id) is the primary TeamRun creation path now
+    // that Wave no longer owns execution attempts (ADR 0034/0051).
     let (status, body) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
             "objective": "first attempt",
             "mission_id": "mission-alpha",
-            "wave_id": "wave-alpha",
             "members": [{"name": "lead", "role": "integrator", "provider": "kimi", "initial_work": "Integrate the first attempt and submit evidence for Host review."}],
         }),
     );
@@ -1037,10 +1040,7 @@ fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
         body["result"]["team_run"]["mission_id"].as_str(),
         Some("mission-alpha")
     );
-    assert_eq!(
-        body["result"]["team_run"]["wave_id"].as_str(),
-        Some("wave-alpha")
-    );
+    assert!(body["result"]["team_run"]["wave_id"].is_null());
     assert!(body["result"]["team_run"].get("task_ids").is_none());
     let member_id = body["result"]["member_runs"][0]["id"]
         .as_str()
@@ -1118,36 +1118,11 @@ fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
         "causation-only reply inherits its cause correlation"
     );
 
-    // Provider/member failure settles at reviewing. It must remain active for
-    // gate purposes, but can be explicitly cancelled so a truthful retry can
-    // be created without marking the failed attempt completed.
-    force_team_run_reviewing(
-        &home,
-        &project_id,
-        &attempt_a,
-        "mission-alpha",
-        "wave-alpha",
-    );
-
-    // A gate is only meaningful once every attempt is settled. In particular,
-    // blocked/revise cannot race a later TeamRun transition and leave
-    // Wave.status disagreeing with gate_status.
-    for gate_status in ["blocked", "revise"] {
-        let (status, body) = serve.post_json(
-            "/v1/waves/wave-alpha/gate",
-            &serde_json::json!({"status": gate_status, "note": "too early"}),
-        );
-        assert_eq!(status, 400, "body: {body}");
-        assert!(
-            body["error"]
-                .as_str()
-                .is_some_and(|error| error.contains("active attempt")),
-            "body: {body}"
-        );
-    }
-    let unsettled_wave = run_json(&home, &project_id, &["wave", "show", "--id", "wave-alpha"]);
-    assert_eq!(unsettled_wave["gate_status"].as_str(), Some("pending"));
-
+    // Provider/member failure settles at reviewing; it can be explicitly
+    // cancelled so a truthful retry can be created without marking the
+    // failed attempt completed. Unrelated to any Wave gate now -- there is
+    // no gate left to race.
+    force_team_run_reviewing(&home, &project_id, &attempt_a, "mission-alpha");
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{attempt_a}/transition"),
         &serde_json::json!({"status": "cancelled"}),
@@ -1155,12 +1130,31 @@ fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
     assert_eq!(status, 200, "body: {body}");
     assert_eq!(body["result"]["status"].as_str(), Some("cancelled"));
 
+    // Log-before-act (ADR 0051): the Host records why it is retrying before
+    // creating the replacement attempt, not as after-the-fact narration.
+    let replan = run_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "log",
+            "append",
+            "--mission-id",
+            "mission-alpha",
+            "--kind",
+            "replan",
+            "--body",
+            "First attempt failed in review; retry with a fresh MemberRun.",
+            "--json",
+        ],
+    );
+    assert_eq!(replan["revision"].as_u64(), Some(2));
+
     let (status, body) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
             "objective": "replacement attempt",
             "mission_id": "mission-alpha",
-            "wave_id": "wave-alpha",
             "previous_run_id": attempt_a,
             "members": [{"name": "lead", "role": "integrator", "provider": "kimi"}],
         }),
@@ -1170,83 +1164,83 @@ fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
         .as_str()
         .unwrap()
         .to_string();
-    let (_, snapshot) = serve.get_json("/v1/snapshot");
     assert_eq!(
-        snapshot["waves"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|wave| wave["id"].as_str() == Some("wave-alpha"))
-            .unwrap()["executor_run_ids"],
-        serde_json::json!([attempt_a, attempt_b]),
+        body["result"]["team_run"]["previous_run_id"].as_str(),
+        Some(attempt_a.as_str())
     );
 
-    // A cancelled attempt is not gate-eligible. Complete B through the public
-    // team transition before accepting it through the public Wave gate.
-    let (status, body) = serve.post_json(
-        "/v1/waves/wave-alpha/gate",
-        &serde_json::json!({"status": "accepted", "run_id": attempt_a}),
-    );
-    assert_eq!(status, 400, "body: {body}");
-    let (status, body) = serve.post_json(
-        "/v1/waves/wave-alpha/gate",
-        &serde_json::json!({"status": "accepted", "run_id": "team-run-not-an-attempt"}),
-    );
-    assert_eq!(status, 400, "body: {body}");
-    force_team_run_reviewing(
-        &home,
-        &project_id,
-        &attempt_b,
-        "mission-alpha",
-        "wave-alpha",
-    );
+    force_team_run_reviewing(&home, &project_id, &attempt_b, "mission-alpha");
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{attempt_b}/transition"),
         &serde_json::json!({"status": "completed"}),
     );
     assert_eq!(status, 200, "body: {body}");
+    assert_eq!(body["result"]["status"].as_str(), Some("completed"));
 
-    let (status, body) = serve.post_json(
-        "/v1/waves/wave-alpha/gate",
-        &serde_json::json!({
-            "status": "accepted",
-            "run_id": attempt_b,
-            "accepted_by": "operator",
-            "note": "integration verified",
-            "outcome": "retry accepted",
-            "artifact_refs": ["check:team-run"],
-        }),
+    // The Host records closeout evidence in the Mission Log instead of a
+    // Wave gate accepting the retry -- an append-only log has nothing
+    // analogous to a gate to accept, revise, or block (ADR 0051).
+    let closeout = run_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "log",
+            "append",
+            "--mission-id",
+            "mission-alpha",
+            "--kind",
+            "closeout_evidence",
+            "--body",
+            "Retry attempt completed and reviewed.",
+            "--json",
+        ],
     );
-    assert_eq!(status, 200, "body: {body}");
-    let wave = &body["result"];
-    assert_eq!(wave["accepted_run_id"].as_str(), Some(attempt_b.as_str()));
-    assert_eq!(wave["gate_status"].as_str(), Some("accepted"));
-    assert_eq!(wave["accepted_by"].as_str(), Some("operator"));
-    assert_eq!(wave["artifact_refs"], serde_json::json!(["check:team-run"]));
-
-    // An accepted Wave is immutable with respect to a conflicting attempt.
-    let (status, body) = serve.post_json(
-        "/v1/waves/wave-alpha/gate",
-        &serde_json::json!({"status": "accepted", "run_id": attempt_a}),
+    assert_eq!(closeout["revision"].as_u64(), Some(3));
+    let entries = run_json(
+        &home,
+        &project_id,
+        &["mission", "log", "show", "--mission-id", "mission-alpha", "--json"],
     );
-    assert_eq!(status, 400, "body: {body}");
-
-    // Acceptance freezes the Wave's attempt set. A later retry must be made
-    // explicit by revising before acceptance or by creating a later Wave.
-    let (status, body) = serve.post_json(
-        "/v1/team-runs",
-        &serde_json::json!({
-            "objective": "too late",
-            "wave_id": "wave-alpha",
-            "members": [{"name": "late", "role": "worker", "provider": "kimi"}],
-        }),
-    );
-    assert_eq!(status, 400, "body: {body}");
-    let frozen_wave = run_json(&home, &project_id, &["wave", "show", "--id", "wave-alpha"]);
     assert_eq!(
-        frozen_wave["executor_run_ids"],
-        serde_json::json!([attempt_a, attempt_b])
+        entries
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["revision"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3]
     );
+
+    // The Wave gate that used to accept a retry attempt is retired on every
+    // surface, regardless of which attempt or Wave id is named.
+    let (status, body) = serve.post_json(
+        "/v1/waves/wave-alpha/gate",
+        &serde_json::json!({"status": "accepted", "run_id": attempt_b}),
+    );
+    assert_eq!(status, 400, "body: {body}");
+    assert!(
+        body["error"].as_str().unwrap_or_default().contains("retired"),
+        "body: {body}"
+    );
+    let cli_gate = run_harness(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "wave",
+            "gate",
+            "--id",
+            "wave-alpha",
+            "--status",
+            "accepted",
+            "--run-id",
+            &attempt_b,
+        ],
+    );
+    assert!(!cli_gate.status.success());
+    assert!(String::from_utf8_lossy(&cli_gate.stderr).contains("retired"));
 
     // Historical reasoning remains in JSONL, but the new snapshot must not
     // project it as product state or evidence.
@@ -1293,7 +1287,7 @@ fn mission_wave_attempt_retry_gate_and_snapshot_contract() {
 }
 
 #[test]
-fn http_console_starts_native_team_wave_and_streams_transient_thinking() {
+fn http_console_starts_native_team_run_and_streams_transient_thinking() {
     let home = TempHome::new("mission-wave-console-start");
     let project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
@@ -1313,28 +1307,17 @@ fn http_console_starts_native_team_wave_and_streams_transient_thinking() {
         &serde_json::json!({
             "id": "mission-console",
             "title": "Console-native Agent Team",
-            "objective": "Run the complete Mission/Wave journey",
+            "objective": "Run the complete Mission/TeamRun journey",
         }),
     );
     assert_eq!(status, 200, "body: {body}");
-    let (status, body) = serve.post_json(
-        "/v1/waves",
-        &serde_json::json!({
-            "id": "wave-console",
-            "mission_id": "mission-console",
-            "title": "Execute one team",
-            "objective": "Let the fake member complete",
-            "executor_kind": "agent_team",
-            "exit_criteria": "The completed attempt is accepted",
-        }),
-    );
-    assert_eq!(status, 200, "body: {body}");
+    // Mission-only (no wave_id) is the primary TeamRun creation path now
+    // that Wave no longer owns execution attempts (ADR 0034/0051).
     let (status, body) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
             "objective": "Complete through the Console start endpoint",
             "mission_id": "mission-console",
-            "wave_id": "wave-console",
             "members": [{"name": "worker", "role": "implementer", "provider": "kimi", "initial_work": "Run the fake provider and return the requested evidence."}],
         }),
     );
@@ -1498,6 +1481,28 @@ fn http_console_starts_native_team_wave_and_streams_transient_thinking() {
     );
     assert_eq!(status, 400, "body: {body}");
 
+    // The Host records closeout evidence in the Mission Log instead of a
+    // Wave gate accepting the run (ADR 0051: an append-only log has nothing
+    // analogous to a gate). `/v1/waves/{id}/gate` is retired regardless.
+    let closeout = run_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "log",
+            "append",
+            "--mission-id",
+            "mission-console",
+            "--kind",
+            "closeout_evidence",
+            "--body",
+            "Deterministic provider completed; run accepted.",
+            "--json",
+        ],
+    );
+    assert_eq!(closeout["kind"].as_str(), Some("closeout_evidence"));
+    assert_eq!(closeout["revision"].as_u64(), Some(1));
+
     let (status, body) = serve.post_json(
         &format!("/v1/waves/wave-console/gate?project={project_id}"),
         &serde_json::json!({
@@ -1508,10 +1513,9 @@ fn http_console_starts_native_team_wave_and_streams_transient_thinking() {
             "artifact_refs": ["check:http-console"],
         }),
     );
-    assert_eq!(status, 200, "body: {body}");
-    assert_eq!(body["result"]["gate_status"].as_str(), Some("accepted"));
-    assert_eq!(
-        body["result"]["accepted_run_id"].as_str(),
-        Some(run_id.as_str())
+    assert_eq!(status, 400, "body: {body}");
+    assert!(
+        body["error"].as_str().unwrap_or_default().contains("retired"),
+        "body: {body}"
     );
 }
