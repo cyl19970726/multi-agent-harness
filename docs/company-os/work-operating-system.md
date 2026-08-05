@@ -36,8 +36,8 @@ filter dimension, not another task container.
 
 `Milestone` is a durable business checkpoint such as “Trademark application
 submitted” or “V1 released”. It groups WorkItems around an outcome and target
-date. `Mission -> Wave` is an optional execution plan for long-running work and
-remains outside this hierarchy. A WorkItem can link to a Mission, Wave,
+date. `Mission` with its append-only MissionLog is an optional execution plan for long-running work and
+remains outside this hierarchy. A WorkItem can link to a Mission,
 AgentTeamRun, WorkflowRun, Host execution, Git Issue, or Pull Request through
 typed execution and delivery references.
 
@@ -109,6 +109,36 @@ rewritten to make a cleaner board. A card prioritizes operational recognition:
 Movement between columns invokes the governed lifecycle Action. Dragging a
 card is not permission to bypass responsibility, required Approval, result
 provenance, or transition rules.
+
+## Company WorkItem and Team Work kernel
+
+Company WorkItem (11 states) and Team Work (6 states) operate in different
+responsibility domains. Company WorkItem owns business intent, source
+provenance, and approval authority; Team Work owns execution responsibility,
+member assignment, and delivery evidence. There is no 1:1 state mapping because
+the two kernels serve different lifecycle authorities.
+
+| Company WorkItem state | Team Work state | Mapping rule |
+| --- | --- | --- |
+| `draft` | — | Not yet published to Team; no Team Work exists |
+| `submitted` | — | Company intake only; Team Work may be created as `open` when routed |
+| `triaged` | — | Routing decision; Team Work may transition |
+| `accepted` | `open` → `in_progress` | Company acceptance gates Team execution start |
+| `in_progress` | `in_progress` | Aligned execution |
+| `waiting_for_approval` | `blocked` | Company approval blocked = Team blocked |
+| `blocked` | `blocked` | Aligned blocked |
+| `in_review` | `review` | Review aligned |
+| `completed` | `done` | Host accepts → both complete |
+| `cancelled` | `cancelled` | Aligned cancellation |
+| `archived` | — | Historical only; Team Work already terminated |
+
+**Cutover authority rule:** Company WorkItem is authority for business intent
+and approval; Team Work is authority for execution responsibility. Promotion
+to Team-scoped Work requires the Company WorkItem to be in a terminal state
+(`draft` / `completed` / `cancelled` / `archived`) per the dual-lock fence
+protocol. While both Company WorkItem and Team Work are active, the
+`WorkExecutionChain` projection links them read-only; it is a bridge, not a
+write path.
 
 ## All Work contract
 
