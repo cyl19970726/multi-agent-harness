@@ -28,6 +28,24 @@ Native Session = transcript, tools, commands, turns, internal subagents
 
 These hard invariants apply to every Host and Member. The full shared text lives in [`skills/shared-references/SKILL.md`](../shared-references/SKILL.md); when a rule appears in both skills, the shared copy is authoritative. The rules below are the Host-Lead-specific application.
 
+### Wave Vocabulary (Disambiguation)
+
+The word **wave** in this skill name and in batch labels (e.g. "Governance wave
+2") is a **planning-rhythm / batch label**, not a governed object. Wave as a
+writable governed object (`wave create|update|advance`) was retired by ADR 0051;
+no Wave state exists. Mission phases that were once recorded under wave
+transitions are now recorded exclusively through Mission Log entries
+(`--kind judgment|replan|closeout_evidence`).
+
+Retired-object pointers:
+- `HARNESS_ORIGIN_WAVE_ID` is a compatibility-only environment variable (see
+  Collaboration Envelope below).
+- `wave list|show|history` are historical read-only commands. They read
+  compatibility records from pre-ADR-0051 runs but cannot create, mutate, or
+  advance a wave.
+- **Convention**: use lowercase `wave` as a batch noun, never capitalized
+  `Wave` as an object name in new documentation, code, or Work titles.
+
 Never turn the Mission Log into a task list, dependency graph, executor
 container, synchronization barrier, or raw transcript dump. Never use a
 Message as responsibility or status. Agent Team responsibility is only through the shared Works board — see shared hard invariants §1 (no Assignment Message compatibility path).
