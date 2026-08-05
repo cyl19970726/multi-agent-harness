@@ -25153,6 +25153,12 @@ fn handle_http_action(
             false,
         )?)?);
     }
+    if let Some(mission_id) = path
+        .strip_prefix("/v1/missions/")
+        .and_then(|rest| rest.strip_suffix("/log"))
+    {
+        return append_mission_log_value(store, mission_id, body);
+    }
     // Wave write endpoints retired with the ADR 0051 Mission Log cutover
     // (same retirement as the `wave create|update|advance|gate` CLI
     // commands — see `retired_wave_write_error`). HTTP and MCP share the
@@ -26063,6 +26069,24 @@ fn close_mission_value(
         mission_id,
         &required_json_string(body, "outcome")?,
         &optional_json_string(body, "completed_by")?.unwrap_or_else(|| "host".to_string()),
+    )?)?)
+}
+
+/// POST /v1/missions/{id}/log — append one append-only Mission Log entry,
+/// the console-facing replacement for the retired Wave write routes
+/// (ADR 0051): Host plan judgment, replans, recovery notes, and closeout
+/// evidence are recorded here. Same append path as `harness mission log`.
+fn append_mission_log_value(
+    store: &HarnessStore,
+    mission_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    Ok(serde_json::to_value(create_mission_log_entry(
+        store,
+        mission_id,
+        &required_json_string(body, "kind")?,
+        &required_json_string(body, "body")?,
+        optional_json_string(body, "actor")?,
     )?)?)
 }
 

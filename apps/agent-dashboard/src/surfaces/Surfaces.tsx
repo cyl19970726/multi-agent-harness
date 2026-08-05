@@ -1,13 +1,22 @@
-import { Activity, Bot, Inbox, MessageSquare, Send, TerminalSquare, Users } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Activity, Bot, Inbox, MessageSquare, Plus, Send, TerminalSquare, Users } from "lucide-react";
 
 import { Avatar } from "@/components/workbench/Avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogFooter,
+  Field,
+  Select,
+  TextArea,
+  TextInput,
+} from "@/components/workbench/OperatorForms";
 import { cn } from "@/lib/utils";
 
-import { deliverQueued } from "../api/actions";
-import { providerDisplayName, providerStackLine } from "@/lib/provider";
+import { createAgent, deliverQueued } from "../api/actions";
+import { providerDisplayName, providerStackLine, TEAM_MEMBER_PROVIDER_MODES } from "@/lib/provider";
 import type { SelectionState } from "../app/selection";
 import type { WorkbenchModel } from "../model/readModel";
 
@@ -30,16 +39,28 @@ function runtimeTone(status?: string): "good" | "running" | "warn" | "idle" {
  * live in Company OS Organization; MemberRuns live under an AgentTeamRun. This
  * page intentionally does not project either identity into superseded work objects.
  */
-export function AgentsList({ model, onSelectionChange }: SurfaceProps) {
+export function AgentsList({ model, onSelectionChange, actionsEnabled, onAction }: SurfaceProps) {
   const members = model.snapshot.members ?? [];
+  const [createOpen, setCreateOpen] = useState(false);
   return (
     <section className="space-y-5" aria-labelledby="execution-members-title">
-      <header>
-        <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Execution directory</p>
-        <h1 id="execution-members-title" className="mt-1 text-2xl font-semibold tracking-tight">Agent members</h1>
-        <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-          Provider-backed execution identities. Standing Agents are managed from Organization and per-attempt members from Agent Teams.
-        </p>
+      <header className="flex flex-wrap items-end justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Execution directory</p>
+          <h1 id="execution-members-title" className="mt-1 text-2xl font-semibold tracking-tight">Agent members</h1>
+          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+            Provider-backed execution identities. Standing Agents are managed from Organization and per-attempt members from Agent Teams.
+          </p>
+        </div>
+        <Button
+          size="sm"
+          variant="secondary"
+          disabled={!actionsEnabled}
+          title={actionsEnabled ? undefined : "Connect a live source to enable actions"}
+          onClick={() => setCreateOpen(true)}
+        >
+          <Plus className="size-3.5" /> New Agent Member
+        </Button>
       </header>
       {members.length ? (
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -77,13 +98,141 @@ export function AgentsList({ model, onSelectionChange }: SurfaceProps) {
           </CardContent>
         </Card>
       )}
+      <AgentMemberDialog
+        open={createOpen}
+        actionsEnabled={actionsEnabled}
+        onAction={onAction}
+        onClose={() => setCreateOpen(false)}
+      />
     </section>
+  );
+}
+
+function AgentMemberDialog({
+  open,
+  actionsEnabled,
+  onAction,
+  onClose,
+}: {
+  open: boolean;
+  actionsEnabled?: boolean;
+  onAction?: (path: string, body?: unknown) => void;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [role, setRole] = useState("");
+  const [provider, setProvider] = useState(TEAM_MEMBER_PROVIDER_MODES[0].provider);
+  const [model, setModel] = useState("");
+  const [description, setDescription] = useState("");
+  const [permissionProfile, setPermissionProfile] = useState("");
+  const [approvalPolicy, setApprovalPolicy] = useState("");
+  const [sandboxPolicy, setSandboxPolicy] = useState("");
+
+  useEffect(() => {
+    if (open) {
+      setName("");
+      setRole("");
+      setProvider(TEAM_MEMBER_PROVIDER_MODES[0].provider);
+      setModel("");
+      setDescription("");
+      setPermissionProfile("");
+      setApprovalPolicy("");
+      setSandboxPolicy("");
+    }
+  }, [open]);
+
+  const valid = Boolean(name.trim() && role.trim() && provider);
+  const submit = () => {
+    if (!valid) return;
+    const descriptor = createAgent({
+      name: name.trim(),
+      role: role.trim(),
+      provider,
+      model: model.trim() || undefined,
+      description: description.trim() || undefined,
+      permissionProfile: permissionProfile.trim() || undefined,
+      approvalPolicy: approvalPolicy.trim() || undefined,
+      sandboxPolicy: sandboxPolicy.trim() || undefined,
+    });
+    onAction?.(descriptor.path, descriptor.body);
+    onClose();
+  };
+
+  return (
+    <Dialog
+      open={open}
+      title="New Agent Member"
+      description="Create a durable execution identity in the Agents directory."
+      onClose={onClose}
+    >
+      <form
+        className="space-y-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          submit();
+        }}
+      >
+        <Field label="Name" required>
+          {(id) => <TextInput id={id} value={name} onChange={(event) => setName(event.target.value)} />}
+        </Field>
+        <Field label="Role" required>
+          {(id) => (
+            <TextInput
+              id={id}
+              value={role}
+              onChange={(event) => setRole(event.target.value)}
+              placeholder="implementer, reviewer, researcher…"
+            />
+          )}
+        </Field>
+        <Field
+          label="Provider"
+          required
+          hint="Registered persistent bidirectional mode; the execution mode defaults per provider."
+        >
+          {(id) => (
+            <Select id={id} value={provider} onChange={(event) => setProvider(event.target.value)}>
+              {TEAM_MEMBER_PROVIDER_MODES.map((entry) => (
+                <option key={entry.provider} value={entry.provider}>
+                  {entry.label} · {entry.mode}
+                </option>
+              ))}
+            </Select>
+          )}
+        </Field>
+        <Field label="Model" hint="Optional model override requested for this member.">
+          {(id) => <TextInput id={id} value={model} onChange={(event) => setModel(event.target.value)} />}
+        </Field>
+        <Field label="Description">
+          {(id) => <TextArea id={id} value={description} onChange={(event) => setDescription(event.target.value)} />}
+        </Field>
+        <Field label="Permission profile" hint="Optional provider permission profile.">
+          {(id) => <TextInput id={id} value={permissionProfile} onChange={(event) => setPermissionProfile(event.target.value)} />}
+        </Field>
+        <Field label="Approval policy" hint="Optional provider approval policy.">
+          {(id) => <TextInput id={id} value={approvalPolicy} onChange={(event) => setApprovalPolicy(event.target.value)} />}
+        </Field>
+        <Field label="Sandbox policy" hint="Optional provider sandbox policy.">
+          {(id) => <TextInput id={id} value={sandboxPolicy} onChange={(event) => setSandboxPolicy(event.target.value)} />}
+        </Field>
+        <p className="rounded-md border border-border bg-muted/35 px-3 py-2 text-[11px] text-muted-foreground">
+          Creation does not start a runtime; members run when a team run starts or reopens them.
+        </p>
+        <DialogFooter
+          submitLabel="Create member"
+          actionsEnabled={Boolean(actionsEnabled)}
+          canSubmit={valid}
+          onCancel={onClose}
+          onSubmit={submit}
+        />
+      </form>
+    </Dialog>
   );
 }
 
 export function AgentDetail({ model, onSelectionChange, actionsEnabled, onAction }: SurfaceProps) {
   const member = model.selectedMember;
-  if (!member) return <AgentsList model={model} onSelectionChange={onSelectionChange} />;
+  if (!member) return <AgentsList model={model} onSelectionChange={onSelectionChange} actionsEnabled={actionsEnabled} onAction={onAction} />;
 
   const status = member.runtime_status ?? member.status;
   const nativeSession = member.native_session;

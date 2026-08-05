@@ -10,6 +10,20 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   pi: "Pi",
 };
 
+/**
+ * The registered persistent bidirectional provider modes (mirrors the backend
+ * `validate_team_member_execution_mode` registry). Every member/team creation
+ * form sources its provider options from this single constant, so adding a
+ * provider is one registry entry, not a per-form edit. The display map above
+ * stays the only hardcoded presentation layer.
+ */
+export const TEAM_MEMBER_PROVIDER_MODES: Array<{ provider: string; label: string; mode: string }> = [
+  { provider: "kimi", label: "Kimi Code", mode: "kimi_acp" },
+  { provider: "codex", label: "Codex", mode: "codex_app_server" },
+  { provider: "claude", label: "Claude Code", mode: "claude_agent_sdk" },
+  { provider: "pi", label: "Pi", mode: "pi_rpc" },
+];
+
 export function providerDisplayName(provider?: string | null): string {
   if (!provider) return "provider unset";
   return PROVIDER_DISPLAY_NAMES[provider.toLowerCase()] ?? provider;

@@ -9,6 +9,7 @@ import {
   ListFilter,
   MessageSquare,
   Play,
+  Plus,
   Search,
   Send,
   ShieldAlert,
@@ -18,7 +19,7 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { providerDisplayName, providerStackLine, memberModelLabel } from "@/lib/provider";
+import { providerDisplayName, providerStackLine, memberModelLabel, TEAM_MEMBER_PROVIDER_MODES } from "@/lib/provider";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -27,7 +28,7 @@ import { ContextModule, ContextRail } from "@/components/workbench/context/Conte
 import { ReadinessMeter } from "@/components/workbench/execution/ExecutionPrimitives";
 import { FocusHeader, FocusShell } from "@/components/workbench/layout/FocusShell";
 import { EmptyState } from "@/components/workbench/atoms";
-import { Select, TextArea } from "@/components/workbench/OperatorForms";
+import { Dialog, DialogFooter, Field, Select, TextArea, TextInput } from "@/components/workbench/OperatorForms";
 
 import { TeamCapacityStrip } from "@/components/workbench/team/TeamCapacityStrip";
 import { TeamConversationStream } from "@/components/workbench/team/TeamConversation";
@@ -62,8 +63,8 @@ import {
 } from "../model/teamSelectors";
 import { buildAgentTeamOrgModel, orgTeamPath } from "../model/orgSelectors";
 import type { WorkbenchModel } from "../model/readModel";
-import { acknowledgeTeamMessage, resolvePendingInteraction, sendTeamMessage, startTeamRun, transitionTeamRun, type ActionDescriptor } from "../api/actions";
-import type { MemberRun, TeamMessage, Wave, Work } from "../types";
+import { acknowledgeTeamMessage, addTeamMember, resolvePendingInteraction, sendTeamMessage, startTeamRun, transitionTeamRun, type ActionDescriptor } from "../api/actions";
+import type { MemberRun, TeamMessage, TeamMessageResponseIntent, Wave, Work } from "../types";
 import type { SelectionState } from "../app/selection";
 
 export interface TeamWarRoomProps {
@@ -113,6 +114,8 @@ export function TeamWarRoom({
   const [composerOpen, setComposerOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [kind, setKind] = useState("message");
+  const [responseIntent, setResponseIntent] = useState<TeamMessageResponseIntent>("response_required");
+  const [addMemberOpen, setAddMemberOpen] = useState(false);
   const [replyAnchor, setReplyAnchor] = useState<TeamMessage>();
   const [composerWorkId, setComposerWorkId] = useState("");
   const [showAllMembers, setShowAllMembers] = useState(false);
@@ -310,6 +313,7 @@ export function TeamWarRoom({
       kind,
       body: draft.trim(),
       workId: (replyAnchor?.work_id ?? composerWorkId) || undefined,
+      responseIntent,
       correlationId: replyAnchor?.correlation_id ?? undefined,
       causationId: replyAnchor?.id,
       originWaveId: navigationWave?.id,
@@ -428,7 +432,7 @@ export function TeamWarRoom({
           <div
             data-composer-controls="true"
             className={cn(
-              "grid min-w-0 gap-2 sm:grid-cols-2 md:grid-cols-[7rem_6rem_8rem_minmax(8rem,1fr)_auto] lg:grid-cols-[9rem_7rem_11rem_minmax(12rem,1fr)_auto]",
+              "grid min-w-0 gap-2 sm:grid-cols-2 md:grid-cols-[7rem_6rem_7rem_8rem_minmax(8rem,1fr)_auto] lg:grid-cols-[9rem_7rem_8rem_11rem_minmax(12rem,1fr)_auto]",
               !composerOpen && "hidden sm:grid",
             )}
           >
@@ -445,6 +449,15 @@ export function TeamWarRoom({
             <Select aria-label="Message kind" value={kind} onChange={(event) => setKind(event.target.value)} className="h-11 w-full sm:h-9" disabled={Boolean(replyAnchor)}>
               <option value="message">Message</option>
               <option value="handoff">Handoff</option>
+            </Select>
+            <Select
+              aria-label="Response intent"
+              value={responseIntent}
+              onChange={(event) => setResponseIntent(event.target.value as TeamMessageResponseIntent)}
+              className="h-11 w-full sm:h-9"
+            >
+              <option value="response_required">Needs reply</option>
+              <option value="informational">Informational</option>
             </Select>
             <Select
               aria-label="Related Work"
@@ -754,6 +767,20 @@ export function TeamWarRoom({
           </TabsContent>
 
           <TabsContent value="members" className="mt-0">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 px-1 py-2">
+              <p className="text-[11px] text-muted-foreground">
+                Attempt-scoped roster; new members queue for the live Supervisor.
+              </p>
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={!actionsEnabled}
+                title={actionsEnabled ? undefined : "Connect a live source to enable actions"}
+                onClick={() => setAddMemberOpen(true)}
+              >
+                <Plus className="size-3.5" /> Add member
+              </Button>
+            </div>
             <TeamMembersCapacity
               members={orderedMembers}
               works={works}
@@ -762,6 +789,13 @@ export function TeamWarRoom({
               currentActionFor={(memberId) => latestActionTitle(actions, memberId)}
               onSelect={selectMember}
               onOpen={openMember}
+            />
+            <AddMemberDialog
+              open={addMemberOpen}
+              teamRunId={run.id}
+              actionsEnabled={actionsEnabled}
+              onAction={onAction}
+              onClose={() => setAddMemberOpen(false)}
             />
           </TabsContent>
         </Tabs>
@@ -790,6 +824,134 @@ function AttemptActions({ status, actionsEnabled, starting, onStart, onCancel, o
     );
   }
   return null;
+}
+
+/**
+ * Add one member to this TeamRun (POST /v1/team-runs/{id}/members). Selecting
+ * a provider auto-fills its registered execution mode; creation only queues the
+ * member — a live Supervisor picks it up, otherwise it waits until the run is
+ * (re)started or the member is reopened.
+ */
+function AddMemberDialog({
+  open,
+  teamRunId,
+  actionsEnabled,
+  onAction,
+  onClose,
+}: {
+  open: boolean;
+  teamRunId: string;
+  actionsEnabled: boolean;
+  onAction: TeamWarRoomProps["onAction"];
+  onClose: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [role, setRole] = useState("");
+  const [provider, setProvider] = useState(TEAM_MEMBER_PROVIDER_MODES[0].provider);
+  const [model, setModel] = useState("");
+  const [resumeSessionId, setResumeSessionId] = useState("");
+  const [initialWork, setInitialWork] = useState("");
+
+  useEffect(() => {
+    if (open) {
+      setName("");
+      setRole("");
+      setProvider(TEAM_MEMBER_PROVIDER_MODES[0].provider);
+      setModel("");
+      setResumeSessionId("");
+      setInitialWork("");
+    }
+  }, [open]);
+
+  const selectedMode = TEAM_MEMBER_PROVIDER_MODES.find((entry) => entry.provider === provider)?.mode;
+  const valid = Boolean(name.trim() && role.trim() && provider);
+  const submit = () => {
+    if (!valid) return;
+    const descriptor = addTeamMember({
+      teamRunId,
+      name: name.trim(),
+      role: role.trim(),
+      provider,
+      model: model.trim() || undefined,
+      executionMode: selectedMode,
+      resumeNativeSessionId: resumeSessionId.trim() || undefined,
+      initialWork: initialWork.trim() || undefined,
+    });
+    void onAction?.(descriptor.path, descriptor.body);
+    onClose();
+  };
+
+  return (
+    <Dialog
+      open={open}
+      title="Add member to this run"
+      description="Adds one MemberRun to this attempt's roster."
+      onClose={onClose}
+    >
+      <form
+        className="space-y-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          submit();
+        }}
+      >
+        <Field label="Name" required>
+          {(id) => <TextInput id={id} value={name} onChange={(event) => setName(event.target.value)} />}
+        </Field>
+        <Field label="Role" required>
+          {(id) => (
+            <TextInput
+              id={id}
+              value={role}
+              onChange={(event) => setRole(event.target.value)}
+              placeholder="implementer, reviewer, researcher…"
+            />
+          )}
+        </Field>
+        <Field
+          label="Provider"
+          required
+          hint={selectedMode ? `Execution mode auto-fills as ${selectedMode}.` : undefined}
+        >
+          {(id) => (
+            <Select id={id} value={provider} onChange={(event) => setProvider(event.target.value)}>
+              {TEAM_MEMBER_PROVIDER_MODES.map((entry) => (
+                <option key={entry.provider} value={entry.provider}>
+                  {entry.label} · {entry.mode}
+                </option>
+              ))}
+            </Select>
+          )}
+        </Field>
+        <Field label="Model" hint="Optional model override requested for this member.">
+          {(id) => <TextInput id={id} value={model} onChange={(event) => setModel(event.target.value)} />}
+        </Field>
+        <Field label="Resume native session id" hint="Optional provider-native session to resume instead of starting fresh.">
+          {(id) => (
+            <TextInput
+              id={id}
+              value={resumeSessionId}
+              onChange={(event) => setResumeSessionId(event.target.value)}
+              className="font-mono text-[12px]"
+            />
+          )}
+        </Field>
+        <Field label="Initial work" hint="Optional first assignment; omit to create an idle, addressable member.">
+          {(id) => <TextArea id={id} value={initialWork} onChange={(event) => setInitialWork(event.target.value)} />}
+        </Field>
+        <p className="rounded-md border border-border bg-muted/35 px-3 py-2 text-[11px] text-muted-foreground">
+          A live Supervisor picks the queued member up; without one it waits until the run is (re)started or the member is reopened.
+        </p>
+        <DialogFooter
+          submitLabel="Add member"
+          actionsEnabled={actionsEnabled}
+          canSubmit={valid}
+          onCancel={onClose}
+          onSubmit={submit}
+        />
+      </form>
+    </Dialog>
+  );
 }
 
 function MissionTeamModule({ missionTitle, teamName, leadAgentId, missionScoped, members, onOpenMember, onOpen }: {

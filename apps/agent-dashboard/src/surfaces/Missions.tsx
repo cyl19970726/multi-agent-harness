@@ -41,19 +41,18 @@ import {
 } from "@/components/workbench/OperatorForms";
 
 import {
-  advanceWave,
+  appendMissionLog,
   closeMission,
   createMissionTeam,
   createMission,
   createTeamRun,
-  createWave,
-  gateWave,
-  updateWaveContext,
   type ActionDescriptor,
+  type TeamRunMemberSpec,
 } from "../api/actions";
+import { TEAM_MEMBER_PROVIDER_MODES } from "@/lib/provider";
 import type { SelectionState } from "../app/selection";
 import type { WorkbenchModel } from "../model/readModel";
-import type { Mission, MissionLogEntry, TeamRun, Wave } from "../types";
+import type { Mission, MissionLogEntry, MissionLogEntryKind, TeamRun, Wave } from "../types";
 
 interface MissionsProps {
   model: WorkbenchModel;
@@ -67,8 +66,8 @@ interface MissionsProps {
 interface MemberDraft {
   name: string;
   role: string;
-  provider: "codex" | "kimi" | "claude";
-  executionMode: "codex_app_server" | "kimi_acp" | "claude_agent_sdk";
+  provider: string;
+  executionMode: string;
   model: string;
   effort: string;
   serviceTier: string;
@@ -215,17 +214,27 @@ function MarkdownContext({ value, empty }: { value?: string | null; empty: strin
 }
 
 function blankMember(): MemberDraft {
+  const codex = TEAM_MEMBER_PROVIDER_MODES.find((entry) => entry.provider === "codex")
+    ?? TEAM_MEMBER_PROVIDER_MODES[0];
   return {
     name: "",
     role: "",
-    provider: "codex",
-    executionMode: "codex_app_server",
+    provider: codex.provider,
+    executionMode: codex.mode,
     model: "",
     effort: "high",
     serviceTier: "",
     ownedPaths: "",
   };
 }
+
+/** One registered mode per provider, so the mode auto-fills from the provider. */
+const EXECUTION_MODE_HINTS: Record<string, string> = {
+  codex_app_server: "Interactive app-server is the only Codex Agent Team mode; one-shot exec belongs to Dynamic Workflow.",
+  kimi_acp: "ACP: provider questions resume in-turn; chat queues to the next round.",
+  claude_agent_sdk: "Agent SDK streaming session is the only Claude Agent Team mode; claude -p belongs to Dynamic Workflow.",
+  pi_rpc: "RPC is Pi's persistent bidirectional mode.",
+};
 
 function exitCriteriaFor(wave: Wave): string[] {
   return (wave.exit_criteria ?? "")
@@ -350,7 +359,7 @@ function MissionDetail({
   actionsEnabled = false,
   onAction,
 }: MissionsProps & { mission: Mission; selectedWaveId?: string }) {
-  const [waveOpen, setWaveOpen] = useState(false);
+  const [logOpen, setLogOpen] = useState(false);
   const [teamOpen, setTeamOpen] = useState(false);
   const [closeOpen, setCloseOpen] = useState(false);
   const waves = wavesFor(model, mission.id);
@@ -466,9 +475,9 @@ function MissionDetail({
               <ActionButton
                 enabled={actionsEnabled}
                 disabled={mission.status === "completed" || mission.status === "cancelled"}
-                onClick={() => setWaveOpen(true)}
+                onClick={() => setLogOpen(true)}
               >
-                <Plus className="size-3.5" /> Add Wave
+                <Plus className="size-3.5" /> Append Host judgment
               </ActionButton>
               <ActionButton
                 enabled={actionsEnabled}
@@ -539,7 +548,7 @@ function MissionDetail({
             <div>
               <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Wave canvas</p>
               <p className="mt-1 text-[11px] text-muted-foreground">
-                Wave rows are append-only history; the current Wave's Markdown can still be revised in place.
+                Wave rows are append-only history; Host plan revisions are recorded as Mission Log entries (ADR 0051).
               </p>
             </div>
             <Badge tone="muted">Read-only</Badge>
@@ -801,13 +810,13 @@ function MissionDetail({
         </div>
       </div>
 
-      <WaveDialog
-        open={waveOpen}
-        mission={mission}
-        nextIndex={(waves[waves.length - 1]?.index ?? 0) + 1}
+      <MissionLogDialog
+        open={logOpen}
+        missionId={mission.id}
+        initialKind="judgment"
         actionsEnabled={actionsEnabled}
         onAction={onAction}
-        onClose={() => setWaveOpen(false)}
+        onClose={() => setLogOpen(false)}
       />
       <MissionTeamDialog
         open={teamOpen}
@@ -887,8 +896,8 @@ function WaveCanvasCard({
   onAction,
 }: WaveCanvasCardProps) {
   const [attemptOpen, setAttemptOpen] = useState(false);
-  const [gateOpen, setGateOpen] = useState(false);
-  const [planOpen, setPlanOpen] = useState(false);
+  const [logOpen, setLogOpen] = useState(false);
+  const [logKind, setLogKind] = useState<MissionLogEntryKind>("judgment");
   const latest = runs[runs.length - 1];
   const canTeamRun = wave.executor_kind === "agent_team";
   const hasActiveAttempt = runs.some((run) =>
@@ -931,7 +940,10 @@ function WaveCanvasCard({
                 disabled={wave.status === "completed"}
                 size="sm"
                 variant="secondary"
-                onClick={() => setPlanOpen(true)}
+                onClick={() => {
+                  setLogKind("replan");
+                  setLogOpen(true);
+                }}
               >
                 <PencilLine className="size-3.5" /> Update plan
               </ActionButton>
@@ -1035,15 +1047,20 @@ function WaveCanvasCard({
               : "No linked artifacts yet. Gate remains an explicit host decision."}
           </p>
           {wave.outcome_summary && <p className="mt-1.5 text-[11px] leading-relaxed text-foreground">{wave.outcome_summary}</p>}
-          <div className="mt-2 flex flex-wrap gap-2">
+          <div className="mt-2 space-y-2">
+            <p className="rounded-md border border-border bg-muted/35 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+              Host decisions are recorded as Mission Log entries (ADR 0051); the Wave gate/advance write routes are retired.
+            </p>
             <ActionButton
               enabled={actionsEnabled}
-              disabled={hasActiveAttempt || waveAccepted}
               size="sm"
               variant="secondary"
-              onClick={() => setGateOpen(true)}
+              onClick={() => {
+                setLogKind("judgment");
+                setLogOpen(true);
+              }}
             >
-              <ShieldCheck className="size-3.5" /> {wave.executor_kind === "host" ? "Advance Wave" : "Gate Wave"}
+              <PencilLine className="size-3.5" /> Record judgment
             </ActionButton>
           </div>
           </div>
@@ -1059,77 +1076,109 @@ function WaveCanvasCard({
         onAction={onAction}
         onClose={() => setAttemptOpen(false)}
       />
-      <GateDialog
-        open={gateOpen}
-        wave={wave}
-        runs={runs}
+      <MissionLogDialog
+        open={logOpen}
+        missionId={wave.mission_id}
+        initialKind={logKind}
         actionsEnabled={actionsEnabled}
         onAction={onAction}
-        onClose={() => setGateOpen(false)}
-      />
-      <UpdatePlanDialog
-        open={planOpen}
-        wave={wave}
-        actionsEnabled={actionsEnabled}
-        onAction={onAction}
-        onClose={() => setPlanOpen(false)}
+        onClose={() => setLogOpen(false)}
       />
     </section>
   );
 }
 
-function UpdatePlanDialog({
+/**
+ * Append one Mission Log entry (ADR 0051) — the replacement for the retired
+ * Wave write routes. Plan revisions post kind `replan`; gate/advance decisions
+ * post kind `judgment`. Entries are append-only and never advance a Wave.
+ */
+function MissionLogDialog({
   open,
-  wave,
+  missionId,
+  initialKind,
   actionsEnabled,
   onAction,
   onClose,
 }: {
   open: boolean;
-  wave: Wave;
+  missionId: string;
+  initialKind: MissionLogEntryKind;
   actionsEnabled: boolean;
   onAction: MissionsProps["onAction"];
   onClose: () => void;
 }) {
-  const [context, setContext] = useState(wave.context ?? "");
+  const [kind, setKind] = useState<MissionLogEntryKind>(initialKind);
+  const [body, setBody] = useState("");
 
   useEffect(() => {
-    if (open) setContext(wave.context ?? "");
-  }, [open, wave.context]);
+    if (open) {
+      setKind(initialKind);
+      setBody("");
+    }
+  }, [open, initialKind]);
 
-  const changed = Boolean(context.trim()) && context.trim() !== (wave.context ?? "").trim();
+  const valid = Boolean(body.trim());
   const submit = () => {
-    if (!changed) return;
-    dispatch(onAction, updateWaveContext(wave.id, context.trim(), "host"));
+    if (!valid) return;
+    dispatch(
+      onAction,
+      appendMissionLog({
+        missionId,
+        kind,
+        body: body.trim(),
+        actor: "operator",
+      }),
+    );
     onClose();
   };
 
   return (
     <Dialog
       open={open}
-      title={`Update Wave ${wave.index} plan`}
-      description={`Save a lightweight Host revision (next: r${(wave.revision ?? 0) + 1}). Advance to a new Wave when responsibility, team composition, or the decision boundary changes materially.`}
+      title="Append Mission Log entry"
+      description="Append-only Host judgment, newest first. Recording an entry never advances a Wave."
       onClose={onClose}
     >
-      <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); submit(); }}>
+      <form
+        className="space-y-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          submit();
+        }}
+      >
+        <Field label="Kind" required>
+          {(id) => (
+            <Select
+              id={id}
+              value={kind}
+              onChange={(event) => setKind(event.target.value as MissionLogEntryKind)}
+            >
+              <option value="judgment">Judgment · Host decision or advance rationale</option>
+              <option value="replan">Replan · revised plan for the current Wave</option>
+              <option value="recovery">Recovery · how a blocker or failure was handled</option>
+              <option value="closeout_evidence">Closeout evidence · acceptance support</option>
+            </Select>
+          )}
+        </Field>
         <Field
-          label="Host plan context"
+          label="Entry"
           required
-          hint="Markdown plan, current judgment, member responsibilities, carry-over, blockers, and the next decision."
+          hint="Markdown: current judgment, member responsibilities, carry-over, blockers, and the next decision."
         >
           {(id) => (
             <TextArea
               id={id}
-              value={context}
-              onChange={(event) => setContext(event.target.value)}
-              className="min-h-64 font-mono text-[12px]"
+              value={body}
+              onChange={(event) => setBody(event.target.value)}
+              className="min-h-40 font-mono text-[12px]"
             />
           )}
         </Field>
         <DialogFooter
-          submitLabel="Save revision"
+          submitLabel="Append log entry"
           actionsEnabled={actionsEnabled}
-          canSubmit={changed}
+          canSubmit={valid}
           onCancel={onClose}
           onSubmit={submit}
         />
@@ -1202,90 +1251,6 @@ function MissionDialog({
           submitLabel="Create Mission"
           actionsEnabled={Boolean(actionsEnabled)}
           canSubmit={Boolean(title.trim() && objective.trim())}
-          onCancel={onClose}
-          onSubmit={submit}
-        />
-      </form>
-    </Dialog>
-  );
-}
-
-function WaveDialog({
-  open,
-  mission,
-  nextIndex,
-  actionsEnabled,
-  onAction,
-  onClose,
-}: {
-  open: boolean;
-  mission: Mission;
-  nextIndex: number;
-  actionsEnabled: boolean;
-  onAction: MissionsProps["onAction"];
-  onClose: () => void;
-}) {
-  const [title, setTitle] = useState("");
-  const [objective, setObjective] = useState("");
-  const [exit, setExit] = useState("");
-  const [context, setContext] = useState("");
-
-  useEffect(() => {
-    if (open) {
-      setTitle("");
-      setObjective("");
-      setExit("");
-      setContext("");
-    }
-  }, [open]);
-
-  const submit = () => {
-    if (!title.trim() || !objective.trim() || !context.trim()) return;
-    dispatch(
-      onAction,
-      createWave({
-        missionId: mission.id,
-        index: nextIndex,
-        title: title.trim(),
-        objective: objective.trim(),
-        executorKind: "host",
-        exitCriteria: exit.trim() || undefined,
-        context: context.trim() || undefined,
-      }),
-    );
-    onClose();
-  };
-
-  return (
-    <Dialog
-      open={open}
-      title={`Add Wave ${nextIndex}`}
-      description="A Wave is the Host's versioned operational memo, not a runtime container."
-      onClose={onClose}
-    >
-      <form
-        className="space-y-3"
-        onSubmit={(event) => {
-          event.preventDefault();
-          submit();
-        }}
-      >
-        <Field label="Title" required>
-          {(id) => <TextInput id={id} value={title} onChange={(event) => setTitle(event.target.value)} />}
-        </Field>
-        <Field label="Objective" required>
-          {(id) => <TextArea id={id} value={objective} onChange={(event) => setObjective(event.target.value)} />}
-        </Field>
-        <Field label="Wave context" required hint="Markdown plan, member responsibilities, carry-over, questions, and Host judgment.">
-          {(id) => <TextArea id={id} value={context} onChange={(event) => setContext(event.target.value)} />}
-        </Field>
-        <Field label="Advance when">
-          {(id) => <TextInput id={id} value={exit} onChange={(event) => setExit(event.target.value)} />}
-        </Field>
-        <DialogFooter
-          submitLabel="Add Wave"
-          actionsEnabled={actionsEnabled}
-          canSubmit={Boolean(title.trim() && objective.trim() && context.trim())}
           onCancel={onClose}
           onSubmit={submit}
         />
@@ -1398,7 +1363,7 @@ function AttemptDialog({
           name: member.name.trim(),
           role: member.role.trim(),
           provider: member.provider,
-          executionMode: member.executionMode,
+          executionMode: member.executionMode as TeamRunMemberSpec["executionMode"],
           model: member.model.trim() || undefined,
           effort: member.effort.trim() || undefined,
           serviceTier: member.serviceTier.trim() || undefined,
@@ -1469,44 +1434,38 @@ function AttemptDialog({
                     id={id}
                     value={member.provider}
                     onChange={(event) => {
-                      const provider = event.target.value as MemberDraft["provider"];
+                      const entry = TEAM_MEMBER_PROVIDER_MODES.find(
+                        (candidate) => candidate.provider === event.target.value,
+                      );
+                      if (!entry) return;
                       updateMember(index, {
-                        provider,
-                        executionMode: provider === "codex"
-                          ? "codex_app_server"
-                          : provider === "kimi"
-                            ? "kimi_acp"
-                            : "claude_agent_sdk",
-                        model: provider === "kimi" ? "kimi-code/k3" : "",
-                        serviceTier: provider === "codex" ? member.serviceTier : "",
+                        provider: entry.provider,
+                        executionMode: entry.mode,
+                        model: entry.provider === "kimi" ? "kimi-code/k3" : "",
+                        serviceTier: entry.provider === "codex" ? member.serviceTier : "",
                       });
                     }}
                   >
-                    <option value="codex">Codex</option>
-                    <option value="kimi">Kimi</option>
-                    <option value="claude">Claude Code</option>
+                    {TEAM_MEMBER_PROVIDER_MODES.map((entry) => (
+                      <option key={entry.provider} value={entry.provider}>{entry.label}</option>
+                    ))}
                   </Select>
                 )}
               </Field>
               <Field
                 label="Execution mode"
-                hint={member.executionMode === "codex_app_server"
-                  ? "Interactive app-server is the only Codex Agent Team mode; one-shot exec belongs to Dynamic Workflow."
-                  : member.executionMode === "kimi_acp"
-                    ? "ACP: provider questions resume in-turn; chat queues to the next round."
-                    : "Agent SDK streaming session is the only Claude Agent Team mode; claude -p belongs to Dynamic Workflow."}
+                hint={EXECUTION_MODE_HINTS[member.executionMode]
+                  ?? "Registered persistent bidirectional mode, auto-filled from the provider."}
               >
                 {(id) => (
+                  // One registered mode per provider: changing the provider
+                  // above is the only mode change this form allows.
                   <Select
                     id={id}
                     value={member.executionMode}
-                    onChange={(event) => updateMember(index, {
-                      executionMode: event.target.value as MemberDraft["executionMode"],
-                    })}
+                    onChange={() => undefined}
                   >
-                    {member.provider === "codex" && <option value="codex_app_server">Interactive app-server</option>}
-                    {member.provider === "kimi" && <option value="kimi_acp">Kimi ACP</option>}
-                    {member.provider === "claude" && <option value="claude_agent_sdk">Claude Agent SDK</option>}
+                    <option value={member.executionMode}>{member.executionMode}</option>
                   </Select>
                 )}
               </Field>
@@ -1634,141 +1593,6 @@ function MissionCloseDialog({
         </Field>
         <DialogFooter
           submitLabel="Complete Mission"
-          actionsEnabled={actionsEnabled}
-          canSubmit={valid}
-          onCancel={onClose}
-          onSubmit={submit}
-        />
-      </form>
-    </Dialog>
-  );
-}
-
-function GateDialog({
-  open,
-  wave,
-  runs,
-  actionsEnabled,
-  onAction,
-  onClose,
-}: {
-  open: boolean;
-  wave: Wave;
-  runs: TeamRun[];
-  actionsEnabled: boolean;
-  onAction: MissionsProps["onAction"];
-  onClose: () => void;
-}) {
-  const [status, setStatus] = useState<"accepted" | "revise" | "blocked">("accepted");
-  const [runId, setRunId] = useState("");
-  const [outcome, setOutcome] = useState("");
-  const [note, setNote] = useState("");
-  const [artifacts, setArtifacts] = useState("");
-  const completedRuns = runs.filter((run) => run.status === "completed");
-  const latestCompletedRunId = completedRuns[completedRuns.length - 1]?.id ?? "";
-  const requiresRun = wave.executor_kind !== "host";
-  const nonTeamRunIds = wave.executor_kind === "agent_team" ? [] : (wave.executor_run_ids ?? []);
-  const defaultRunId = wave.accepted_run_id
-    ?? (wave.executor_kind === "agent_team" ? latestCompletedRunId : nonTeamRunIds[nonTeamRunIds.length - 1])
-    ?? "";
-  const artifactValues = (wave.artifact_refs ?? []).join(", ");
-
-  useEffect(() => {
-    if (open) {
-      setStatus("accepted");
-      setRunId(defaultRunId);
-      setOutcome(wave.outcome_summary ?? "");
-      setNote("");
-      setArtifacts(artifactValues);
-    }
-  }, [artifactValues, defaultRunId, open, wave.outcome_summary]);
-
-  const valid = status !== "accepted" || Boolean(outcome.trim() && (!requiresRun || runId));
-  const selectableRuns = status === "accepted" ? completedRuns : runs;
-  const submit = () => {
-    if (!valid) return;
-    dispatch(onAction, wave.executor_kind === "host" && status === "accepted"
-      ? advanceWave({
-          waveId: wave.id,
-          outcome: outcome.trim(),
-          advancedBy: "host",
-          artifactRefs: parseList(artifacts),
-        })
-      : gateWave({
-          waveId: wave.id,
-          status,
-          runId: runId || undefined,
-          acceptedBy: "host",
-          outcome: outcome.trim() || undefined,
-          note: note.trim() || undefined,
-          artifactRefs: parseList(artifacts),
-        }));
-    onClose();
-  };
-
-  return (
-    <Dialog
-      open={open}
-      title={wave.executor_kind === "host" ? "Advance Host plan" : "Gate legacy executor Wave"}
-      description={wave.executor_kind === "host"
-        ? "Record why the Host is advancing. Active assignments and provider sessions continue unchanged."
-        : "The Host records accepted, revise, or blocked without deleting any attempt."}
-      onClose={onClose}
-    >
-      <form
-        className="space-y-3"
-        onSubmit={(event) => {
-          event.preventDefault();
-          submit();
-        }}
-      >
-        <Field label="Gate result" required>
-          {(id) => (
-            <Select
-              id={id}
-              value={status}
-              onChange={(event) => setStatus(event.target.value as typeof status)}
-            >
-              <option value="accepted">Accepted</option>
-              <option value="revise">Revise</option>
-              <option value="blocked">Blocked</option>
-            </Select>
-          )}
-        </Field>
-        {requiresRun && <Field
-          label="Attempt"
-          hint={wave.executor_kind === "agent_team" ? "Accepted must name a completed Agent Team attempt." : "Accepted must name an executor run registered to this Wave."}
-        >
-          {(id) => (
-            <Select id={id} value={runId} onChange={(event) => setRunId(event.target.value)}>
-              <option value="">No attempt selected</option>
-              {selectableRuns.map((run) => (
-                <option key={run.id} value={run.id}>
-                  {run.id} · {run.status ?? "planning"}
-                </option>
-              ))}
-              {nonTeamRunIds.map((id) => (
-                <option key={id} value={id}>{id}</option>
-              ))}
-            </Select>
-          )}
-        </Field>}
-        {!requiresRun && (
-          <p className="rounded-md border border-border bg-muted/35 px-3 py-2 text-[11px] text-muted-foreground">
-            Host execution records its direct outcome and artifacts without inventing an executor run.
-          </p>
-        )}
-        <Field label="Outcome" required={status === "accepted"}>
-          {(id) => <TextArea id={id} value={outcome} onChange={(event) => setOutcome(event.target.value)} />}
-        </Field>
-        <Field label="Gate note">
-          {(id) => <TextArea id={id} value={note} onChange={(event) => setNote(event.target.value)} />}
-        </Field>
-        <Field label="Artifacts" hint="Comma-separated references.">
-          {(id) => <TextInput id={id} value={artifacts} onChange={(event) => setArtifacts(event.target.value)} />}
-        </Field>
-        <DialogFooter
-          submitLabel="Record gate"
           actionsEnabled={actionsEnabled}
           canSubmit={valid}
           onCancel={onClose}
