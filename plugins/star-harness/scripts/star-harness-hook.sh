@@ -47,6 +47,13 @@ case "$host_surface" in
   *) hook_provider="${HARNESS_PROVIDER:-codex}" ;;
 esac
 
+# Export star-harness host binding so downstream `harness team-run create` /
+# `harness team-run start` can auto-bind when these env vars are present and
+# unambiguous. Hook subprocesses inherit them; the user's shell must source
+# them separately for standalone CLI use.
+export STAR_HARNESS_HOST_SURFACE="$host_surface"
+export STAR_HARNESS_HOST_THREAD_ID="$session_id"
+
 # Forward bound lifecycle events to Harness. Core ingestion owns sanitization;
 # unbound raw hook payloads are deliberately not persisted by this plugin.
 if [[ -n "${HARNESS_AGENT_MEMBER_ID:-}" ]]; then

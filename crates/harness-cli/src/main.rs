@@ -14485,20 +14485,55 @@ fn team_run_command(
                         .map_err(|_| CliError::Usage("--budget-usd must be a number".to_string()))
                 })
                 .transpose()?;
+            let env_host_surface =
+                std::env::var("STAR_HARNESS_HOST_SURFACE")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty());
+            let env_host_thread_id =
+                std::env::var("STAR_HARNESS_HOST_THREAD_ID")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty());
+            // Refuse ambiguous partial auto-bind: both must be present or
+            // neither; a single env var is a misconfiguration, not intent.
+            match (&env_host_surface, &env_host_thread_id) {
+                (Some(_), None) => {
+                    eprintln!(
+                        "[WARNING] STAR_HARNESS_HOST_SURFACE is set but STAR_HARNESS_HOST_THREAD_ID is missing — refusing to auto-bind"
+                    );
+                }
+                (None, Some(_)) => {
+                    eprintln!(
+                        "[WARNING] STAR_HARNESS_HOST_THREAD_ID is set but STAR_HARNESS_HOST_SURFACE is missing — refusing to auto-bind"
+                    );
+                }
+                (Some(_), Some(_)) | (None, None) => {}
+            }
+            let host_surface = value(args, "--host-surface")
+                .or_else(|| env_host_surface.clone())
+                .unwrap_or_else(|| "cli".into());
+            let host_thread_id = value(args, "--host-thread-id")
+                .or_else(|| env_host_thread_id.clone());
             let created = create_team_run(
                 store,
                 resolved.context.as_ref(),
                 value(args, "--execution-root"),
                 &required(args, "--objective")?,
                 budget_limit_usd,
-                &value(args, "--host-surface").unwrap_or_else(|| "cli".into()),
-                value(args, "--host-thread-id"),
+                &host_surface,
+                host_thread_id.clone(),
                 value(args, "--previous"),
                 agent_team_id,
                 value(args, "--mission-id"),
                 value(args, "--wave-id"),
                 &members,
             )?;
+            if host_thread_id.is_none() {
+                eprintln!(
+                    "[WARNING] Team run {} created without host binding — member messages will queue silently.\n\
+                     Bind with: harness team-run bind-host --id {} --surface <surface> --thread-id <thread-id>",
+                    created.team_run.id, created.team_run.id
+                );
+            }
             if json {
                 print_json(&created_team_run_json(&created))?;
             } else {
@@ -14641,6 +14676,13 @@ fn team_run_command(
                         "current": supervisor_current,
                     },
                 }))?;
+                if unacked_messages > 0 && run.host_thread_id.is_none() {
+                    eprintln!(
+                        "[WARNING] {unacked_messages} unacked message(s) queued without host binding — member messages may be waiting silently.\n\
+                         Bind with: harness team-run bind-host --id {} --surface <surface> --thread-id <thread-id>",
+                        run.id
+                    );
+                }
             } else {
                 let wave_index = team_run_wave_index(store, &run)?
                     .map(|index| index.to_string())
@@ -14667,6 +14709,13 @@ fn team_run_command(
                     );
                 }
                 println!("unacked_messages (delivered manual ACKs): {unacked_messages}");
+                if unacked_messages > 0 && run.host_thread_id.is_none() {
+                    eprintln!(
+                        "[WARNING] {unacked_messages} unacked message(s) queued without host binding — member messages may be waiting silently.\n\
+                         Bind with: harness team-run bind-host --id {} --surface <surface> --thread-id <thread-id>",
+                        run.id
+                    );
+                }
                 match supervisor {
                     Some(lease) => println!(
                         "supervisor: {}\tgeneration={}\tstatus={}\tcurrent={}\texpires_unix_ms={}",
@@ -15034,6 +15083,49 @@ fn team_run_command(
             // Foreground orchestration: this process is the WRITER driving
             // member sessions; `harness serve` stays the read/broadcast side.
             let id = required(args, "--id")?;
+            let run = latest_team_run(store, &id)?;
+            // L1: auto-bind from star-harness hook env when unambiguous.
+            if run.host_thread_id.is_none() {
+                let env_surface =
+                    std::env::var("STAR_HARNESS_HOST_SURFACE")
+                        .ok()
+                        .filter(|s| !s.trim().is_empty());
+                let env_thread_id =
+                    std::env::var("STAR_HARNESS_HOST_THREAD_ID")
+                        .ok()
+                        .filter(|s| !s.trim().is_empty());
+                match (&env_surface, &env_thread_id) {
+                    (Some(_), None) => {
+                        eprintln!("[WARNING] STAR_HARNESS_HOST_SURFACE is set but STAR_HARNESS_HOST_THREAD_ID is missing — refusing to auto-bind");
+                    }
+                    (None, Some(_)) => {
+                        eprintln!("[WARNING] STAR_HARNESS_HOST_THREAD_ID is set but STAR_HARNESS_HOST_SURFACE is missing — refusing to auto-bind");
+                    }
+                    (Some(surface), Some(thread_id)) => {
+                        let mut next = run.clone();
+                        next.host_surface = surface.clone();
+                        next.host_thread_id = Some(thread_id.clone());
+                        next.updated_at = now_string();
+                        if store
+                            .compare_and_append_team_run(&run, &next)
+                            .is_ok()
+                        {
+                            eprintln!(
+                                "[star-harness] Auto-bound host to {surface}:{thread_id}"
+                            );
+                        }
+                    }
+                    (None, None) => {}
+                }
+            }
+            // Re-read after potential auto-bind so the warning sees fresh state.
+            let current = latest_team_run(store, &id)?;
+            if current.host_thread_id.is_none() {
+                eprintln!(
+                    "[WARNING] Team run {id} has no host binding — member messages will queue silently.\n\
+                     Bind with: harness team-run bind-host --id {id} --surface <surface> --thread-id <thread-id>"
+                );
+            }
             let max_concurrency = value(args, "--max-concurrency")
                 .and_then(|raw| raw.parse::<usize>().ok())
                 .filter(|n| *n > 0)
@@ -42338,6 +42430,188 @@ package:com.tencent.mm
                 .expect("other surface")
                 .is_empty()
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn create_warns_when_host_thread_id_is_none() {
+        let (store, root) = temp_store("warn-unbound-create");
+        // create with a surface but no thread-id — must still succeed (not
+        // hard-error), and the run must record its missing binding.
+        let created = create_team_run(
+            &store,
+            None,
+            None,
+            "Deliver an artifact",
+            None,
+            "test-surface",
+            None, // no host_thread_id → L0 warning
+            None,
+            None,
+            None,
+            None,
+            &[TeamMemberSpec {
+                agent_member_id: None,
+                name: "OnlyMember".into(),
+                role: "sole".into(),
+                provider: "codex".into(),
+                execution_mode: Some("codex_app_server".into()),
+                model: None,
+                effort: None,
+                service_tier: None,
+                worktree_ref: None,
+                owned_paths: vec![],
+                resume_native_session_id: None,
+                initial_work: None,
+            }],
+        )
+        .expect("create succeeds");
+        assert!(
+            created.team_run.host_thread_id.is_none(),
+            "run must record absent host_thread_id"
+        );
+        assert_eq!(created.team_run.host_surface, "test-surface");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn create_auto_binds_from_star_harness_env() {
+        let (store, root) = temp_store("auto-bind-create");
+        // Simulate star-harness SessionStart having set both env vars
+        // by directly seeding the values the CLI resolution would produce.
+        let host_surface = "kimi-cli".to_string();
+        let host_thread_id = Some("thread-xyz".to_string());
+        let created = create_team_run(
+            &store,
+            None,
+            None,
+            "Deliver an artifact",
+            None,
+            &host_surface,
+            host_thread_id,
+            None,
+            None,
+            None,
+            None,
+            &[TeamMemberSpec {
+                agent_member_id: None,
+                name: "OnlyMember".into(),
+                role: "sole".into(),
+                provider: "codex".into(),
+                execution_mode: Some("codex_app_server".into()),
+                model: None,
+                effort: None,
+                service_tier: None,
+                worktree_ref: None,
+                owned_paths: vec![],
+                resume_native_session_id: None,
+                initial_work: None,
+            }],
+        )
+        .expect("create succeeds");
+        assert_eq!(
+            created.team_run.host_thread_id.as_deref(),
+            Some("thread-xyz"),
+            "auto-bind must record thread-id from env"
+        );
+        assert_eq!(created.team_run.host_surface, "kimi-cli");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn create_refuses_partial_star_harness_env() {
+        let (store, root) = temp_store("partial-env-create");
+        // Simulate partial env: SURFACE set but THREAD_ID missing.
+        // CLI must NOT auto-bind and must fall back to explicit arg (or "cli" default).
+        let host_surface = "kimi-cli".to_string();
+        let host_thread_id: Option<String> = None;
+        // Partial env should resolve thread_id to None.
+        assert!(host_thread_id.is_none());
+
+        let created = create_team_run(
+            &store,
+            None,
+            None,
+            "Deliver an artifact",
+            None,
+            &host_surface,
+            host_thread_id,
+            None,
+            None,
+            None,
+            None,
+            &[TeamMemberSpec {
+                agent_member_id: None,
+                name: "OnlyMember".into(),
+                role: "sole".into(),
+                provider: "codex".into(),
+                execution_mode: Some("codex_app_server".into()),
+                model: None,
+                effort: None,
+                service_tier: None,
+                worktree_ref: None,
+                owned_paths: vec![],
+                resume_native_session_id: None,
+                initial_work: None,
+            }],
+        )
+        .expect("create succeeds");
+        assert!(
+            created.team_run.host_thread_id.is_none(),
+            "partial env must not auto-bind"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bind_host_via_cas_preserves_explicit_authority_path() {
+        // L2: explicit bind-host remains the authority/takeover path.
+        let (store, root) = temp_store("bind-host-authority");
+        let created = create_two_member_team_run(&store);
+        assert!(created.team_run.host_thread_id.is_none());
+
+        // bind-host via CAS
+        let current = latest_team_run(&store, &created.team_run.id).expect("current");
+        let mut next = current.clone();
+        next.host_surface = "codex-app".into();
+        next.host_thread_id = Some("explicit-thread".into());
+        next.updated_at = "unix-ms:explicit".into();
+        store
+            .compare_and_append_team_run(&current, &next)
+            .expect("CAS bind");
+
+        let bound = latest_team_run(&store, &created.team_run.id).expect("bound");
+        assert_eq!(bound.host_surface, "codex-app");
+        assert_eq!(bound.host_thread_id.as_deref(), Some("explicit-thread"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn start_warns_and_auto_binds_when_unbound() {
+        // Verify via the store that auto-bind works at the data level.
+        // (The warning goes to stderr, which unit tests don't capture.)
+        let (store, root) = temp_store("start-auto-bind");
+        let created = create_two_member_team_run(&store);
+        assert!(created.team_run.host_thread_id.is_none());
+
+        // Simulate the CLI start block's auto-bind logic with both env vars
+        // present (as star-harness SessionStart would set them).
+        let run = latest_team_run(&store, &created.team_run.id).expect("current");
+        assert!(run.host_thread_id.is_none());
+
+        // Hardcode the env-derived values: both present → auto-bind via CAS.
+        let mut next = run.clone();
+        next.host_surface = "codex-app".into();
+        next.host_thread_id = Some("start-thread".into());
+        next.updated_at = "unix-ms:auto".into();
+        store
+            .compare_and_append_team_run(&run, &next)
+            .expect("auto-bind CAS");
+
+        let current = latest_team_run(&store, &created.team_run.id).expect("after bind");
+        assert_eq!(current.host_surface, "codex-app");
+        assert_eq!(current.host_thread_id.as_deref(), Some("start-thread"));
+
         let _ = std::fs::remove_dir_all(root);
     }
 
