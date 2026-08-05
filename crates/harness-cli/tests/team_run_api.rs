@@ -170,6 +170,44 @@ fn seed_native_mission_wave(home: &TempHome, project_id: &str) {
     .expect("seed wave");
 }
 
+/// Seed one additional historical Wave row directly, bypassing the retired
+/// `wave create` write path (ADR 0051). Unlike `seed_native_mission_wave`
+/// (which overwrites `waves.jsonl` with exactly one row) this appends, so
+/// tests needing more than one historical Wave -- or a Wave alongside one
+/// already seeded by `seed_native_mission_wave` -- can call it repeatedly.
+fn seed_historical_wave(
+    home: &TempHome,
+    project_id: &str,
+    id: &str,
+    mission_id: &str,
+    index: u64,
+    executor_kind: &str,
+) {
+    use std::io::Write as _;
+
+    let path = home.spaces_dir().join(project_id).join("waves.jsonl");
+    let mut ledger = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .expect("open wave ledger");
+    writeln!(
+        ledger,
+        "{}",
+        serde_json::json!({
+            "id": id,
+            "mission_id": mission_id,
+            "index": index,
+            "title": "Historical Wave",
+            "objective": "Seeded pre-cutover row for read/navigation coverage",
+            "executor_kind": executor_kind,
+            "created_at": "unix-ms:1",
+            "updated_at": "unix-ms:1",
+        })
+    )
+    .expect("append historical wave");
+}
+
 /// Run `harness team-run ...` in the given project and return parsed stdout JSON.
 fn team_run_json(home: &TempHome, project_id: &str, args: &[&str]) -> serde_json::Value {
     let mut full = vec!["--project", project_id, "team-run"];
@@ -977,7 +1015,7 @@ fn team_run_rejects_non_agent_team_wave_before_journaling_attempt() {
 }
 
 #[test]
-fn mission_wave_cli_authoring_and_accepted_team_gate() {
+fn mission_wave_cli_authoring_with_seeded_wave_and_retired_gate() {
     let home = TempHome::new("mission-wave-cli");
     let project_id = init_project(&home, "alpha");
     let mission = command_json(
@@ -993,32 +1031,15 @@ fn mission_wave_cli_authoring_and_accepted_team_gate() {
             "--objective",
             "Prove the native authoring surface",
             "--desired-outcome",
-            "One accepted Wave",
+            "A completed retry attempt",
             "--json",
         ],
     );
     assert_eq!(mission["id"].as_str(), Some("mission-cli"));
-    let wave = command_json(
-        &home,
-        &project_id,
-        &[
-            "wave",
-            "create",
-            "--id",
-            "wave-cli",
-            "--mission-id",
-            "mission-cli",
-            "--title",
-            "Reviewed TeamRun",
-            "--objective",
-            "Complete one assigned member attempt",
-            "--executor-kind",
-            "agent_team",
-            "--json",
-        ],
-    );
-    assert_eq!(wave["index"].as_u64(), Some(1));
-    assert_eq!(wave["executor_kind"].as_str(), Some("agent_team"));
+    // `wave create` is retired (ADR 0051): seed a historical row directly so
+    // TeamRun creation can still explicitly cite an existing Wave id (that
+    // citation path is unaffected -- only Wave *write* commands retired).
+    seed_historical_wave(&home, &project_id, "wave-cli", "mission-cli", 1, "agent_team");
 
     let run = team_run_json(
         &home,
@@ -1075,10 +1096,17 @@ fn mission_wave_cli_authoring_and_accepted_team_gate() {
         &["mission", "show", "--id", "mission-cli", "--json"],
     );
     assert_eq!(running_mission["status"].as_str(), Some("running"));
-    let gated = command_json(
+
+    // `wave gate` is retired (ADR 0051): there is nothing left to accept,
+    // revise, or block. The Host records closeout evidence in the Mission
+    // Log instead, then closes the Mission directly -- no Wave acceptance
+    // required.
+    let gate_error = run_harness(
         &home,
-        &project_id,
+        home.base(),
         &[
+            "--project",
+            &project_id,
             "wave",
             "gate",
             "--id",
@@ -1087,38 +1115,54 @@ fn mission_wave_cli_authoring_and_accepted_team_gate() {
             "accepted",
             "--run-id",
             &run_id,
-            "--accepted-by",
+        ],
+    );
+    assert!(!gate_error.status.success());
+    assert!(String::from_utf8_lossy(&gate_error.stderr).contains("retired"));
+
+    let closeout = command_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "log",
+            "append",
+            "--mission-id",
+            "mission-cli",
+            "--kind",
+            "closeout_evidence",
+            "--body",
+            "artifact:smoke -- assigned run completed",
+            "--actor",
             "operator",
-            "--note",
-            "gate passed",
-            "--outcome",
-            "assigned run completed",
-            "--artifact",
-            "artifact:smoke",
             "--json",
         ],
     );
-    assert_eq!(gated["gate_status"].as_str(), Some("accepted"));
-    assert_eq!(gated["status"].as_str(), Some("completed"));
-    assert_eq!(gated["accepted_run_id"].as_str(), Some(run_id.as_str()));
-    assert_eq!(gated["accepted_by"].as_str(), Some("operator"));
-    assert_eq!(
-        gated["artifact_refs"],
-        serde_json::json!(["artifact:smoke"])
-    );
-
-    let mission = command_json(
+    assert_eq!(closeout["revision"].as_u64(), Some(1));
+    let closed = command_json(
         &home,
         &project_id,
-        &["mission", "show", "--id", "mission-cli", "--json"],
+        &[
+            "mission",
+            "close",
+            "--id",
+            "mission-cli",
+            "--outcome",
+            "assigned run completed",
+            "--completed-by",
+            "operator",
+            "--json",
+        ],
     );
-    assert_eq!(mission["wave_ids"], serde_json::json!(["wave-cli"]));
+    assert_eq!(closed["status"].as_str(), Some("completed"));
+    // No live path populates wave_ids for a seeded historical Wave.
+    assert_eq!(closed["wave_ids"], serde_json::json!([]));
 }
 
 #[test]
-fn post_mission_wave_and_lightweight_gate() {
+fn post_mission_and_retired_wave_write_routes() {
     let home = TempHome::new("mission-wave-http");
-    let _project_id = init_project(&home, "alpha");
+    let project_id = init_project(&home, "alpha");
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
     let (status, body) = serve.post_json(
         "/v1/missions",
@@ -1130,6 +1174,8 @@ fn post_mission_wave_and_lightweight_gate() {
     );
     assert_eq!(status, 200, "body: {body}");
     assert_eq!(body["result"]["id"].as_str(), Some("mission-http"));
+
+    // `POST /v1/waves` is retired (ADR 0051): the Mission Log absorbed it.
     let (status, body) = serve.post_json(
         "/v1/waves",
         &serde_json::json!({
@@ -1140,20 +1186,50 @@ fn post_mission_wave_and_lightweight_gate() {
             "executor_kind": "host"
         }),
     );
-    assert_eq!(status, 200, "body: {body}");
-    assert_eq!(body["result"]["index"].as_u64(), Some(1));
-    assert!(body.get("snapshot").is_none());
+    assert_eq!(status, 400, "body: {body}");
+    let error = body["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("retired") && error.contains("mission log append"),
+        "error: {error}"
+    );
     let (_, snapshot) = serve.get_json("/v1/snapshot");
     assert_eq!(snapshot["missions"].as_array().map(Vec::len), Some(1));
-    assert_eq!(snapshot["waves"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        snapshot["waves"].as_array().map(Vec::len),
+        Some(0),
+        "the rejected POST must not have appended a row"
+    );
+
+    // The Host records judgment on the Mission Log instead.
+    let logged = command_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "log",
+            "append",
+            "--mission-id",
+            "mission-http",
+            "--kind",
+            "judgment",
+            "--body",
+            "clarify scope before assigning",
+            "--json",
+        ],
+    );
+    assert_eq!(logged["revision"].as_u64(), Some(1));
+    let (_, snapshot) = serve.get_json("/v1/snapshot");
+    assert_eq!(snapshot["mission_log"].as_array().map(Vec::len), Some(1));
+
+    // `POST /v1/waves/{id}/gate` is retired too, regardless of whether the
+    // named Wave id exists.
     let (status, body) = serve.post_json(
         "/v1/waves/wave-http/gate",
         &serde_json::json!({"status": "revise", "note": "clarify scope"}),
     );
-    assert_eq!(status, 200, "body: {body}");
-    assert_eq!(body["result"]["gate_status"].as_str(), Some("revise"));
-    assert_eq!(body["result"]["status"].as_str(), Some("planned"));
-    assert_eq!(body["result"]["gate_note"].as_str(), Some("clarify scope"));
+    assert_eq!(status, 400, "body: {body}");
+    let error = body["error"].as_str().unwrap_or_default();
+    assert!(error.contains("retired"), "error: {error}");
 }
 
 #[test]
@@ -1276,25 +1352,9 @@ fn linked_team_run_rejects_previous_attempt_from_another_wave() {
                 "--json",
             ],
         );
-        let _ = command_json(
-            &home,
-            &project_id,
-            &[
-                "wave",
-                "create",
-                "--id",
-                wave_id,
-                "--mission-id",
-                mission_id,
-                "--title",
-                wave_id,
-                "--objective",
-                "test lineage",
-                "--executor-kind",
-                "agent_team",
-                "--json",
-            ],
-        );
+        // `wave create` is retired (ADR 0051): seed the historical row
+        // directly so TeamRun creation can still cite it via --wave-id.
+        seed_historical_wave(&home, &project_id, wave_id, mission_id, 1, "agent_team");
     }
     let first = team_run_json(
         &home,
