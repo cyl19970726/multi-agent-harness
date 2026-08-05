@@ -8,14 +8,14 @@ use std::time::{Duration, Instant};
 use harness_core::{
     AgentEvent, AgentMember, AgentMessageRoute, AgentRuntime, AgentTeam, AgentTeamRun, Decision,
     DelegationRun, Evidence, Gap, MemberAction, MemberRun, Message, MessageDelivery,
-    MessageDeliveryStatus, MessageTerminalSource, Mission, MissionStatus, PendingInteraction,
-    Proposal, ProviderChildThread, ProviderExecutionStatus, Review, TeamDeliveryPolicy,
-    TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage,
-    TeamMessageKind, TeamRunEvent, TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus,
-    Vision, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, Work, WorkClaimMode,
-    WorkCommandContext, WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate, WorkEvent,
-    WorkEventKind, WorkOperation, WorkStatus, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun,
-    WorkflowStep,
+    MessageDeliveryStatus, MessageTerminalSource, Mission, MissionLogEntry, MissionStatus,
+    PendingInteraction, Proposal, ProviderChildThread, ProviderExecutionStatus, Review,
+    TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus,
+    TeamMessage, TeamMessageKind, TeamRunEvent, TeamRunStatus, TeamSupervisorLease,
+    TeamSupervisorLeaseStatus, Vision, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, Work,
+    WorkClaimMode, WorkCommandContext, WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate,
+    WorkEvent, WorkEventKind, WorkOperation, WorkStatus, WorkflowArtifactManifest, WorkflowPatch,
+    WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -242,9 +242,73 @@ impl HarnessStore {
         Ok(wave)
     }
 
-    /// Atomically close one Mission after every ordered Wave has an accepted,
-    /// completed gate. The Wave set is checked under the same store lock as
-    /// the Mission CAS so a concurrent Wave create cannot race closeout.
+    /// Append one [`MissionLogEntry`] under the store lock, atomically
+    /// allocating its monotonic `revision` the same way
+    /// `insert_wave_and_update_mission` allocates a Wave index: read the
+    /// current max for this `mission_id`, then `+ 1` (starting at 1). This
+    /// is the Mission Log's ONLY write operation (ADR 0051) — there is no
+    /// update or delete, so unlike Wave there is no compare-and-append
+    /// variant to race against.
+    pub fn append_mission_log_entry(&self, mut entry: MissionLogEntry) -> StoreResult<MissionLogEntry> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        if entry.body.trim().is_empty() {
+            return Err(StoreError::Conflict(
+                "mission log entry body must not be empty".to_string(),
+            ));
+        }
+        if entry.actor.trim().is_empty() {
+            return Err(StoreError::Conflict(
+                "mission log entry actor must not be empty".to_string(),
+            ));
+        }
+        let missions = latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
+            mission.id.clone()
+        });
+        if !missions.contains_key(&entry.mission_id) {
+            return Err(StoreError::Conflict(format!(
+                "mission not found: {}",
+                entry.mission_id
+            )));
+        }
+        let existing = self.read_jsonl::<MissionLogEntry>("mission_log.jsonl")?;
+        if existing.iter().any(|row| row.id == entry.id) {
+            return Err(StoreError::Conflict(format!(
+                "mission log entry already exists: {}",
+                entry.id
+            )));
+        }
+        entry.revision = existing
+            .iter()
+            .filter(|row| row.mission_id == entry.mission_id)
+            .map(|row| row.revision)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "mission log revision space is exhausted for mission {}",
+                    entry.mission_id
+                ))
+            })?;
+        self.append_jsonl_unlocked("mission_log.jsonl", &entry)?;
+        Ok(entry)
+    }
+
+    /// Atomically close one Mission. Prior to ADR 0051 this required every
+    /// ordered Wave to have an accepted, completed gate; Wave write commands
+    /// (including the gate) are now retired, so a native post-cutover
+    /// Mission always has empty `wave_ids` and closes on its own outcome —
+    /// the Host records `kind = closeout_evidence` in the Mission Log
+    /// beforehand by convention, not as a store-enforced precondition (ADR
+    /// 0051 "Mission closeout evidence becomes a ... Log entry instead of a
+    /// separate Wave-outcome convention"). A legacy Mission that already
+    /// accumulated `wave_ids` before the cutover keeps the original
+    /// Wave-gate requirement so its in-flight contract does not change
+    /// underneath it; no NEW Mission can reach that branch since Wave create
+    /// no longer populates membership. The Wave set is still checked under
+    /// the same store lock as the Mission CAS so a concurrent Wave create
+    /// (of a legacy, still-populated Mission) cannot race closeout.
     pub fn compare_and_close_mission(&self, expected: &Mission, next: &Mission) -> StoreResult<()> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
@@ -259,46 +323,42 @@ impl HarnessStore {
                 expected.id
             )));
         }
-        if current.wave_ids.is_empty() {
-            return Err(StoreError::Conflict(format!(
-                "mission {} has no Waves to close",
-                current.id
-            )));
-        }
-        let waves = latest_by_id(self.read_jsonl::<Wave>("waves.jsonl")?, |wave| {
-            wave.id.clone()
-        });
-        let mut actual_wave_ids = waves
-            .values()
-            .filter(|wave| wave.mission_id == current.id)
-            .map(|wave| (wave.index, wave.id.clone()))
-            .collect::<Vec<_>>();
-        actual_wave_ids.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
-        let actual_wave_ids = actual_wave_ids
-            .into_iter()
-            .map(|(_, id)| id)
-            .collect::<Vec<_>>();
-        if actual_wave_ids != current.wave_ids {
-            return Err(StoreError::Conflict(format!(
-                "mission {} Wave membership changed or is inconsistent; retry closeout",
-                current.id
-            )));
-        }
-        for wave_id in &current.wave_ids {
-            let wave = waves.get(wave_id).ok_or_else(|| {
-                StoreError::Conflict(format!(
-                    "mission {} references missing Wave {wave_id}",
-                    current.id
-                ))
-            })?;
-            if wave.mission_id != current.id
-                || wave.status != WaveStatus::Completed
-                || wave.gate_status != WaveGateStatus::Accepted
-            {
+        if !current.wave_ids.is_empty() {
+            let waves = latest_by_id(self.read_jsonl::<Wave>("waves.jsonl")?, |wave| {
+                wave.id.clone()
+            });
+            let mut actual_wave_ids = waves
+                .values()
+                .filter(|wave| wave.mission_id == current.id)
+                .map(|wave| (wave.index, wave.id.clone()))
+                .collect::<Vec<_>>();
+            actual_wave_ids.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+            let actual_wave_ids = actual_wave_ids
+                .into_iter()
+                .map(|(_, id)| id)
+                .collect::<Vec<_>>();
+            if actual_wave_ids != current.wave_ids {
                 return Err(StoreError::Conflict(format!(
-                    "mission {} cannot close: Wave {} is status {:?} with gate {:?}",
-                    current.id, wave.id, wave.status, wave.gate_status
+                    "mission {} Wave membership changed or is inconsistent; retry closeout",
+                    current.id
                 )));
+            }
+            for wave_id in &current.wave_ids {
+                let wave = waves.get(wave_id).ok_or_else(|| {
+                    StoreError::Conflict(format!(
+                        "mission {} references missing Wave {wave_id}",
+                        current.id
+                    ))
+                })?;
+                if wave.mission_id != current.id
+                    || wave.status != WaveStatus::Completed
+                    || wave.gate_status != WaveGateStatus::Accepted
+                {
+                    return Err(StoreError::Conflict(format!(
+                        "mission {} cannot close: Wave {} is status {:?} with gate {:?}",
+                        current.id, wave.id, wave.status, wave.gate_status
+                    )));
+                }
             }
         }
         if next.id != current.id
@@ -2715,6 +2775,36 @@ impl HarnessStore {
                 .then(left.id.cmp(&right.id))
         });
         Ok(waves)
+    }
+
+    /// Raw append-only Mission Log rows across every Mission, in append
+    /// order. Prefer [`Self::mission_log_entries`] when scoping to one
+    /// Mission; this is here for parity with `waves()`/`missions()`.
+    pub fn mission_log(&self) -> StoreResult<Vec<MissionLogEntry>> {
+        self.read_jsonl("mission_log.jsonl")
+    }
+
+    /// Every [`MissionLogEntry`] for one Mission, ordered by `revision`
+    /// ascending. There is no latest-wins collapse: unlike Wave/Mission the
+    /// Log has no mutable identity, every row is a permanent entry.
+    pub fn mission_log_entries(&self, mission_id: &str) -> StoreResult<Vec<MissionLogEntry>> {
+        let mut entries = self
+            .mission_log()?
+            .into_iter()
+            .filter(|entry| entry.mission_id == mission_id)
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.revision);
+        Ok(entries)
+    }
+
+    /// The last `n` [`MissionLogEntry`] rows for one Mission, oldest-first
+    /// within the returned slice (Unix `tail` ordering) so a reader sees them
+    /// in the order they were written. Returns fewer than `n` rows if the
+    /// Mission has fewer entries, and an empty Vec if it has none yet.
+    pub fn mission_log_tail(&self, mission_id: &str, n: usize) -> StoreResult<Vec<MissionLogEntry>> {
+        let entries = self.mission_log_entries(mission_id)?;
+        let start = entries.len().saturating_sub(n);
+        Ok(entries[start..].to_vec())
     }
 
     pub fn members(&self) -> StoreResult<Vec<AgentMember>> {
