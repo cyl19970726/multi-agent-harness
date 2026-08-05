@@ -16765,12 +16765,6 @@ fn build_member_wake_view(
     zero_output_streak: u32,
     last_consumed_work_version: Option<u64>,
 ) -> CliResult<supervisor_wake::MemberWakeView> {
-    let stable_member_id = member_row
-        .agent_member_id
-        .as_deref()
-        .or(member_row.slot_id.as_deref())
-        .unwrap_or(member_row.id.as_str())
-        .to_string();
     let is_idle = matches!(member_row.status, MemberRunStatus::Idle);
 
     let all_works = ledger.store.latest_works()?;
@@ -16789,7 +16783,6 @@ fn build_member_wake_view(
 
     Ok(supervisor_wake::MemberWakeView {
         member_id: member_row.id.clone(),
-        stable_member_id,
         status: member_row.status,
         is_idle,
         active_work_id: active_work.map(|work| work.id.clone()),
@@ -17552,8 +17545,8 @@ fn run_codex_member(
     // Supervisor wake-policy tracking.
     let wake_policy = supervisor_wake::WakePolicy::default();
     let mut wake_backoff = supervisor_wake::WakeBackoff::new();
-    let mut zero_output_streak: u32 = 0;
-    let mut last_consumed_work_version: Option<u64> = None;
+    let zero_output_streak: u32 = 0;
+    let last_consumed_work_version: Option<u64> = None;
     match wait_for_idle_member_wake(
         ledger,
         &mut member_row,

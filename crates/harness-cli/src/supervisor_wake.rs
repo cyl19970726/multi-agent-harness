@@ -37,7 +37,6 @@ pub enum WakeDecision {
 #[derive(Debug, Clone)]
 pub struct MemberWakeView {
     pub member_id: String,
-    pub stable_member_id: String,
     pub status: MemberRunStatus,
     /// Whether the member is currently idle (not running a turn).
     pub is_idle: bool,
@@ -167,6 +166,7 @@ impl WakeBackoff {
     }
 
     /// Number of consecutive Sleep decisions without an intervening wake event.
+    #[cfg(test)]
     pub fn consecutive_sleeps(&self) -> u32 {
         self.consecutive_sleeps
     }
@@ -224,7 +224,6 @@ mod tests {
         let o = overrides;
         MemberWakeView {
             member_id: "member-1".into(),
-            stable_member_id: "agent-1".into(),
             status: o.status.unwrap_or(MemberRunStatus::Idle),
             is_idle: o.is_idle.unwrap_or(true),
             active_work_id: o.active_work_id,
