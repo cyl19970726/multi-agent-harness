@@ -34655,14 +34655,11 @@ mission update-context --id <id> --context <text>
 mission create-team   --id <id> --name <text> --description <text>
                       [--lead <id>] [--member <id>] [--team-id <id>]
 mission close         --id <id> --outcome <text> [--completed-by <actor>]
-wave create  --mission-id <id> --title <text> --objective <text> [--id <id>]
-             [--index <n>] [--executor-kind host|agent_team|dynamic_workflow]
-             [--context <text>] [--json]
-wave show    --id <id>
-wave list    [--mission-id <id>]
-wave update  --id <id> --context <text>
-wave advance --id <id> --outcome <text> [--artifact <ref>]
-wave gate    --id <id> --status <status> [--note <text>]
+mission log append    --mission-id <id>
+                      --kind judgment|replan|recovery|closeout_evidence
+                      --body <md> [--actor <id>] [--json]
+mission log show       --mission-id <id> [--tail <n>] [--json]
+wave list (historical) [--mission-id <id>]
 "#;
 
 const CHEATSHEET_ALL: &str = r#"team-run create --objective <text> [--mission-id <id>] [--wave-id <id>]
@@ -34695,13 +34692,10 @@ mission update-context --id <id> --context <text>
 mission create-team --id <id> --name <text> --description <text>
   [--lead <id>] [--member <id>]
 mission close --id <id> --outcome <text>
-wave create --mission-id <id> --title <text> --objective <text>
-  [--executor-kind host|agent_team|dynamic_workflow] [--context <text>] [--json]
-wave show --id <id>
-wave list [--mission-id <id>]
-wave update --id <id> --context <text>
-wave advance --id <id> --outcome <text> [--artifact <ref>]
-wave gate --id <id> --status <status> [--note <text>]
+mission log append --mission-id <id>
+  --kind judgment|replan|recovery|closeout_evidence --body <md>
+mission log show --mission-id <id> [--tail <n>]
+wave list (historical) [--mission-id <id>]
 "#;
 
 fn print_help() {
@@ -34716,7 +34710,9 @@ fn print_help() {
   legacy-goal-task export --project <id|path> --output <dir>
   legacy-goal-task verify --archive <dir>
   mission create|list|show|update-context|create-team|link-team|unlink-team|close
-  wave create|list|show|history|update|advance|gate
+  mission log append --mission-id <id> --kind judgment|replan|recovery|closeout_evidence --body <md>
+  mission log show --mission-id <id> [--tail <n>]
+  wave list|show|history (historical reads only; create|update|advance|gate retired by ADR 0051 -- use `mission log append`)
   team-run create|list|status|recover|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|complete|cancel
   team-run board-summary --id <team-run-id>
       <=500-char plain-text board digest: counts by status, assigned/unassigned,
@@ -42697,19 +42693,45 @@ package:com.tencent.mm
             );
         }
         let mission_body = function_body(MAIN_RS_SOURCE, "mission_command");
-        for leaf in ["create", "show", "update-context", "create-team", "close"] {
+        for leaf in ["create", "show", "update-context", "create-team", "close", "log"] {
             assert!(
                 subcommand_is_real(mission_body, leaf),
                 "mission {leaf} is documented in the cheatsheet but is not a \
                  real match arm in mission_command"
             );
         }
+        // `mission log` is its own nested dispatcher (ADR 0051 Mission Log).
+        let mission_log_body = function_body(MAIN_RS_SOURCE, "mission_log_command");
+        for leaf in ["append", "show"] {
+            assert!(
+                subcommand_is_real(mission_log_body, leaf),
+                "mission log {leaf} is documented in the cheatsheet but is not a \
+                 real match arm in mission_log_command"
+            );
+        }
+        // `wave create|update|advance|gate` retired with the ADR 0051 Mission
+        // Log cutover (see `retired_wave_write_command`); only `list` remains
+        // documented (historical read). This deliberately does NOT check for
+        // the retired leaves, so this test would fail loudly if one were ever
+        // re-added to the cheatsheet without also being wired.
         let wave_body = function_body(MAIN_RS_SOURCE, "wave_command");
-        for leaf in ["create", "show", "list", "update", "advance", "gate"] {
+        for leaf in ["list"] {
             assert!(
                 subcommand_is_real(wave_body, leaf),
                 "wave {leaf} is documented in the cheatsheet but is not a \
                  real match arm in wave_command"
+            );
+        }
+        for retired in ["create", "update", "advance", "gate"] {
+            assert!(
+                !CHEATSHEET_MISSION.contains(&format!("wave {retired}")),
+                "CHEATSHEET_MISSION documents retired `wave {retired}`; ADR 0051 retired \
+                 Wave write commands, use `mission log append` instead"
+            );
+            assert!(
+                !CHEATSHEET_ALL.contains(&format!("wave {retired}")),
+                "CHEATSHEET_ALL documents retired `wave {retired}`; ADR 0051 retired \
+                 Wave write commands, use `mission log append` instead"
             );
         }
     }
