@@ -58,6 +58,8 @@ mod project;
 mod resident;
 #[cfg(unix)]
 mod resident_daemon;
+#[cfg(unix)]
+mod supervisor_daemon;
 mod sse;
 mod supervisor_wake;
 mod workflow;
@@ -14345,15 +14347,35 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
         "submit" => {
             let team_run_id = required(args, "--team-run-id")?;
             let member_run_id = required(args, "--member-run-id")?;
-            print_json(&store.submit_work(
-                &required(args, "--work-id")?,
+            let work_id = required(args, "--work-id")?;
+            let submitted = store.submit_work(
+                &work_id,
                 required_work_version(args)?,
                 &member_run_id,
                 &required(args, "--result")?,
                 many(args, "--artifact-ref"),
                 many(args, "--check-ref"),
                 member_work_context(args, &team_run_id, &member_run_id)?,
-            )?)
+            )?;
+            // Best-effort host notification so the operator sees work status
+            // changes without polling. A write conflict is logged, not fatal.
+            if let Err(error) = send_team_message_as_work(
+                store,
+                &team_run_id,
+                compatibility_team_actor(&member_run_id, "member_runtime"),
+                vec!["host".to_string()],
+                TeamMessageKind::Message,
+                "Work submitted for review; use `team-run work accept` or `team-run work request-changes` to review.",
+                Some(work_id),
+                None,
+                None,
+                None,
+                None,
+            ) {
+                eprintln!("work submit notification failed: {error}");
+            }
+            print_json(&submitted)?;
+            Ok(())
         }
         "request-changes" => print_json(&store.request_work_changes(
             &required(args, "--work-id")?,
@@ -15177,8 +15199,6 @@ fn team_run_command(
             }),
         )?)?,
         "start" => {
-            // Foreground orchestration: this process is the WRITER driving
-            // member sessions; `harness serve` stays the read/broadcast side.
             let id = required(args, "--id")?;
             let run = latest_team_run(store, &id)?;
             // L1: auto-bind from star-harness hook env when unambiguous.
@@ -15224,6 +15244,36 @@ fn team_run_command(
                 .and_then(|raw| raw.parse::<u64>().ok())
                 .filter(|n| *n > 0)
                 .unwrap_or(kimi_acp::DEFAULT_PROMPT_IDLE_TIMEOUT_SECS);
+
+            // When the multi-team supervisor daemon is running, delegate to it
+            // instead of blocking in a foreground loop.
+            #[cfg(unix)]
+            {
+                if supervisor_daemon::supervisor_daemon_is_available(store.root()) {
+                    let resp = supervisor_daemon::daemon_start_run(
+                        store.root(),
+                        &id,
+                        max_concurrency,
+                    )?;
+                    if resp.ok {
+                        println!(
+                            "team run {id} delegated to supervisor daemon ({} managed runs)",
+                            resp.runs.as_ref().map(|r| r.len()).unwrap_or(0)
+                        );
+                        return Ok(());
+                    }
+                    // Daemon is present but rejected the start (e.g. already
+                    // managed). Report and fall through to foreground as a
+                    // last-resort compatibility path.
+                    eprintln!(
+                        "supervisor daemon rejected start for {id}: {:?}; falling back to foreground",
+                        resp.error
+                    );
+                }
+            }
+
+            // Foreground orchestration: this process is the WRITER driving
+            // member sessions; `harness serve` stays the read/broadcast side.
             team_run_start(
                 store,
                 resolved,
@@ -23942,9 +23992,24 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
 /// socket is present, and falls back to an inline single turn when it is not.
 #[cfg(unix)]
 fn daemon_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "daemon start|status|stop")?;
+    require_subcommand(args, "daemon serve|start|status|stop")?;
     let harness_root = store.root().to_path_buf();
     match args[0].as_str() {
+        "serve" => {
+            let max_concurrency = value(args, "--max-concurrency")
+                .and_then(|raw| raw.parse::<usize>().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(TEAM_RUN_START_DEFAULT_CONCURRENCY);
+            let scan_secs = value(args, "--scan-interval-s")
+                .and_then(|raw| raw.parse::<u64>().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(5);
+            supervisor_daemon::run_serve(
+                &harness_root,
+                max_concurrency,
+                Duration::from_secs(scan_secs),
+            )?;
+        }
         "start" => {
             let idle_secs = value(args, "--idle-secs")
                 .and_then(|s| s.parse::<u64>().ok())
@@ -23972,28 +24037,76 @@ fn daemon_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             }
             resident_daemon::run_daemon(&harness_root, idle_secs)?;
         }
-        "status" => match resident_daemon::daemon_status(&harness_root) {
-            resident_daemon::DaemonStatus::Running => {
-                let pid = resident_daemon::daemon_pid(&harness_root);
-                println!(
-                    "running (socket {}{})",
-                    resident_daemon::daemon_socket_path(&harness_root).display(),
-                    pid.map(|p| format!(", pid {p}")).unwrap_or_default()
-                );
+        "status" => {
+            // Report both resident daemon and supervisor daemon status.
+            println!("--- resident daemon ---");
+            match resident_daemon::daemon_status(&harness_root) {
+                resident_daemon::DaemonStatus::Running => {
+                    let pid = resident_daemon::daemon_pid(&harness_root);
+                    println!(
+                        "running (socket {}{})",
+                        resident_daemon::daemon_socket_path(&harness_root).display(),
+                        pid.map(|p| format!(", pid {p}")).unwrap_or_default()
+                    );
+                }
+                resident_daemon::DaemonStatus::Stale => println!(
+                    "stale (socket {} exists but no daemon answers)",
+                    resident_daemon::daemon_socket_path(&harness_root).display()
+                ),
+                resident_daemon::DaemonStatus::Absent => println!("absent (no daemon socket)"),
             }
-            resident_daemon::DaemonStatus::Stale => println!(
-                "stale (socket {} exists but no daemon answers)",
-                resident_daemon::daemon_socket_path(&harness_root).display()
-            ),
-            resident_daemon::DaemonStatus::Absent => println!("absent (no daemon socket)"),
-        },
-        "stop" => match resident_daemon::daemon_pid(&harness_root) {
-            Some(pid) => {
-                stop_pid(pid)?;
-                println!("stopped resident daemon pid {pid}");
+            println!("--- supervisor daemon ---");
+            if supervisor_daemon::supervisor_daemon_is_available(&harness_root) {
+                match supervisor_daemon::daemon_status(&harness_root) {
+                    Ok(resp) => {
+                        if let Some(runs) = resp.runs {
+                            for run in &runs {
+                                println!("  {}  {}", run.status, run.run_id);
+                            }
+                            if runs.is_empty() {
+                                println!("  (no managed team-runs)");
+                            }
+                        } else {
+                            println!("running");
+                        }
+                    }
+                    Err(error) => println!("error: {error}"),
+                }
+            } else {
+                let path = supervisor_daemon::supervisor_socket_path(&harness_root);
+                if path.exists() {
+                    println!("stale (socket {} exists but no daemon answers)", path.display());
+                } else {
+                    println!("absent (no supervisor daemon socket)");
+                }
             }
-            None => return Err(CliError::Usage("no resident daemon pidfile found".into())),
-        },
+        }
+        "stop" => {
+            // Stop supervisor daemon first (if running), then resident daemon.
+            if supervisor_daemon::supervisor_daemon_is_available(&harness_root) {
+                let path = supervisor_daemon::supervisor_socket_path(&harness_root);
+                let stream =
+                    std::os::unix::net::UnixStream::connect(&path).map_err(|error| {
+                        CliError::Usage(format!("cannot connect to supervisor daemon: {error}"))
+                    })?;
+                let mut writer = stream.try_clone()?;
+                let req = b"{\"cmd\":\"stop\"}\n";
+                writer.write_all(req)?;
+                writer.flush()?;
+                println!("sent stop to supervisor daemon");
+            }
+            match resident_daemon::daemon_pid(&harness_root) {
+                Some(pid) => {
+                    stop_pid(pid)?;
+                    println!("stopped resident daemon pid {pid}");
+                }
+                None => {
+                    if !supervisor_daemon::supervisor_daemon_is_available(&harness_root) {
+                        return Err(CliError::Usage("no daemon pidfile found".into()));
+                    }
+                }
+            }
+        }
         other => return Err(CliError::Usage(format!("unknown daemon command: {other}"))),
     }
     Ok(())
