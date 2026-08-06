@@ -296,3 +296,23 @@ prove it. Minimum gates for Phase 0/1:
   SQLite derived layer, remote authenticated API, BlockNote surface.
 - Historical block-era acceptance evidence remains valid as evidence of the
   old surface; the new surface earns its own evidence per section 11.
+
+
+## 13. Old surface retirement plan
+
+The Block-era Docs surface is retired in stages, never by a single deletion:
+each stage lands only when the v2 surface provably covers what it removes.
+Deletion gates follow `documentation-governance.md` (consumers migrated,
+checks updated, registry statuses changed, data readable or migrated).
+
+| Stage | Content | Gate |
+| --- | --- | --- |
+| R0 (done) | `document-system.md` and `docs-operating-surface-matrix.md` carry supersession banners; v2 merged (PR #353) | banners + ADR 0054 |
+| R1 | v2 adds `page rename/move/archive` metadata commands through the revision mechanism; template handling decided (migrate to v2 templates or declare legacy-retained) | new commands asserted by the v2 suites |
+| R2 | Dashboard `?surface=docs` document focus switches to the v2 renderer; `BasicDocumentPage` and its fixture adapter paths are deleted; `?surface=docs-v2` remains the explicit route | company-os-docs-check rewritten against v2 and green |
+| R3 | Old `document/block` CLI command tree and `document.append`/`block.append` API actions are deleted (not deprecated-forwarded); the record-layer commands (`module`, `typed-record`, `view`, `relation`, health, source sync) remain — they are the shared record layer, not old docs | check-company-os-docs-cli-smoke/live retired; v2 suites green; trademark scenario migrated or explicitly grandfathered |
+| R4 | `company_os_blocks.jsonl` stays readable as historical data (never deleted in place); `knowledge.schema.json` Block definitions drop to archived status once no live code path reads them; the two superseded contract docs move to registry `archival` status or are deleted with Git history as the archive | governance check green after each change |
+
+Explicit non-goals of the retirement: no loss of module/typed-record/view/
+relation capability, no rewrite of existing ledger data, and no acceptance
+gap — every stage keeps the full check chain green before it lands.

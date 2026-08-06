@@ -4,6 +4,12 @@
 
 Accepted for target architecture; implementation is staged.
 
+The page/document storage and write layer described here is superseded by
+ADR 0054 (AI-first Docs v2: closed block set, whole-page revisions,
+page-first CLI) for the parts that ADR 0054 implements; structured views,
+custom page contracts, and the record layer remain active under this ADR and
+ADR 0036.
+
 ## Context
 
 The Company OS needs the clarity, nesting, tables, and database views associated

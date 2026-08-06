@@ -141,6 +141,15 @@ and governed maintenance for `document create|rename|move|archive`,
 `typed-record append|update|validate`, `view create|update`, and
 `relation link|unlink|relink|repair-missing`.
 
+Supersession note (ADR 0054): page/document creation and content authoring
+now belong to the AI-first Docs v2 surface (`page create|read|write|append|search`
+over whole-page revisions; see `docs/company-os/ai-first-docs-spec.md`). The
+Block-era `document create` and `block *` commands above remain implemented
+but are on the retirement path (spec §13, stage R3); new Agent work should
+prefer the v2 page commands. Record-layer commands (`module`,
+`typed-record`, `view`, `relation`, `template`, health, source sync) are
+unaffected and stay current.
+
 External software source sync is Company Store-routed (`--company`) and
 observes a Git worktree (`--repo-path`).
 

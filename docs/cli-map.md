@@ -52,17 +52,22 @@ Store identity introduced by ADR 0042.
 
 ### Docs
 
-`harness company docs ...` is the most complete Company OS CLI surface.
+`harness company docs ...` is the most complete Company OS CLI surface. Two
+generations coexist during the ADR 0054 retirement plan
+(`docs/company-os/ai-first-docs-spec.md` §13): the AI-first Docs v2 page
+surface is current for page/document work; the Block-era document/block
+commands remain implemented until their retirement stage lands.
 
 | Capability | Commands | Status | Notes |
 | --- | --- | --- | --- |
+| Pages v2 (ADR 0054) | `page create`, `page read`, `page write`, `page append`, `page search` | Implemented | AI-first page model: whole-page immutable revisions with sha256 digests, `expected_revision` optimistic concurrency, idempotent replay by action id, scoped reads (`outline/section/range/keyword` + `simple/with-ids/full`), Markdown<->block serialization, `--after -1\|heading:<text>` anchors, write-time missing-embed warnings. Serve API: `/v1/company-os/docs-v2/pages*` (token-gated writes, revision history, live entity_embed resolution). Dashboard: `?surface=docs-v2` (store-live, zero fixture path). |
 | Read/projection | `query`, `search`, `traverse`, `refs`, `related`, `snapshot`, `diff`, `change-report`, `health` | Implemented | Agent-readable and human-readable projections over native Docs records. |
 | Source sync | `source sync` | Implemented | Syncs external source state into Docs TypedRecords and idempotent `Document → source_for → TypedRecord` Relations with explicit boundaries. GitHub webhook transport is still a separate future adapter. |
 | Module setup | `module create` | Implemented | Creates BusinessModule plus default/fallback View through governed API path. |
 | Custom page metadata | `page-definition create`, `page scaffold`, `page verify`, `page publish` | Partial | Defines/scaffolds/verifies/publishes custom-page records and refs. It does not yet generate a complete production page from an arbitrary business brief. |
-| Document lifecycle | `document create`, `document rename`, `document move`, `document archive` | Implemented | Structure maintenance exists. Archive requires confirmation; no physical delete. |
-| Template lifecycle | `template create`, `template status` | Implemented | Template records exist; full template version approval workflow is still missing. |
-| Blocks | `block append`, `block update`, `block archive`, `block remove`, `block reorder` | Implemented | Agent-first document editing primitives. Drag/drop editor is not the priority path. |
+| Document lifecycle (Block-era) | `document create`, `document rename`, `document move`, `document archive` | Superseded in part | Page/document creation and content now belong to Pages v2; rename/move/archive remain only here until v2 stage R1 lands (spec §13). |
+| Template lifecycle | `template create`, `template status` | Implemented | Template records exist; full template version approval workflow is still missing. Template handling under v2 is decided at retirement stage R1. |
+| Blocks (Block-era) | `block append`, `block update`, `block archive`, `block remove`, `block reorder` | Superseded | Replaced for page content by Pages v2 full-page writes; retired at stage R3 (spec §13). |
 | Typed records | `typed-record append`, `typed-record update`, `typed-record validate` | Implemented | Core structured memory primitive. |
 | Views | `view create`, `view update` | Partial | Basic view records exist. Advanced view editing, calendar/chart views and complex field configuration are still missing. |
 | Relations | `relation link`, `relation unlink`, `relation relink`, `relation repair-missing` | Implemented | Native relation maintenance across Docs and adjacent systems. `repair-missing` is definition/module-scoped, dry-run-first, confirmation-gated, and idempotent. |

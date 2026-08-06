@@ -1,9 +1,16 @@
 # Docs operating surface matrix
 
 ```text
-status: canonical Docs operating-surface audit
+status: canonical Docs operating-surface audit (page layer superseded)
 owner_role: Docs Governance Agent
 canonical_for: Docs page capabilities, CLI/skill coverage, visual evidence, and remaining implementation gaps
+superseded_note: >
+  Everything this matrix describes about page/document surfaces (Block-era
+  document/block/template commands, BasicDocumentPage, docs workspace) is
+  superseded for the parts implemented by the AI-first Docs v2 target: see
+  docs/company-os/ai-first-docs-spec.md (incl. the old-surface retirement
+  plan) and ADR 0054. Record-layer surfaces (modules, typed records, views,
+  relations, health) remain tracked here until migrated.
 ```
 
 This matrix answers whether the Company OS Docs surface can be operated as the
