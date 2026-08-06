@@ -5,11 +5,11 @@ description: Use when a Host Agent must create, resume, or re-plan a long-runnin
 
 # Orchestrate Missions
 
-This skill is a procedural capability, not product authority. Use the Harness CLI
+This skill is a procedural capability, not product authority. Use the Firm CLI
 as the complete authority path. Treat this Skill as a thin operating guide;
 canonical architecture, schemas, store state, and native Provider records win
 any conflict. After a compaction or whenever CLI syntax is
-uncertain, run `harness cheatsheet` first — never rediscover flags via repeated
+uncertain, run `firm cheatsheet` first — never rediscover flags via repeated
 `--help` calls or source greps.
 
 ## Keep One Small Mental Model
@@ -38,7 +38,7 @@ transitions are now recorded exclusively through Mission Log entries
 (`--kind judgment|replan|closeout_evidence`).
 
 Retired-object pointers:
-- `HARNESS_ORIGIN_WAVE_ID` is a compatibility-only environment variable (see
+- `FIRM_ORIGIN_WAVE_ID` is a compatibility-only environment variable (see
   Collaboration Envelope below).
 - `wave list|show|history` are historical read-only commands. They read
   compatibility records from pre-ADR-0051 runs but cannot create, mutate, or
@@ -77,7 +77,7 @@ Select exactly one top-level execution driver per MemberRun — see shared hard 
    interactions, Member/Supervisor health, and native-session bindings.
 2. **Orient.** Create or update Mission Markdown with the durable objective,
    constraints, decision boundary, and success standard.
-3. **Record judgment.** Append a Mission Log entry (`harness mission log
+3. **Record judgment.** Append a Mission Log entry (`firm mission log
    append --mission-id <id> --kind judgment --body <markdown>`) containing
    changed facts, composition decisions, important Work ids, carry-over, and
    evidence needed to advance. Log before you act on the judgment, never as
@@ -115,7 +115,7 @@ Select exactly one top-level execution driver per MemberRun — see shared hard 
 This policy governs how the Host loop above actually runs a wake cycle; it
 adds no new commands, only a discipline for the ones already listed.
 
-- **Per-wake kernel.** Block on `harness team-run wait --id <team-run-id>
+- **Per-wake kernel.** Block on `firm team-run wait --id <team-run-id>
   --after-seq <last-seq> --timeout-secs <bounded-seconds>`. On wake, drain
   everything pending in priority order before sleeping again: (1) the
   review queue first — `review` is non-terminal and blocks its owner's
@@ -146,14 +146,14 @@ adds no new commands, only a discipline for the ones already listed.
 List and inspect the board before allocating new work:
 
 ```bash
-harness team-run work list --team-run-id <team-run-id>
-harness team-run work show --work-id <work-id>
+firm team-run work list --team-run-id <team-run-id>
+firm team-run work show --work-id <work-id>
 ```
 
 Create an assigned Work:
 
 ```bash
-harness team-run work create \
+firm team-run work create \
   --team-run-id <team-run-id> \
   --title "<bounded responsibility>" \
   --context "<Markdown context and constraints>" \
@@ -166,7 +166,7 @@ harness team-run work create \
 Create a claimable shared-pool Work:
 
 ```bash
-harness team-run work create \
+firm team-run work create \
   --team-run-id <team-run-id> \
   --title "<ready responsibility>" \
   --context "<Markdown context>" \
@@ -190,7 +190,7 @@ terminal Work.
 Assign an existing open Work with optimistic concurrency:
 
 ```bash
-harness team-run work assign \
+firm team-run work assign \
   --work-id <work-id> \
   --member-run-id <member-run-id> \
   --expected-version <latest-version> \
@@ -206,7 +206,7 @@ the Work at the next safe boundary. Never silently interrupt active work.
 Start a Work-linked conversation:
 
 ```bash
-harness team-run send --id <team-run-id> \
+firm team-run send --id <team-run-id> \
   --from host --to <member-run-id> --kind message \
   --work-id <work-id> \
   --body "<question, clarification, plan request, or explanation>" --json
@@ -215,7 +215,7 @@ harness team-run send --id <team-run-id> \
 Reply to a specific message without changing Work state:
 
 ```bash
-harness team-run send --id <team-run-id> \
+firm team-run send --id <team-run-id> \
   --from host --to <member-run-id> --kind message \
   --work-id <work-id> \
   --body "<reply>" \
@@ -229,9 +229,9 @@ At Host safe boundaries, read the bound Lead Inbox. ACK means receipt, not
 semantic approval:
 
 ```bash
-harness team-run host-inbox \
+firm team-run host-inbox \
   --surface <provider-surface> --thread-id <native-host-task-id> --json
-harness team-run ack --id <team-run-id> \
+firm team-run ack --id <team-run-id> \
   --message-id <message-id> --member-id host
 ```
 
@@ -248,12 +248,12 @@ completion criteria and risk require. Empty artifact/check arrays are valid
 when the criteria need no such reference. Then choose exactly one:
 
 ```bash
-harness team-run work request-changes \
+firm team-run work request-changes \
   --work-id <work-id> --expected-version <latest-version> \
   --reason "<specific required change>" \
   --idempotency-key <stable-command-key>
 
-harness team-run work accept \
+firm team-run work accept \
   --work-id <work-id> --expected-version <latest-version> \
   --idempotency-key <stable-command-key>
 ```
@@ -265,7 +265,7 @@ Host acceptance moves Work to `done`. A reviewer Member may recommend but cannot
 - `idle`: assign or expose ready claimable Work.
 - `working`: queue new Work without interrupting the active turn.
 - `waiting interaction`: resolve the exact PendingInteraction before driving.
-- `crashed/disconnected`: run `harness team-run recover --id <run>` to adopt/restart
+- `crashed/disconnected`: run `firm team-run recover --id <run>` to adopt/restart
   the supervisor generation, reconcile stale deliveries, resume compatible native
   sessions, and rebind incompatible Works. Never run `team-run create` during
   recovery — recovery must rebind the existing run and Work ids, never mint
@@ -285,7 +285,7 @@ bounded read of its native session. Do not repeatedly poll full status or send
 duplicate Work. Prefer event waits:
 
 ```bash
-harness team-run wait --id <team-run-id> \
+firm team-run wait --id <team-run-id> \
   --after-seq <last-seq> --timeout-secs <bounded-seconds>
 ```
 
@@ -295,15 +295,15 @@ When `team-run status` or `team-run recover` shows no live supervisor:
 
 **L0 — Diagnose** (always start here):
 ```bash
-harness team-run status --id <team-run-id>
+firm team-run status --id <team-run-id>
 # Look for: supervisor current=false, pid_alive=false, heartbeat_age_s
 # Use --json for machine-readable diagnosis
-harness team-run status --id <team-run-id> --json | jq '.supervisor'
+firm team-run status --id <team-run-id> --json | jq '.supervisor'
 ```
 
 **L1 — Restart writer** (covers transient crash, lease expiry):
 ```bash
-harness team-run start --id <team-run-id>
+firm team-run start --id <team-run-id>
 ```
 
 **L2 — Kill wedged PID only** (when PID exists but not writing):
@@ -311,21 +311,21 @@ harness team-run start --id <team-run-id>
 # Identify the stuck PID from status output
 kill <pid>
 # Then restart
-harness team-run start --id <team-run-id>
+firm team-run start --id <team-run-id>
 ```
 
 **L3 — Per-member close/reopen** (when restart alone fails):
 ```bash
-harness team-run close-member --team-run-id <team-run-id> --member-run-id <member-run-id>
-harness team-run reopen-member --team-run-id <team-run-id> --member-run-id <member-run-id>
-harness team-run start --id <team-run-id>
+firm team-run close-member --team-run-id <team-run-id> --member-run-id <member-run-id>
+firm team-run reopen-member --team-run-id <team-run-id> --member-run-id <member-run-id>
+firm team-run start --id <team-run-id>
 ```
 
 **L4 — Nuclear recreate** (last resort, preserves Work ids via recover):
 ```bash
 # Stop all provider processes. Then:
-harness team-run recover --id <team-run-id>
-harness team-run start --id <team-run-id>
+firm team-run recover --id <team-run-id>
+firm team-run start --id <team-run-id>
 ```
 
 ### Quick Board Reads
@@ -333,9 +333,9 @@ harness team-run start --id <team-run-id>
 For bounded Host context, prefer these compact reads over full `work list`:
 
 ```bash
-harness team-run board-summary --id <team-run-id>
-harness team-run work list --team-run-id <team-run-id> --brief
-harness team-run work list --team-run-id <team-run-id> --since <cursor>
+firm team-run board-summary --id <team-run-id>
+firm team-run work list --team-run-id <team-run-id> --brief
+firm team-run work list --team-run-id <team-run-id> --since <cursor>
 ```
 
 `board-summary` prints a ≤500-character summary: open/in-progress/blocked/review/done/cancelled counts plus each Member's idle/working/awaiting-review state. `--brief` prints one plain-text line per Work. `--since` takes a monotonic cursor from a prior `list` response and returns only new or updated Works.
@@ -343,7 +343,7 @@ harness team-run work list --team-run-id <team-run-id> --since <cursor>
 To acknowledge all delivered manual-ack messages at once:
 
 ```bash
-harness team-run ack --id <team-run-id> --member-id host --all-delivered
+firm team-run ack --id <team-run-id> --member-id host --all-delivered
 ```
 
 ## Execution Driver Reference
@@ -372,22 +372,22 @@ The current separate StandingAgent record is a compatibility implementation; new
 
 ## Collaboration Envelope
 
-When the Host starts a Member run, the harness injects these environment variables into the Member's runtime:
+When the Host starts a Member run, the firm injects these environment variables into the Member's runtime:
 
 | Variable | Presence | Meaning |
 | --- | --- | --- |
-| `HARNESS_TEAM_RUN_ID` | Yes | The TeamRun this Member belongs to |
-| `HARNESS_MEMBER_RUN_ID` | Yes | This Member's own run identity |
-| `HARNESS_BIN` | Yes | Absolute path to the harness CLI binary |
-| `HARNESS_SPACE` | Yes | Current Execution Space |
-| `HARNESS_PROJECT` | Yes | Active Project Binding path |
-| `HARNESS_PROJECT_ID` | Yes | Active Project Binding id |
-| `HARNESS_MISSION_ID` | When Mission-scoped | The Mission this TeamRun serves |
-| `HARNESS_WORK_ID` | When delivered with Work | The Work id for the current delivery |
-| `HARNESS_WORK_VERSION` | When delivered with Work | The Work version for the current delivery |
-| `HARNESS_ORIGIN_WAVE_ID` | Historical | Deprecated; preserved for compatibility reads only |
+| `FIRM_TEAM_RUN_ID` | Yes | The TeamRun this Member belongs to |
+| `FIRM_MEMBER_RUN_ID` | Yes | This Member's own run identity |
+| `FIRM_BIN` | Yes | Absolute path to the firm CLI binary |
+| `FIRM_SPACE` | Yes | Current Execution Space |
+| `FIRM_PROJECT` | Yes | Active Project Binding path |
+| `FIRM_PROJECT_ID` | Yes | Active Project Binding id |
+| `FIRM_MISSION_ID` | When Mission-scoped | The Mission this TeamRun serves |
+| `FIRM_WORK_ID` | When delivered with Work | The Work id for the current delivery |
+| `FIRM_WORK_VERSION` | When delivered with Work | The Work version for the current delivery |
+| `FIRM_ORIGIN_WAVE_ID` | Historical | Deprecated; preserved for compatibility reads only |
 
-The Host must never infer a Member's identity from a display name; the injection binds identity. Member-side Work commands (`work claim`, `work start`, `work block`, `work submit`) validate `HARNESS_MEMBER_RUN_ID` against the collaboration envelope and reject calls where the bound value does not match.
+The Host must never infer a Member's identity from a display name; the injection binds identity. Member-side Work commands (`work claim`, `work start`, `work block`, `work submit`) validate `FIRM_MEMBER_RUN_ID` against the collaboration envelope and reject calls where the bound value does not match.
 
 ## Acceptance Checklist
 
@@ -408,7 +408,7 @@ Before claiming completion, prove from durable state:
 - carried Works retain identity across re-plans; and
 - the Host records explicit Mission Log judgment and Mission closeout.
 
-When developing Star Harness itself and the product contract is in question,
+When developing Firm itself and the product contract is in question,
 read canonical repository files `docs/product/agent-team-works.md`,
 `docs/decisions/0050-agent-team-work-board-and-message-boundary.md`,
 `docs/decisions/0051-single-intent-spine.md`, and

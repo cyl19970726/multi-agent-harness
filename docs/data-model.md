@@ -7,7 +7,7 @@ rules those fields must preserve.
 
 ## Vision Link
 
-Star Harness must turn durable intent into:
+Firm must turn durable intent into:
 
 ```text
 Mission -> ordered Host-plan Wave
@@ -127,7 +127,7 @@ read into native Mission/Wave projections or used as a reason to retain old UI.
 - `WorkDelivery` proves transport progression for a Work version. It does not
   prove that the Member started, submitted, or received Host acceptance.
 - Dashboard columns are read models; safe actions must create or update
-  canonical harness objects.
+  canonical firm objects.
 - Provider thread/session ids are native execution refs; they do not own
   assignment, Approval, outcome acceptance, or Wave gate state.
 - Normalized provider activity is an ephemeral read projection, not a Harness

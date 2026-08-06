@@ -1,6 +1,6 @@
 # Concept Model
 
-This document defines the canonical object relationships for Star Harness. It
+This document defines the canonical object relationships for Firm. It
 exists to prevent architecture drift: implementation may add fields, commands,
 and views, but it must not change the meaning of the core objects without
 updating this model first.
@@ -21,7 +21,7 @@ Mission <-> independent AgentTeam -> TeamRun -> MemberRun
   -> explicit Host advance -> Mission outcome
 ```
 
-The harness is the coordination and evidence system. Project-specific tools are
+The firm is the coordination and evidence system. Project-specific tools are
 connected through adapters.
 
 ## Active Vocabulary
@@ -154,7 +154,7 @@ be described with Agent Team semantics.
 
 Host execution is direct work by the resident Host Agent. The host may use
 provider-native subagents internally. Those subagents are optional observation
-targets, not canonical child records unless the harness actually controls them.
+targets, not canonical child records unless the firm actually controls them.
 
 ## Messages And Ownership
 
@@ -241,7 +241,7 @@ The target contract makes thinking transient live-only state.
 
 - It may be shown live when a provider exposes it.
 - It is bounded and sanitized.
-- It is never persisted in canonical harness history.
+- It is never persisted in canonical firm history.
 - It is never replayable state.
 - It is never execution evidence.
 - It is never forwarded into another member's context.
@@ -273,7 +273,7 @@ a mandatory object graph.
 
 ## Open-Enum Vocabularies
 
-Useful but workflow-flavored taxonomies remain open enums: harness defines a
+Useful but workflow-flavored taxonomies remain open enums: firm defines a
 canonical starter set in Rust, JSON keeps the field as `string`, and adapters
 may add values without a schema bump.
 
@@ -287,4 +287,4 @@ may add values without a schema bump.
 | `category` | Gap | `ux`, `data`, `observability`, `parity`, `tooling`, `workflow`, `docs`, `bug`, `other` |
 | `outcome` | outcome evaluation | `success`, `partial`, `failed`, `blocked` |
 
-Only truly closed, harness-owned sets should use hard JSON enums.
+Only truly closed, firm-owned sets should use hard JSON enums.

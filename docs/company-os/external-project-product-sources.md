@@ -91,10 +91,10 @@ Company OS should support two sync modes.
 
 An Agent, scheduled job, or GitHub connector runs a read-only sync against a
 registered repo and branch. The first implementation may call `git` and `gh`
-under the hood rather than adding new GitHub-specific Harness CLI commands:
+under the hood rather than adding new GitHub-specific Firm CLI commands:
 
 ```bash
-harness --project <current-compat-project-selector> \
+firm --project <current-compat-project-selector> \
   company docs source sync \
   --definition <software-source-page-definition-id> \
   --module <software-product-sources-module-id> \
@@ -281,7 +281,7 @@ repo-derived `ProjectContext` implementation:
 ```text
 Company OS project id: new-day-wanchengwanling
 project_root: /Users/hhh0x/new-day/wanchengwanling
-store_root: /Users/hhh0x/.harness/projects/new-day-wanchengwanling
+store_root: /Users/hhh0x/.firm/projects/new-day-wanchengwanling
 external software project id: wanchengwanling
 ```
 

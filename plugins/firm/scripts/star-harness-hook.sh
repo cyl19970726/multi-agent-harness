@@ -3,8 +3,8 @@
 set -uo pipefail
 
 payload="$(cat 2>/dev/null || true)"
-harness_bin="${HARNESS_BIN:-harness}"
-command -v "$harness_bin" >/dev/null 2>&1 || exit 0
+firm_bin="${FIRM_BIN:-harness}"
+command -v "$firm_bin" >/dev/null 2>&1 || exit 0
 
 hook_fields="$(
   HOOK_PAYLOAD="$payload" python3 - 2>/dev/null <<'PY'
@@ -44,24 +44,24 @@ case "$host_surface" in
   codex-app|codex*) hook_provider="codex" ;;
   claude-code|claude*) hook_provider="claude" ;;
   kimi-cli|kimi*) hook_provider="kimi" ;;
-  *) hook_provider="${HARNESS_PROVIDER:-codex}" ;;
+  *) hook_provider="${FIRM_PROVIDER:-codex}" ;;
 esac
 
-# Export star-harness host binding so downstream `harness team-run create` /
-# `harness team-run start` can auto-bind when these env vars are present and
+# Export firm host binding so downstream `firm team-run create` /
+# `firm team-run start` can auto-bind when these env vars are present and
 # unambiguous. Hook subprocesses inherit them; the user's shell must source
 # them separately for standalone CLI use.
-export STAR_HARNESS_HOST_SURFACE="$host_surface"
-export STAR_HARNESS_HOST_THREAD_ID="$session_id"
+export STAR_FIRM_HOST_SURFACE="$host_surface"
+export STAR_FIRM_HOST_THREAD_ID="$session_id"
 
 # Forward bound lifecycle events to Harness. Core ingestion owns sanitization;
 # unbound raw hook payloads are deliberately not persisted by this plugin.
-if [[ -n "${HARNESS_AGENT_MEMBER_ID:-}" ]]; then
-  args=(hook record --provider "$hook_provider" --agent "$HARNESS_AGENT_MEMBER_ID")
-  if [[ -n "${HARNESS_AGENT_RUNTIME_ID:-}" ]]; then
-    args+=(--runtime "$HARNESS_AGENT_RUNTIME_ID")
+if [[ -n "${FIRM_AGENT_MEMBER_ID:-}" ]]; then
+  args=(hook record --provider "$hook_provider" --agent "$FIRM_AGENT_MEMBER_ID")
+  if [[ -n "${FIRM_AGENT_RUNTIME_ID:-}" ]]; then
+    args+=(--runtime "$FIRM_AGENT_RUNTIME_ID")
   fi
-  printf '%s' "$payload" | "$harness_bin" "${args[@]}" >/dev/null 2>&1 || true
+  printf '%s' "$payload" | "$firm_bin" "${args[@]}" >/dev/null 2>&1 || true
   # Codex Stop requires JSON stdout. A Member owns its own Inbox and must never
   # receive the Lead Inbox simply because both use the same provider plugin.
   if [[ "$event_name" == "Stop" && -n "$turn_id" ]]; then
@@ -71,14 +71,14 @@ if [[ -n "${HARNESS_AGENT_MEMBER_ID:-}" ]]; then
 fi
 
 # External interactive Member inbox push. A user-driven interactive session
-# (execution_mode=external_interactive) binds with HARNESS_TEAM_RUN_ID +
-# HARNESS_MEMBER_RUN_ID and receives its queued coordination mail as native
+# (execution_mode=external_interactive) binds with FIRM_TEAM_RUN_ID +
+# FIRM_MEMBER_RUN_ID and receives its queued coordination mail as native
 # context; Harness never drives this Member, so this hook is its only push
-# channel. Driven Members (HARNESS_AGENT_MEMBER_ID above) own their inbox
+# channel. Driven Members (FIRM_AGENT_MEMBER_ID above) own their inbox
 # through the Supervisor and must never enter this branch.
-if [[ -n "${HARNESS_MEMBER_RUN_ID:-}" ]]; then
-  member_run_id="$HARNESS_MEMBER_RUN_ID"
-  team_run_id="${HARNESS_TEAM_RUN_ID:-}"
+if [[ -n "${FIRM_MEMBER_RUN_ID:-}" ]]; then
+  member_run_id="$FIRM_MEMBER_RUN_ID"
+  team_run_id="${FIRM_TEAM_RUN_ID:-}"
   if [[ -z "$team_run_id" || -z "$session_id" ]]; then
     # Without the run binding or native identity there is no safe mailbox to
     # inject, so fail open rather than reading every run.
@@ -105,7 +105,7 @@ if [[ -n "${HARNESS_MEMBER_RUN_ID:-}" ]]; then
   # Environment variables are routing hints, not proof that this session owns
   # an external MemberRun. Verify the durable binding before reading any mail
   # so a stale or mistyped id cannot intake a driven Member's Inbox.
-  member_detail_json="$("$harness_bin" member-run show \
+  member_detail_json="$("$firm_bin" member-run show \
     --id "$member_run_id" --json 2>/dev/null)" || {
     if [[ "$event_name" == "Stop" && -n "$turn_id" ]]; then
       printf '{}\n'
@@ -140,7 +140,7 @@ PY
     exit 0
   fi
 
-  member_inbox_json="$("$harness_bin" team-run inbox \
+  member_inbox_json="$("$firm_bin" team-run inbox \
     --id "$team_run_id" --member-run-id "$member_run_id" --json 2>/dev/null)" || {
     if [[ "$event_name" == "Stop" && -n "$turn_id" ]]; then
       printf '{}\n'
@@ -188,7 +188,7 @@ if not messages:
 team_run_id = os.environ.get("TEAM_RUN_ID", "?")
 member_run_id = os.environ.get("MEMBER_RUN_ID", "?")
 lines = [
-    "Star Harness Member Inbox received new coordination mail while this Member was busy.",
+    "Firm Member Inbox received new coordination mail while this Member was busy.",
     "Process it now in the same native task. Read the full message before deciding; "
     "reply in its correlation when needed, then ACK only after it has entered your working context.",
 ]
@@ -202,10 +202,10 @@ for message in messages[:5]:
         f"correlation={message.get('correlation_id', '?')}: {body}"
     )
 if len(messages) > 5:
-    lines.append(f"- ... and {len(messages) - 5} more; use `harness team-run inbox "
+    lines.append(f"- ... and {len(messages) - 5} more; use `firm team-run inbox "
                  f"--id {team_run_id} --member-run-id {member_run_id} --json`.")
 lines.append(
-    f"Use `harness team-run ack --id {team_run_id} --message-id <message-id> "
+    f"Use `firm team-run ack --id {team_run_id} --message-id <message-id> "
     f"--member-id {member_run_id}` after intake. Do not treat transport ACK as semantic acceptance."
 )
 print(json.dumps({"decision": "block", "reason": "\n".join(lines)}))
@@ -251,10 +251,10 @@ messages = [m for m in entries if isinstance(m, dict)] if isinstance(entries, li
 team_run_id = os.environ.get("TEAM_RUN_ID", "?")
 member_run_id = os.environ.get("MEMBER_RUN_ID", "?")
 if os.environ.get("SHOW_BINDING") == "1":
-    print(f"[star-harness] External member binding: team_run={team_run_id} member_run={member_run_id}")
+    print(f"[firm] External member binding: team_run={team_run_id} member_run={member_run_id}")
 if not messages:
     raise SystemExit(0)
-print(f"[star-harness] Member mail: TeamRun={team_run_id} pending_member_messages={len(messages)}")
+print(f"[firm] Member mail: TeamRun={team_run_id} pending_member_messages={len(messages)}")
 for message in messages[:3]:
     body = re.sub(r"\s+", " ", str(message.get("body", ""))).strip()
     if len(body) > 120:
@@ -267,7 +267,7 @@ for message in messages[:3]:
 if len(messages) > 3:
     print(f"- ... and {len(messages) - 3} more")
 print(
-    f"  read with `harness team-run inbox --id {team_run_id} "
+    f"  read with `firm team-run inbox --id {team_run_id} "
     f"--member-run-id {member_run_id} --json`; ACK only after intake"
 )
 PY
@@ -298,7 +298,7 @@ if [[ -z "$session_id" ]]; then
   exit 0
 fi
 
-inbox_json="$("$harness_bin" team-run host-inbox \
+inbox_json="$("$firm_bin" team-run host-inbox \
   --surface "$host_surface" --thread-id "$session_id" --json 2>/dev/null)" || {
   if [[ "$event_name" == "Stop" && -n "$turn_id" ]]; then
     printf '{}\n'
@@ -343,7 +343,7 @@ if not messages:
     raise SystemExit(0)
 
 lines = [
-    "Star Harness Host Inbox received new coordination mail while this Host was busy.",
+    "Firm Host Inbox received new coordination mail while this Host was busy.",
     "Process it now in the same native task. Read the full message before deciding; "
     "reply in its correlation when needed, then ACK only after it has entered your working context.",
 ]
@@ -357,11 +357,11 @@ for run_id, message in messages[:5]:
         f"correlation={message.get('correlation_id', '?')}: {body}"
     )
 if len(messages) > 5:
-    lines.append(f"- ... and {len(messages) - 5} more; use `harness team-run host-inbox "
+    lines.append(f"- ... and {len(messages) - 5} more; use `firm team-run host-inbox "
                  f"--surface {os.environ.get('HOST_SURFACE', '?')} "
                  f"--thread-id <session-id> --json`.")
 lines.append(
-    "Use `harness team-run ack --id <team-run-id> --message-id <message-id> "
+    "Use `firm team-run ack --id <team-run-id> --message-id <message-id> "
     "--member-id host` after intake. Do not treat transport ACK as semantic acceptance."
 )
 print(json.dumps({"decision": "block", "reason": "\n".join(lines)}))
@@ -408,13 +408,13 @@ if not isinstance(entries, list):
 surface = os.environ.get("HOST_SURFACE", "?")
 session_id = os.environ.get("HOST_SESSION_ID", "?")
 if os.environ.get("SHOW_BINDING") == "1":
-    print(f"[star-harness] Host native binding: surface={surface} thread={session_id}")
+    print(f"[firm] Host native binding: surface={surface} thread={session_id}")
     print(
         "  New TeamRuns must use `--host-surface "
         + surface
         + " --host-thread-id "
         + session_id
-        + "`; bind an existing run with `harness team-run bind-host`."
+        + "`; bind an existing run with `firm team-run bind-host`."
     )
 
 for entry in entries:
@@ -424,7 +424,7 @@ for entry in entries:
     messages = entry.get("messages", [])
     if not isinstance(messages, list) or not messages:
         continue
-    print(f"[star-harness] Needs you: TeamRun={run_id} pending_host_messages={len(messages)}")
+    print(f"[firm] Needs you: TeamRun={run_id} pending_host_messages={len(messages)}")
     for message in messages[:3]:
         if not isinstance(message, dict):
             continue
@@ -439,7 +439,7 @@ for entry in entries:
     if len(messages) > 3:
         print(f"- ... and {len(messages) - 3} more")
     print(
-        "  read with `harness team-run inbox --id "
+        "  read with `firm team-run inbox --id "
         + run_id
         + " --member-run-id host --json`; ACK only after intake"
     )

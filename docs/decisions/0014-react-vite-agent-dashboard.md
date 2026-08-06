@@ -9,7 +9,7 @@
 
 Use React, TypeScript, and Vite for the Agent Dashboard frontend.
 
-Keep the Rust CLI/API as the source of truth for harness state. The frontend
+Keep the Rust CLI/API as the source of truth for firm state. The frontend
 may derive read-model warnings for operator visibility, but stable acceptance
 rules must move into schemas, Rust code, CLI/API, or CI gates before they are
 treated as canonical.
@@ -44,7 +44,7 @@ The Dashboard source should be split by responsibility:
 
 ```text
 apps/agent-dashboard/src/
-  types.ts          # snapshot and harness read-model types
+  types.ts          # snapshot and firm read-model types
   readModel.ts      # UI-only derived view and warning helpers
   api.ts            # live snapshot loading
   components/       # panels, boards, lists, controls

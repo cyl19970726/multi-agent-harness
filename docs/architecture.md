@@ -2,11 +2,11 @@
 
 ## Product Boundary
 
-Star Harness is the coordination product. A business project is a tool
+Firm is the coordination product. A business project is a tool
 environment connected through an adapter.
 
 ```text
-Star Harness
+Firm
   Mission intent / Host-plan Waves / team relations
   Agent Team control plane / durable Team Supervisor / typed mail
   Dynamic Workflow runtime
@@ -124,7 +124,7 @@ Use Host execution when the resident Host Agent does work directly. The host may
 its provider's native subagents internally. Those subagents are host/provider
 implementation detail unless optional hooks expose observable delegation facts.
 
-The harness should record observable inputs, outputs, artifacts, and decisions,
+The firm should record observable inputs, outputs, artifacts, and decisions,
 not invent canonical child records for provider-native helpers it does not
 control.
 
@@ -157,7 +157,7 @@ The target contract makes thinking transient live-only state.
 
 - It may appear in a live host UI or SSE stream when a provider exposes it.
 - It is bounded and sanitized.
-- It is never persisted as canonical harness history.
+- It is never persisted as canonical firm history.
 - It is never replayable state.
 - It is never execution evidence.
 - It is never forwarded into another member's context.

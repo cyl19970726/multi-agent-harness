@@ -9,7 +9,7 @@ canonical_for: least-privilege Company Action authority for bound Standing Agent
 ## Current truth and target boundary
 
 Today Company OS write transport is protected by the service-side
-`HARNESS_COMPANY_OS_TOKEN`. The Action dispatcher separately checks an active
+`FIRM_COMPANY_OS_TOKEN`. The Action dispatcher separately checks an active
 Company Actor, the server-owned Action policy, the Actor's permission refs,
 scope, risk, and any required Human Approval. Successful dispatch preserves
 policy-authorized and terminal AuditEvents. The transport token is still one
@@ -21,7 +21,7 @@ broker defined below are **target contracts only**. They do not exist in the
 current schemas, Store, API, CLI, Dashboard, skills, or plugins. Until those
 surfaces and their acceptance checks exist, a StandingAgent, AgentMember,
 MemberRun, or provider-native session must not receive
-`HARNESS_COMPANY_OS_TOKEN` and must not be described as holding brokered
+`FIRM_COMPANY_OS_TOKEN` and must not be described as holding brokered
 Company write authority.
 
 The broker adds a narrow authorization path; it does not replace the Action
@@ -137,7 +137,7 @@ scope.
 The target member-facing operation is one broker call:
 
 ```bash
-harness company authority dispatch \
+firm company authority dispatch \
   --grant <scoped-permission-grant-id> \
   --assignment <company-assignment-id> \
   --action-command <action-command-json>
@@ -148,7 +148,7 @@ There are no flags for the root token, MemberRun identity, native-session id,
 or Supervisor generation. The Company-side broker owns the root transport
 credential, validates the request, dispatches at most one canonical
 ActionCommand, consumes the internal lease, and returns a non-secret receipt.
-It never returns, logs, or injects `HARNESS_COMPANY_OS_TOKEN`.
+It never returns, logs, or injects `FIRM_COMPANY_OS_TOKEN`.
 
 Every request returns one durable `CapabilityLeaseReceipt`, including a denial:
 
@@ -337,7 +337,7 @@ named by the grant.
    ActionCommands, `PolicyDenied`, generation fencing, and atomic receipt/audit
    writes.
 2. Add the Supervisor-bound Company broker and one
-   `harness company authority dispatch` client command without exposing the
+   `firm company authority dispatch` client command without exposing the
    root token.
 3. Implement only the one exact proof-specific `in_progress -> in_review`
    ActionCommand payload and Human R3 activation; add deterministic allow,

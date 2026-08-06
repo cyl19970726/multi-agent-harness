@@ -12,7 +12,7 @@ contracts fit together and which layer owns each decision.
 
 ## Product mission
 
-Star Harness is an AI Company OS for turning durable company context into
+Firm is an AI Company OS for turning durable company context into
 governed work and returning accepted outcomes to company memory. Its two
 primary product systems are **Docs** and **Organization**. Work and Finance are
 first-class operating systems connected to them. AgentOS is the programmable
@@ -126,7 +126,7 @@ Works, Organization, Finance, and launch readiness around that application.
 The integration contract is [External Project Product Sources](external-project-product-sources.md).
 Under ADR 0042, the Git repository is a Project Binding and/or external source,
 not the owner of the Company Store. One Agent Company Workspace may contain
-multiple operating areas, such as Wanchengwanling and AgentOS / Star Harness,
+multiple operating areas, such as Wanchengwanling and AgentOS / Firm,
 while mapping several repositories.
 
 ## AgentOS plugin and connector layer
@@ -146,7 +146,7 @@ platform-specific core commands. A plugin can package:
   evidence, fallback views, and policy gates.
 
 This layer is the right place for GitHub, WeCom, Xiaohongshu, Douyin, WeChat
-Channels, ecommerce, logistics, and future integrations. The core `harness`
+Channels, ecommerce, logistics, and future integrations. The core `firm`
 CLI may provide generic Company OS object and Action commands plus a small
 readiness/bootstrap probe, but it should not hard-code platform page flows,
 API quirks, or business-specific automation. Whether an operation is invoked

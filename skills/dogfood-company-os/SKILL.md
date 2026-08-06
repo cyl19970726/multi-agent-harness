@@ -52,10 +52,10 @@ Load only the focused Skills needed for the current cycle.
 Select Company Store truth independently from execution source code:
 
 ```bash
-harness company current
-harness --company <company-id> company docs query --document <root-document-id>
-harness --company <company-id> company work list
-harness --company <company-id> company org list
+firm company current
+firm --company <company-id> company docs query --document <root-document-id>
+firm --company <company-id> company work list
+firm --company <company-id> company org list
 ```
 
 A Company Store may bind several repositories. A Git worktree is an execution
@@ -262,7 +262,7 @@ installed:
   requested-vs-effective `provider_controls` receipt before trusting the lane;
   a recorded alias alone is never proof of the model actually used.
 - Claude (`claude_agent_sdk`) may join only while its installed SDK version is
-  reviewed: `harness member providers --fail-on-review` must be green. An
+  reviewed: `firm member providers --fail-on-review` must be green. An
   unreviewed SDK is `review_required` and stays out of dogfood lanes.
 - Codex providers are not dogfood execution members. Historical Codex runs are
   read-only evidence, and bounded `codex_exec` paths stay inside Dynamic

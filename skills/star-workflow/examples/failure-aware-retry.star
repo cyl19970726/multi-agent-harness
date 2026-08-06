@@ -5,7 +5,7 @@
 # fallback or abort path deliberately.
 #
 # Run:
-#   harness workflow run-script ./failure-aware-retry.star \
+#   firm workflow run-script ./failure-aware-retry.star \
 #     --args '{"target":"checkout flow","primary_timeout_s":120}'
 
 workflow(

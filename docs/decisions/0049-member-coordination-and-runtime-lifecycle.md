@@ -80,7 +80,7 @@ that needs the actor again must create a new MemberRun and Assignment.
 
 ### External interactive members
 
-For `external_interactive`, Close and Reopen apply only to the Harness
+For `external_interactive`, Close and Reopen apply only to the Firm
 coordination binding. Harness does not stop, restart, or prove continuity of
 the user's external process or conversation. Reopen still preserves the same
 MemberRun, correlation history, and frozen Harness mailbox; provider history

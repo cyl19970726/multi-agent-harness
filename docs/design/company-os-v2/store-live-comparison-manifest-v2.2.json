@@ -2,17 +2,17 @@
   "contract": "company-os-v2-2-store-live-comparison-v1",
   "status": "human_review_pending",
   "source_capture": ".visual-evidence/company-os-v2/company-os-v2-2-live-acceptance/capture-run.json",
-  "source_store_archive": ".visual-evidence/company-os-v2/company-os-v2-2-live-acceptance/archived-harness-home",
+  "source_store_archive": ".visual-evidence/company-os-v2/company-os-v2-2-live-acceptance/archived-firm-home",
   "source_snapshot": ".visual-evidence/company-os-v2/company-os-v2-2-live-acceptance/live-company-os-snapshot.json",
   "project_id": "proj-36fb21564ebf16b5",
   "store_source": {
     "authoritative": true,
-    "kind": "harness_store",
+    "kind": "firm_store",
     "project_id": "proj-36fb21564ebf16b5",
     "projection": "latest_row_wins",
     "revision": "fnv1a64:8d042bc6e5785769",
     "schema": "company-os/v1",
-    "store_root": "/var/folders/97/6ydtlhlx7750tcl9pk4kfx100000gn/T/company-os-v1-live-tV0vb0/home/.harness/projects/proj-36fb21564ebf16b5"
+    "store_root": "/var/folders/97/6ydtlhlx7750tcl9pk4kfx100000gn/T/company-os-v1-live-tV0vb0/home/.firm/projects/proj-36fb21564ebf16b5"
   },
   "counts": {
     "current_before": 6,
@@ -48,7 +48,7 @@
       "store_live_actual": {
         "file": "store-live-actual/home--morning-operating-review--desktop.png",
         "sha256": "sha256:95465c702ce92a538f670cd69f088759b4743d0f53671768fbefa73f5ebd77bb",
-        "truth": "V2.2 browser implementation from authority-labelled Harness Store projection"
+        "truth": "V2.2 browser implementation from authority-labelled Firm Store projection"
       }
     },
     {
@@ -72,7 +72,7 @@
       "store_live_actual": {
         "file": "store-live-actual/docs--company-knowledge-workspace--desktop.png",
         "sha256": "sha256:400cb646ea11f569b65dedaa1b18f96e0a84017764c1df880bfea4b9d2b6cb6f",
-        "truth": "V2.2 browser implementation from authority-labelled Harness Store projection"
+        "truth": "V2.2 browser implementation from authority-labelled Firm Store projection"
       }
     },
     {
@@ -96,7 +96,7 @@
       "store_live_actual": {
         "file": "store-live-actual/organization--lead-first-company--desktop.png",
         "sha256": "sha256:74172a37a3b2197d4c85491f3cf9257cc243c06bf29250c123ad96900a1ae6bd",
-        "truth": "V2.2 browser implementation from authority-labelled Harness Store projection"
+        "truth": "V2.2 browser implementation from authority-labelled Firm Store projection"
       }
     },
     {
@@ -120,7 +120,7 @@
       "store_live_actual": {
         "file": "store-live-actual/lead-agent--coordinating-direct-reports--desktop.png",
         "sha256": "sha256:174d3c6eff9e85abb5caf35e83e32cc08b46e901f69ac914b1a689727a54d71f",
-        "truth": "V2.2 browser implementation from authority-labelled Harness Store projection"
+        "truth": "V2.2 browser implementation from authority-labelled Firm Store projection"
       }
     },
     {
@@ -144,7 +144,7 @@
       "store_live_actual": {
         "file": "store-live-actual/business-module--trademark-operations--desktop.png",
         "sha256": "sha256:76e7133d2f6e46190da5405ee7fde6241f33c4a155b7201023a33d9c3c8d43b2",
-        "truth": "V2.2 browser implementation from authority-labelled Harness Store projection"
+        "truth": "V2.2 browser implementation from authority-labelled Firm Store projection"
       }
     },
     {
@@ -168,7 +168,7 @@
       "store_live_actual": {
         "file": "store-live-actual/work--milestones-and-workitems--desktop.png",
         "sha256": "sha256:7b16be8aec46c44597b1356610493abc43a8f2d686c8844f8eef50f752dfa956",
-        "truth": "V2.2 browser implementation from authority-labelled Harness Store projection"
+        "truth": "V2.2 browser implementation from authority-labelled Firm Store projection"
       }
     }
   ]

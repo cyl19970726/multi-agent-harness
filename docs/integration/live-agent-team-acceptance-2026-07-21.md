@@ -16,10 +16,10 @@ canonical_for: first native Codex + Kimi AgentTeamRun acceptance and interrupted
 
 ## 2026-07-30 consecutive persistent-Team release acceptance
 
-Mission `mission-star-harness-dogfood-20260729-v1` ran the canonical
+Mission `mission-firm-dogfood-20260729-v1` ran the canonical
 [Agent Team Dogfood Loop](../product/agent-team-dogfood-loop.md) against the
 trusted-development profile. The accepted live execution tree used Company
-Store `agent-company`, Execution Space `star-harness-dogfood`, Project Binding
+Store `agent-company`, Execution Space `firm-dogfood`, Project Binding
 `multi-agent-harness`, and repository integration HEAD `1895f5f` before the
 final clean rebase onto `master`.
 
@@ -133,7 +133,7 @@ Team modes after the single-execution-driver change.
 | Provider mode | TeamRun / MemberRun | Native session | Accepted facts |
 | --- | --- | --- | --- |
 | Codex `codex_app_server` 0.145.0 | `team-run-1785228644132-p55579-0` / `member-run-1785228644132-p55579-1` | `019fa7eb-9d46-7160-b2d9-a894c66c906d` | two Host rounds on one thread, host-driven execution, explicit Host close |
-| Claude `claude_agent_sdk` 2.1.220 | `team-run-1785230417407-p72711-0` / `member-run-1785230417407-p72711-1` | `ec91628d-a514-4d40-ae9c-7f73ecf3c40f` | exact `HARNESS_BIN`, correct project/store resolution, handoff, second-round continuation, explicit Host close, SDK `listSessions` discovery |
+| Claude `claude_agent_sdk` 2.1.220 | `team-run-1785230417407-p72711-0` / `member-run-1785230417407-p72711-1` | `ec91628d-a514-4d40-ae9c-7f73ecf3c40f` | exact `FIRM_BIN`, correct project/store resolution, handoff, second-round continuation, explicit Host close, SDK `listSessions` discovery |
 | Kimi `kimi_acp` 0.29.1 | `team-run-1785230571586-p78529-0` / `member-run-1785230571586-p78529-1` | none | requested `k2.5` rejected before bind because that alias is absent from operator configuration |
 
 The Kimi attempt is blocked evidence, not an accepted provider canary. Harness
@@ -148,9 +148,9 @@ claims provider-native storage and resume, not Desktop sidebar visibility.
 
 The live run also exposed and fixed an execution-root edge case: a `serve`
 started from an unregistered external worktree must retain its exact
-`ProjectContext`; nested Member commands use `HARNESS_PROJECT` as an executable
-root selector and `HARNESS_PROJECT_ID` as identity. Members invoke the Host's
-exact `HARNESS_BIN`, not a stale binary found on `PATH`.
+`ProjectContext`; nested Member commands use `FIRM_PROJECT` as an executable
+root selector and `FIRM_PROJECT_ID` as identity. Members invoke the Host's
+exact `FIRM_BIN`, not a stale binary found on `PATH`.
 
 One correlation defect remains deliberately assigned to the following Wave:
 second-round handoff causation must name the triggering follow-up message rather
@@ -214,7 +214,7 @@ resume and Codex/Kimi cooperative interruption.
 
 On 2026-07-22 the installed Codex CLI had advanced to
 `0.145.0-alpha.27`, while the reviewed live acceptance above remains pinned to
-`0.145.0-alpha.18`. `harness member providers --fail-on-review` therefore
+`0.145.0-alpha.18`. `firm member providers --fail-on-review` therefore
 reported Codex as `review_required`, exactly as ADR 0031 requires. This does not
 invalidate the historical run, and it is not permission to add alpha.27 to the
 reviewed set without mode-specific protocol and live acceptance. Installed
@@ -224,7 +224,7 @@ Claude `2.1.181` and Kimi `0.27.0` still probed as `current` in the same audit.
 
 This record proves real provider transport and native Store reconstruction. It
 does not claim that a deterministic fixture is live evidence, that assignment
-receipt validates file contents, or that the Harness controls provider-native
+receipt validates file contents, or that the Firm controls provider-native
 subagents.
 
 - Mission: `mission-1784634958783-p62756-0`

@@ -55,8 +55,8 @@ action, not a replacement execution history.
 Use focused Rust tests while iterating on one slice:
 
 ```bash
-cargo test -p harness-cli --test mcp_stdio --test team_run_start -- --test-threads=1
-cargo test -p harness-cli --test team_run_api \
+cargo test -p firm-cli --test mcp_stdio --test team_run_start -- --test-threads=1
+cargo test -p firm-cli --test team_run_api \
   persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_completion \
   -- --test-threads=1
 ```
@@ -75,20 +75,20 @@ Validate the repository's unified Harness/Plugin source and compare it with the
 local installation:
 
 ```bash
-pnpm star-harness:install:check
+pnpm firm:install:check
 ```
 
 After the source commit is accepted and published in the repository
 marketplace, install it with:
 
 ```bash
-pnpm star-harness:install
+pnpm firm:install
 ```
 
-This builds a versioned Harness binary, updates the stable binary link,
+This builds a versioned Firm binary, updates the stable binary link,
 converges Codex and Claude on the Git marketplace copy, removes the duplicate
 Codex personal copy, and records the installation under
-`~/.local/state/star-harness/installations/`. Start new Codex and Claude
+`~/.local/state/firm/installations/`. Start new Codex and Claude
 sessions after applying it. Existing sessions keep the Plugin and Provider
 runtime they already loaded.
 
@@ -100,7 +100,7 @@ window is:
    and exact rollback;
 3. leave active MemberRuns/native sessions on the current runtime;
 4. install the candidate for new sessions and run
-   `harness member providers --fail-on-review`;
+   `firm member providers --fail-on-review`;
 5. run the mode-specific deterministic acceptance and one proportional live
    canary;
 6. promote the reviewed version only after green evidence, otherwise roll back
@@ -112,7 +112,7 @@ and it never upgrades several Providers in one review window.
 
 ### Rolling Reconciliation After Master Merges
 
-A necessary master merge that changes the Harness binary, adapter, protocol,
+A necessary master merge that changes the Firm binary, adapter, protocol,
 permission, model-control, Plugin, or Skill contract triggers rolling
 Supervisor reconciliation of live dogfood runtimes before new Team work
 starts:
@@ -135,7 +135,7 @@ The dogfood execution roster is deliberate: Kimi `kimi_acp` with the reviewed
 K3 model alias at `max` thinking effort is primary (verify the MemberRun
 requested-vs-effective `provider_controls` receipt); Claude `claude_agent_sdk`
 joins only while its installed SDK passes
-`harness member providers --fail-on-review`; Codex providers are not dogfood
+`firm member providers --fail-on-review`; Codex providers are not dogfood
 execution members. Each member also runs under a strict research budget: one
 evidence pass over the Work, owned paths, and directly linked records,
 then produce deliverables or report a blocked verdict with the exact missing
@@ -155,25 +155,25 @@ of the active command surface.
 Start the operator surface with an explicit Workspace selection:
 
 ```bash
-harness serve --addr 127.0.0.1:8787
+firm serve --addr 127.0.0.1:8787
 ```
 
 The current Mission/Team authoring path is available through Cargo:
 
 ```bash
-cargo run -p harness-cli -- --help
-cargo run -p harness-cli -- init
-cargo run -p harness-cli -- mission create --title <title> --objective <objective> --context "<mission-markdown>"
-cargo run -p harness-cli -- mission create-team --id <mission-id> --name <team-name> --description <purpose> --lead host
-cargo run -p harness-cli -- wave create --mission-id <mission-id> --title <title> --objective <objective> --context "<wave-markdown>"
-cargo run -p harness-cli -- team-run create --mission-id <mission-id> \
+cargo run -p firm-cli -- --help
+cargo run -p firm-cli -- init
+cargo run -p firm-cli -- mission create --title <title> --objective <objective> --context "<mission-markdown>"
+cargo run -p firm-cli -- mission create-team --id <mission-id> --name <team-name> --description <purpose> --lead host
+cargo run -p firm-cli -- wave create --mission-id <mission-id> --title <title> --objective <objective> --context "<wave-markdown>"
+cargo run -p firm-cli -- team-run create --mission-id <mission-id> \
   --agent-team-id <team-id> --objective <objective> \
   --member-owned-path <member-name>:crates
-cargo run -p harness-cli -- team-run start --id <team-run-id>
-cargo run -p harness-cli -- wave advance --id <wave-id> --outcome "<host-decision>" --advanced-by host
-cargo run -p harness-cli -- wave create --mission-id <mission-id> --title <next-title> --objective <next-objective> --context "<next-wave-markdown>"
-cargo run -p harness-cli -- dashboard snapshot
-cargo run -p harness-cli -- serve --addr 127.0.0.1:8787
+cargo run -p firm-cli -- team-run start --id <team-run-id>
+cargo run -p firm-cli -- wave advance --id <wave-id> --outcome "<host-decision>" --advanced-by host
+cargo run -p firm-cli -- wave create --mission-id <mission-id> --title <next-title> --objective <next-objective> --context "<next-wave-markdown>"
+cargo run -p firm-cli -- dashboard snapshot
+cargo run -p firm-cli -- serve --addr 127.0.0.1:8787
 ```
 
 Omit ad-hoc `--member` overrides when starting from a reusable AgentTeam
@@ -185,14 +185,14 @@ authority.
 Select the Execution Space and Project Binding explicitly:
 
 ```bash
-harness space switch <execution-space-id>
-harness project switch <project-binding-id>
+firm space switch <execution-space-id>
+firm project switch <project-binding-id>
 ```
 
-`--space` / `HARNESS_SPACE` selects Mission/Wave, Agent Team, Workflow, and
-coordination storage. `--project` / `HARNESS_PROJECT` independently selects
+`--space` / `FIRM_SPACE` selects Mission/Wave, Agent Team, Workflow, and
+coordination storage. `--project` / `FIRM_PROJECT` independently selects
 provider cwd, project instructions, Skills, Git/worktree, and permission
-boundaries. `--store` / `HARNESS_ROOT` remains a deprecation-warned
+boundaries. `--store` / `FIRM_ROOT` remains a deprecation-warned
 compatibility override. Provider transcripts, tool streams, command output,
 and turns remain in the provider's native store and are joined through
 `NativeSessionRef`.
@@ -244,7 +244,7 @@ of mutating dashboard-only state.
 
 Bind the API to `127.0.0.1` for normal local use. It sends permissive CORS
 headers so a static Dashboard file can read it; do not bind it to a public
-interface unless that harness store is intentionally shareable.
+interface unless that firm store is intentionally shareable.
 
 `review gate --decision accept` is evidence-hardened by default. It rejects:
 

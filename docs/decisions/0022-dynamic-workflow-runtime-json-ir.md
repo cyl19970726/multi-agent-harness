@@ -1,16 +1,16 @@
-# 0022: Dynamic Workflow Runtime — skill + CLI entry, JSON-IR spec, `harness-workflow` crate
+# 0022: Dynamic Workflow Runtime — skill + CLI entry, JSON-IR spec, `firm-workflow` crate
 
 ## Status
 
 > **Superseded in part by
 > [0023 (Starlark program front-end)](0023-starlark-workflow-frontend.md):** the
 > JSON-IR authoring path decided here — the `WorkflowSpec` / `WorkflowNode` /
-> `dispatch_spec()` interpreter, the `harness workflow run-spec` CLI arm, and
+> `dispatch_spec()` interpreter, the `firm workflow run-spec` CLI arm, and
 > `schemas/workflow-spec.schema.json` (+ fixtures + the
 > `acceptance-dynamic-workflow` proof) — was **deleted** once Starlark proved a
-> strict superset. Starlark (run via `harness workflow run-script`) is now the
+> strict superset. Starlark (run via `firm workflow run-script`) is now the
 > sole dynamic authoring surface alongside the compiled Rust registry. The
-> `crates/harness-workflow` crate, the additive `WorkflowRun`/`WorkflowStep`
+> `crates/firm-workflow` crate, the additive `WorkflowRun`/`WorkflowStep`
 > fields, the scheduler primitives (`parallel()`/`pipeline()`), and the
 > one-journal/one-dashboard contract decided here are **kept**.
 
@@ -42,7 +42,7 @@ runtime *lives* so it stays provider-agnostic.
 ## Decision
 
 1. **Trigger = skill + CLI, not MCP/plugin.** The entry point is the existing
-   `harness` binary: a new subcommand `harness workflow run-spec <spec.json>`
+   `firm` binary: a new subcommand `firm workflow run-spec <spec.json>`
    alongside `workflow run --name`, plus a `star-workflow` skill
    (`skills/star-workflow/SKILL.md`) that teaches an agent to write a
    valid spec, invoke the CLI, and read the run back. Any shell-capable agent
@@ -63,11 +63,11 @@ runtime *lives* so it stays provider-agnostic.
    code, so the determinism contract and the provider-neutral boundary are
    preserved.
 
-3. **Runtime lives in a new `crates/harness-workflow` lib crate.** The scheduler,
+3. **Runtime lives in a new `crates/firm-workflow` lib crate.** The scheduler,
    primitives (`agent()` / `parallel()` / `pipeline()`), the `WorkflowSpec` IR,
-   and `dispatch_spec()` are extracted out of `harness-cli/src/workflow.rs` into a
+   and `dispatch_spec()` are extracted out of `firm-cli/src/workflow.rs` into a
    provider-agnostic crate behind the injected `AgentStepFn` trait object.
-   `harness-cli` depends on it and injects the real delivery driver
+   `firm-cli` depends on it and injects the real delivery driver
    (`workflow_real_agent_step` → `run_provider_delivery`), so the runtime never
    names a provider (per [0011](0011-provider-neutral-runtime.md)) and the
    registry `run` path and the dynamic `run-spec` path share one
@@ -107,7 +107,7 @@ node scripts/acceptance-dynamic-workflow.mjs   # mock mode, exits 0
 
 The end-to-end proof is `scripts/acceptance-dynamic-workflow.mjs`: it authors a
 two-provider `WorkflowSpec` (serial `plan` → parallel `audit` barrier → streaming
-`synthesize` pipeline), runs it through `harness workflow run-spec --dry-run`,
+`synthesize` pipeline), runs it through `firm workflow run-spec --dry-run`,
 and asserts the journaled `WorkflowRun` + ordered `WorkflowStep`s carry the
 expected serial → parallel → pipeline shape, a populated `final_output`, and are
 visible over the live dashboard `/v1/snapshot` API.

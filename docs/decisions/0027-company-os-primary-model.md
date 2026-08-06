@@ -19,7 +19,7 @@ providers, plugins, and MCP are reusable tools beneath it.
 
 ## Decision
 
-Star Harness is an AI Company OS with two primary systems:
+Firm is an AI Company OS with two primary systems:
 
 1. Docs owns company memory, business modules, typed records, relations, views,
    decisions, and the source/result context of company work.

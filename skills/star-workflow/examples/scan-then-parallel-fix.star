@@ -8,7 +8,7 @@
 # Note the prompt shape this skill expects everywhere: a ROLE, an explicit
 # what-to-READ, hard CONSTRAINTS, and an exact OUTPUT format — not a one-liner.
 #
-# Run:  harness workflow run-script ./scan-then-parallel-fix.star \
+# Run:  firm workflow run-script ./scan-then-parallel-fix.star \
 #         --args '{"area":"src/checkout","language":"TypeScript"}'
 
 workflow(

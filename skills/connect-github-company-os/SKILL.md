@@ -97,8 +97,8 @@ field ownership and surface conflicts for review.
 Inspect both sides:
 
 ```bash
-harness --company <company-id> company docs query --document <source-doc-id>
-harness --company <company-id> company work query --work-item <work-item-id>
+firm --company <company-id> company docs query --document <source-doc-id>
+firm --company <company-id> company work query --work-item <work-item-id>
 gh repo view <owner/repo> --json nameWithOwner,defaultBranchRef,url
 gh issue view <number> --repo <owner/repo> --json number,title,state,url,labels,milestone
 gh pr view <number> --repo <owner/repo> \
@@ -119,7 +119,7 @@ time, and transport.
 For repository documents, use the governed Docs source-sync path:
 
 ```bash
-harness --company <company-id> --project <project-binding> \
+firm --company <company-id> --project <project-binding> \
   company docs source sync \
   --definition <page-definition-id> \
   --module <software-source-module-id> \

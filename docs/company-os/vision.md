@@ -12,7 +12,7 @@ An AI-native company needs more than agents that can run tasks. It needs a
 durable way to understand its business, decide what should happen, assign
 accountability, preserve evidence, and reorganize itself as new work appears.
 
-Star Harness provides that operating system through two equal cores:
+Firm provides that operating system through two equal cores:
 
 - **Docs** are the company’s memory and operational hub. They hold context,
   business records, plans, decisions, relations, metrics, and the durable

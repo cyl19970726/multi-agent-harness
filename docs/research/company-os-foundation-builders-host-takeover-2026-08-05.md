@@ -42,7 +42,7 @@ standalone. The Host integrated the complete dependency chains in this order:
 5. Durable identity Dashboard projection: `d96cc9b`
 6. Work-to-Host-attention integration and migration safety: `e12efd6`
 
-The two textual conflicts in `crates/harness-store/src/lib.rs` were resolved by
+The two textual conflicts in `crates/firm-store/src/lib.rs` were resolved by
 preserving the complete import union and both Runtime and identity test blocks.
 
 ## Accepted implementation boundaries
@@ -74,9 +74,9 @@ preserving the complete import union and both Runtime and identity test blocks.
 
 - `cargo fmt --all -- --check`
 - `git diff --check`
-- `cargo test -p harness-core`
-- `cargo test -p harness-store --test team_work_delivery_lifecycle`
-- `cargo test -p harness-store`
+- `cargo test -p firm-core`
+- `cargo test -p firm-store --test team_work_delivery_lifecycle`
+- `cargo test -p firm-store`
 - focused topology, Codex receipt, identity, execution-space migration, and
   snapshot tests
 - schema fixtures: 40 valid and 40 invalid

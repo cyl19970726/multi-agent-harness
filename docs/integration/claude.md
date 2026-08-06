@@ -4,7 +4,7 @@
 status: implementation reference; Work/WorkDelivery target pending ADR 0050
 ```
 
-This document defines the Claude-specific implementation of Star Harness Agent
+This document defines the Claude-specific implementation of Firm Agent
 Team members. Provider-neutral runtime contracts live in
 [agent-runtime.md](../agent-runtime.md); native session ownership lives in
 [native-session-storage.md](native-session-storage.md).
@@ -112,11 +112,11 @@ then resumes the same session for subsequent mailbox input. It does not mean
 `member_closed` and exits while the MemberRun, frozen mailbox, and native
 session locator remain. Reopen increments the runtime generation, starts a new
 runner, and resumes that exact session. Normal mailbox idleness never closes a
-production member. `HARNESS_CLAUDE_AGENT_SDK_IDLE_GRACE_MS` exists only to give
+production member. `FIRM_CLAUDE_AGENT_SDK_IDLE_GRACE_MS` exists only to give
 deterministic foreground integration tests a bound.
 
 Physical SDK handles remain process-local. A close/interrupt request must route
-through the lease's loopback locator to the Harness service holding the current
+through the lease's loopback locator to the Firm service holding the current
 durable Supervisor generation. That service fences the lease again immediately
 before the SDK operation. After it exits or loses its lease, Harness retains
 coordination and the native-session locator but does not pretend to own an
@@ -141,11 +141,11 @@ Claude uses the same provider-neutral
 The first SDK turn receives a self-contained collaboration envelope with the
 TeamRun, MemberRun, active Work/version, roster, Inbox, peer-message, and Work
 submission commands, so correctness does not depend on a provider-specific
-Claude Skill fork. When the Star Harness Skill is also installed, it must match
+Claude Skill fork. When the Firm Skill is also installed, it must match
 that canonical contract rather than redefine mailbox semantics.
 
-The envelope supplies `HARNESS_BIN`, the exact Harness executable selected by
-the Host. A Claude Member sends Host mail explicitly with `"$HARNESS_BIN"
+The envelope supplies `FIRM_BIN`, the exact Harness executable selected by
+the Host. A Claude Member sends Host mail explicitly with `"$FIRM_BIN"
 team-run send
 --to host`. Harness stores it immediately in the Host Inbox as delivered mail
 requiring manual ACK. This does not interrupt the Host's current turn; the Host
@@ -246,7 +246,7 @@ Desktop is observation-only while Harness owns the Member's execution driver.
 Import is always an explicit operator action; member startup never opens
 Desktop automatically.
 
-`harness member-run open-native --id <member-run-id>` performs that explicit
+`firm member-run open-native --id <member-run-id>` performs that explicit
 macOS import. `--print-only` returns the target without opening an application.
 The Dashboard exposes the same provider URI only for a bound
 `claude_agent_sdk` session. Harness continues storing the original SDK session
@@ -257,13 +257,13 @@ Harness-owned transcript or lifecycle.
 
 A reviewed adapter version does not mean the account can execute. Wave 2 proved
 the gap: local auth metadata reported logged-in while the SDK returned
-`403 Request not allowed`, because the Harness process had no `HTTP(S)_PROXY`
+`403 Request not allowed`, because the Firm process had no `HTTP(S)_PROXY`
 and this host's direct egress is blocked; the identical request succeeded
 through the proxy (`apps/claude-member-runner/FINDINGS.md` §F).
 
 ```bash
-harness member preflight --provider claude --json            # metadata only
-harness member preflight --provider claude --canary --json   # a real request
+firm member preflight --provider claude --json            # metadata only
+firm member preflight --provider claude --canary --json   # a real request
 ```
 
 Without `--canary` the state stays `unknown` with
@@ -273,7 +273,7 @@ includes the non-secret proxy/base-URL runtime context so a `403` is diagnosed
 as missing proxy rather than mistaken for an account limit.
 
 That precedence also governs the start guard. A recorded structured `401`/`403`
-is merged into the live probe, not substituted for it: while the Harness
+is merged into the live probe, not substituted for it: while the Firm
 process has no `HTTP(S)_PROXY`, capacity stays `unknown`, the missing-proxy
 diagnosis is preserved, and the member is **not** gated — the recorded
 rejection is kept in `detail` as evidence. Once a proxy is configured the same
@@ -300,7 +300,7 @@ Claude Code and Agent SDK maintenance follows ADR 0031's Agent-managed,
 one-Provider-at-a-time update loop. Do not hot-replace an active
 MemberRun/native session. After a change:
 
-1. run `harness member providers --fail-on-review`;
+1. run `firm member providers --fail-on-review`;
 2. run mode-specific deterministic tests;
 3. run a proportional live canary;
 4. update the reviewed-version set only when the evidence supports it.
@@ -318,8 +318,8 @@ Repository gates:
 
 ```bash
 node --test apps/claude-member-runner/test/*.test.mjs
-cargo test -p harness-cli --test claude_agent_sdk_member
-cargo test -p harness-cli
+cargo test -p firm-cli --test claude_agent_sdk_member
+cargo test -p firm-cli
 npx pnpm@9.15.4 acceptance:mission-wave
 ```
 

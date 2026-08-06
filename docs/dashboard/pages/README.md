@@ -1,7 +1,7 @@
 # Agent Workbench Page Specs
 
 This directory owns page-level product and UX specs for Agent Workbench. A page
-spec explains why a page or workspace exists, which canonical harness objects it
+spec explains why a page or workspace exists, which canonical firm objects it
 owns, what workflow proof it must show, and which failure modes it prevents.
 
 Page specs own their own layout contracts. Each page file must include detailed

@@ -1,5 +1,5 @@
 ---
-description: "Show TeamRun members, shared Works, Lead Inbox, controls, evidence, and Dashboard URL. Usage: /star-harness:team-status [run-id]"
+description: "Show TeamRun members, shared Works, Lead Inbox, controls, evidence, and Dashboard URL. Usage: /firm:team-status [run-id]"
 ---
 
 Resolve the requested or latest active TeamRun. Read CLI status, Works, events,

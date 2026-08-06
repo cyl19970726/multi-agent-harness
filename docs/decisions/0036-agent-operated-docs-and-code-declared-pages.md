@@ -15,7 +15,7 @@ through CLI/API/skill commands. Humans primarily inspect, review, approve, and
 understand company state.
 
 Earlier discussion sometimes made Docs sound like a Notion clone. That is the
-wrong product center. Notion was built around Human editing. Star Harness Docs
+wrong product center. Notion was built around Human editing. Firm Docs
 must be built around Agent operation, governed records, typed business truth,
 and high-quality review surfaces.
 

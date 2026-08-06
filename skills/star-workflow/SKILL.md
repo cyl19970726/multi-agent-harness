@@ -1,21 +1,21 @@
 ---
 name: star-workflow
-description: "Use when an agent needs to author a standalone Dynamic Workflow at runtime: write a Starlark program (loops, conditionals, data-driven fan-out) that calls agent()/parallel()/phase()/log() over the harness runtime, declare a mandatory workflow(name, design_intent) header, run it with `harness workflow run-script`, and read the resulting WorkflowRun/WorkflowStep records back from the dashboard snapshot or store."
+description: "Use when an agent needs to author a standalone Dynamic Workflow at runtime: write a Starlark program (loops, conditionals, data-driven fan-out) that calls agent()/parallel()/phase()/log() over the firm runtime, declare a mandatory workflow(name, design_intent) header, run it with `firm workflow run-script`, and read the resulting WorkflowRun/WorkflowStep records back from the dashboard snapshot or store."
 ---
 
 # Author Workflow
 
 Use this skill to make a shell-capable agent (Codex, Claude Code, or any other)
-author a workflow at runtime and run it through the harness, with no MCP or
+author a workflow at runtime and run it through the firm, with no MCP or
 plugin. Starlark is the SOLE dynamic authoring surface: write a `.star` program
-and run it through `harness workflow run-script`, which journals a `WorkflowRun`
+and run it through `firm workflow run-script`, which journals a `WorkflowRun`
 plus one `WorkflowStep` per agent leaf.
 
 ```text
-write a .star program  ->  harness workflow run-script <prog.star>  ->  read the run back
+write a .star program  ->  firm workflow run-script <prog.star>  ->  read the run back
 ```
 
-The runtime is provider-agnostic (`crates/harness-workflow`). Each `agent()` call
+The runtime is provider-agnostic (`crates/firm-workflow`). Each `agent()` call
 names a PROVIDER (`"codex"`, `"claude"`, or `"kimi"`); the CLI spins up a NEW
 one-shot ephemeral worker for that call (it does NOT deliver to a pre-existing
 member) and journals a `WorkflowRun` plus one `WorkflowStep` per agent call —
@@ -122,7 +122,7 @@ for reproducibility.
 ## Host API
 
 The interpreter is [Starlark](https://github.com/facebook/starlark-rust)
-([`crates/harness-workflow/src/starlark_front.rs`](../../crates/harness-workflow/src/starlark_front.rs)),
+([`crates/firm-workflow/src/starlark_front.rs`](../../crates/firm-workflow/src/starlark_front.rs)),
 the same dialect Bazel uses. It is HERMETIC by design: the script has no clock, no
 randomness, and no IO. The orchestration (which agents run, in what order, with what
 prompts) is therefore deterministic — the ONLY nondeterminism lives in the journaled
@@ -167,7 +167,7 @@ Rules every call obeys:
 - `prompt`, `label`, and `phase` are non-empty strings; optional `model` (any
   non-empty string) overrides the provider's default model — route a CHEAP model
   to read-only verify/review steps and the strong model to the builder. The value
-  is passed VERBATIM to the provider CLI and is NOT validated by the harness (an
+  is passed VERBATIM to the provider CLI and is NOT validated by the firm (an
   unknown name is rejected by the provider), and the supported set is NOT
   hardcoded — it changes as each provider ships new models. Don't rely on a
   baked-in list; discover the current models from the provider's own CLI:
@@ -295,8 +295,8 @@ because the provider cannot physically enforce read-only; choose codex/claude fo
 hard read-only enforcement.
 
 A call that must EDIT files or run commands sets `writable=True`. That worker is
-automatically run in its own harness-owned throwaway git worktree under
-`.harness/worktrees/` (writes land in a discardable checkout, NOT the live repo);
+automatically run in its own firm-owned throwaway git worktree under
+`.firm/worktrees/` (writes land in a discardable checkout, NOT the live repo);
 its `git diff` becomes the step's evidence, and the worktree is cleaned up after
 (auto-removed if unchanged, never auto-merged directly). A non-empty writable diff
 is saved as a pending `WorkflowPatch` unless the step sets
@@ -370,9 +370,9 @@ else:
 # action == "pending": make no patch call; the operator applies/rejects later.
 ```
 
-Manual operator path: `harness workflow patch list`, `harness workflow patch show
-<run_id> --step implement`, then `harness workflow patch apply <run_id> --step
-implement` or `harness workflow patch reject <run_id> --step implement`. Without
+Manual operator path: `firm workflow patch list`, `firm workflow patch show
+<run_id> --step implement`, then `firm workflow patch apply <run_id> --step
+implement` or `firm workflow patch reject <run_id> --step implement`. Without
 `--allow-dirty`, apply refuses only when a path THIS patch touches already has
 local modifications (or a to-be-created file already exists untracked) —
 unrelated dirty/untracked files elsewhere in the repo no longer block it.
@@ -390,12 +390,12 @@ sandbox — is the boundary: a `writable` prompt executes for real, so scope it,
 never point a workflow with destructive/money-moving `writable` steps at a tree you
 care about.
 
-Nested harness commands from an ephemeral leaf are store-isolated by default. The
-runtime injects a session-local child store/home for `harness ...` commands run
+Nested firm commands from an ephemeral leaf are store-isolated by default. The
+runtime injects a session-local child store/home for `firm ...` commands run
 inside a provider leaf, so a worker cannot accidentally create tasks, evidence,
 proposals, or decisions in the parent project's central store. If a workflow
-intentionally needs a leaf to mutate the canonical harness store, invoke
-`run-script` with `HARNESS_WORKFLOW_ALLOW_STORE_MUTATION=1` and record that grant
+intentionally needs a leaf to mutate the canonical firm store, invoke
+`run-script` with `FIRM_WORKFLOW_ALLOW_STORE_MUTATION=1` and record that grant
 in the task/evidence; otherwise keep store writes in the Lead process after the
 workflow returns.
 
@@ -407,7 +407,7 @@ for ordinary read-only reviews or scans.
 steps** — the throwaway worktree is created with `git worktree add`. In a non-git
 directory such a step fails fast with an actionable error. Either run the workflow
 from a git repo (`git init`), or keep the step READ-ONLY and retrieve its produced
-text with `harness workflow get-output <run_id> --step <label>`. Under a
+text with `firm workflow get-output <run_id> --step <label>`. Under a
 project-switching `serve`, the worktree base / worker cwd is the run's selected
 project root (#147), not necessarily where the binary launched.
 
@@ -739,7 +739,7 @@ when the bar is not met, even though every worker ran), and persists its `log()`
 lines + verdict + criterion into the run's `final_output`.
 
 ```
-harness workflow run-script ./closed-loop.star --args '{"task":"...","bar":"..."}' --max-budget-usd 5
+firm workflow run-script ./closed-loop.star --args '{"task":"...","bar":"..."}' --max-budget-usd 5
 ```
 
 A flat fan-out that only finds-and-reports is an ANTI-PATTERN: it cannot tell a
@@ -890,7 +890,7 @@ Write the program to a file, then invoke the CLI. The program's `provider` value
 drive delivery, so there is no member binding to pass:
 
 ```bash
-harness workflow run-script ./scan-then-parallel-fix.star --args '{"area":"checkout flow"}'
+firm workflow run-script ./scan-then-parallel-fix.star --args '{"area":"checkout flow"}'
 ```
 
 Useful flags:
@@ -920,7 +920,7 @@ Read them without raw JSONL reads via the snapshot, which carries `workflow_runs
 and `workflow_steps`:
 
 ```bash
-harness dashboard snapshot | node -e '
+firm dashboard snapshot | node -e '
   const s = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
   console.log(JSON.stringify({
     runs: s.workflow_runs,
@@ -952,14 +952,14 @@ and inside `run.final_output`:
 So a foreground call gives you the whole timeline + answer at once:
 
 ```bash
-harness workflow run-script ./prog.star --args '{...}' \
+firm workflow run-script ./prog.star --args '{...}' \
   | python3 -c 'import sys,json; print(json.load(sys.stdin)["run"]["final_output"]["result"])'
 ```
 
 For LIVE tracking (which phase is running now), you cannot read a foreground
 command's stdout mid-run — the shell tool returns it only on exit. Two options:
 add **`--progress`** (NDJSON step events to stderr, which you still see in the
-tool result) and/or run it in the **background** and poll `harness dashboard
+tool result) and/or run it in the **background** and poll `firm dashboard
 snapshot` (the journal updates per step live). End any answer-producing program
 with `output(...)` so the answer is one field, not a step picked by label.
 
@@ -971,7 +971,7 @@ Pick by how live you need it:
   run as its tool result: `run.final_output.result` (the answer), `run.status`
   (`completed` / `failed`), the `verdict`, and `steps[]` (per-leaf `label`, `phase`,
   `provider`, `status`, `output_summary`). One call, whole timeline.
-- **By id, any time / any shell.** `harness workflow get-output <run_id>` prints a
+- **By id, any time / any shell.** `firm workflow get-output <run_id>` prints a
   run's ordered steps + status as JSON — `--text` for just the deliverable text,
   `--step <label>` to filter to one leaf. The `<run_id>` (`wfrun-…`) is in the
   run-script output; use this to inspect a run started in the background or another
@@ -981,31 +981,31 @@ Pick by how live you need it:
   and what did its final message say?
 - **Live, phase-by-phase.** Add `--progress` for one NDJSON line per step
   (`phase`, `label`, `running` / `ok` / `failed`) on STDERR as it executes, and/or
-  background the run and poll `harness dashboard snapshot` (`workflow_runs` +
+  background the run and poll `firm dashboard snapshot` (`workflow_runs` +
   `workflow_steps` advance per step).
 - **Visual / SSE.** Point a live server at the SAME store
-  (`harness serve --store <path>`) and open the dashboard **Workflows** surface:
+  (`firm serve --store <path>`) and open the dashboard **Workflows** surface:
   every run, a per-step timeline (status, provider, `output_summary`), and an
   on-demand provider-native activity view through `NativeSessionRef`. Harness
   does not retain a second provider turn trace.
 - **Completion hook (push — for a backgrounded run).** Set
-  `HARNESS_WORKFLOW_ON_COMPLETE` to a shell command and the harness fires it the
-  moment a run reaches a terminal status, passing `HARNESS_RUN_ID` /
-  `HARNESS_RUN_STATUS` (`completed` / `failed`) / `HARNESS_RUN_NAME` as env vars and
+  `FIRM_WORKFLOW_ON_COMPLETE` to a shell command and the firm fires it the
+  moment a run reaches a terminal status, passing `FIRM_RUN_ID` /
+  `FIRM_RUN_STATUS` (`completed` / `failed`) / `FIRM_RUN_NAME` as env vars and
   the full run JSON on stdin. It fires INSIDE the run-owning process at finalization,
   so a backgrounded `run-script &` notifies WITHOUT the caller polling. No-op when
   the var is unset; best-effort (a hook error is logged, never fails the run); keep
   the hook quick (the run waits for it) or self-detach with a trailing `&`. E.g.
-  `HARNESS_WORKFLOW_ON_COMPLETE='harness message send --from lead --content "wf $HARNESS_RUN_ID $HARNESS_RUN_STATUS"' harness workflow run-script prog.star &`.
+  `FIRM_WORKFLOW_ON_COMPLETE='harness message send --from lead --content "wf $FIRM_RUN_ID $FIRM_RUN_STATUS"' firm workflow run-script prog.star &`.
   Scope: this hook is for `run-script` (and the stale-run reaper).
 
 ## Permission Note
 
-The agent that runs the program invokes the `harness` binary through its shell, so
+The agent that runs the program invokes the `firm` binary through its shell, so
 its permission profile must allow it:
 
-- The runner's allowed-tool / command policy must permit running the `harness`
-  binary (for Claude this is a `Bash(harness ...)` allowance; for Codex the
+- The runner's allowed-tool / command policy must permit running the `firm`
+  binary (for Claude this is a `Bash(firm ...)` allowance; for Codex the
   sandbox/approval policy must let the shell call through).
 - Each agent call spins up a fresh ephemeral worker that is READ-ONLY in the
   selected project root by default (#190). `writable=True` grants edit tools/full
@@ -1014,11 +1014,11 @@ its permission profile must allow it:
   immediately. A prompt that writes files or runs destructive / money-moving
   actions executes for real once writable — scope prompts accordingly and keep
   parallel mutations in worktrees.
-- Nested `harness ...` commands inside an ephemeral worker write a session-local
+- Nested `firm ...` commands inside an ephemeral worker write a session-local
   child store by default, not the parent project's central store. Use
-  `HARNESS_WORKFLOW_ALLOW_STORE_MUTATION=1 harness workflow run-script ...` only
-  when the leaf is explicitly trusted to mutate canonical harness objects.
-- If `harness` is not on the runner's `PATH`, invoke it by absolute path and
+  `FIRM_WORKFLOW_ALLOW_STORE_MUTATION=1 firm workflow run-script ...` only
+  when the leaf is explicitly trusted to mutate canonical firm objects.
+- If `firm` is not on the runner's `PATH`, invoke it by absolute path and
   ensure that path is the allowed command.
 
 ## Checklist
@@ -1029,9 +1029,9 @@ its permission profile must allow it:
 - [ ] Every agent leaf (`agent()` call / `parallel` spec) has a `provider` of `"codex"`, `"claude"`, or `"kimi"` (keep `schema=`-gated control-flow leaves on codex/claude).
 - [ ] Parallel slots that EDIT files use worktree isolation; never use direct mode in parallel/pipeline.
 - [ ] Writable code leaves declare `owned_paths`; leave default patch capture on unless the diff is intentionally throwaway.
-- [ ] Store mutation is explicit: ephemeral leaves do not write parent harness
+- [ ] Store mutation is explicit: ephemeral leaves do not write parent firm
       objects unless the run is intentionally invoked with
-      `HARNESS_WORKFLOW_ALLOW_STORE_MUTATION=1`; otherwise the Lead records
+      `FIRM_WORKFLOW_ALLOW_STORE_MUTATION=1`; otherwise the Lead records
       evidence/proposals/decisions after reading the workflow result.
 - [ ] Writable file-producing leaves declare `expected_artifacts` and/or `artifact_manifest` with repo-relative paths.
 - [ ] If a workflow should decide landing internally, it has a review/gate leaf and calls `apply_patch(label, reason)` or `reject_patch(label, reason)` only for explicit apply/reject; insufficient evidence leaves the patch pending.
@@ -1040,9 +1040,9 @@ its permission profile must allow it:
 - [ ] The standalone landing decision is explicit: `run-script` creates pending patches unless the script applies or rejects them, while `write_mode="direct"` changes the selected working tree immediately.
 - [ ] If the workflow has only one `agent()` call and no branch/fan-out/loop, it is NOT a workflow — collapse it to that one call.
 - [ ] Quality steps (verify / adversarial / judge / loop-until-dry / completeness) cross-check rather than trust a single pass, where the task warrants it.
-- [ ] Ran it: `harness workflow run-script <prog.star>` (no member binding needed).
-- [ ] The run is visible in `harness dashboard snapshot` (`workflow_runs` / `workflow_steps`) with its `design_intent`.
-- [ ] The runner's profile allows the `harness` binary and what each leaf's prompt does.
+- [ ] Ran it: `firm workflow run-script <prog.star>` (no member binding needed).
+- [ ] The run is visible in `firm dashboard snapshot` (`workflow_runs` / `workflow_steps`) with its `design_intent`.
+- [ ] The runner's profile allows the `firm` binary and what each leaf's prompt does.
 
 ## Maintaining This Skill
 

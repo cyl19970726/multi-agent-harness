@@ -277,7 +277,7 @@ checks pass without mutating the expected image.
 - This page is for a `MemberRun`, not a StandingAgent profile. Shared identity
   modules require an explicit stable AgentMember ↔ StandingAgent join.
 - It does not require or display a legacy dependency graph as the ownership model.
-- Provider-native subagents remain observed delegation unless the harness owns
+- Provider-native subagents remain observed delegation unless the firm owns
   their lifecycle.
 - Provider-native subagents remain inside this member's responsibility and
   permission ceiling; they are not independent acceptance.

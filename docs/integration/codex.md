@@ -4,7 +4,7 @@
 status: implementation reference; Work/WorkDelivery target pending ADR 0050
 ```
 
-This document defines the current Codex provider contract for Star Harness.
+This document defines the current Codex provider contract for Firm.
 Provider-neutral lifecycle and mailbox semantics live in
 [Agent Runtime](../agent-runtime.md); this file only explains how Codex
 implements them.
@@ -126,12 +126,12 @@ owned by Harness; the user's Codex Desktop Host task is normally owned by the
 Desktop app. TeamRuns therefore bind the Host explicitly:
 
 ```bash
-harness team-run create ... \
+firm team-run create ... \
   --host-surface codex-app \
   --host-thread-id <Codex hook session_id>
 ```
 
-The Star Harness hook queries `team-run host-inbox` with that exact pair.
+The Firm hook queries `team-run host-inbox` with that exact pair.
 `SessionStart` and `UserPromptSubmit` surface actionable mail. When mail exists
 at `Stop`, Codex's native continuation protocol keeps the same task running
 once and supplies the bounded Inbox summary. `stop_hook_active` prevents a
@@ -260,9 +260,9 @@ resume from native session
 MCP uses `team_run_close_member` and `team_run_reopen_member`. CLI uses:
 
 ```bash
-harness team-run close-member --id <team-run-id> \
+firm team-run close-member --id <team-run-id> \
   --member-run-id <member-run-id> --requested-by host --reason <reason>
-harness team-run reopen-member --id <team-run-id> \
+firm team-run reopen-member --id <team-run-id> \
   --member-run-id <member-run-id> --reopened-by host --reason <reason>
 ```
 
@@ -271,7 +271,7 @@ harness team-run reopen-member --id <team-run-id> \
 Provider capability claims are execution-mode and version specific. Run:
 
 ```bash
-harness member providers --fail-on-review
+firm member providers --fail-on-review
 ```
 
 An unreviewed Codex version is `review_required`, not silently compatible.
@@ -292,7 +292,7 @@ RPCs, which complete after `initialize` + `initialized` and therefore require
 no `thread/start`, no rollout, and no billable turn:
 
 ```bash
-harness member preflight --provider codex --json
+firm member preflight --provider codex --json
 ```
 
 The contract, classification thresholds, start guard, and truth matrix live in

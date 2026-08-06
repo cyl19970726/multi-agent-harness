@@ -29,9 +29,9 @@ CustomPageDefinition / Package
 1. Query current truth:
 
 ```bash
-harness company docs query --document <document-id>
-harness company docs traverse --document <root-document-id> --depth 2
-harness company docs health
+firm company docs query --document <document-id>
+firm company docs traverse --document <root-document-id> --depth 2
+firm company docs health
 ```
 
 2. Define the page contract as a TypedRecord or explicit Document section.
@@ -45,14 +45,14 @@ harness company docs health
 ## Common command shape
 
 ```bash
-harness company docs block append \
+firm company docs block append \
   --definition <page-definition-id> \
   --document <document-id> \
   --kind simple_table \
   --content-json '<json>' \
   --actor <actor-id>
 
-harness company docs typed-record append \
+firm company docs typed-record append \
   --definition <page-definition-id> \
   --module <module-id> \
   --source-document <document-id> \
@@ -61,7 +61,7 @@ harness company docs typed-record append \
   --fields-json '<json>' \
   --actor <actor-id>
 
-harness company docs relation link \
+firm company docs relation link \
   --definition <page-definition-id> \
   --from-document <document-id> \
   --to-record <typed-record-id> \

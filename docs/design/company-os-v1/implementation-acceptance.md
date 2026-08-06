@@ -38,7 +38,7 @@ The two data modes answer different questions and must never be merged:
 
 Every `capture-run.json` records `data_mode`, an `assertion_contract`, and a
 separate `data_source`. A fixture run identifies its isolated fixture API. A
-live run records the Harness API base, projects endpoint, snapshot endpoint,
+live run records the Firm API base, projects endpoint, snapshot endpoint,
 selected project descriptor, snapshot generation time, and Company OS
 projection identity.
 
@@ -131,7 +131,7 @@ Fixture runs additionally require
 `data-company-os-prototype="true"`. Live runs require
 `data-company-os-data-mode="store-live"` and
 `data-company-os-prototype="false"` on that same root; they deliberately do
-not require or claim a fixture identity. Their source is pinned by the Harness
+not require or claim a fixture identity. Their source is pinned by the Firm
 API/store metadata in `capture-run.json`.
 
 Required business objects must be rendered from the declared data source and
@@ -181,7 +181,7 @@ Store-live checks.
 
 For the canonical acceptance scenario, use the deterministic public-API seed
 orchestrator. It creates a temporary project and Store, starts the real Harness
-server with `HARNESS_COMPANY_OS_TOKEN`, writes through the bootstrap and
+server with `FIRM_COMPANY_OS_TOKEN`, writes through the bootstrap and
 administrative envelopes, and stops at the Human gate:
 
 ```bash
@@ -235,10 +235,10 @@ The final real Store-backed capture is stored at:
 `.visual-evidence/company-os-v1/company-os-v1-live-acceptance/capture-run.json`
 
 It reports **passed, 26 captures, 0 gaps, 0 retries** with
-`data_mode=live`. Its source is an authoritative `company-os-v1` Harness Store
+`data_mode=live`. Its source is an authoritative `company-os-v1` Firm Store
 projection. The sibling `seed-manifest.json` and
 `live-company-os-snapshot.json` prove the pre-settlement gate, while
-`archived-harness-home/` preserves the native append-only ledgers used by the
+`archived-firm-home/` preserves the native append-only ledgers used by the
 capture. The browser did not define `window.__COMPANY_OS_FIXTURE__`.
 
 The selected durable visual evidence is under

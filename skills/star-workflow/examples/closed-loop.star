@@ -14,7 +14,7 @@
 # writable worker runs in its OWN worktree, so the edit+gate+fix loop lives inside
 # ONE writable worker while the PLAN and VERDICT stay in Starlark.
 #
-# Run:  harness workflow run-script ./closed-loop.star --max-budget-usd 5 \
+# Run:  firm workflow run-script ./closed-loop.star --max-budget-usd 5 \
 #   --args '{"task":"explain how auth sessions are issued, validated, and revoked","bar":"covers issuance, validation, revocation, and every failure path, each grounded in a named code location"}'
 
 workflow(

@@ -9,7 +9,7 @@ control surface is the canonical CLI; MCP is an optional thin typed adapter:
 ```text
 Host Agent
   -> thin orchestration skill
-  -> harness CLI (complete authoring and control)
+  -> firm CLI (complete authoring and control)
   -> shared Rust application operations
   -> Mission / Host-plan Wave / AgentTeam / AgentTeamRun / Store
   -> provider member adapter
@@ -66,13 +66,13 @@ Build the binary, initialize/select the Workspace, then register its absolute
 path and explicit project identity:
 
 ```bash
-cargo build -p harness-cli
-target/debug/harness init
-codex mcp add harness -- \
-  /absolute/path/to/target/debug/harness \
+cargo build -p firm-cli
+target/debug/firm init
+codex mcp add firm -- \
+  /absolute/path/to/target/debug/firm \
   --space <execution-space-id> \
   --project <project-binding-id> mcp
-codex mcp get harness
+codex mcp get firm
 ```
 
 An existing Codex conversation may require a new session before the newly
@@ -80,7 +80,7 @@ registered MCP tools appear. The API and Dashboard UI are separate long-running
 processes. Start the Vite UI with its same-origin proxy pointed at the API:
 
 ```bash
-target/debug/harness --space <execution-space-id> \
+target/debug/firm --space <execution-space-id> \
   --project <project-binding-id> serve --addr 127.0.0.1:8787
 HARNESS_CAPTURE_API_PROXY=http://127.0.0.1:8787 npm run dashboard:dev
 ```

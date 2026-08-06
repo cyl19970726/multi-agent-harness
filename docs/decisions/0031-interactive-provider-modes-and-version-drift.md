@@ -84,7 +84,7 @@ Every execution-mode profile records:
 - adapter review date;
 - compatibility status and explanation.
 
-`harness member providers` probes installed versions. `--fail-on-review` is the
+`firm member providers` probes installed versions. `--fail-on-review` is the
 CI/periodic-audit gate. A new unreviewed version becomes `review_required`; it
 does not silently become compatible or incompatible. Review must regenerate
 provider schemas/capability snapshots and run mode-specific deterministic and

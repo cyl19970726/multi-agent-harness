@@ -1,5 +1,5 @@
 ---
-description: "Create a Mission, first Host-plan Wave, and optionally link an Agent Team. Usage: /star-harness:mission-new [objective]"
+description: "Create a Mission, first Host-plan Wave, and optionally link an Agent Team. Usage: /firm:mission-new [objective]"
 ---
 
 Use `$ARGUMENTS` as the objective sketch and follow

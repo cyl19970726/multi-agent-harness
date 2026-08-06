@@ -19,7 +19,7 @@ The selected mode's continuous-execution contract is defined by the
 
 ## Vision Link
 
-Star Harness must support Codex first — with Claude Code and Kimi now
+Firm must support Codex first — with Claude Code and Kimi now
 registered as further exec-stream providers — while leaving room for others
 such as OpenClaw, cloud-hosted agents, or a Permission Agent. Provider
 integrations are successful only when they preserve Mission intent,

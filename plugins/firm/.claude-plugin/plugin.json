@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
-  "name": "star-harness",
+  "name": "firm",
   "version": "0.4.4",
   "description": "Thin Mission/Wave and autonomous Agent Team integration for Claude Code.",
   "author": {

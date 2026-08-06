@@ -19,7 +19,7 @@ Duplicate latest StandingAgent refs are an integrity error, not last-write-wins.
 ## Authoring the first edge
 
 The relation is authored by one explicit command per pair,
-`harness company org link-execution` / `unlink-execution`, over records that
+`firm company org link-execution` / `unlink-execution`, over records that
 already exist. Both ids are typed explicitly, including when they are equal.
 The StandingAgent is read latest-row-wins and re-appended through the Human
 administrative governance envelope with only `execution_agent_member_ref` and
@@ -33,7 +33,7 @@ a no-op cannot become a bypass for an unknown or non-admin operator.
 ## Cross-store validation
 
 AgentMember truth lives in an Execution Space, not in the Company Store
-(ADR 0042), and `harness company ...` resolves the Company Store without ever
+(ADR 0042), and `firm company ...` resolves the Company Store without ever
 reaching the `--space` selector. `link-execution` therefore requires an explicit
 `--execution-space <id>` and opens that space read-only to confirm the
 AgentMember exists. There is no fallback to the active space and none to a

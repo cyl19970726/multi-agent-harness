@@ -134,7 +134,7 @@ remains governed and may require the Human Owner.
 ### 7. Harness updates reconcile runtimes; they do not replace Agents
 
 Projection-only changes leave provider runtimes untouched. A same-contract
-Harness process recovery acquires a new Supervisor generation and reattaches
+Firm process recovery acquires a new Supervisor generation and reattaches
 the same unclosed MemberRun and native session. A delivery, adapter, permission,
 model/effort, or Plugin contract change requires a controlled drain or
 interrupt and an explicit replacement runtime generation.

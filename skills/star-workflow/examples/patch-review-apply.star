@@ -11,7 +11,7 @@
 # that attachment does not change the workflow's patch semantics.
 #
 # Run:
-#   harness workflow run-script ./patch-review-apply.star \
+#   firm workflow run-script ./patch-review-apply.star \
 #     --args '{"task":"add focused behavior X","owned_paths":["src","tests"],"gate":"cargo test -q"}'
 
 workflow(
@@ -89,7 +89,7 @@ Choose exactly one action:
   diff_review_notes give enough concrete evidence.
 - reject: the patch is wrong, unsafe, or outside scope.
 - pending: evidence is insufficient; leave the WorkflowPatch pending for manual
-  `harness workflow patch show` review.
+  `firm workflow patch show` review.
 
 Set ok=true only for apply. Set ok=false for reject or pending.""".format(
         task=task,

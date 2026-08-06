@@ -25,7 +25,7 @@ We therefore **delete the JSON-IR path** and keep Starlark as the only dynamic
 authoring surface (alongside the compiled Rust built-in registry):
 
 - `WorkflowSpec` / `WorkflowNode` / `dispatch_spec` and the
-  `harness workflow run-spec` CLI arm are removed, along with
+  `firm workflow run-spec` CLI arm are removed, along with
   `schemas/workflow-spec.schema.json` (+ fixtures), the JSON examples, and the
   `acceptance-dynamic-workflow` proof.
 - The runtime primitives the IR walked (`parallel()` / `pipeline()` /
@@ -57,7 +57,7 @@ step produced, branch on a result, recurse). That is the expressiveness gap
 between a declarative spec and a real **program**.
 
 Claude Code's internal Workflow tool lets an agent write a program with that
-control flow. To give a harness-driven agent the same authoring power at runtime
+control flow. To give a firm-driven agent the same authoring power at runtime
 — without a recompile and without widening the JSON-IR into a homegrown
 expression language — we need a front-end that accepts an actual program while
 keeping the runtime's determinism contract intact.
@@ -73,7 +73,7 @@ keeping the runtime's determinism contract intact.
 
 2. **Embed a hermetic Starlark interpreter.** We use the existing
    `starlark = "0.14"` (Meta's crate, already a dependency of
-   `crates/harness-workflow`). Starlark is chosen precisely because it is
+   `crates/firm-workflow`). Starlark is chosen precisely because it is
    *designed* to be hermetic: no clock, no random, no filesystem/network, no
    ambient I/O, and deterministic iteration order. The program is pure control
    flow over the workflow primitives; **all** nondeterminism stays in the
@@ -109,7 +109,7 @@ keeping the runtime's determinism contract intact.
 
 - **`load()`-gating.** Decide and enforce policy for Starlark's `load()`
   statement (module imports) — default-deny, or an explicit allow-list of
-  harness-provided modules — so a runtime-authored program cannot pull in
+  firm-provided modules — so a runtime-authored program cannot pull in
   arbitrary or escape code.
 - **Execution-limit hardening.** Bound the interpreter: step/instruction budget,
   wall-clock and memory ceilings, and recursion/loop limits, so a malformed or

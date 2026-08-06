@@ -12,7 +12,7 @@ Company OS currently has durable Human and Standing Agent identities,
 Organization records, WorkItems, Assignments, Approvals, Action policies, and
 AuditEvents. ADR 0045 defines the explicit StandingAgent-to-execution relation,
 and ADR 0046 separates the durable Company Lead from the Runtime Supervisor.
-Company writes still use the service-side `HARNESS_COMPANY_OS_TOKEN`.
+Company writes still use the service-side `FIRM_COMPANY_OS_TOKEN`.
 The [implementation truth matrix](implementation-truth-matrix.md) is canonical
 for what those current surfaces can prove.
 

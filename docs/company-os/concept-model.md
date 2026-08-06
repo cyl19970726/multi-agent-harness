@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-This document defines the target product model for Star Harness as an AI
+This document defines the target product model for Firm as an AI
 Company Operating System. It is additive to the current execution substrate:
 Mission/Wave, Agent Team, Dynamic Workflow, Host, and provider objects retain
 their own execution contracts.

@@ -70,28 +70,28 @@ lifecycle from a document update.
 ## Command selection
 
 Use the smallest command that preserves the source of truth. Current commands:
-`harness company docs query`, `harness company docs search`,
-`harness company docs traverse`, `harness company docs refs`,
-`harness company docs related`, `harness company docs health`,
-`harness company docs source sync`, `harness company docs module create`,
-`harness company docs page scaffold`, `harness company docs page verify`,
-`harness company docs page publish`,
-`harness company docs page-definition create`,
-`harness company docs document create`, `harness company docs document rename`,
-`harness company docs document move`, `harness company docs document archive`,
-`harness company docs template create`, `harness company docs template status`,
-`harness company docs block append`, `harness company docs block update`,
-`harness company docs block archive`, `harness company docs block remove`,
-`harness company docs block reorder`,
-`harness company docs typed-record append`,
-`harness company docs typed-record update`,
-`harness company docs typed-record validate`,
-`harness company docs view create`, `harness company docs view update`,
-`harness company docs relation link`, `harness company docs relation unlink`,
-`harness company docs relation relink`,
-`harness company docs relation repair-missing`, `harness company docs diff`,
-`harness company docs snapshot`, and
-`harness company docs change-report`.
+`firm company docs query`, `firm company docs search`,
+`firm company docs traverse`, `firm company docs refs`,
+`firm company docs related`, `firm company docs health`,
+`firm company docs source sync`, `firm company docs module create`,
+`firm company docs page scaffold`, `firm company docs page verify`,
+`firm company docs page publish`,
+`firm company docs page-definition create`,
+`firm company docs document create`, `firm company docs document rename`,
+`firm company docs document move`, `firm company docs document archive`,
+`firm company docs template create`, `firm company docs template status`,
+`firm company docs block append`, `firm company docs block update`,
+`firm company docs block archive`, `firm company docs block remove`,
+`firm company docs block reorder`,
+`firm company docs typed-record append`,
+`firm company docs typed-record update`,
+`firm company docs typed-record validate`,
+`firm company docs view create`, `firm company docs view update`,
+`firm company docs relation link`, `firm company docs relation unlink`,
+`firm company docs relation relink`,
+`firm company docs relation repair-missing`, `firm company docs diff`,
+`firm company docs snapshot`, and
+`firm company docs change-report`.
 
 Module and page-definition creation are administrative governance operations
 and require a Human with `company_os.admin`. Ordinary document, block,
@@ -100,9 +100,9 @@ typed-record, view, and relation writes require a matching
 
 ## Safe workflow
 
-1. Inspect current truth through CLI/API. Use `harness company docs query` as
+1. Inspect current truth through CLI/API. Use `firm company docs query` as
    the first read command for one Document or module operating context, then use
-   `harness company docs health` for broader structural audit. Prefer native
+   `firm company docs health` for broader structural audit. Prefer native
    Store projection reads over fixture or mock data.
 2. For any business-critical page, define the page contract before mutation:
    primary question, intended audience, required sections, source
@@ -202,12 +202,12 @@ writing more blocks.
 Use the read-only query command before deciding where or how to write:
 
 ```bash
-harness company docs query --document <document-id>
-harness company docs query --module <business-module-id>
-harness company docs search --query "商标" --module <business-module-id>
-harness company docs traverse --document <document-id> --depth 2
-harness company docs refs --document <document-id>
-harness company docs related --record <typed-record-id>
+firm company docs query --document <document-id>
+firm company docs query --module <business-module-id>
+firm company docs search --query "商标" --module <business-module-id>
+firm company docs traverse --document <document-id> --depth 2
+firm company docs refs --document <document-id>
+firm company docs related --record <typed-record-id>
 ```
 
 The response is the Agent-facing operating context over the latest projection:
@@ -232,7 +232,7 @@ architecture docs, or design contracts from an external Git worktree such as a
 software product repository:
 
 ```bash
-harness company docs source sync \
+firm company docs source sync \
   --definition <custom-page-definition-id> \
   --module <business-module-id> \
   --source-document <document-id> \
@@ -266,16 +266,16 @@ Human-assembled Notion pages. Use these commands for PageDefinition/PagePackage
 metadata:
 
 ```bash
-harness company docs page scaffold \
+firm company docs page scaffold \
   --module <business-module-id> \
   --fallback-view <view-id> \
   --title "Trademark Console" \
   --authority <human-admin-id>
 
-harness company docs page verify \
+firm company docs page verify \
   --definition <custom-page-definition-id>
 
-harness company docs page publish \
+firm company docs page publish \
   --definition <custom-page-definition-id> \
   --version <semver> \
   --artifact-ref <source-or-build-artifact-path> \
@@ -294,7 +294,7 @@ FinancialRecords, and Actors.
 Use explicit structure commands instead of creating duplicate pages:
 
 ```bash
-harness company docs document create \
+firm company docs document create \
   --root \
   --id <root-document-id> \
   --space <document-space-id> \
@@ -302,7 +302,7 @@ harness company docs document create \
   --actor <human-or-agent-id> \
   --authority <human-admin-id>
 
-harness company docs document create \
+firm company docs document create \
   --definition <custom-page-definition-id> \
   --parent-document <document-id> \
   --id <child-document-id> \
@@ -310,21 +310,21 @@ harness company docs document create \
   --title <child-title> \
   --actor <human-or-agent-id>
 
-harness company docs document rename \
+firm company docs document rename \
   --definition <custom-page-definition-id> \
   --document <document-id> \
   --title <new-title> \
   --actor <human-or-agent-id> \
   --dry-run
 
-harness company docs document move \
+firm company docs document move \
   --definition <custom-page-definition-id> \
   --document <document-id> \
   (--parent-document <new-parent-document-id> | --root) \
   --actor <human-or-agent-id> \
   --dry-run
 
-harness company docs document archive \
+firm company docs document archive \
   --definition <custom-page-definition-id> \
   --document <document-id> \
   --actor <human-or-agent-id> \
@@ -352,9 +352,9 @@ View, PageDefinition, and any TypedRecords/Relations through their own commands.
 Use explicit Block commands for content edits instead of replacing the whole
 Document:
 
-Commands: `harness company docs block update`,
-`harness company docs block archive`, and
-`harness company docs block remove`.
+Commands: `firm company docs block update`,
+`firm company docs block archive`, and
+`firm company docs block remove`.
 
 `block update` dispatches a governed `block.append` update for the existing
 Block and keeps `Document.block_ids` unchanged. `block remove` dispatches only
@@ -370,11 +370,11 @@ Finance, Organization, or Execution effects.
 Use TypedRecord and Relation commands for structured business truth. Do not
 hide structured changes inside prose Blocks.
 
-Commands: `harness company docs typed-record update`,
-`harness company docs relation unlink`,
-`harness company docs relation relink`,
-`harness company docs relation repair-missing`, and
-`harness company docs typed-record validate`.
+Commands: `firm company docs typed-record update`,
+`firm company docs relation unlink`,
+`firm company docs relation relink`,
+`firm company docs relation repair-missing`, and
+`firm company docs typed-record validate`.
 
 `typed-record update` dispatches a governed `typed_record.append` update for an
 existing record. It may change title, fields, and lifecycle status; it must not
@@ -412,7 +412,7 @@ Create reusable templates explicitly instead of changing an existing page's
 `Document.kind` in place:
 
 ```bash
-harness company docs template create \
+firm company docs template create \
   --definition <custom-page-definition-id> \
   --parent-document <document-id> \
   --title "Vendor onboarding template" \
@@ -430,7 +430,7 @@ WorkItems, Approvals, or Finance effects.
 Change reusable template lifecycle state explicitly:
 
 ```bash
-harness company docs template status \
+firm company docs template status \
   --definition <custom-page-definition-id> \
   --template <template-document-id> \
   --status active|paused|archived \
@@ -442,10 +442,10 @@ through governed `document.append`. It refuses ordinary pages and does not
 mutate existing Documents that already recorded the template through
 `template_ref`.
 
-`harness company docs document create` may carry a template provenance pointer:
+`firm company docs document create` may carry a template provenance pointer:
 
 ```bash
-harness company docs document create \
+firm company docs document create \
   --definition <custom-page-definition-id> \
   --parent-document <document-id> \
   --title "Vendor onboarding note" \
@@ -458,12 +458,12 @@ New DocumentSpace roots use an explicit administrative bootstrap path rather
 than borrowing another module's PageDefinition:
 
 ```bash
-harness company docs document create \
+firm company docs document create \
   --root \
   --authority <human-admin-id> \
   --id <root-document-id> \
   --space <space-id> \
-  --title "AgentOS / Star Harness" \
+  --title "AgentOS / Firm" \
   --actor <human-or-agent-id>
 ```
 
@@ -480,18 +480,18 @@ updates. It still does not create TypedRecords, Relations, WorkItems,
 Approvals, or Finance effects. If the operation needs canonical records or
 follow-up work, create those through their own governed commands. If a template
 should correspond to a TypedRecord type, first declare the module policy with
-`harness company docs module create --relation-rule-json
+`firm company docs module create --relation-rule-json
 '{"relation_type":"source_for","from_kind":"document","to_kind":"typed_record","required":true,"cross_module":false}'`,
-then create/link the concrete TypedRecord through `harness company docs
-typed-record append` and `harness company docs relation link`.
+then create/link the concrete TypedRecord through `firm company docs
+typed-record append` and `firm company docs relation link`.
 
 ## Structured block authoring
 
-`harness company docs block append` supports plain text shorthand and structured
+`firm company docs block append` supports plain text shorthand and structured
 content:
 
 ```bash
-harness company docs block append \
+firm company docs block append \
   --definition <custom-page-definition-id> \
   --document <document-id> \
   --kind callout \
@@ -520,7 +520,7 @@ kind. They do not create local page truth. Block order is displayed from native
 effect is changing that order:
 
 ```bash
-harness company docs block reorder \
+firm company docs block reorder \
   --definition <custom-page-definition-id> \
   --document <document-id> \
   --block-order <block-id-2,block-id-1> \
@@ -534,11 +534,11 @@ layered on this command later.
 
 ## Standard view configuration
 
-`harness company docs view create` creates a native `View` record. Use it for
+`firm company docs view create` creates a native `View` record. Use it for
 saved presentation over existing module records, not as a second data store.
 
 ```bash
-harness company docs view create \
+firm company docs view create \
   --definition <custom-page-definition-id> \
   --module <business-module-id> \
   --title "Trademark filing board" \
@@ -547,7 +547,7 @@ harness company docs view create \
   --query-json '{"filters":[{"field":"record_type","value":"trademark_application"}],"group_by":"lifecycle_status","sort_by":"updated_at"}' \
   --actor <human-or-agent-id>
 
-harness company docs view update \
+firm company docs view update \
   --definition <custom-page-definition-id> \
   --view <view-id> \
   --query-json '{"group_by":"lifecycle_status"}' \
@@ -567,9 +567,9 @@ only. It must not mutate TypedRecords or create a second source of truth.
 Use review commands before risky cleanup:
 
 ```bash
-harness company docs snapshot --document <document-id>
-harness company docs diff --document <document-id> --proposed-json <json>
-harness company docs change-report --action-json <action-command-json>
+firm company docs snapshot --document <document-id>
+firm company docs diff --document <document-id> --proposed-json <json>
+firm company docs change-report --action-json <action-command-json>
 ```
 
 These commands are report-only. They do not authorize, dispatch, approve,

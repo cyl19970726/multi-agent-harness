@@ -1,9 +1,9 @@
 {
-  "name": "star-harness",
+  "name": "firm",
   "version": "0.4.4",
   "description": "Thin Mission/Wave and autonomous Agent Team integration for Kimi Code.",
   "interface": {
-    "displayName": "Star Harness",
+    "displayName": "Firm",
     "shortDescription": "Plan Missions and coordinate autonomous Agent Teams.",
     "longDescription": "Adds provider-neutral Host and Member skills, Harness MCP registration, lifecycle status hooks, CLI shortcuts, and Dashboard deep links. Product state remains in Harness and provider execution remains in native sessions.",
     "developerName": "Multi-Agent Harness",
@@ -16,7 +16,7 @@
   "sessionStart": {
     "skill": "orchestrate-mission-waves"
   },
-  "skillInstructions": "Use the Harness CLI as the complete path. Mission stores durable intent; Wave stores Host plan and judgment; Agent Team Works store responsibility, status, submission, and Host acceptance; TeamMessage is Work-linked conversation only. Members may use provider-native subagents internally, provider pauses use PendingInteraction, and provider-native sessions remain execution truth.",
+  "skillInstructions": "Use the Firm CLI as the complete path. Mission stores durable intent; Wave stores Host plan and judgment; Agent Team Works store responsibility, status, submission, and Host acceptance; TeamMessage is Work-linked conversation only. Members may use provider-native subagents internally, provider pauses use PendingInteraction, and provider-native sessions remain execution truth.",
   "mcpServers": {
     "harness": {
       "command": "harness",
@@ -27,19 +27,19 @@
     {
       "event": "SessionStart",
       "matcher": "*",
-      "command": "$KIMI_PLUGIN_ROOT/scripts/star-harness-hook.sh",
+      "command": "$KIMI_PLUGIN_ROOT/scripts/firm-hook.sh",
       "timeout": 10
     },
     {
       "event": "UserPromptSubmit",
       "matcher": "*",
-      "command": "$KIMI_PLUGIN_ROOT/scripts/star-harness-hook.sh",
+      "command": "$KIMI_PLUGIN_ROOT/scripts/firm-hook.sh",
       "timeout": 10
     },
     {
       "event": "Stop",
       "matcher": "*",
-      "command": "$KIMI_PLUGIN_ROOT/scripts/star-harness-hook.sh",
+      "command": "$KIMI_PLUGIN_ROOT/scripts/firm-hook.sh",
       "timeout": 10
     }
   ],

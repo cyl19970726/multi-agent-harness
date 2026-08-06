@@ -269,7 +269,7 @@ If the project has a software repo, use `$connect-github-company-os` to map
 external source and delivery facts. The Docs-owned source snapshot starts with:
 
 ```bash
-harness --company <company-store-id> --project <project-binding> \
+firm --company <company-store-id> --project <project-binding> \
   company docs source sync \
   --definition <custom-page-definition-id> \
   --module <software-product-sources-module-id> \
@@ -335,7 +335,7 @@ For current Wanchengwanling dogfood, the active local Company Store is:
 
 ```text
 company_id: agent-company
-store: /Users/hhh0x/.harness/companies/agent-company
+store: /Users/hhh0x/.firm/companies/agent-company
 root_docs_entry: document-wcw-root
 project_home: document-wcw-project-home
 business_model: document-wcw-business-model

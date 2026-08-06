@@ -2,7 +2,7 @@
 
 ## Product mission
 
-Star Harness helps a person and a mixed organization of standing Agents run a
+Firm helps a person and a mixed organization of standing Agents run a
 company through durable documents, explicit responsibility, governed actions,
 and provider-neutral execution tools.
 

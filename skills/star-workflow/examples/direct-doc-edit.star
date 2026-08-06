@@ -5,7 +5,7 @@
 # already landed in the working tree, and the runtime records direct_diff evidence.
 #
 # Run:
-#   harness workflow run-script ./direct-doc-edit.star \
+#   firm workflow run-script ./direct-doc-edit.star \
 #     --args '{"target":"docs/workflow-runtime.md","request":"clarify direct write mode"}'
 
 workflow(

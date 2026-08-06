@@ -16,17 +16,17 @@ Before reading or writing Company OS records, identify the Company Store. Prefer
 one of:
 
 ```bash
-harness company current
-harness --company <company-id> company work ...
-HARNESS_COMPANY=<company-id> harness company work ...
+firm company current
+firm --company <company-id> company work ...
+FIRM_COMPANY=<company-id> firm company work ...
 ```
 
-If no Company is selected, `harness company ...` falls back to the current
+If no Company is selected, `firm company ...` falls back to the current
 project-derived compatibility Store. Treat that as legacy compatibility, not
 the target Agent Company Workspace boundary.
 
 To move legacy Company OS rows into a real Company Store, use
-`harness company migrate-from-project --from-project <project-id|path> --id <company-id>`.
+`firm company migrate-from-project --from-project <project-id|path> --id <company-id>`.
 It copies only `company_os_*.jsonl`; it does not migrate execution records,
 provider sessions, prompts, or runtimes.
 
@@ -178,22 +178,22 @@ protected-action Approval, review, or durable triage.
 Current stable dedicated CLI coverage is strongest for Docs:
 
 ```bash
-harness company docs query --document <document-id>
-harness company docs refs --document <document-id>
-harness company docs related --record <typed-record-id>
+firm company docs query --document <document-id>
+firm company docs refs --document <document-id>
+firm company docs related --record <typed-record-id>
 ```
 
 Work records and Work projections exist through the Company OS Store/API and
-governed Action path. Dedicated `harness company work ...` commands are
+governed Action path. Dedicated `firm company work ...` commands are
 implemented for the first native operating slice: list, query, create, update,
 assign, transition, close, and baseline Milestone lifecycle.
 
 Use:
 
 ```bash
-harness company work query --work-item <work-item-id>
-harness company work list --module <business-module-id> --milestone <milestone-id>
-harness company work create \
+firm company work query --work-item <work-item-id>
+firm company work list --module <business-module-id> --milestone <milestone-id>
+firm company work create \
   --definition <custom-page-definition-id> \
   --source-document <doc-id> \
   --module <business-module-id> \
@@ -205,7 +205,7 @@ harness company work create \
   --submitted-by <actor-id> \
   --accountable-owner <actor-id> \
   [--assignee <actor-id> ...]
-harness company work update \
+firm company work update \
   --definition <custom-page-definition-id> \
   --work-item <work-item-id> \
   --actor <actor-id> \
@@ -217,35 +217,35 @@ harness company work update \
   [--work-type <type>] \
   [--accountable-owner <actor-id>] \
   [--assignee <actor-id> ...]
-harness company work assign \
+firm company work assign \
   --definition <custom-page-definition-id> \
   --work-item <work-item-id> \
   --assignee <actor-id> \
   --assigned-by <actor-id>
-harness company work transition \
+firm company work transition \
   --definition <custom-page-definition-id> \
   --work-item <work-item-id> \
   --status <in_progress|blocked|waiting_for_approval|in_review|completed> \
   --actor <actor-id>
   [--deliverable-ref-json '{"kind":"evidence","id":"..."}' ...]
-harness company work close \
+firm company work close \
   --definition <custom-page-definition-id> \
   --work-item <work-item-id> \
   --actor <actor-id>
-harness company work milestone list
-harness company work milestone show --milestone <milestone-id>
-harness company work milestone create \
+firm company work milestone list
+firm company work milestone show --milestone <milestone-id>
+firm company work milestone create \
   --authority <human-admin-id> \
   --id <milestone-id> \
   --title <title> \
   --outcome <outcome> \
   --accountable-owner <actor-id>
-harness company work milestone update --authority <human-admin-id> --milestone <milestone-id> --status <planned|active|at_risk|achieved|cancelled|archived>
-harness company work milestone close --authority <human-admin-id> --milestone <milestone-id>
+firm company work milestone update --authority <human-admin-id> --milestone <milestone-id> --status <planned|active|at_risk|achieved|cancelled|archived>
+firm company work milestone close --authority <human-admin-id> --milestone <milestone-id>
 ```
 
 `list` and `query` are read-only. Writes require
-`HARNESS_COMPANY_OS_TOKEN`, a matching `CustomPageDefinition`, and an Action
+`FIRM_COMPANY_OS_TOKEN`, a matching `CustomPageDefinition`, and an Action
 policy for `work_item.append`, `work_item.update`, `assignment.append`, or
 `work_item.transition`.
 

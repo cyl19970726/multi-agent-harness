@@ -2,7 +2,7 @@
 
 ## Decision
 
-The Agent Dashboard is an operational control surface over harness state.
+The Agent Dashboard is an operational control surface over firm state.
 
 ## Consequences
 
@@ -10,5 +10,5 @@ It must show legacy dependency graph, team state, message delivery, runtime heal
 evidence, proposal, review, decision, and evaluation visibility. It should
 link to project dashboards instead of replacing them.
 
-Dashboard actions must update canonical harness objects through CLI/API/store
+Dashboard actions must update canonical firm objects through CLI/API/store
 contracts.

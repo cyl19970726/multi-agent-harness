@@ -15,7 +15,7 @@ Live Wave 2 evidence proved adapter compatibility is not runtime availability:
 
 - Kimi returned a quota `403` while its adapter was reviewed and current.
 - Claude's local auth metadata reported logged-in while the standalone SDK
-  returned `403 Request not allowed`, because the Harness process had no
+  returned `403 Request not allowed`, because the Firm process had no
   `HTTP(S)_PROXY` and this host's direct egress to the API is blocked. The
   identical request succeeded through the proxy
   (`apps/claude-member-runner/FINDINGS.md` §F).
@@ -37,7 +37,7 @@ and `ProviderCapacitySnapshot` carries no compatibility field.
 
 ## The Snapshot
 
-`ProviderCapacitySnapshot` (`crates/harness-core/src/lib.rs`) is
+`ProviderCapacitySnapshot` (`crates/firm-core/src/lib.rs`) is
 provider-neutral and execution-mode-specific:
 
 | Field | Meaning |
@@ -130,7 +130,7 @@ this process right now, and whether the account/source could be read. Those
 facts survive the merge.
 
 For `claude_agent_sdk` specifically, **a missing proxy outranks a recorded
-credential rejection**. When the Harness process has no `HTTP(S)_PROXY` and a
+credential rejection**. When the Firm process has no `HTTP(S)_PROXY` and a
 recorded structured failure says `unauthorized`, capacity stays `unknown`, the
 missing-proxy diagnosis is preserved, and the start is **not** gated. The
 recorded rejection is kept in `detail` — it is real evidence, just not a
@@ -166,7 +166,7 @@ proceed <=> anything else (no snapshot, unknown, available, limited, stale)
 ```
 
 Freshness uses `PROVIDER_CAPACITY_DEFAULT_TTL_MS` (5 minutes), overridable with
-`HARNESS_CAPACITY_TTL_MS`. A future-dated or unstamped observation is treated as
+`FIRM_CAPACITY_TTL_MS`. A future-dated or unstamped observation is treated as
 unknown, never fresh.
 
 The block is the product fact and the journal is its record, not its gate: if a
@@ -185,7 +185,7 @@ A blocked member:
 - becomes `blocked`, never submits or completes Work;
 - never opens a native session.
 
-`HARNESS_CAPACITY_PREFLIGHT=off` disables only the probe. That produces no
+`FIRM_CAPACITY_PREFLIGHT=off` disables only the probe. That produces no
 snapshot, and no snapshot never blocks — the honest-unknown semantics are
 unchanged.
 
@@ -208,10 +208,10 @@ Work submit operation with result/evidence refs.
 ## CLI
 
 ```bash
-harness member preflight --json
-harness member preflight --provider codex --json
-harness member preflight --provider claude --canary --timeout-s 120 --json
-harness member preflight --json --fail-on-unavailable
+firm member preflight --json
+firm member preflight --provider codex --json
+firm member preflight --provider claude --canary --timeout-s 120 --json
+firm member preflight --json --fail-on-unavailable
 ```
 
 With `--json` each row reports `capacity`, `capacity_freshness`,
@@ -223,7 +223,7 @@ reports its own answer as stale.
 `--fail-on-unavailable` exits non-zero when any provider returns a fresh
 known-unavailable state; it never fails on `unknown`.
 
-`harness member providers` remains the adapter-compatibility inventory and is
+`firm member providers` remains the adapter-compatibility inventory and is
 unchanged.
 
 ## Dashboard Projection
@@ -238,17 +238,17 @@ unknown rather than as healthy.
 
 | Concern | Test |
 | --- | --- |
-| Snapshot/state/freshness/decision rules | `crates/harness-core/src/lib.rs` (`capacity_*`, `fresh_known_unavailable_capacity_blocks_start`, `unknown_absent_and_stale_capacity_never_block_and_never_claim_available`) |
-| Codex payload parsing, thresholds, signed-out, no invented numbers | `crates/harness-cli/src/codex_app_server.rs` tests |
-| Claude proxy diagnosis, Kimi/Codex never fabricating capacity, structured-only classification, member text never classifying, URL redaction, TTL expiry, silence | `crates/harness-cli/src/main.rs` tests |
-| End-to-end preflight, start guard, queued-WorkDelivery preservation, capacity-vs-compatibility separation | `crates/harness-cli/tests/provider_capacity_preflight.rs` |
+| Snapshot/state/freshness/decision rules | `crates/firm-core/src/lib.rs` (`capacity_*`, `fresh_known_unavailable_capacity_blocks_start`, `unknown_absent_and_stale_capacity_never_block_and_never_claim_available`) |
+| Codex payload parsing, thresholds, signed-out, no invented numbers | `crates/firm-cli/src/codex_app_server.rs` tests |
+| Claude proxy diagnosis, Kimi/Codex never fabricating capacity, structured-only classification, member text never classifying, URL redaction, TTL expiry, silence | `crates/firm-cli/src/main.rs` tests |
+| End-to-end preflight, start guard, queued-WorkDelivery preservation, capacity-vs-compatibility separation | `crates/firm-cli/tests/provider_capacity_preflight.rs` |
 
 ## Known Limits
 
 - The Claude canary exercises the bundled CLI path, not the Agent SDK runtime.
   It is honest about that in `detail`; a true SDK-runtime canary would need a
   runner entry point that does not create a native session.
-- Codex capacity is read for the signed-in account of the Harness process. A
+- Codex capacity is read for the signed-in account of the Firm process. A
   member pinned to a different account is not yet modelled.
 - Kimi stays `unknown` until Moonshot exposes a reviewed quota API. Do not
   approximate it from local logs.

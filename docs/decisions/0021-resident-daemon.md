@@ -20,16 +20,16 @@ the default. It explicitly allowed, in the Decision section, "one run per claime
 delivery (optionally a small warm pool if latency matters)."
 
 The resident Claude path ([../resident-claude.md](../resident-claude.md),
-`crates/harness-cli/src/resident.rs`) holds a `claude` child open across turns to
+`crates/firm-cli/src/resident.rs`) holds a `claude` child open across turns to
 amortize model + MCP warmup. That `ResidentPool` lives **in-process**, but the
-harness CLI is short-lived: every `harness agent deliver` is a fresh process, so
+firm CLI is short-lived: every `firm agent deliver` is a fresh process, so
 an in-process pool dies with the command and never actually keeps a child warm
 across deliveries. The warm pool 0018 anticipated needs a cross-process host.
 
 ## Decision
 
-Add an **internal, unix-only daemon** (`crates/harness-cli/src/resident_daemon.rs`,
-`harness daemon start|status|stop`) that hosts one `Arc<Mutex<ResidentPool>>`
+Add an **internal, unix-only daemon** (`crates/firm-cli/src/resident_daemon.rs`,
+`firm daemon start|status|stop`) that hosts one `Arc<Mutex<ResidentPool>>`
 behind a per-workspace Unix domain socket (`<store-root>/resident.sock`). Each
 short-lived delivery connects, sends one line-delimited JSON `DaemonRequest`
 (exactly the `ResidentPool::run_turn` arguments), and reads one `DaemonResponse`.
@@ -46,8 +46,8 @@ protocol:**
    provider socket, never invents a turn state machine; it writes one
    user-message stream-json frame to stdin and reads to the `result` frame
    (`resident.rs` already does this).
-2. The Unix socket is **internal harness IPC** between the short-lived
-   `harness deliver` CLI and a long-lived harness-owned host — it is NOT a
+2. The Unix socket is **internal firm IPC** between the short-lived
+   `firm deliver` CLI and a long-lived firm-owned host — it is NOT a
    provider transport. 0018's objection was to a *provider* protocol that was
    undocumented/Tier-3; this socket carries `run_turn` arguments between two
    pieces of OUR own code, both of which still drive the provider via the
@@ -59,7 +59,7 @@ protocol:**
 ## Consequences
 
 - **Opt-in and degrading:** the resident path is still gated by
-  `HARNESS_CLAUDE_RESIDENT=1` (0018-era behavior). Within it, the daemon is used
+  `FIRM_CLAUDE_RESIDENT=1` (0018-era behavior). Within it, the daemon is used
   ONLY when a probe-connect to the socket succeeds; otherwise delivery falls
   through to the existing inline single-turn resident path. Flag unset → exec
   path → daemon code never reached. Default behavior is byte-for-byte unchanged.
@@ -81,7 +81,7 @@ protocol:**
 ## Validation
 
 ```bash
-cargo test -p harness-cli
+cargo test -p firm-cli
 ```
 
 The core proof is the integration test

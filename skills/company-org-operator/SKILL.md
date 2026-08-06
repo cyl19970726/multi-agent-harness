@@ -16,17 +16,17 @@ Before reading or writing Company OS records, identify the Company Store. Prefer
 one of:
 
 ```bash
-harness company current
-harness --company <company-id> company org ...
-HARNESS_COMPANY=<company-id> harness company org ...
+firm company current
+firm --company <company-id> company org ...
+FIRM_COMPANY=<company-id> firm company org ...
 ```
 
-If no Company is selected, `harness company ...` falls back to the current
+If no Company is selected, `firm company ...` falls back to the current
 project-derived compatibility Store. Treat that as legacy compatibility, not
 the target Agent Company Workspace boundary.
 
 To move legacy Company OS rows into a real Company Store, use
-`harness company migrate-from-project --from-project <project-id|path> --id <company-id>`.
+`firm company migrate-from-project --from-project <project-id|path> --id <company-id>`.
 It copies only `company_os_*.jsonl`; it does not migrate execution records,
 provider sessions, prompts, or runtimes.
 
@@ -79,17 +79,17 @@ link with `--execution-agent-member-ref <agent-member-id>`. For a Standing Agent
 that already exists, use the governed relation commands instead:
 
 ```bash
-harness company org link-execution \
+firm company org link-execution \
   --authority <human-id> --actor <standing-agent-id> \
   --agent-member <agent-member-id> --execution-space <space-id>
 
-harness company org unlink-execution \
+firm company org unlink-execution \
   --authority <human-id> --actor <standing-agent-id> \
   [--expect-agent-member <agent-member-id>]
 ```
 
 `--execution-space` is required and never defaults: AgentMember truth lives in
-an Execution Space, and `harness company ...` resolves the Company Store only
+an Execution Space, and `firm company ...` resolves the Company Store only
 (ADR 0042). The named space is opened read-only to confirm the AgentMember
 exists, so a typo fails loudly instead of persisting a dangling reference. Type
 both ids even when they are equal. Re-running the same pair changes nothing
@@ -153,23 +153,23 @@ that company authority.
 ## Current interface state
 
 Organization records exist through the Company OS Store/API. The first
-dedicated `harness company org ...` command family is implemented for
+dedicated `firm company org ...` command family is implemented for
 inspection and Human administrative authoring of actors, OrgUnits,
 Memberships, declared actor status, and permission/capability refs.
 
 Use:
 
 ```bash
-harness company org list [--actor-kind human|agent|external|service] [--status <status>] [--unit <org-unit-id>]
-harness company org query --actor <actor-id> [--actor-kind human|agent|external|service]
-harness company org query --unit <org-unit-id>
-harness company org query --membership <membership-id>
-harness company org create-human \
+firm company org list [--actor-kind human|agent|external|service] [--status <status>] [--unit <org-unit-id>]
+firm company org query --actor <actor-id> [--actor-kind human|agent|external|service]
+firm company org query --unit <org-unit-id>
+firm company org query --membership <membership-id>
+firm company org create-human \
   --id <human-id> \
   --display-name <name> \
   --responsibility <summary> \
   --authority <human-admin-id>
-harness company org create-agent \
+firm company org create-agent \
   --id <standing-agent-id> \
   --display-name <name> \
   --role <role> \
@@ -177,24 +177,24 @@ harness company org create-agent \
   --authority <human-admin-id> \
   [--execution-agent-member-ref <agent-member-id>] \
   [--skill <skill-id> --tool <tool-id> --permission <policy> --capability <capability>]
-harness company org create-unit \
+firm company org create-unit \
   --id <org-unit-id> \
   --name <name> \
   --purpose <purpose> \
   --authority <human-admin-id> \
   [--parent-unit <id> --human-lead <human-id> --agent-lead <agent-id>]
-harness company org add-membership \
+firm company org add-membership \
   --unit <org-unit-id> \
   --actor <actor-id> \
   --actor-kind human|agent|external|service \
   --role lead|member|advisor|observer|external_partner \
   --authority <human-admin-id>
-harness company org transition-actor \
+firm company org transition-actor \
   --actor <actor-id> \
   --actor-kind human|agent|external|service \
   --status active|invited|paused|ended|archived \
   --authority <human-admin-id>
-harness company org update-permissions \
+firm company org update-permissions \
   --actor <actor-id> \
   --actor-kind human|agent|external|service \
   --permission <policy-ref> \
@@ -204,18 +204,18 @@ harness company org update-permissions \
 The nested operator aliases are also available:
 
 ```bash
-harness company org actor list
-harness company org actor show --actor <actor-id>
-harness company org actor create-human --id <human-id> --name <name> --responsibility <summary>
-harness company org actor create-agent --authority <human-admin-id> --id <agent-id> --name <name> --role <role> --responsibility <summary> --permission <policy-ref> --capability <capability-ref>
-harness company org actor update-status --authority <human-admin-id> --actor <actor-id> --status active|paused|ended|archived
-harness company org unit list
-harness company org unit show --unit <org-unit-id>
-harness company org unit create --authority <human-admin-id> --id <unit-id> --name <name> --purpose <purpose> --human-lead <human-id> --agent-lead <agent-id>
-harness company org unit update-status --authority <human-admin-id> --unit <unit-id> --status active|paused|archived
-harness company org membership list
-harness company org membership assign --authority <human-admin-id> --unit <unit-id> --actor <actor-id> --actor-kind human|agent|external|service --role lead|member|advisor|observer|external_partner
-harness company org membership update-status --authority <human-admin-id> --membership <membership-id> --status active|invited|paused|ended
+firm company org actor list
+firm company org actor show --actor <actor-id>
+firm company org actor create-human --id <human-id> --name <name> --responsibility <summary>
+firm company org actor create-agent --authority <human-admin-id> --id <agent-id> --name <name> --role <role> --responsibility <summary> --permission <policy-ref> --capability <capability-ref>
+firm company org actor update-status --authority <human-admin-id> --actor <actor-id> --status active|paused|ended|archived
+firm company org unit list
+firm company org unit show --unit <org-unit-id>
+firm company org unit create --authority <human-admin-id> --id <unit-id> --name <name> --purpose <purpose> --human-lead <human-id> --agent-lead <agent-id>
+firm company org unit update-status --authority <human-admin-id> --unit <unit-id> --status active|paused|archived
+firm company org membership list
+firm company org membership assign --authority <human-admin-id> --unit <unit-id> --actor <actor-id> --actor-kind human|agent|external|service --role lead|member|advisor|observer|external_partner
+firm company org membership update-status --authority <human-admin-id> --membership <membership-id> --status active|invited|paused|ended
 ```
 
 Current v1 boundary:
@@ -235,7 +235,7 @@ Current v1 boundary:
 
 ADR 0052 (`docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md`)
 establishes durable AgentMember identities as the Agent Team Organization foundation.
-The cutover CLI (`harness org`) manages durable identities independently of runtime
+The cutover CLI (`firm org`) manages durable identities independently of runtime
 sessions, compatibility registry rows, or one-off MemberRuns. Use these commands
 when creating, converging, inspecting, or auditing durable AgentMember identities
 and their Host authority relationships.
@@ -244,7 +244,7 @@ and their Host authority relationships.
 
 ```bash
 # Create a durable AgentMember identity (writes durable_agent_members.jsonl)
-harness org member create \
+firm org member create \
   --name <name> \
   --description <description> \
   --role <role> \
@@ -258,17 +258,17 @@ harness org member create \
   [--created-by-member <member-id>]
 
 # Converge a compatibility AgentMember (members.jsonl) into a durable member
-harness org member converge \
+firm org member converge \
   --id <id> \
   [--project-binding <project-id>] \
   [--business-access-ceiling <ref>]... \
   [--created-by-member <member-id>]
 
 # List all durable members (latest-row-wins projection)
-harness org member list
+firm org member list
 
 # Show a single durable member by id
-harness org member show --id <id>
+firm org member show --id <id>
 ```
 
 Durable member status: `Active`, `Paused`, `Retired`. Converge maps
@@ -280,7 +280,7 @@ produces the same row; it never silently rewrites an existing identity.
 
 ```bash
 # Bootstrap a root AgentTeam with a durable Host member (one atomic operation)
-harness org bootstrap-lead \
+firm org bootstrap-lead \
   --team <team-id> \
   --name <name> \
   --description <description> \
@@ -291,13 +291,13 @@ harness org bootstrap-lead \
   [--project-binding <project-id>]
 
 # Resolve the Host authority for an AgentTeam
-harness org host --team <team-id>
+firm org host --team <team-id>
 
 # Validate organization topology and Host-authority state
-harness org cutover-audit
+firm org cutover-audit
 ```
 
-`bootstrap-lead` expects the team to already exist (created with `harness team create`).
+`bootstrap-lead` expects the team to already exist (created with `firm team create`).
 It sets the team's `host_member_id` and `owner_agent_id` to the durable member id.
 `host` resolves the authoritative Host member (source: `explicit` or
 `owner_agent_id_compatibility`). `cutover-audit` validates cycle-free topology,
@@ -307,8 +307,8 @@ host-member existence, and no conflicting `owner_agent_id` / `host_member_id` pa
 
 | Surface | Scope | Store |
 |---------|-------|-------|
-| `harness org member` | Durable AgentMember identity for Agent Teams | `durable_agent_members.jsonl`, `teams.jsonl` |
-| `harness company org` | Company OS Standing Agents, Humans, OrgUnits, Memberships | Company Store (`company_os_*.jsonl`) |
+| `firm org member` | Durable AgentMember identity for Agent Teams | `durable_agent_members.jsonl`, `teams.jsonl` |
+| `firm company org` | Company OS Standing Agents, Humans, OrgUnits, Memberships | Company Store (`company_os_*.jsonl`) |
 
 The cutover CLI lives at the Execution Space level and feeds the Agent Team
 kernel. Company OS organization records are a separate durable surface.

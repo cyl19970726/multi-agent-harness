@@ -43,15 +43,15 @@ whose pair exactly matches the calling task.
 The CLI supports:
 
 ```bash
-harness team-run create ... \
+firm team-run create ... \
   --host-surface codex-app \
   --host-thread-id <native-session-id>
 
-harness team-run bind-host --id <run> \
+firm team-run bind-host --id <run> \
   --surface codex-app \
   --thread-id <native-session-id>
 
-harness team-run host-inbox \
+firm team-run host-inbox \
   --surface codex-app \
   --thread-id <native-session-id> \
   --json
@@ -80,7 +80,7 @@ daemon.
 
 ### Codex safe-boundary delivery
 
-The Star Harness Codex hook reads the common hook `session_id` and only queries
+The Firm Codex hook reads the common hook `session_id` and only queries
 the matching `codex-app` Host binding.
 
 - `SessionStart` publishes the binding instructions and actionable Inbox.

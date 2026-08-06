@@ -89,7 +89,7 @@ returned to ordinary Dashboard clients.
 
 ## Write boundary
 
-Provider adapters may write only the Harness facts created by crossing a
+Provider adapters may write only the Firm facts created by crossing a
 coordination boundary:
 
 | Provider occurrence | Harness write |

@@ -109,7 +109,7 @@ unsupported or unobserved. It is never promoted into a synthetic MemberRun.
 
 ### Packaging and call surfaces
 
-The resident Harness service owns Store, read models, event stream, and MCP.
+The resident Firm service owns Store, read models, event stream, and MCP.
 Provider plugins remain thin distribution packages.
 
 | Layer | Role |

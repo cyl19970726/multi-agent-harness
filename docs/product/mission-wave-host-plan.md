@@ -30,7 +30,7 @@ external memory without turning that memory into a rigid scheduler.
 Mission context:
 
 ```markdown
-# Ship Star Harness host integration
+# Ship Firm host integration
 
 Deliver a repeatable Codex-first integration with a live Dashboard. Preserve
 provider-native sessions and use Kimi only for targeted review.
@@ -61,7 +61,7 @@ passes; the interaction lane may carry into a later entry.
 ```
 
 ```bash
-harness mission log append --mission-id <id> --kind judgment \
+firm mission log append --mission-id <id> --kind judgment \
   --body "$(cat wave-1-judgment.md)"
 ```
 
@@ -79,7 +79,7 @@ Add RepairFixer only if the live interaction check finds a defect.
 ```
 
 ```bash
-harness mission log append --mission-id <id> --kind judgment \
+firm mission log append --mission-id <id> --kind judgment \
   --body "$(cat integrate-judgment.md)"
 ```
 
@@ -109,7 +109,7 @@ session continue.
   composition change, recovery, or a model/provider switch — the Host appends
   the judgment entry before mutating runs or Works, never as after-the-fact
   narration.
-- Mandatory readers: the recovery entrypoint (`harness team-run recover`)
+- Mandatory readers: the recovery entrypoint (`firm team-run recover`)
   prints the linked Mission's Log tail before any mutation; a replacement
   Host derives its native goal/plan from `mission show` plus the Log tail
   plus the board summary, never from provider-native goal/plan state, which
@@ -203,7 +203,7 @@ Keep the approved Mission Canvas layout. Make targeted semantic changes:
 - The Mission Log renders newest-first as a plain list: revision, kind badge
   (`judgment`/`replan`/`recovery`/`closeout_evidence`), body, and created_at.
   It is a read projection in this cutover; recording judgment goes through
-  `harness mission log append`, not a Dashboard write form.
+  `firm mission log append`, not a Dashboard write form.
 - The Wave canvas/list is labeled **Historical** and renders read-only: full
   Markdown context and revision history for rows that predate ADR 0051. It
   never gains new entries.
@@ -247,7 +247,7 @@ The preferred Host experience is:
 ```text
 thin orchestration skill
         ↓
-canonical Harness CLI
+canonical Firm CLI
         ↓
 shared application services
         ├─ optional thin MCP adapter

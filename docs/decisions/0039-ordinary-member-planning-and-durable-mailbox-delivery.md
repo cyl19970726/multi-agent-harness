@@ -152,7 +152,7 @@ Completing or advancing a Wave, TeamRun, or Mission never implies Close.
 Close intent is durably latched before process-local teardown; a racing lease,
 receiver, or reconnect cannot revive the Member after Host Close.
 
-The Harness process that starts a TeamRun supervises every unclosed Member.
+The Firm process that starts a TeamRun supervises every unclosed Member.
 Unexpected provider transport loss records an explicit `disconnected` action,
 keeps the native-session binding, and resumes that session rather than
 replaying stale Work content. Re-running TeamRun start after a Host process restart
@@ -164,7 +164,7 @@ operation.
 
 ### Member detail is a coordination projection
 
-`harness member-run show --id <member-run-id> --json` is the canonical
+`firm member-run show --id <member-run-id> --json` is the canonical
 single-member operator read. It joins:
 
 - MemberRun identity, status, provider profile, Workspace and worktree facts;

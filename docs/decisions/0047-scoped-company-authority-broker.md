@@ -9,7 +9,7 @@ owner_role: company-authority-architecture
 ## Context
 
 Company OS write transport currently depends on the service-side
-`HARNESS_COMPANY_OS_TOKEN`. Action policy then validates Company Actor status,
+`FIRM_COMPANY_OS_TOKEN`. Action policy then validates Company Actor status,
 permission refs, scope, risk, and Human Approval. Giving the root transport
 secret to a StandingAgent, AgentMember, MemberRun, or provider-native session
 would collapse those layers and make one execution binding a Company

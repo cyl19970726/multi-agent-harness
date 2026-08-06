@@ -17,7 +17,7 @@ Expected images were not promoted into V2 and did not constrain V2 composition.
 V1 Actual = current browser baseline
 V2.2 Expected = generated product and visual intent, approved for implementation
 V2.2 Fixture Actual = deterministic browser implementation evidence
-V2.2 Store-live Actual = browser evidence from an authority-labelled Harness Store projection
+V2.2 Store-live Actual = browser evidence from an authority-labelled Firm Store projection
 ```
 
 The redesign starts with six P0 mother pages:
@@ -67,7 +67,7 @@ Review artifacts:
 - `prompts/`
 - `expected/`
 - `actual/` — deterministic-fixture browser evidence;
-- `store-live-actual/` — browser renders backed by an archived Harness Store.
+- `store-live-actual/` — browser renders backed by an archived Firm Store.
 - [`approval-action-v1/review.html`](approval-action-v1/review.html) — the first
   governed browser interaction: requested, invalid capability denied, approved,
   and rejected, with ActionCommand/audit evidence in the adjacent manifest.

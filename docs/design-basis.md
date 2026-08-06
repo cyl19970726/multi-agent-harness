@@ -6,7 +6,7 @@ owner_role: product-architecture
 canonical_for: system decomposition, module core ideas, truth boundaries, and documentation structure
 ```
 
-The PRD explains why Star Harness exists. Architecture and schemas describe
+The PRD explains why Firm exists. Architecture and schemas describe
 what is implemented. This document explains why the product is decomposed into
 Company OS truth systems plus a separate execution foundation.
 

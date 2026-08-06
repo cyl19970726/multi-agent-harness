@@ -12,10 +12,10 @@ consequences, affected modules, and validation path.
 | [0004](0004-file-store-before-database.md) | active | File store before database |
 | [0005](0005-self-hosting-first.md) | active | Self-hosting first |
 | [0008](0008-persistent-codex-agent-runtime.md) | amended | Persistent Codex Agent runtime; provider lifecycle refined by 0018, 0020 and 0021 |
-| [0010](0010-harness-store-is-canonical.md) | active | Harness store is canonical for execution records |
+| [0010](0010-firm-store-is-canonical.md) | active | Harness store is canonical for execution records |
 | [0011](0011-provider-neutral-runtime.md) | active | Provider-neutral runtime before provider implementations |
 | [0012](0012-dashboard-is-control-plane.md) | scoped | Dashboard is the execution operator control plane, not the Company OS truth owner |
-| [0013](0013-pr-merge-is-not-harness-acceptance.md) | active | PR merge is not Harness acceptance |
+| [0013](0013-pr-merge-is-not-firm-acceptance.md) | active | PR merge is not Harness acceptance |
 | [0014](0014-react-vite-agent-dashboard.md) | scoped | React/Vite frontend platform; earlier product IA is superseded |
 | [0016](0016-tailwind-shadcn-adoption.md) | active | Tailwind v4 + shadcn/ui adoption |
 | [0018](0018-exec-stream-primary-substrate.md) | superseded for Agent Team | Historical exec-stream decision; retained for bounded Workflow context |
