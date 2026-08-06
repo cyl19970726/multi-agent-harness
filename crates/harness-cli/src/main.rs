@@ -17,13 +17,13 @@ use harness_core::{
     validate_agent_team_topology, validate_host_authority_cutover, AgentEvent, AgentMember,
     AgentMemberStatus, AgentMessageRoute, AgentProviderConfig, AgentRuntime, AgentRuntimeHealth,
     AgentRuntimeStatus, AgentTeam, AgentTeamRun, AgentTeamStatus, DelegationRun,
-    DurableAgentMember, DurableAgentMemberStatus, Evidence, ExecutionSpace, HostControlMode,
-    LaunchMcp, LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus,
-    MemberCoordinationStatus, MemberExecutionDriver, MemberRun, MemberRunStatus,
-    MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus, MessageKind,
-    MessageTerminalSource, Mission, MissionLogEntry, MissionLogEntryKind, MissionStatus,
-    NativeSessionAvailability, NativeSessionRef, OrdinaryMessageBoundary, PendingInteraction,
-    PendingInteractionKind, PendingInteractionOption, PendingInteractionRoute,
+    DurableAgentMember, DurableAgentMemberStatus, Evidence, ExecutionSpace, GitHubLink,
+    GitHubLinkKind, HostControlMode, LaunchMcp, LaunchPermission, LaunchSpec, MemberAction,
+    MemberActionStatus, MemberCoordinationStatus, MemberExecutionDriver, MemberRun,
+    MemberRunStatus, MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus,
+    MessageKind, MessageTerminalSource, Mission, MissionLogEntry, MissionLogEntryKind,
+    MissionStatus, NativeSessionAvailability, NativeSessionRef, OrdinaryMessageBoundary,
+    PendingInteraction, PendingInteractionKind, PendingInteractionOption, PendingInteractionRoute,
     PendingInteractionStatus, ProjectContext, ProjectKind, ProviderAccountRef,
     ProviderCapabilities, ProviderCapacityConfidence, ProviderCapacityEvidence,
     ProviderCapacitySnapshot, ProviderCapacityState, ProviderCompatibilityStatus,
@@ -11927,6 +11927,7 @@ fn create_team_run(
                     blocker_reason: None,
                     artifact_refs: Vec::new(),
                     check_refs: Vec::new(),
+                    github_links: Vec::new(),
                     version: 0,
                     created_at: String::new(),
                     updated_at: String::new(),
@@ -12060,6 +12061,7 @@ fn add_team_run_member(
                         blocker_reason: None,
                         artifact_refs: Vec::new(),
                         check_refs: Vec::new(),
+                        github_links: Vec::new(),
                         version: 0,
                         created_at: String::new(),
                         updated_at: String::new(),
@@ -14076,6 +14078,187 @@ fn team_run_board_summary_text(store: &HarnessStore, team_run_id: &str) -> CliRe
     Ok(lines.join("\n"))
 }
 
+/// Parse `owner/repo#N` into `(owner, repo, number)` for the `--github-issue`
+/// and `--github-pr` flags. `N` must be a positive integer.
+fn parse_github_ref(raw: &str) -> CliResult<(String, String, u64)> {
+    let (repo_ref, number_ref) = raw.rsplit_once('#').ok_or_else(|| {
+        CliError::Usage(format!(
+            "--github-issue/--github-pr expects owner/repo#N, got {raw:?} (e.g. octocat/hello-world#42)"
+        ))
+    })?;
+    let number = number_ref
+        .parse::<u64>()
+        .map_err(|_| CliError::Usage(format!("invalid GitHub issue/PR number in {raw:?}")))?;
+    if number == 0 {
+        return Err(CliError::Usage(format!(
+            "GitHub issue/PR number must be positive, got {raw:?}"
+        )));
+    }
+    let (owner, repo) = repo_ref.split_once('/').ok_or_else(|| {
+        CliError::Usage(format!(
+            "--github-issue/--github-pr expects owner/repo#N, got {raw:?} (missing '/')"
+        ))
+    })?;
+    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
+        return Err(CliError::Usage(format!(
+            "--github-issue/--github-pr expects owner/repo#N, got {raw:?}"
+        )));
+    }
+    Ok((owner.to_string(), repo.to_string(), number))
+}
+
+/// Run `gh <args...>` and parse its stdout as JSON.
+///
+/// The `gh` CLI must be installed and authenticated; any failure is surfaced
+/// with the underlying `gh` stderr so a member can diagnose (missing binary,
+/// expired auth, network) without guessing.
+fn gh_json(args: &[&str]) -> CliResult<serde_json::Value> {
+    let output = Command::new("gh").args(args).output().map_err(|error| {
+        CliError::Usage(format!(
+            "could not run `gh {}`: {error} (is the GitHub CLI installed?)",
+            args.join(" ")
+        ))
+    })?;
+    if !output.status.success() {
+        return Err(CliError::Usage(format!(
+            "`gh {}` failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    serde_json::from_slice(&output.stdout).map_err(|error| {
+        CliError::Usage(format!(
+            "`gh {}` returned non-JSON output: {error}",
+            args.join(" ")
+        ))
+    })
+}
+
+/// Best-effort PR CI summary from `gh pr checks`. `gh pr view` already proved
+/// the link and auth above, so "no checks reported" (e.g. a PR merged without
+/// CI) yields `(None, None)` rather than failing the whole submit.
+fn github_pr_ci_summary(owner: &str, repo: &str, number: u64) -> (Option<String>, Option<String>) {
+    let Ok(value) = gh_json(&[
+        "pr",
+        "checks",
+        &number.to_string(),
+        "--repo",
+        &format!("{owner}/{repo}"),
+        "--json",
+        "name,state,link",
+    ]) else {
+        return (None, None);
+    };
+    let Some(checks) = value.as_array() else {
+        return (None, None);
+    };
+    if checks.is_empty() {
+        return (None, None);
+    }
+    let mut saw_pending = false;
+    for check in checks {
+        let state = check
+            .get("state")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        if state == "FAILURE" {
+            let ci_url = check
+                .get("link")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string();
+            return (Some("failure".to_string()), Some(ci_url));
+        }
+        if state == "PENDING" || state == "IN_PROGRESS" || state == "STARTUP_FAILURE" {
+            saw_pending = true;
+        }
+    }
+    if saw_pending {
+        return (
+            Some("pending".to_string()),
+            checks
+                .first()
+                .and_then(|check| check.get("link"))
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+        );
+    }
+    (
+        Some("success".to_string()),
+        checks
+            .first()
+            .and_then(|check| check.get("link"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+    )
+}
+
+/// Build the [`GitHubLink`] snapshot for `work create --github-issue
+/// owner/repo#N`, fetching the live issue state from the GitHub API.
+fn github_issue_link(raw: &str) -> CliResult<GitHubLink> {
+    let (owner, repo, number) = parse_github_ref(raw)?;
+    let value = gh_json(&[
+        "issue",
+        "view",
+        &number.to_string(),
+        "--repo",
+        &format!("{owner}/{repo}"),
+        "--json",
+        "state,url",
+    ])?;
+    Ok(GitHubLink {
+        kind: GitHubLinkKind::Issue,
+        owner,
+        repo,
+        number,
+        url: value
+            .get("url")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| CliError::Usage("gh issue view returned no url".to_string()))?
+            .to_string(),
+        status: value
+            .get("state")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        ci_status: None,
+        ci_url: None,
+    })
+}
+
+/// Build the [`GitHubLink`] snapshot for `work submit --github-pr
+/// owner/repo#N`: PR state from `gh pr view` plus a best-effort CI summary
+/// from `gh pr checks`.
+fn github_pr_link(raw: &str) -> CliResult<GitHubLink> {
+    let (owner, repo, number) = parse_github_ref(raw)?;
+    let value = gh_json(&[
+        "pr",
+        "view",
+        &number.to_string(),
+        "--repo",
+        &format!("{owner}/{repo}"),
+        "--json",
+        "state,url",
+    ])?;
+    let (ci_status, ci_url) = github_pr_ci_summary(&owner, &repo, number);
+    Ok(GitHubLink {
+        kind: GitHubLinkKind::PullRequest,
+        owner,
+        repo,
+        number,
+        url: value
+            .get("url")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| CliError::Usage("gh pr view returned no url".to_string()))?
+            .to_string(),
+        status: value
+            .get("state")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        ci_status,
+        ci_url,
+    })
+}
+
 fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
@@ -14222,6 +14405,17 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 } else {
                     WorkClaimMode::TeamClaim
                 });
+            // `--github-issue owner/repo#N` links the Work to a GitHub issue and
+            // auto-populates artifact_refs with the issue URL (issue #369).
+            let mut github_links = Vec::new();
+            let mut artifact_refs = Vec::new();
+            if let Some(raw) = value(args, "--github-issue") {
+                let link = github_issue_link(&raw)?;
+                if !artifact_refs.contains(&link.url) {
+                    artifact_refs.push(link.url.clone());
+                }
+                github_links.push(link);
+            }
             let work = Work {
                 id: value(args, "--work-id").unwrap_or_else(|| generated_id("work")),
                 team_run_id,
@@ -14245,8 +14439,9 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 created_by_actor: context.performed_by_actor.clone(),
                 result_summary: None,
                 blocker_reason: None,
-                artifact_refs: Vec::new(),
+                artifact_refs,
                 check_refs: Vec::new(),
+                github_links,
                 version: 0,
                 created_at: String::new(),
                 updated_at: String::new(),
@@ -14345,13 +14540,32 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
         "submit" => {
             let team_run_id = required(args, "--team-run-id")?;
             let member_run_id = required(args, "--member-run-id")?;
-            print_json(&store.submit_work(
+            // `--github-pr owner/repo#N` attaches the PR to the submission,
+            // auto-fetches its CI status via the `gh` API, and auto-populates
+            // artifact_refs (PR URL) + check_refs (CI checks URL) (issue #369).
+            let mut artifact_refs = many(args, "--artifact-ref");
+            let mut check_refs = many(args, "--check-ref");
+            let mut github_links = Vec::new();
+            if let Some(raw) = value(args, "--github-pr") {
+                let link = github_pr_link(&raw)?;
+                if !artifact_refs.contains(&link.url) {
+                    artifact_refs.push(link.url.clone());
+                }
+                if let Some(ci_url) = &link.ci_url {
+                    if !check_refs.contains(ci_url) {
+                        check_refs.push(ci_url.clone());
+                    }
+                }
+                github_links.push(link);
+            }
+            print_json(&store.submit_work_with_links(
                 &required(args, "--work-id")?,
                 required_work_version(args)?,
                 &member_run_id,
                 &required(args, "--result")?,
-                many(args, "--artifact-ref"),
-                many(args, "--check-ref"),
+                artifact_refs,
+                check_refs,
+                github_links,
                 member_work_context(args, &team_run_id, &member_run_id)?,
             )?)
         }
@@ -26261,6 +26475,7 @@ fn create_team_work_value(
         blocker_reason: None,
         artifact_refs: Vec::new(),
         check_refs: Vec::new(),
+        github_links: Vec::new(),
         version: 0,
         created_at: String::new(),
         updated_at: String::new(),
@@ -35779,6 +35994,7 @@ const CHEATSHEET_WORK: &str = r#"work create          --team-run-id <id> --title
                     [--claim-mode team_claim --eligible-member-id <id>]
                     [--priority low|normal|high|urgent] [--context <md>]
                     [--prerequisite-work-id <id>] [--idempotency-key <key>]
+                    [--github-issue owner/repo#N]
 work list            --team-run-id <id> [--brief] [--since <cursor>]
                     [--status <status>] [--member-run-id <id>]
 work show            --work-id <id>
@@ -35821,9 +36037,13 @@ team-run recover --id <id> [--json]
 work create --team-run-id <id> --title <text> --completion-criteria <text>
   [--owner-member-run-id <id> --claim-mode host_assign]
   [--claim-mode team_claim --eligible-member-id <id>] [--idempotency-key <key>]
+  [--github-issue owner/repo#N]
 work list --team-run-id <id> [--brief] [--since <cursor>]
 work show --work-id <id>
 work assign --work-id <id> --expected-version <n> --member-run-id <id> [--idempotency-key <key>]
+work submit --team-run-id <id> --member-run-id <id> --work-id <id>
+  --expected-version <n> --result <text> [--artifact-ref <url>] [--check-ref <url>]
+  [--github-pr owner/repo#N]
 work accept --work-id <id> --expected-version <n> [--idempotency-key <key>]
 work request-changes --work-id <id> --expected-version <n> --reason <text> [--idempotency-key <key>]
 
