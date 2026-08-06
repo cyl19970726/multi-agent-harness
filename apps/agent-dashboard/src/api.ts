@@ -127,6 +127,8 @@ export interface DocsV2PageView {
   blocks: DocsV2BlockView[];
   /** F4: live-resolved entity_embed targets keyed by `<kind>:<id>`. */
   resolved_embeds?: Record<string, DocsV2ResolvedEmbed>;
+  /** R2: true when the page is a read-only projection of legacy blocks. */
+  legacy_projection?: boolean;
 }
 
 export interface DocsV2PageIndexItem {

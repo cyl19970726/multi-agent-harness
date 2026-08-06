@@ -122,7 +122,7 @@ export interface CompanyOsRelationRepairCommand {
 
 export interface CompanyOsDocsActionCommand {
   id: string;
-  command_name: "document.append" | "block.append" | "typed_record.append" | "view.append" | "relation.append";
+  command_name: "typed_record.append" | "view.append" | "relation.append";
   subject_ref: CompanyOsEntityRef;
   requested_by: CompanyOsActorRef;
   payload: {
@@ -140,26 +140,6 @@ export interface CompanyOsDocsActionCommand {
   completed_at: null;
 }
 
-export interface CompanyOsDocumentAuthoringContext {
-  definitionId: string;
-  documentPolicyRef: string;
-  blockPolicyRef: string;
-  documentId: string;
-  spaceId: string;
-  parentDocumentId: string | null;
-  documentKind: string;
-  lifecycleStatus: string;
-  blockIds: string[];
-  permissionPolicyRefs: string[];
-  referenceRefs: CompanyOsEntityRef[];
-  templateRef?: string | null;
-  templateOptions?: CompanyOsTemplateOption[];
-  templateRecordPolicy?: CompanyOsTemplateRecordPolicy;
-  createdBy: CompanyOsActorRef;
-  createdAt: string;
-  requestedBy: CompanyOsActorRef;
-}
-
 export interface CompanyOsModuleAuthoringContext {
   definitionId: string;
   moduleId: string;
@@ -168,65 +148,6 @@ export interface CompanyOsModuleAuthoringContext {
   relationPolicyRef: string;
   viewPolicyRef: string;
   requestedBy: CompanyOsActorRef;
-}
-
-export interface CompanyOsProperty {
-  label: string;
-  value: ReactNode;
-  ref?: string;
-  actorType?: CompanyOsLink["actorType"];
-}
-
-export interface CompanyOsSimpleTable {
-  columns: string[];
-  rows: Array<Array<ReactNode>>;
-  caption?: string;
-}
-
-export type CompanyOsDocumentBlock =
-  | { id: string; type: "paragraph"; content: ReactNode }
-  | { id: string; type: "heading"; level?: 2 | 3; content: ReactNode }
-  | { id: string; type: "bullets"; items: ReactNode[] }
-  | { id: string; type: "callout"; title?: string; content: ReactNode; tone?: "neutral" | "warning" | "success" }
-  | { id: string; type: "table"; table: CompanyOsSimpleTable }
-  | { id: string; type: "relations"; label?: string; links: CompanyOsLink[] }
-  | { id: string; type: "custom"; content: ReactNode };
-
-export interface CompanyOsDocumentPageData {
-  id?: string;
-  title: string;
-  /** Label chain for the Document's location: space, ancestors, then the Document itself. */
-  breadcrumb?: string[];
-  /**
-   * Navigable ancestor Documents derived from Document.parent_document_id, oldest
-   * first; the last item is the current Document and carries no href.
-   */
-  breadcrumbs?: CompanyOsLink[];
-  /** Active child Documents scoped to this Document through parent_document_id. */
-  childDocuments?: CompanyOsLink[];
-  /** Documents that reference this Document through snapshot Relations or reference_refs. */
-  backlinks?: CompanyOsLink[];
-  /** Set when an explicit document selection does not resolve in this projection. */
-  missingDocumentId?: string;
-  space?: string;
-  lifecycleStatus?: string;
-  description?: string;
-  documentTree?: CompanyOsWorkspaceTreeItem[];
-  properties?: CompanyOsProperty[];
-  blocks: CompanyOsDocumentBlock[];
-  sourceLinks?: CompanyOsLink[];
-  resultLinks?: CompanyOsLink[];
-  /**
-   * WorkItems that reference this Document through any canonical ref, deduplicated to
-   * one entry per WorkItem. `meta` states every reason the entry is listed, so a
-   * WorkItem that is both source and context reads as one item with two reasons.
-   */
-  relatedWork?: CompanyOsLink[];
-  connectedRecords?: CompanyOsLink[];
-  activity?: Array<{ id: string; label: string; detail?: string; at?: string }>;
-  authoring?: CompanyOsDocumentAuthoringContext;
-  fixtureId?: string;
-  updatedLabel?: string;
 }
 
 export type CompanyOsViewKind = "table" | "board" | "timeline";

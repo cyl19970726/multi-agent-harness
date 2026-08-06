@@ -93,8 +93,6 @@ async function post(base, path, body) {
 }
 
 const workActions = [
-  "document.append",
-  "block.append",
   "typed_record.append",
   "view.append",
   "relation.append",

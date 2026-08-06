@@ -438,8 +438,6 @@ async function main() {
     }
 
     const workActions = [
-      "document.append",
-      "block.append",
       "typed_record.append",
       "view.append",
       "relation.append",

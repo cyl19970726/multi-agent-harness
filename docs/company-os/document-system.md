@@ -9,9 +9,13 @@ superseded_note: >
   set, document/block command sprawl, no revisions) is superseded by the
   AI-first Docs v2 target for everything implemented under ADR 0054:
   see docs/company-os/ai-first-docs-spec.md and
-  docs/decisions/0054-ai-first-docs-page-model-and-storage.md. The remaining
-  surfaces (modules, typed records, views, relations, templates, health,
-  governed Action dispatch) stay canonical here until migrated.
+  docs/decisions/0054-ai-first-docs-page-model-and-storage.md. At retirement
+  stage R3 the Block-era document/template/block CLI command tree and the
+  document.append/block.append API actions were deleted; page-layer contracts
+  now live in ADR 0054 and the AI-first Docs spec. The remaining
+  surfaces (modules, typed records, views, relations, legacy template
+  records, health, governed Action dispatch) stay canonical here until
+  migrated.
 ```
 
 ## Purpose
@@ -257,26 +261,20 @@ boundaries; `harness company docs module create` creates a governance-scoped
 BusinessModule with a fallback View and optional explicit relation rules such
 as Document → TypedRecord `source_for`, `harness company docs page-definition
 create` installs a CustomPageDefinition, package, server ActionPolicyDefinition
-bundle, and module reference, `harness company docs document create --root`
-bootstraps a new top-level Document/DocumentSpace entry with Human admin
-authority, `harness company docs document create --parent-document` creates a
-scoped child Document, `harness company docs document rename|move|archive`
-perform governed structure maintenance by updating the latest Document row
-through `document.append` while preserving identity, existing Blocks and
-existing references; `move` can change `parent_document_id` without duplicating
-the page and rejects parent cycles, while `archive` requires `--confirm` unless
-it is a dry-run. `harness company docs template create` creates an
-explicit reusable `Document(kind=template)` and can copy ordered Blocks from a
-source Document, `harness company docs template status` updates a template's
-`lifecycle_status`,
-`harness company docs block append` appends a Block and updates the owning
-Document's `block_ids`, `harness company docs block update` updates an
-existing Block's content/kind/position through `block.append` without changing
-Document order, `harness company docs block archive` marks a Block archived in
-`Block.content` and removes it from visible Document order without physical
-delete, `harness company docs block remove` removes a Block from visible
-Document order while preserving the Block row, and the block reorder command
-updates `Document.block_ids` order while preserving the exact existing Block set,
+bundle, and module reference. Page authoring uses the v2 page surface under
+ADR 0054: `harness company docs page create` creates a page (top-level without
+`--parent`, replacing the retired root bootstrap), `page read` projects pages
+read-only with scoped reads and revision selection (legacy ledger documents
+project with `legacy_projection=true`), `page write`/`page append` author
+Markdown through whole-page immutable revisions with `expected_revision`
+optimistic concurrency, and `page search` finds pages by keyword.
+`harness company docs page rename|move|archive` perform structure maintenance
+as metadata revisions through the same mechanism: `move` rejects parent cycles,
+and `archive` requires `--confirm` to commit. The Block-era
+`document create/rename/move/archive`, `template create/status`, and
+`block append/update/archive/remove/reorder` commands plus their
+`document.append`/`block.append` API actions were deleted at retirement stage
+R3; legacy template Documents and Block rows remain readable records,
 `harness company docs typed-record append` creates a source-linked TypedRecord
 in a BusinessModule, `harness company docs typed-record update` writes a
 governed latest-row update for an existing TypedRecord while preserving its
@@ -289,49 +287,28 @@ archive, not deletion: it writes a new latest Relation row with
 metadata, requires `--confirm` unless dry-run, and makes active query/health
 projections ignore that Relation. Module and
 page-definition creation use the administrative governance envelope and require
-a Human `company_os.admin` authority; ordinary document, block, record, view,
-and relation writes are governed Action wrappers, not direct store writes. A
-Store-live Document Focus page can use the same governed transport to create a
-child Document and append structured Blocks. The verified authoring subset is
-`rich_text`, `heading`, `callout`, and simple `table`: the UI builds the native
-`block.append` command, preserves structured `Block.kind`/`Block.content`, and
-also dispatches the required `document.append` update so `Document.block_ids`
-remains navigable. Store-backed Document Focus projections render actual
-Document Blocks before falling back to fixture explanatory content.
-Template creation is non-mutating toward the source page: `--from-document`
-copies the source Document's ordered native Blocks into the new template
-through governed `block.append` and `document.append` updates, but it does not
-change the source Document's identity, kind, block order, references, or
-relations. Template lifecycle changes are also scoped: `template status`
-accepts only `Document(kind=template)` and updates only that template row's
-`lifecycle_status`; archiving or pausing a template does not mutate existing
-Documents that already carry its `template_ref`. Child Document creation can preserve a `template_ref` provenance
-pointer when the selected template is a template Document. By default this is
-provenance-only. The CLI can opt into template Block instantiation with
-`--instantiate-template`, and the Store-live Document Focus UI exposes the same
-explicit opt-in as a browser Action sequence. Both paths copy the template
-Document's ordered native Blocks into the child Document through governed
-`block.append` and `document.append` updates. They do not create TypedRecords,
-Relations, WorkItems, Approvals, Finance effects, or business acceptance.
-When a module declares a Document → TypedRecord relation rule, the Docs UI
-shows that policy next to templates and provides the concrete `relation link`
-command. The rule is not a template side effect: the child Document,
-TypedRecord, and Relation are still separate governed records.
-The current Document Focus editor surface includes a governed Block composer:
-users can choose paragraph, heading, callout, or simple table Blocks, see empty
-Document and template provenance states, explicitly decide whether template
-Blocks should be copied, and receive an explicit warning that composer content
-becomes company truth only after the relevant Actions are accepted. The composer
-now has a first slash-menu affordance for governed Block type selection, visible
-native `Document.block_ids` order, an honest disabled
-fallback for generated Blocks, governed Up/Down reorder controls for native
-Blocks, and explicit permission/error feedback when the governed write path is
-unavailable or rejected. Reorder is a scoped `document.append` wrapper: it may
-change only `Document.block_ids` order and must preserve the exact Block set.
-The Docs Workspace also renders a native template library: template Documents
-show their ordered Block counts and the UI copy distinguishes default
-`template_ref` provenance from explicit Block instantiation through governed
-Actions. Its first search affordance is projection-only: it filters the
+a Human `company_os.admin` authority; record, view, and relation writes are
+governed Action wrappers, not direct store writes, while page authoring writes
+through the v2 revision mechanism.
+Templates are legacy-retained. The Block-era template authoring/lifecycle
+commands (`template create`, `template status`, template instantiation during
+document create) were deleted at retirement stage R3, following the deletion of
+the `document.append`/`block.append` Actions they dispatched. Existing
+`Document(kind=template)` rows remain readable legacy records: their
+`lifecycle_status` and any `template_ref` provenance pointers on other
+Documents stay intact, and no live path mutates them. When a module declares a
+Document → TypedRecord relation rule, the Docs UI still shows that policy next
+to templates and provides the concrete `relation link` command; the rule is not
+a template side effect: the Document, TypedRecord, and Relation remain separate
+governed records. A v2 template mechanism returns only when a real v2 template
+need exists.
+Document deep links render through the v2 DocsV2Surface (store-live, zero
+fixture path); the Block-era Document Focus page, its governed Block composer,
+and the reorder controls were deleted at retirement stages R2/R3. Page content
+is authored as Markdown through `page write`/`page append` revisions instead.
+The Docs Workspace also renders a legacy template library (read-only since
+R3): template Documents show their ordered Block counts and lifecycle state.
+Its first search affordance is projection-only: it filters the
 operating areas, template Documents, and recent records already supplied to the
 page. It is not yet a global full-text index and does not read hidden stores.
 The standard
@@ -354,9 +331,9 @@ through governed Actions with no WorkItem, Approval, Commitment, or Payment side
 effects; the View action can persist table/board/timeline mode plus simple
 filter/group/sort query configuration. Fixture and read-only projections must show the contract or disabled
 state rather than pretending to write. A collaborative Notion-like rich editor,
-drag/drop layout editing layered on the governed reorder Action, full template
-instantiation in Store-live browser UI, calendar/chart View modes, inline saved-view editing, advanced field
-configuration, and broad document
+drag/drop layout editing layered on the v2 page revision mechanism, v2
+template support, calendar/chart View modes, inline saved-view editing,
+advanced field configuration, and broad document
 restructuring commands remain planned
 until their own policies and acceptance evidence exist.
 

@@ -15,7 +15,7 @@ const [router, organization, works, orgSelectors, workSelectors, selection, warR
   read("src/app/selection.ts"),
   read("src/surfaces/TeamWarRoom.tsx"),
   read("src/surfaces/MemberRuns.tsx"),
-  read("src/company-os/docs/BasicDocumentPage.tsx"),
+  read("src/company-os/docs/DocsV2Surface.tsx"),
 ]);
 
 let passed = 0;
@@ -66,8 +66,11 @@ check(!works.includes("canonicalFixture") && !workSelectors.includes("canonicalF
 
 check(warRoom.includes("Organization") && warRoom.includes("data-team-child-count") && warRoom.includes("teamWorkId"), "War Room reuses the existing surface with Organization breadcrumb, child Teams, and deep-linked Work");
 check(memberFocus.includes("Created Work") && memberFocus.includes("Child Work") && memberFocus.includes("created_by_actor") && memberFocus.includes("parent_work_id"), "Member Focus adds provenance-backed Work lineage without a second focus implementation");
-check(docs.includes("Create Work from selection") && docs.includes("Link existing Work") && docs.includes("No linked Work"), "Docs-to-Work handoff slots and honest empty state are visible");
-check(docs.includes('data-docs-create-work="unavailable"') && docs.includes("A Document revision never completes Work"), "unconnected Docs handoff transports stay unavailable and preserve lifecycle boundaries");
+// The Block-era Document Focus handoff slots were retired with BasicDocumentPage;
+// document deep links now render store-live through DocsV2Surface, which stays a
+// read-only projection renderer (no Work writes, no fixture fallback).
+check(docs.includes("data-docs-v2-page") && docs.includes("data-docs-v2-surface") && docs.includes("fetchDocsV2Page") && docs.includes("data-docs-v2-error"), "Docs deep links render through the store-live DocsV2Surface contract with an explicit error state instead of a silent fallback");
+check(docs.includes("data-docs-v2-legacy") && !docs.includes("adaptTrademarkDocsFixture") && !docs.includes("company-os-trademark-v1.json"), "DocsV2Surface labels legacy Block-era projections read-only and imports no fixture truth");
 
 const selectors = await loadRecursiveSelectors();
 const durableOnlyRoot = {

@@ -1,6 +1,6 @@
 {
   "schema": "star_harness.company_os_implementation_truth.v1",
-  "auditedAt": "2026-08-05",
+  "auditedAt": "2026-08-06",
   "states": [
     "design_only",
     "partial",
@@ -14,10 +14,9 @@
       "implementationState": "partial",
       "truthRefs": {
         "contract": [
-        "docs/company-os/document-system.md",
+          "docs/company-os/document-system.md",
           "docs/company-os/docs-operating-surface-matrix.md",
-          "docs/decisions/0035-company-os-sql-read-model.md"
-          ,
+          "docs/decisions/0035-company-os-sql-read-model.md",
           "docs/decisions/0036-agent-operated-docs-and-code-declared-pages.md"
         ],
         "schema": [
@@ -39,7 +38,9 @@
           "crates/harness-cli/tests/company_os_api.rs",
           "apps/agent-dashboard/tests/company-os-docs-check.mjs",
           "scripts/check-company-os-docs-cli-smoke.mjs",
-          "scripts/check-company-os-docs-cli-live.mjs",
+          "scripts/check-company-os-docs-v2-smoke.mjs",
+          "scripts/check-company-os-docs-v2-api.mjs",
+          "apps/agent-dashboard/tests/company-os-docs-v2-store-live-check.mjs",
           "docs/company-os/docs-operating-surface-matrix.md",
           ".visual-evidence/company-os-docs-v1/docs-health-review-v1/capture-run.json",
           ".visual-evidence/company-os-v2/company-os-docs-module-route-v1/capture-run.json",
@@ -51,8 +52,8 @@
       "verifiedSlices": [
         "trademark result Block, source Document and TypedRecord writeback",
         "CLI-backed projection Docs query returns one read-only Document/module operating context with ordered Blocks, children, templates, TypedRecords, Relations, Views, BusinessModule, health findings, available commands, and explicit no-side-effect boundaries",
-        "CLI-backed Document rename, move, and archive perform governed document.append structure maintenance with dry-run, archive confirmation, parent-cycle rejection, preserved Blocks and references, and no Work, Finance, Organization, or Execution side effects",
-        "CLI-backed Block update, archive, and remove perform governed content maintenance with dry-run, archive/remove confirmation, preserved Block rows, no physical delete, and no Work, Finance, Organization, or Execution side effects",
+        "Historical (retired at R3): CLI-backed Document rename, move, and archive perform governed document.append structure maintenance with dry-run, archive confirmation, parent-cycle rejection, preserved Blocks and references, and no Work, Finance, Organization, or Execution side effects",
+        "Historical (retired at R3): CLI-backed Block update, archive, and remove perform governed content maintenance with dry-run, archive/remove confirmation, preserved Block rows, no physical delete, and no Work, Finance, Organization, or Execution side effects",
         "CLI-backed TypedRecord update and Relation unlink preserve structured record identity/source metadata, support field merge and dry-run, archive Relation latest rows without physical delete, make active query/health ignore archived Relations, and create no Work, Finance, Organization, or Execution side effects",
         "CLI-backed Docs search, traverse, refs, related, snapshot, diff, and change-report provide read-only Agent context and review evidence from latest projections without dispatching mutations or implying SQL index authority",
         "CLI-backed PageDefinition/PagePackage scaffold, verify, and publish implement the first code-declared custom page contract metadata slice; publish records candidate package metadata without switching the active definition pointer and without making UI a second data truth",
@@ -60,20 +61,20 @@
         "CLI-backed TypedRecord validate checks explicit schema JSON for required fields and simple field types without claiming persistent module field-schema governance",
         "CLI-backed Relation relink dry-run exposes archive-plus-link cleanup boundaries without physical delete or broad graph migration",
         "projection-backed Document Health Review with read-only CLI audit semantics",
-        "CLI-backed Docs health audit, Human-admin BusinessModule and CustomPageDefinition authoring, and governed document.append, block.append, typed_record.append, view.append, and relation.append command wrappers",
-        "CLI-backed and Store-live child Document creation can preserve Document.template_ref provenance; CLI-backed and Store-live opt-in template instantiation copies ordered template Blocks without creating TypedRecords, Work, Approval, or Finance side effects",
-        "CLI-backed reusable template creation creates explicit Document(kind=template) records and can copy ordered Blocks from a source Document through governed Docs Actions without mutating the source or creating TypedRecords, Relations, Work, Approval, or Finance side effects",
-        "CLI-backed template lifecycle status updates change only Document.lifecycle_status for Document(kind=template) through governed document.append while preserving existing child template_ref provenance",
-        "CLI-backed structured Block authoring preserves Block kind/content for rich_text, heading, callout, and simple table variants while keeping Document.block_ids navigable",
-        "Document Focus exposes a governed Block composer with type affordances, empty Document state, template provenance display, Store-live opt-in template Block instantiation controls, and durable-action hinting",
-        "Document Focus exposes slash-menu Block selection, native Document.block_ids order display, governed reorder controls, and authoring permission/error feedback without local fake writes",
-        "CLI-backed and Store-live block reorder preserves exactly the existing Document.block_ids set through governed document.append without editing Block content or non-Docs systems",
+        "CLI-backed Docs health audit, Human-admin BusinessModule and CustomPageDefinition authoring, and governed typed_record.append, view.append, and relation.append command wrappers (document.append/block.append wrappers retired at R3)",
+        "Historical (retired at R3): CLI-backed and Store-live child Document creation can preserve Document.template_ref provenance; CLI-backed and Store-live opt-in template instantiation copies ordered template Blocks without creating TypedRecords, Work, Approval, or Finance side effects",
+        "Historical (retired at R3): CLI-backed reusable template creation creates explicit Document(kind=template) records and can copy ordered Blocks from a source Document through governed Docs Actions without mutating the source or creating TypedRecords, Relations, Work, Approval, or Finance side effects",
+        "Historical (retired at R3): CLI-backed template lifecycle status updates change only Document.lifecycle_status for Document(kind=template) through governed document.append while preserving existing child template_ref provenance",
+        "Historical (retired at R3): CLI-backed structured Block authoring preserves Block kind/content for rich_text, heading, callout, and simple table variants while keeping Document.block_ids navigable",
+        "Historical (retired at R3): Document Focus exposes a governed Block composer with type affordances, empty Document state, template provenance display, Store-live opt-in template Block instantiation controls, and durable-action hinting",
+        "Historical (retired at R3): Document Focus exposes slash-menu Block selection, native Document.block_ids order display, governed reorder controls, and authoring permission/error feedback without local fake writes",
+        "Historical (retired at R3): CLI-backed and Store-live block reorder preserves exactly the existing Document.block_ids set through governed document.append without editing Block content or non-Docs systems",
         "Business Module Focus exposes standard View provenance for module scope, native View ref, source kinds, query summary, record count, and empty-state boundaries",
         "Business Module Focus exposes saved standard View configuration for mode, source kinds, filters, grouping, sorting, and native query display without making View a second truth",
-        "Store-live Document Focus child Document and structured Block authoring controls using governed document.append and block.append Actions",
-        "Store-live Document Focus renders actual Store Blocks when present before using fixture explanatory content",
-        "Docs Workspace exposes a native template library with ordered Block counts and provenance-vs-instantiation boundary copy",
-        "Docs Workspace exposes template lifecycle badges and the governed template status command boundary",
+        "Historical (retired at R3): Store-live Document Focus child Document and structured Block authoring controls using governed document.append and block.append Actions",
+        "Historical (retired at R3): Store-live Document Focus renders actual Store Blocks when present before using fixture explanatory content",
+        "Docs Workspace exposes a read-only legacy template library with ordered Block counts (template authoring retired at R3)",
+        "Docs Workspace exposes template lifecycle badges as read-only legacy state (the governed template status command was retired at R3)",
         "Docs Workspace exposes projection-only filtering for operating areas, template Documents, and recent records without claiming a global full-text index",
         "BusinessModule creation can preserve explicit Document-to-TypedRecord relation_rules through CLI --relation-rule-json while leaving concrete TypedRecord and Relation creation as separate governed Actions",
         "Docs Workspace and Document Focus expose template-to-TypedRecord relation policy visibility from native BusinessModule relation_rules without creating TypedRecords or Relations during template instantiation",
@@ -94,22 +95,63 @@
         "active package promotion for code-declared pages, comments, mentions, attachments, relation migration execution, split, merge, delete, migration cleanup Actions, durable rollback bundles, and Health Review UI dispatch for structure/content maintenance",
         "derived SQL read/query/index layer for deeper Docs traversal, search, Views, health, diff, export, and permission-filtered reads",
         "global full-text Docs search index"
-      ]
+      ],
+      "retirementNote": "ADR 0054 retirement stage R3 (2026-08-06): the Block-era document/template/block CLI command tree and the document.append/block.append API actions were deleted. Page-layer truth now lives in docs/company-os/ai-first-docs-spec.md and ADR 0054 (v2 page revisions). Slices below prefixed 'Historical (retired at R3):' remain valid only as evidence of the retired surface."
     },
     {
       "id": "organization",
       "implementationState": "partial",
       "truthRefs": {
-        "contract": ["docs/company-os/organization-and-actors.md", "docs/company-os/nested-agent-team-organization.md", "docs/decisions/0045-company-owned-standing-agent-execution-relation.md", "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md"],
-        "schema": ["schemas/company-os/actors.schema.json", "schemas/member-run.schema.json"],
-        "store": ["crates/harness-store/src/company_os.rs"],
-        "api": ["crates/harness-cli/src/company_os_api.rs"],
-        "ui": ["apps/agent-dashboard/src/company-os/operations/pages.tsx"],
-        "skills": ["skills/company-org-operator/SKILL.md"],
-        "acceptance": ["crates/harness-core/tests/company_os.rs", "crates/harness-store/tests/company_os.rs", "crates/harness-cli/tests/company_os_api.rs", "crates/harness-cli/tests/mission_wave_api.rs", "scripts/check-company-os-org-cli-smoke.mjs", "pnpm check:dashboard"]
+        "contract": [
+          "docs/company-os/organization-and-actors.md",
+          "docs/company-os/nested-agent-team-organization.md",
+          "docs/decisions/0045-company-owned-standing-agent-execution-relation.md",
+          "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md"
+        ],
+        "schema": [
+          "schemas/company-os/actors.schema.json",
+          "schemas/member-run.schema.json"
+        ],
+        "store": [
+          "crates/harness-store/src/company_os.rs"
+        ],
+        "api": [
+          "crates/harness-cli/src/company_os_api.rs"
+        ],
+        "ui": [
+          "apps/agent-dashboard/src/company-os/operations/pages.tsx"
+        ],
+        "skills": [
+          "skills/company-org-operator/SKILL.md"
+        ],
+        "acceptance": [
+          "crates/harness-core/tests/company_os.rs",
+          "crates/harness-store/tests/company_os.rs",
+          "crates/harness-cli/tests/company_os_api.rs",
+          "crates/harness-cli/tests/mission_wave_api.rs",
+          "scripts/check-company-os-org-cli-smoke.mjs",
+          "pnpm check:dashboard"
+        ]
       },
-      "verifiedSlices": ["Standing Agent prompt/tool/skill/maintained-Docs/accepted-WorkType/escalation references", "shared Organization-native Standing Agent workspace", "Company-owned optional one-to-one StandingAgent.execution_agent_member_ref -> MemberRun.agent_member_id join with no same-id fallback or lifecycle writeback", "read-only Agent Team assignment and assignment-less participation projection", "Organization-to-profile and Standing-Agent-to-MemberRun navigation", "dedicated Organization CLI list/query/create-human/create-agent/create-unit/add-membership/transition-actor/update-permissions smoke through the bootstrap-only Human administrative authoring boundary", "ADR 0052 DurableAgentMember identity ledger: additive bootstrap-lead, member create|converge|list|show, host, and cutover-audit foundation; deterministic compatibility mapping from StandingAgent identity without same-id fallback; MemberRun.agent_member_id binding verifies member continuity through distinct runtime generations"],
-      "blockingGaps": ["implemented availability and capacity ownership", "Workflow participation and direct durable-agent messaging projection", "durable cross-client Team Supervisor runtime health", "governed organization-change proposal/approval lifecycle", "governance-led Organization Actual", "full ADR 0052 recursive Team topology verification (Lead → CTO → child Team dogfood)", "AgentMember convergence from StandingAgent compatibility identity without dual-write", "Work-kernel convergence from Company WorkItem/Team Work dual store"]
+      "verifiedSlices": [
+        "Standing Agent prompt/tool/skill/maintained-Docs/accepted-WorkType/escalation references",
+        "shared Organization-native Standing Agent workspace",
+        "Company-owned optional one-to-one StandingAgent.execution_agent_member_ref -> MemberRun.agent_member_id join with no same-id fallback or lifecycle writeback",
+        "read-only Agent Team assignment and assignment-less participation projection",
+        "Organization-to-profile and Standing-Agent-to-MemberRun navigation",
+        "dedicated Organization CLI list/query/create-human/create-agent/create-unit/add-membership/transition-actor/update-permissions smoke through the bootstrap-only Human administrative authoring boundary",
+        "ADR 0052 DurableAgentMember identity ledger: additive bootstrap-lead, member create|converge|list|show, host, and cutover-audit foundation; deterministic compatibility mapping from StandingAgent identity without same-id fallback; MemberRun.agent_member_id binding verifies member continuity through distinct runtime generations"
+      ],
+      "blockingGaps": [
+        "implemented availability and capacity ownership",
+        "Workflow participation and direct durable-agent messaging projection",
+        "durable cross-client Team Supervisor runtime health",
+        "governed organization-change proposal/approval lifecycle",
+        "governance-led Organization Actual",
+        "full ADR 0052 recursive Team topology verification (Lead → CTO → child Team dogfood)",
+        "AgentMember convergence from StandingAgent compatibility identity without dual-write",
+        "Work-kernel convergence from Company WorkItem/Team Work dual store"
+      ]
     },
     {
       "id": "work",
@@ -138,8 +180,17 @@
           "apps/agent-dashboard/tests/company-os-operations-check.mjs"
         ]
       },
-      "verifiedSlices": ["source Document to WorkItem and Assignment through governed Actions", "Lead request to Work Governance submission to Business Agent completion and Docs return", "non-financial work creates no Commitment or Approval"],
-      "blockingGaps": ["additional business-specific lifecycle policies", "ADR 0052 unified Work kernel convergence from Company WorkItem/Team Work dual store", "recursive delegation and child-Work topology under Agent Team organization", "Work source/provenance for continuous-discovery loop across Company and Team boundaries"]
+      "verifiedSlices": [
+        "source Document to WorkItem and Assignment through governed Actions",
+        "Lead request to Work Governance submission to Business Agent completion and Docs return",
+        "non-financial work creates no Commitment or Approval"
+      ],
+      "blockingGaps": [
+        "additional business-specific lifecycle policies",
+        "ADR 0052 unified Work kernel convergence from Company WorkItem/Team Work dual store",
+        "recursive delegation and child-Work topology under Agent Team organization",
+        "Work source/provenance for continuous-discovery loop across Company and Team boundaries"
+      ]
     },
     {
       "id": "finance",
@@ -221,8 +272,6 @@
       "commitment.append",
       "approval.decide",
       "work_item.transition",
-      "block.append",
-      "document.append",
       "typed_record.append"
     ],
     "missingNativeActions": [],
@@ -244,7 +293,8 @@
         "product_truth": "pass",
         "visual_fidelity": "pass"
       }
-    }
+    },
+    "retirementNote": "Since R3 the trademark writeback of result Block/source Document goes through the generic raw /v1/company-os/blocks|documents resource endpoints instead of the deleted document.append/block.append Actions; governed Action coverage remains for work_item/assignment/commitment/approval/typed_record flows."
   },
   "agentOsSelfHostingLoop": {
     "implementationState": "partial",
@@ -275,12 +325,26 @@
   },
   "standingAgentWorkLoop": {
     "implementationState": "verified",
-    "existingEvidence": ["crates/harness-cli/tests/company_os_api.rs", "apps/agent-dashboard/src/company-os/operations/pages.tsx"],
-    "route": ["Lead Agent", "Work Governance Agent", "Business Agent", "accountable Human", "Docs result return"],
+    "existingEvidence": [
+      "crates/harness-cli/tests/company_os_api.rs",
+      "apps/agent-dashboard/src/company-os/operations/pages.tsx"
+    ],
+    "route": [
+      "Lead Agent",
+      "Work Governance Agent",
+      "Business Agent",
+      "accountable Human",
+      "Docs result return"
+    ],
     "conditionalFinance": {
       "nonFinancial": "zero Commitment and zero Approval",
       "monetary": "Finance-owned Commitment plus named Human Approval"
     },
-    "blockingGaps": ["governed OrgChangeProposal and Standing Agent provisioning lifecycle", "live Standing Agent message transport", "Workflow and direct-assignment participation projection", "durable cross-client Team Supervisor runtime health"]
+    "blockingGaps": [
+      "governed OrgChangeProposal and Standing Agent provisioning lifecycle",
+      "live Standing Agent message transport",
+      "Workflow and direct-assignment participation projection",
+      "durable cross-client Team Supervisor runtime health"
+    ]
   }
 }

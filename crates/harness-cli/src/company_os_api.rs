@@ -2137,14 +2137,8 @@ fn dispatch_action(store: &HarnessStore, body: &Value) -> Result<Value, ApiError
     if command.command_name == "commitment.propose" {
         validate_commitment_proposal(store, &command, &record)?;
     }
-    if command.command_name == "document.append" {
-        validate_document_append(store, &command, &record)?;
-    }
     if command.command_name == "typed_record.append" {
         validate_typed_record_append(store, &command, &record)?;
-    }
-    if command.command_name == "block.append" {
-        validate_block_append(store, &command, &record)?;
     }
     if command.command_name == "relation.append" {
         validate_relation_append(store, &command, &record)?;
@@ -2423,12 +2417,7 @@ type ServerActionShape = (&'static str, RiskTier, bool, Vec<ActorType>, ActionEf
 
 fn server_action_shape(command_name: &str) -> Result<ServerActionShape, ApiError> {
     Ok(match command_name {
-        "document.append"
-        | "block.append"
-        | "typed_record.append"
-        | "view.append"
-        | "work_item.append"
-        | "assignment.append" => (
+        "typed_record.append" | "view.append" | "work_item.append" | "assignment.append" => (
             "company.records.write",
             RiskTier::R1,
             false,
@@ -2577,31 +2566,6 @@ fn validate_definition_scope(
         }
     }
     let in_scope = match command.command_name.as_str() {
-        "document.append" => {
-            let record_id = value_id(record);
-            let updates_scoped_document = record_id.is_some_and(|id| {
-                command.subject_ref.kind == EntityKind::Document
-                    && command.subject_ref.id == id
-                    && document_in_module(store, definition, id)
-            });
-            let creates_scoped_child = record
-                .get("parent_document_id")
-                .and_then(Value::as_str)
-                .is_some_and(|id| {
-                    command.subject_ref.kind == EntityKind::Document
-                        && command.subject_ref.id == id
-                        && document_in_module(store, definition, id)
-                });
-            updates_scoped_document || creates_scoped_child
-        }
-        "block.append" => record
-            .get("document_id")
-            .and_then(Value::as_str)
-            .is_some_and(|id| {
-                command.subject_ref.kind == EntityKind::Document
-                    && command.subject_ref.id == id
-                    && document_in_module(store, definition, id)
-            }),
         "typed_record.append" => {
             let module_matches = record
                 .get("module_id")
@@ -3289,82 +3253,6 @@ fn validate_approval_request(
     Ok(())
 }
 
-fn validate_document_append(
-    store: &HarnessStore,
-    command: &ActionCommand,
-    record: &Value,
-) -> Result<(), ApiError> {
-    let target: Document = parse(record)?;
-    if command.subject_ref.kind == EntityKind::Document && command.subject_ref.id == target.id {
-        let documents = store.latest_documents()?;
-        let previous = documents
-            .iter()
-            .find(|row| row.id == target.id)
-            .ok_or_else(|| ApiError::not_found(format!("Document:{}", target.id)))?;
-        let immutable_changed = previous.space_id != target.space_id
-            || previous.kind != target.kind
-            || previous.created_by != target.created_by
-            || previous.created_at != target.created_at;
-        if target.parent_document_id.as_deref() == Some(target.id.as_str()) {
-            return Err(ApiError::conflict(
-                "document.append update cannot move a Document under itself",
-            ));
-        }
-        let mut seen_parent_ids = BTreeSet::new();
-        let mut parent_cursor = target.parent_document_id.as_deref();
-        while let Some(parent_id) = parent_cursor {
-            if parent_id == target.id {
-                return Err(ApiError::conflict(
-                    "document.append update cannot create a parent cycle",
-                ));
-            }
-            if !seen_parent_ids.insert(parent_id.to_string()) {
-                return Err(ApiError::conflict(
-                    "document.append update cannot preserve an existing parent cycle",
-                ));
-            }
-            parent_cursor = documents
-                .iter()
-                .find(|row| row.id == parent_id)
-                .and_then(|row| row.parent_document_id.as_deref());
-        }
-        let latest_blocks = store.latest_blocks()?;
-        let block_ids: BTreeSet<_> = target.block_ids.iter().collect();
-        if block_ids.len() != target.block_ids.len() {
-            return Err(ApiError::conflict(
-                "document.append update cannot duplicate block references",
-            ));
-        }
-        for block_id in &target.block_ids {
-            let block = latest_blocks
-                .iter()
-                .find(|row| row.id == *block_id)
-                .ok_or_else(|| ApiError::not_found(format!("Block:{block_id}")))?;
-            if block.document_id != target.id {
-                return Err(ApiError::conflict(
-                    "document.append update cannot reference a Block owned by another Document",
-                ));
-            }
-        }
-        if immutable_changed
-            || !previous
-                .reference_refs
-                .iter()
-                .all(|reference| target.reference_refs.contains(reference))
-        {
-            return Err(ApiError::conflict(
-                "document.append update cannot change identity or remove relations",
-            ));
-        }
-        if target.updated_by != command.requested_by {
-            return Err(ApiError::forbidden(
-                "Document.updated_by must be the Action requester",
-            ));
-        }
-    }
-    Ok(())
-}
-
 fn validate_typed_record_append(
     store: &HarnessStore,
     command: &ActionCommand,
@@ -3401,47 +3289,6 @@ fn validate_typed_record_append(
     if target.updated_by != command.requested_by {
         return Err(ApiError::forbidden(
             "TypedRecord.updated_by must be the Action requester",
-        ));
-    }
-    Ok(())
-}
-
-fn validate_block_append(
-    store: &HarnessStore,
-    command: &ActionCommand,
-    record: &Value,
-) -> Result<(), ApiError> {
-    let block: Block = parse(record)?;
-    if command.subject_ref.kind != EntityKind::Document
-        || command.subject_ref.id != block.document_id
-    {
-        return Err(ApiError::forbidden(
-            "block.append subject must be the owning Document",
-        ));
-    }
-    let existing = store
-        .latest_blocks()?
-        .into_iter()
-        .find(|row| row.id == block.id);
-    if let Some(previous) = existing {
-        if previous.document_id != block.document_id
-            || previous.created_by != block.created_by
-            || previous.created_at != block.created_at
-        {
-            return Err(ApiError::conflict(
-                "block.append update cannot change Block identity, owning Document, or creation metadata",
-            ));
-        }
-        if block.updated_by != command.requested_by {
-            return Err(ApiError::forbidden(
-                "Block.updated_by must be the Action requester",
-            ));
-        }
-        return Ok(());
-    }
-    if block.created_by != command.requested_by || block.updated_by != command.requested_by {
-        return Err(ApiError::forbidden(
-            "Block creator/updater must be the Action requester",
         ));
     }
     Ok(())
@@ -3681,8 +3528,6 @@ fn dispatch_declared_record(
     allow_existing_exact: bool,
 ) -> Result<Value, ApiError> {
     let resource = match command.command_name.as_str() {
-        "document.append" => "documents",
-        "block.append" => "blocks",
         "typed_record.append" => "typed-records",
         "relation.append" => "relations",
         "view.append" => "views",

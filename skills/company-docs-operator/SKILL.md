@@ -1,6 +1,6 @@
 ---
 name: company-docs-operator
-description: Operate Company OS Docs through governed CLI and Action contracts. Use when a Governance Agent or business Agent needs to audit document/page architecture, define page contracts, create child documents or templates, append structured blocks, create typed records, create views, link relations, or prepare a module/page-definition operation while preserving Docs/Work/Org/Finance truth boundaries.
+description: Operate Company OS Docs through governed CLI and Action contracts. Use when a Governance Agent or business Agent needs to audit document/page architecture, define page contracts, author pages through the v2 page surface, create typed records, create views, link relations, or prepare a module/page-definition operation while preserving Docs/Work/Org/Finance truth boundaries.
 ---
 
 # Company Docs Operator
@@ -41,7 +41,7 @@ contract wins.
 - Read `references/business-page-archetypes.md` when shaping a commercial
   project, operating module, or multi-page document space.
 - Read `references/store-authoring-patterns.md` before writing page contracts,
-  structured Blocks, TypedRecords, Relations, or Views into a real Store.
+  page content, TypedRecords, Relations, or Views into a real Store.
 - Read `references/anti-patterns.md` before final handoff for a commercial
   Docs change or when the result risks becoming generic prose.
 
@@ -74,15 +74,13 @@ Use the smallest command that preserves the source of truth. Current commands:
 `harness company docs traverse`, `harness company docs refs`,
 `harness company docs related`, `harness company docs health`,
 `harness company docs source sync`, `harness company docs module create`,
+`harness company docs page create`, `harness company docs page read`,
+`harness company docs page write`, `harness company docs page append`,
+`harness company docs page search`, `harness company docs page rename`,
+`harness company docs page move`, `harness company docs page archive`,
 `harness company docs page scaffold`, `harness company docs page verify`,
 `harness company docs page publish`,
 `harness company docs page-definition create`,
-`harness company docs document create`, `harness company docs document rename`,
-`harness company docs document move`, `harness company docs document archive`,
-`harness company docs template create`, `harness company docs template status`,
-`harness company docs block append`, `harness company docs block update`,
-`harness company docs block archive`, `harness company docs block remove`,
-`harness company docs block reorder`,
 `harness company docs typed-record append`,
 `harness company docs typed-record update`,
 `harness company docs typed-record validate`,
@@ -94,9 +92,17 @@ Use the smallest command that preserves the source of truth. Current commands:
 `harness company docs change-report`.
 
 Module and page-definition creation are administrative governance operations
-and require a Human with `company_os.admin`. Ordinary document, block,
-typed-record, view, and relation writes require a matching
-`CustomPageDefinition` policy and the normal Company OS write capability.
+and require a Human with `company_os.admin`. Typed-record, view, and relation
+writes require a matching `CustomPageDefinition` policy and the normal Company
+OS write capability. Page create/read/write/append/search/rename/move/archive
+are the v2 page surface and write through the revision mechanism; they need no
+PageDefinition policy bundle.
+
+The Block-era command tree (`document create/rename/move/archive`,
+`template create/status`, `block append/update/archive/remove/reorder`) and the
+`document.append`/`block.append` API actions were retired in stage R3 of the
+AI-first Docs retirement plan. Do not script against them; legacy ledger
+documents remain readable through `page read` as honest legacy projections.
 
 ## Safe workflow
 
@@ -164,7 +170,8 @@ longer part of current operating context. Before archival:
    and active module/page entrypoints;
 3. move any still-current fact or accepted result to the active owner through
    an explicit update or relation;
-4. use `document archive --dry-run`, obtain required review, then confirm; and
+4. preview with `page archive` (dry-run without `--confirm`), obtain required
+   review, then confirm; and
 5. verify the archived content is absent from active navigation while its ids,
    relations, evidence, and audit history remain resolvable.
 
@@ -195,7 +202,7 @@ editing a real commercial project page, check:
   ungoverned HTML in Docs?
 
 If the answer is no, stop and produce the page contract or module design before
-writing more blocks.
+writing more content.
 
 ## Query before mutation
 
@@ -289,104 +296,95 @@ custom page may be beautiful and purpose-built, but it remains presentation
 over native Documents, TypedRecords, Relations, Views, WorkItems, Approvals,
 FinancialRecords, and Actors.
 
-## Document structure maintenance
+## Page authoring and structure (v2 page surface)
 
-Use explicit structure commands instead of creating duplicate pages:
+Page-level authoring uses the v2 page surface. Content is authored as Markdown;
+the store maps it to the page revision mechanism, so every write is an explicit
+versioned change instead of an in-place mutation.
 
 ```bash
-harness company docs document create \
-  --root \
-  --id <root-document-id> \
-  --space <document-space-id> \
-  --title <root-title> \
+harness company docs page create \
+  --title <title> \
   --actor <human-or-agent-id> \
-  --authority <human-admin-id>
+  [--markdown <text> | --markdown-file <path>] \
+  [--id <document-id>] [--space <document-space-id>] [--parent <document-id>]
 
-harness company docs document create \
-  --definition <custom-page-definition-id> \
-  --parent-document <document-id> \
-  --id <child-document-id> \
-  --space <document-space-id> \
-  --title <child-title> \
-  --actor <human-or-agent-id>
+harness company docs page read --doc <document-id> \
+  [--scope outline|section|range|keyword] [--detail simple|with-ids|full] \
+  [--revision <n|-1>] [--format json|markdown]
 
-harness company docs document rename \
-  --definition <custom-page-definition-id> \
-  --document <document-id> \
-  --title <new-title> \
-  --actor <human-or-agent-id> \
-  --dry-run
+harness company docs page write --doc <document-id> \
+  --expected-revision <n> \
+  (--markdown <text> | --markdown-file <path>) \
+  [--title <title>] [--summary <change-summary>]
 
-harness company docs document move \
-  --definition <custom-page-definition-id> \
-  --document <document-id> \
-  (--parent-document <new-parent-document-id> | --root) \
-  --actor <human-or-agent-id> \
-  --dry-run
+harness company docs page append --doc <document-id> \
+  (--markdown <text> | --markdown-file <path>) \
+  [--after <block-id|-1|end|heading:text>] [--expected-revision <n>] \
+  [--summary <change-summary>]
 
-harness company docs document archive \
-  --definition <custom-page-definition-id> \
-  --document <document-id> \
-  --actor <human-or-agent-id> \
-  --dry-run
+harness company docs page search --keyword <text> [--limit <n>]
 ```
 
-`rename`, `move`, and `archive` all dispatch governed `document.append`
-updates when `--dry-run` is omitted. Dry-run returns the proposed before/after
-and Action body without dispatching. Archive requires `--confirm` unless it is a
-dry-run. These commands must preserve `Document.id`, `space_id`, `kind`,
-`created_by`, `created_at`, existing `block_ids`, and existing
-`reference_refs`; move must not create a parent cycle. They do not create
-WorkItems, Approvals, Finance records, Organization changes, or execution
-records.
+Structure maintenance goes through the same revision mechanism:
 
-`document create --root` is a bootstrap escape hatch for a new DocumentSpace or
-top-level operating area inside an existing Company Store. It requires a Human
-admin `--authority` and appends only a root `Document`; it does not create a
-BusinessModule, PageDefinition, WorkItem, Relation, Finance row, Organization
-row, or source sync record. After creating the root, create the module, fallback
-View, PageDefinition, and any TypedRecords/Relations through their own commands.
+```bash
+harness company docs page rename --doc <document-id> --title <new-title> \
+  [--expected-revision <n>]
 
-## Block content maintenance
+harness company docs page move --doc <document-id> \
+  --parent <new-parent-document-id|-1|root> [--expected-revision <n>]
 
-Use explicit Block commands for content edits instead of replacing the whole
-Document:
+harness company docs page archive --doc <document-id> [--expected-revision <n>]
+```
 
-Commands: `harness company docs block update`,
-`harness company docs block archive`, and
-`harness company docs block remove`.
+Boundary rules:
 
-`block update` dispatches a governed `block.append` update for the existing
-Block and keeps `Document.block_ids` unchanged. `block remove` dispatches only
-`document.append` to remove the Block from the visible order while preserving
-the Block row. `block archive` dispatches `block.append` with archived metadata
-inside `Block.content` and then `document.append` to remove it from the visible
-order. `archive` and `remove` require `--confirm` unless they are dry-runs.
-None of these commands physically delete records or imply Work, Approval,
-Finance, Organization, or Execution effects.
+- `page write` requires `--expected-revision`; a stale revision is rejected
+  instead of silently overwriting newer work. Read the current revision first.
+- `page rename`/`page move` record metadata revisions; move rejects parent
+  cycles. `page archive` requires `--confirm` to commit; without it the command
+  returns a dry-run preview and writes nothing.
+- A top-level operating area or DocumentSpace root is created with
+  `page create` without `--parent` (plus `--space` when the store has several
+  spaces). This replaces the retired Block-era root bootstrap; it still creates
+  only the page, not a BusinessModule, PageDefinition, WorkItem, Relation,
+  Finance row, Organization row, or source sync record.
+- Page commands do not create WorkItems, Approvals, Finance records,
+  Organization changes, or execution records, and they never physically delete
+  pages or revisions.
+
+Legacy Block-era documents remain readable: `page read` projects them
+read-only (`legacy_projection=true`) with best-effort block-kind mapping. To
+evolve a legacy document, rewrite it through `page write` rather than editing
+Block rows directly.
 
 ## Typed records and relations
 
 Use TypedRecord and Relation commands for structured business truth. Do not
 hide structured changes inside prose Blocks.
 
-Commands: `harness company docs typed-record update`,
+Commands: `harness company docs typed-record append`,
+`harness company docs typed-record update`,
+`harness company docs relation link`,
 `harness company docs relation unlink`,
 `harness company docs relation relink`,
 `harness company docs relation repair-missing`, and
 `harness company docs typed-record validate`.
 
+`typed-record append` creates a source-linked TypedRecord under a module;
 `typed-record update` dispatches a governed `typed_record.append` update for an
-existing record. It may change title, fields, and lifecycle status; it must not
-change record id, module, record type, source Document, creator, or created
+existing record. Update may change title, fields, and lifecycle status; it must
+not change record id, module, record type, source Document, creator, or created
 time. `--merge-fields` overlays the supplied JSON object on existing fields;
 without it, `--fields-json` replaces the full fields object.
 
-`relation unlink` dispatches a governed `relation.append` update that marks the
-latest Relation row `lifecycle_status=archived`. It does not physically delete
-the Relation or alter endpoints, type, provenance, creator, or created time.
-Unlink requires `--confirm` unless it is a dry-run. Active Docs query and
-health checks ignore archived Relations, so unlinking a required
+`relation link` creates an active Relation through a governed `relation.append`
+Action. `relation unlink` dispatches a governed `relation.append` update that
+marks the latest Relation row `lifecycle_status=archived`. It does not
+physically delete the Relation or alter endpoints, type, provenance, creator,
+or created time. Unlink requires `--confirm` unless it is a dry-run. Active
+Docs query and health checks ignore archived Relations, so unlinking a required
 Document ↔ TypedRecord relation may surface a missing-relation finding until a
 new active relation is linked.
 
@@ -406,131 +404,21 @@ or Execution state.
 the current `TypedRecord.fields` for required fields and simple field types.
 Persistent module field-schema governance remains a later object-model slice.
 
-## Template provenance
-
-Create reusable templates explicitly instead of changing an existing page's
-`Document.kind` in place:
-
-```bash
-harness company docs template create \
-  --definition <custom-page-definition-id> \
-  --parent-document <document-id> \
-  --title "Vendor onboarding template" \
-  --from-document <source-document-id> \
-  --actor <human-or-agent-id>
-```
-
-Without `--from-document`, this creates an empty `Document(kind=template)`.
-With `--from-document`, it copies the source Document's ordered native Blocks
-into the new template through governed `block.append` and `document.append`
-updates. The source Document keeps its original identity, kind, blocks, and
-relations. Template creation does not create TypedRecords, Relations,
-WorkItems, Approvals, or Finance effects.
-
-Change reusable template lifecycle state explicitly:
-
-```bash
-harness company docs template status \
-  --definition <custom-page-definition-id> \
-  --template <template-document-id> \
-  --status active|paused|archived \
-  --actor <human-or-agent-id>
-```
-
-This updates only `Document.lifecycle_status` for a `Document(kind=template)`
-through governed `document.append`. It refuses ordinary pages and does not
-mutate existing Documents that already recorded the template through
-`template_ref`.
-
-`harness company docs document create` may carry a template provenance pointer:
-
-```bash
-harness company docs document create \
-  --definition <custom-page-definition-id> \
-  --parent-document <document-id> \
-  --title "Vendor onboarding note" \
-  --template <template-document-id> \
-  --instantiate-template \
-  --actor <human-or-agent-id>
-```
-
-New DocumentSpace roots use an explicit administrative bootstrap path rather
-than borrowing another module's PageDefinition:
-
-```bash
-harness company docs document create \
-  --root \
-  --authority <human-admin-id> \
-  --id <root-document-id> \
-  --space <space-id> \
-  --title "AgentOS / Star Harness" \
-  --actor <human-or-agent-id>
-```
-
-This creates only a root `Document` with `parent_document_id=null`. It does not
-create a `BusinessModule`, page definition, WorkItem, Approval, Finance record,
-Organization member, execution space, or Project Binding. Create the module
-and page definition as separate governed/admin operations after the root
-exists.
-
-Without `--instantiate-template`, this records `Document.template_ref` only.
-With `--instantiate-template`, it copies the template Document's ordered native
-Blocks into the child through governed `block.append` and `document.append`
-updates. It still does not create TypedRecords, Relations, WorkItems,
-Approvals, or Finance effects. If the operation needs canonical records or
-follow-up work, create those through their own governed commands. If a template
-should correspond to a TypedRecord type, first declare the module policy with
-`harness company docs module create --relation-rule-json
+If a template-like pattern should correspond to a TypedRecord type, declare the
+module policy with `harness company docs module create --relation-rule-json
 '{"relation_type":"source_for","from_kind":"document","to_kind":"typed_record","required":true,"cross_module":false}'`,
 then create/link the concrete TypedRecord through `harness company docs
 typed-record append` and `harness company docs relation link`.
 
-## Structured block authoring
+## Legacy template Documents
 
-`harness company docs block append` supports plain text shorthand and structured
-content:
-
-```bash
-harness company docs block append \
-  --definition <custom-page-definition-id> \
-  --document <document-id> \
-  --kind callout \
-  --content-json '{"title":"Decision needed","text":"Founder approval is required before filing.","tone":"warning"}' \
-  --actor <human-or-agent-id>
-```
-
-Use:
-
-- `--kind rich_text --text <body>` for ordinary paragraphs;
-- `--kind heading --text <heading>` for section headings;
-- `--kind callout --content-json <json>` for durable notes, decisions, risks,
-  or warnings;
-- `--kind simple_table --content-json <json>` for simple table content when the data
-  is document-local prose. Use `typed-record append` plus a `view create` when
-  rows are canonical business records.
-
-Appending a Block must preserve `Document.block_ids`. If the Block row exists
-but the Document navigation list does not reference it, treat the operation as
-incomplete.
-
-In the Document Focus UI, slash commands such as `/paragraph`, `/heading`,
-`/callout`, and `/table` are only a safer way to choose the same governed Block
-kind. They do not create local page truth. Block order is displayed from native
-`Document.block_ids`; use the governed reorder command when the only intended
-effect is changing that order:
-
-```bash
-harness company docs block reorder \
-  --definition <custom-page-definition-id> \
-  --document <document-id> \
-  --block-order <block-id-2,block-id-1> \
-  --actor <human-or-agent-id>
-```
-
-The order must contain exactly the existing `Document.block_ids` set. It must
-not edit Block content, delete Blocks, merge/split Documents, or imply approval
-of linked Work, Finance, Organization, or Execution state. Drag/drop UI may be
-layered on this command later.
+Block-era template authoring (`template create`, `template status`, template
+instantiation during document create) was retired with the R3 deletion of the
+Block-era command tree. Existing `Document(kind=template)` rows remain readable
+legacy records: query/health still report them, and their lifecycle state is
+historical data, not an authoring surface. New reusable patterns are authored
+as ordinary v2 pages plus TypedRecords/Relations, not as template Documents.
+A v2 template mechanism returns only when a real v2 template need exists.
 
 ## Standard view configuration
 
@@ -595,7 +483,7 @@ Minimum checks after changing this skill or the Docs operating surface:
 
 ```bash
 npx pnpm@9.15.4 check:company-os
-npx pnpm@9.15.4 acceptance:company-os:docs-cli
+npx pnpm@9.15.4 check:docs-v2-live
 git diff --check
 ```
 

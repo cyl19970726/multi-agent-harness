@@ -50,73 +50,39 @@ async function loadFixtureAdapter() {
   }
 }
 
-async function loadDocumentTree() {
-  const { default: ts } = await import("typescript");
-  const directory = await mkdtemp(join(tmpdir(), "company-os-docs-tree-"));
-  try {
-    const input = await source("documentTree.ts");
-    const output = ts.transpileModule(input, {
-      compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
-    }).outputText;
-    const outputPath = join(directory, "documentTree.mjs");
-    await writeFile(outputPath, output, "utf8");
-    return await import(pathToFileURL(outputPath).href);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-}
-
-async function loadDocumentAction() {
-  const { default: ts } = await import("typescript");
-  const directory = await mkdtemp(join(tmpdir(), "company-os-docs-action-"));
-  try {
-    const input = await source("documentAction.ts");
-    const output = ts.transpileModule(input, {
-      compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
-    }).outputText;
-    const outputPath = join(directory, "documentAction.mjs");
-    await writeFile(outputPath, output, "utf8");
-    return await import(pathToFileURL(outputPath).href);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-}
-
 async function main() {
   const fixture = JSON.parse(await readFile(join(repositoryRoot, "docs", "design", "company-os-v1", "fixtures", "company-os-trademark-v1.json"), "utf8"));
-  const [index, workspace, document, structured, home, relation, health, healthAction, documentAction, adapter, types, tree] = await Promise.all([
-    source("index.ts"), source("DocsWorkspace.tsx"), source("BasicDocumentPage.tsx"),
-    source("StructuredDocumentView.tsx"), source("CompanyHome.tsx"), source("RelationChips.tsx"), source("DocumentHealthReview.tsx"), source("healthAction.ts"), source("documentAction.ts"), source("fixtureAdapter.ts"), source("types.ts"), source("documentTree.ts"),
+  const [index, workspace, structured, home, relation, health, healthAction, documentAction, adapter, types, router, shell] = await Promise.all([
+    source("index.ts"), source("DocsWorkspace.tsx"),
+    source("StructuredDocumentView.tsx"), source("CompanyHome.tsx"), source("RelationChips.tsx"),
+    source("DocumentHealthReview.tsx"), source("healthAction.ts"), source("documentAction.ts"),
+    source("fixtureAdapter.ts"), source("types.ts"),
+    readFile(join(dashboardRoot, "src", "company-os", "CompanyOsRouter.tsx"), "utf8"),
+    readFile(join(dashboardRoot, "src", "app", "WorkbenchShell.tsx"), "utf8"),
   ]);
 
-  check(index.includes("DocsWorkspace") && index.includes("BasicDocumentPage") && index.includes("StructuredDocumentView") && index.includes("CompanyHome") && index.includes("DocumentHealthReview"), "public Docs API exports all five Company OS Docs surfaces");
-  check(index.includes("buildDocsTypedRecordCommand") && index.includes("buildDocsViewCommand") && index.includes("buildDocsRelationCommand") && index.includes("buildDocsReorderBlocksCommand"), "public Docs API exports Store-live module authoring command builders");
-  check(workspace.includes('data-company-os-page="docs-workspace"') && document.includes('data-company-os-page="document-focus"') && structured.includes('data-company-os-page="business-module-focus"') && home.includes('data-company-os-page="home"') && health.includes('data-company-os-page="document-health"'), "capture-ready page markers identify each Docs surface");
-  check([workspace, document, structured, home, health].every((file) => file.includes('data-company-os-ready="true"')), "every Docs root exposes a ready marker");
+  // R2 retirement: the Block-era document-focus rendering chain (BasicDocumentPage,
+  // documentTree, document/block append builders, template instantiation) is deleted.
+  // Document deep links are rendered store-live by DocsV2Surface; its data-docs-v2-*
+  // markers, fixture-free sourcing, and resolvedEmbeds behaviour are asserted by
+  // tests/company-os-docs-v2-check.mjs and are not duplicated here.
+  check(!router.includes("document-focus") && !router.includes("BasicDocumentPage"), "Company OS router no longer routes the Block-era document-focus page");
+  check(shell.includes('selection.surface === "docs" && selection.documentId') && shell.includes("DocsV2Surface"), "document deep links are intercepted by the Workbench shell and rendered through DocsV2Surface");
+  check(!index.includes("BasicDocumentPage") && !index.includes("buildDocsAppendBlockCommands") && !index.includes("buildDocsChildDocumentCommand"), "public Docs API no longer exports the retired document-focus surface or block authoring builders");
+
+  check(index.includes("DocsWorkspace") && index.includes("StructuredDocumentView") && index.includes("CompanyHome") && index.includes("DocumentHealthReview"), "public Docs API exports the four remaining Company OS Docs surfaces");
+  check(index.includes("buildDocsTypedRecordCommand") && index.includes("buildDocsViewCommand") && index.includes("buildDocsRelationCommand"), "public Docs API exports Store-live module authoring command builders");
+  check(workspace.includes('data-company-os-page="docs-workspace"') && structured.includes('data-company-os-page="business-module-focus"') && home.includes('data-company-os-page="home"') && health.includes('data-company-os-page="document-health"'), "capture-ready page markers identify each Docs surface");
+  check([workspace, structured, home, health].every((file) => file.includes('data-company-os-ready="true"')), "every Docs root exposes a ready marker");
   check(structured.includes('className="h-full space-y-4 overflow-y-auto"'), "standard business-module pages retain their own bounded vertical scroll owner");
   check(structured.includes("availableViews") && structured.includes("fallback") && structured.includes("BoardView") && structured.includes("TimelineView"), "structured view exposes standard table, board, timeline, and fallback paths");
   check(structured.includes("StandardViewProvenance") && structured.includes('data-docs-standard-view-provenance="true"') && structured.includes("View is presentation, not a second truth"), "structured view exposes provenance for module scope, native View, source kinds, query, and record count");
   check(structured.includes("StandardViewConfiguration") && structured.includes('data-docs-standard-view-configuration="true"') && structured.includes("Configuration is stored in native View.query") && structured.includes('aria-label="View filter field"') && structured.includes('aria-label="View group by"'), "structured view exposes saved View configuration and Store-live View query authoring controls");
   check(structured.includes('data-docs-standard-view-empty="true"') && structured.includes("declared query returned no records") && structured.includes("does not delete the BusinessModule"), "structured view empty state is explicit without fabricating module truth");
   check(structured.includes('data-docs-authoring-panel="business-module-focus"') && structured.includes("buildDocsTypedRecordCommand") && structured.includes("buildDocsViewCommand") && structured.includes("buildDocsRelationCommand"), "Structured module view exposes Store-live TypedRecord, View, and Relation authoring controls");
-  check(document.includes("SimpleTable") && document.includes("RelationChips") && document.includes("sourceLinks") && document.includes("resultLinks"), "basic document supports tables, relation chips, source, and result links");
-  check(adapter.includes('kind === "table" || kind === "simple_table"'), "projection adapter renders CLI-native simple_table Blocks through the Document Focus table component");
-  check(document.includes("data-docs-authoring-panel=\"document-focus\"") && document.includes("buildDocsChildDocumentCommand") && document.includes("buildDocsAppendBlockCommands") && document.includes("Document.block_ids"), "Document Focus exposes Store-live child Document and Block authoring controls");
-  check(document.includes('aria-label="Child document template"') && document.includes("templateOptions") && document.includes("childTemplateRef"), "Document Focus exposes template provenance selection for child Documents");
-  check(document.includes("buildDocsInstantiateTemplateBlockCommands") && document.includes('aria-label="Instantiate template blocks"') && document.includes('data-docs-template-instantiation="browser-action"'), "Document Focus exposes Store-live opt-in template Block instantiation controls");
-  check(document.includes('data-docs-block-composer="true"') && document.includes("data-docs-block-kind-option") && document.includes("data-docs-block-composer-hint"), "Document Focus exposes a Notion-like governed Block composer with type affordances and durable-action hinting");
-  check(document.includes('data-docs-slash-menu="true"') && document.includes('aria-label="Slash menu block commands"') && document.includes("data-docs-slash-command") && document.includes("/heading"), "Document Focus exposes a slash-menu affordance for governed Block type selection");
-  check(document.includes('data-docs-block-order-boundary="true"') && document.includes("Document.block_ids sequence") && document.includes("data-docs-block-reorder") && document.includes("governed document.append update"), "Document Focus exposes native block order and governed reorder controls");
-  check(document.includes("data-docs-authoring-error-boundary") && document.includes("role=\"status\"") && document.includes("server validates definition, policy, actor permission"), "Document Focus exposes governed authoring error and permission feedback boundary");
-  check(document.includes('data-docs-document-architecture="true"') && document.includes('data-docs-document-architecture-link="true"') && document.includes("DocumentArchitecture") && document.includes("preserveCompanyOsWorkbenchContext"), "Document Focus exposes projection-backed document architecture navigation that preserves live api/project context");
-  check(document.includes('data-docs-empty-document="true"') && document.includes("data-docs-template-provenance") && document.includes("template Blocks are copied only by an explicit governed instantiation action"), "Document Focus surfaces empty document and template provenance states without fabricating content");
-  check(document.includes("data-docs-template-record-policy") && document.includes("Template Blocks do not create records") && document.includes("Use a governed Relation after the child Document and TypedRecord exist"), "Document Focus exposes template-to-TypedRecord relation boundary during child Document creation");
-  check(document.includes('aria-label="Block kind"') && document.includes('value: "heading"') && document.includes('value: "callout"') && document.includes('value: "table"'), "Document Focus exposes structured Block authoring controls");
-  check(!document.includes("key={property.label}") && document.includes("property.ref ?? \"property\""), "repeated property labels use a stable React key rather than a duplicate display label");
   check(home.includes("Review decision") && home.includes("decisionRequester") && home.includes("decisionCollaborators"), "Home gives the pending decision a first-viewport review action and structured responsibility context");
   check(home.includes("Button asChild") && home.includes("data.decisionRequired.href") && home.includes("disabled"), "Home renders a real approval link without a callback and never leaves an enabled no-op CTA");
   check(adapter.includes("adaptCompanyOsDocsProjection") && adapter.includes("financialRecordType"), "projection adapter maps financial type from an explicit record field");
-  check(types.includes("documentTree?: CompanyOsWorkspaceTreeItem[]") && adapter.includes("documentTree: workspaceTree"), "projection adapter supplies the same Store-backed document tree to Document Focus without hard-coded project navigation");
   check(adapter.includes("buildDocumentHealthData") && adapter.includes("missing_document_record_relation") && adapter.includes("No deletion without governed action") === false, "projection adapter computes document health without embedding UI policy copy");
   check(workspace.includes('data-docs-template-library="true"') && workspace.includes("data-docs-template-block-count") && workspace.includes("template_ref only") && workspace.includes("copy Blocks via Actions"), "Docs Workspace exposes a native template library with provenance and instantiation boundaries");
   check(workspace.includes("data-docs-template-lifecycle") && workspace.includes("harness company docs template status") && workspace.includes("archiving a template does not mutate existing Documents"), "Docs Workspace exposes template lifecycle state and governed status boundary");
@@ -131,13 +97,9 @@ async function main() {
   check(health.includes("onRepairRelation") && health.includes("data-docs-health-direct-action-state") && health.includes("buildDocsHealthRelationRepairCommand"), "Document Health Review exposes Store-live direct Relation repair controls without storing capability");
   check(healthAction.includes('command_name: "work_item.append"') && healthAction.includes('subject_ref: { kind: "document"') && healthAction.includes('required_permission: "company.records.write"') && !healthAction.includes("commitment") && !healthAction.includes("payment"), "Document Health corrective action builds a native WorkItem command without Finance effects");
   check(healthAction.includes('command_name: "relation.append"') && healthAction.includes('relation_type: context.relationType') && healthAction.includes('provenance_ref') && !healthAction.includes("action_note"), "Document Health direct action builds a strict native Relation command without polluting relation records");
-  check(documentAction.includes('command_name: "document.append"') && documentAction.includes('command_name: "block.append"') && documentAction.includes("block_ids: [...context.blockIds, blockId]") && !documentAction.includes("work_item") && !documentAction.includes("commitment"), "Document authoring actions build native Docs commands and preserve Document.block_ids without Work or Finance effects");
-  check(documentAction.includes("buildDocsReorderBlocksCommand") && documentAction.includes("Block reorder must preserve exactly the existing Document.block_ids set") && documentAction.includes("block_ids: next") && documentAction.includes('command_name: "document.append"'), "Document authoring actions support governed block reorder without changing Block content or non-Docs systems");
-  check(documentAction.includes("templateRef") && documentAction.includes("template_ref: params.templateRef?.trim() || null") && documentAction.includes("template_ref: context.templateRef ?? null"), "Document authoring actions preserve optional template_ref provenance without clearing template content");
-  check(documentAction.includes("buildDocsInstantiateTemplateBlockCommands") && documentAction.includes("template.templateBlocks") && documentAction.includes("referenced_entities: templateBlock.referencedEntities") && documentAction.includes('command_name: "block.append"') && documentAction.includes('command_name: "document.append"'), "Document authoring actions instantiate template Blocks through governed Block and Document commands");
-  check(documentAction.includes("blockKind") && documentAction.includes('kind: blockKind') && documentAction.includes("columns") && documentAction.includes("calloutTitle"), "Document authoring actions build structured Block content for heading, callout, and table variants");
   check(documentAction.includes('command_name: "typed_record.append"') && documentAction.includes('command_name: "view.append"') && documentAction.includes('command_name: "relation.append"') && documentAction.includes('subject_ref: { kind: "business_module"') && documentAction.includes('source_document_ref: context.sourceDocumentId'), "Module authoring actions build native TypedRecord, View, and Relation commands from scoped Docs context");
   check(documentAction.includes("mode: params.mode ?? \"table\"") && documentAction.includes("source_kinds: sourceKinds?.length ? sourceKinds : [\"typed_record\"]") && documentAction.includes("query: params.query ?? {}"), "View authoring command preserves saved mode, source kinds, and query configuration in native View records");
+  check(!documentAction.includes('command_name: "document.append"') && !documentAction.includes('command_name: "block.append"'), "browser Docs actions no longer build Block-era document.append or block.append commands");
   const [captureScript, seedScript] = await Promise.all([
     readFile(join(repositoryRoot, "scripts", "capture-company-os-v2.mjs"), "utf8"),
     readFile(join(repositoryRoot, "scripts", "seed-company-os-trademark-v1.mjs"), "utf8"),
@@ -157,18 +119,6 @@ async function main() {
   const archivedSourceProjection = structuredClone(fixture);
   const archivedSource = archivedSourceProjection.documents.find((entry) => entry.id === "document-trademark-application-cn-2026-018");
   archivedSource.lifecycle_status = "archived";
-  const archivedSourcePages = adaptCompanyOsDocsProjection(
-    archivedSourceProjection,
-    { documentId: archivedSource.id },
-  );
-  check(
-    archivedSourcePages.document.id === archivedSource.id
-      && archivedSourcePages.document.lifecycleStatus === "archived"
-      && archivedSourcePages.document.authoring === undefined
-      && archivedSourcePages.document.resultLinks?.some((link) => link.id === "workitem-trademark-filing-brand-a"),
-    "an explicitly selected archived source remains readable and linked to active Work while Store-live authoring is disabled",
-  );
-  check(document.includes('data-docs-archived-history="true"') && document.includes("Archived history.") && types.includes("lifecycleStatus?: string"), "Document Focus labels the read-only archived history route instead of degrading Work provenance to a raw id");
   const archivedHealthPages = adaptCompanyOsDocsProjection(archivedSourceProjection, {});
   check(
     archivedHealthPages.health.findings.some((finding) => finding.kind === "work_item_source_document_archived"
@@ -196,16 +146,12 @@ async function main() {
     "a missing Work source is a critical Docs health finding instead of a silently degraded id",
   );
   check(adapter.includes("work_item_source_document_archived") && adapter.includes("work_item_source_document_missing") && adapter.includes("typed_record_source_document_archived") && adapter.includes("sourceDocuments"), "Docs health adapter computes Work and record archived-source findings from the unfiltered Document projection");
-  check(pages.document.sourceLinks?.[0]?.label === "Trademark application CN-2026-018" && pages.document.resultLinks?.[0]?.label === "Trademark filing for Brand A", "fixture adapter preserves source and WorkItem provenance");
   check(pages.home.decisionActor?.name === "Brand Owner" && pages.home.financeSummary[0]?.value === "¥3,000" && pages.home.financeSummary[0]?.financialRecordType === "commitment", "home preserves the human decision and pending-commitment distinction");
   check(pages.home.decisionRequired?.href === "?surface=approvals&approval=approval-trademark-filing-fee-cn-2026-018", "projection adapter supplies the Home review CTA with the selected approval route");
   check(!/^[a-z][a-z0-9]*(?:[._:-][a-z0-9-]+)+$/i.test(pages.home.decisionRequired?.label ?? "") && pages.home.decisionRequired?.label !== pages.home.decisionSummary && pages.home.decisionRequester?.label === "Trademark Agent" && (pages.home.decisionCollaborators?.length ?? 0) > 0, "Home derives a readable non-duplicated approval prompt with grouped requester and collaborators");
   check(["actor-agent-content-strategy", "actor-external-lawyer"].every((id) => pages.home.decisionCollaborators?.some((actor) => actor.id === id)), "Home contributor selection retains projection-backed strategy and external legal collaborators without broad actor dumping");
-  const documentHeadings = pages.document.blocks.filter((block) => block.type === "heading").map((block) => block.content);
-  const documentTables = pages.document.blocks.filter((block) => block.type === "table").map((block) => block.table.caption);
   check(pages.workspace.rootSelected === true && !pages.workspace.tree.flatMap((item) => item.children ?? []).some((item) => item.selected), "Docs workspace selection remains on the Company workspace root");
   check(pages.workspace.tree.flatMap((item) => item.children ?? []).some((item) => item.href?.startsWith("?surface=docs&document=")) && pages.workspace.recentlyUpdated?.some((link) => link.href?.startsWith("?surface=docs&document=")), "Docs workspace supplies URL-addressable document links for tree and recent records");
-  check(pages.document.documentTree?.flatMap((item) => item.children ?? []).some((item) => item.href?.startsWith("?surface=docs&document=")), "Document Focus receives URL-addressable document architecture links from the same projection-backed tree");
   check(pages.workspace.tree.flatMap((item) => item.children ?? []).some((item) => /Trademark Management/.test(item.label) && /Proposed/.test(item.meta ?? "")), "proposed module is discoverable from the Company workspace tree");
   check(pages.workspace.maintainers?.some((actor) => actor.id === "actor-agent-document-architecture" && actor.actorType === "Standing Agent"), "Docs workspace exposes projection-backed Standing Agent maintainers");
   check(pages.moduleView.provenance?.moduleId === "module-trademark-management" && pages.moduleView.provenance?.sourceKinds?.includes("typed_record") && pages.moduleView.provenance?.recordCount === pages.moduleView.records.length, "Business Module standard view provenance preserves module scope, source kinds, and record count");
@@ -233,42 +179,14 @@ async function main() {
     blocks: [{ id: "block-template-operating-note-1", document_id: "template-operating-note", kind: "callout", position: 0, content: { title: "Template note", text: "Reusable operating note" }, referenced_entities: [{ kind: "document", id: "document-root-template-test" }], created_by: { actor_type: "human", actor_id: "actor-human-brand-owner" }, updated_by: { actor_type: "human", actor_id: "actor-human-brand-owner" }, created_at: "2026-07-20T10:00:00+08:00", updated_at: "2026-07-20T10:00:00+08:00" }],
     custom_page_definitions: [{ id: "definition-doc-template-test", module_id: "module-template-test", action_command_refs: ["document.append", "block.append"], policy_refs: ["definition-doc-template-test:document.append", "definition-doc-template-test:block.append"] }],
   }, { documentId: "document-root-template-test" });
-  check(templatedPages.workspace.templates?.some((template) => template.id === "template-operating-note" && template.meta === "Active") && templatedPages.document.authoring?.templateOptions?.some((template) => template.id === "template-operating-note" && template.templateBlockIds.includes("block-template-operating-note-1")), "projection adapter exposes template Documents, lifecycle state, and ordered template Blocks to Workspace and Document authoring without fabricating template instantiation");
+  check(templatedPages.workspace.templates?.some((template) => template.id === "template-operating-note" && template.meta === "Active" && template.templateBlockIds.includes("block-template-operating-note-1")), "projection adapter exposes template Documents, lifecycle state, and ordered template Blocks to the Workspace without fabricating template instantiation");
   const templatedPolicyPages = adaptCompanyOsDocsProjection({
     actors: [{ id: "actor-agent-docs-template-policy", display_name: "Docs Template Agent", actor_type: "agent", permission_policy_refs: ["company.records.write"] }],
     documents: [{ id: "document-template-policy-root", space_id: "company", parent_document_id: null, title: "Root", kind: "page", lifecycle_status: "active", block_ids: [], template_ref: null, permission_policy_refs: ["company.records.write"], reference_refs: [], created_by: { actor_type: "agent", actor_id: "actor-agent-docs-template-policy" }, updated_by: { actor_type: "agent", actor_id: "actor-agent-docs-template-policy" }, created_at: "2026-07-20T10:00:00+08:00", updated_at: "2026-07-20T10:00:00+08:00" }],
     business_modules: [{ id: "module-template-policy", name: "Template policy", root_document_ref: "document-template-policy-root", record_types: ["TrademarkApplication"], relation_rules: [{ relation_type: "source_for", from_kind: "document", to_kind: "typed_record", required: true, cross_module: false }], status: "active", default_view_refs: [] }],
     custom_page_definitions: [{ id: "definition-template-policy", module_id: "module-template-policy", action_command_refs: ["document.append", "block.append", "relation.append"], policy_refs: ["definition-template-policy:document.append", "definition-template-policy:block.append", "definition-template-policy:relation.append"] }],
   });
-  check(templatedPolicyPages.workspace.templateRecordPolicy?.status === "declared" && templatedPolicyPages.workspace.templateRecordPolicy.relationTypes.includes("source_for") && templatedPolicyPages.document.authoring?.templateRecordPolicy?.recordTypes.includes("TrademarkApplication"), "projection adapter exposes declared template-to-TypedRecord relation policy from native BusinessModule rules");
-  const actionModule = await loadDocumentAction();
-  const childCommand = actionModule.buildDocsChildDocumentCommand({
-    document: templatedPages.document,
-    title: "Child from template",
-    templateRef: "template-operating-note",
-    commandId: "action-test-child-template",
-    createdAt: "2026-07-20T10:05:00+08:00",
-  });
-  const templateCommands = actionModule.buildDocsInstantiateTemplateBlockCommands({
-    parentDocument: templatedPages.document,
-    childDocumentCommand: childCommand,
-    template: templatedPages.document.authoring.templateOptions[0],
-    commandId: "action-test-template-copy",
-    createdAt: "2026-07-20T10:05:00+08:00",
-  });
-  check(
-    childCommand.command_name === "document.append" &&
-      childCommand.payload.record.template_ref === "template-operating-note" &&
-      templateCommands.length === 2 &&
-      templateCommands[0].command_name === "block.append" &&
-      templateCommands[0].payload.record.document_id === childCommand.payload.record.id &&
-      templateCommands[0].payload.record.content.title === "Template note" &&
-      templateCommands[1].command_name === "document.append" &&
-      templateCommands[1].payload.record.block_ids.includes(templateCommands[0].payload.record.id) &&
-      !JSON.stringify(templateCommands).includes("work_item") &&
-      !JSON.stringify(templateCommands).includes("financial"),
-    "Document action builders generate Store-live template Block instantiation commands without Work or Finance effects",
-  );
+  check(templatedPolicyPages.workspace.templateRecordPolicy?.status === "declared" && templatedPolicyPages.workspace.templateRecordPolicy.relationTypes.includes("source_for") && templatedPolicyPages.workspace.templateRecordPolicy.recordTypes.includes("TrademarkApplication"), "projection adapter exposes declared template-to-TypedRecord relation policy from native BusinessModule rules");
   check(
     pages.workspace.authoringCommands?.some((hint) => hint.command.includes("harness company docs module create")) &&
     pages.workspace.authoringCommands?.some((hint) => hint.command.includes("harness company docs page-definition create")) &&
@@ -298,51 +216,15 @@ async function main() {
   });
   check(duplicateHealthPages.health.cleanupQueue?.some((item) => item.operation === "merge" && item.route === "corrective_work_item" && !item.disabledReason), "Document Health routes duplicate-title cleanup through a corrective WorkItem queue");
   check(workspace.includes('className="hidden border-b') && workspace.includes('className="hidden border-t'), "Docs mobile layout prioritizes document content over desktop tree and context rails");
-  check(documentHeadings.includes("What this plan coordinates") && documentHeadings.includes("Why this context matters") && documentHeadings.includes("Strategy and next review") && documentTables.includes("Linked work") && documentTables.includes("Reported metrics"), "Document Focus renders projection-backed what, why, next, work, and metric sections");
-  check(document.includes("grid min-w-0") && document.includes("DocumentSurface className=\"mx-0 min-w-0") && document.includes("break-words text-sm leading-6"), "Document Focus constrains intrinsic content width and wraps copy on mobile");
-  check(pages.document.properties?.some((property) => property.label === "Operating status" && property.value === "On track") && !/T\d{2}:\d{2}:\d{2}/.test(pages.document.updatedLabel ?? ""), "Document Focus preserves on-track fixture truth without reintroducing Project language and formats timestamps for people");
   const emptyPages = adaptCompanyOsDocsProjection({});
-  check(emptyPages.workspace.tree.length === 0 && emptyPages.document.id === undefined && emptyPages.home.decisionRequired === undefined && emptyPages.home.financeSummary.length === 0, "empty projections render honest empty Docs data without fixture facts");
-  check(
-    emptyPages.workspace.archive === undefined
-      && emptyPages.document.breadcrumbs === undefined
-      && emptyPages.document.childDocuments === undefined
-      && emptyPages.document.backlinks === undefined
-      && emptyPages.document.missingDocumentId === undefined,
-    "an empty projection supplies no archive, breadcrumbs, child documents, backlinks, or not-found marker",
-  );
+  check(emptyPages.workspace.tree.length === 0 && emptyPages.home.decisionRequired === undefined && emptyPages.home.financeSummary.length === 0, "empty projections render honest empty Docs data without fixture facts");
+  check(emptyPages.workspace.archive === undefined, "an empty projection supplies no archive complement");
   const alternatePages = adaptCompanyOsDocsProjection({
     documents: [{ id: "document-live-1", title: "Live operating brief", space: "Operations" }],
     typed_records: [{ id: "record-live-1", record_type: "Initiative", source_document_ref: "document-live-1" }],
     work_items: [{ id: "work-live-1", title: "Prepare live brief", source_document_ref: "document-live-1" }],
   });
-  check(alternatePages.document.id === "document-live-1" && alternatePages.document.title === "Live operating brief" && alternatePages.home.changes.every((link) => !/trademark|brand a/i.test(link.label)), "a different live projection maps only its supplied records");
-  const selectedDocumentPages = adaptCompanyOsDocsProjection({
-    documents: [
-      { id: "document-selected-a", title: "Selected A", space: "Operations", parent_document_id: null, block_ids: [] },
-      { id: "document-selected-b", title: "Selected B", space: "Operations", parent_document_id: null, block_ids: [] },
-    ],
-    typed_records: [
-      { id: "record-selected-a", title: "Selected A record", record_type: "brief", source_document_ref: "document-selected-a" },
-      { id: "record-selected-b", title: "Selected B record", record_type: "brief", source_document_ref: "document-selected-b" },
-    ],
-    work_items: [
-      { id: "work-selected-a", title: "Work for selected A", source_document_ref: "document-selected-a" },
-      { id: "work-selected-b", title: "Work for selected B", source_document_ref: "document-selected-b" },
-    ],
-    financial_records: [
-      { id: "finance-selected-a", display_name: "Finance for selected A", type: "commitment", work_item_ref: "work-selected-a" },
-      { id: "finance-selected-b", display_name: "Finance for selected B", type: "commitment", work_item_ref: "work-selected-b" },
-    ],
-  }, { documentId: "document-selected-b" });
-  check(
-    selectedDocumentPages.document.connectedRecords?.some((link) => link.id === "record-selected-b")
-      && selectedDocumentPages.document.connectedRecords?.some((link) => link.id === "finance-selected-b")
-      && selectedDocumentPages.document.resultLinks?.some((link) => link.id === "work-selected-b")
-      && !selectedDocumentPages.document.connectedRecords?.some((link) => link.id === "record-selected-a" || link.id === "finance-selected-a")
-      && !selectedDocumentPages.document.resultLinks?.some((link) => link.id === "work-selected-a"),
-    "selected Document Focus scopes context rail records to the selected document",
-  );
+  check(alternatePages.workspace.recentlyUpdated?.some((link) => link.id === "document-live-1") && alternatePages.home.changes.every((link) => !/trademark|brand a/i.test(link.label)), "a different live projection maps only its supplied records");
   const archivedPages = adaptCompanyOsDocsProjection({
     documents: [
       { id: "document-active-root", title: "Active Root", space_id: "agentos", parent_document_id: null, kind: "page", lifecycle_status: "active", block_ids: [] },
@@ -368,7 +250,7 @@ async function main() {
       && !flattenTree(archivedPages.workspace.tree).some((item) => item.id === "module-archived-root"),
     "Docs workspace hides archived Documents and modules whose root Document is archived from active navigation",
   );
-  check([workspace, document, structured, home, relation, health].every((file) => file.includes("data-company-os-ref")) && relation.includes("data-financial-record-type") && home.includes("data-actor-type"), "visible Docs, record, finance, and actor nodes propagate semantic references");
+  check([workspace, structured, home, relation, health].every((file) => file.includes("data-company-os-ref")) && relation.includes("data-financial-record-type") && home.includes("data-actor-type"), "visible Docs, record, finance, and actor nodes propagate semantic references");
 
   // U1/U2: the default tree is the real parent_document_id hierarchy under a single
   // "not archived" predicate, and the Archive view is that predicate's exact complement.
@@ -449,60 +331,14 @@ async function main() {
     adapter.includes("buildDocumentSpaceTree") && adapter.includes("parent_document_id") && !adapter.includes('lifecycle_status) === "active"'),
     "projection adapter derives the tree from Document.parent_document_id without an active-only lifecycle filter",
   );
-  // The space node holds root Documents AND every BusinessModule attached to that space,
-  // so a directory anchor chosen by raw child count picks the space and exposes one page
-  // instead of eleven. Rank by Document children only.
-  const { selectDocumentDirectoryAnchor, documentChildCount, isDocumentTreeNode, filterDocumentTree } = await loadDocumentTree();
-  check(
-    tree.includes('item.kind === "document"') && !tree.includes('includes("document=")') && !tree.includes('includes("module=")'),
-    "documentTree distinguishes real Documents from grouping spaces and modules through the canonical node kind, never href substrings",
-  );
   check(
     types.includes('kind?: "space" | "document" | "module"')
       && adapter.includes('kind: "document"') && adapter.includes('kind: "space" as const') && adapter.includes('kind: "module"'),
     "the projection adapter tags every tree node with the canonical kind of the store object it represents",
   );
-  check(
-    isDocumentTreeNode({ id: "d", ref: "document-x", label: "X", kind: "document" }) === true
-      && isDocumentTreeNode({ id: "space:x", label: "X", kind: "space" }) === false
-      && isDocumentTreeNode({ id: "m", ref: "module-x", label: "X", kind: "module" }) === false
-      && documentChildCount({ id: "s", label: "s", kind: "space", children: [{ id: "d", ref: "d", label: "d", kind: "document" }, { id: "m", ref: "m", label: "m", kind: "module" }] }) === 1,
-    "Document node detection and child counts accept only canonical Document nodes",
-  );
-  check(
-    JSON.stringify(filterDocumentTree([{ id: "space:x", label: "x", kind: "space", children: [{ id: "d1", ref: "d1", label: "d1", kind: "document" }, { id: "m1", ref: "m1", label: "m1", kind: "module" }] }, { id: "space:empty", label: "empty", kind: "space", children: [{ id: "m2", ref: "m2", label: "m2", kind: "module" }] }]))
-      === JSON.stringify([{ id: "space:x", label: "x", kind: "space", children: [{ id: "d1", ref: "d1", label: "d1", kind: "document" }] }]),
-    "a document tree renders only Document children, dropping module nodes and spaces left without Documents",
-  );
-  check(
-    document.includes("filterDocumentTree") && document.includes("isDocumentTreeNode"),
-    "Document Focus renders documents-only trees and directory cards",
-  );
-  const wcwNumberedIds = Array.from({ length: 11 }, (_, index) => `document-wcw-${String(index).padStart(2, "0")}`);
-  const wcwProjection = {
-    documents: [
-      { id: "document-wcw-root", space_id: "wanchengwanling", parent_document_id: null, title: "Wanchengwanling / 万城万灵", kind: "page", lifecycle_status: "active", block_ids: [] },
-      ...wcwNumberedIds.map((id, index) => ({ id, space_id: "wanchengwanling", parent_document_id: "document-wcw-root", title: `${String(index).padStart(2, "0")} Wanchengwanling page`, kind: "page", lifecycle_status: "active", block_ids: [] })),
-    ],
-    // Eleven modules on the same space: the space node therefore has twelve raw children
-    // while the real page holder has eleven.
-    business_modules: wcwNumberedIds.map((id, index) => ({ id: `module-wcw-${index}`, name: `Wanchengwanling module ${index}`, root_document_ref: id, status: "active", default_view_refs: [] })),
-  };
-  const wcwPages = adaptCompanyOsDocsProjection(wcwProjection, { documentId: "document-wcw-00" });
-  const wcwSpaceNode = wcwPages.workspace.tree.find((item) => item.label === "wanchengwanling");
-  const wcwAnchor = selectDocumentDirectoryAnchor(wcwPages.document.documentTree, /wanchengwanling|万城万灵/i);
-  check(
-    (wcwSpaceNode?.children?.length ?? 0) > documentChildCount(wcwSpaceNode ?? {})
-      && wcwAnchor?.ref === "document-wcw-root"
-      && (wcwAnchor?.children ?? []).filter((child) => child.href?.includes("document=")).length === 11
-      && JSON.stringify(sortedIds((wcwAnchor?.children ?? []).filter((child) => child.href?.includes("document=")).map((child) => child.ref))) === JSON.stringify(sortedIds(wcwNumberedIds)),
-    "the document directory anchors on the Document holding all eleven numbered pages, not the space node whose children are inflated by BusinessModules",
-  );
-  check(
-    selectDocumentDirectoryAnchor([{ id: "space:x", label: "wanchengwanling", kind: "space", children: [{ id: "m", ref: "m", label: "wanchengwanling module", kind: "module", href: "?surface=docs&module=m" }] }], /wanchengwanling/i)?.id === "space:x"
-      && selectDocumentDirectoryAnchor(undefined, /wanchengwanling/i) === undefined,
-    "the directory anchor degrades safely when a matching node has only BusinessModule children or no tree is supplied",
-  );
+  // The retired documentTree helpers (selectDocumentDirectoryAnchor/filterDocumentTree)
+  // served the deleted Document Focus directory cards; workspace tree rendering keeps
+  // its canonical-kind tagging, asserted above.
 
   // Conservation: a BusinessModule is in the default tree or the Archive, never neither.
   const orphanSpaceProjection = {
@@ -543,134 +379,28 @@ async function main() {
     "Docs Workspace archive copy states the conservation invariant and renders each module's own withholding reason",
   );
 
-  // Archived-ness must be the discriminator for authoring, not a missing policy context.
-  const authoringActor = { id: "actor-agent-docs-authoring", display_name: "Docs Governance Agent", actor_type: "agent", permission_policy_refs: ["company.records.write"] };
-  const authoringDefinitions = [{ id: "definition-authoring-probe", module_id: "module-authoring-probe", action_command_refs: ["document.append", "block.append"], policy_refs: ["definition-authoring-probe:document.append", "definition-authoring-probe:block.append"] }];
-  const authoringDocument = (id, lifecycle) => ({ id, space_id: "company", parent_document_id: null, title: `Authoring probe ${lifecycle}`, kind: "page", lifecycle_status: lifecycle, block_ids: [], template_ref: null, permission_policy_refs: ["company.records.write"], reference_refs: [], created_by: { actor_type: "agent", actor_id: authoringActor.id }, updated_by: { actor_type: "agent", actor_id: authoringActor.id }, created_at: "2026-07-20T10:00:00+08:00", updated_at: "2026-07-20T10:00:00+08:00" });
-  const authoringProjection = {
-    actors: [authoringActor],
-    documents: [authoringDocument("document-authoring-active", "draft"), authoringDocument("document-authoring-archived", "archived")],
-    business_modules: [{ id: "module-authoring-probe", name: "Authoring probe", root_document_ref: "document-authoring-active", status: "active", default_view_refs: [] }],
-    custom_page_definitions: authoringDefinitions,
-  };
-  const grantedAuthoring = adaptCompanyOsDocsProjection(authoringProjection, { documentId: "document-authoring-active" }).document.authoring;
-  const refusedAuthoring = adaptCompanyOsDocsProjection(authoringProjection, { documentId: "document-authoring-archived" }).document.authoring;
-  check(
-    grantedAuthoring?.documentId === "document-authoring-active"
-      && grantedAuthoring?.documentPolicyRef === "definition-authoring-probe:document.append"
-      && grantedAuthoring?.blockPolicyRef === "definition-authoring-probe:block.append"
-      && refusedAuthoring === undefined,
-    "archived lifecycle alone withdraws Store-live authoring: the identical definition, policy refs, and writable actor grant it to the non-archived Document",
-  );
-
   const deepLinkedArchivedPages = adaptCompanyOsDocsProjection({ documents: hierarchyDocuments }, { documentId: "document-agentos-home" });
-  check(
-    deepLinkedArchivedPages.document.id === "document-agentos-home"
-      && deepLinkedArchivedPages.document.lifecycleStatus === "archived"
-      && deepLinkedArchivedPages.document.authoring === undefined
-      && !flattenTree(deepLinkedArchivedPages.workspace.tree).some((item) => item.ref === "document-agentos-home"),
-    "an archived deep link still resolves read-only with its archived lifecycle while staying out of the default tree",
-  );
   check(
     deepLinkedArchivedPages.workspace.archive?.documentIds.includes("document-agentos-home")
       && flattenTree(deepLinkedArchivedPages.workspace.archive?.tree).some((item) => item.ref === "document-agentos-home" && item.kind === "document")
-      && deepLinkedArchivedPages.document.breadcrumbs?.some((link) => link.id === "document-agentos-home"),
-    "an archived deep link stays reachable through the explicit Archive view and keeps its own location trail",
-  );
-  check(
-    document.includes("archivedReason") && document.includes("withdrawn for archived Documents") && document.indexOf("archivedReason") < document.indexOf('"This projection does not expose a CustomPageDefinition'),
-    "Document Focus names the archived lifecycle as the true Store-live authoring boundary instead of a false missing-policy reason",
+      && !flattenTree(deepLinkedArchivedPages.workspace.tree).some((item) => item.ref === "document-agentos-home"),
+    "an archived deep link stays reachable through the explicit Archive view while staying out of the default tree",
   );
   check(
     workspace.includes('data-docs-archive-narrow="true"') && workspace.includes("lg:hidden"),
     "the Archive stays reachable below desktop widths where the desktop tree rail is hidden",
   );
-  check(
-    document.includes("lg:border-l lg:border-t-0") && document.includes("border-t border-border pt-5"),
-    "Document Focus stacks its context rail below the document body on narrow widths",
-  );
 
-  // Navigation context derives from real snapshot relations only: the ancestor
-  // chain from parent_document_id, scoped active children, backlinks from
-  // Relations/reference_refs, related WorkItems, and maintained-by actors.
-  const navigationPages = adaptCompanyOsDocsProjection({
-    actors: [
-      { id: "actor-agent-nav", display_name: "Nav Agent", actor_type: "agent", permission_policy_refs: ["company.records.write"] },
-      { id: "actor-human-nav", display_name: "Nav Human", actor_type: "human" },
-    ],
-    documents: [
-      { id: "document-nav-root", space_id: "company", parent_document_id: null, title: "Nav Root", kind: "page", lifecycle_status: "active", block_ids: [] },
-      { id: "document-nav-parent", space_id: "company", parent_document_id: "document-nav-root", title: "Nav Parent", kind: "page", lifecycle_status: "active", block_ids: [] },
-      { id: "document-nav-focus", space_id: "company", parent_document_id: "document-nav-parent", title: "Nav Focus", kind: "page", lifecycle_status: "active", block_ids: [], created_by: { actor_type: "agent", actor_id: "actor-agent-nav" }, updated_by: { actor_type: "human", actor_id: "actor-human-nav" } },
-      { id: "document-nav-child", space_id: "company", parent_document_id: "document-nav-focus", title: "Nav Child", kind: "page", lifecycle_status: "active", block_ids: [] },
-      { id: "document-nav-archived-child", space_id: "company", parent_document_id: "document-nav-focus", title: "Nav Archived Child", kind: "page", lifecycle_status: "archived", block_ids: [] },
-      { id: "document-nav-backlink", space_id: "company", parent_document_id: null, title: "Nav Backlink", kind: "page", lifecycle_status: "active", block_ids: [], reference_refs: [{ kind: "document", id: "document-nav-focus" }] },
-    ],
-    work_items: [{ id: "work-nav-focus", title: "Nav focus work", source_document_ref: "document-nav-focus" }],
-    relations: [{ id: "relation-nav-backlink", relation_type: "references", source_ref: "document-nav-backlink", target_ref: "document-nav-focus" }],
-  }, { documentId: "document-nav-focus" });
-  check(
-    navigationPages.document.breadcrumb?.join(" / ") === "company / Nav Root / Nav Parent / Nav Focus"
-      && navigationPages.document.breadcrumbs?.map((link) => link.id).join(",") === "document-nav-root,document-nav-parent,document-nav-focus"
-      && navigationPages.document.breadcrumbs?.[0]?.href === "?surface=docs&document=document-nav-root"
-      && navigationPages.document.breadcrumbs?.[2]?.href === undefined,
-    "breadcrumbs derive the full ancestor chain from parent_document_id and stay navigable up to the current Document",
-  );
-  check(
-    JSON.stringify(navigationPages.document.childDocuments?.map((link) => link.id)) === JSON.stringify(["document-nav-child"]),
-    "scoped child documents list exactly the active parent_document_id children of the selected Document",
-  );
-  check(
-    navigationPages.document.backlinks?.length === 1 && navigationPages.document.backlinks?.[0]?.id === "document-nav-backlink",
-    "backlinks derive from snapshot Relations and reference_refs, deduplicated to each referencing Document",
-  );
-  check(
-    navigationPages.document.resultLinks?.some((link) => link.id === "work-nav-focus")
-      && navigationPages.document.properties?.some((property) => property.label === "Last maintained by" && property.ref === "actor-human-nav")
-      && navigationPages.document.properties?.some((property) => property.label === "Created by" && property.ref === "actor-agent-nav"),
-    "related WorkItems and maintained-by actors derive from real snapshot relations and actor refs",
-  );
-  check(
-    document.includes('data-docs-breadcrumbs="true"') && document.includes("DocumentBreadcrumbs")
-      && document.includes('label="Child pages"') && document.includes('label="Backlinks"'),
-    "Document Focus renders navigable breadcrumbs, scoped child pages, and backlinks",
-  );
-  check(
-    types.includes("breadcrumbs?: CompanyOsLink[]") && types.includes("childDocuments?: CompanyOsLink[]") && types.includes("backlinks?: CompanyOsLink[]") && types.includes("missingDocumentId?: string"),
-    "the document page contract carries breadcrumbs, child documents, backlinks, and the not-found marker",
-  );
-
-  // A missing explicit selection is an honest not-found route, not a substitution.
-  const missingPages = adaptCompanyOsDocsProjection({
-    documents: [{ id: "document-nav-root", space_id: "company", parent_document_id: null, title: "Nav Root", kind: "page", lifecycle_status: "active", block_ids: [] }],
-  }, { documentId: "document-pruned-away" });
-  check(
-    missingPages.document.id === undefined
-      && missingPages.document.missingDocumentId === "document-pruned-away"
-      && missingPages.document.title === "Document not found"
-      && missingPages.document.authoring === undefined
-      && missingPages.document.blocks.length === 0
-      && adapter.includes("selectionMissed"),
-    "a missing explicit document selection renders an explicit not-found state instead of substituting another Document",
-  );
-  check(
-    document.includes('data-docs-document-not-found="true"') && document.includes("nothing else is substituted under the requested id"),
-    "Document Focus renders the not-found state without fabricating document content",
-  );
-
-  // A long document renders every native Block in Document.block_ids order and
-  // raises the existing oversized-document health signal.
+  // The oversized-document health signal survives the document-focus retirement even
+  // though the Block rendering itself moved to DocsV2Surface.
   const longBlockIds = Array.from({ length: 60 }, (_, index) => `block-long-${String(index).padStart(2, "0")}`);
   const longPages = adaptCompanyOsDocsProjection({
     documents: [{ id: "document-long", space_id: "company", parent_document_id: null, title: "Long document", kind: "page", lifecycle_status: "active", block_ids: longBlockIds }],
     blocks: longBlockIds.map((id, index) => ({ id, document_id: "document-long", kind: "rich_text", position: 59 - index, content: { text: `Paragraph ${index}` } })),
   }, { documentId: "document-long" });
   check(
-    longPages.document.blocks.length === 60
-      && longPages.document.blocks[0]?.id === "block-long-00"
-      && longPages.document.blocks[59]?.id === "block-long-59"
-      && longPages.health.findings.some((finding) => finding.kind === "oversized_document" && finding.subject?.id === "document-long"),
-    "a long document renders every native Block in Document.block_ids order and flags the oversized-document health signal",
+    longPages.health.findings.some((finding) => finding.kind === "oversized_document" && finding.subject?.id === "document-long"),
+    "a long document still raises the oversized-document health signal",
   );
 
   const pageRefs = {
@@ -689,14 +419,6 @@ async function main() {
       ...(pages.workspace.suggestions ?? []).map((link) => link.id),
       pages.workspace.proposal?.id,
     ].filter(Boolean)),
-    "document-focus": new Set([
-      pages.document.id,
-      ...flattenTree(pages.document.documentTree).map((item) => item.ref),
-      ...(pages.document.properties ?? []).flatMap((property) => property.ref ? [property.ref] : []),
-      ...(pages.document.sourceLinks ?? []).map((link) => link.id),
-      ...(pages.document.resultLinks ?? []).map((link) => link.id),
-      ...(pages.document.connectedRecords ?? []).map((link) => link.id),
-    ]),
     "business-module-focus": new Set([
       pages.moduleView.id,
       ...pages.moduleView.records.flatMap((record) => [record.id, ...(record.links ?? []).map((link) => link.id)]),
@@ -713,7 +435,7 @@ async function main() {
       ]),
     ].filter(Boolean)),
   };
-  for (const page of ["home", "docs-workspace", "document-focus", "business-module-focus"]) {
+  for (const page of ["home", "docs-workspace", "business-module-focus"]) {
     const missing = fixture.page_slices[page].required_refs.filter((ref) => !pageRefs[page].has(ref));
     check(missing.length === 0, `${page} adapter exposes every fixture-required reference through a visible node (${missing.join(", ") || "complete"})`);
   }
@@ -724,90 +446,15 @@ async function main() {
     "approval-trademark-filing-fee-cn-2026-018",
     "financial-commitment-trademark-filing-fee-cn-2026-018",
   ];
-  for (const page of ["home", "docs-workspace", "document-focus"]) {
+  for (const page of ["home", "docs-workspace"]) {
     const missing = crossPageRefs.filter((ref) => !pageRefs[page].has(ref));
     check(missing.length === 0, `${page} has visible document/application/work/approval/commitment reference nodes (${missing.join(", ") || "complete"})`);
   }
 
-  // M1/M2 behavioural regression against Store-shaped records (ids and shapes lifted
-  // from the live agent-company Company Store).
-  const iaFixture = JSON.parse(await readFile(join(dashboardRoot, "fixtures", "company-os-docs-ia-v1", "projection.json"), "utf8"));
-  const iaEmpty = adaptCompanyOsDocsProjection(iaFixture, { documentId: "document-wcw-root" });
-  const iaEmptySource = iaFixture.documents.find((entry) => entry.id === "document-wcw-root");
-  check(
-    Array.isArray(iaEmptySource.block_ids) && iaEmptySource.block_ids.length === 0
-      && iaEmpty.document.id === "document-wcw-root"
-      && iaEmpty.document.blocks.length === 0
-      && !JSON.stringify(iaEmpty.document.blocks).includes("What this plan coordinates"),
-    "a Store Document asserting block_ids: [] renders zero Blocks instead of synthesized narrative, so the empty state is reachable",
-  );
-  const iaWithBlocks = adaptCompanyOsDocsProjection(iaFixture, { documentId: "document-agentos-01-agentos-dogfood" });
-  check(
-    iaWithBlocks.document.blocks.length === 12 && iaWithBlocks.document.id === "document-agentos-01-agentos-dogfood",
-    "a Store Document that does declare Blocks still renders exactly its projected Blocks",
-  );
-  // The discriminator is the Document's own assertion, not the absence of Blocks: a
-  // projection that never mentions block_ids is not claiming the Document is empty.
-  const undeclaredBlockIds = adaptCompanyOsDocsProjection({
-    documents: [{ id: "document-no-block-ids-key", title: "Prototype document", space: "Operations" }],
-  }, { documentId: "document-no-block-ids-key" });
-  const declaredEmptyBlockIds = adaptCompanyOsDocsProjection({
-    documents: [{ id: "document-declared-empty", title: "Store document", space: "Operations", block_ids: [] }],
-  }, { documentId: "document-declared-empty" });
-  check(
-    undeclaredBlockIds.document.blocks.length > 0 && declaredEmptyBlockIds.document.blocks.length === 0,
-    "an explicit empty block_ids is what suppresses synthesis; a projection that omits block_ids keeps its prototype narrative",
-  );
-  check(
-    document.includes('data-docs-empty-document="true"') && document.includes("empty UI state is not company truth") && document.includes("document.blocks.length"),
-    "Document Focus renders the empty-document state directly from the projected Block count",
-  );
-  // document-wcw-root renders through the Wanchengwanling operating layout, not the
-  // standard article, so suppressing synthesis there would have produced a silently
-  // blank page rather than a stated empty state.
-  check(
-    (document.match(/data-docs-empty-document="true"/g) ?? []).length === 1
-      && document.includes("function EmptyDocumentState")
-      && (document.match(/<EmptyDocumentState/g) ?? []).length === 2
-      && document.includes("{document.blocks.length ? (") && document.includes(': <EmptyDocumentState className="rounded-2xl bg-card/60" />}'),
-    "the Wanchengwanling operating layout and the standard article render one shared empty-document state, so neither can go silently blank",
-  );
-
-  const iaRelated = adaptCompanyOsDocsProjection(iaFixture, { documentId: "document-agentos-03-org-work-doc-loop" });
-  const relatedWork = iaRelated.document.relatedWork ?? [];
-  const relatedById = new Map(relatedWork.map((link) => [link.id, link]));
-  const iaSourceCount = iaFixture.work_items.filter((entry) => entry.source_document_ref === "document-agentos-03-org-work-doc-loop").length;
-  const iaContextCount = iaFixture.work_items.filter((entry) => (entry.context_refs ?? []).some((ref) => (ref?.id ?? ref) === "document-agentos-03-org-work-doc-loop")).length;
-  const iaResultCount = iaFixture.work_items.filter((entry) => entry.result_document_ref === "document-agentos-03-org-work-doc-loop").length;
-  check(
-    relatedWork.length === 17 && relatedById.size === 17,
-    `related work for document-agentos-03-org-work-doc-loop is the deduplicated union of ${iaSourceCount} source + ${iaContextCount} context + ${iaResultCount} result references (${iaSourceCount + iaContextCount + iaResultCount} refs -> ${relatedWork.length} distinct items)`,
-  );
-  check(
-    iaSourceCount + iaContextCount + iaResultCount > relatedWork.length
-      && relatedWork.every((link) => Boolean(link.meta))
-      && relatedById.get("work-agentos-org-work-doc-loop-v1")?.meta === "Source document · Context reference"
-      && relatedById.get("work-agentos-provider-capacity-preflight-v1")?.meta === "Context reference · Result document"
-      && relatedById.get("work-agentos-workitem-update-ownership-enforcement-v1")?.meta === "Source document · Result document",
-    "a WorkItem referenced more than once appears exactly once and states every reason it is related, rather than being listed twice or losing a reason",
-  );
-  check(
-    !relatedById.has("work-agentos-archived-source-provenance-v1") && !relatedById.has("work-agentos-doc-space-cleanup-v1")
-      && relatedWork.every((link) => link.kind === "work" && link.href?.startsWith("?surface=work&workItem=")),
-    "related work stays scoped to WorkItems that actually reference this Document and each entry routes to its WorkItem",
-  );
-  check(
-    adaptCompanyOsDocsProjection({
-      documents: [{ id: "document-context-string-refs", title: "Context ref shapes", space: "Operations", block_ids: [] }],
-      work_items: [{ id: "work-string-context", title: "String context ref", context_refs: ["document-context-string-refs"] }],
-    }, { documentId: "document-context-string-refs" }).document.relatedWork?.[0]?.meta === "Context reference",
-    "context_refs written as bare id strings resolve the same as { kind, id } entity refs",
-  );
-  check(
-    document.includes('data-docs-related-work="true"') && document.includes("Related work") && document.includes("RelatedWorkBlock")
-      && document.includes("Each item states why it is listed") && !document.includes('ContextBlock label="Results"'),
-    "Document Focus renders related work in a panel named for what it holds instead of labelling context and source references as Results",
-  );
+  // The Store-shaped M1/M2 document-content regressions (empty block_ids honesty,
+  // Block rendering, related-work deduplication) lived on the deleted Document Focus
+  // projection output. Document content is now read store-live through DocsV2Surface;
+  // see tests/company-os-docs-v2-check.mjs and tests/company-os-docs-v2-store-live-check.mjs.
 
   console.log(`\n   Company OS Docs checks: ${passed} pass, ${failed} fail`);
   process.exit(failed === 0 ? 0 : 1);
