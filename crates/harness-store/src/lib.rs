@@ -39,6 +39,19 @@ const LOCK_UN: i32 = 8;
 const COMPANY_WORK_ITEMS_LEDGER: &str = "company_os_work_items.jsonl";
 const WORK_CUTOVER_FENCES_LEDGER: &str = "company_os_work_cutover_fences.jsonl";
 
+/// Normalize surface identifiers into their canonical form.
+/// All surface comparisons and storage MUST route through this.
+/// Aliases: kimi|kimi-cli|kimi-code → kimi; codex|codex-app|codex-app-server → codex;
+/// claude|claude-code → claude. Unknown surfaces pass through unchanged.
+pub fn canonical_surface(surface: &str) -> &str {
+    match surface {
+        "kimi" | "kimi-cli" | "kimi-code" => "kimi",
+        "codex" | "codex-app" | "codex-app-server" => "codex",
+        "claude" | "claude-code" => "claude",
+        other => other,
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("io error: {0}")]
@@ -839,7 +852,7 @@ impl HarnessStore {
         });
         let mut inboxes = Vec::new();
         for run in runs.into_values().filter(|run| {
-            run.host_surface == host_surface
+            canonical_surface(&run.host_surface) == canonical_surface(host_surface)
                 && run.host_thread_id.as_deref() == Some(host_thread_id)
         }) {
             let inbox =
@@ -991,7 +1004,11 @@ impl HarnessStore {
             return Ok(attention);
         }
         if attention.status != HostAttentionStatus::Delivered
-            || attention.claimed_host_surface.as_deref() != Some(host_surface)
+            || attention
+                .claimed_host_surface
+                .as_deref()
+                .map(canonical_surface)
+                != Some(canonical_surface(host_surface))
             || attention.claimed_host_thread_id.as_deref() != Some(host_thread_id)
         {
             return Err(StoreError::Conflict(format!(
@@ -2845,7 +2862,8 @@ impl HarnessStore {
         require_non_empty_store(host_surface, "Host surface")?;
         require_non_empty_store(host_thread_id, "Host thread id")?;
         let run = self.require_team_run_unlocked(team_run_id)?;
-        if run.host_surface != host_surface || run.host_thread_id.as_deref() != Some(host_thread_id)
+        if canonical_surface(&run.host_surface) != canonical_surface(host_surface)
+            || run.host_thread_id.as_deref() != Some(host_thread_id)
         {
             return Err(StoreError::Conflict(format!(
                 "HOST_BINDING_MISMATCH: TeamRun {team_run_id} is not bound to {host_surface}/{host_thread_id}"
