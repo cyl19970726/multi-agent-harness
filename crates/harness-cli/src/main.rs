@@ -22892,7 +22892,7 @@ fn contract_prompt(
          - Permission boundary: the provider currently has full local execution permission, but owned paths and this Assignment remain the product/acceptance boundary. Do NOT deploy, push, merge, or delete anything; do not modify files outside owned paths. Sensitive or ambiguous external actions must be escalated to Host/Policy/Human.\n\
          - You may use provider-native subagents freely inside your own plan. They are your implementation detail: do not create an implicit MemberRun, and keep responsibility, permissions, and evidence under this MemberRun.\n\
          - You own this Assignment across multiple turns until Host explicitly accepts your handoff. Ask questions and coordinate early rather than silently guessing.\n\
-         - If Host asks you to plan first, answer with a concise Markdown plan in the same Assignment correlation and wait for an ordinary revise-or-execute message. Harness has no Plan Gate.\n\
+         - PLANNING: Present plans as ordinary Markdown messages to Host. Do NOT use EnterPlanMode, ExitPlanMode, or any provider-native plan/gate approval feature — they block you indefinitely in headless team context (the approval UI auto-dismisses and creates a loop). Harness has no Plan Gate. Write the plan as text, then send it to Host as a message.\n\
          \n\
          COORDINATION CLI (run from this Workspace)\n\
          - Use the exact Host binary from `HARNESS_BIN`; do not substitute another `harness` found on PATH.\n\
@@ -26155,6 +26155,14 @@ pub(crate) fn resolve_pending_interaction_value(
                     || option.id.contains("approve")
                     || option.id.starts_with("plan_opt_")
             }) {
+                PendingInteractionStatus::Approved
+            } else if matches!(current.kind, PendingInteractionKind::PlanReview)
+                && selected.is_none()
+            {
+                // Fallback: when a PlanReview arrives without a matched option (e.g. the
+                // Lead used --response-text instead of --option-id plan_approve), default
+                // to Approved — ADR 0039: Harness has no Plan Gate, and a denied
+                // provider-native plan review traps the member in a plan-mode loop.
                 PendingInteractionStatus::Approved
             } else {
                 PendingInteractionStatus::Denied
