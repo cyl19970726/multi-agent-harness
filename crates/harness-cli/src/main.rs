@@ -16699,12 +16699,14 @@ impl TeamRunLedger {
             title,
             summary,
             None,
+            &[],
         )
     }
 
     /// `provider_status` carries the transport's OWN terminal metadata in a
     /// machine-readable token. It is the only field a capacity classifier may
     /// read: `summary` is prose and also contains the member's own text.
+    #[allow(clippy::too_many_arguments)]
     fn append_action_with_provider_status(
         &self,
         member_run_id: &str,
@@ -16713,6 +16715,7 @@ impl TeamRunLedger {
         title: &str,
         summary: &str,
         provider_status: Option<String>,
+        evidence_refs: &[String],
     ) -> CliResult<MemberAction> {
         let _guard = self.write_lock();
         self.append_action_locked(
@@ -16722,6 +16725,7 @@ impl TeamRunLedger {
             title,
             summary,
             provider_status,
+            evidence_refs,
         )
     }
 
@@ -16737,6 +16741,7 @@ impl TeamRunLedger {
         title: &str,
         summary: &str,
         provider_status: Option<String>,
+        evidence_refs: &[String],
     ) -> CliResult<MemberAction> {
         let seq = self
             .store
@@ -16765,7 +16770,7 @@ impl TeamRunLedger {
             semantic_status: None,
             title: title.to_string(),
             summary: summary.to_string(),
-            evidence_refs: Vec::new(),
+            evidence_refs: evidence_refs.to_vec(),
             started_at: now_string(),
             completed_at,
         };
@@ -16804,6 +16809,7 @@ impl TeamRunLedger {
             title,
             summary,
             None,
+            &[],
         )?;
         Ok(true)
     }
@@ -19322,7 +19328,7 @@ fn run_claude_team_member(
                 .unwrap_or_else(|| generated_id("corr")),
             causation_id: assignment.as_ref().map(|message| message.id.clone()),
             response_intent: None,
-            evidence_refs: Vec::new(),
+            evidence_refs: turn.evidence_refs,
             deliveries: vec![TeamMessageDelivery {
                 member_id: "host".to_string(),
                 policy: TeamDeliveryPolicy::ManualAck,
@@ -20028,6 +20034,7 @@ fn run_claude_agent_sdk_team_member(
                         provider_terminal
                             .as_ref()
                             .map(|failure| failure.reason.clone()),
+                        &turn_evidence_refs,
                     )?;
                     ledger.fold_event(
                         TeamRunEventSourceKind::Member,
@@ -20043,7 +20050,6 @@ fn run_claude_agent_sdk_team_member(
                     ledger.save_member_run(&member_row)?;
                     final_status = MemberRunStatus::Idle;
                     final_summary = summary;
-                    let _ = turn_evidence_refs;
                     turn_text.clear();
                     idle_since = Some(Instant::now());
                     turn_lease.take();
@@ -20513,6 +20519,7 @@ fn record_provider_error_round(
         record
             .provider_terminal
             .map(ProviderTerminalFailure::to_provider_status),
+        &[],
     )?;
     ledger.fold_event(
         TeamRunEventSourceKind::Member,
@@ -20619,6 +20626,7 @@ fn record_member_round(
 struct ClaudeTeamTurn {
     session_id: String,
     final_text: String,
+    evidence_refs: Vec<String>,
 }
 
 fn claude_team_permission_mode() -> &'static str {
@@ -20757,9 +20765,11 @@ fn run_claude_team_turn(
         .ok_or_else(|| CliError::Usage("Claude completed without a native session id".into()))?;
     let final_text = extract_claude_reply_text(&events)
         .ok_or_else(|| CliError::Usage("Claude completed without an assistant result".into()))?;
+    let evidence_refs = extract_claude_evidence_refs(&events);
     Ok(ClaudeTeamTurn {
         session_id,
         final_text,
+        evidence_refs,
     })
 }
 
@@ -35041,6 +35051,24 @@ fn extract_claude_reply_text(events: &[ClaudeStreamEvent]) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("\n"))
 }
 
+/// Extract evidence refs from a `claude -p --output-format stream-json`
+/// stream. Scans the terminal `result` event for an optional `evidenceRefs`
+/// array (strings); returns empty vec when absent.
+fn extract_claude_evidence_refs(events: &[ClaudeStreamEvent]) -> Vec<String> {
+    for event in events.iter().rev() {
+        if event.event_type != "result" {
+            continue;
+        }
+        if let Some(refs) = event.payload.get("evidenceRefs").and_then(|v| v.as_array()) {
+            return refs
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
 /// Map ProviderExecutionStatus to terminal source.
 fn status_to_terminal_source(status: &ProviderExecutionStatus) -> Option<MessageTerminalSource> {
     match status {
@@ -46345,5 +46373,72 @@ invalid json line
                 .and_then(extract_json_object),
             Some(serde_json::json!({"ok": true}))
         );
+    }
+}
+
+#[cfg(test)]
+mod tests_extract_claude_evidence_refs {
+    use super::*;
+
+    #[test]
+    fn result_with_evidence_refs() {
+        let events = vec![ClaudeStreamEvent::parse_line(
+            r#"{"type":"result","result":"done","evidenceRefs":["src/a.ts","docs/b.md"]}"#,
+        )
+        .unwrap()];
+        let refs = extract_claude_evidence_refs(&events);
+        assert_eq!(refs, vec!["src/a.ts", "docs/b.md"]);
+    }
+
+    #[test]
+    fn result_without_evidence_refs() {
+        let events =
+            vec![ClaudeStreamEvent::parse_line(r#"{"type":"result","result":"done"}"#).unwrap()];
+        let refs = extract_claude_evidence_refs(&events);
+        assert_eq!(refs, Vec::<String>::new());
+    }
+
+    #[test]
+    fn no_result_event() {
+        let events = vec![ClaudeStreamEvent::parse_line(
+            r#"{"type":"stream_event","event":{"type":"message","message":{"content":[{"type":"text","text":"hello"}]}}}"#,
+        )
+        .unwrap()];
+        let refs = extract_claude_evidence_refs(&events);
+        assert_eq!(refs, Vec::<String>::new());
+    }
+
+    #[test]
+    fn result_with_empty_evidence_refs() {
+        let events = vec![ClaudeStreamEvent::parse_line(
+            r#"{"type":"result","result":"done","evidenceRefs":[]}"#,
+        )
+        .unwrap()];
+        let refs = extract_claude_evidence_refs(&events);
+        assert_eq!(refs, Vec::<String>::new());
+    }
+
+    #[test]
+    fn result_interleaved_uses_last_result() {
+        let events = vec![
+            ClaudeStreamEvent::parse_line(
+                r#"{"type":"stream_event","event":{"type":"message","message":{"content":[{"type":"text","text":"ok"}]}}}"#,
+            )
+            .unwrap(),
+            ClaudeStreamEvent::parse_line(
+                r#"{"type":"result","result":"done","evidenceRefs":["first.ts"]}"#,
+            )
+            .unwrap(),
+            ClaudeStreamEvent::parse_line(
+                r#"{"type":"stream_event","event":{"type":"message","message":{"content":[{"type":"text","text":"more"}]}}}"#,
+            )
+            .unwrap(),
+            ClaudeStreamEvent::parse_line(
+                r#"{"type":"result","result":"done","evidenceRefs":["last.ts"]}"#,
+            )
+            .unwrap(),
+        ];
+        let refs = extract_claude_evidence_refs(&events);
+        assert_eq!(refs, vec!["last.ts"]);
     }
 }

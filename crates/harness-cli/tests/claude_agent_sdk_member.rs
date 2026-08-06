@@ -454,6 +454,32 @@ fn agent_sdk_member_consumes_a_message_that_arrives_after_the_queue_emptied() {
         completed_rounds, 2,
         "the persistent member must execute both turns"
     );
+    // Issue #232: turn_evidence_refs must land on the recorded action.
+    let turn_actions: Vec<_> = detail_json["actions"]
+        .as_array()
+        .expect("member actions")
+        .iter()
+        .filter(|action| action["action_type"] == "turn_completed")
+        .collect();
+    assert_eq!(turn_actions.len(), 2);
+    let turn1_refs = turn_actions[0]["evidence_refs"]
+        .as_array()
+        .expect("evidence_refs for turn 1");
+    assert_eq!(
+        turn1_refs
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect::<Vec<_>>(),
+        vec!["src/member.ts"],
+        "turn 1 must record the provider-emitted evidence refs"
+    );
+    let turn2_refs = turn_actions[1]["evidence_refs"]
+        .as_array()
+        .expect("evidence_refs for turn 2");
+    assert!(
+        turn2_refs.is_empty(),
+        "turn 2 must record empty evidence refs from provider"
+    );
     let status_body = String::from_utf8_lossy(&status.stdout);
     assert!(
         status_body.contains("\"status\": \"idle\""),
