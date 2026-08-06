@@ -79,8 +79,10 @@ async function main() {
   check(shell.includes("CompanyOsRouter") && shell.includes("isCompanyOsSurface"), "Company OS surfaces are mounted in the real Workbench shell");
   check(shell.includes('{companyContext ? "Company context" : "Active context"}') && shell.includes("Docs holds context, Organization holds authority, Work holds commitments, and Finance records monetary effects."), "Company OS navigation keeps four-system context separate from Mission and Wave execution context");
 
-  const pages = ["home", "docs-workspace", "document-health", "document-focus", "workboard", "work-item-focus", "finance", "agents-organization", "standing-agent-focus", "governance-proposal", "approval-focus", "business-module-focus", "human-member-focus"];
-  check([...pages, "custom-page"].every((page) => router.includes(`\"${page}\"`)), "router owns all core page contracts plus the custom page runtime entry");
+  // Document deep links no longer enumerate as a CompanyOsRouter page: the Workbench
+  // shell intercepts surface=docs + documentId and renders DocsV2Surface directly.
+  const pages = ["home", "docs-workspace", "document-health", "workboard", "work-item-focus", "finance", "agents-organization", "standing-agent-focus", "governance-proposal", "approval-focus", "business-module-focus", "human-member-focus"];
+  check([...pages, "custom-page"].every((page) => router.includes(`\"${page}\"`)) && !router.includes('"document-focus"'), "router owns all core page contracts plus the custom page runtime entry, with document deep links delegated to DocsV2Surface");
   check(router.includes("<CustomPageHost") && router.includes("selection.customPageId"), "router mounts Store-backed custom pages through the generic CustomPageHost");
   check(router.includes('data-company-os-prototype={isLive ? "false" : "true"}') && router.includes("fixed fixture fallback") && router.includes("not claiming live Company OS persistence"), "fixture fallback is visibly and structurally labelled as prototype data");
   check(router.includes("store-live-loading") && router.includes("prototype fixture data is suppressed") && shell.includes("livePending={livePending}"), "Company OS suppresses prototype fixtures while Store-live data is loading");

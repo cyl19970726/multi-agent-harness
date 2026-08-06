@@ -1,9 +1,7 @@
 import type {
   CompanyOsActorRef,
   CompanyOsCorrectiveWorkContext,
-  CompanyOsDocumentAuthoringContext,
   CompanyOsDocumentHealthData,
-  CompanyOsDocumentPageData,
   CompanyOsHomeData,
   CompanyOsHealthFinding,
   CompanyOsLink,
@@ -19,7 +17,6 @@ import type {
 type JsonRecord = Record<string, unknown>;
 type Projection = {
   workspace: CompanyOsWorkspaceData;
-  document: CompanyOsDocumentPageData;
   moduleView: CompanyOsStructuredViewData;
   home: CompanyOsHomeData;
   health: CompanyOsDocumentHealthData;
@@ -137,13 +134,6 @@ function entityRefs(value: unknown): Array<{ kind: string; id: string }> {
  * WorkItem.context_refs is written either as `{ kind, id }` entity refs or as bare id
  * strings depending on the writer, so both shapes have to resolve to the same ids.
  */
-function contextRefIds(entry: JsonRecord): string[] {
-  return distinct([
-    ...entityRefs(entry.context_refs).map((reference) => reference.id),
-    ...strings(entry.context_refs),
-  ]).filter(Boolean);
-}
-
 function docsDocumentHref(id: string): string | undefined {
   return id ? `?surface=docs&document=${encodeURIComponent(id)}` : undefined;
 }
@@ -191,6 +181,11 @@ function linkEntries(values: Array<CompanyOsLink | undefined>): CompanyOsLink[] 
     .filter((value, index, entries) => entries.findIndex((candidate) => candidate.id === value.id) === index);
 }
 
+function contentObject(block: JsonRecord): JsonRecord {
+  const content = block.content;
+  return content && typeof content === "object" && !Array.isArray(content) ? content as JsonRecord : {};
+}
+
 function templateOption(document: JsonRecord, blocks: JsonRecord[]): CompanyOsTemplateOption {
   const blockOrder = strings(document.block_ids);
   const templateId = text(document.id);
@@ -233,27 +228,6 @@ function humanize(value: unknown): string {
   return raw.replace(/[_-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-function humanTimestamp(value: unknown): string | undefined {
-  const raw = text(value);
-  const parsed = raw.startsWith("unix-ms:") ? Number(raw.slice("unix-ms:".length)) : Date.parse(raw);
-  if (!raw || !Number.isFinite(parsed)) return raw || undefined;
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(parsed);
-}
-
-function facts(root: JsonRecord, page: string): string[] {
-  const slices = root.page_slices;
-  if (!slices || typeof slices !== "object") return [];
-  const slice = (slices as JsonRecord)[page];
-  return slice && typeof slice === "object" ? strings((slice as JsonRecord).required_facts) : [];
-}
-
 function isReadableSentence(value: unknown): boolean {
   const raw = text(value).trim();
   return Boolean(raw)
@@ -286,55 +260,6 @@ function approvalSummary(
   if (financialName) return `Review the requested ${financialName}.`;
   if (workTitle) return `Review the decision needed for ${workTitle}.`;
   return undefined;
-}
-
-function contentObject(block: JsonRecord): JsonRecord {
-  const content = block.content;
-  return content && typeof content === "object" && !Array.isArray(content) ? content as JsonRecord : {};
-}
-
-function blockText(block: JsonRecord): string {
-  const content = contentObject(block);
-  return text(content.text, text(content.body, text(block.text)));
-}
-
-function projectedDocumentBlocks(document: JsonRecord | undefined, blocks: JsonRecord[]): CompanyOsDocumentPageData["blocks"] {
-  const documentId = text(document?.id);
-  if (!documentId) return [];
-  const blockOrder = strings(document?.block_ids);
-  const relevant = blocks
-    .filter((block) => text(block.document_id, text(block.document_ref)) === documentId)
-    .sort((left, right) => {
-      const leftIndex = blockOrder.indexOf(text(left.id));
-      const rightIndex = blockOrder.indexOf(text(right.id));
-      if (leftIndex !== -1 || rightIndex !== -1) return (leftIndex === -1 ? Number.MAX_SAFE_INTEGER : leftIndex) - (rightIndex === -1 ? Number.MAX_SAFE_INTEGER : rightIndex);
-      return Number(left.position ?? 0) - Number(right.position ?? 0);
-    });
-  return relevant.map((block) => {
-    const kind = text(block.kind, "rich_text");
-    const content = contentObject(block);
-    const id = text(block.id, `block:${kind}`);
-    if (kind === "heading") return { id, type: "heading" as const, content: blockText(block), level: Number(content.level) === 3 ? 3 as const : 2 as const };
-    if (kind === "callout") return { id, type: "callout" as const, title: text(content.title) || undefined, content: blockText(block), tone: ["warning", "success"].includes(text(content.tone)) ? text(content.tone) as "warning" | "success" : "neutral" as const };
-    if (kind === "table" || kind === "simple_table") {
-      const columns = strings(content.columns);
-      const rawRows = Array.isArray(content.rows) ? content.rows : [];
-      return {
-        id,
-        type: "table" as const,
-        table: {
-          caption: text(content.caption, text(content.title)) || undefined,
-          columns: columns.length ? columns : ["Value"],
-          rows: rawRows.map((row) => Array.isArray(row) ? row.map((cell) => text(cell)) : [text(row)]),
-        },
-      };
-    }
-    if (kind === "bullets" || kind === "bullet_list") {
-      const items = Array.isArray(content.items) ? content.items.map((item) => text(item)).filter(Boolean) : blockText(block).split("\n").filter(Boolean);
-      return { id, type: "bullets" as const, items };
-    }
-    return { id, type: "paragraph" as const, content: blockText(block) };
-  });
 }
 
 function relationEndpointIds(relation: JsonRecord): string[] {
@@ -823,7 +748,6 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
   const focusRefs = refs(root, "document-focus");
   const moduleRefs = refs(root, "business-module-focus");
   const homeRefs = refs(root, "home");
-  const focusFacts = facts(root, "document-focus");
   const workspaceDocument = firstReferenced(documents, workspaceRefs) ?? documents[0];
   const explicitlySelectedDocument = selected.documentId
     ? record(allDocuments, selected.documentId)
@@ -832,9 +756,6 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     ?? firstReferenced(documents, focusRefs)
     ?? workspaceDocument
     ?? documents[0];
-  // An explicit selection that does not resolve is a not-found route, not a
-  // license to substitute another Document under the requested id.
-  const selectionMissed = Boolean(selected.documentId) && !explicitlySelectedDocument;
   const templateDocuments = documents.filter((entry) => text(entry.kind).toLowerCase() === "template");
   const templateLinks = templateDocuments.map((document) => templateOption(document, blocks));
   const work = workItems.find((entry) => text(entry.source_document_ref) === text(workspaceDocument?.id))
@@ -865,7 +786,6 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
   const sourceLink = sourceLinkBase && workSourceDocument && isArchived(workSourceDocument)
     ? { ...sourceLinkBase, meta: "Archived history" }
     : sourceLinkBase;
-  const focusLink = documentLink(focusDocument);
   const applicationLink = application
     ? { id: text(application.id), label: text(field(application, "display_id"), text(application.display_name, text(application.title, "Untitled record"))), kind: "record" as const }
     : undefined;
@@ -878,44 +798,6 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
   const proposalLink = proposal ? { id: text(proposal.id), label: text(field(proposal, "title"), text(proposal.title, "Structure proposal")), kind: "module" as const } : undefined;
   const selectedModuleLink = moduleLink(module);
   const focusDocumentId = text(focusDocument?.id);
-  const focusParentDocument = record(allDocuments, focusDocument?.parent_document_id);
-  // Location, child, and backlink context derive only from real snapshot
-  // relations: Document.parent_document_id for the ancestor chain and scoped
-  // children, and snapshot Relations/reference_refs for backlinks. Missing
-  // relations yield absent lists, never fabricated ones.
-  const focusAncestorDocuments: JsonRecord[] = [];
-  {
-    const seen = new Set<string>([focusDocumentId]);
-    let cursor = focusParentDocument;
-    while (cursor) {
-      const cursorId = text(cursor.id);
-      if (!cursorId || seen.has(cursorId)) break;
-      seen.add(cursorId);
-      focusAncestorDocuments.unshift(cursor);
-      cursor = record(allDocuments, cursor.parent_document_id);
-    }
-  }
-  const focusSpaceLabel = focusDocument ? text(focusDocument.space, text(focusDocument.space_id)) : "";
-  const focusBreadcrumbLabels = focusDocument
-    ? [focusSpaceLabel, ...focusAncestorDocuments.map((entry) => text(entry.title, "Untitled document")), text(focusDocument.title, "Untitled document")].filter(Boolean)
-    : undefined;
-  const focusBreadcrumbLinks: CompanyOsLink[] = focusDocument
-    ? linkEntries([
-        ...focusAncestorDocuments.map(documentLink),
-        { id: focusDocumentId, label: text(focusDocument.title, "Untitled document"), kind: "document" as const },
-      ])
-    : [];
-  const focusChildDocuments = focusDocumentId
-    ? documents.filter((entry) => text(entry.parent_document_id) === focusDocumentId).sort(documentTitleOrder)
-    : [];
-  const focusBacklinkDocuments = focusDocumentId
-    ? allDocuments.filter((entry) => {
-        const entryId = text(entry.id);
-        if (!entryId || entryId === focusDocumentId) return false;
-        const references = entityRefs(entry.reference_refs).some((reference) => reference.kind === "document" && reference.id === focusDocumentId);
-        return references || hasRelationBetween(relations, entryId, focusDocumentId);
-      })
-    : [];
   const focusTypedRecords = focusDocumentId
     ? typedRecords.filter((entry) => text(entry.source_document_ref, text(entry.source_document_id)) === focusDocumentId
       || hasRelationBetween(relations, focusDocumentId, text(entry.id)))
@@ -925,58 +807,6 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     ? workItems.filter((entry) => text(entry.source_document_ref, text(entry.source_document_id)) === focusDocumentId
       || focusTypedRecordIds.has(text(entry.business_record_ref, text(entry.source_record_ref))))
     : [];
-  const focusWorkItemIds = new Set(focusWorkItems.map((entry) => text(entry.id)).filter(Boolean));
-  const focusFinancialRecords = financialRecords.filter((entry) => focusWorkItemIds.has(text(entry.work_item_ref))
-    || focusTypedRecordIds.has(text(entry.business_record_ref)));
-  const focusFinancialRecordIds = new Set(focusFinancialRecords.map((entry) => text(entry.id)).filter(Boolean));
-  const focusApprovals = approvals.filter((entry) => {
-    const subjectRefs = strings(entry.subject_refs);
-    const subjectId = text(entry.subject_ref);
-    return [...subjectRefs, subjectId].some((id) => focusWorkItemIds.has(id) || focusFinancialRecordIds.has(id) || focusTypedRecordIds.has(id));
-  });
-  const focusSourceLinks = linkEntries([focusParentDocument && text(focusParentDocument.id) !== focusDocumentId ? documentLink(focusParentDocument) : undefined]);
-  const focusChildDocumentLinks = linkEntries(focusChildDocuments.map(documentLink));
-  const focusBacklinkLinks = linkEntries(focusBacklinkDocuments.map((entry) => {
-    const link = documentLink(entry);
-    return link && isArchived(entry) ? { ...link, meta: "Archived history" } : link;
-  }));
-  const focusResultLinks = linkEntries(focusWorkItems.map(workItemLink));
-  // Related work is the deduplicated union of every canonical WorkItem -> Document
-  // reference, because no document -> work_item Relations exist in the ledger to read.
-  // A WorkItem appears once no matter how many refs point here, and carries the reasons
-  // it appears, so "why is this listed" never has to be guessed from the title.
-  const focusWorkRelations = focusDocumentId
-    ? workItems
-      .map((entry) => {
-        const reasons = [
-          text(entry.source_document_ref, text(entry.source_document_id)) === focusDocumentId ? "Source document" : "",
-          contextRefIds(entry).includes(focusDocumentId) ? "Context reference" : "",
-          text(entry.result_document_ref, text(entry.result_document_id)) === focusDocumentId ? "Result document" : "",
-          focusTypedRecordIds.has(text(entry.business_record_ref, text(entry.source_record_ref))) ? "Linked record" : "",
-        ].filter(Boolean);
-        return { entry, reasons };
-      })
-      .filter((candidate) => candidate.reasons.length)
-      .filter((candidate, index, values) => values.findIndex((other) => text(other.entry.id) === text(candidate.entry.id)) === index)
-    : [];
-  const focusRelatedWorkLinks = linkEntries(focusWorkRelations.map(({ entry, reasons }) => {
-    const link = workItemLink(entry);
-    const workId = text(entry.id);
-    return link ? { ...link, href: workId ? `?surface=work&workItem=${encodeURIComponent(workId)}` : undefined, meta: reasons.join(" · ") } : undefined;
-  }));
-  const focusConnectedRecordLinks = linkEntries([
-    ...focusTypedRecords.map(typedRecordLink),
-    ...focusApprovals.map((entry) => {
-      const relatedFinancial = focusFinancialRecords.find((candidate) => strings(entry.subject_refs).includes(text(candidate.id)));
-      const relatedWork = focusWorkItems.find((candidate) => strings(entry.subject_refs).includes(text(candidate.id)));
-      return { id: text(entry.id), label: approvalTitle(entry, relatedFinancial, relatedWork), kind: "approval" as const, href: `?surface=approvals&approval=${encodeURIComponent(text(entry.id))}` };
-    }),
-    ...focusFinancialRecords.map(financialRecordLink),
-  ]);
-  const documentSourceLinks = selected.documentId ? focusSourceLinks : linkEntries([sourceLink]);
-  const documentResultLinks = selected.documentId ? focusResultLinks : linkEntries([workLink]);
-  const documentConnectedRecords = selected.documentId ? focusConnectedRecordLinks : linkEntries([applicationLink, approvalLink, financeLink]);
-
   const focusActorRefs = refs(root, "document-focus");
   const moduleActorRefs = refs(root, "business-module-focus");
   const homeActorRefs = refs(root, "home");
@@ -996,16 +826,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     entry.reviewer_ref ?? entry.reviewer, entry.legal_reviewer_ref, entry.approver_ref ?? entry.approver,
   ].map(refId).filter(Boolean));
   const focusActors = linkEntries(distinct([...focusActorRefs, refId(focusDocument?.owner_ref), ...referencedActorIds, ...focusWorkActorRefs]).map((id) => actorLink(actors, id)));
-  const explicitDocumentActors = linkEntries(distinct([
-    ...focusActorRefs,
-    refId(focusDocument?.owner_ref),
-    ...referencedActorIds,
-  ]).map((id) => actorLink(actors, id)));
   const moduleActors = linkEntries(distinct([...moduleActorRefs, ...workActorRefs]).map((id) => actorLink(actors, id)));
-  const owner = actorLink(actors, focusDocument?.owner_ref);
-  const creator = actorLink(actors, focusDocument?.created_by);
-  const lastMaintainer = actorLink(actors, focusDocument?.updated_by);
-  const workAccountable = actorLink(actors, focusWorkItems[0]?.accountable_owner_ref ?? focusWorkItems[0]?.accountable_owner);
   const decisionActor = actorLink(actors, approval?.accountable_owner_ref ?? work?.approver_ref ?? work?.approver);
   const decisionRequester = actorLink(actors, approval?.requested_by_ref ?? approval?.requested_by ?? work?.requested_by_ref ?? work?.requested_by);
   const decisionCollaborators = linkEntries(distinct([
@@ -1018,13 +839,6 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     refId(work?.legal_reviewer_ref),
     ...(Array.isArray(work?.contributor_refs) ? work.contributor_refs.map(refId) : []),
   ]).filter((id) => id && id !== decisionActor?.id && id !== decisionRequester?.id).map((id) => actorLink(actors, id)));
-  const strategyPartner = explicitDocumentActors.find((actor) => /strategy/i.test(actor.label));
-  const rawDocumentStatus = text(focusDocument?.lifecycle_status, text(field(focusDocument, "status")));
-  const documentStatus = rawDocumentStatus
-    ? humanize(rawDocumentStatus)
-    : focusFacts.some((fact) => /on track/i.test(fact)) ? "On track" : "";
-  const nextReviewAt = approval?.expires_at ?? work?.updated_at;
-  const reportedMetrics = items(root.explicit_metrics);
 
   const docsBySpace = new Map<string, JsonRecord[]>();
   documents.forEach((entry) => {
@@ -1078,75 +892,6 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     }
     : undefined;
 
-  const documentProperties = [
-    owner && { label: "Owner", value: `${owner.label} · ${owner.actorType}`, ref: owner.id, actorType: owner.actorType },
-    creator && { label: "Created by", value: `${creator.label} · ${creator.actorType}`, ref: creator.id, actorType: creator.actorType },
-    lastMaintainer && lastMaintainer.id !== creator?.id && { label: "Last maintained by", value: `${lastMaintainer.label} · ${lastMaintainer.actorType}`, ref: lastMaintainer.id, actorType: lastMaintainer.actorType },
-    documentStatus && { label: "Operating status", value: documentStatus },
-    strategyPartner && { label: "Strategy partner", value: `${strategyPartner.label} · ${strategyPartner.actorType}`, ref: strategyPartner.id, actorType: strategyPartner.actorType },
-    ...explicitDocumentActors.filter((actor) => actor.id !== owner?.id && actor.id !== strategyPartner?.id).slice(0, 2).map((actor) => ({ label: "Participant", value: `${actor.label} · ${actor.actorType}`, ref: actor.id, actorType: actor.actorType })),
-  ].filter(Boolean) as NonNullable<CompanyOsDocumentPageData["properties"]>;
-  const storeDocumentBlocks = projectedDocumentBlocks(focusDocument, blocks);
-  // A Document that carries a block_ids array is describing its own Blocks, so an empty
-  // array is a Store assertion that it has none. Synthesizing narrative Blocks there
-  // would invent company memory under a real Document id. A projection that omits
-  // block_ids entirely is not making that assertion, and keeps the prototype narrative.
-  const declaresBlockIds = Array.isArray(focusDocument?.block_ids);
-  const documentBlocks: CompanyOsDocumentPageData["blocks"] = storeDocumentBlocks.length
-    ? storeDocumentBlocks
-    : focusDocument && declaresBlockIds
-      ? []
-      : focusDocument
-        ? [
-        { id: "what", type: "heading", content: "What this plan coordinates" },
-        { id: "what-copy", type: "paragraph", content: `This page keeps ${text(focusDocument.title, "the selected document")} connected to its related operating records.` },
-        { id: "why", type: "heading", content: "Why this context matters" },
-        { id: "why-copy", type: "paragraph", content: "The document explains the work; approvals, financial records, and execution outcomes remain linked to their authoritative records instead of becoming copied ledger facts here." },
-        { id: "next", type: "heading", content: "Strategy and next review" },
-        {
-          id: "next-callout",
-          type: "callout",
-          tone: approval || work ? "warning" : "neutral",
-          title: nextReviewAt ? `Review by ${humanTimestamp(nextReviewAt)}` : "Review linked work",
-          content: work
-            ? `${text(work.title, "Linked work")} is currently ${humanize(work.status) || "open"}. Review the linked decision before updating this plan.`
-            : "No linked work is supplied for review.",
-        },
-        ...(work ? [{
-          id: "linked-work-table",
-          type: "table" as const,
-          table: {
-            caption: "Linked work",
-            columns: ["Work", "Accountable", "Status", "Last updated"],
-            rows: [[
-              text(work.title, "Untitled work"),
-              workAccountable?.label ?? "Not supplied",
-              humanize(work.status) || "Not supplied",
-              humanTimestamp(work.updated_at) ?? "Not supplied",
-            ]],
-          },
-        }] : []),
-        ...(reportedMetrics.length ? [{
-          id: "reported-metrics",
-          type: "table" as const,
-          table: {
-            caption: "Reported metrics",
-            columns: ["Metric", "Observed", "Value"],
-            rows: reportedMetrics.map((metric) => [
-              text(metric.label, "Metric"),
-              humanTimestamp(metric.observed_at) ?? "Not supplied",
-              text(metric.display_amount, text(metric.value, "Not supplied")),
-            ]),
-          },
-        }] : []),
-        { id: "linked-work", type: "relations", label: "Linked records", links: linkEntries([workLink, applicationLink, approvalLink, financeLink]) },
-        ]
-        : [{ id: "empty", type: "paragraph", content: "No rich document blocks are supplied." }];
-  const documentActivity = [
-    focusDocument?.updated_at && { id: `document:${text(focusDocument.id)}`, label: "Document updated", at: humanTimestamp(focusDocument.updated_at) },
-    ...focusWorkItems.map((entry) => entry.updated_at && { id: `work:${text(entry.id)}`, label: "Linked work updated", detail: text(entry.title), at: humanTimestamp(entry.updated_at) }),
-    ...focusFinancialRecords.map((entry) => entry.updated_at && { id: `financial:${text(entry.id)}`, label: "Financial record updated", detail: text(entry.display_name), at: humanTimestamp(entry.updated_at) }),
-  ].filter(Boolean) as NonNullable<CompanyOsDocumentPageData["activity"]>;
   const structureLinks = linkEntries([selectedModuleLink, proposalLink, sourceLink, applicationLink, financeLink]);
   const documentDefinition = pageDefinitions.find((definition) => Array.isArray(definition.action_command_refs)
     && definition.action_command_refs.map((value) => text(value)).includes("document.append")
@@ -1155,12 +900,6 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     ?? pageDefinitions.find((definition) => Array.isArray(definition.action_command_refs)
       && definition.action_command_refs.map((value) => text(value)).includes("document.append")
       && definition.action_command_refs.map((value) => text(value)).includes("block.append"));
-  const documentPolicyRef = Array.isArray(documentDefinition?.policy_refs)
-    ? documentDefinition.policy_refs.map((value) => text(value)).find((value) => value.endsWith(":document.append"))
-    : undefined;
-  const blockPolicyRef = Array.isArray(documentDefinition?.policy_refs)
-    ? documentDefinition.policy_refs.map((value) => text(value)).find((value) => value.endsWith(":block.append"))
-    : undefined;
   const typedRecordPolicyRef = Array.isArray(documentDefinition?.policy_refs)
     ? documentDefinition.policy_refs.map((value) => text(value)).find((value) => value.endsWith(":typed_record.append"))
     : undefined;
@@ -1177,31 +916,9 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     ?? actors.find(isWritableAgent);
   const documentAuthoringActor = actorRef(documentAuthoringAgent)
     ?? actorRef(actors.find((actor) => actorPermissions(actor).includes("company.records.write")));
-  const focusDocumentCreatedBy = actorRef(focusDocument?.created_by as JsonRecord | undefined);
   const primaryDefinitionForPolicy = text(documentDefinition?.id, "<custom-page-definition-id>");
   const actorForPolicy = documentAuthoringActor?.actor_id ?? "<agent-or-human-id>";
   const templatePolicy = templateRecordPolicy(module, primaryDefinitionForPolicy, actorForPolicy);
-  const documentAuthoring: CompanyOsDocumentAuthoringContext | undefined = focusDocument && !isArchived(focusDocument) && documentDefinition && documentPolicyRef && blockPolicyRef && documentAuthoringActor
-    ? {
-        definitionId: text(documentDefinition.id),
-        documentPolicyRef,
-        blockPolicyRef,
-        documentId: text(focusDocument.id),
-        spaceId: text(focusDocument.space_id, text(focusDocument.space, "company")),
-        parentDocumentId: text(focusDocument.parent_document_id) || null,
-        documentKind: text(focusDocument.kind, "page"),
-        lifecycleStatus: text(focusDocument.lifecycle_status, "draft"),
-        blockIds: strings(focusDocument.block_ids),
-        permissionPolicyRefs: strings(focusDocument.permission_policy_refs).length ? strings(focusDocument.permission_policy_refs) : ["company.records.write"],
-        referenceRefs: entityRefs(focusDocument.reference_refs),
-        templateRef: text(focusDocument.template_ref) || null,
-        templateOptions: templateLinks,
-        templateRecordPolicy: templatePolicy,
-        createdBy: focusDocumentCreatedBy ?? documentAuthoringActor,
-        createdAt: text(focusDocument.created_at, text(focusDocument.updated_at)),
-        requestedBy: documentAuthoringActor,
-    }
-    : undefined;
   const moduleAuthoringSourceDocumentId = text(module?.root_document_ref, text(module?.root_document_id, text(focusDocument?.id)));
   const moduleAuthoring = module && moduleAuthoringSourceDocumentId && documentDefinition && typedRecordPolicyRef && viewPolicyRef && moduleRelationPolicyRef && documentAuthoringActor
     ? {
@@ -1413,40 +1130,6 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
       suggestions: linkEntries([sourceLink, applicationLink, workLink, approvalLink, financeLink]),
       proposal: proposalLink,
       authoringCommands: governanceCommands,
-    },
-    document: selectionMissed ? {
-      fixtureId,
-      id: undefined,
-      title: "Document not found",
-      missingDocumentId: selected.documentId,
-      description: `No Document with id "${selected.documentId}" is present in this projection. The route stays explicit instead of substituting another Document under the requested id.`,
-      documentTree: workspaceTree,
-      properties: [],
-      blocks: [],
-      sourceLinks: [],
-      resultLinks: [],
-      connectedRecords: [],
-      activity: [],
-    } : {
-      fixtureId,
-      id: focusDocument ? text(focusDocument.id) : undefined,
-      title: focusDocument ? text(focusDocument.title, "Untitled document") : "No document selected",
-      breadcrumb: focusBreadcrumbLabels,
-      breadcrumbs: focusBreadcrumbLinks.length ? focusBreadcrumbLinks : undefined,
-      childDocuments: focusChildDocumentLinks.length ? focusChildDocumentLinks : undefined,
-      backlinks: focusBacklinkLinks.length ? focusBacklinkLinks : undefined,
-      lifecycleStatus: text(focusDocument?.lifecycle_status, text(field(focusDocument, "status"))) || undefined,
-      description: focusDocument ? "This document is rendered from the supplied Company OS projection." : "Select a document or provide a document projection to begin.",
-      documentTree: workspaceTree,
-      properties: documentProperties,
-      blocks: documentBlocks,
-      sourceLinks: documentSourceLinks,
-      resultLinks: documentResultLinks,
-      relatedWork: focusRelatedWorkLinks,
-      connectedRecords: documentConnectedRecords,
-      activity: documentActivity,
-      authoring: documentAuthoring,
-      updatedLabel: focusDocument?.updated_at ? `Last updated ${humanTimestamp(focusDocument.updated_at)}` : undefined,
     },
     moduleView: {
       fixtureId,

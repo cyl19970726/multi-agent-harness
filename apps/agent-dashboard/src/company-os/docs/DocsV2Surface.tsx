@@ -505,6 +505,15 @@ function DocsV2PageDocument({ apiUrl, documentId, company, project, space, onOpe
         <h1 className="text-2xl font-bold text-slate-900">{page.title}</h1>
         <div className="mt-1 font-mono text-xs text-slate-400">{documentId}</div>
       </header>
+      {page.legacy_projection ? (
+        <div
+          data-docs-v2-legacy="true"
+          className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs text-amber-900"
+        >
+          Legacy document (Block-era ledger) — rendered as a read-only v2 projection.
+          Edit through the governed v2 page commands after migration.
+        </div>
+      ) : null}
       <RevisionBanner page={page} />
       <BlockList blocks={page.blocks} ctx={ctx} />
     </article>

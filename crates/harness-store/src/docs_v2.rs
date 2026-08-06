@@ -134,6 +134,7 @@ impl HarnessStore {
             None => return Ok(None),
         };
         let latest = latest_by_id(self.blocks_v2()?, |row| row.id.clone());
+        let legacy_blocks = self.latest_blocks()?;
         let mut blocks = Vec::with_capacity(document.block_ids.len());
         for block_id in &document.block_ids {
             match latest.get(block_id) {
@@ -145,10 +146,19 @@ impl HarnessStore {
                     )))
                 }
                 None => {
-                    return Err(validation(format!(
-                        "document {} references missing block {block_id}",
-                        document.id
-                    )))
+                    // Retirement compatibility (R2): a block that exists only
+                    // in the legacy blocks ledger belongs to a pre-v2
+                    // document; read callers project it read-only. Missing
+                    // from both ledgers remains an error.
+                    let legacy_exists = legacy_blocks
+                        .iter()
+                        .any(|b| b.id == *block_id && b.document_id == document.id);
+                    if !legacy_exists {
+                        return Err(validation(format!(
+                            "document {} references missing block {block_id}",
+                            document.id
+                        )));
+                    }
                 }
             }
         }

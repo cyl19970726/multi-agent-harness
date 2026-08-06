@@ -966,10 +966,11 @@ function SurfaceSwitch({
     projectBindingId,
     executionSpaceId,
   };
-  if (selection.surface === "docs-v2") {
-    // AI-first Docs v2 (ADR 0054): per-document store-live surface. It reads
-    // directly from the Docs write service endpoints; no snapshot projection
-    // and no fixture fallback participate in this route.
+  if (selection.surface === "docs-v2" || (selection.surface === "docs" && selection.documentId)) {
+    // AI-first Docs v2 (ADR 0054, retirement stage R2): the document focus of
+    // both docs surfaces renders through the store-live v2 page endpoint
+    // (legacy ledger documents appear as honest read-only legacy
+    // projections). No snapshot projection or fixture fallback participates.
     return (
       <DocsV2Surface
         apiUrl={apiUrl}

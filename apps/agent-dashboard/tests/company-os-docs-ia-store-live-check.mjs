@@ -54,12 +54,12 @@ await page.route("**/v1/**", async (r) => {
 });
 let pass = 0, fail = 0;
 const check = (c, m) => { console.log(`  ${c ? "PASS" : "FAIL"}  ${m}`); c ? pass++ : fail++; };
-const open = async (q) => { await page.goto(`${base}/?surface=docs&${q}`, { waitUntil: "networkidle" }); await page.waitForSelector('[data-company-os-page="document-focus"][data-company-os-ready="true"]', { timeout: 20000 }); };
+const open = async (q) => { await page.goto(`${base}/?surface=docs&${q}`, { waitUntil: "networkidle" }); await page.waitForSelector("article[data-docs-v2-page]", { timeout: 20000 }); };
 
 // M1 — Store-live regression for document-wcw-root
 await open("document=document-wcw-root");
 check(await page.locator('[data-docs-empty-document="true"]').count() === 1, "M1 document-wcw-root renders the honest empty-document state from the live Store");
-const wcwText = await page.locator('[data-company-os-page="document-focus"]').last().innerText();
+const wcwText = await page.locator("article[data-docs-v2-page]").last().innerText();
 check(!wcwText.includes("What this plan coordinates") && !wcwText.includes("Why this context matters"), "M1 no synthesized narrative headings appear under the real Document id");
 await page.screenshot({ path: "/tmp/m1-wcw-root-empty.png" });
 
@@ -84,7 +84,7 @@ await page.screenshot({ path: "/tmp/m2-related-work.png" });
 // Preserved behaviour
 check(await page.locator('[data-docs-breadcrumbs="true"]').count() >= 1, "preserved breadcrumbs still render");
 await open("document=document-agentos-root");
-const railLabels = await page.evaluate(() => [...document.querySelectorAll('[data-company-os-page="document-focus"] aside h2')].map((n) => n.innerText.trim().toLowerCase()));
+const railLabels = await page.evaluate(() => [...document.querySelectorAll("article[data-docs-v2-page] aside h2")].map((n) => n.innerText.trim().toLowerCase()));
 check(railLabels.includes("child pages") && railLabels.includes("related work"), `preserved child-page rail still renders alongside related work (${railLabels.join(", ")})`);
 await open("document=document-does-not-exist-xyz");
 check(await page.locator('[data-docs-document-not-found="true"]').count() === 1, "preserved honest not-found route still renders");

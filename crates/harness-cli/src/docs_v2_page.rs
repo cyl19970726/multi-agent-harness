@@ -7,7 +7,10 @@
 
 use serde_json::json;
 
-use harness_core::company_os::{ActorRef, ActorType, Document, DocumentKind, LifecycleStatus};
+use harness_core::company_os::{
+    ActorRef, ActorType, Block as LegacyBlock, BlockKind as LegacyBlockKind, Document,
+    DocumentKind, LifecycleStatus,
+};
 use harness_core::docs_v2::{BlockKindV2, BlockV2, ChangeMutation, ChangeMutationOp};
 use harness_store::docs_v2::PageWriteRequest;
 use harness_store::{HarnessStore, StoreError};
@@ -820,6 +823,176 @@ fn block_markdown(block: &BlockV2) -> String {
 // Core page operations shared by the CLI and the serve API
 // ---------------------------------------------------------------------------
 
+/// R2 read compatibility: legacy (Block-era) blocks projected read-only into
+/// the v2 block shape. Content mapping is best-effort and lossy by design;
+/// unmapped payload is stringified into text so nothing silently disappears.
+/// This path is read-only: v2 writes never flow through it.
+fn legacy_block_to_v2(block: &LegacyBlock) -> BlockV2 {
+    let content = &block.content;
+    let text_fallback = || -> String {
+        content
+            .get("text")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| serde_json::to_string(content).unwrap_or_default())
+    };
+    let items_fallback = || -> serde_json::Value {
+        content
+            .get("items")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .map(serde_json::Value::Array)
+            .unwrap_or_else(|| json!([{ "text": text_fallback() }]))
+    };
+    let entity_embed = |kind: &str| -> serde_json::Value {
+        let id = content
+            .get("id")
+            .or_else(|| content.get(format!("{kind}_id").as_str()))
+            .or_else(|| content.get("ref"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        json!({ "target": { "kind": kind, "id": id }, "display": "card" })
+    };
+    let (kind, mapped_content) = match block.kind {
+        LegacyBlockKind::RichText => (BlockKindV2::Paragraph, json!({ "text": text_fallback() })),
+        LegacyBlockKind::Heading => {
+            let level = content
+                .get("level")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(2)
+                .clamp(1, 6);
+            (
+                BlockKindV2::Heading,
+                json!({ "level": level, "text": text_fallback() }),
+            )
+        }
+        LegacyBlockKind::List => {
+            let ordered = content
+                .get("ordered")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let kind = if ordered {
+                BlockKindV2::OrderedList
+            } else {
+                BlockKindV2::BulletList
+            };
+            (kind, json!({ "items": items_fallback() }))
+        }
+        LegacyBlockKind::Checklist => {
+            (BlockKindV2::Checklist, json!({ "items": items_fallback() }))
+        }
+        LegacyBlockKind::Callout => {
+            let tone = content
+                .get("tone")
+                .and_then(|v| v.as_str())
+                .unwrap_or("note")
+                .to_string();
+            let mut mapped = json!({ "tone": tone, "text": text_fallback() });
+            if let Some(title) = content.get("title").and_then(|v| v.as_str()) {
+                mapped["title"] = json!(title);
+            }
+            (BlockKindV2::Callout, mapped)
+        }
+        LegacyBlockKind::Code => {
+            let mut mapped = json!({ "text": text_fallback() });
+            if let Some(language) = content.get("language").and_then(|v| v.as_str()) {
+                mapped["language"] = json!(language);
+            }
+            (BlockKindV2::Code, mapped)
+        }
+        LegacyBlockKind::Media => (BlockKindV2::Image, content.clone()),
+        LegacyBlockKind::Attachment => (BlockKindV2::Attachment, content.clone()),
+        LegacyBlockKind::SimpleTable => {
+            let header = content
+                .get("header")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let rows = content
+                .get("rows")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            (
+                BlockKindV2::Table,
+                json!({ "header": header, "rows": rows }),
+            )
+        }
+        LegacyBlockKind::Comment => (
+            BlockKindV2::Callout,
+            json!({ "tone": "note", "title": "legacy comment", "text": text_fallback() }),
+        ),
+        LegacyBlockKind::Mention => (BlockKindV2::Paragraph, json!({ "text": text_fallback() })),
+        LegacyBlockKind::EmbeddedView => (BlockKindV2::EntityEmbed, entity_embed("view")),
+        LegacyBlockKind::Metric => (BlockKindV2::EntityEmbed, entity_embed("typed_record")),
+        LegacyBlockKind::Decision => (BlockKindV2::EntityEmbed, entity_embed("typed_record")),
+        LegacyBlockKind::WorkItem => (BlockKindV2::EntityEmbed, entity_embed("work_item")),
+        LegacyBlockKind::RelationSummary => (
+            BlockKindV2::Callout,
+            json!({ "tone": "info", "title": "legacy relation summary", "text": text_fallback() }),
+        ),
+    };
+    BlockV2 {
+        id: block.id.clone(),
+        document_id: block.document_id.clone(),
+        kind,
+        content: mapped_content,
+        referenced_entities: block.referenced_entities.clone(),
+        created_by: block.created_by.clone(),
+        updated_by: block.updated_by.clone(),
+        created_at: block.created_at.clone(),
+        updated_at: block.updated_at.clone(),
+    }
+}
+
+/// Block resolution for reads: prefer v2 block rows; when a document has none,
+/// project its legacy blocks read-only (R2 retirement compatibility). The bool
+/// reports whether the legacy projection was used.
+fn page_blocks_with_legacy_fallback(
+    store: &HarnessStore,
+    document: &Document,
+    v2_blocks: Vec<BlockV2>,
+) -> CliResult<(Vec<BlockV2>, bool)> {
+    let has_v2 = v2_blocks.iter().any(|b| b.document_id == document.id);
+    if has_v2 || document.block_ids.is_empty() {
+        // A document with v2 rows uses them; a document with no block ids at
+        // all is simply empty (legacy rows, if any, are orphans and hidden).
+        if has_v2 {
+            return Ok((v2_blocks, false));
+        }
+    }
+    let legacy = store.latest_blocks().map_err(conflict_to_usage)?;
+    let doc_legacy: Vec<&LegacyBlock> = legacy
+        .iter()
+        .filter(|b| b.document_id == document.id)
+        .collect();
+    if doc_legacy.is_empty() {
+        return Ok((v2_blocks, false));
+    }
+    let mapped: std::collections::BTreeMap<String, BlockV2> = doc_legacy
+        .iter()
+        .map(|b| (b.id.clone(), legacy_block_to_v2(b)))
+        .collect();
+    let mut ordered: Vec<BlockV2> = Vec::new();
+    for id in &document.block_ids {
+        if let Some(block) = mapped.get(id) {
+            ordered.push(block.clone());
+        }
+    }
+    let mut rest: Vec<&&LegacyBlock> = doc_legacy
+        .iter()
+        .filter(|b| !document.block_ids.contains(&b.id))
+        .collect();
+    rest.sort_by_key(|b| b.position);
+    for block in rest {
+        if let Some(mapped_block) = mapped.get(&block.id) {
+            ordered.push(mapped_block.clone());
+        }
+    }
+    Ok((ordered, true))
+}
+
 fn resolve_page(
     store: &HarnessStore,
     document_id: &str,
@@ -863,6 +1036,7 @@ pub fn read_page_value(
         ));
     }
 
+    let mut legacy_projection = false;
     let (document, blocks, revision): (
         Document,
         Vec<BlockV2>,
@@ -888,7 +1062,10 @@ pub fn read_page_value(
         }
         None => {
             let state = resolve_page(store, document_id)?;
-            (state.document, state.blocks, state.revision)
+            let (blocks, legacy) =
+                page_blocks_with_legacy_fallback(store, &state.document, state.blocks)?;
+            legacy_projection = legacy;
+            (state.document, blocks, state.revision)
         }
     };
 
@@ -1029,6 +1206,7 @@ pub fn read_page_value(
         "document_id": document.id,
         "title": document.title,
         "parent_document_id": document.parent_document_id,
+        "legacy_projection": legacy_projection,
         "lifecycle_status": document.lifecycle_status,
         "revision_id": revision.as_ref().map(|r| r.id.clone()),
         "revision_number": revision.as_ref().map(|r| r.revision_number).unwrap_or(0),
