@@ -3021,6 +3021,17 @@ impl HarnessStore {
         {
             return Ok(Vec::new());
         }
+        // Skip loopback deliveries for terminal work: the owning member
+        // already knows their work is Done/Cancelled — self-notification is
+        // redundant. Non-terminal events (Created, Assigned, ChangesRequested,
+        // Resumed, Rebound) genuinely need delivery even to the owner.
+        if work.is_terminal() {
+            if let Some(ref owner_id) = work.owner_member_id {
+                if owner_id == &stable_member_identity(&member) {
+                    return Ok(Vec::new());
+                }
+            }
+        }
         Ok(vec![WorkDelivery {
             id: format!("work-delivery-{event_id}-{member_run_id}"),
             work_event_id: event_id.to_string(),
