@@ -241,6 +241,12 @@ otherwise send a queued Message for the next safe boundary.
 
 ## Review Work Explicitly
 
+**Review discipline.** Before issuing `request-changes`, verify the claimed
+gap against the current master branch code — not against memory, not against
+the review expectation alone. A Member's rebuttal backed by master-branch
+evidence is legitimate and must be checked; do not dismiss it without
+re-verifying.
+
 Provider completion and conversational updates never submit or accept Work.
 When a Member moves Work to `review`, inspect the required result summary plus
 the artifact/check refs, changed files, tests, and native session that its
@@ -261,6 +267,35 @@ harness team-run work accept \
 Host acceptance moves Work to `done`. A reviewer Member may recommend but cannot impersonate the Host's acceptance authority. Submission moves Work to `review`, not `done`; only explicit Host acceptance moves Work to `done` — see shared hard invariants §5.
 
 ## Handle Lifecycle And Failure
+
+### Wake-Latency Expectations
+
+Between-round silence is normal and expected — a Member finishing a provider
+turn may take seconds to minutes before the next cycle starts. Never treat
+silence alone as a stall.
+
+Before nudging a Member, progress-probe first: check the board for status
+changes, read its native session tail, or inspect its last delivery. If
+progress is genuinely stalled, send a control message (ordinary Work-linked
+TeamMessage) — it is the standard nudge. Do not repeatedly send duplicate
+nudges; one message with the specific concern and a decision request is
+sufficient.
+
+### Member-Failure Recovery Checklist
+
+When a Member has genuinely failed (crashed, unresponsive, or terminated):
+
+1. **Its `in_progress` Works cannot be released or reassigned** — the Work
+   state machine does not permit ownership transfer while in progress.
+2. **Cancel each `in_progress` Work with an honest reason** describing what
+   the Member was attempting and why the attempt failed.
+3. **Move responsibility to another Work** — create a new Work capturing the
+   remaining scope, or assign a new owner to an existing open Work.
+4. **Close the Member with the failure reason** (`team-run close-member`)
+   before any replacement Member claims the new Work.
+
+Never silently drop a failed Member's in-progress Works; always record the
+cancellation reason and create explicit follow-up responsibility.
 
 - `idle`: assign or expose ready claimable Work.
 - `working`: queue new Work without interrupting the active turn.

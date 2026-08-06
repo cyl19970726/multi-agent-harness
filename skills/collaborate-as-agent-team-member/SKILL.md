@@ -206,6 +206,27 @@ Work; never keep executing a Work already in `review`, `blocked`, `done`, or
 
 ## Submit Work, Not A Handoff Message
 
+- **RULE ZERO: done = merged PR with green CI.** Code-complete without commit,
+  push, and PR is NOT delivery. File changes sitting in a worktree or workspace
+  are work-in-progress, not a submission. Only a merged PR with passing CI
+  proves delivery for code and doc changes.
+- **Submissions MUST carry artifact_refs and check_refs.** Every `work submit`
+  that produces code or doc changes must include `--artifact-ref <PR-URL>` and
+  `--check-ref "<CI-run-URL>"`. These are not optional decoration — they are
+  the verifiable evidence the Host inspects during review.
+- **Non-trivial work defaults to plan-first.** Before implementing a multi-file
+  change or a design decision, use ExitPlanMode / plan mode to get Lead
+  approval on the approach. Implementation without a reviewed plan on
+  non-trivial work is treated as un-reviewed delivery.
+- **Never go silent.** When blocked, send a Work-linked message naming the
+  specific blocker and the decision needed. Do not spin silently in a
+  provider-native loop waiting for resolution — the Host cannot see a silent
+  stall.
+- **Worktree discipline.** Create your own worktree OUTSIDE the repository
+  directory (e.g. `../multi-agent-harness-audit`). Never edit files in the
+  main checkout or in `.worktrees/`. Report the absolute worktree path, branch,
+  and commit in your submission.
+
 When criteria are met, refresh the latest Work version and submit a durable
 result summary. Add artifact and check refs when the completion criteria or
 Host review requires them; they are not universal submission fields:
