@@ -392,6 +392,30 @@ PY
   exit 0
 fi
 
+# ── Host Inbox push ──────────────────────────────────────────────────────
+# Neither a driven Member nor an external-interactive Member session — this
+# is a Host session. Read the Lead Inbox across all active team-runs and
+# inject pending messages into the Host context on SessionStart and
+# UserPromptSubmit so the Host sees member questions/work updates without
+# polling team-run events.
+if [[ -n "${STAR_HARNESS_HOST_SURFACE:-}" && -n "${STAR_HARNESS_HOST_THREAD_ID:-}" ]]; then
+  case "$event_name" in
+    SessionStart|session_start)
+      show_binding=1
+      ;;
+    UserPromptSubmit|user_prompt_submit)
+      show_binding=0
+      ;;
+    Stop|stop)
+      show_binding=0
+      ;;
+    *)
+      show_binding=0
+      ;;
+  esac
+  inbox_json="$("$harness_bin" team-run host-inbox --surface "$STAR_HARNESS_HOST_SURFACE" --thread-id "$STAR_HARNESS_HOST_THREAD_ID" --json 2>/dev/null)" || inbox_json="[]"
+fi
+
 INBOX_JSON="$inbox_json" HOST_SURFACE="$host_surface" HOST_SESSION_ID="$session_id" \
 SHOW_BINDING="$show_binding" python3 - 2>/dev/null <<'PY'
 import json
