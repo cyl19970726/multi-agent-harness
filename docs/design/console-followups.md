@@ -62,19 +62,7 @@ session, and live-but-idle members are steered, not resumed. Therefore:
   without a resumable native session it stays **Reopen** on `/reopen`. One
   control, capability-labelled — no duplicate buttons.
 
-## 4. DeepSeek provider adapter — DESCOPED (user decision, 2026-08-06)
-
-No official DeepSeek agent runtime exists; the planned adapter required a
-self-built shim that owns conversation state and a tool loop — i.e. building
-another agent. User decision: not needed. DeepSeek models belong behind the
-existing runtimes, not as a new provider. Sections below kept only as
-research record.
-
-(Original design: register a `deepseek_rpc` mode using the same JSONL
-stdio contract as `pi_rpc`; a real DeepSeek shim would implement that
-contract over `api.deepseek.com` chat completions.)
-
-## 5. Acceptance matrix
+## 4. Acceptance matrix
 
 | # | Where | Asserts |
 |---|---|---|
@@ -88,10 +76,8 @@ Gate: `pnpm check:dashboard` + the cargo tests above green; iterate until green.
 Results (2026-08-06): backend cargo tests 2/2 green on first full run after
 two test-fixture fixes; `operator-controls-check` 42 pass; new browser flows
 20/20 (create/start, mission log, chat intent, Host attention ack, context
-edit, team link/unlink, capability-labelled resume). DeepSeek descoped — see §4.
+edit, team link/unlink, capability-labelled resume).
 
-## 6. Out of scope
+## 5. Out of scope
 
 - Typed HostAttention SSE frame (refresh-on-action suffices; documented).
-- A real networked DeepSeek canary (needs API key; separate live evidence).
-- CodeWhale/ACP flavor — the contract choice is pi-rpc-shaped NDJSON.
