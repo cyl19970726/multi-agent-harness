@@ -59,10 +59,7 @@ fn spawn_fake_kimi_serve(home: &TempHome) -> ServeHandle {
     )
 }
 
-fn create_mission_and_run(
-    serve: &ServeHandle,
-    project_id: &str,
-) -> (String, String, String) {
+fn create_mission_and_run(serve: &ServeHandle, project_id: &str) -> (String, String, String) {
     let (status, body) = serve.post_json(
         &format!("/v1/missions?project={project_id}"),
         &serde_json::json!({
@@ -143,7 +140,13 @@ fn host_attentions_read_and_console_ack_lifecycle() {
         &serde_json::json!({"max_concurrency": 1, "idle_timeout_s": 10}),
     );
     assert_eq!(status, 202, "body: {body}");
-    wait_for_member_status(&serve, &project_id, &member_id, "idle", Duration::from_secs(15));
+    wait_for_member_status(
+        &serve,
+        &project_id,
+        &member_id,
+        "idle",
+        Duration::from_secs(15),
+    );
 
     // Submitting the initial Work derives a WorkReviewRequested HostAttention.
     let started = run_member_json(
@@ -152,11 +155,17 @@ fn host_attentions_read_and_console_ack_lifecycle() {
         &run_id,
         &member_id,
         &[
-            "team-run", "work", "start",
-            "--team-run-id", &run_id,
-            "--work-id", &work_id,
-            "--expected-version", "1",
-            "--member-run-id", &member_id,
+            "team-run",
+            "work",
+            "start",
+            "--team-run-id",
+            &run_id,
+            "--work-id",
+            &work_id,
+            "--expected-version",
+            "1",
+            "--member-run-id",
+            &member_id,
             "--json",
         ],
     );
@@ -167,18 +176,26 @@ fn host_attentions_read_and_console_ack_lifecycle() {
         &run_id,
         &member_id,
         &[
-            "team-run", "work", "submit",
-            "--team-run-id", &run_id,
-            "--work-id", &work_id,
-            "--expected-version", &started_version.to_string(),
-            "--member-run-id", &member_id,
-            "--result", "evidence for the console route",
+            "team-run",
+            "work",
+            "submit",
+            "--team-run-id",
+            &run_id,
+            "--work-id",
+            &work_id,
+            "--expected-version",
+            &started_version.to_string(),
+            "--member-run-id",
+            &member_id,
+            "--result",
+            "evidence for the console route",
             "--json",
         ],
     );
 
-    let (status, body) =
-        serve.get_json(&format!("/v1/host-attentions?team_run_id={run_id}&project={project_id}"));
+    let (status, body) = serve.get_json(&format!(
+        "/v1/host-attentions?team_run_id={run_id}&project={project_id}"
+    ));
     assert_eq!(status, 200, "body: {body}");
     let attention = body["attentions"]
         .as_array()
@@ -192,8 +209,9 @@ fn host_attentions_read_and_console_ack_lifecycle() {
     assert_eq!(attention["work_id"].as_str(), Some(work_id.as_str()));
 
     // Unknown runs are 404; unknown attentions are errors, not silent success.
-    let (status, _) =
-        serve.get_json(&format!("/v1/host-attentions?team_run_id=nope&project={project_id}"));
+    let (status, _) = serve.get_json(&format!(
+        "/v1/host-attentions?team_run_id=nope&project={project_id}"
+    ));
     assert_eq!(status, 404);
 
     // Console ack walks Actionable -> Claimed -> Delivered -> Acknowledged and
@@ -203,7 +221,10 @@ fn host_attentions_read_and_console_ack_lifecycle() {
         &serde_json::json!({"acknowledged_by": "operator"}),
     );
     assert_eq!(status, 200, "body: {body}");
-    assert_eq!(body["result"]["attention"]["status"].as_str(), Some("acknowledged"));
+    assert_eq!(
+        body["result"]["attention"]["status"].as_str(),
+        Some("acknowledged")
+    );
     assert_eq!(body["result"]["idempotent"].as_bool(), Some(false));
 
     let (status, snapshot) = serve.get_json(&format!("/v1/snapshot?project={project_id}"));
@@ -214,7 +235,11 @@ fn host_attentions_read_and_console_ack_lifecycle() {
         .flatten()
         .find(|run| run["id"].as_str() == Some(run_id.as_str()))
         .and_then(|run| run["host_thread_id"].as_str().map(str::to_string));
-    assert_eq!(host_thread.as_deref(), Some("console"), "console ack binds unbound runs");
+    assert_eq!(
+        host_thread.as_deref(),
+        Some("console"),
+        "console ack binds unbound runs"
+    );
 
     let (status, body) = serve.post_json(
         &format!("/v1/host-attentions/{attention_id}/ack?project={project_id}"),
@@ -236,7 +261,13 @@ fn member_resume_route_rejects_active_and_resumes_closed_member() {
         &serde_json::json!({"max_concurrency": 1, "idle_timeout_s": 10}),
     );
     assert_eq!(status, 202, "body: {body}");
-    wait_for_member_status(&serve, &project_id, &member_id, "idle", Duration::from_secs(15));
+    wait_for_member_status(
+        &serve,
+        &project_id,
+        &member_id,
+        "idle",
+        Duration::from_secs(15),
+    );
 
     // An active member is continued by message/steer, never by resume.
     let (status, body) = serve.post_json(
@@ -245,7 +276,10 @@ fn member_resume_route_rejects_active_and_resumes_closed_member() {
     );
     assert_eq!(status, 400, "body: {body}");
     assert!(
-        body["error"].as_str().unwrap_or_default().contains("active"),
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("active"),
         "honest active-member refusal: {body}"
     );
 
@@ -255,7 +289,13 @@ fn member_resume_route_rejects_active_and_resumes_closed_member() {
         &serde_json::json!({}),
     );
     assert!(status == 200 || status == 202, "body: {body}");
-    wait_for_member_status(&serve, &project_id, &member_id, "stopped", Duration::from_secs(15));
+    wait_for_member_status(
+        &serve,
+        &project_id,
+        &member_id,
+        "stopped",
+        Duration::from_secs(15),
+    );
 
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/members/{member_id}/resume?project={project_id}"),

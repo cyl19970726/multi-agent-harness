@@ -19,12 +19,11 @@ use harness_core::{
     AgentRuntimeStatus, AgentTeam, AgentTeamRun, AgentTeamStatus, DelegationRun,
     DurableAgentMember, DurableAgentMemberStatus, Evidence, ExecutionSpace, HostAttention,
     HostAttentionStatus, HostControlMode, LaunchMcp, LaunchPermission, LaunchSpec, MemberAction,
-    MemberActionStatus,
-    MemberCoordinationStatus, MemberExecutionDriver, MemberRun, MemberRunStatus,
-    MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus, MessageKind,
-    MessageTerminalSource, Mission, MissionLogEntry, MissionLogEntryKind, MissionStatus,
-    NativeSessionAvailability, NativeSessionRef, OrdinaryMessageBoundary, PendingInteraction,
-    PendingInteractionKind, PendingInteractionOption, PendingInteractionRoute,
+    MemberActionStatus, MemberCoordinationStatus, MemberExecutionDriver, MemberRun,
+    MemberRunStatus, MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus,
+    MessageKind, MessageTerminalSource, Mission, MissionLogEntry, MissionLogEntryKind,
+    MissionStatus, NativeSessionAvailability, NativeSessionRef, OrdinaryMessageBoundary,
+    PendingInteraction, PendingInteractionKind, PendingInteractionOption, PendingInteractionRoute,
     PendingInteractionStatus, ProjectContext, ProjectKind, ProviderAccountRef,
     ProviderCapabilities, ProviderCapacityConfidence, ProviderCapacityEvidence,
     ProviderCapacitySnapshot, ProviderCapacityState, ProviderCompatibilityStatus,
@@ -26323,7 +26322,11 @@ fn ack_host_attention_value(
 
     let claim_id = format!("console-{attention_id}");
     let claimed: HostAttentionClaimResult = store_conflict_as_usage(store.claim_host_attention(
-        attention_id, &surface, &thread, &claim_id, &now,
+        attention_id,
+        &surface,
+        &thread,
+        &claim_id,
+        &now,
     ))?;
     match claimed {
         HostAttentionClaimResult::Claimed(_) => {}
