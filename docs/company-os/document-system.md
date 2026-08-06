@@ -1,9 +1,17 @@
 # Document System
 
 ```text
-status: canonical product contract
+status: canonical product contract (page/document layer superseded in part)
 owner_role: product
 canonical_for: document-driven company knowledge, action, and reorganization
+superseded_note: >
+  The page/document storage and write layer described here (open Block kind
+  set, document/block command sprawl, no revisions) is superseded by the
+  AI-first Docs v2 target for everything implemented under ADR 0054:
+  see docs/company-os/ai-first-docs-spec.md and
+  docs/decisions/0054-ai-first-docs-page-model-and-storage.md. The remaining
+  surfaces (modules, typed records, views, relations, templates, health,
+  governed Action dispatch) stay canonical here until migrated.
 ```
 
 ## Purpose

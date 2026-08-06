@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 pub mod company_os;
+pub mod docs_v2;
 pub use company_os::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

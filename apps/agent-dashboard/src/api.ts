@@ -93,6 +93,107 @@ function withCompanyOsRoute(
     : withQuery(path, { space, project });
 }
 
+/**
+ * AI-first Docs v2 (ADR 0054): one block-rendered document page fetched
+ * store-live from `/v1/company-os/docs-v2/pages/<id>`. The dashboard renders
+ * exactly what the Docs write service returns; there is no fixture fallback
+ * on this surface.
+ */
+export interface DocsV2BlockView {
+  id?: string;
+  kind: string;
+  markdown: string;
+  content?: unknown;
+}
+
+export interface DocsV2ResolvedEmbed {
+  kind: string;
+  found: boolean;
+  title?: string;
+  record_type?: string;
+  lifecycle_status?: string;
+  mode?: string;
+  status?: string;
+}
+
+export interface DocsV2PageView {
+  document_id: string;
+  title: string;
+  lifecycle_status?: string;
+  revision_id?: string | null;
+  revision_number?: number;
+  content_digest?: string | null;
+  scope?: { mode?: string; fragment?: boolean; excerpts?: string[] };
+  blocks: DocsV2BlockView[];
+  /** F4: live-resolved entity_embed targets keyed by `<kind>:<id>`. */
+  resolved_embeds?: Record<string, DocsV2ResolvedEmbed>;
+}
+
+export interface DocsV2PageIndexItem {
+  document_id: string;
+  title: string;
+  space_id?: string;
+  parent_document_id?: string | null;
+  lifecycle_status?: string;
+  block_count?: number;
+  revision_number?: number;
+  content_digest?: string | null;
+  updated_at?: string;
+}
+
+async function fetchDocsV2Envelope<T>(
+  baseUrl: string,
+  path: string,
+  project?: string | null,
+  company?: string | null,
+  space?: string | null,
+): Promise<T> {
+  const normalized = normalizeBaseUrl(baseUrl);
+  if (!normalized) throw new Error("Harness API URL is required");
+  const response = await fetch(
+    `${normalized}${withProjectAndCompany(path, project, company, space)}`,
+  );
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const payload = (await response.json()) as { ok?: boolean; result?: T; error?: string; detail?: string };
+  if (payload.ok === false || payload.result === undefined) {
+    throw new Error(payload.detail ?? payload.error ?? "docs-v2 request failed");
+  }
+  return payload.result;
+}
+
+export function fetchDocsV2Page(
+  baseUrl: string,
+  documentId: string,
+  project?: string | null,
+  company?: string | null,
+  space?: string | null,
+): Promise<DocsV2PageView> {
+  return fetchDocsV2Envelope<DocsV2PageView>(
+    baseUrl,
+    `/v1/company-os/docs-v2/pages/${encodeURIComponent(documentId)}`,
+    project,
+    company,
+    space,
+  );
+}
+
+export function fetchDocsV2PageIndex(
+  baseUrl: string,
+  project?: string | null,
+  company?: string | null,
+  space?: string | null,
+): Promise<{ count: number; items: DocsV2PageIndexItem[] }> {
+  return fetchDocsV2Envelope<{ count: number; items: DocsV2PageIndexItem[] }>(
+    baseUrl,
+    "/v1/company-os/docs-v2/pages",
+    project,
+    company,
+    space,
+  );
+}
+
 export async function fetchSnapshot(
   baseUrl: string,
   project?: string | null,

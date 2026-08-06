@@ -1,0 +1,353 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://star-harness.local/schemas/company-os/docs-v2.schema.json",
+  "title": "Company OS AI-first Docs slice (ADR 0054)",
+  "description": "Additive contracts for the AI-first Docs target: closed block kind set with per-kind content schemas, whole-page DocumentRevision, atomic DocumentChangeOperation, CommentThread annotations, and content-addressed blob metadata. Existing knowledge.schema.json objects remain canonical until the ADR 0054 migration completes.",
+  "oneOf": [
+    { "$ref": "#/$defs/blockV2" },
+    { "$ref": "#/$defs/documentRevision" },
+    { "$ref": "#/$defs/documentChangeOperation" },
+    { "$ref": "#/$defs/commentThread" },
+    { "$ref": "#/$defs/blobMeta" }
+  ],
+  "$defs": {
+    "string": { "type": "string", "minLength": 1 },
+    "refs": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/string" } },
+    "actorRef": {
+      "type": "object", "additionalProperties": false,
+      "required": ["actor_type", "actor_id"],
+      "properties": {
+        "actor_type": { "enum": ["human", "agent", "external", "service"] },
+        "actor_id": { "$ref": "#/$defs/string" }
+      }
+    },
+    "entityKind": {
+      "enum": [
+        "actor", "document", "typed_record", "business_module", "work_item",
+        "approval", "financial_record", "evidence", "execution", "view", "relation"
+      ]
+    },
+    "entityRef": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/entityKind" },
+        "id": { "$ref": "#/$defs/string" }
+      }
+    },
+    "displayMode": { "enum": ["card", "inline"] },
+    "calloutTone": { "enum": ["note", "tip", "warning", "danger", "info"] },
+
+    "paragraphContent": {
+      "type": "object", "additionalProperties": false,
+      "required": ["text"],
+      "properties": { "text": { "type": "string" } }
+    },
+    "headingContent": {
+      "type": "object", "additionalProperties": false,
+      "required": ["level", "text"],
+      "properties": {
+        "level": { "type": "integer", "minimum": 1, "maximum": 6 },
+        "text": { "$ref": "#/$defs/string" }
+      }
+    },
+    "listContent": {
+      "type": "object", "additionalProperties": false,
+      "required": ["items"],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["text"],
+            "properties": {
+              "text": { "type": "string" },
+              "checked": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "quoteContent": {
+      "type": "object", "additionalProperties": false,
+      "required": ["text"],
+      "properties": { "text": { "type": "string" } }
+    },
+    "calloutContent": {
+      "type": "object", "additionalProperties": false,
+      "required": ["tone", "text"],
+      "properties": {
+        "tone": { "$ref": "#/$defs/calloutTone" },
+        "title": { "$ref": "#/$defs/string" },
+        "text": { "type": "string" }
+      }
+    },
+    "codeContent": {
+      "type": "object", "additionalProperties": false,
+      "required": ["text"],
+      "properties": {
+        "language": { "$ref": "#/$defs/string" },
+        "text": { "type": "string" }
+      }
+    },
+    "tableContent": {
+      "type": "object", "additionalProperties": false,
+      "required": ["header", "rows"],
+      "properties": {
+        "header": { "type": "array", "items": { "type": "string" } },
+        "rows": {
+          "type": "array",
+          "items": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "dividerContent": {
+      "type": "object", "additionalProperties": false,
+      "properties": {}
+    },
+    "pageEmbedContent": {
+      "type": "object", "additionalProperties": false,
+      "required": ["target_document_id", "display"],
+      "properties": {
+        "target_document_id": { "$ref": "#/$defs/string" },
+        "display": { "$ref": "#/$defs/displayMode" }
+      }
+    },
+    "entityEmbedContent": {
+      "type": "object", "additionalProperties": false,
+      "required": ["target", "display"],
+      "properties": {
+        "target": { "$ref": "#/$defs/entityRef" },
+        "display": { "$ref": "#/$defs/displayMode" }
+      }
+    },
+    "blobRefContent": {
+      "type": "object", "additionalProperties": false,
+      "required": ["blob_id"],
+      "properties": {
+        "blob_id": { "$ref": "#/$defs/string" },
+        "alt": { "$ref": "#/$defs/string" },
+        "caption": { "$ref": "#/$defs/string" },
+        "name": { "$ref": "#/$defs/string" }
+      }
+    },
+
+    "blockKind": {
+      "enum": [
+        "paragraph", "heading", "bullet_list", "ordered_list", "checklist",
+        "quote", "callout", "code", "table", "divider",
+        "page_embed", "entity_embed", "image", "attachment"
+      ]
+    },
+    "blockV2": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "id", "document_id", "kind", "content", "referenced_entities",
+        "created_by", "updated_by", "created_at", "updated_at"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/string" },
+        "document_id": { "$ref": "#/$defs/string" },
+        "kind": { "$ref": "#/$defs/blockKind" },
+        "content": {
+          "type": "object",
+          "description": "Per-kind content payload; the allOf/if-then branches below enforce the exact content schema for each kind."
+        },
+        "referenced_entities": { "type": "array", "items": { "$ref": "#/$defs/entityRef" } },
+        "created_by": { "$ref": "#/$defs/actorRef" },
+        "updated_by": { "$ref": "#/$defs/actorRef" },
+        "created_at": { "$ref": "#/$defs/string" },
+        "updated_at": { "$ref": "#/$defs/string" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "paragraph" } } },
+          "then": { "properties": { "content": { "$ref": "#/$defs/paragraphContent" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "heading" } } },
+          "then": { "properties": { "content": { "$ref": "#/$defs/headingContent" } } }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": { "enum": ["bullet_list", "ordered_list", "checklist"] }
+            }
+          },
+          "then": { "properties": { "content": { "$ref": "#/$defs/listContent" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "quote" } } },
+          "then": { "properties": { "content": { "$ref": "#/$defs/quoteContent" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "callout" } } },
+          "then": { "properties": { "content": { "$ref": "#/$defs/calloutContent" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "code" } } },
+          "then": { "properties": { "content": { "$ref": "#/$defs/codeContent" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "table" } } },
+          "then": { "properties": { "content": { "$ref": "#/$defs/tableContent" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "divider" } } },
+          "then": { "properties": { "content": { "$ref": "#/$defs/dividerContent" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "page_embed" } } },
+          "then": { "properties": { "content": { "$ref": "#/$defs/pageEmbedContent" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "entity_embed" } } },
+          "then": { "properties": { "content": { "$ref": "#/$defs/entityEmbedContent" } } }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "enum": ["image", "attachment"] } }
+          },
+          "then": { "properties": { "content": { "$ref": "#/$defs/blobRefContent" } } }
+        }
+      ]
+    },
+
+    "documentRevision": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "id", "document_id", "revision_number", "content_snapshot",
+        "content_digest", "change_summary", "authored_by",
+        "action_command_id", "created_at"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/string" },
+        "document_id": { "$ref": "#/$defs/string" },
+        "revision_number": { "type": "integer", "minimum": 1 },
+        "parent_revision_id": { "type": ["string", "null"], "minLength": 1 },
+        "content_snapshot": {
+          "type": "object",
+          "description": "Normalized ordered Document + Block payload sufficient to reconstruct the document at this revision."
+        },
+        "content_digest": {
+          "type": "string", "pattern": "^[0-9a-f]{64}$",
+          "description": "sha256 of the canonicalized content_snapshot serialization."
+        },
+        "change_summary": { "type": "string" },
+        "authored_by": { "$ref": "#/$defs/actorRef" },
+        "execution_ref": { "oneOf": [{ "$ref": "#/$defs/entityRef" }, { "type": "null" }] },
+        "action_command_id": { "$ref": "#/$defs/string" },
+        "created_at": { "$ref": "#/$defs/string" }
+      }
+    },
+
+    "changeMutation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["op"],
+      "properties": {
+        "op": {
+          "enum": [
+            "block_append", "block_insert_after", "block_replace",
+            "block_delete", "block_move_after", "document_meta_update"
+          ]
+        },
+        "anchor_block_id": { "type": ["string", "null"], "minLength": 1 },
+        "target_block_id": { "type": ["string", "null"], "minLength": 1 },
+        "source_block_ids": { "$ref": "#/$defs/refs" },
+        "block": { "$ref": "#/$defs/blockV2" },
+        "meta": { "type": "object" }
+      }
+    },
+    "documentChangeOperation": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "action_command_id", "document_id", "expected_revision",
+        "mutations", "resulting_document_id", "resulting_block_ids",
+        "document_revision_id", "created_at"
+      ],
+      "properties": {
+        "action_command_id": {
+          "$ref": "#/$defs/string",
+          "description": "Canonical idempotency key; exactly the governing ActionCommand.id."
+        },
+        "document_id": { "$ref": "#/$defs/string" },
+        "expected_revision": {
+          "type": "integer", "minimum": 0,
+          "description": "0 for creation; otherwise the revision number the change was prepared against."
+        },
+        "mutations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/changeMutation" }
+        },
+        "resulting_document_id": { "$ref": "#/$defs/string" },
+        "resulting_block_ids": { "$ref": "#/$defs/refs" },
+        "document_revision_id": { "$ref": "#/$defs/string" },
+        "created_at": { "$ref": "#/$defs/string" }
+      }
+    },
+
+    "commentAnchor": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["block", "block_range", "revision"] },
+        "block_id": { "type": ["string", "null"], "minLength": 1 },
+        "end_block_id": { "type": ["string", "null"], "minLength": 1 },
+        "revision_id": { "type": ["string", "null"], "minLength": 1 }
+      }
+    },
+    "commentThread": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "id", "document_id", "anchor", "status", "comments",
+        "created_by", "created_at"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/string" },
+        "document_id": { "$ref": "#/$defs/string" },
+        "anchor": { "$ref": "#/$defs/commentAnchor" },
+        "status": { "enum": ["open", "resolved"] },
+        "comments": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["id", "body", "author", "created_at"],
+            "properties": {
+              "id": { "$ref": "#/$defs/string" },
+              "body": { "$ref": "#/$defs/string" },
+              "author": { "$ref": "#/$defs/actorRef" },
+              "in_reply_to": { "type": ["string", "null"], "minLength": 1 },
+              "created_at": { "$ref": "#/$defs/string" }
+            }
+          }
+        },
+        "created_by": { "$ref": "#/$defs/actorRef" },
+        "created_at": { "$ref": "#/$defs/string" }
+      }
+    },
+
+    "blobMeta": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "id", "digest", "size", "mime_type", "name", "storage",
+        "created_by", "created_at"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/string" },
+        "digest": {
+          "type": "string", "pattern": "^[0-9a-f]{64}$",
+          "description": "sha256 of the blob payload; also its content address."
+        },
+        "size": { "type": "integer", "minimum": 0 },
+        "mime_type": { "$ref": "#/$defs/string" },
+        "name": { "$ref": "#/$defs/string" },
+        "storage": {
+          "enum": ["local", "s3_compatible"],
+          "description": "local = <company>/blobs/sha256/<2>/<rest>; s3_compatible is the later hosted tier."
+        },
+        "created_by": { "$ref": "#/$defs/actorRef" },
+        "created_at": { "$ref": "#/$defs/string" }
+      }
+    }
+  }
+}

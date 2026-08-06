@@ -48,6 +48,7 @@ use thiserror::Error;
 mod codex_app_server;
 mod company_os_api;
 mod company_store;
+mod docs_v2_page;
 mod execution_space;
 mod kimi_acp;
 mod legacy_export;
@@ -4175,13 +4176,19 @@ fn company_docs_command(store: &HarnessStore, args: &[String]) -> CliResult<()> 
             }
         }
         "page" => {
-            require_subcommand(&args[1..], "company docs page scaffold|verify|publish")?;
+            require_subcommand(
+                &args[1..],
+                "company docs page create|read|write|append|search|scaffold|verify|publish",
+            )?;
             match args[1].as_str() {
+                "create" | "read" | "write" | "append" | "search" => {
+                    docs_v2_page::company_docs_page_v2_command(store, &args[1..])
+                }
                 "scaffold" => company_docs_page_scaffold_command(store, &args[2..]),
                 "verify" => company_docs_page_verify_command(store, &args[2..]),
                 "publish" => company_docs_page_publish_command(store, &args[2..]),
                 other => Err(CliError::Usage(format!(
-                    "unknown company docs page command: {other}; usage: harness company docs page scaffold|verify|publish"
+                    "unknown company docs page command: {other}; usage: harness company docs page create|read|write|append|scaffold|verify|publish"
                 ))),
             }
         }

@@ -50,6 +50,8 @@ consequences, affected modules, and validation path.
 | [0050](0050-agent-team-work-board-and-message-boundary.md) | amended by 0052; implementation pending | Work is the scheduling primitive; permanent Company WorkItem separation is superseded |
 | [0051](0051-single-intent-spine.md) | accepted; staged breaking cutover | Mission absorbs Wave as an append-only Mission Log; provider-native goal/plan are derived drive cache, never truth |
 | [0052](0052-nested-agent-teams-are-the-agent-organization.md) | accepted target; implementation pending | AgentMember is the durable agent identity; Organization is recursive AgentTeam topology over one Work kernel; it amends the Work scope in 0050 |
+| [0053](0053-finance-contract-layer-retirement.md) | accepted; staged retirement | Finance contract layer retired; Commitment/Payment code remains dormant until decommission |
+| [0054](0054-ai-first-docs-page-model-and-storage.md) | accepted; implementation pending | AI-first Docs: closed block kind set, Markdown-first serialization, whole-page revisions, JSONL canonical store with derived SQLite read layer and content-addressed blobs |
 
 ## Split Rule
 
