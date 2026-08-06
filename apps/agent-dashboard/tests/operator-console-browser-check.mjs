@@ -78,19 +78,74 @@ const state = {
   members: [],
   teams: [],
   teamRuns: [],
-  memberRuns: [],
+  memberRuns: [
+    // Closed terminal member with a resumable native session: exercises the
+    // capability-labelled Resume control on the Member focus page.
+    {
+      id: "member-console-resume",
+      team_run_id: fixtureRunId,
+      slot_id: "resume",
+      name: "Resume Candidate",
+      role: "implementer",
+      provider: "kimi",
+      model: "K2.5",
+      status: "completed",
+      coordination_status: "closed",
+      native_session: {
+        provider: "kimi",
+        execution_mode: "kimi_acp",
+        native_session_id: "session_resume_fixture",
+        native_locator_kind: "kimi_code_session",
+        adapter_contract_version: "kimi-acp-v1",
+        availability: "available",
+        supports_resume: true,
+      },
+      owned_paths: [],
+      started_at: "2026-07-19T10:00:00Z",
+      last_event_at: "2026-07-19T11:00:00Z",
+      finished_at: "2026-07-19T11:00:00Z",
+    },
+  ],
   teamMessages: [],
   missionLog: [],
   posts: [],
+  // Console follow-up state: attention lifecycle + mission brief/links.
+  attentions: [
+    {
+      id: "attention-console-1",
+      team_run_id: fixtureRunId,
+      kind: "work_review_requested",
+      work_id: baseline.works[0]?.id ?? "work-fixture",
+      work_version: 2,
+      source_event_ref: "event-fixture",
+      member_run_id: null,
+      status: "actionable",
+      attempt: 1,
+      claim_id: null,
+      created_at: "2026-07-29T00:00:00Z",
+      updated_at: "2026-07-29T00:00:00Z",
+    },
+  ],
+  missionContext: null,
+  linkedMissionTeamIds: new Set(),
 };
 
 function buildSnapshot() {
   return {
     ...baseline,
     generated_at: new Date().toISOString(),
-    members: [...baseline.members, ...state.members],
+    missions: baseline.missions.map((mission) => mission.id === missionId
+      ? {
+          ...mission,
+          agent_team_ids: [...state.linkedMissionTeamIds],
+          context: state.missionContext ?? mission.context,
+        }
+      : mission),
     teams: [...baseline.teams, ...state.teams],
-    team_runs: [...baseline.team_runs, ...state.teamRuns],
+    members: [...baseline.members, ...state.members],
+    team_runs: [...baseline.team_runs, ...state.teamRuns].map((run) => run.id === fixtureRunId
+      ? { ...run, member_run_ids: [...(run.member_run_ids ?? []), "member-console-resume"] }
+      : run),
     member_runs: [...baseline.member_runs, ...state.memberRuns],
     team_messages: [...baseline.team_messages, ...state.teamMessages],
     mission_log: [...state.missionLog],
@@ -184,7 +239,37 @@ async function mockRoutes(page) {
         });
         return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, result: state.missionLog.at(-1) }) });
       }
+      const contextRoute = url.pathname.match(/^\/v1\/missions\/([^/]+)\/context$/);
+      if (contextRoute) {
+        state.missionContext = body.context ?? "";
+        return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, result: { context: state.missionContext } }) });
+      }
+      const linkRoute = url.pathname.match(/^\/v1\/missions\/([^/]+)\/link-team$/);
+      if (linkRoute) {
+        state.linkedMissionTeamIds.add(body.team_id);
+        return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+      }
+      const unlinkRoute = url.pathname.match(/^\/v1\/missions\/([^/]+)\/unlink-team$/);
+      if (unlinkRoute) {
+        state.linkedMissionTeamIds.delete(body.team_id);
+        return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+      }
+      const ackRoute = url.pathname.match(/^\/v1\/host-attentions\/([^/]+)\/ack$/);
+      if (ackRoute) {
+        const attention = state.attentions.find((row) => row.id === decodeURIComponent(ackRoute[1]));
+        if (attention) attention.status = "acknowledged";
+        return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, result: { attention, idempotent: false } }) });
+      }
+      const resumeRoute = url.pathname.match(/^\/v1\/team-runs\/([^/]+)\/members\/([^/]+)\/resume$/);
+      if (resumeRoute) {
+        return route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ ok: true, result: { via: "resume", member_run: { id: decodeURIComponent(resumeRoute[2]), coordination_status: "active" } } }) });
+      }
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+    }
+    if (url.pathname === "/v1/host-attentions") {
+      const wanted = url.searchParams.get("team_run_id");
+      const rows = state.attentions.filter((row) => row.team_run_id === wanted);
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ attentions: rows }) });
     }
     if (url.pathname === `/v1/team-runs/${encodeURIComponent(fixtureRunId)}/snapshot`
       || /^\/v1\/team-runs\/[^/]+\/snapshot$/.test(url.pathname)
@@ -319,6 +404,60 @@ try {
       "team composer posts the message to the run's message route");
     check(message?.body?.response_intent === "informational",
       "team composer carries the explicit response intent");
+    await context.close();
+  }
+
+  // ── Flow E: Host attention console surface ──
+  {
+    const { context, page } = await newPage({ surface: "team", team: fixtureRunId });
+    await page.getByText("Shared Works", { exact: true }).waitFor({ timeout: 20_000 }).catch(() => {});
+    const attentionModule = page.getByRole("region", { name: "Host attention" });
+    await attentionModule.waitFor({ timeout: 10_000 }).catch(() => {});
+    check(await attentionModule.isVisible().catch(() => false),
+      "Host attention module renders in the War Room when a Work review is requested");
+    await page.getByRole("button", { name: "Ack" }).first().click();
+    await page.waitForTimeout(800);
+    const ack = lastPost(/^\/v1\/host-attentions\/attention-console-1\/ack$/);
+    check(Boolean(ack) && ack.body.acknowledged_by === "operator",
+      "Ack posts /v1/host-attentions/{id}/ack as operator");
+    await context.close();
+  }
+
+  // ── Flow F: Mission brief edit + team link/unlink ──
+  {
+    const { context, page } = await newPage({ surface: "missions", mission: missionId });
+    await page.getByRole("button", { name: "Edit context" }).click();
+    await page.getByRole("textbox", { name: "Context", exact: true }).fill("Console acceptance: durable brief rewritten from the console.");
+    await page.getByRole("button", { name: "Save context" }).click();
+    await page.waitForTimeout(800);
+    const contextPost = lastPost(new RegExp(`^/v1/missions/${missionId}/context$`));
+    check(Boolean(contextPost) && String(contextPost.body.context).includes("durable brief rewritten"),
+      "Edit context posts /v1/missions/{id}/context with the rewritten brief");
+
+    await page.getByLabel("Team to link").selectOption("team-platform-foundation");
+    await page.getByRole("button", { name: "Link team" }).click();
+    await page.waitForTimeout(800);
+    check(Boolean(lastPost(new RegExp(`^/v1/missions/${missionId}/link-team$`))),
+      "Link team posts /v1/missions/{id}/link-team");
+    await page.getByRole("button", { name: "Unlink" }).first().waitFor({ timeout: 8_000 }).catch(() => {});
+    await page.getByRole("button", { name: "Unlink" }).first().click();
+    await page.waitForTimeout(800);
+    check(Boolean(lastPost(new RegExp(`^/v1/missions/${missionId}/unlink-team$`))),
+      "Unlink posts /v1/missions/{id}/unlink-team");
+    await context.close();
+  }
+
+  // ── Flow G: capability-labelled resume for a closed resumable member ──
+  {
+    const { context, page } = await newPage({ surface: "team", team: fixtureRunId, memberRun: "member-console-resume" });
+    const resumeButton = page.getByRole("button", { name: "Resume session" });
+    await resumeButton.waitFor({ timeout: 15_000 }).catch(() => {});
+    check(await resumeButton.isVisible().catch(() => false),
+      "closed resumable member renders a capability-labelled Resume session control");
+    await resumeButton.click().catch(() => {});
+    await page.waitForTimeout(800);
+    check(Boolean(lastPost(new RegExp(`^/v1/team-runs/${fixtureRunId}/members/member-console-resume/resume$`))),
+      "Resume session posts the standalone member resume route");
     await context.close();
   }
 } finally {

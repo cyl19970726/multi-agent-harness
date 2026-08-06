@@ -437,6 +437,28 @@ export function linkMissionTeam(missionId: string, teamId: string): ActionDescri
   };
 }
 
+/** Remove a durable team from a Mission's linked-team set. */
+export function unlinkMissionTeam(missionId: string, teamId: string): ActionDescriptor {
+  return {
+    method: "POST",
+    path: `/v1/missions/${encodeId(missionId)}/unlink-team`,
+    body: { team_id: teamId },
+  };
+}
+
+/**
+ * Acknowledge one HostAttention from the console (POST
+ * /v1/host-attentions/{id}/ack). Transport intake only — the server walks the
+ * attention lifecycle and never mutates the underlying Work.
+ */
+export function acknowledgeHostAttention(attentionId: string): ActionDescriptor {
+  return {
+    method: "POST",
+    path: `/v1/host-attentions/${encodeId(attentionId)}/ack`,
+    body: { acknowledged_by: "operator" },
+  };
+}
+
 export function createMissionTeam(params: {
   missionId: string;
   name: string;
@@ -654,6 +676,24 @@ export function reopenTeamMember(
     method: "POST",
     path: `/v1/team-runs/${encodeId(teamRunId)}/members/${encodeId(memberRunId)}/reopen`,
     body: { reason, reopened_by: "host" },
+  };
+}
+
+/**
+ * Resume the recorded provider-native session (POST
+ * /v1/team-runs/{id}/members/{m}/resume). Refuses active members — their
+ * continuation is a message or steer — and otherwise reuses the reopen
+ * machinery with the same capability gates.
+ */
+export function resumeTeamMember(
+  teamRunId: string,
+  memberRunId: string,
+  reason = "Host resumed member native session",
+): ActionDescriptor {
+  return {
+    method: "POST",
+    path: `/v1/team-runs/${encodeId(teamRunId)}/members/${encodeId(memberRunId)}/resume`,
+    body: { reason, resumed_by: "operator" },
   };
 }
 

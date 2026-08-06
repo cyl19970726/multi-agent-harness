@@ -46,6 +46,9 @@ import {
   createMissionTeam,
   createMission,
   createTeamRun,
+  linkMissionTeam,
+  unlinkMissionTeam,
+  updateMissionContext,
   type ActionDescriptor,
   type TeamRunMemberSpec,
 } from "../api/actions";
@@ -362,6 +365,8 @@ function MissionDetail({
   const [logOpen, setLogOpen] = useState(false);
   const [teamOpen, setTeamOpen] = useState(false);
   const [closeOpen, setCloseOpen] = useState(false);
+  const [editContextOpen, setEditContextOpen] = useState(false);
+  const [linkTeamId, setLinkTeamId] = useState("");
   const waves = wavesFor(model, mission.id);
   const missionLog = missionLogFor(model, mission.id);
   const readyToClose =
@@ -381,6 +386,9 @@ function MissionDetail({
   const latestMissionRun = missionRuns[missionRuns.length - 1];
   const linkedMissionTeams = (model.snapshot.teams ?? []).filter((team) =>
     (mission.agent_team_ids ?? []).includes(team.id),
+  );
+  const unlinkedTeams = (model.snapshot.teams ?? []).filter(
+    (team) => !(mission.agent_team_ids ?? []).includes(team.id),
   );
   const linkedTeamSummaries = (mission.agent_team_ids ?? []).map((teamId) => {
     const team = linkedMissionTeams.find((candidate) => candidate.id === teamId);
@@ -507,9 +515,78 @@ function MissionDetail({
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Mission brief</p>
                 <p className="mt-1 text-[11px] text-muted-foreground">Durable context used by the Host across every Wave.</p>
               </div>
-              <Badge tone="muted">Markdown</Badge>
+              <span className="flex items-center gap-2">
+                <Badge tone="muted">Markdown</Badge>
+                <ActionButton
+                  enabled={actionsEnabled}
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setEditContextOpen(true)}
+                >
+                  Edit context
+                </ActionButton>
+              </span>
             </div>
             <MarkdownContext value={mission.context} empty="No Mission context has been recorded yet." />
+          </section>
+
+          <section className="border-b border-border/70 py-5">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Linked teams</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">Independent Agent Teams this Mission may reuse across Waves.</p>
+              </div>
+              <Badge tone="muted">{linkedMissionTeams.length} linked</Badge>
+            </div>
+            {linkedMissionTeams.length === 0 ? (
+              <p className="text-[12px] text-muted-foreground">No teams linked yet. Link an independent team below or create one under New Team.</p>
+            ) : (
+              <ul className="space-y-2">
+                {linkedMissionTeams.map((team) => (
+                  <li key={team.id} className="flex items-center gap-2 rounded-lg border border-border/70 bg-background/70 px-3 py-2">
+                    <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground">{team.name ?? team.id}</span>
+                    <button
+                      type="button"
+                      disabled={!actionsEnabled}
+                      title={actionsEnabled ? "Remove this team from the Mission's linked set" : "Connect a live source to enable actions"}
+                      onClick={() => dispatch(onAction, unlinkMissionTeam(mission.id, team.id))}
+                      className="shrink-0 rounded-md border border-border bg-background px-2 py-1 text-[11px] font-medium text-foreground transition-colors enabled:hover:border-primary/30 enabled:hover:bg-primary/[0.035] disabled:cursor-default disabled:text-muted-foreground"
+                    >
+                      Unlink
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {unlinkedTeams.length > 0 && (
+              <div className="mt-3 flex items-center gap-2">
+                <Select
+                  aria-label="Team to link"
+                  value={linkTeamId}
+                  onChange={(event) => setLinkTeamId(event.target.value)}
+                  className="h-9 min-w-0 flex-1"
+                  disabled={!actionsEnabled}
+                >
+                  <option value="">Choose an unlinked team…</option>
+                  {unlinkedTeams.map((team) => (
+                    <option key={team.id} value={team.id}>{team.name ?? team.id}</option>
+                  ))}
+                </Select>
+                <button
+                  type="button"
+                  disabled={!actionsEnabled || !linkTeamId}
+                  title={actionsEnabled ? (linkTeamId ? "Link this team to the Mission" : "Choose a team first") : "Connect a live source to enable actions"}
+                  onClick={() => {
+                    if (!linkTeamId) return;
+                    dispatch(onAction, linkMissionTeam(mission.id, linkTeamId));
+                    setLinkTeamId("");
+                  }}
+                  className="shrink-0 rounded-md border border-border bg-background px-3 py-2 text-[11px] font-medium text-foreground transition-colors enabled:hover:border-primary/30 enabled:hover:bg-primary/[0.035] disabled:cursor-default disabled:text-muted-foreground"
+                >
+                  Link team
+                </button>
+              </div>
+            )}
           </section>
 
           <section className="border-b border-border/70 py-5">
@@ -832,6 +909,13 @@ function MissionDetail({
         onAction={onAction}
         onClose={() => setCloseOpen(false)}
       />
+      <EditContextDialog
+        open={editContextOpen}
+        mission={mission}
+        actionsEnabled={actionsEnabled}
+        onAction={onAction}
+        onClose={() => setEditContextOpen(false)}
+      />
     </DocumentSurface>
   );
 }
@@ -1093,6 +1177,59 @@ function WaveCanvasCard({
  * Wave write routes. Plan revisions post kind `replan`; gate/advance decisions
  * post kind `judgment`. Entries are append-only and never advance a Wave.
  */
+function EditContextDialog({
+  open,
+  mission,
+  actionsEnabled,
+  onAction,
+  onClose,
+}: {
+  open: boolean;
+  mission: Mission;
+  actionsEnabled: boolean;
+  onAction: MissionsProps["onAction"];
+  onClose: () => void;
+}) {
+  const [context, setContext] = useState("");
+
+  useEffect(() => {
+    if (open) setContext(mission.context ?? "");
+  }, [open, mission.context]);
+
+  const submit = () => {
+    dispatch(onAction, updateMissionContext(mission.id, context));
+    onClose();
+  };
+
+  return (
+    <Dialog
+      open={open}
+      title="Edit Mission context"
+      description="The durable brief every Host Wave and linked team reads. Rewriting it does not rewrite history."
+      onClose={onClose}
+    >
+      <form
+        className="space-y-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          submit();
+        }}
+      >
+        <Field label="Context" hint="Markdown. Keep it durable: intent, constraints, and decision boundaries.">
+          {(id) => <TextArea id={id} value={context} onChange={(event) => setContext(event.target.value)} rows={10} />}
+        </Field>
+        <DialogFooter
+          submitLabel="Save context"
+          actionsEnabled={actionsEnabled}
+          canSubmit
+          onCancel={onClose}
+          onSubmit={submit}
+        />
+      </form>
+    </Dialog>
+  );
+}
+
 function MissionLogDialog({
   open,
   missionId,

@@ -29,6 +29,7 @@ import {
   interruptTeamMember,
   reopenTeamMember,
   resolvePendingInteraction,
+  resumeTeamMember,
   sendTeamMessage,
   steerTeamMember,
   type ActionDescriptor,
@@ -481,11 +482,18 @@ function MemberHeroHeader({
             className="min-h-11 sm:min-h-0"
             disabled={!actionsEnabled || !["stopped", "completed", "failed"].includes(context.member.status ?? "")}
             title={["stopped", "completed", "failed"].includes(context.member.status ?? "")
-              ? "Start a new adapter process and resume this member's existing native session"
+              ? context.member.native_session?.supports_resume
+                ? "Resume the recorded provider-native session under a fresh Supervisor"
+                : "Start a new adapter process and resume this member's existing native session"
               : "Wait until the closing runtime reaches a terminal status"}
-            onClick={() => dispatch(onAction, reopenTeamMember(context.run.id, context.member.id))}
+            onClick={() => dispatch(
+              onAction,
+              context.member.native_session?.supports_resume
+                ? resumeTeamMember(context.run.id, context.member.id)
+                : reopenTeamMember(context.run.id, context.member.id),
+            )}
           >
-            <RotateCcw className="size-3.5" /> Reopen
+            <RotateCcw className="size-3.5" /> {context.member.native_session?.supports_resume ? "Resume session" : "Reopen"}
           </Button>
         )}
         <Button size="sm" variant="outline" className="min-h-11 sm:min-h-0" onClick={onBack}><ArrowLeft className="size-3.5" /> Back to team</Button>

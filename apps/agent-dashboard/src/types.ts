@@ -550,6 +550,39 @@ export interface NativeActivityProjection {
   truncated: boolean;
 }
 
+/** Durable wake-notification the store derives from WorkOperations; the Host
+ * acks it through the console (transport intake only, never mutates Work). */
+export type HostAttentionKind =
+  | "work_review_requested"
+  | "work_blocked"
+  | "work_accepted"
+  | "work_changes_requested"
+  | "work_cancelled"
+  | "work_delivery_failed"
+  | "member_stopped_with_owned_ready_work"
+  | "member_failed_with_owned_ready_work";
+
+export type HostAttentionStatus = "actionable" | "claimed" | "delivered" | "acknowledged";
+
+export interface HostAttention {
+  id: string;
+  team_run_id: string;
+  kind: HostAttentionKind | string;
+  work_id: string;
+  work_version?: number;
+  source_event_ref?: string;
+  member_run_id?: string | null;
+  status: HostAttentionStatus | string;
+  attempt?: number;
+  claim_id?: string | null;
+  claimed_host_surface?: string | null;
+  claimed_host_thread_id?: string | null;
+  provider_receipt_id?: string | null;
+  last_failure_reason?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
 export interface ProviderIntegrationProfile {
   provider: string;
   execution_mode: string;
