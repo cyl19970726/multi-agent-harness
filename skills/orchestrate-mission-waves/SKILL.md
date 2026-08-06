@@ -149,6 +149,28 @@ adds no new commands, only a discipline for the ones already listed.
   judgment memo, and this wake's events only. Re-read global state fresh
   from the board each wake instead of trusting window memory; judgment
   history lives in durable records, never only in the window.
+- **Work context template.** Every Work needs a mini mental model so the
+  Member can orient in one turn. Use this structure in `--context`:
+
+  ```
+  ┌─ What ──────────────────────────────┐
+  │ One sentence: what to build/fix/audit│
+  ├─ Mental Model ──────────────────────┤
+  │ ASCII diagram of states / flow      │
+  │ Key invariants the Member must hold  │
+  ├─ Boundary ──────────────────────────┤
+  │ Paths to touch / never touch        │
+  │ Worktree convention (OUTSIDE repo)  │
+  │ Other members' lanes (don't collide) │
+  ├─ Evidence ──────────────────────────┤
+  │ What counts as done (merged PR etc) │
+  │ Required artifact_refs / check_refs  │
+  └─────────────────────────────────────┘
+  ```
+
+  Use `--completion-criteria` for the acceptance checklist, not prose.
+  The `--context` should make the Member understand the problem in one read;
+  the `--completion-criteria` should make the Host accept/reject in one look.
 
 ## Create And Allocate Works
 
