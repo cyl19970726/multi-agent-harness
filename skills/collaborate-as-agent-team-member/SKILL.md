@@ -16,6 +16,34 @@ display name.
 
 These hard invariants apply to every Host and Member. The full shared text lives in [`skills/shared-references/SKILL.md`](../shared-references/SKILL.md); when a rule appears in both skills, the shared copy is authoritative. The rules below are the Member-specific application.
 
+## Quick Start: First Turn
+
+When you wake up as a new member with a Work assignment, the daemon has already
+delivered your Work context and set these env vars. Run these exact commands
+(paste them — do not retype):
+
+```bash
+# 1. See your Work
+"$HARNESS_BIN" team-run work show --work-id "$HARNESS_WORK_ID" --json
+
+# 2. Mark it in progress (version from step 1)
+"$HARNESS_BIN" team-run work start \
+  --team-run-id "$HARNESS_TEAM_RUN_ID" \
+  --work-id "$HARNESS_WORK_ID" \
+  --member-run-id "$HARNESS_MEMBER_RUN_ID" \
+  --expected-version <version-from-step-1> \
+  --idempotency-key "start-$(date +%s)"
+
+# 3. Check for messages from Host or peers
+"$HARNESS_BIN" team-run inbox \
+  --id "$HARNESS_TEAM_RUN_ID" \
+  --member-run-id "$HARNESS_MEMBER_RUN_ID" \
+  --all --json
+
+# 4. Read the board to see other members' status
+"$HARNESS_BIN" team-run board-summary --id "$HARNESS_TEAM_RUN_ID"
+```
+
 ## Start From Work, Not Chat
 
 Confirm these facts before side effects:

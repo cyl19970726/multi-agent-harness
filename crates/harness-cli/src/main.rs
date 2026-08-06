@@ -16400,6 +16400,21 @@ fn wait_for_idle_member_wake(
                 // Then try active-work continuation.
                 if member_supervisor_test_idle_grace().is_none() {
                     if let Some(work) = ledger.active_work_continuation_for(&member_row.id)? {
+                        // Before continuing work, deliver any pending
+                        // round-triggering messages first (Host replies,
+                        // peer messages). Without this, a Host reply sent
+                        // between rounds is silently lost when the wake
+                        // reason is ActiveWorkContinuation.
+                        let pending =
+                            ledger.claim_round_triggering_messages_for(&member_row.id)?;
+                        if !pending.is_empty() {
+                            backoff.reset();
+                            member_row.status = MemberRunStatus::Running;
+                            member_row.finished_at = None;
+                            member_row.last_event_at = Some(now_string());
+                            ledger.save_member_run(member_row)?;
+                            return Ok(IdleMemberWake::Messages(pending));
+                        }
                         backoff.reset();
                         member_row.status = MemberRunStatus::Running;
                         member_row.finished_at = None;
@@ -40267,7 +40282,8 @@ package:com.tencent.mm
         );
 
         let mut future = team_member_provider_profile("kimi");
-        apply_provider_version(&mut future, Some("0.32.0".to_string()));
+        apply_provider_version(&mut future, Some("0.32.0",
+                "0.33.0".to_string()));
         // 0.32.0 is adapter-reviewed for prompt delivery/resume/mail, but
         // cancel and native goal mode stay unclaimed (fail-closed per
         // capability, not inherited from 0.31.x).
