@@ -4178,10 +4178,10 @@ fn company_docs_command(store: &HarnessStore, args: &[String]) -> CliResult<()> 
         "page" => {
             require_subcommand(
                 &args[1..],
-                "company docs page create|read|write|append|search|scaffold|verify|publish",
+                "company docs page create|read|write|append|search|rename|move|archive|scaffold|verify|publish",
             )?;
             match args[1].as_str() {
-                "create" | "read" | "write" | "append" | "search" => {
+                "create" | "read" | "write" | "append" | "search" | "rename" | "move" | "archive" => {
                     docs_v2_page::company_docs_page_v2_command(store, &args[1..])
                 }
                 "scaffold" => company_docs_page_scaffold_command(store, &args[2..]),

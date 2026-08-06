@@ -576,7 +576,135 @@ try {
     JSON.stringify({ index: search.index, count: search.count, docs: [...new Set((search.matches ?? []).map((m) => m.document_id))] }),
   );
 
-  // --- 10. markdown output format -------------------------------------------
+  // --- 10. R1 rename / move / archive metadata commands -------------------
+  const renamed = json(
+    run([
+      ...company,
+      "company", "docs", "page", "rename",
+      "--doc", "document-cli-warned-embeds",
+      "--title", "Renamed Embeds Page",
+      "--actor", "agent-smoke",
+      "--summary", "smoke rename",
+    ]),
+    "page rename",
+  );
+  check("R1 rename advances the revision", typeof renamed.revision_number === "number", JSON.stringify(renamed));
+  const readRenamed = json(
+    run([...company, "company", "docs", "page", "read", "--doc", "document-cli-warned-embeds"]),
+    "read renamed",
+  );
+  check("R1 rename updates the title", readRenamed.title === "Renamed Embeds Page", JSON.stringify(readRenamed.title));
+
+  run([
+    ...company,
+    "company", "docs", "page", "create",
+    "--title", "Move Parent", "--id", "document-cli-move-parent",
+    "--actor", "agent-smoke", "--markdown", "# Move Parent",
+  ]);
+  run([
+    ...company,
+    "company", "docs", "page", "create",
+    "--title", "Move Child", "--id", "document-cli-move-child",
+    "--actor", "agent-smoke", "--markdown", "# Move Child",
+  ]);
+  const moved = json(
+    run([
+      ...company,
+      "company", "docs", "page", "move",
+      "--doc", "document-cli-move-child",
+      "--parent", "document-cli-move-parent",
+      "--actor", "agent-smoke",
+    ]),
+    "page move",
+  );
+  check("R1 move succeeds", moved.result === "success", JSON.stringify(moved));
+  const readChild = json(
+    run([...company, "company", "docs", "page", "read", "--doc", "document-cli-move-child"]),
+    "read moved",
+  );
+  check(
+    "R1 read exposes parent_document_id after move",
+    readChild.parent_document_id === "document-cli-move-parent",
+    JSON.stringify(readChild.parent_document_id),
+  );
+  const cyclic = run(
+    [
+      ...company,
+      "company", "docs", "page", "move",
+      "--doc", "document-cli-move-parent",
+      "--parent", "document-cli-move-child",
+      "--actor", "agent-smoke",
+    ],
+    true,
+  );
+  check(
+    "R1 move rejects parent cycles",
+    cyclic.ok === false && cyclic.stderr.includes("parent cycle"),
+    cyclic.stderr.slice(0, 160),
+  );
+  json(
+    run([
+      ...company,
+      "company", "docs", "page", "move",
+      "--doc", "document-cli-move-child", "--parent", "-1",
+      "--actor", "agent-smoke",
+    ]),
+    "move back to root",
+  );
+  const readRoot = json(
+    run([...company, "company", "docs", "page", "read", "--doc", "document-cli-move-child"]),
+    "read root again",
+  );
+  check("R1 move -1 returns the page to root", readRoot.parent_document_id == null, JSON.stringify(readRoot.parent_document_id));
+
+  const dryArchive = json(
+    run([
+      ...company,
+      "company", "docs", "page", "archive",
+      "--doc", "document-cli-move-child",
+      "--actor", "agent-smoke",
+    ]),
+    "archive dry run",
+  );
+  check("R1 archive without --confirm is a dry run", dryArchive.result === "dry_run", JSON.stringify(dryArchive));
+  const readAfterDry = json(
+    run([...company, "company", "docs", "page", "read", "--doc", "document-cli-move-child"]),
+    "read after dry archive",
+  );
+  check("R1 dry-run archive leaves lifecycle unchanged", readAfterDry.lifecycle_status === "active", JSON.stringify(readAfterDry.lifecycle_status));
+  json(
+    run([
+      ...company,
+      "company", "docs", "page", "archive",
+      "--doc", "document-cli-move-child", "--confirm",
+      "--actor", "agent-smoke",
+    ]),
+    "archive confirmed",
+  );
+  const readArchived = json(
+    run([...company, "company", "docs", "page", "read", "--doc", "document-cli-move-child"]),
+    "read archived",
+  );
+  check("R1 archive with --confirm sets lifecycle archived", readArchived.lifecycle_status === "archived", JSON.stringify(readArchived.lifecycle_status));
+
+  const staleRename = run(
+    [
+      ...company,
+      "company", "docs", "page", "rename",
+      "--doc", "document-cli-move-parent",
+      "--title", "Should Fail",
+      "--expected-revision", "0",
+      "--actor", "agent-smoke",
+    ],
+    true,
+  );
+  check(
+    "R1 stale expected revision is rejected on metadata writes",
+    staleRename.ok === false && staleRename.stderr.includes("REVISION_CONFLICT"),
+    staleRename.stderr.slice(0, 160),
+  );
+
+  // --- 11. markdown output format -------------------------------------------
   const markdownOut = run([
     ...company,
     "company",
