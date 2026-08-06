@@ -70,6 +70,7 @@ echo "Star Harness source: ${VERSION} (${REPO_ROOT})"
   node scripts/sync-star-harness-plugin-skills.mjs --check
   node scripts/check-star-harness-plugin.mjs
   node scripts/check-star-harness-hook.mjs
+  node scripts/check-cross-layer-consistency.mjs
 )
 
 echo

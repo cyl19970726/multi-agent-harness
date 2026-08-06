@@ -5,7 +5,7 @@
   "type": "module",
   "packageManager": "pnpm@9.15.4",
   "scripts": {
-    "check": "pnpm validate:json && pnpm check:schema-fixtures && pnpm check:tool-descriptors && pnpm check:native-session-boundary && pnpm check:star-harness-plugin && pnpm check:dashboard && pnpm check:company-os",
+    "check": "pnpm validate:json && pnpm check:schema-fixtures && pnpm check:tool-descriptors && pnpm check:native-session-boundary && pnpm check:star-harness-plugin && node scripts/check-cross-layer-consistency.mjs && pnpm check:dashboard && pnpm check:company-os",
     "validate:json": "node scripts/validate-json.mjs",
     "check:schema-fixtures": "node scripts/check-schema-fixtures.mjs",
     "check:tool-descriptors": "node scripts/check-tool-descriptors.mjs",
