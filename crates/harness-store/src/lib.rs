@@ -2555,6 +2555,8 @@ impl HarnessStore {
             .filter(|operation| operation.work.id == current.id)
             .count() as u64
             + 1;
+        let prereq_event_id = context.event_id.clone();
+        let prereq_created_at = context.created_at.clone();
         let deliveries = if matches!(
             kind,
             WorkEventKind::Assigned
@@ -2563,6 +2565,8 @@ impl HarnessStore {
                 | WorkEventKind::Rebound
                 | WorkEventKind::TeamScopePromoted
                 | WorkEventKind::ExecutionRetargeted
+                | WorkEventKind::Accepted
+                | WorkEventKind::Cancelled
         ) {
             self.initial_work_deliveries_unlocked(&next, &context.event_id, &context.created_at)?
         } else {
@@ -2616,6 +2620,80 @@ impl HarnessStore {
             delivery_updates,
         };
         self.append_work_operation_unlocked(&operation)?;
+        // When a work is accepted (Done), notify works that depend on it
+        // as a prerequisite: create deliveries for their owner members.
+        if kind == WorkEventKind::Accepted {
+            let team_run_id = &next.team_run_id;
+            let prerequisite_id = &next.id;
+            let all_works = self.latest_works_unlocked()?;
+            for dependent_work in all_works.values() {
+                if dependent_work.team_run_id == *team_run_id
+                    && dependent_work
+                        .prerequisite_work_ids
+                        .iter()
+                        .any(|pid| pid == prerequisite_id)
+                    && !dependent_work.is_terminal()
+                {
+                    if let Some(owner_member_id) = dependent_work.active_member_run_id.as_deref() {
+                        if let Ok(member) =
+                            self.require_member_run_unlocked(owner_member_id, team_run_id)
+                        {
+                            if self
+                                .ensure_member_can_receive_work_unlocked(&member)
+                                .is_ok()
+                            {
+                                let dep_delivery = WorkDelivery {
+                                    id: format!(
+                                        "work-delivery-prereq-{}-{}",
+                                        prereq_event_id, dependent_work.id
+                                    ),
+                                    work_event_id: prereq_event_id.clone(),
+                                    team_run_id: team_run_id.clone(),
+                                    work_id: dependent_work.id.clone(),
+                                    work_version: dependent_work.version,
+                                    recipient_member_run_id: owner_member_id.to_string(),
+                                    status: WorkDeliveryStatus::Queued,
+                                    attempt: 0,
+                                    claim_id: None,
+                                    claimed_by_supervisor_id: None,
+                                    claimed_generation: None,
+                                    provider_receipt_id: None,
+                                    failure_reason: None,
+                                    updated_at: prereq_created_at.clone(),
+                                };
+                                self.append_jsonl_unlocked("work_deliveries.jsonl", &dep_delivery)?;
+                                // Also ensure HostAttention for prerequisite completion
+                                let prereq_attention = HostAttention {
+                                    id: format!("host-attention-prereq-{}", dep_delivery.id),
+                                    team_run_id: team_run_id.clone(),
+                                    kind: HostAttentionKind::WorkPrerequisiteCompleted,
+                                    work_id: dependent_work.id.clone(),
+                                    work_version: dependent_work.version,
+                                    source_event_ref: prereq_event_id.clone(),
+                                    member_run_id: Some(owner_member_id.to_string()),
+                                    status: HostAttentionStatus::Actionable,
+                                    attempt: 0,
+                                    claim_id: None,
+                                    claimed_host_surface: None,
+                                    claimed_host_thread_id: None,
+                                    provider_receipt_id: None,
+                                    last_failure_reason: None,
+                                    created_at: prereq_created_at.clone(),
+                                    updated_at: prereq_created_at.clone(),
+                                };
+                                prereq_attention
+                                    .validate()
+                                    .map_err(|error| StoreError::Conflict(error.to_string()))?;
+                                self.append_jsonl_unlocked(
+                                    "host_attentions.jsonl",
+                                    &prereq_attention,
+                                )?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         self.ensure_host_attention_for_work_operation_unlocked(&operation)?;
         Ok(next)
     }
@@ -4426,6 +4504,101 @@ impl HarnessStore {
         {
             return Ok(WorkDeliveryClaimResult::NotQueued);
         }
+        delivery.status = WorkDeliveryStatus::Claimed;
+        delivery.attempt = delivery.attempt.saturating_add(1);
+        delivery.claim_id = Some(claim_id.to_string());
+        delivery.claimed_by_supervisor_id = Some(supervisor_id.to_string());
+        delivery.claimed_generation = Some(supervisor_generation);
+        delivery.provider_receipt_id = None;
+        delivery.failure_reason = None;
+        delivery.updated_at = updated_at.to_string();
+        let update_sequence = self.next_work_delivery_update_sequence_unlocked()?;
+        self.append_jsonl_unlocked(
+            "work_delivery_updates.jsonl",
+            &WorkDeliveryUpdate {
+                delivery_id: delivery.id.clone(),
+                update_sequence,
+                status: delivery.status,
+                attempt: delivery.attempt,
+                claim_id: delivery.claim_id.clone(),
+                claimed_by_supervisor_id: delivery.claimed_by_supervisor_id.clone(),
+                claimed_generation: delivery.claimed_generation,
+                provider_receipt_id: None,
+                failure_reason: None,
+                updated_at: delivery.updated_at.clone(),
+            },
+        )?;
+        Ok(WorkDeliveryClaimResult::Claimed(Box::new(delivery)))
+    }
+
+    /// Claim a queued WorkDelivery for a terminal work notification.
+    ///
+    /// Like [`claim_work_delivery`] but permits terminal (Accepted /
+    /// Cancelled) works, skips the prerequisite-satisfied check, and does not
+    /// fence on another active work occupying the member slot. A terminal-work
+    /// notification is informational (the supervisor turns it into a
+    /// TeamMessage), not an execution assignment.
+    #[allow(clippy::too_many_arguments)]
+    pub fn claim_work_notification(
+        &self,
+        team_run_id: &str,
+        delivery_id: &str,
+        member_run_id: &str,
+        supervisor_id: &str,
+        supervisor_generation: u64,
+        claim_id: &str,
+        now_unix_ms: u64,
+        updated_at: &str,
+    ) -> StoreResult<WorkDeliveryClaimResult> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let lease = latest_by_id(
+            self.read_jsonl::<TeamSupervisorLease>("team_supervisor_leases.jsonl")?,
+            |lease| lease.team_run_id.clone(),
+        )
+        .remove(team_run_id)
+        .ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "team run {team_run_id} has no active Supervisor lease"
+            ))
+        })?;
+        if lease.status != TeamSupervisorLeaseStatus::Active
+            || lease.supervisor_id != supervisor_id
+            || lease.generation != supervisor_generation
+            || lease.expires_unix_ms <= now_unix_ms
+        {
+            return Err(StoreError::Conflict(format!(
+                "team run {team_run_id} Supervisor lease is not owned by {supervisor_id} generation {supervisor_generation}"
+            )));
+        }
+        let mut deliveries = self.latest_work_deliveries_unlocked()?;
+        let Some(mut delivery) = deliveries.remove(delivery_id) else {
+            return Ok(WorkDeliveryClaimResult::NotQueued);
+        };
+        if delivery.team_run_id != team_run_id
+            || delivery.recipient_member_run_id != member_run_id
+            || !matches!(
+                delivery.status,
+                WorkDeliveryStatus::Queued | WorkDeliveryStatus::Failed
+            )
+        {
+            return Ok(WorkDeliveryClaimResult::NotQueued);
+        }
+        let works = self.latest_works_unlocked()?;
+        let Some(work) = works.get(&delivery.work_id) else {
+            return Ok(WorkDeliveryClaimResult::NotQueued);
+        };
+        // Terminal works are allowed; the supervisor will turn this delivery
+        // into a TeamMessage, not a work-assignment prompt.
+        if work.team_run_id != team_run_id
+            || work.version != delivery.work_version
+            || work.active_member_run_id.as_deref() != Some(member_run_id)
+            || !work.is_terminal()
+        {
+            return Ok(WorkDeliveryClaimResult::NotQueued);
+        }
+        // No slot-occupancy fence: a terminal-work notification never blocks
+        // an active execution assignment.
         delivery.status = WorkDeliveryStatus::Claimed;
         delivery.attempt = delivery.attempt.saturating_add(1);
         delivery.claim_id = Some(claim_id.to_string());
