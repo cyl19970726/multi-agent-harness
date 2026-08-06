@@ -60,6 +60,8 @@ mod resident;
 #[cfg(unix)]
 mod resident_daemon;
 mod sse;
+#[cfg(unix)]
+mod supervisor_daemon;
 mod supervisor_wake;
 mod workflow;
 
@@ -16018,6 +16020,117 @@ struct TeamSupervisorRegistration {
     control_thread: Option<std::thread::JoinHandle<()>>,
 }
 
+impl TeamSupervisorRegistration {
+    /// Acquire a supervisor lease, bind a TCP control listener, and start
+    /// heartbeat + control threads. Does NOT register in LIVE_TEAM_SUPERVISORS
+    /// — callers that need in-process deduplication must manage that guard
+    /// themselves (e.g. `reserve_team_supervisor`).
+    pub(crate) fn start(
+        store: &HarnessStore,
+        team_run_id: &str,
+    ) -> CliResult<TeamSupervisorRegistration> {
+        let supervisor_id = generated_id("supervisor");
+        let ttl_ms = team_supervisor_lease_ttl_ms();
+        let control_listener = TcpListener::bind("127.0.0.1:0")?;
+        control_listener.set_nonblocking(true)?;
+        let owner_locator = format!("tcp://{}", control_listener.local_addr()?);
+        let lease = store
+            .acquire_team_supervisor_lease(
+                team_run_id,
+                &supervisor_id,
+                std::process::id(),
+                &owner_locator,
+                current_unix_ms_u64(),
+                ttl_ms,
+            )
+            .map_err(|e| {
+                store_conflict_as_usage::<TeamSupervisorLease>(Err(e))
+                    .expect_err("Supervisor acquisition error must remain an error")
+            })?;
+        let heartbeat_stop = Arc::new(AtomicBool::new(false));
+        let heartbeat_valid = Arc::new(AtomicBool::new(true));
+        let heartbeat_store = HarnessStore::new(store.root().to_path_buf());
+        let heartbeat_team_run_id = team_run_id.to_string();
+        let heartbeat_supervisor_id = supervisor_id.clone();
+        let heartbeat_stop_thread = Arc::clone(&heartbeat_stop);
+        let heartbeat_valid_thread = Arc::clone(&heartbeat_valid);
+        let generation = lease.generation;
+        let heartbeat_interval_ms = (ttl_ms / 3).clamp(50, 1_000);
+        let heartbeat_thread = std::thread::spawn(move || {
+            while !heartbeat_stop_thread.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(heartbeat_interval_ms));
+                if heartbeat_stop_thread.load(Ordering::Acquire) {
+                    break;
+                }
+                if let Some(reason) = supervisor_test_heartbeat_failure() {
+                    let _ = latch_supervisor_lease_lost(
+                        &heartbeat_valid_thread,
+                        &heartbeat_team_run_id,
+                        &heartbeat_supervisor_id,
+                        generation,
+                        &reason,
+                    );
+                    break;
+                }
+                if let Err(error) = heartbeat_store.renew_team_supervisor_lease(
+                    &heartbeat_team_run_id,
+                    &heartbeat_supervisor_id,
+                    generation,
+                    current_unix_ms_u64(),
+                    ttl_ms,
+                ) {
+                    let _ = latch_supervisor_lease_lost(
+                        &heartbeat_valid_thread,
+                        &heartbeat_team_run_id,
+                        &heartbeat_supervisor_id,
+                        generation,
+                        &error.to_string(),
+                    );
+                    break;
+                }
+            }
+        });
+        let control_stop = Arc::new(AtomicBool::new(false));
+        let control_store = HarnessStore::new(store.root().to_path_buf());
+        let control_team_run_id = team_run_id.to_string();
+        let control_supervisor_id = supervisor_id.clone();
+        let control_generation = lease.generation;
+        let control_stop_thread = Arc::clone(&control_stop);
+        let control_valid_thread = Arc::clone(&heartbeat_valid);
+        let control_thread = std::thread::spawn(move || {
+            while !control_stop_thread.load(Ordering::Acquire) {
+                match control_listener.accept() {
+                    Ok((stream, _)) => {
+                        handle_live_member_control_connection(
+                            stream,
+                            &control_store,
+                            &control_team_run_id,
+                            &control_supervisor_id,
+                            control_generation,
+                            &control_valid_thread,
+                        );
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        Ok(TeamSupervisorRegistration {
+            team_run_id: team_run_id.to_string(),
+            supervisor_id,
+            generation: lease.generation,
+            store: HarnessStore::new(store.root().to_path_buf()),
+            heartbeat_stop,
+            heartbeat_valid,
+            heartbeat_thread: Some(heartbeat_thread),
+            control_stop,
+            control_thread: Some(control_thread),
+        })
+    }
+}
+
 impl Drop for TeamSupervisorRegistration {
     fn drop(&mut self) {
         self.control_stop.store(true, Ordering::Release);
@@ -16103,111 +16216,17 @@ fn reserve_team_supervisor(
     }
     drop(supervisors);
 
-    let supervisor_id = generated_id("supervisor");
-    let ttl_ms = team_supervisor_lease_ttl_ms();
-    let control_listener = TcpListener::bind("127.0.0.1:0")?;
-    control_listener.set_nonblocking(true)?;
-    let owner_locator = format!("tcp://{}", control_listener.local_addr()?);
-    let lease = match store.acquire_team_supervisor_lease(
-        team_run_id,
-        &supervisor_id,
-        std::process::id(),
-        &owner_locator,
-        current_unix_ms_u64(),
-        ttl_ms,
-    ) {
-        Ok(lease) => lease,
+    match TeamSupervisorRegistration::start(store, team_run_id) {
+        Ok(reg) => Ok(reg),
         Err(error) => {
             LIVE_TEAM_SUPERVISORS
                 .get_or_init(|| Mutex::new(HashSet::new()))
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .remove(team_run_id);
-            return Err(store_conflict_as_usage::<TeamSupervisorLease>(Err(error))
-                .expect_err("Supervisor acquisition error must remain an error"));
+            Err(error)
         }
-    };
-    let heartbeat_stop = Arc::new(AtomicBool::new(false));
-    let heartbeat_valid = Arc::new(AtomicBool::new(true));
-    let heartbeat_store = HarnessStore::new(store.root().to_path_buf());
-    let heartbeat_team_run_id = team_run_id.to_string();
-    let heartbeat_supervisor_id = supervisor_id.clone();
-    let heartbeat_stop_thread = Arc::clone(&heartbeat_stop);
-    let heartbeat_valid_thread = Arc::clone(&heartbeat_valid);
-    let generation = lease.generation;
-    let heartbeat_interval_ms = (ttl_ms / 3).clamp(50, 1_000);
-    let heartbeat_thread = std::thread::spawn(move || {
-        while !heartbeat_stop_thread.load(Ordering::Acquire) {
-            std::thread::sleep(Duration::from_millis(heartbeat_interval_ms));
-            if heartbeat_stop_thread.load(Ordering::Acquire) {
-                break;
-            }
-            if let Some(reason) = supervisor_test_heartbeat_failure() {
-                let _ = latch_supervisor_lease_lost(
-                    &heartbeat_valid_thread,
-                    &heartbeat_team_run_id,
-                    &heartbeat_supervisor_id,
-                    generation,
-                    &reason,
-                );
-                break;
-            }
-            if let Err(error) = heartbeat_store.renew_team_supervisor_lease(
-                &heartbeat_team_run_id,
-                &heartbeat_supervisor_id,
-                generation,
-                current_unix_ms_u64(),
-                ttl_ms,
-            ) {
-                let _ = latch_supervisor_lease_lost(
-                    &heartbeat_valid_thread,
-                    &heartbeat_team_run_id,
-                    &heartbeat_supervisor_id,
-                    generation,
-                    &error.to_string(),
-                );
-                break;
-            }
-        }
-    });
-    let control_stop = Arc::new(AtomicBool::new(false));
-    let control_store = HarnessStore::new(store.root().to_path_buf());
-    let control_team_run_id = team_run_id.to_string();
-    let control_supervisor_id = supervisor_id.clone();
-    let control_generation = lease.generation;
-    let control_stop_thread = Arc::clone(&control_stop);
-    let control_valid_thread = Arc::clone(&heartbeat_valid);
-    let control_thread = std::thread::spawn(move || {
-        while !control_stop_thread.load(Ordering::Acquire) {
-            match control_listener.accept() {
-                Ok((stream, _)) => {
-                    handle_live_member_control_connection(
-                        stream,
-                        &control_store,
-                        &control_team_run_id,
-                        &control_supervisor_id,
-                        control_generation,
-                        &control_valid_thread,
-                    );
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(_) => break,
-            }
-        }
-    });
-    Ok(TeamSupervisorRegistration {
-        team_run_id: team_run_id.to_string(),
-        supervisor_id,
-        generation: lease.generation,
-        store: HarnessStore::new(store.root().to_path_buf()),
-        heartbeat_stop,
-        heartbeat_valid,
-        heartbeat_thread: Some(heartbeat_thread),
-        control_stop,
-        control_thread: Some(control_thread),
-    })
+    }
 }
 
 impl Drop for LiveMemberControlRegistration {
@@ -17753,6 +17772,13 @@ impl MemberOutcome {
     }
 }
 
+pub(crate) struct PreparedTeamRunBody {
+    run_id: String,
+    objective: String,
+    run: AgentTeamRun,
+    members: Vec<MemberRun>,
+}
+
 pub(crate) struct PreparedTeamRunStart {
     run_id: String,
     objective: String,
@@ -17762,15 +17788,14 @@ pub(crate) struct PreparedTeamRunStart {
     supervisor_registration: TeamSupervisorRegistration,
 }
 
-/// Reserve one process-scoped supervisor before any provider thread starts.
-/// A planning TeamRun transitions to running; an existing non-terminal or
-/// completed run reattaches its unclosed MemberRuns to their native sessions.
-/// The process-local reservation prevents duplicate supervisors in one Host.
-pub(crate) fn prepare_team_run_start(
+/// Validate the team run, filter active members, check provider compat, and
+/// return the raw run + members WITHOUT reserving a supervisor or creating a
+/// ledger. The caller (in-process path or daemon) builds the rest.
+pub(crate) fn prepare_team_run_start_body(
     store: &HarnessStore,
     run_id: &str,
-    max_concurrency: usize,
-) -> CliResult<PreparedTeamRunStart> {
+    _max_concurrency: usize,
+) -> CliResult<PreparedTeamRunBody> {
     let run = latest_team_run(store, run_id)?;
     if matches!(run.status, TeamRunStatus::Failed | TeamRunStatus::Cancelled) {
         return Err(CliError::Usage(format!(
@@ -17813,6 +17838,24 @@ pub(crate) fn prepare_team_run_start(
             return Err(CliError::Usage(refusal));
         }
     }
+    Ok(PreparedTeamRunBody {
+        run_id: run_id.to_string(),
+        objective: run.objective.clone(),
+        run,
+        members,
+    })
+}
+
+/// Reserve one process-scoped supervisor before any provider thread starts.
+/// A planning TeamRun transitions to running; an existing non-terminal or
+/// completed run reattaches its unclosed MemberRuns to their native sessions.
+/// The process-local reservation prevents duplicate supervisors in one Host.
+pub(crate) fn prepare_team_run_start(
+    store: &HarnessStore,
+    run_id: &str,
+    max_concurrency: usize,
+) -> CliResult<PreparedTeamRunStart> {
+    let body = prepare_team_run_start_body(store, run_id, max_concurrency)?;
     let supervisor_registration = reserve_team_supervisor(store, run_id)?;
     let ledger = Arc::new(TeamRunLedger::new(
         store,
@@ -17821,19 +17864,19 @@ pub(crate) fn prepare_team_run_start(
         supervisor_registration.generation,
         Arc::clone(&supervisor_registration.heartbeat_valid),
     ));
-    let running = if run.status == TeamRunStatus::Planning {
-        let mut running = run.clone();
+    let running = if body.run.status == TeamRunStatus::Planning {
+        let mut running = body.run.clone();
         running.status = TeamRunStatus::Running;
         running.updated_at = now_string();
         store_conflict_as_usage(store.compare_and_append_team_run_with_wave_status(
-            &run,
+            &body.run,
             &running,
             WaveStatus::Running,
             &now_string(),
         ))?;
         running
     } else {
-        run.clone()
+        body.run.clone()
     };
     ledger.fold_event(
         TeamRunEventSourceKind::Host,
@@ -17845,43 +17888,100 @@ pub(crate) fn prepare_team_run_start(
             "member supervisor {} generation {} {} ({} unclosed member(s), max-concurrency {max_concurrency})",
             supervisor_registration.supervisor_id,
             supervisor_registration.generation,
-            if run.status == TeamRunStatus::Planning {
+            if body.run.status == TeamRunStatus::Planning {
                 "started"
             } else {
                 "reattached"
             },
-            members.len(),
+            body.members.len(),
         ),
     )?;
     Ok(PreparedTeamRunStart {
-        run_id: run_id.to_string(),
-        objective: run.objective,
+        run_id: body.run_id,
+        objective: body.objective,
         running,
-        members,
+        members: body.members,
         ledger,
         supervisor_registration,
     })
 }
 
-/// `harness team-run start`: reserve the run and supervise its persistent
-/// members. A member turn or handoff never terminalizes either the MemberRun or
-/// the TeamRun; those lifecycles remain under explicit Host control.
+/// `harness team-run start`: spawn or adopt a supervisor daemon, then exit.
+/// The daemon owns the delivery loop, heartbeat, and control listener.
+/// The old in-process path (`prepare_team_run_start` + `drive_prepared_team_run`)
+/// remains available for `serve_command` and `dashboard_command`.
+///
+/// On non-Unix platforms the supervisor runs in-process (no daemon).
 pub(crate) fn team_run_start(
     store: &HarnessStore,
-    resolved: &ResolvedStore,
+    _resolved: &ResolvedStore,
     run_id: &str,
     max_concurrency: usize,
     idle_timeout: Duration,
 ) -> CliResult<()> {
-    let prepared = prepare_team_run_start(store, run_id, max_concurrency)?;
-    drive_prepared_team_run(
-        prepared,
-        resolved.execution_space_context.clone(),
-        resolved.context.clone(),
-        max_concurrency,
-        idle_timeout,
-        None,
-    )
+    #[cfg(unix)]
+    {
+        // When the test-idle env var is set, fall back to the old in-process
+        // supervisor path so integration tests that expect blocking completion
+        // continue to work without spawning a real daemon child.
+        let test_idle_ms = std::env::var("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS").ok();
+        if test_idle_ms.is_some() {
+            let prepared = prepare_team_run_start(store, run_id, max_concurrency)?;
+            return drive_prepared_team_run(
+                prepared,
+                _resolved.execution_space_context.clone(),
+                _resolved.context.clone(),
+                max_concurrency,
+                idle_timeout,
+                None,
+            );
+        }
+
+        // Validate the team run and refresh member provider profiles before
+        // spawning.  The daemon will re-validate on its side, but pre-validating
+        // here gives the CLI user an immediate error for unrecoverable problems.
+        let _body = prepare_team_run_start_body(store, run_id, max_concurrency)?;
+
+        let daemon =
+            match crate::supervisor_daemon::check_existing_supervisor_daemon(store, run_id)? {
+                Some(info) => {
+                    eprintln!(
+                    "[star-harness] team run {run_id}: adopting supervisor daemon pid {} (gen {})",
+                    info.pid, info.generation,
+                );
+                    info
+                }
+                None => {
+                    eprintln!("[star-harness] team run {run_id}: spawning supervisor daemon...");
+                    crate::supervisor_daemon::spawn_supervisor_daemon(
+                        store,
+                        run_id,
+                        max_concurrency,
+                        idle_timeout.as_secs(),
+                    )?
+                }
+            };
+
+        crate::supervisor_daemon::adopt_daemon(&daemon)?;
+        println!(
+            "team run {run_id}\trunning (daemon pid {}, gen {})",
+            daemon.pid, daemon.generation,
+        );
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    {
+        let prepared = prepare_team_run_start(store, run_id, max_concurrency)?;
+        drive_prepared_team_run(
+            prepared,
+            _resolved.execution_space_context.clone(),
+            _resolved.context.clone(),
+            max_concurrency,
+            idle_timeout,
+            None,
+        )
+    }
 }
 
 pub(crate) fn drive_prepared_team_run(
@@ -24379,9 +24479,12 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
 /// socket is present, and falls back to an inline single turn when it is not.
 #[cfg(unix)]
 fn daemon_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "daemon start|status|stop")?;
+    require_subcommand(args, "daemon start|status|stop|supervisor")?;
     let harness_root = store.root().to_path_buf();
     match args[0].as_str() {
+        "supervisor" => {
+            supervisor_daemon::supervisor_daemon_command(store, &args[1..])?;
+        }
         "start" => {
             let idle_secs = value(args, "--idle-secs")
                 .and_then(|s| s.parse::<u64>().ok())

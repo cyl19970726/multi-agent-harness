@@ -6584,7 +6584,7 @@ fn external_interactive_member_joins_and_exchanges_mail() {
     // The Supervisor starts the run without spawning an adapter for external
     // members: no adapter error, no Failed status, and start returns promptly
     // because there is nothing to drive.
-    let out = run_harness(
+    let out = run_harness_with_env(
         &home,
         home.base(),
         &[
@@ -6595,6 +6595,7 @@ fn external_interactive_member_joins_and_exchanges_mail() {
             "--id",
             &run_id,
         ],
+        &[("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS", "100")],
     );
     assert!(
         out.status.success(),
