@@ -8,11 +8,11 @@ use std::time::{Duration, Instant};
 use harness_core::{
     validate_agent_team_topology, validate_work_cutover_with_fences, AgentEvent, AgentMember,
     AgentMemberStatus, AgentMessageRoute, AgentRuntime, AgentTeam, AgentTeamRun, Decision,
-    DelegationRun, DurableAgentMember, Evidence, Gap, HostAttention, HostAttentionInbox,
-    HostAttentionKind, HostAttentionStatus, MemberAction, MemberRun, Message, MessageDelivery,
-    MessageDeliveryStatus, MessageTerminalSource, Mission, MissionLogEntry, MissionStatus,
-    PendingInteraction, Proposal, ProviderChildThread, ProviderExecutionStatus, Review,
-    TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus,
+    DelegationRun, DurableAgentMember, Evidence, Gap, GitHubLink, HostAttention,
+    HostAttentionInbox, HostAttentionKind, HostAttentionStatus, MemberAction, MemberRun, Message,
+    MessageDelivery, MessageDeliveryStatus, MessageTerminalSource, Mission, MissionLogEntry,
+    MissionStatus, PendingInteraction, Proposal, ProviderChildThread, ProviderExecutionStatus,
+    Review, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus,
     TeamMessage, TeamMessageKind, TeamRunEvent, TeamRunStatus, TeamSupervisorLease,
     TeamSupervisorLeaseStatus, Validate, Vision, Wave, WaveExecutorKind, WaveGateStatus,
     WaveStatus, Work, WorkClaimMode, WorkCommandContext, WorkCutoverFence, WorkCutoverReport,
@@ -2224,6 +2224,33 @@ impl HarnessStore {
         check_refs: Vec<String>,
         context: WorkCommandContext,
     ) -> StoreResult<Work> {
+        self.submit_work_with_links(
+            work_id,
+            expected_version,
+            member_run_id,
+            result_summary,
+            artifact_refs,
+            check_refs,
+            Vec::new(),
+            context,
+        )
+    }
+
+    /// [`submit_work`] plus an explicit GitHub issue/PR linkage snapshot
+    /// (issue #369). The base method keeps its historical signature; links are
+    /// merged into any links already attached at create time.
+    #[allow(clippy::too_many_arguments)]
+    pub fn submit_work_with_links(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        member_run_id: &str,
+        result_summary: &str,
+        artifact_refs: Vec<String>,
+        check_refs: Vec<String>,
+        github_links: Vec<GitHubLink>,
+        context: WorkCommandContext,
+    ) -> StoreResult<Work> {
         if result_summary.trim().is_empty() {
             return Err(StoreError::Conflict("RESULT_REQUIRED".to_string()));
         }
@@ -2239,6 +2266,14 @@ impl HarnessStore {
                 work.result_summary = Some(result_summary.to_string());
                 work.artifact_refs = artifact_refs;
                 work.check_refs = check_refs;
+                // Merge rather than replace: a Work created with
+                // `--github-issue` keeps that link when a `--github-pr` is
+                // attached at submit time.
+                for link in github_links {
+                    if !work.github_links.contains(&link) {
+                        work.github_links.push(link);
+                    }
+                }
                 work.blocker_reason = None;
             },
         )
@@ -6354,6 +6389,7 @@ mod tests {
                     blocker_reason: None,
                     artifact_refs: Vec::new(),
                     check_refs: Vec::new(),
+                    github_links: Vec::new(),
                     version: 0,
                     created_at: String::new(),
                     updated_at: String::new(),
@@ -8041,6 +8077,7 @@ mod tests {
             blocker_reason: None,
             artifact_refs: Vec::new(),
             check_refs: Vec::new(),
+            github_links: Vec::new(),
             version: 0,
             created_at: String::new(),
             updated_at: String::new(),

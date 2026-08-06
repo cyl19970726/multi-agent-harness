@@ -3290,6 +3290,40 @@ pub struct WorkCommandContext {
     pub duplicate_ok: bool,
 }
 
+/// Kind of GitHub object a [`Work`] is linked to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitHubLinkKind {
+    Issue,
+    PullRequest,
+}
+
+/// A GitHub issue/PR link attached to a [`Work`] by
+/// `work create --github-issue` / `work submit --github-pr`.
+///
+/// The link is a durable snapshot: `status`/`ci_status`/`ci_url` are captured
+/// from the GitHub API (via the `gh` CLI) at link time and never silently
+/// re-synced, so a stored link states the observation made when it was created.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitHubLink {
+    pub kind: GitHubLinkKind,
+    pub owner: String,
+    pub repo: String,
+    pub number: u64,
+    pub url: String,
+    /// GitHub object state at snapshot time: `OPEN`/`CLOSED` for issues,
+    /// `OPEN`/`CLOSED`/`MERGED` for pull requests.
+    #[serde(default)]
+    pub status: Option<String>,
+    /// PR CI outcome at snapshot time: `success`, `failure`, `pending`, or
+    /// `unknown` when no checks are reported for the PR.
+    #[serde(default)]
+    pub ci_status: Option<String>,
+    /// Link to the PR checks page / the check that determined `ci_status`.
+    #[serde(default)]
+    pub ci_url: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Work {
     pub id: String,
@@ -3337,6 +3371,10 @@ pub struct Work {
     pub artifact_refs: Vec<String>,
     #[serde(default)]
     pub check_refs: Vec<String>,
+    /// GitHub issue/PR linkage snapshot (see [`GitHubLink`]). `#[serde(default)]`
+    /// keeps pre-linkage works.jsonl records readable.
+    #[serde(default)]
+    pub github_links: Vec<GitHubLink>,
     pub version: u64,
     pub created_at: String,
     pub updated_at: String,
@@ -5361,6 +5399,7 @@ mod tests {
                 blocker_reason: None,
                 artifact_refs: Vec::new(),
                 check_refs: Vec::new(),
+                github_links: Vec::new(),
                 version: 1,
                 created_at: "unix-ms:1".into(),
                 updated_at: "unix-ms:1".into(),

@@ -179,6 +179,7 @@ fn base_work(run_id: &str, id: &str) -> Work {
         blocker_reason: None,
         artifact_refs: Vec::new(),
         check_refs: Vec::new(),
+        github_links: Vec::new(),
         version: 0,
         created_at: String::new(),
         updated_at: String::new(),

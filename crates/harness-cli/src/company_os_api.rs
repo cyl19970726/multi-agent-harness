@@ -1625,6 +1625,7 @@ mod projection_tests {
                         blocker_reason: None,
                         artifact_refs: vec![format!("evidence-{id}")],
                         check_refs: Vec::new(),
+                        github_links: Vec::new(),
                         version: 0,
                         created_at: String::new(),
                         updated_at: String::new(),
