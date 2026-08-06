@@ -162,6 +162,13 @@ adds no new commands, only a discipline for the ones already listed.
   │ Paths to touch / never touch        │
   │ Worktree convention (OUTSIDE repo)  │
   │ Other members' lanes (don't collide) │
+  ├─ Delivery Requirements ─────────────┤
+  │ 1. Create clean worktree:           │
+  │    ../multi-agent-harness-<task>    │
+  │ 2. Commit ALL changes before submit │
+  │ 3. Push branch to origin            │
+  │ 4. Create PR with Summary/Changes   │
+  │ 5. Wait for review → merge          │
   ├─ Evidence ──────────────────────────┤
   │ What counts as done (merged PR etc) │
   │ Required artifact_refs / check_refs  │
@@ -171,6 +178,14 @@ adds no new commands, only a discipline for the ones already listed.
   Use `--completion-criteria` for the acceptance checklist, not prose.
   The `--context` should make the Member understand the problem in one read;
   the `--completion-criteria` should make the Host accept/reject in one look.
+
+  **Standard delivery requirements** (include in every code-changing work):
+  - Worktree: `../multi-agent-harness-<task-name>` (OUTSIDE main repo)
+  - Commit: ALL changes must be committed before `work submit`
+  - Push: Branch must be pushed to origin
+  - PR: Create PR with Summary/Changes/Verification sections
+  - Review: Wait for Host review → merge after approval
+  - No half-finished work: if blocked, report why, don't leave uncommitted changes
 
 ## Create And Allocate Works
 
