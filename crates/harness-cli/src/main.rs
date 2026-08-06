@@ -9749,6 +9749,30 @@ fn append_team_run_event(
     Ok(store.append_team_run_event_next(event)?)
 }
 
+/// Append a work-transition team-run event. Thin wrapper around
+/// `append_team_run_event` that extracts the team-run id from the Work
+/// struct.
+fn append_work_event(
+    store: &HarnessStore,
+    work: &Work,
+    source_kind: TeamRunEventSourceKind,
+    member_run_id: Option<String>,
+    operation: &str,
+    summary: &str,
+) -> CliResult<TeamRunEvent> {
+    append_team_run_event(
+        store,
+        &work.team_run_id,
+        0,
+        source_kind,
+        member_run_id,
+        "work",
+        &work.id,
+        operation,
+        summary,
+    )
+}
+
 /// One member spec for team-run creation, parsed from either the CLI
 /// `--member name:role:provider[/mode][:model][@path1,path2]` spelling or the
 /// HTTP JSON body. `/mode` selects the execution mode; the driven Agent Team
@@ -14278,31 +14302,61 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             };
             print_json(&store.insert_work(work, context)?)
         }
-        "assign" => print_json(&store.assign_work(
-            &required(args, "--work-id")?,
-            required_work_version(args)?,
-            &required(args, "--member-run-id")?,
-            host_work_context(args),
-        )?),
+        "assign" => {
+            let member_run_id = required(args, "--member-run-id")?;
+            let work = store.assign_work(
+                &required(args, "--work-id")?,
+                required_work_version(args)?,
+                &member_run_id,
+                host_work_context(args),
+            )?;
+            append_work_event(
+                store,
+                &work,
+                TeamRunEventSourceKind::Host,
+                Some(member_run_id.clone()),
+                "assigned",
+                &format!("Work assigned to {member_run_id}"),
+            )?;
+            print_json(&work)
+        }
         "claim" => {
             let team_run_id = required(args, "--team-run-id")?;
             let member_run_id = required(args, "--member-run-id")?;
-            print_json(&store.claim_work(
+            let work = store.claim_work(
                 &required(args, "--work-id")?,
                 required_work_version(args)?,
                 &member_run_id,
                 member_work_context(args, &team_run_id, &member_run_id)?,
-            )?)
+            )?;
+            append_work_event(
+                store,
+                &work,
+                TeamRunEventSourceKind::Member,
+                Some(member_run_id.clone()),
+                "claimed",
+                &format!("Work claimed by {member_run_id}"),
+            )?;
+            print_json(&work)
         }
         "start" => {
             let team_run_id = required(args, "--team-run-id")?;
             let member_run_id = required(args, "--member-run-id")?;
-            print_json(&store.start_work(
+            let work = store.start_work(
                 &required(args, "--work-id")?,
                 required_work_version(args)?,
                 &member_run_id,
                 member_work_context(args, &team_run_id, &member_run_id)?,
-            )?)
+            )?;
+            append_work_event(
+                store,
+                &work,
+                TeamRunEventSourceKind::Member,
+                Some(member_run_id.clone()),
+                "started",
+                &format!("Work started by {member_run_id}"),
+            )?;
+            print_json(&work)
         }
         "block" => {
             let team_run_id = required(args, "--team-run-id")?;
@@ -14310,20 +14364,38 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             let expected_version = required_work_version(args)?;
             let reason = required(args, "--reason")?;
             if let Some(member_run_id) = value(args, "--member-run-id") {
-                print_json(&store.block_work(
+                let work = store.block_work(
                     &work_id,
                     expected_version,
                     &member_run_id,
                     &reason,
                     member_work_context(args, &team_run_id, &member_run_id)?,
-                )?)
+                )?;
+                append_work_event(
+                    store,
+                    &work,
+                    TeamRunEventSourceKind::Member,
+                    Some(member_run_id.clone()),
+                    "blocked",
+                    &format!("Work blocked by {member_run_id}: {reason}"),
+                )?;
+                print_json(&work)
             } else {
-                print_json(&store.block_work_as_host(
+                let work = store.block_work_as_host(
                     &work_id,
                     expected_version,
                     &reason,
                     host_work_context(args),
-                )?)
+                )?;
+                append_work_event(
+                    store,
+                    &work,
+                    TeamRunEventSourceKind::Host,
+                    None,
+                    "blocked",
+                    &format!("Work blocked by host: {reason}"),
+                )?;
+                print_json(&work)
             }
         }
         "resume" => {
@@ -14332,20 +14404,38 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             let expected_version = required_work_version(args)?;
             let resolution = required(args, "--resolution")?;
             if let Some(member_run_id) = value(args, "--member-run-id") {
-                print_json(&store.resume_work(
+                let work = store.resume_work(
                     &work_id,
                     expected_version,
                     &member_run_id,
                     &resolution,
                     member_work_context(args, &team_run_id, &member_run_id)?,
-                )?)
+                )?;
+                append_work_event(
+                    store,
+                    &work,
+                    TeamRunEventSourceKind::Member,
+                    Some(member_run_id.clone()),
+                    "resumed",
+                    &format!("Work resumed by {member_run_id}: {resolution}"),
+                )?;
+                print_json(&work)
             } else {
-                print_json(&store.resume_work_as_host(
+                let work = store.resume_work_as_host(
                     &work_id,
                     expected_version,
                     &resolution,
                     host_work_context(args),
-                )?)
+                )?;
+                append_work_event(
+                    store,
+                    &work,
+                    TeamRunEventSourceKind::Host,
+                    None,
+                    "resumed",
+                    &format!("Work resumed by host: {resolution}"),
+                )?;
+                print_json(&work)
             }
         }
         "release" => {
@@ -14353,50 +14443,113 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             let work_id = required(args, "--work-id")?;
             let expected_version = required_work_version(args)?;
             if let Some(member_run_id) = value(args, "--member-run-id") {
-                print_json(&store.release_work(
+                let work = store.release_work(
                     &work_id,
                     expected_version,
                     &member_run_id,
                     member_work_context(args, &team_run_id, &member_run_id)?,
-                )?)
+                )?;
+                append_work_event(
+                    store,
+                    &work,
+                    TeamRunEventSourceKind::Member,
+                    Some(member_run_id.clone()),
+                    "released",
+                    &format!("Work released by {member_run_id}"),
+                )?;
+                print_json(&work)
             } else {
-                print_json(&store.release_work_as_host(
+                let work = store.release_work_as_host(
                     &work_id,
                     expected_version,
                     host_work_context(args),
-                )?)
+                )?;
+                append_work_event(
+                    store,
+                    &work,
+                    TeamRunEventSourceKind::Host,
+                    None,
+                    "released",
+                    "Work released by host",
+                )?;
+                print_json(&work)
             }
         }
         "submit" => {
             let team_run_id = required(args, "--team-run-id")?;
             let member_run_id = required(args, "--member-run-id")?;
-            print_json(&store.submit_work(
+            let result = required(args, "--result")?;
+            let work = store.submit_work(
                 &required(args, "--work-id")?,
                 required_work_version(args)?,
                 &member_run_id,
-                &required(args, "--result")?,
+                &result,
                 many(args, "--artifact-ref"),
                 many(args, "--check-ref"),
                 member_work_context(args, &team_run_id, &member_run_id)?,
-            )?)
+            )?;
+            append_work_event(
+                store,
+                &work,
+                TeamRunEventSourceKind::Member,
+                Some(member_run_id.clone()),
+                "submitted",
+                &format!("Work submitted by {member_run_id}: {result}"),
+            )?;
+            print_json(&work)
         }
-        "request-changes" => print_json(&store.request_work_changes(
-            &required(args, "--work-id")?,
-            required_work_version(args)?,
-            &required(args, "--reason")?,
-            host_work_context(args),
-        )?),
-        "accept" => print_json(&store.accept_work(
-            &required(args, "--work-id")?,
-            required_work_version(args)?,
-            host_work_context(args),
-        )?),
-        "cancel" => print_json(&store.cancel_work(
-            &required(args, "--work-id")?,
-            required_work_version(args)?,
-            &required(args, "--reason")?,
-            host_work_context(args),
-        )?),
+        "request-changes" => {
+            let reason = required(args, "--reason")?;
+            let work = store.request_work_changes(
+                &required(args, "--work-id")?,
+                required_work_version(args)?,
+                &reason,
+                host_work_context(args),
+            )?;
+            append_work_event(
+                store,
+                &work,
+                TeamRunEventSourceKind::Host,
+                None,
+                "changes_requested",
+                &format!("Changes requested: {reason}"),
+            )?;
+            print_json(&work)
+        }
+        "accept" => {
+            let work = store.accept_work(
+                &required(args, "--work-id")?,
+                required_work_version(args)?,
+                host_work_context(args),
+            )?;
+            append_work_event(
+                store,
+                &work,
+                TeamRunEventSourceKind::Host,
+                None,
+                "accepted",
+                &format!("Work accepted: {}", work.title),
+            )?;
+            print_json(&work)
+        }
+        "cancel" => {
+            let reason = required(args, "--reason")?;
+            let work = store.cancel_work(
+                &required(args, "--work-id")?,
+                required_work_version(args)?,
+                &reason,
+                host_work_context(args),
+            )?;
+            append_work_event(
+                store,
+                &work,
+                TeamRunEventSourceKind::Host,
+                None,
+                "cancelled",
+                &format!("Work cancelled: {reason}"),
+            )?;
+            print_json(&work)
+        }
         "promote" => {
             let company_store = selected_company_store_for_work_cutover(args)?;
             print_json(&store.promote_work_to_team_scope(
@@ -17009,6 +17162,111 @@ impl TeamRunLedger {
         }
     }
 
+    /// Claim queued terminal-work notifications for an idle member.
+    ///
+    /// When a Work the member owns reaches a terminal status (Done or
+    /// Cancelled), the store may hold a queued [`WorkDelivery`] for that
+    /// transition. This method claims those notification deliveries and
+    /// converts each into an informational [`TeamMessage`] from the Host
+    /// so the member sees the transition as mail rather than as a new
+    /// work assignment.
+    ///
+    /// Only works where `is_terminal()` is true AND `active_member_run_id`
+    /// matches the member are eligible — this is a notification, not a
+    /// handoff. No slot-occupancy fence is applied because a terminal-work
+    /// notification never blocks an active execution assignment.
+    fn claim_terminal_work_notifications_for(
+        &self,
+        member_id: &str,
+    ) -> CliResult<Vec<TeamMessage>> {
+        self.require_supervisor_lease()?;
+
+        let works = self
+            .store
+            .latest_works()?
+            .into_iter()
+            .filter(|w| w.team_run_id == self.run_id)
+            .map(|w| (w.id.clone(), w))
+            .collect::<HashMap<_, _>>();
+
+        let deliveries: Vec<_> = self
+            .store
+            .latest_work_deliveries()?
+            .into_iter()
+            .filter(|d| {
+                d.team_run_id == self.run_id
+                    && d.recipient_member_run_id == member_id
+                    && d.status == WorkDeliveryStatus::Queued
+            })
+            .filter(|d| {
+                works.get(&d.work_id).is_some_and(|w| {
+                    w.is_terminal()
+                        && w.version == d.work_version
+                        && w.active_member_run_id.as_deref() == Some(member_id)
+                })
+            })
+            .collect();
+
+        let mut messages = Vec::new();
+        for delivery in deliveries {
+            let claim_id = generated_id("work-notification-claim");
+            let result = store_conflict_as_usage(self.store.claim_work_notification(
+                &self.run_id,
+                &delivery.id,
+                member_id,
+                &self.supervisor_id,
+                self.supervisor_generation,
+                &claim_id,
+                current_unix_ms_u64(),
+                &now_string(),
+            ))?;
+
+            let claimed = match result {
+                WorkDeliveryClaimResult::Claimed(d) => *d,
+                _ => continue,
+            };
+
+            let work = works.get(&claimed.work_id).unwrap();
+            let status_label = serde_snake_label(&work.status);
+            let body = format!(
+                "NOTIFICATION: Work \"{}\" has been {}. This Work is now terminal; no further action is required.",
+                work.title, status_label
+            );
+
+            let sender = compatibility_team_actor("host", "host_cli");
+            let message = prepare_team_message_as(
+                &self.store,
+                &self.run_id,
+                &sender,
+                vec![member_id.to_string()],
+                TeamMessageKind::Message,
+                &body,
+                Some(work.id.clone()),
+                None,
+                None,
+                None,
+                TeamMessageDeliveryMode::Routed,
+                Some(TeamMessageResponseIntent::Informational),
+            )?;
+            let message = publish_team_message(&self.store, &sender, message)?;
+            let receipt_id = message.id.clone();
+            messages.push(message);
+
+            store_conflict_as_usage(self.store.complete_work_delivery_claim(
+                &self.run_id,
+                &claimed.id,
+                member_id,
+                &self.supervisor_id,
+                self.supervisor_generation,
+                &claim_id,
+                &receipt_id,
+                current_unix_ms_u64(),
+                &now_string(),
+            ))?;
+        }
+        Ok(messages)
+    }
+
     /// Claim queued mail for an idle member only when at least one queued
     /// message requires a response round (ADR 0046 §4). When a round is
     /// triggered, every queued message — including informational mail — is
@@ -17224,15 +17482,33 @@ fn wait_for_idle_member_wake(
                         return Ok(IdleMemberWake::ActiveWorkContinuation(Box::new(work)));
                     }
                 }
-                // Then response-required messages.
-                let claimed = ledger.claim_round_triggering_messages_for(&member_row.id)?;
-                if !claimed.is_empty() {
+                // Then terminal-work notifications (informational messages
+                // for Done / Cancelled works the member still owns) and
+                // response-required messages. Deliver both in one batch so
+                // members that exit after single turns (e.g. test fakes with
+                // EXIT_AFTER_FIRST_TURN=1) do not lose queued follow-up
+                // messages to disconnect handling between separate deliveries.
+                let mut notifs = ledger.claim_terminal_work_notifications_for(&member_row.id)?;
+                let mut claimed = ledger.claim_round_triggering_messages_for(&member_row.id)?;
+                notifs.append(&mut claimed);
+                // Deduplicate by message id: claim_round_triggering_messages_for
+                // may re-claim messages that claim_terminal_work_notifications_for
+                // already published (informational work notifications). Keep the
+                // last entry — the claimed version — because
+                // mark_message_delivered requires a durable claim_id.
+                notifs.reverse();
+                {
+                    let mut seen = BTreeSet::new();
+                    notifs.retain(|msg| seen.insert(msg.id.clone()));
+                }
+                notifs.reverse();
+                if !notifs.is_empty() {
                     backoff.reset();
                     member_row.status = MemberRunStatus::Running;
                     member_row.finished_at = None;
                     member_row.last_event_at = Some(now_string());
                     ledger.save_member_run(member_row)?;
-                    return Ok(IdleMemberWake::Messages(claimed));
+                    return Ok(IdleMemberWake::Messages(notifs));
                 }
                 // DeliverPending predicted but nothing claimable — fall through to Sleep.
             }
@@ -26728,53 +27004,75 @@ fn mutate_team_work_value(
         None
     };
     let context = http_host_work_context(body)?;
-    let work = match operation {
-        "assign" => store.assign_work(
-            work_id,
-            expected_version,
-            &required_json_string(body, "member_run_id")?,
-            context,
-        )?,
-        "rebind" => store.rebind_work(
-            work_id,
-            expected_version,
-            rebind_member_run_id
+    let (work, event_op, event_summary) = match operation {
+        "assign" => {
+            let member_run_id = required_json_string(body, "member_run_id")?;
+            let work = store.assign_work(work_id, expected_version, &member_run_id, context)?;
+            (
+                work,
+                "assigned",
+                format!("Work assigned to {member_run_id}"),
+            )
+        }
+        "rebind" => {
+            let target = rebind_member_run_id
                 .as_deref()
-                .expect("rebind target validated before mutation"),
-            context,
-        )?,
-        "block" => store.block_work_as_host(
-            work_id,
-            expected_version,
-            &required_json_string(body, "reason")?,
-            context,
-        )?,
-        "resume" => store.resume_work_as_host(
-            work_id,
-            expected_version,
-            &required_json_string(body, "resolution")?,
-            context,
-        )?,
-        "release" => store.release_work_as_host(work_id, expected_version, context)?,
-        "request-changes" => store.request_work_changes(
-            work_id,
-            expected_version,
-            &required_json_string(body, "reason")?,
-            context,
-        )?,
-        "accept" => store.accept_work(work_id, expected_version, context)?,
-        "cancel" => store.cancel_work(
-            work_id,
-            expected_version,
-            &required_json_string(body, "reason")?,
-            context,
-        )?,
+                .expect("rebind target validated before mutation");
+            let work = store.rebind_work(work_id, expected_version, target, context)?;
+            (work, "rebound", format!("Work rebound to {target}"))
+        }
+        "block" => {
+            let reason = required_json_string(body, "reason")?;
+            let work = store.block_work_as_host(work_id, expected_version, &reason, context)?;
+            (work, "blocked", format!("Work blocked by host: {reason}"))
+        }
+        "resume" => {
+            let resolution = required_json_string(body, "resolution")?;
+            let work =
+                store.resume_work_as_host(work_id, expected_version, &resolution, context)?;
+            (
+                work,
+                "resumed",
+                format!("Work resumed by host: {resolution}"),
+            )
+        }
+        "release" => {
+            let work = store.release_work_as_host(work_id, expected_version, context)?;
+            (work, "released", "Work released by host".to_string())
+        }
+        "request-changes" => {
+            let reason = required_json_string(body, "reason")?;
+            let work = store.request_work_changes(work_id, expected_version, &reason, context)?;
+            (
+                work,
+                "changes_requested",
+                format!("Changes requested: {reason}"),
+            )
+        }
+        "accept" => {
+            let work = store.accept_work(work_id, expected_version, context)?;
+            let title = work.title.clone();
+            (work, "accepted", format!("Work accepted: {title}"))
+        }
+        "cancel" => {
+            let reason = required_json_string(body, "reason")?;
+            let work = store.cancel_work(work_id, expected_version, &reason, context)?;
+            (work, "cancelled", format!("Work cancelled: {reason}"))
+        }
         other => {
             return Err(CliError::Usage(format!(
                 "unsupported operator Work operation: {other}"
             )))
         }
     };
+    append_work_event(
+        store,
+        &work,
+        TeamRunEventSourceKind::Host,
+        None,
+        event_op,
+        &event_summary,
+    )?;
     Ok(serde_json::to_value(work)?)
 }
 

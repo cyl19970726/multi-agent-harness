@@ -3845,6 +3845,7 @@ pub enum HostAttentionKind {
     WorkAccepted,
     WorkChangesRequested,
     WorkCancelled,
+    WorkPrerequisiteCompleted,
     WorkDeliveryFailed,
     MemberStoppedWithOwnedReadyWork,
     MemberFailedWithOwnedReadyWork,
