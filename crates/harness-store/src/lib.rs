@@ -3015,7 +3015,12 @@ impl HarnessStore {
             return Ok(Vec::new());
         };
         let member = self.require_member_run_unlocked(member_run_id, &work.team_run_id)?;
-        self.ensure_member_can_receive_work_unlocked(&member)?;
+        if self
+            .ensure_member_can_receive_work_unlocked(&member)
+            .is_err()
+        {
+            return Ok(Vec::new());
+        }
         Ok(vec![WorkDelivery {
             id: format!("work-delivery-{event_id}-{member_run_id}"),
             work_event_id: event_id.to_string(),

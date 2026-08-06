@@ -17479,8 +17479,25 @@ fn wait_for_idle_member_wake(
                     }
                 }
                 // Then terminal-work notifications (informational messages
-                // for Done / Cancelled works the member still owns).
-                let notifs = ledger.claim_terminal_work_notifications_for(&member_row.id)?;
+                // for Done / Cancelled works the member still owns) and
+                // response-required messages. Deliver both in one batch so
+                // members that exit after single turns (e.g. test fakes with
+                // EXIT_AFTER_FIRST_TURN=1) do not lose queued follow-up
+                // messages to disconnect handling between separate deliveries.
+                let mut notifs = ledger.claim_terminal_work_notifications_for(&member_row.id)?;
+                let mut claimed = ledger.claim_round_triggering_messages_for(&member_row.id)?;
+                notifs.append(&mut claimed);
+                // Deduplicate by message id: claim_round_triggering_messages_for
+                // may re-claim messages that claim_terminal_work_notifications_for
+                // already published (informational work notifications). Keep the
+                // last entry — the claimed version — because
+                // mark_message_delivered requires a durable claim_id.
+                notifs.reverse();
+                {
+                    let mut seen = BTreeSet::new();
+                    notifs.retain(|msg| seen.insert(msg.id.clone()));
+                }
+                notifs.reverse();
                 if !notifs.is_empty() {
                     backoff.reset();
                     member_row.status = MemberRunStatus::Running;
@@ -17488,16 +17505,6 @@ fn wait_for_idle_member_wake(
                     member_row.last_event_at = Some(now_string());
                     ledger.save_member_run(member_row)?;
                     return Ok(IdleMemberWake::Messages(notifs));
-                }
-                // Then response-required messages.
-                let claimed = ledger.claim_round_triggering_messages_for(&member_row.id)?;
-                if !claimed.is_empty() {
-                    backoff.reset();
-                    member_row.status = MemberRunStatus::Running;
-                    member_row.finished_at = None;
-                    member_row.last_event_at = Some(now_string());
-                    ledger.save_member_run(member_row)?;
-                    return Ok(IdleMemberWake::Messages(claimed));
                 }
                 // DeliverPending predicted but nothing claimable — fall through to Sleep.
             }
