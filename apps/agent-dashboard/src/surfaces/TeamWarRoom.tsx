@@ -8,6 +8,7 @@ import {
   Inbox,
   ListFilter,
   MessageSquare,
+  OctagonAlert,
   Play,
   Plus,
   Search,
@@ -63,8 +64,9 @@ import {
 } from "../model/teamSelectors";
 import { buildAgentTeamOrgModel, orgTeamPath } from "../model/orgSelectors";
 import type { WorkbenchModel } from "../model/readModel";
-import { acknowledgeTeamMessage, addTeamMember, resolvePendingInteraction, sendTeamMessage, startTeamRun, transitionTeamRun, type ActionDescriptor } from "../api/actions";
-import type { MemberRun, TeamMessage, TeamMessageResponseIntent, Wave, Work } from "../types";
+import { acknowledgeHostAttention, acknowledgeTeamMessage, addTeamMember, resolvePendingInteraction, sendTeamMessage, startTeamRun, transitionTeamRun, type ActionDescriptor } from "../api/actions";
+import { fetchHostAttentions } from "../api";
+import type { HostAttention, MemberRun, TeamMessage, TeamMessageResponseIntent, Wave, Work } from "../types";
 import type { SelectionState } from "../app/selection";
 
 export interface TeamWarRoomProps {
@@ -78,6 +80,10 @@ export interface TeamWarRoomProps {
   onSelectionChange: (selection: Partial<SelectionState>) => void;
   actionsEnabled?: boolean;
   onAction?: (path: string, body?: unknown) => void | Promise<boolean>;
+  /** Live Harness API used for on-demand HostAttention reads. */
+  apiUrl?: string;
+  projectBindingId?: string | null;
+  executionSpaceId?: string | null;
 }
 
 type ComposerTarget = "team" | string;
@@ -104,8 +110,39 @@ export function TeamWarRoom({
   onSelectionChange,
   actionsEnabled = false,
   onAction,
+  apiUrl,
+  projectBindingId,
+  executionSpaceId,
 }: TeamWarRoomProps) {
   const context = selectTeamRunContext(model.snapshot, teamRunId);
+  const [hostAttentions, setHostAttentions] = useState<HostAttention[]>([]);
+  const [attentionRefresh, setAttentionRefresh] = useState(0);
+
+  // HostAttention rows are store-derived (reconciled on read), so there is no
+  // typed SSE frame for them; the console polls lightly while a run is open
+  // and refetches immediately after an ack.
+  useEffect(() => {
+    if (!apiUrl || !teamRunId) {
+      setHostAttentions([]);
+      return;
+    }
+    let cancelled = false;
+    const load = () => {
+      fetchHostAttentions(apiUrl, teamRunId, projectBindingId ?? null, executionSpaceId ?? null)
+        .then((rows) => {
+          if (!cancelled) setHostAttentions(rows);
+        })
+        .catch(() => {
+          if (!cancelled) setHostAttentions([]);
+        });
+    };
+    load();
+    const timer = window.setInterval(load, 10_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [apiUrl, teamRunId, projectBindingId, executionSpaceId, attentionRefresh]);
   const [filter, setFilter] = useState<StreamFilter>("all");
   const [participantFilter, setParticipantFilter] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -527,6 +564,45 @@ export function TeamWarRoom({
     >
       <div className="mx-auto flex w-full max-w-[1180px] flex-col px-4 py-2 sm:px-5">
         <TeamCapacityStrip tiles={capacityTiles} />
+
+        {hostAttentions.some((attention) => attention.status !== "acknowledged") && (
+          <section aria-label="Host attention" className="mt-2 overflow-hidden rounded-lg border border-status-warn/35 bg-status-warn/[0.05]">
+            <header className="flex items-center justify-between gap-2 border-b border-status-warn/25 px-3 py-1.5">
+              <span className="flex items-center gap-1.5 text-[11px] font-semibold text-status-warn">
+                <OctagonAlert className="size-3.5" /> Host attention
+              </span>
+              <span className="text-[10px] text-muted-foreground">Transport intake only — acknowledging never mutates Work</span>
+            </header>
+            <ul className="divide-y divide-status-warn/15">
+              {hostAttentions.filter((attention) => attention.status !== "acknowledged").map((attention) => {
+                const work = works.find((candidate) => candidate.id === attention.work_id);
+                const member = attention.member_run_id ? memberById.get(attention.member_run_id) : undefined;
+                return (
+                  <li key={attention.id} className="flex min-w-0 items-center gap-2 px-3 py-1.5">
+                    <Badge tone="warn">{attention.kind.replace(/_/g, " ")}</Badge>
+                    <span className="min-w-0 flex-1 truncate text-[11px] text-foreground">
+                      {work?.title ?? attention.work_id}
+                      {member ? ` · ${member.name ?? member.id}` : ""}
+                      {(attention.attempt ?? 0) > 1 ? ` · attempt ${attention.attempt}` : ""}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={!actionsEnabled}
+                      title={actionsEnabled ? "Acknowledge as the Host console" : "Connect a live source to enable actions"}
+                      onClick={() => {
+                        dispatch(onAction, acknowledgeHostAttention(attention.id));
+                        setAttentionRefresh((current) => current + 1);
+                      }}
+                      className="shrink-0 rounded-md border border-status-warn/40 bg-background px-2 py-0.5 text-[10px] font-semibold text-status-warn transition-colors enabled:hover:bg-status-warn/10 disabled:cursor-default disabled:opacity-60"
+                    >
+                      Ack
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        )}
 
         {/* The pressure row is the affordance that opens Activity, so it is
             redundant once Activity is the visible panel — and at 320px it cost

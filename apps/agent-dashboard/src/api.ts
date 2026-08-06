@@ -5,6 +5,7 @@ import type {
   DocRegistryEntry,
   ExecutionSpace,
   HarnessMeta,
+  HostAttention,
   LiveMemberActivity,
   MemberAction,
   MemberRun,
@@ -155,6 +156,21 @@ export async function fetchNativeMemberActivity(
   const response = await fetch(`${normalized}${withQuery(`/v1/member-runs/${encodeURIComponent(memberRunId)}/native-activity`, { space, project })}`);
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return (await response.json()) as NativeActivityProjection;
+}
+
+/** Reconciled latest HostAttention rows for one TeamRun. */
+export async function fetchHostAttentions(
+  baseUrl: string,
+  teamRunId: string,
+  project?: string | null,
+  space?: string | null,
+): Promise<HostAttention[]> {
+  const normalized = normalizeBaseUrl(baseUrl);
+  if (!normalized) throw new Error("Harness API URL is required");
+  const response = await fetch(`${normalized}${withQuery("/v1/host-attentions", { space, project, team_run_id: teamRunId })}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const payload = (await response.json()) as { attentions?: HostAttention[] };
+  return payload.attentions ?? [];
 }
 
 export async function fetchNativeWorkflowStepActivity(

@@ -193,6 +193,9 @@ async function mockRoutes(page) {
     if (url.pathname === "/v1/companies") return route.fulfill({ status: 200, contentType: "application/json", body: '{"companies":[],"current":""}' });
     if (url.pathname === "/v1/workflows") return route.fulfill({ status: 200, contentType: "application/json", body: '{"workflows":[]}' });
     if (url.pathname === "/v1/events") return route.fulfill({ status: 200, contentType: "text/event-stream", body: "" });
+    // The War Room polls HostAttention rows per open run; stub the read so the
+    // console stays free of network errors (nothing here asserts attentions).
+    if (url.pathname === "/v1/host-attentions") return route.fulfill({ status: 200, contentType: "application/json", body: '{"attentions":[]}' });
     // The persistent provenance footer (issue #307) polls this on its own;
     // stub it like every other endpoint so this check stays free of
     // console-logged network errors — this script does not assert anything

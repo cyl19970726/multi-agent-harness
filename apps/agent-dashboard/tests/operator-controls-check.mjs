@@ -179,6 +179,24 @@ async function main() {
     "native activity polling is gated on the member actually running",
   );
   check(
+    missionSource.includes("updateMissionContext(")
+      && missionSource.includes("Edit context")
+      && missionSource.includes("linkMissionTeam(")
+      && missionSource.includes("unlinkMissionTeam("),
+    "Mission canvas exposes durable context editing and team link/unlink controls",
+  );
+  check(
+    teamSource.includes("fetchHostAttentions(")
+      && teamSource.includes("acknowledgeHostAttention(")
+      && teamSource.includes("Host attention"),
+    "War Room surfaces HostAttention rows with a console Ack control",
+  );
+  check(
+    memberSource.includes("resumeTeamMember(")
+      && memberSource.includes("Resume session"),
+    "closed resumable members use the standalone resume route behind a capability label",
+  );
+  check(
     teamSource.includes('delivery.member_id === "host" && delivery.status === "delivered"')
       && teamSource.includes("acknowledgeTeamMessage(run.id, message.id, \"host\")"),
     "Dashboard offers ACK only for delivered Host recipient rows",

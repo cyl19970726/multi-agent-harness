@@ -18,7 +18,8 @@ use harness_core::{
     AgentMemberStatus, AgentMessageRoute, AgentProviderConfig, AgentRuntime, AgentRuntimeHealth,
     AgentRuntimeStatus, AgentTeam, AgentTeamRun, AgentTeamStatus, DelegationRun,
     DurableAgentMember, DurableAgentMemberStatus, Evidence, ExecutionSpace, HostAttention,
-    HostControlMode, LaunchMcp, LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus,
+    HostAttentionStatus, HostControlMode, LaunchMcp, LaunchPermission, LaunchSpec, MemberAction,
+    MemberActionStatus,
     MemberCoordinationStatus, MemberExecutionDriver, MemberRun, MemberRunStatus,
     MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus, MessageKind,
     MessageTerminalSource, Mission, MissionLogEntry, MissionLogEntryKind, MissionStatus,
@@ -40,8 +41,8 @@ use harness_core::{
     WorkflowTerminalReason, EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
-    HarnessStore, MessageDeliveryClaimResult, StoreError, TeamMessageDeliveryClaimResult,
-    WorkDeliveryClaimResult,
+    HarnessStore, HostAttentionClaimResult, MessageDeliveryClaimResult, StoreError,
+    TeamMessageDeliveryClaimResult, WorkDeliveryClaimResult,
 };
 use thiserror::Error;
 
@@ -24281,6 +24282,19 @@ fn handle_http_connection(
             write_http_json(&mut stream, response.status, &response.body)?;
             return Ok(());
         }
+        if path_only == "/v1/host-attentions" {
+            let team_run_id = query_param(&path, "team_run_id").unwrap_or_default();
+            match host_attentions_value(store, &team_run_id) {
+                Ok(value) => write_http_json(&mut stream, "200 OK", &value)?,
+                Err(CliError::Usage(detail)) => write_http_json(
+                    &mut stream,
+                    "404 Not Found",
+                    &serde_json::json!({"error": "not_found", "detail": detail}),
+                )?,
+                Err(error) => return Err(error),
+            }
+            return Ok(());
+        }
         if path_only == "/v1/team-runs/host-inbox" {
             let surface = query_param(&path, "surface").unwrap_or_default();
             let thread_id = query_param(&path, "thread_id").unwrap_or_default();
@@ -24886,6 +24900,77 @@ fn handle_http_connection(
         }
     }
 
+    // POST /v1/team-runs/{id}/members/{member-id}/resume — capability-gated
+    // alias over the reopen machinery for resuming the recorded native
+    // session; refuses active members (message/steer is their continuation).
+    if let Some(rest) = path_only.strip_prefix("/v1/team-runs/") {
+        let parts = rest.split('/').collect::<Vec<_>>();
+        if let [team_run_id, "members", member_run_id, "resume"] = parts.as_slice() {
+            let result = (|| -> CliResult<(serde_json::Value, Option<PreparedTeamRunStart>)> {
+                let resumed =
+                    resume_team_member_value(store, team_run_id, member_run_id, &body_json)?;
+                let prepared = if reopened_member_requires_supervisor_start(
+                    store,
+                    team_run_id,
+                    member_run_id,
+                )? {
+                    Some(prepare_reopened_team_run_start(
+                        store,
+                        team_run_id,
+                        TEAM_RUN_START_DEFAULT_CONCURRENCY,
+                    )?)
+                } else {
+                    None
+                };
+                Ok((resumed, prepared))
+            })();
+            match result {
+                Ok((resumed, prepared)) => {
+                    if let Some(prepared) = prepared {
+                        let context = projects.context_for(
+                            project_param.as_deref(),
+                            Some(&project_id),
+                            store,
+                        );
+                        let execution_space = projects.space_context_for(&project_id);
+                        let activity_manager = sse_manager.clone();
+                        let activity_project = project_id.clone();
+                        let live_sink: LiveMemberActivitySink = Arc::new(move |activity| {
+                            broadcast_live_member_activity(
+                                &activity_manager,
+                                &activity_project,
+                                activity,
+                            );
+                        });
+                        std::thread::spawn(move || {
+                            if let Err(error) = drive_prepared_team_run(
+                                prepared,
+                                execution_space,
+                                Some(context),
+                                TEAM_RUN_START_DEFAULT_CONCURRENCY,
+                                Duration::from_secs(kimi_acp::DEFAULT_PROMPT_IDLE_TIMEOUT_SECS),
+                                Some(live_sink),
+                            ) {
+                                eprintln!("team member HTTP resume failed: {error}");
+                            }
+                        });
+                    }
+                    write_http_json(
+                        &mut stream,
+                        "202 Accepted",
+                        &serde_json::json!({"ok": true, "result": resumed}),
+                    )?;
+                }
+                Err(error) => write_http_json(
+                    &mut stream,
+                    "400 Bad Request",
+                    &serde_json::json!({"ok": false, "error": error.to_string()}),
+                )?,
+            }
+            return Ok(());
+        }
+    }
+
     // POST /v1/team-runs/{id}/start — reserve the planning attempt under the
     // store CAS, then run providers on a background thread. The immediate 202
     // lets the Console keep its SSE connection responsive while member turns
@@ -25159,6 +25244,12 @@ fn handle_http_action(
     {
         return append_mission_log_value(store, mission_id, body);
     }
+    if let Some(attention_id) = path
+        .strip_prefix("/v1/host-attentions/")
+        .and_then(|rest| rest.strip_suffix("/ack"))
+    {
+        return ack_host_attention_value(store, attention_id, body);
+    }
     // Wave write endpoints retired with the ADR 0051 Mission Log cutover
     // (same retirement as the `wave create|update|advance|gate` CLI
     // commands — see `retired_wave_write_error`). HTTP and MCP share the
@@ -25265,6 +25356,9 @@ fn handle_http_action(
         }
         if let [team_run_id, "members", member_run_id, "reopen"] = parts.as_slice() {
             return reopen_team_member_value(store, team_run_id, member_run_id, body);
+        }
+        if let [team_run_id, "members", member_run_id, "resume"] = parts.as_slice() {
+            return resume_team_member_value(store, team_run_id, member_run_id, body);
         }
         if let [team_run_id, "members", member_run_id, "rename"] = parts.as_slice() {
             return Ok(serde_json::to_value(rename_team_run_member(
@@ -25685,6 +25779,47 @@ fn close_team_member_value(
     }))
 }
 
+/// POST /v1/team-runs/{id}/members/{m}/resume — dedicated entry for resuming
+/// the recorded provider-native session. There is no state where resume is
+/// meaningful but reopen is not: an active member is continued with a message
+/// or steer (resume refuses it), and a terminal member is reopened through the
+/// same capability gates and supervisor-start machinery.
+pub(crate) fn resume_team_member_value(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member_run_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let run = latest_team_run(store, team_run_id)?;
+    if !run.member_run_ids.iter().any(|id| id == member_run_id) {
+        return Err(CliError::Usage(format!(
+            "member run {member_run_id} does not belong to team run {team_run_id}"
+        )));
+    }
+    let member = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .find(|member| member.id == member_run_id)
+        .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+    if member.coordination_is_active() {
+        return Err(CliError::Usage(format!(
+            "member run {member_run_id} is active; continue it with a message or steer instead of resume"
+        )));
+    }
+    let reopen_body = serde_json::json!({
+        "reopened_by": optional_json_string(body, "resumed_by")?
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "operator".to_string()),
+        "reason": optional_json_string(body, "reason")?
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "Host resumed member".to_string()),
+    });
+    let mut reopened = reopen_team_member_value(store, team_run_id, member_run_id, &reopen_body)?;
+    if let Some(object) = reopened.as_object_mut() {
+        object.insert("via".to_string(), serde_json::json!("resume"));
+    }
+    Ok(reopened)
+}
+
 pub(crate) fn reopen_team_member_value(
     store: &HarnessStore,
     team_run_id: &str,
@@ -26088,6 +26223,126 @@ fn append_mission_log_value(
         &required_json_string(body, "body")?,
         optional_json_string(body, "actor")?,
     )?)?)
+}
+
+/// GET /v1/host-attentions?team_run_id=<id> — reconciled latest HostAttention
+/// rows for one TeamRun. The console reads these to show what needs Host
+/// action; transport intake only, nothing here mutates Work.
+fn host_attentions_value(store: &HarnessStore, team_run_id: &str) -> CliResult<serde_json::Value> {
+    if team_run_id.trim().is_empty() {
+        return Err(CliError::Usage(
+            "team_run_id query parameter is required".to_string(),
+        ));
+    }
+    latest_team_run(store, team_run_id)?;
+    let attentions = store
+        .host_attentions()?
+        .into_iter()
+        .filter(|attention| attention.team_run_id == team_run_id)
+        .collect::<Vec<_>>();
+    Ok(serde_json::json!({ "attentions": attentions }))
+}
+
+/// POST /v1/host-attentions/{id}/ack — console acknowledgement of one
+/// HostAttention. The console is a Host surface, so the endpoint resolves the
+/// TeamRun's own host binding (binding unbound runs to the console first,
+/// mirroring `team-run bind-host`) and walks the lifecycle as needed:
+/// Actionable -> claim + complete + acknowledge; Claimed -> fail the stale
+/// claim, then claim/complete/acknowledge; Delivered -> acknowledge;
+/// Acknowledged -> idempotent. Never mutates Work.
+fn ack_host_attention_value(
+    store: &HarnessStore,
+    attention_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let _acknowledged_by = optional_json_string(body, "acknowledged_by")?
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "operator".to_string());
+
+    fn find_attention(store: &HarnessStore, attention_id: &str) -> CliResult<HostAttention> {
+        store
+            .host_attentions()?
+            .into_iter()
+            .find(|attention| attention.id == attention_id)
+            .ok_or_else(|| CliError::Usage(format!("host attention {attention_id} not found")))
+    }
+
+    let attention = find_attention(store, attention_id)?;
+    let mut run = latest_team_run(store, &attention.team_run_id)?;
+
+    // Claim/ack require an exact non-empty host binding. Console-created runs
+    // may have none; bind them to the console surface exactly like the
+    // `team-run bind-host` command does.
+    if run.host_thread_id.is_none() {
+        let mut next = run.clone();
+        next.host_thread_id = Some("console".to_string());
+        next.updated_at = now_string();
+        store_conflict_as_usage(store.compare_and_append_team_run(&run, &next))?;
+        append_team_run_event(
+            store,
+            &run.id,
+            next_team_run_seq(store, &run.id)?,
+            TeamRunEventSourceKind::Host,
+            None,
+            "host_binding",
+            &run.id,
+            "updated",
+            &format!("Host binding set to {}:console", next.host_surface),
+        )?;
+        run = next;
+    }
+    let surface = run.host_surface.clone();
+    let thread = run
+        .host_thread_id
+        .clone()
+        .expect("host binding established above");
+
+    let now = now_string();
+    match attention.status {
+        HostAttentionStatus::Acknowledged => {
+            return Ok(serde_json::json!({ "attention": attention, "idempotent": true }));
+        }
+        HostAttentionStatus::Delivered => {
+            let final_attention: HostAttention = store_conflict_as_usage(
+                store.acknowledge_host_attention(attention_id, &surface, &thread, &now),
+            )?;
+            return Ok(serde_json::json!({ "attention": final_attention, "idempotent": false }));
+        }
+        HostAttentionStatus::Claimed => {
+            if let Some(claim_id) = attention.claim_id.as_deref() {
+                let _: HostAttention = store_conflict_as_usage(store.fail_host_attention_claim(
+                    attention_id,
+                    claim_id,
+                    "console reclaim",
+                    &now,
+                ))?;
+            }
+        }
+        HostAttentionStatus::Actionable => {}
+    }
+
+    let claim_id = format!("console-{attention_id}");
+    let claimed: HostAttentionClaimResult = store_conflict_as_usage(store.claim_host_attention(
+        attention_id, &surface, &thread, &claim_id, &now,
+    ))?;
+    match claimed {
+        HostAttentionClaimResult::Claimed(_) => {}
+        HostAttentionClaimResult::NotActionable => {
+            return Err(CliError::Usage(format!(
+                "host attention {attention_id} is no longer actionable"
+            )));
+        }
+    }
+    let _: HostAttention = store_conflict_as_usage(store.complete_host_attention_claim(
+        attention_id,
+        &claim_id,
+        "console-ack",
+        &now,
+    ))?;
+    let final_attention: HostAttention = store_conflict_as_usage(
+        store.acknowledge_host_attention(attention_id, &surface, &thread, &now),
+    )?;
+    Ok(serde_json::json!({ "attention": final_attention, "idempotent": false }))
 }
 
 /// POST /v1/team-runs/{run}/messages/{message}/ack — acknowledge only a
