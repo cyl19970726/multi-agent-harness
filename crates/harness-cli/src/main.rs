@@ -40,8 +40,8 @@ use harness_core::{
     WorkflowTerminalReason, EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
-    HarnessStore, HostAttentionClaimResult, MessageDeliveryClaimResult, StoreError,
-    TeamMessageDeliveryClaimResult, WorkDeliveryClaimResult,
+    canonical_surface, HarnessStore, HostAttentionClaimResult, MessageDeliveryClaimResult,
+    StoreError, TeamMessageDeliveryClaimResult, WorkDeliveryClaimResult,
 };
 use thiserror::Error;
 
@@ -12936,7 +12936,8 @@ pub(crate) fn host_inbox_for_native_thread(
         .collect();
     let mut entries = Vec::new();
     for run in latest_team_runs_in_append_order(store)? {
-        if run.host_surface != host_surface || run.host_thread_id.as_deref() != Some(host_thread_id)
+        if canonical_surface(&run.host_surface) != canonical_surface(host_surface)
+            || run.host_thread_id.as_deref() != Some(host_thread_id)
         {
             continue;
         }
@@ -14587,9 +14588,12 @@ fn team_run_command(
                 }
                 (Some(_), Some(_)) | (None, None) => {}
             }
-            let host_surface = value(args, "--host-surface")
-                .or_else(|| env_host_surface.clone())
-                .unwrap_or_else(|| "cli".into());
+            let host_surface = canonical_surface(
+                &value(args, "--host-surface")
+                    .or_else(|| env_host_surface.clone())
+                    .unwrap_or_else(|| "cli".into()),
+            )
+            .to_string();
             let host_thread_id =
                 value(args, "--host-thread-id").or_else(|| env_host_thread_id.clone());
             let created = create_team_run(
@@ -14899,7 +14903,7 @@ fn team_run_command(
             }
             let current = latest_team_run(store, &id)?;
             let mut next = current.clone();
-            next.host_surface = surface;
+            next.host_surface = canonical_surface(&surface).to_string();
             next.host_thread_id = Some(thread_id);
             next.updated_at = now_string();
             store_conflict_as_usage(store.compare_and_append_team_run(&current, &next))?;
@@ -15233,7 +15237,7 @@ fn team_run_command(
                     }
                     (Some(surface), Some(thread_id)) => {
                         let mut next = run.clone();
-                        next.host_surface = surface.clone();
+                        next.host_surface = canonical_surface(surface).to_string();
                         next.host_thread_id = Some(thread_id.clone());
                         next.updated_at = now_string();
                         if store.compare_and_append_team_run(&run, &next).is_ok() {
@@ -42976,6 +42980,113 @@ package:com.tencent.mm
                 .is_empty()
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn host_inbox_normalizes_surface_kimi_to_kimi_cli() {
+        let (store, root) = temp_store("host-inbox-kimi-to-kimi-cli");
+        let created = create_two_member_team_run(&store);
+        let member = &created.member_runs[0];
+        let assignment = seed_host_conversation(&store, &created, 0);
+        let current = latest_team_run(&store, &created.team_run.id).expect("current run");
+        let mut bound = current.clone();
+        bound.host_surface = "kimi".into();
+        bound.host_thread_id = Some("thread-t1".into());
+        bound.updated_at = "unix-ms:host-bound".into();
+        store
+            .compare_and_append_team_run(&current, &bound)
+            .expect("bind native Host");
+
+        let mail = send_team_message(
+            &store,
+            &bound.id,
+            &member.id,
+            vec!["host".into()],
+            TeamMessageKind::Message,
+            "QUESTION: test surface normalization",
+            Some(assignment.correlation_id.clone()),
+            Some(assignment.id.clone()),
+            None,
+            None,
+        )
+        .expect("member asks Host");
+
+        // Query with "kimi-cli" — should find the "kimi"-bound run
+        let result = host_inbox_for_native_thread(&store, "kimi-cli", "thread-t1", false)
+            .expect("kimi-cli inbox");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["team_run_id"], bound.id);
+        assert_eq!(result[0]["messages"][0]["id"], mail.id);
+
+        // Also works with "kimi-code"
+        let result2 = host_inbox_for_native_thread(&store, "kimi-code", "thread-t1", false)
+            .expect("kimi-code inbox");
+        assert_eq!(result2.len(), 1);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn host_inbox_normalizes_surface_kimi_cli_to_kimi() {
+        let (store, root) = temp_store("host-inbox-kimi-cli-to-kimi");
+        let created = create_two_member_team_run(&store);
+        let member = &created.member_runs[0];
+        let assignment = seed_host_conversation(&store, &created, 0);
+        let current = latest_team_run(&store, &created.team_run.id).expect("current run");
+        let mut bound = current.clone();
+        bound.host_surface = "kimi-cli".into();
+        bound.host_thread_id = Some("thread-t2".into());
+        bound.updated_at = "unix-ms:host-bound".into();
+        store
+            .compare_and_append_team_run(&current, &bound)
+            .expect("bind native Host");
+
+        send_team_message(
+            &store,
+            &bound.id,
+            &member.id,
+            vec!["host".into()],
+            TeamMessageKind::Message,
+            "QUESTION: reverse normalization check",
+            Some(assignment.correlation_id.clone()),
+            Some(assignment.id.clone()),
+            None,
+            None,
+        )
+        .expect("member asks Host");
+
+        // Query with "kimi" — should find the "kimi-cli"-bound run
+        let result =
+            host_inbox_for_native_thread(&store, "kimi", "thread-t2", false).expect("kimi inbox");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["team_run_id"], bound.id);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn canonical_surface_equivalence() {
+        use harness_store::canonical_surface;
+
+        // kimi family
+        assert_eq!(canonical_surface("kimi"), "kimi");
+        assert_eq!(canonical_surface("kimi-cli"), "kimi");
+        assert_eq!(canonical_surface("kimi-code"), "kimi");
+
+        // codex family
+        assert_eq!(canonical_surface("codex"), "codex");
+        assert_eq!(canonical_surface("codex-app"), "codex");
+        assert_eq!(canonical_surface("codex-app-server"), "codex");
+
+        // claude family
+        assert_eq!(canonical_surface("claude"), "claude");
+        assert_eq!(canonical_surface("claude-code"), "claude");
+
+        // Unknown surfaces pass through
+        assert_eq!(canonical_surface("cli"), "cli");
+        assert_eq!(canonical_surface("http"), "http");
+        assert_eq!(canonical_surface(""), "");
+        assert_eq!(canonical_surface("custom-agent"), "custom-agent");
     }
 
     #[test]
