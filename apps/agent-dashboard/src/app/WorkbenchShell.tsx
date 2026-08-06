@@ -50,6 +50,7 @@ import { TeamWarRoom } from "../surfaces/TeamWarRoom";
 import { MemberRunFocus } from "../surfaces/MemberRuns";
 import { MissionsSurface } from "../surfaces/Missions";
 import { isCompanyOsSurface, resolveCompanyOsRouteData } from "../company-os/routeMeta";
+import { DocsV2Surface } from "../company-os/docs/DocsV2Surface";
 
 /** Company OS page tree is large; keep it out of the initial workbench chunk
  * and load it when a Company OS surface is actually opened. */
@@ -228,6 +229,7 @@ export function WorkbenchShell({
                 apiUrl={apiUrl}
                 projectBindingId={selectedProjectId}
                 executionSpaceId={selectedSpaceId}
+                companyId={selectedCompanyId}
                 isLoading={isLoading}
               />
             );
@@ -940,6 +942,7 @@ function SurfaceSwitch({
   apiUrl,
   projectBindingId,
   executionSpaceId,
+  companyId,
   isLoading,
 }: {
   model: WorkbenchModel;
@@ -951,6 +954,7 @@ function SurfaceSwitch({
   apiUrl: string;
   projectBindingId: string;
   executionSpaceId: string;
+  companyId: string;
   isLoading: boolean;
 }) {
   const shared = {
@@ -962,6 +966,21 @@ function SurfaceSwitch({
     projectBindingId,
     executionSpaceId,
   };
+  if (selection.surface === "docs-v2") {
+    // AI-first Docs v2 (ADR 0054): per-document store-live surface. It reads
+    // directly from the Docs write service endpoints; no snapshot projection
+    // and no fixture fallback participate in this route.
+    return (
+      <DocsV2Surface
+        apiUrl={apiUrl}
+        selection={selection}
+        company={companyId}
+        project={projectBindingId}
+        space={executionSpaceId}
+        onSelectionChange={onSelectionChange}
+      />
+    );
+  }
   if (isCompanyOsSurface(selection.surface)) {
     const livePending = isLoading || (actionsEnabled && !model.snapshot.company_os);
     return (

@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use harness_core::{
     ActionCommand, ActionCommandStatus, ActionEffect, ActionPolicyDefinition, ActorRef, ActorType,
     Approval, ApprovalStatus, Assignment, AuditEvent, AuditEventKind, Block, BusinessModule,
-    Commitment, CommitmentStatus, CustomPageDefinition, CustomPagePackage, Document, EntityKind,
+    Commitment, CommitmentStatus, CustomPageDefinition, CustomPagePackage, Document, DocumentKind, EntityKind,
     LifecycleStatus, MemberStatus, Milestone, OrgUnit, OrganizationMembership, Payment,
     PendingInteractionStatus, Relation, RiskTier, TypedRecord, ValidateCompanyOs, View, WorkItem,
     WorkItemStatus, WorkQuery,
@@ -156,6 +156,9 @@ pub fn handle_get(
     if path == "/v1/company-os/docs-health" {
         return Some(finish(docs_health_report(store).map_err(ApiError::from)));
     }
+    if let Some(response) = docs_v2_get(store, path) {
+        return Some(response);
+    }
     let suffix = path.strip_prefix("/v1/company-os/")?;
     let mut parts = suffix.split('/');
     let resource = parts.next().unwrap_or_default();
@@ -194,6 +197,9 @@ pub fn handle_post(
     }
     if path == "/v1/company-os/actions/dispatch" {
         return Some(finish(dispatch_action(store, body)));
+    }
+    if let Some(response) = docs_v2_post(store, path, body) {
+        return Some(response);
     }
     let resource = path.strip_prefix("/v1/company-os/")?;
     if resource.is_empty() || resource.contains('/') || resource == "snapshot" {
@@ -4059,4 +4065,297 @@ fn rfc3339_epoch_seconds(value: &str) -> Option<i64> {
 
 fn now_string() -> String {
     format!("unix-ms:{}", now_unix_millis())
+}
+
+// ---------------------------------------------------------------------------
+// AI-first Docs v2 endpoints (ADR 0054). Same contract as the CLI page
+// commands: scoped reads with fragment honesty, whole-page revisions,
+// expected-revision optimistic concurrency, and idempotent replay.
+// ---------------------------------------------------------------------------
+
+const DOCS_V2_PAGES: &str = "/v1/company-os/docs-v2/pages";
+
+fn docs_v2_error(error: crate::CliError) -> ApiError {
+    match error {
+        crate::CliError::Usage(message) => {
+            if message.starts_with("REVISION_CONFLICT") || message.starts_with("IDEMPOTENCY_CONFLICT")
+            {
+                ApiError::conflict(message)
+            } else if message.starts_with("document not found")
+                || message.starts_with("block not found")
+                || message.starts_with("anchor block not found")
+                || message.contains("not found for document")
+            {
+                ApiError::not_found(message)
+            } else {
+                ApiError::bad_request(message)
+            }
+        }
+        crate::CliError::Store(store_error) => ApiError::from(store_error),
+        other => ApiError::internal(other.to_string()),
+    }
+}
+
+fn docs_v2_actor(body: &Value) -> Result<ActorRef, ApiError> {
+    let actor = body
+        .get("actor")
+        .ok_or_else(|| ApiError::bad_request("actor is required"))?;
+    let (actor_type, actor_id) = match actor {
+        Value::String(raw) => {
+            let (kind, id) = raw
+                .split_once(':')
+                .ok_or_else(|| ApiError::bad_request("actor string must be <kind>:<id>"))?;
+            (kind.to_string(), id.to_string())
+        }
+        Value::Object(_) => {
+            let kind = actor
+                .get("actor_type")
+                .and_then(Value::as_str)
+                .unwrap_or("agent")
+                .to_string();
+            let id = actor
+                .get("actor_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            (kind, id)
+        }
+        _ => return Err(ApiError::bad_request("actor must be an object or <kind>:<id> string")),
+    };
+    if actor_id.trim().is_empty() {
+        return Err(ApiError::bad_request("actor id must be non-empty"));
+    }
+    let actor_type = match actor_type.as_str() {
+        "human" => ActorType::Human,
+        "agent" => ActorType::Agent,
+        "external" => ActorType::External,
+        "service" => ActorType::Service,
+        other => {
+            return Err(ApiError::bad_request(format!(
+                "actor_type must be human|agent|external|service, got {other}"
+            )))
+        }
+    };
+    Ok(ActorRef {
+        actor_type,
+        actor_id,
+    })
+}
+
+fn docs_v2_body_string<'a>(body: &'a Value, field: &str, required: bool) -> Result<Option<&'a str>, ApiError> {
+    match body.get(field).and_then(Value::as_str) {
+        Some(value) => Ok(Some(value)),
+        None if required => Err(ApiError::bad_request(format!("{field} is required"))),
+        None => Ok(None),
+    }
+}
+
+fn docs_v2_pages_index(store: &HarnessStore) -> Result<Value, ApiError> {
+    let documents = store.latest_documents().map_err(ApiError::from)?;
+    let mut items = Vec::new();
+    for document in documents.iter().filter(|d| matches!(d.kind, DocumentKind::Page)) {
+        let history = store
+            .document_revision_history(&document.id)
+            .map_err(ApiError::from)?;
+        let latest = history.iter().max_by_key(|r| r.revision_number);
+        items.push(json!({
+            "document_id": document.id,
+            "title": document.title,
+            "space_id": document.space_id,
+            "parent_document_id": document.parent_document_id,
+            "lifecycle_status": document.lifecycle_status,
+            "block_count": document.block_ids.len(),
+            "revision_number": latest.map(|r| r.revision_number).unwrap_or(0),
+            "content_digest": latest.map(|r| r.content_digest.clone()),
+            "updated_at": document.updated_at,
+        }));
+    }
+    Ok(json!({ "count": items.len(), "items": items }))
+}
+
+fn docs_v2_get(store: &HarnessStore, path: &str) -> Option<ApiResponse> {
+    if path == DOCS_V2_PAGES {
+        return Some(finish(docs_v2_pages_index(store)));
+    }
+    let rest = path.strip_prefix(&format!("{DOCS_V2_PAGES}/"))?;
+    let segments: Vec<&str> = rest.split('/').collect();
+    match segments.as_slice() {
+        [document_id] => {
+            let options = crate::docs_v2_page::PageReadOptions {
+                detail: "full".to_string(),
+                scope: "full".to_string(),
+                ..Default::default()
+            };
+            Some(finish(
+                crate::docs_v2_page::read_page_value(store, document_id, &options)
+                    .map_err(docs_v2_error)
+                    .and_then(|mut page| {
+                        let resolved = resolve_entity_embed_refs(store, &page)?;
+                        page["resolved_embeds"] = resolved;
+                        Ok(page)
+                    }),
+            ))
+        }
+        [document_id, "revisions"] => Some(finish(
+            store
+                .document_revision_history(document_id)
+                .map_err(ApiError::from)
+                .map(|history| {
+                    let items: Vec<Value> = history
+                        .iter()
+                        .map(|revision| {
+                            json!({
+                                "revision_id": revision.id,
+                                "revision_number": revision.revision_number,
+                                "parent_revision_id": revision.parent_revision_id,
+                                "content_digest": revision.content_digest,
+                                "change_summary": revision.change_summary,
+                                "authored_by": revision.authored_by,
+                                "action_command_id": revision.action_command_id,
+                                "created_at": revision.created_at,
+                            })
+                        })
+                        .collect();
+                    json!({ "count": items.len(), "items": items })
+                }),
+        )),
+        _ => None,
+    }
+}
+
+fn docs_v2_post(store: &HarnessStore, path: &str, body: &Value) -> Option<ApiResponse> {
+    if path == DOCS_V2_PAGES {
+        return Some(finish((|| {
+            let title = docs_v2_body_string(body, "title", true)?.unwrap_or("");
+            let markdown = docs_v2_body_string(body, "markdown", false)?.unwrap_or("");
+            let actor = docs_v2_actor(body)?;
+            let space = docs_v2_body_string(body, "space", false)?.unwrap_or("company");
+            let parent = docs_v2_body_string(body, "parent", false)?;
+            let summary = docs_v2_body_string(body, "summary", false)?.unwrap_or("page create");
+            let action_id = docs_v2_body_string(body, "action_command_id", false)?.map(str::to_string);
+            let slug: String = title
+                .to_lowercase()
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                .collect::<String>()
+                .trim_matches('-')
+                .to_string();
+            let document_id = docs_v2_body_string(body, "id", false)?
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("document-api-{slug}"));
+            crate::docs_v2_page::create_page_value(
+                store, &document_id, title, markdown, space, parent, actor, summary, action_id,
+            )
+            .map_err(docs_v2_error)
+        })()));
+    }
+    let rest = path.strip_prefix(&format!("{DOCS_V2_PAGES}/"))?;
+    let segments: Vec<&str> = rest.split('/').collect();
+    match segments.as_slice() {
+        [document_id, "write"] => Some(finish((|| {
+            let markdown = docs_v2_body_string(body, "markdown", true)?.unwrap_or("");
+            let expected_raw = body
+                .get("expected_revision")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| ApiError::bad_request("expected_revision is required"))?;
+            let actor = docs_v2_actor(body)?;
+            let title = docs_v2_body_string(body, "title", false)?;
+            let summary = docs_v2_body_string(body, "summary", false)?.unwrap_or("page write");
+            let action_id = docs_v2_body_string(body, "action_command_id", false)?.map(str::to_string);
+            crate::docs_v2_page::write_page_value(
+                store, document_id, markdown, expected_raw, title, actor, summary, action_id,
+            )
+            .map_err(docs_v2_error)
+        })())),
+        [document_id, "append"] => Some(finish((|| {
+            let markdown = docs_v2_body_string(body, "markdown", true)?.unwrap_or("");
+            let actor = docs_v2_actor(body)?;
+            let after = docs_v2_body_string(body, "after", false)?;
+            let expected = body.get("expected_revision").and_then(Value::as_u64);
+            let summary = docs_v2_body_string(body, "summary", false)?.unwrap_or("page append");
+            let action_id = docs_v2_body_string(body, "action_command_id", false)?.map(str::to_string);
+            crate::docs_v2_page::append_page_value(
+                store, document_id, markdown, after, expected, actor, summary, action_id,
+            )
+            .map_err(docs_v2_error)
+        })())),
+        _ => None,
+    }
+}
+
+
+/// F4: resolve entity_embed targets live from their owning ledgers so embed
+/// cards can show real titles instead of bare refs. Missing targets resolve
+/// to an explicit `found: false` entry rather than disappearing.
+fn resolve_entity_embed_refs(store: &HarnessStore, page: &Value) -> Result<Value, ApiError> {
+    let mut targets: Vec<(String, String)> = Vec::new();
+    if let Some(blocks) = page.get("blocks").and_then(Value::as_array) {
+        for block in blocks {
+            if block.get("kind").and_then(Value::as_str) != Some("entity_embed") {
+                continue;
+            }
+            let target = block.get("content").and_then(|c| c.get("target"));
+            let kind = target
+                .and_then(|t| t.get("kind"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let id = target
+                .and_then(|t| t.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            if !kind.is_empty() && !id.is_empty() {
+                targets.push((kind, id));
+            }
+        }
+    }
+    if targets.is_empty() {
+        return Ok(json!({}));
+    }
+    let typed_records = store.latest_typed_records().map_err(ApiError::from)?;
+    let views = store.latest_views().map_err(ApiError::from)?;
+    let work_items = store.latest_work_items().map_err(ApiError::from)?;
+    let mut resolved = serde_json::Map::new();
+    for (kind, id) in targets {
+        let entry = match kind.as_str() {
+            "typed_record" => typed_records
+                .iter()
+                .find(|record| record.id == id)
+                .map(|record| {
+                    json!({
+                        "kind": "typed_record",
+                        "found": true,
+                        "title": record.title,
+                        "record_type": record.record_type,
+                        "lifecycle_status": record.lifecycle_status,
+                    })
+                }),
+            "view" => views.iter().find(|view| view.id == id).map(|view| {
+                json!({
+                    "kind": "view",
+                    "found": true,
+                    "title": view.title,
+                    "mode": serde_json::to_value(view.mode).unwrap_or(json!(null)),
+                })
+            }),
+            "work_item" => work_items
+                .iter()
+                .find(|item| item.id == id)
+                .map(|item| {
+                    json!({
+                        "kind": "work_item",
+                        "found": true,
+                        "title": item.title,
+                        "status": serde_json::to_value(item.status).unwrap_or(json!(null)),
+                    })
+                }),
+            _ => None,
+        };
+        resolved.insert(
+            format!("{kind}:{id}"),
+            entry.unwrap_or_else(|| json!({ "kind": kind, "found": false })),
+        );
+    }
+    Ok(Value::Object(resolved))
 }

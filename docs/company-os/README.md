@@ -168,6 +168,11 @@ rules live in [Documentation Governance](../documentation-governance.md).
   itself.
 - [Docs operating surface matrix](docs-operating-surface-matrix.md): current
   Docs UI, CLI/skill, visual, Store-live evidence, and planned gaps.
+- [AI-first Docs spec](ai-first-docs-spec.md): proposed v2 target for the Docs
+  module (closed block set, Markdown-first serialization, whole-page
+  revisions, content-addressed blobs); design intent accepted by
+  [ADR 0054](../decisions/0054-ai-first-docs-page-model-and-storage.md), not
+  yet implementation authority.
 - [Browser Action transport](browser-action-transport.md) and
   [WorkItem lifecycle actions](work-item-lifecycle-actions.md): implemented
   technical slices.

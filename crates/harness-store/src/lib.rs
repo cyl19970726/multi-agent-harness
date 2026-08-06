@@ -24,6 +24,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
 
 mod company_os;
+pub mod docs_v2;
 pub use company_os::{
     ActionAuditReservation, ActionCommandClaimResult, CompanyActor, FinancialRecord,
 };

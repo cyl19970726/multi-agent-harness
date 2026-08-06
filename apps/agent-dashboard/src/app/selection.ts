@@ -12,6 +12,7 @@ export type SurfaceId =
   | "team"
   | "workflows"
   | "docs"
+  | "docs-v2"
   | "debug";
 
 /** Tabs on the agent detail page. "conversation" is the default. */
@@ -117,6 +118,7 @@ const surfaceIds: SurfaceId[] = [
   "missions",
   "workflows",
   "docs",
+  "docs-v2",
   "debug",
 ];
 

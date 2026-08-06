@@ -10,6 +10,7 @@ They intentionally do not import, project, or convert legacy Goal/Task records.
 | `work.schema.json` | Milestone, WorkType-bearing WorkItem, Assignment, Approval |
 | `finance.schema.json` | Commitment, Payment |
 | `programmable-page.schema.json` | CustomPageDefinition, CustomPagePackage, ActionPolicyDefinition, ActionCommand, AuditEvent |
+| `docs-v2.schema.json` | AI-first Docs slice (ADR 0054): closed block kind set, DocumentRevision, DocumentChangeOperation, CommentThread, BlobMeta |
 
 Cross-record authorization and referential checks belong at the governed store
 and Action Command boundary. The Rust models enforce local invariants before a

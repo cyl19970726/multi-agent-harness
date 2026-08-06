@@ -21,6 +21,7 @@ declare global {
 const COMPANY_OS_SURFACES = new Set<SurfaceId>([
   "home",
   "docs",
+  "docs-v2",
   "organization",
   "work",
   "approvals",
