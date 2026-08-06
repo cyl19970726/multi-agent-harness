@@ -326,39 +326,45 @@ harness team-run wait --id <team-run-id> \
 
 ### Supervisor Recovery Ladder (L0 → L4)
 
+The supervisor is a detached daemon process (PR #365). `team-run start` spawns or adopts the daemon and exits; the daemon owns delivery, heartbeat, and control.
+
 When `team-run status` or `team-run recover` shows no live supervisor:
 
 **L0 — Diagnose** (always start here):
 ```bash
 harness team-run status --id <team-run-id>
 # Look for: supervisor current=false, pid_alive=false, heartbeat_age_s
-# Use --json for machine-readable diagnosis
 harness team-run status --id <team-run-id> --json | jq '.supervisor'
+# Daemon-specific diagnosis (after #346):
+harness daemon supervisor status --team-run-id <team-run-id>
+# States: Running(pid,gen) | Crashed(pid,gen) | Expired(pid,gen) | Absent
 ```
 
-**L1 — Restart writer** (covers transient crash, lease expiry):
+**L1 — Restart daemon** (covers transient crash, lease expiry, dead daemon):
 ```bash
 harness team-run start --id <team-run-id>
 ```
+This spawns a new daemon or adopts an existing one. `team-run start` exits cleanly after spawning; the daemon continues in background.
 
-**L2 — Kill wedged PID only** (when PID exists but not writing):
+**L2 — Stop and restart wedged daemon** (PID alive but daemon not writing):
 ```bash
-# Identify the stuck PID from status output
-kill <pid>
-# Then restart
+harness daemon supervisor stop --team-run-id <team-run-id>
 harness team-run start --id <team-run-id>
 ```
+Only kill the PID directly when `daemon supervisor stop` fails.
 
-**L3 — Per-member close/reopen** (when restart alone fails):
+**L3 — Per-member close/reopen** (single bad member, daemon healthy):
 ```bash
-harness team-run close-member --team-run-id <team-run-id> --member-run-id <member-run-id>
-harness team-run reopen-member --team-run-id <team-run-id> --member-run-id <member-run-id>
+harness team-run close-member --id <team-run-id> --member-run-id <id> --reason "..."
+harness team-run reopen-member --id <team-run-id> --member-run-id <id>
 harness team-run start --id <team-run-id>
 ```
+The daemon picks up the reopened member automatically.
 
-**L4 — Nuclear recreate** (last resort, preserves Work ids via recover):
+**L4 — Nuclear recreate** (last resort, store state suspect):
 ```bash
-# Stop all provider processes. Then:
+harness team-run cancel --id <team-run-id>
+# Rebuild from stored Work ids:
 harness team-run recover --id <team-run-id>
 harness team-run start --id <team-run-id>
 ```
