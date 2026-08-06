@@ -428,6 +428,52 @@ export function App() {
     setDomainFreshness(uniformFreshness("reconnecting"));
   }, []);
 
+  // When the URL carries a team definition id (team-xxx, not team-run-xxx),
+  // resolve it to the latest team-run id before any snapshot fetch so the
+  // Team surface and WorkbenchShell both agree on a real team-run.
+  useEffect(() => {
+    if (source !== liveSource) return;
+    if (selection.surface !== "team" || !selection.teamId) return;
+    if (!selection.teamId.startsWith("team-") || selection.teamId.startsWith("team-run-")) return;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const fullSnapshot = await fetchSnapshot(
+          apiUrl,
+          selectedProjectId,
+          selectedCompanyId,
+          selectedSpaceId,
+        );
+        if (cancelled) return;
+        const matchingRun = (fullSnapshot.team_runs ?? [])
+          .filter((run) => run.agent_team_id === selection.teamId)
+          .sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""))[0];
+        if (matchingRun && !cancelled) {
+          setSelection((prev) =>
+            prev.teamId === selection.teamId
+              ? { ...prev, teamId: matchingRun.id }
+              : prev,
+          );
+        }
+      } catch {
+        // Resolution failed; leave teamId as-is so fetchTeamRunSnapshot 404s
+        // honestly rather than silently hiding the error.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    selection.teamId,
+    selection.surface,
+    source,
+    apiUrl,
+    selectedCompanyId,
+    selectedProjectId,
+    selectedSpaceId,
+  ]);
+
   // TeamRun focus may use a deliberately bounded snapshot, but that response
   // must never become the backing model for Work/Docs/Org after navigation.
   // Crossing either direction performs one authoritative read for the newly
