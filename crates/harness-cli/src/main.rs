@@ -8959,6 +8959,7 @@ fn team_member_provider_profile_for_mode(
                 "0.31.0".to_string(),
                 "0.31.1".to_string(),
                 "0.32.0".to_string(),
+                "0.33.0".to_string(),
             ],
             compatibility_status: ProviderCompatibilityStatus::Unknown,
             adapter_reviewed_at: Some("2026-08-04".to_string()),
