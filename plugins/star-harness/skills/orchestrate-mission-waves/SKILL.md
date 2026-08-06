@@ -15,15 +15,24 @@ uncertain, run `harness cheatsheet` first — never rediscover flags via repeate
 ## Keep One Small Mental Model
 
 ```text
-Mission        = durable intent, shared context, outcome, and closeout
-Mission Log    = versioned Host judgment: appended entries (judgment/replan/recovery/closeout)
-AgentTeam      = independent reusable collaboration identity
-AgentTeamRun   = one live or historical execution of that Team
+Store          = append-only JSONL, sole source of truth
+Event          = every state change, monotonically sequenced (seq)
+Daemon         = detached process, owns delivery loop + heartbeat
 Work           = durable responsibility, owner, status, result, acceptance
-Works          = shared TeamRun board derived from Work records
 TeamMessage    = authored conversation, optionally linked to one Work
-WorkDelivery   = reliable delivery of one Work version to a Member runtime
-Native Session = transcript, tools, commands, turns, internal subagents
+Member         = autonomous worker, one turn = one round, idles after each
+Host (Lead)    = decision-maker: review, accept, assign, close, re-plan
+```
+
+**Work states**: `open → assigned → in_progress → review → done` (Host accepts) or `→ cancelled`
+**Message states**: `queued → claimed → delivered` (daemon handles)
+**Member states**: `queued → running → idle` (normal breathing) or `→ stopped` (Host closes)
+**Host receives**: hook auto-injects host-inbox at turn start — no polling needed
+**Member receives**: daemon injects messages + work into CONTRACT prompt each round
+
+The full reference is at `docs/product/agent-team-mental-model.md` in the repository.
+Plugin users: this summary is sufficient; the canonical doc provides deeper context for
+contributors and those with repository access.
 ```
 
 These hard invariants apply to every Host and Member. The full shared text lives in [`skills/shared-references/SKILL.md`](../shared-references/SKILL.md); when a rule appears in both skills, the shared copy is authoritative. The rules below are the Host-Lead-specific application.
