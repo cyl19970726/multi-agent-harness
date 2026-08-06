@@ -143,6 +143,18 @@ install -m 0644 \
   "${MARKETPLACE_SNAPSHOT}/.claude-plugin/marketplace.json"
 cp -R "${REPO_ROOT}/plugins/star-harness" "${MARKETPLACE_SNAPSHOT}/plugins/"
 
+# Download canonical mental model doc from repo main branch and place it
+# in the plugin's shared-references so all users get it without cloning.
+echo "Downloading agent-team-mental-model.md from main branch..."
+MENTAL_MODEL_URL="https://raw.githubusercontent.com/cyl19970726/multi-agent-harness/master/docs/product/agent-team-mental-model.md"
+MENTAL_MODEL_DST="${REPO_ROOT}/plugins/star-harness/skills/shared-references/agent-team-mental-model.md"
+mkdir -p "$(dirname "${MENTAL_MODEL_DST}")"
+if curl -fsSL "${MENTAL_MODEL_URL}" -o "${MENTAL_MODEL_DST}" 2>/dev/null; then
+  echo "  downloaded to ${MENTAL_MODEL_DST}"
+else
+  echo "  WARNING: could not download mental model doc from GitHub; local copy may be stale" >&2
+fi
+
 case "${CLAUDE_RUNNER_INSTALL}" in
   "${VERSION_DIR}/"*) ;;
   *)

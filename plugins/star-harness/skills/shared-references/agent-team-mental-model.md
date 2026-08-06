@@ -13,27 +13,6 @@ understand this model.
 
 ---
 
-<!-- BEGIN-SKILL-SUMMARY -->
-## Keep One Small Mental Model
-
-```text
-Store          = append-only JSONL, sole source of truth
-Event          = every state change, monotonically sequenced (seq)
-Daemon         = detached process, owns delivery loop + heartbeat
-Work           = durable responsibility, owner, status, result, acceptance
-TeamMessage    = authored conversation, optionally linked to one Work
-Member         = autonomous worker, one turn = one round, idles after each
-Host (Lead)    = decision-maker: review, accept, assign, close, re-plan
-```
-
-**Work states**: `open → assigned → in_progress → review → done` (Host accepts) or `→ cancelled`
-**Message states**: `queued → claimed → delivered` (daemon handles)
-**Member states**: `queued → running → idle` (normal breathing) or `→ stopped` (Host closes)
-**Host receives**: hook auto-injects host-inbox at turn start — no polling needed
-**Member receives**: daemon injects messages + work into CONTRACT prompt each round
-**External member receives**: hook reads inbox → injects into session context
-<!-- END-SKILL-SUMMARY -->
-
 ## 1. One Sentence
 
 > **Store is truth. Event is history. Daemon executes. Member works. Lead decides.

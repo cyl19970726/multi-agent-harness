@@ -30,9 +30,9 @@ Host (Lead)    = decision-maker: review, accept, assign, close, re-plan
 **Host receives**: hook auto-injects host-inbox at turn start — no polling needed
 **Member receives**: daemon injects messages + work into CONTRACT prompt each round
 
-The full reference is at `docs/product/agent-team-mental-model.md` in the repository.
-Plugin users: this summary is sufficient; the canonical doc provides deeper context for
-contributors and those with repository access.
+The full canonical reference is at
+[`../shared-references/agent-team-mental-model.md`](../shared-references/agent-team-mental-model.md)
+(synced from the repository main branch during plugin install).
 ```
 
 These hard invariants apply to every Host and Member. The full shared text lives in [`skills/shared-references/SKILL.md`](../shared-references/SKILL.md); when a rule appears in both skills, the shared copy is authoritative. The rules below are the Host-Lead-specific application.
