@@ -16,7 +16,7 @@ use crate::{
     docs_actor_kind, generated_id, now_string, print_json, required, value, CliError, CliResult,
 };
 
-const PAGE_USAGE: &str = "usage: harness company docs page create --title <title> --actor <actor-id> [--markdown <text>] [--markdown-file <path>] [--id <doc-id>] [--space <id>] [--parent <doc-id>] [--format json|text] | page read --doc <id> [--scope outline|section|range|keyword] [--detail simple|with-ids|full] [--keyword <a|b>] [--start-block-id <id>] [--end-block-id <id>] [--revision <n|-1>] [--format json|markdown] | page write --doc <id> --expected-revision <n> (--markdown <text> | --markdown-file <path>) [--title <title>] [--summary <s>] [--format json|text] | page append --doc <id> (--markdown <text> | --markdown-file <path>) [--after <block-id|-1|end|heading:text>] [--expected-revision <n>] [--summary <s>] [--format json|text] | page search --keyword <a|b> [--limit <n>]";
+const PAGE_USAGE: &str = "usage: harness company docs page create --title <title> --actor <actor-id> [--markdown <text>] [--markdown-file <path>] [--id <doc-id>] [--space <id>] [--parent <doc-id>] [--format json|text] | page read --doc <id> [--scope outline|section|range|keyword] [--detail simple|with-ids|full] [--keyword <a|b>] [--start-block-id <id>] [--end-block-id <id>] [--revision <n|-1>] [--format json|markdown] | page write --doc <id> --expected-revision <n> (--markdown <text> | --markdown-file <path>) [--title <title>] [--summary <s>] [--format json|text] | page append --doc <id> (--markdown <text> | --markdown-file <path>) [--after <block-id|-1|end|heading:text>] [--expected-revision <n>] [--summary <s>] [--format json|text] | page search --keyword <a|b> [--limit <n>] | page rename --doc <id> --title <title> [--expected-revision <n>] [--format json|text] | page move --doc <id> --parent <doc-id|-1|root> [--expected-revision <n>] [--format json|text] | page archive --doc <id> --confirm [--expected-revision <n>] [--format json|text]";
 
 fn actor_ref_from_args(args: &[String]) -> CliResult<ActorRef> {
     let actor_id = required(args, "--actor")?;
@@ -1028,6 +1028,7 @@ pub fn read_page_value(
     Ok(json!({
         "document_id": document.id,
         "title": document.title,
+        "parent_document_id": document.parent_document_id,
         "lifecycle_status": document.lifecycle_status,
         "revision_id": revision.as_ref().map(|r| r.id.clone()),
         "revision_number": revision.as_ref().map(|r| r.revision_number).unwrap_or(0),
@@ -1281,7 +1282,7 @@ pub fn append_page_value(
 pub fn company_docs_page_v2_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     crate::require_subcommand(
         args,
-        "company docs page create|read|write|append|search|scaffold|verify|publish",
+        "company docs page create|read|write|append|search|rename|move|archive|scaffold|verify|publish",
     )?;
     match args[0].as_str() {
         "create" => page_create_command(store, &args[1..]),
@@ -1289,6 +1290,9 @@ pub fn company_docs_page_v2_command(store: &HarnessStore, args: &[String]) -> Cl
         "write" => page_write_command(store, &args[1..]),
         "append" => page_append_command(store, &args[1..]),
         "search" => page_search_command(store, &args[1..]),
+        "rename" => page_rename_command(store, &args[1..]),
+        "move" => page_move_command(store, &args[1..]),
+        "archive" => page_archive_command(store, &args[1..]),
         other => Err(CliError::Usage(format!(
             "not a docs-v2 page verb: {other}; {PAGE_USAGE}"
         ))),
@@ -1519,6 +1523,75 @@ fn page_read_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     print_json(&result)
 }
 
+/// R1: metadata-only page change (rename/move/archive) committed through the
+/// same revision mechanism: one document-row update, no block-row appends,
+/// one new revision whose snapshot carries the updated document metadata.
+#[allow(clippy::too_many_arguments)]
+pub fn update_page_meta_value(
+    store: &HarnessStore,
+    document_id: &str,
+    new_title: Option<&str>,
+    new_parent: Option<Option<String>>,
+    new_lifecycle: Option<harness_core::company_os::LifecycleStatus>,
+    expected_revision: Option<u64>,
+    actor: ActorRef,
+    summary: &str,
+    action_id: Option<String>,
+) -> CliResult<serde_json::Value> {
+    let now = now_string();
+    let current = resolve_page(store, document_id)?;
+    let expected = match expected_revision {
+        Some(value) => value,
+        None => current
+            .revision
+            .as_ref()
+            .map(|r| r.revision_number)
+            .unwrap_or(0),
+    };
+    let mut document = current.document.clone();
+    if let Some(title) = new_title {
+        if title.trim().is_empty() {
+            return Err(CliError::Usage("--title must be non-empty".into()));
+        }
+        document.title = title.trim().to_string();
+    }
+    if let Some(parent) = new_parent {
+        document.parent_document_id = parent;
+    }
+    if let Some(lifecycle) = new_lifecycle {
+        document.lifecycle_status = lifecycle;
+    }
+    document.updated_by = actor.clone();
+    document.updated_at = now.clone();
+
+    let outcome = store
+        .write_document_page_atomic(&PageWriteRequest {
+            document,
+            block_rows: vec![],
+            mutations: vec![ChangeMutation {
+                op: ChangeMutationOp::DocumentMetaUpdate,
+                anchor_block_id: None,
+                target_block_id: None,
+                source_block_ids: vec![],
+                block: None,
+            }],
+            expected_revision: expected,
+            change_summary: summary.to_string(),
+            authored_by: actor,
+            execution_ref: None,
+            action_command_id: action_id.unwrap_or_else(|| generated_id("action-cli-docs-page")),
+            created_at: now,
+        })
+        .map_err(conflict_to_usage)?;
+    Ok(json!({
+        "result": "success",
+        "document_id": document_id,
+        "revision_id": outcome.revision_id,
+        "revision_number": outcome.revision_number,
+        "content_digest": outcome.content_digest,
+    }))
+}
+
 /// F3 (interim): cross-document search over latest page projections. This is
 /// an honest substring scan, not an FTS index; the derived SQLite layer (spec
 /// Phase 3) supersedes it.
@@ -1592,6 +1665,115 @@ pub fn search_pages_value(
         "count": hits.len(),
         "matches": hits,
     }))
+}
+
+fn page_rename_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let document_id = required(args, "--doc")?;
+    let title = required(args, "--title")?;
+    let actor = actor_ref_from_args(args)?;
+    let summary = value(args, "--summary").unwrap_or_else(|| "page rename".to_string());
+    let result = update_page_meta_value(
+        store,
+        &document_id,
+        Some(&title),
+        None,
+        None,
+        parse_expected_revision(args, false)?,
+        actor,
+        &summary,
+        value(args, "--action-id"),
+    )?;
+    emit_meta_result(args, &result, "renamed");
+    Ok(())
+}
+
+fn page_move_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let document_id = required(args, "--doc")?;
+    let parent_raw = required(args, "--parent")?;
+    let actor = actor_ref_from_args(args)?;
+    let new_parent: Option<String> = if parent_raw == "-1" || parent_raw == "root" {
+        None
+    } else {
+        // Parent must exist and must not be the document itself or one of its
+        // descendants (cycle check over the latest document projection).
+        let documents = store.latest_documents().map_err(conflict_to_usage)?;
+        if !documents.iter().any(|d| d.id == parent_raw) {
+            return Err(CliError::Usage(format!(
+                "parent document not found: {parent_raw}"
+            )));
+        }
+        let mut cursor: Option<String> = Some(parent_raw.clone());
+        while let Some(id) = cursor {
+            if id == document_id {
+                return Err(CliError::Usage(format!(
+                    "move rejected: {parent_raw} is {document_id} itself or one of its descendants (parent cycle)"
+                )));
+            }
+            cursor = documents
+                .iter()
+                .find(|d| d.id == id)
+                .and_then(|d| d.parent_document_id.clone());
+        }
+        Some(parent_raw)
+    };
+    let summary = value(args, "--summary").unwrap_or_else(|| "page move".to_string());
+    let result = update_page_meta_value(
+        store,
+        &document_id,
+        None,
+        Some(new_parent),
+        None,
+        parse_expected_revision(args, false)?,
+        actor,
+        &summary,
+        value(args, "--action-id"),
+    )?;
+    emit_meta_result(args, &result, "moved");
+    Ok(())
+}
+
+fn page_archive_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let document_id = required(args, "--doc")?;
+    let actor = actor_ref_from_args(args)?;
+    if !crate::has_flag(args, "--confirm") {
+        let current = resolve_page(store, &document_id)?;
+        print_json(&json!({
+            "result": "dry_run",
+            "document_id": document_id,
+            "title": current.document.title,
+            "revision_number": current.revision.as_ref().map(|r| r.revision_number).unwrap_or(0),
+            "note": "page archive requires --confirm to commit; nothing was written",
+        }))?;
+        return Ok(());
+    }
+    let summary = value(args, "--summary").unwrap_or_else(|| "page archive".to_string());
+    let result = update_page_meta_value(
+        store,
+        &document_id,
+        None,
+        None,
+        Some(harness_core::company_os::LifecycleStatus::Archived),
+        parse_expected_revision(args, false)?,
+        actor,
+        &summary,
+        value(args, "--action-id"),
+    )?;
+    emit_meta_result(args, &result, "archived");
+    Ok(())
+}
+
+fn emit_meta_result(args: &[String], result: &serde_json::Value, verb: &str) {
+    if value(args, "--format").as_deref() == Some("text") {
+        let digest = result["content_digest"].as_str().unwrap_or("");
+        println!(
+            "ok {} r{} sha256:{}… ({verb})",
+            result["document_id"],
+            result["revision_number"],
+            &digest[..digest.len().min(12)],
+        );
+        return;
+    }
+    let _ = print_json(result);
 }
 
 fn page_search_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
