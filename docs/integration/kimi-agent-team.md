@@ -112,11 +112,11 @@ surface. Harness adopts it in layers:
 | `session/cancel` | implemented as an ACP notification; reviewed for cooperative Interrupt in installed 0.31.0 and 0.31.1 |
 | `session/close`, audio prompts, terminal reverse-RPC | unsupported upstream; Harness must not advertise them |
 
-This lets Kimi gain native capability without expanding the Harness object
+This lets Kimi gain native capability without expanding the Firm object
 model. A new feature becomes a product control only after the exact installed
 mode returns a real receipt and the permission/privacy boundary is defined.
 Explicit Host Close remains available: it durably latches runtime-shutdown
-intent and terminates the Harness-owned ACP process without claiming either a
+intent and terminates the Firm-owned ACP process without claiming either a
 native session close or conflating Close with cooperative Interrupt. Explicit
 Reopen starts a higher adapter generation and resumes the recorded ACP session.
 

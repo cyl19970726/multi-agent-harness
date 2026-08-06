@@ -1,6 +1,6 @@
 # Agent Workbench
 
-The Agent Workbench is the operator UI for Star Harness. Its job is to make
+The Agent Workbench is the operator UI for Firm. Its job is to make
 Mission/Wave Host planning, linked Agent Teams, shared Works, execution state,
 artifacts, advance decisions, and capability gaps inspectable
 without raw JSON or duplicated provider transcripts.

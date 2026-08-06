@@ -1,4 +1,4 @@
-# 0010: Harness Store Is Canonical
+# 0010: Firm Store Is Canonical
 
 ## Status
 
@@ -9,7 +9,7 @@ transcript, tool activity, and resume state.
 
 ## Decision
 
-The canonical coordination state is the Harness store plus versioned repo
+The canonical coordination state is the Firm store plus versioned repo
 artifacts. Provider-native session state is referenced, not copied.
 
 ## Consequences

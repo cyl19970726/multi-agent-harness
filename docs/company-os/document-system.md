@@ -163,9 +163,9 @@ directly changes application status or moves money.
 The first CLI contract for this layer is:
 
 ```text
-harness company docs page scaffold
-harness company docs page verify
-harness company docs page publish
+firm company docs page scaffold
+firm company docs page verify
+firm company docs page publish
 ```
 
 `page scaffold` creates governed `CustomPageDefinition` and
@@ -241,41 +241,41 @@ clarifies ownership, but a relation is preferred over duplicating a record into
 multiple folders.
 
 The current CLI-backed read and authoring primitives cover the first safe
-subset: `harness company docs query` returns one read-only Agent operating
+subset: `firm company docs query` returns one read-only Agent operating
 context for a Document or BusinessModule over latest projections, including
 ordered Blocks, child Documents, templates, TypedRecords, Relations, Views,
 scoped health findings, available commands, and explicit side-effect
-boundaries; `harness company docs module create` creates a governance-scoped
+boundaries; `firm company docs module create` creates a governance-scoped
 BusinessModule with a fallback View and optional explicit relation rules such
-as Document → TypedRecord `source_for`, `harness company docs page-definition
+as Document → TypedRecord `source_for`, `firm company docs page-definition
 create` installs a CustomPageDefinition, package, server ActionPolicyDefinition
-bundle, and module reference, `harness company docs document create --root`
+bundle, and module reference, `firm company docs document create --root`
 bootstraps a new top-level Document/DocumentSpace entry with Human admin
-authority, `harness company docs document create --parent-document` creates a
-scoped child Document, `harness company docs document rename|move|archive`
+authority, `firm company docs document create --parent-document` creates a
+scoped child Document, `firm company docs document rename|move|archive`
 perform governed structure maintenance by updating the latest Document row
 through `document.append` while preserving identity, existing Blocks and
 existing references; `move` can change `parent_document_id` without duplicating
 the page and rejects parent cycles, while `archive` requires `--confirm` unless
-it is a dry-run. `harness company docs template create` creates an
+it is a dry-run. `firm company docs template create` creates an
 explicit reusable `Document(kind=template)` and can copy ordered Blocks from a
-source Document, `harness company docs template status` updates a template's
+source Document, `firm company docs template status` updates a template's
 `lifecycle_status`,
-`harness company docs block append` appends a Block and updates the owning
-Document's `block_ids`, `harness company docs block update` updates an
+`firm company docs block append` appends a Block and updates the owning
+Document's `block_ids`, `firm company docs block update` updates an
 existing Block's content/kind/position through `block.append` without changing
-Document order, `harness company docs block archive` marks a Block archived in
+Document order, `firm company docs block archive` marks a Block archived in
 `Block.content` and removes it from visible Document order without physical
-delete, `harness company docs block remove` removes a Block from visible
+delete, `firm company docs block remove` removes a Block from visible
 Document order while preserving the Block row, and the block reorder command
 updates `Document.block_ids` order while preserving the exact existing Block set,
-`harness company docs typed-record append` creates a source-linked TypedRecord
-in a BusinessModule, `harness company docs typed-record update` writes a
+`firm company docs typed-record append` creates a source-linked TypedRecord
+in a BusinessModule, `firm company docs typed-record update` writes a
 governed latest-row update for an existing TypedRecord while preserving its
 identity, module, record type, source Document, creator, and creation time,
-`harness company docs view create` creates a standard View for that module, and
-`harness company docs relation link` creates a scoped active Document ↔
-TypedRecord Relation. `harness company docs relation unlink` is lifecycle
+`firm company docs view create` creates a standard View for that module, and
+`firm company docs relation link` creates a scoped active Document ↔
+TypedRecord Relation. `firm company docs relation unlink` is lifecycle
 archive, not deletion: it writes a new latest Relation row with
 `lifecycle_status=archived`, preserves endpoints/type/provenance/creation
 metadata, requires `--confirm` unless dry-run, and makes active query/health

@@ -2,15 +2,15 @@
 
 Choose the execution surface first:
 
-- install **Star Harness** for Mission/Wave and persistent Agent Teams;
+- install **Firm** for Mission/Wave and persistent Agent Teams;
 - install **star-workflow** for bounded, one-shot Dynamic Workflow; and
-- start one Harness service plus the Workbench for shared state and controls.
+- start one Firm service plus the Workbench for shared state and controls.
 
 Agent Team and Dynamic Workflow deliberately use different provider modes.
 
 ## Prerequisites
 
-- **Rust** (stable) — builds the `harness` binary.
+- **Rust** (stable) — builds the `firm` binary.
 - **Node + pnpm** — for the dashboard and the doc checks.
 - At least one provider on `PATH`, authenticated:
   - Agent Team: Codex app-server, Claude Agent SDK streaming, or Kimi ACP.
@@ -51,15 +51,15 @@ npx skills add cyl19970726/multi-agent-harness --skill star-workflow --agent cla
 
 ```bash
 codex plugin marketplace add cyl19970726/multi-agent-harness
-codex plugin add star-harness@multi-agent-harness
+codex plugin add firm@multi-agent-harness
 
 claude plugin marketplace add cyl19970726/multi-agent-harness --scope user
-claude plugin install star-harness@multi-agent-harness --scope user
+claude plugin install firm@multi-agent-harness --scope user
 ```
 
-Start a new task/session, then verify that `star-harness` is enabled and that
+Start a new task/session, then verify that `firm` is enabled and that
 the `orchestrate-mission-waves` and `collaborate-as-agent-team-member` skills
-are visible. The bundled MCP entry runs `harness mcp`, so the `harness` binary
+are visible. The bundled MCP entry runs `firm mcp`, so the `firm` binary
 must be on `PATH`.
 
 The separate `star-workflow` plugin remains available for Dynamic Workflow:
@@ -72,27 +72,27 @@ The separate `star-workflow` plugin remains available for Dynamic Workflow:
 ## 2. Initialize an Execution Space and Project Binding
 
 ```bash
-cargo build -p harness-cli
-./target/debug/harness init
-./target/debug/harness space list
-./target/debug/harness project list
+cargo build -p firm-cli
+./target/debug/firm init
+./target/debug/firm space list
+./target/debug/firm project list
 ```
 
 An **Execution Space** owns Mission/Wave, Agent Team, Workflow, and coordination
 state. A **Project Binding** independently selects provider cwd, project
 instructions, Skills, Git/worktree, and permission boundaries. Select them
-explicitly with `--space` / `HARNESS_SPACE` and
-`--project` / `HARNESS_PROJECT`, or `harness space switch` and
-`harness project switch`. Raw `--store` / `HARNESS_ROOT` and repo-local
+explicitly with `--space` / `FIRM_SPACE` and
+`--project` / `FIRM_PROJECT`, or `firm space switch` and
+`firm project switch`. Raw `--store` / `FIRM_ROOT` and repo-local
 `.harness` discovery are compatibility paths, not the preferred model.
 
-## 3. Start the Harness service
+## 3. Start the Firm service
 
 ```bash
-# build output: ./target/debug/harness
+# build output: ./target/debug/firm
 
 # start the API + store (the dashboard and the run-script journal read this)
-./target/debug/harness serve --addr 127.0.0.1:8787
+./target/debug/firm serve --addr 127.0.0.1:8787
 
 # in another terminal, start the dashboard UI (Vite) to watch runs live
 pnpm install
@@ -112,23 +112,23 @@ mail to that owner. A Wave or TeamRun completing does not close a Member.
 ## 4. Create a Mission and persistent Agent Team
 
 ```bash
-./target/debug/harness mission create \
+./target/debug/firm mission create \
   --title "Dogfood Agent Team" \
   --objective "Prove persistent multi-member collaboration" \
   --context "## Context\nUse native provider sessions, shared Works, and explicit Host acceptance."
-./target/debug/harness member register \
+./target/debug/firm member register \
   --id builder-codex --name Builder --role builder --provider codex
-./target/debug/harness mission create-team \
+./target/debug/firm mission create-team \
   --id <mission-id> --name builders --description "Persistent builders" \
   --lead host --member builder-codex
-./target/debug/harness wave create \
+./target/debug/firm wave create \
   --mission-id <mission-id> --title "Wave 1" \
   --objective "Run and inspect the team" \
   --context "## Host plan\nCreate disjoint Works and review submitted results."
-./target/debug/harness team-run create \
+./target/debug/firm team-run create \
   --mission-id <mission-id> --agent-team-id <team-id> \
   --objective "Complete the current Host plan"
-./target/debug/harness team-run start --id <team-run-id>
+./target/debug/firm team-run start --id <team-run-id>
 ```
 
 Use `team-run send`, `inbox`, `host-inbox`, `status`, and `events` for durable
@@ -158,10 +158,10 @@ findings = parallel([
 ])
 ```
 
-Run it through the harness:
+Run it through the firm:
 
 ```bash
-./target/debug/harness workflow run-script hello.star
+./target/debug/firm workflow run-script hello.star
 # bounded + safe options:
 #   --space <id>            select the Execution Space used by `serve`
 #   --store <path>          deprecated raw compatibility override
@@ -182,8 +182,8 @@ To get a text-producing workflow's **full deliverable** back (each leaf's comple
 reply, not the capped per-step summary):
 
 ```bash
-./target/debug/harness workflow get-output <run_id>            # JSON, all leaves
-./target/debug/harness workflow get-output <run_id> --step synthesis --text > plan.md
+./target/debug/firm workflow get-output <run_id>            # JSON, all leaves
+./target/debug/firm workflow get-output <run_id> --step synthesis --text > plan.md
 ```
 
 `get-output` reads the durable explicit `WorkflowStep` outcome and joins optional

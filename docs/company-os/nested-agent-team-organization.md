@@ -43,9 +43,9 @@ The first ADR 0052 cutover slice is intentionally additive:
 - cutover audit refuses missing members, compatibility-only Hosts, and
   conflicting `owner_agent_id` / `host_member_id` identities.
 
-The CLI surface is `harness org member create|converge|list|show`,
-`harness org bootstrap-lead`, `harness org host`, and
-`harness org cutover-audit`. HTTP/MCP, Dashboard, Work-kernel convergence, and
+The CLI surface is `firm org member create|converge|list|show`,
+`firm org bootstrap-lead`, `firm org host`, and
+`firm org cutover-audit`. HTTP/MCP, Dashboard, Work-kernel convergence, and
 the full Lead → CTO → child-Team dogfood scenario are still follow-up work.
 Passing this identity audit therefore proves no more than one explicit durable
 Host authority; it does not claim the whole ADR is implemented.

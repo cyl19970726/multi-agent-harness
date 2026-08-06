@@ -56,7 +56,7 @@ fallback (`docs/company-os/nested-agent-team-organization.md:180-182`).
 | Provenance | `Work.source_refs[]` | `design.md:105` | TARGET (implemented: single `source_work_item_ref`; `WorkEvent.causation_ref`) |
 | Demand class: discovered-unassigned | derived: `status == open && assignee_member_id == null` | `design.md:89-110`; `docs/company-os/nested-agent-team-organization.md:176-178` | TARGET derivation (today: `open && owner_member_id == null`) |
 | Demand class: self-owned | derived: assignee is the viewing Member | same | IMPLEMENTED derivation per viewer |
-| Demand class: delegated | `WorkDelegation{parent_work_ref, child_agent_team_id, child_team_run_id}` | `crates/harness-core/src/lib.rs:3081` | IMPLEMENTED in core |
+| Demand class: delegated | `WorkDelegation{parent_work_ref, child_agent_team_id, child_team_run_id}` | `crates/firm-core/src/lib.rs:3081` | IMPLEMENTED in core |
 | Demand class: follow-up | derived: `parent_work_id` or `source_refs` naming an originating Work/Document/result/review | `specs/.../requirements.md:232-233` | TARGET derivation |
 | Filters | Team path, Host, Member, status, source, milestone | `design.md:286-290` | TARGET (milestone via `WorkRelation kind=milestone`; Company side has `WorkItem.milestone_ref` IMPLEMENTED) |
 | Submission state | `result_summary`, `artifact_refs[]`, `check_refs[]`, `blocker_reason` | `schemas/work.schema.json` | IMPLEMENTED — "Awaiting Host acceptance" wording per `docs/product/agent-team-works.md:256` |

@@ -1,5 +1,5 @@
 {
-  "name": "star-harness",
+  "name": "firm",
   "version": "0.4.4",
   "description": "Thin Mission/Wave and autonomous Agent Team integration for Codex.",
   "author": {
@@ -13,7 +13,7 @@
   "keywords": ["codex", "agent-team", "mission", "wave", "mcp"],
   "skills": "./skills/",
   "interface": {
-    "displayName": "Star Harness",
+    "displayName": "Firm",
     "shortDescription": "Plan Missions and coordinate autonomous Agent Teams.",
     "longDescription": "Adds provider-neutral Host and Member skills, Harness MCP registration, lifecycle status hooks, CLI shortcuts, and Dashboard deep links. Product state remains in Harness and provider execution remains in native sessions.",
     "developerName": "Multi-Agent Harness",

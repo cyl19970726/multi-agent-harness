@@ -9,7 +9,7 @@
 # field is enforced as a STRING, so list-valued returns come back one-per-line
 # and are `.splitlines()`-ed.
 #
-# Run:  harness workflow run-script ./bug-hunt-verify.star \
+# Run:  firm workflow run-script ./bug-hunt-verify.star \
 #   --args '{"area":"the order-pricing module in src/pricing"}'
 
 workflow(

@@ -3,7 +3,7 @@
 > Superseded in part by
 > [0018 (Headless Exec-Stream as Primary Provider Substrate)](0018-exec-stream-primary-substrate.md):
 > exec-stream is now the primary substrate and the persistent app-server is an
-> optional fallback for mid-turn-approval members. The harness-owned mailbox and
+> optional fallback for mid-turn-approval members. The firm-owned mailbox and
 > atomic claim/lease decided here are kept verbatim.
 
 ## Decision
@@ -14,14 +14,14 @@ persistent Agent Members backed by `codex app-server`, not only one-shot
 
 Use one Codex app-server process per Agent Member in V1.
 
-Codex does not own or poll the harness mailbox. Harness delivery is pushed by a
+Codex does not own or poll the firm mailbox. Harness delivery is pushed by a
 provider gateway: it selects the latest queued `Message` for a member, starts or
 probes that member's app-server runtime, creates or resumes the provider
 thread, and sends the message as a `turn/start` request.
 
 That gateway must claim or lease the message before provider side effects. The
 decision is not "call `turn/start` whenever a queued row exists"; it is
-"harness owns mailbox, provider gateway safely injects claimed messages into
+"firm owns mailbox, provider gateway safely injects claimed messages into
 Codex turns."
 
 ## Consequences
@@ -39,7 +39,7 @@ This decision is not MVP-complete until:
 - delivery claim/lease is atomic with latest-message selection;
 - unresolved provider sessions block later normal delivery;
 - closed, closing, and retired members reject delivery and runtime restart;
-- the delivered turn has a stable harness envelope;
+- the delivered turn has a stable firm envelope;
 - Dashboard warnings use the same projection as the dispatcher.
 
 See [../integration/codex.md](../integration/codex.md) and

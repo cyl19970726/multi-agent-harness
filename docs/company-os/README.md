@@ -6,7 +6,7 @@ owner_role: product
 canonical_for: AI Company OS product boundary and document map
 ```
 
-Star Harness is becoming an **AI Company Operating System**. Its two product
+Firm is becoming an **AI Company Operating System**. Its two product
 cores are:
 
 1. **Docs** — the company memory, business structure, decision surface, and
@@ -16,7 +16,7 @@ cores are:
    topology of persistent, nested `AgentTeam`s: a Member can remain a member of
    its parent Team while hosting a child Team of its own.
 
-This is not a rename of the execution harness. Mission/Wave, Dynamic Workflow,
+This is not a rename of the execution firm. Mission/Wave, Dynamic Workflow,
 Agent Team, provider sessions, plugins, and host execution remain the execution
 substrate used by the organization. They do not replace the document system or
 become the company’s primary information architecture.
@@ -40,7 +40,7 @@ scripts/install-skill.sh --agent both --suite company-os
 Dedicated Docs, Work, Organization, and Approval baseline CLI commands
 are implemented. Finance baseline CLI commands are parked at the contract layer
 (see issue #323); Commitment/Payment code remains dormant.
-`harness company org ...` surface and nested `actor/unit/membership` groups for
+`firm company org ...` surface and nested `actor/unit/membership` groups for
 inspection and **bootstrap-only** Human administrative authoring of Humans,
 Standing Agents, OrgUnits, Memberships, declared actor status, and
 permission/capability refs. That boundary is not target delegated authority and
@@ -51,7 +51,7 @@ records remain current implementation truth during an explicit cutover; they
 must not be presented as the target identity model.
 
 Finance CLI v1 is parked at the contract layer (2026-08-05, issue #323).
-The flat `harness company finance ...` surface and nested `commitment/payment`
+The flat `firm company finance ...` surface and nested `commitment/payment`
 commands remain implemented but are no longer part of the active operator suite.
 Commitment/Payment code stays dormant until full decommission; the smoke script
 is preserved as historical evidence.
@@ -62,9 +62,9 @@ search, Views, health, diff, and export; it is not the current canonical write
 Store. See [ADR 0035](../decisions/0035-company-os-sql-read-model.md).
 
 The current implementation now has the first explicit Company Store slice:
-`harness company init/list/current/show/switch/migrate-from-project`,
-`--company <id>`, and `HARNESS_COMPANY` route `harness company ...` commands to
-`<HARNESS_HOME>/companies/<id>/`. If no Company is selected, the older
+`firm company init/list/current/show/switch/migrate-from-project`,
+`--company <id>`, and `FIRM_COMPANY` route `firm company ...` commands to
+`<FIRM_HOME>/companies/<id>/`. If no Company is selected, the older
 project-derived Company OS compatibility path still works. The migration command
 copies only `company_os_*.jsonl` ledgers; it does not move Mission/Wave, Agent
 Team, Workflow, provider sessions, prompts, or runtimes. ADR 0042 defines the

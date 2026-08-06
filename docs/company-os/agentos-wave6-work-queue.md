@@ -30,10 +30,10 @@ and remain in the genuine-next queue.
 Inspection commands (read-only, re-runnable):
 
 ```bash
-harness company current
-harness company work list
-harness company docs query --document document-agentos-root
-harness company docs health
+firm company current
+firm company work list
+firm company docs query --document document-agentos-root
+firm company docs health
 git log --oneline origin/master
 gh pr list --repo cyl19970726/multi-agent-harness --state open
 ```
@@ -42,7 +42,7 @@ Execution roster for all lanes below (from
 `skills/dogfood-company-os/SKILL.md` and `docs/operations.md`): Kimi
 `kimi_acp` with the reviewed K3 model alias at `max` thinking effort is
 primary; Claude `claude_agent_sdk` joins only while its installed SDK passes
-`harness member providers --fail-on-review`; no Codex execution members.
+`firm member providers --fail-on-review`; no Codex execution members.
 After each lane merges to master, remaining live lanes go through rolling
 Supervisor reconciliation (rebase worktree, resume MemberRun/native session
 when compatible, never two generations in one Workspace).
@@ -60,14 +60,14 @@ covers it. No reconciliation needed.
 
 No new implementation. The owner verifies the cited evidence against the
 WorkItem's stored acceptance criteria, attaches the evidence refs, and closes
-the WorkItem through `harness company work transition|close`. If a criterion
+the WorkItem through `firm company work transition|close`. If a criterion
 is not actually met, the item drops back to genuine next with the failing
 criterion named.
 
 | WorkItem | Covering evidence (verified) | Reconcile owner |
 | --- | --- | --- |
 | work-agentos-kimi-mid-turn-delivery-v1 | PR #276 (`80f9bfb`, `d58b596`), #278 (`98afe40`), #292 (`682d4c3`): queued/claimed/delivered/acknowledged states, ordered exactly-once next-round delivery, stale-handoff fencing (`docs/integration/kimi-agent-team.md`) | agent-agentos-platform-development |
-| work-agentos-provider-execution-controls-v1 | Requested-vs-effective `provider_controls` on MemberRun (`schemas/member-run.schema.json`, provider_controls); Kimi `session/set_config_option` with effective receipt (`crates/harness-cli/src/kimi_acp.rs`); Codex/Claude mappings; #296 Claude `provider_error` rounds | agent-agentos-platform-development |
+| work-agentos-provider-execution-controls-v1 | Requested-vs-effective `provider_controls` on MemberRun (`schemas/member-run.schema.json`, provider_controls); Kimi `session/set_config_option` with effective receipt (`crates/firm-cli/src/kimi_acp.rs`); Codex/Claude mappings; #296 Claude `provider_error` rounds | agent-agentos-platform-development |
 | work-agentos-generic-workitem-focus-v1 | PR #279 (`ad91e7e`; `38580de` project Work execution provenance; `73ba38d` complete Work provenance chain); item is `in_review` with deliverable commit `73ba38de` already attached | agent-agentos-platform-development |
 | work-agentos-workitem-detail-fields-v1 | `28003e9` feat(company-os): WorkItem detail fields and AgentOS docs flow | agent-agentos-platform-development |
 | work-agentos-store-docs-foundation-v1 | Store-verified: `document-agentos-root` in space `agentos` with 6 children; `module-agentos-project-home` and `module-agentos-software-product-sources` active; `product-doc-source-agentos-*` and `source-sync-run-1785334715161-p59475-0` records exist | agent-agentos-docs-governance |
@@ -77,8 +77,8 @@ criterion named.
 | work-agentos-organization-operability-v1 | PR #291 (`e2736e1`): Org hierarchy from Store truth, execution binding without MemberRun/identity conflation, ambiguous identity withheld (`apps/agent-dashboard/src/company-os/operations/pages.tsx`) | agent-agentos-org-governance |
 | work-agentos-external-gateway-registry-v1 | PR #273 (`e9de920`): gateway registry contract in `docs/company-os/external-gateway-and-plugins.md` | agent-agentos-platform-development |
 | work-agentos-wecom-gateway-plugin-v0 | PR #273 (`e9de920`): WeCom v0 design contract documented; implementation is a separate blocked item (see section E) | agent-agentos-platform-development |
-| work-agentos-workitem-reassignment-action-v1 | `b033965` governed WorkItem update command (`harness company work update`) | agent-agentos-work-governance |
-| work-agentos-org-role-permission-closure-v1 | `company.work.execute` enforcement with actionable denial (`crates/harness-cli/src/company_os_api.rs`); `harness company org update-permissions` CLI; Org governor self-transition proven live (see `docs/company-os/agentos-self-hosting-loop.md` "Current implementation truth") | agent-agentos-org-governance |
+| work-agentos-workitem-reassignment-action-v1 | `b033965` governed WorkItem update command (`firm company work update`) | agent-agentos-work-governance |
+| work-agentos-org-role-permission-closure-v1 | `company.work.execute` enforcement with actionable denial (`crates/firm-cli/src/company_os_api.rs`); `firm company org update-permissions` CLI; Org governor self-transition proven live (see `docs/company-os/agentos-self-hosting-loop.md` "Current implementation truth") | agent-agentos-org-governance |
 
 Residual target-only gap inside the last item: a governed module/policy-scoped
 grant lineage with revocation and durable denial evidence remains design-only
@@ -107,16 +107,16 @@ lane merges, other live lanes reconcile per the rolling rule.
 
 - Owner: agent-agentos-platform-development
 - Status: implemented — `TeamMessage.response_intent` plus the sender-aware
-  `effective_response_intent` default (`crates/harness-core/src/lib.rs`), the
-  response-intent delivery/fence gate (`crates/harness-store/src/lib.rs`,
-  `crates/harness-cli/src/main.rs`), `--response-required`/`--informational` on
+  `effective_response_intent` default (`crates/firm-core/src/lib.rs`), the
+  response-intent delivery/fence gate (`crates/firm-store/src/lib.rs`,
+  `crates/firm-cli/src/main.rs`), `--response-required`/`--informational` on
   the CLI, `response_intent` on HTTP/MCP, and the Dashboard read-side label.
   ADR 0046 §4 now states the sender-aware rule and is no longer design-only
 - Dependencies: none
-- Collision boundary: `crates/harness-core/src/lib.rs` (TeamMessage),
-  `crates/harness-cli/src/main.rs` (team-run send/gateway), `crates/harness-store`,
+- Collision boundary: `crates/firm-core/src/lib.rs` (TeamMessage),
+  `crates/firm-cli/src/main.rs` (team-run send/gateway), `crates/firm-store`,
   message schemas, `apps/agent-dashboard/src/surfaces/TeamWarRoom.tsx`.
-  Sequence before N2 (both touch `harness-core` and schemas)
+  Sequence before N2 (both touch `firm-core` and schemas)
 - Acceptance: ack-only peer mail triggers no provider round unless
   `response_required` is explicit; Host/Operator/Service mail still wakes an
   idle Member by default so questions, blockers, reviews, and Host decisions
@@ -133,8 +133,8 @@ lane merges, other live lanes reconcile per the rolling rule.
   missing: Harness build fingerprint, `restart_required` state, automatic
   restart-required reconciliation
 - Dependencies: provider-controls substrate (B-list, covered); N1 merged first
-  to avoid `harness-core`/schema conflicts
-- Collision boundary: `crates/harness-core` MemberRun/profile, `crates/harness-cli`
+  to avoid `firm-core`/schema conflicts
+- Collision boundary: `crates/firm-core` MemberRun/profile, `crates/firm-cli`
   supervisor + `member providers`, `schemas/member-run.schema.json`,
   `apps/agent-dashboard/src/surfaces/MemberRuns.tsx`
 - Acceptance: per the stored criteria — build/adapter/config fingerprints on
@@ -153,7 +153,7 @@ lane merges, other live lanes reconcile per the rolling rule.
   archived badge/history navigation; Docs health does not yet report active
   Work referencing archived sources
 - Dependencies: none; pairs with N5 (share the Docs audit)
-- Collision boundary: `crates/harness-cli/src/company_os_api.rs`,
+- Collision boundary: `crates/firm-cli/src/company_os_api.rs`,
   `apps/agent-dashboard/src/company-os/work/` and `.../docs/`; serialize with
   N5 (same dashboard areas)
 - Acceptance: every visible WorkItem source resolves to a navigable active
@@ -165,7 +165,7 @@ lane merges, other live lanes reconcile per the rolling rule.
 - Owner: agent-agentos-platform-development
 - Status: submitted; not implemented — scoped TeamRun route still
   materializes the full global snapshot server-side (open issue #264,
-  confirmed in `crates/harness-cli/src/main.rs` dashboard snapshot path)
+  confirmed in `crates/firm-cli/src/main.rs` dashboard snapshot path)
 - Dependencies: none
 - Collision boundary: `main.rs` snapshot/read-model paths, dashboard types;
   same file as N1's gateway code — sequence or rebase with explicit Host
@@ -220,15 +220,15 @@ lane merges, other live lanes reconcile per the rolling rule.
 
 | WorkItem | Blocker | Exact resume condition |
 | --- | --- | --- |
-| work-agentos-github-source-binding-v0 (in_progress) | Acceptance requires PR #277 merged by the authorized Human path; #277 is OPEN (`feat(company-os): govern dogfood and reconcile team assignments`). The HARNESS_SPACE set/unset Company Assignment execution-bridge suite is also unimplemented | Human merges PR #277 and the exact merge commit is read back; then the bridge suite becomes a genuine-next slice for agent-agentos-platform-development |
+| work-agentos-github-source-binding-v0 (in_progress) | Acceptance requires PR #277 merged by the authorized Human path; #277 is OPEN (`feat(company-os): govern dogfood and reconcile team assignments`). The FIRM_SPACE set/unset Company Assignment execution-bridge suite is also unimplemented | Human merges PR #277 and the exact merge commit is read back; then the bridge suite becomes a genuine-next slice for agent-agentos-platform-development |
 | work-wcw-agentos-wecom-gateway-v0 | WeCom gateway CLI/schema is planned-only (`docs/company-os/external-gateway-and-plugins.md`); requires merchant WeCom credentials and policy approval | Human provides the WeCom app credentials and approves the external-access gate; contract from B-list item work-agentos-wecom-gateway-plugin-v0 then drives implementation |
 
 ## Cross-Lane Collision Rules
 
-- `crates/harness-cli/src/main.rs` is a single shared file: N1 (team-run
+- `crates/firm-cli/src/main.rs` is a single shared file: N1 (team-run
   gateway) and N4 (snapshot paths) must not hold concurrent edits; sequence
   them or rebase on master before handoff.
-- N1 then N2, never in parallel: both touch `crates/harness-core` message and
+- N1 then N2, never in parallel: both touch `crates/firm-core` message and
   MemberRun types plus schemas.
 - Dashboard lanes (N3, N5, N6) serialize on the committed build artifact
   `apps/agent-dashboard/web/index.html`; one dashboard lane at a time, or the

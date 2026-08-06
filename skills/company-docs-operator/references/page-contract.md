@@ -89,7 +89,7 @@ The page code may present this shape, but it must not own business facts.
 
 Before handing off a page:
 
-1. `harness company docs query --document <id>` returns the updated page.
+1. `firm company docs query --document <id>` returns the updated page.
 2. Stable reusable facts exist as TypedRecords or Views when needed.
 3. Relations connect the page to source records and cross-system objects.
 4. The Store-live UI renders the page and document tree.

@@ -47,7 +47,7 @@
       ],
       "expected_approval": {"status": "approved", "approver": "Human Owner", "decided_at": "2026-07-21"},
       "gates": {
-        "product_truth": {"status": "pass", "evidence": "Authority-labelled Harness Store projection; canonical Document, module, proposal, financial, and actor refs verified by capture."},
+        "product_truth": {"status": "pass", "evidence": "Authority-labelled Firm Store projection; canonical Document, module, proposal, financial, and actor refs verified by capture."},
         "visual_fidelity": {"status": "pass", "evidence": "Exact 1536x1024 comparison and overlay preserve the editor-first three-column composition, hierarchy, structure callout, record ledger, and maintainer zone."}
       },
       "review": {"status": "pass_with_deviations", "defects": [], "intentional_deviations": ["The production Workbench navigation and Store-live truth banner remain visible instead of reproducing the concept image shell.", "Recent records and maintainer identities come only from the native projection; no mock milestones, comments, or activity were invented."]}

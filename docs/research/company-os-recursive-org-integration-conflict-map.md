@@ -36,11 +36,11 @@ unique commits — no member currently owns it.
 Verified via non-mutating `git stash create` snapshots merged with `git merge-tree`.
 
 Runtime (snapshot `cdff842`, 48 insertions):
-- `crates/harness-cli/src/main.rs` +2 lines each in `create_team_run` (~11794), `add_team_run_member` (~11923), `team_run_work_command` (~13341), `create_team_work_value` (~23646)
-- `crates/harness-core/src/lib.rs` +34 in `pub struct Work` / `impl Work` / `WorkEventKind` (3070–3183) + 2 in tests
-- `crates/harness-store/src/lib.rs` +2 in `mod tests` (~5318)
-- `crates/harness-cli/src/company_os_api.rs` +2 in `projection_tests`
-- `crates/harness-store/tests/team_work_delivery_lifecycle.rs` +2
+- `crates/firm-cli/src/main.rs` +2 lines each in `create_team_run` (~11794), `add_team_run_member` (~11923), `team_run_work_command` (~13341), `create_team_work_value` (~23646)
+- `crates/firm-core/src/lib.rs` +34 in `pub struct Work` / `impl Work` / `WorkEventKind` (3070–3183) + 2 in tests
+- `crates/firm-store/src/lib.rs` +2 in `mod tests` (~5318)
+- `crates/firm-cli/src/company_os_api.rs` +2 in `projection_tests`
+- `crates/firm-store/tests/team_work_delivery_lifecycle.rs` +2
 
 UI (snapshot `f93c3e7`):
 - `apps/agent-dashboard/src/app/selection.ts` +27, `apps/agent-dashboard/src/types.ts` +12
@@ -52,14 +52,14 @@ Core and Docs worktrees: clean.
 
 | File | Core | Docs | Runtime | UI |
 |---|---|---|---|---|
-| `crates/harness-cli/src/main.rs` | b9e91cd 66ln + c9a8f8a 15893–23085, 38900+ | b9e91cd 66ln (shared) | b9e91cd 66ln (shared) + in-flight 11794/11923/13341/23646 | — |
-| `crates/harness-core/src/lib.rs` | b9e91cd +337 (shared) | shared | shared + in-flight Work struct 3070–3183 | — |
-| `crates/harness-store/src/lib.rs` | b9e91cd +218 (shared) + c9a8f8a 1444, 6539 | shared | shared + in-flight tests 5318 | — |
-| `crates/harness-cli/tests/team_topology.rs` | shared (new) | shared | shared | — |
-| `crates/harness-cli/tests/codex_work_receipt.rs` | c9a8f8a (new) | — | — | — |
-| `crates/harness-cli/tests/fake_provider/mod.rs` | c9a8f8a | — | — | — |
-| `crates/harness-store/tests/team_work_delivery_lifecycle.rs` | — | — | e3d9eef (new, 650ln) + in-flight | — |
-| `crates/harness-cli/src/company_os_api.rs` | — | — | in-flight | — |
+| `crates/firm-cli/src/main.rs` | b9e91cd 66ln + c9a8f8a 15893–23085, 38900+ | b9e91cd 66ln (shared) | b9e91cd 66ln (shared) + in-flight 11794/11923/13341/23646 | — |
+| `crates/firm-core/src/lib.rs` | b9e91cd +337 (shared) | shared | shared + in-flight Work struct 3070–3183 | — |
+| `crates/firm-store/src/lib.rs` | b9e91cd +218 (shared) + c9a8f8a 1444, 6539 | shared | shared + in-flight tests 5318 | — |
+| `crates/firm-cli/tests/team_topology.rs` | shared (new) | shared | shared | — |
+| `crates/firm-cli/tests/codex_work_receipt.rs` | c9a8f8a (new) | — | — | — |
+| `crates/firm-cli/tests/fake_provider/mod.rs` | c9a8f8a | — | — | — |
+| `crates/firm-store/tests/team_work_delivery_lifecycle.rs` | — | — | e3d9eef (new, 650ln) + in-flight | — |
+| `crates/firm-cli/src/company_os_api.rs` | — | — | in-flight | — |
 | `docs/product/agent-team-works.md` | c9a8f8a | — | — | — |
 | `schemas/agent-team.schema.json` + `schemas/fixtures/agent-team/*` | shared | shared | shared | — |
 | `docs/design/company-os-v6/recursive-org-docs-works-v1/*` | — | — | — | e2e4f94 (exclusive) |
@@ -80,14 +80,14 @@ No blocking collision exists at this snapshot. Non-blocking risks messaged to pe
 1. **Work-kernel semantic collision (Core ↔ Runtime).** Runtime is extending
    `pub struct Work` / `WorkEventKind` for Team-scoped promotion; Core's
    in-progress Host-attention Work also needs Work-transition fields. Field
-   names must be agreed before either commits more of `harness-core`
+   names must be agreed before either commits more of `firm-core`
    (messaged: `tmsg-1785855688906-p84114-1` to Core, `tmsg-1785855716881-p94911-1` to Runtime).
 2. **main.rs adjacency (Core ↔ Runtime).** Runtime's `create_team_work_value`
    hunk (~23646) sits ~500 lines from Core's `close_team_member_value` edits
    (22894–23085). Clean today; after Core lands, Runtime must rebase onto the
    post-Core tip (line numbers shift by hundreds of lines).
 3. **Anticipated Docs overlap.** Docs has no unique commits yet but its
-   AgentMember-identity Work will need `harness-core`, `harness-store`,
+   AgentMember-identity Work will need `firm-core`, `firm-store`,
    `main.rs`, `schemas/agent-member.schema.json` — all Core/Runtime-owned
    except the agent-member schema. Docs merges last and must announce touched
    structs before editing (messaged: `tmsg-1785855717239-p95150-1`).
@@ -99,19 +99,19 @@ No blocking collision exists at this snapshot. Non-blocking risks messaged to pe
 1. **UI** `codex/company-os-ui-contract-v1` (commit its two untracked
    selector files + selection/types edits first). Zero overlap; docs+dashboard only.
 2. **Core** `codex/team-delivery-recovery-v1` @ `c9a8f8a`, plus its upcoming
-   Host-attention commits. Largest committed harness delta; self-contained tests.
+   Host-attention commits. Largest committed firm delta; self-contained tests.
 3. **Runtime** `codex/company-os-runtime-delivery-v1` @ `e3d9eef` + in-flight
    Team-scope Work commits. **Rebase onto the post-Core tip, not onto `b9e91cd`.**
    Expected: no textual conflicts at today's hunks; resolve any drift in
-   `main.rs`/`harness-store` tests by keeping both sides (disjoint functions).
+   `main.rs`/`firm-store` tests by keeping both sides (disjoint functions).
 4. **Docs** `codex/company-os-agent-member-identity-v1` last; rebase onto the
    integrated tip of 1–3 immediately before its first real commit.
 
 Validation order after each merge step (and once at the combined tip):
 1. `cargo fmt --check`
-2. `cargo test -p harness-store` (team_work_delivery_lifecycle, topology fixtures)
-3. `cargo test -p harness-core`
-4. `cargo test -p harness-cli` (team_topology, codex_work_receipt)
+2. `cargo test -p firm-store` (team_work_delivery_lifecycle, topology fixtures)
+3. `cargo test -p firm-core`
+4. `cargo test -p firm-cli` (team_topology, codex_work_receipt)
 5. `cargo test --workspace`
 6. Dashboard: `pnpm -C apps/agent-dashboard typecheck`/build (UI step only)
 7. Gate: `pnpm acceptance:mission-wave`
@@ -145,5 +145,5 @@ pnpm acceptance:mission-wave
 ```
 
 Next reviewer actions: re-snapshot when Core starts its Host-attention edits
-(harness-core Work struct is the watch point), and when Docs announces its
+(firm-core Work struct is the watch point), and when Docs announces its
 first struct touches.

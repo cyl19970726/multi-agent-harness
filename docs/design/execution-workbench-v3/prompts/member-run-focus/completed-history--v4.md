@@ -9,7 +9,7 @@ different visual grammar.
 
 ## Image-generation prompt
 
-Create a high-fidelity 1536×1024 desktop product mockup for the Star Harness
+Create a high-fidelity 1536×1024 desktop product mockup for the Firm
 Agent Member detail page. Use the current Member Activity screenshot only as a
 content/problem reference; redesign the complete page.
 
@@ -42,7 +42,7 @@ content/problem reference; redesign the complete page.
 
 1. Phase grouping is a projection over native history, not new persisted truth.
 2. Tool call/result pairing must preserve access to both native records.
-3. Handoff Markdown is rendered from the Harness message while provider-native
+3. Handoff Markdown is rendered from the Firm message while provider-native
    final output remains separately attributable.
 4. Right-rail modules reuse TeamRun, Mission/Wave, native session, workspace,
    and artifact projections; they do not duplicate storage.

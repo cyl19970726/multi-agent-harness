@@ -14,7 +14,7 @@ conflict; do not restate its contract here.
 
 ## Product Context
 
-Star Harness is an AI Company OS with two primary systems: a Notion-like Docs
+Firm is an AI Company OS with two primary systems: a Notion-like Docs
 system for company memory and operating structure, and a mixed Organization of
 humans, Standing Agents, external collaborators, and services. Documents create
 WorkItems and Approvals; accountable actors execute them; results, evidence,
@@ -127,7 +127,7 @@ New Agent Team members use only their persistent bidirectional mode:
 reads; they are not Team fallbacks. The Host explicitly creates, messages,
 inspects, interrupts, closes, and resumes members. Interrupt stops one current
 turn; Close ends the member runtime; Wave or TeamRun completion never implies
-Close. Physical live control handles remain process-local to the Harness
+Close. Physical live control handles remain process-local to the Firm
 service that started them. A durable Team Supervisor lease is the cross-process
 control authority and contains a loopback service locator. Dashboard, CLI, and
 MCP clients route controls to that owner; the owner revalidates supervisor id,
@@ -156,7 +156,7 @@ host-driven members. See
 
 Provider-native or chat-side subagents are implementation details of the Host
 or member that invoked them. Optional hooks may record honest attribution, but
-the harness must not claim lifecycle control it does not have.
+the firm must not claim lifecycle control it does not have.
 
 ## Acceptance Evidence For Mission-Scoped Agent Team Work
 
@@ -189,8 +189,8 @@ without inventing controlled child objects.
 
 The Lead Agent should use this sequence for non-trivial new work:
 
-1. Inspect relevant code/docs and native state with `harness mission list`,
-   `harness wave list`, and the Agent Team/Dynamic Workflow surfaces needed.
+1. Inspect relevant code/docs and native state with `firm mission list`,
+   `firm wave list`, and the Agent Team/Dynamic Workflow surfaces needed.
 2. Create or select the Mission, link any independent teams the Host may use,
    and write the current ordered Wave as Markdown plan and judgment.
 3. Let each executor own its internal plan. A Wave records what changed, what
@@ -225,23 +225,23 @@ or manually edit store evidence to make a run appear green.
 Useful local commands:
 
 ```bash
-target/debug/harness init
-target/debug/harness mission create --title <title> --objective <objective> \
+target/debug/firm init
+target/debug/firm mission create --title <title> --objective <objective> \
   --context <mission-markdown>
-target/debug/harness mission create-team --id <mission> --name <team> \
+target/debug/firm mission create-team --id <mission> --name <team> \
   --description <purpose> --lead host --member <agent-member-id>
-target/debug/harness wave create --mission-id <mission> --title <title> \
+target/debug/firm wave create --mission-id <mission> --title <title> \
   --objective <objective> --context <wave-markdown>
-target/debug/harness team-run create --mission-id <mission> \
+target/debug/firm team-run create --mission-id <mission> \
   --agent-team-id <team> --objective <objective>
-target/debug/harness team-run work create --team-run-id <team-run> \
+target/debug/firm team-run work create --team-run-id <team-run> \
   --title <title> --context <markdown> \
   --completion-criteria <criteria> --owner-member-run-id <member-run>
-target/debug/harness team-run work list --team-run-id <team-run>
-target/debug/harness wave advance --id <wave> --advanced-by <actor> \
+target/debug/firm team-run work list --team-run-id <team-run>
+target/debug/firm wave advance --id <wave> --advanced-by <actor> \
   --outcome <summary>
-target/debug/harness dashboard snapshot
-target/debug/harness serve --addr 127.0.0.1:8787
+target/debug/firm dashboard snapshot
+target/debug/firm serve --addr 127.0.0.1:8787
 npx pnpm@9.15.4 acceptance:mission-wave
 ```
 
@@ -258,7 +258,7 @@ Canonical contract: [multi-project.md](multi-project.md),
 The operator rules are:
 
 One `serve` / dashboard manages independent Execution Spaces and Project
-Bindings. Execution Spaces under `~/.harness/execution-spaces/<id>/` own
+Bindings. Execution Spaces under `~/.firm/execution-spaces/<id>/` own
 Mission/Wave, Agent Team, and Workflow coordination. Project Bindings identify
 the registered Git repository/directory where providers execute and discover
 instructions, Skills, plugins, and MCP configuration. Selecting `--project`
@@ -270,20 +270,20 @@ Company Store, or compatibility store root. Overrides must be the binding root
 or a Git worktree sharing its Git common directory; external Codex worktrees
 are valid. Treat cwd as an explicit execution and permission boundary.
 
-- Select the Execution Space explicitly (`--space <id>`, `HARNESS_SPACE`, or
-  `harness space switch`) before writing coordination records.
+- Select the Execution Space explicitly (`--space <id>`, `FIRM_SPACE`, or
+  `firm space switch`) before writing coordination records.
 - Select the Project Binding explicitly (`--project <id|path>`,
-  `HARNESS_PROJECT`, or `harness project switch`) before spawning workers.
+  `FIRM_PROJECT`, or `firm project switch`) before spawning workers.
 - `AgentTeamRun.project_binding_id` and `WorkflowRun.project_binding_id` pin
   the execution resource; later selector changes must not retarget them.
-- `--store` / `HARNESS_ROOT` still win as back-compat overrides but are
-  deprecation-warned — prefer `harness init` / `harness space switch`.
+- `--store` / `FIRM_ROOT` still win as back-compat overrides but are
+  deprecation-warned — prefer `firm init` / `firm space switch`.
 - The reserved GLOBAL `_global` (`~/`) project is non-git: read-only work runs
   there, but `writable` / `isolation="worktree"` nodes are rejected with an
   actionable message (and have no diff evidence).
 - Copy project-derived execution history with explicit
-  `harness space migrate-from-project`; the source is retained and verified.
-  Centralize a repo-local `.harness` first with `harness project migrate` when
+  `firm space migrate-from-project`; the source is retained and verified.
+  Centralize a repo-local `.harness` first with `firm project migrate` when
   needed. Never silently migrate or dual-write.
 
 `ProjectContext` is compatibility infrastructure. Do not infer that a Git
@@ -307,7 +307,7 @@ authority for product architecture.
 
 Do not make Earning Engine or other domain skills mandatory for this
 repository. Domain workflows enter through adapters and scenario-specific
-skills; the generic harness core must stay domain-neutral.
+skills; the generic firm core must stay domain-neutral.
 
 ## Self-Hosting Rules
 
@@ -332,7 +332,7 @@ mechanism, but must say so and add focused acceptance for the path it creates.
 - Prefer the progression `doc -> skill -> schema -> CLI/API -> dashboard ->
   plugin`. A plugin is justified only after the object contracts and commands
   are stable enough to reduce variance.
-- The Agent Dashboard is the operator view for harness state. Product
+- The Agent Dashboard is the operator view for firm state. Product
   dashboards for adapted projects remain separate.
 
 ## Runtime Replacement And Rolling Reconciliation
@@ -345,7 +345,7 @@ do not mirror quota-specific rosters here — update those scenario carriers
 instead.
 
 The provider-neutral principle behind rolling reconciliation binds every
-runtime replacement (Harness binary, adapter, protocol, permission,
+runtime replacement (Firm binary, adapter, protocol, permission,
 model-control, Plugin, or Skill contract change):
 
 1. classify whether only UI/Docs projection changed or a runtime contract

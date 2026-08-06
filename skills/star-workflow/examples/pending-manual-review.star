@@ -10,7 +10,7 @@
 # after completion without changing that pending-patch decision.
 #
 # Run:
-#   harness workflow run-script ./pending-manual-review.star \
+#   firm workflow run-script ./pending-manual-review.star \
 #     --args '{"task":"tighten validation for X","owned_paths":["src","tests"],"gate":"cargo test -q"}'
 
 workflow(
@@ -113,10 +113,10 @@ else:
     action = "pending"
 
 operator_commands = [
-    "harness workflow patch list --run <run_id>",
-    "harness workflow patch show <run_id> --step implement",
-    "harness workflow patch apply <run_id> --step implement --actor <operator> --reason '<reason>'",
-    "harness workflow patch reject <run_id> --step implement --actor <operator> --reason '<reason>'",
+    "firm workflow patch list --run <run_id>",
+    "firm workflow patch show <run_id> --step implement",
+    "firm workflow patch apply <run_id> --step implement --actor <operator> --reason '<reason>'",
+    "firm workflow patch reject <run_id> --step implement --actor <operator> --reason '<reason>'",
 ]
 
 output({

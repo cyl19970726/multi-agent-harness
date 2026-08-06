@@ -116,8 +116,8 @@ single-intent-spine ADR entry; deleting either side would falsify history.
 The single textual conflict does not imply low semantic risk. Current master
 overlaps Wave 3 ownership in:
 
-- `crates/harness-cli/src/main.rs`, `company_os_api.rs`, `mcp.rs`, and tests;
-- `crates/harness-core/src/lib.rs` and `crates/harness-store/src/lib.rs`;
+- `crates/firm-cli/src/main.rs`, `company_os_api.rs`, `mcp.rs`, and tests;
+- `crates/firm-core/src/lib.rs` and `crates/firm-store/src/lib.rs`;
 - Runtime/SSE and recovery tests;
 - Dashboard `api.ts`, `WorkbenchShell.tsx`, `types.ts`, Vite configuration,
   browser checks, and provenance UI; and
@@ -128,7 +128,7 @@ Candidate simulations against exact master `a2fc58b` report:
 - Atomicity `3b269d4` and Dashboard `5ca2563`: the same single textual
   `docs/decisions/README.md` conflict;
 - Runtime `5565999`: two textual conflicts,
-  `docs/decisions/README.md` and `crates/harness-cli/src/main.rs`; and
+  `docs/decisions/README.md` and `crates/firm-cli/src/main.rs`; and
 - Atomicity plus Dashboard, and Runtime plus Dashboard before master, merge
   textually clean.
 
@@ -265,7 +265,7 @@ not silently repair live state, and this reviewer did not mutate the Works.
 
 | Lane | Worktree/branch | Current base/candidate | Master semantic overlap | State |
 | --- | --- | --- | --- | --- |
-| Atomicity | `company-os-wave3-atomicity` / `codex/company-os-wave3-atomicity` | `3b269d4bc3e9625562eee8bb5768b1a4cd1bf344` | `harness-core`, `harness-store`, `team_run_work_command`, and WorkOperation/rebind semantics overlap current master/PR 310. Candidate includes the authorized `reconcile-projection` CLI hunk and same-MemberRun higher-generation rebind primitive. Against `a2fc58b`, textual conflict is only `docs/decisions/README.md`. | committed; Work Host-accepted v4 |
+| Atomicity | `company-os-wave3-atomicity` / `codex/company-os-wave3-atomicity` | `3b269d4bc3e9625562eee8bb5768b1a4cd1bf344` | `firm-core`, `firm-store`, `team_run_work_command`, and WorkOperation/rebind semantics overlap current master/PR 310. Candidate includes the authorized `reconcile-projection` CLI hunk and same-MemberRun higher-generation rebind primitive. Against `a2fc58b`, textual conflict is only `docs/decisions/README.md`. | committed; Work Host-accepted v4 |
 | Runtime | `company-os-wave3-runtime` / `codex/company-os-wave3-runtime` | unique `5565999e8a09367bc73c1f53801b375d57f409ee`; dependencies `b21917b` (semantic PR 310 replay) then `d5f468f` (patch-identical Atomicity replay) | `main.rs`, SSE/provider and TeamRun tests overlap master. Against `a2fc58b`, textual conflicts are `main.rs` and `docs/decisions/README.md`. Final integration already gets PR 310 from master and Atomicity from its lane, so transplant only commits strictly above `d5f468f`. | committed; Work Host-accepted v5 |
 | Dashboard | `company-os-wave3-dashboard` / `codex/company-os-wave3-dashboard` | `5ca256355dc1566726f718c8d49368071c5ecfc3` (`8e23241` implementation + `5ca2563` audit correction) | Dashboard API, Workbench, types, Vite/browser checks overlap provenance changes. Against `a2fc58b`, textual conflict is only `docs/decisions/README.md`; semantic composition with `6617929` still needs integrated checks. | committed; Work Host-accepted v7 |
 | Release | `company-os-recursive-implementation-v1` / `codex/company-os-recursive-release-v1` | `22e09bf915bac835c284d399522bf34935490465` | Conflicts are resolved with both histories retained; ADRs are 0051 Single Intent and 0052 Nested Teams. Four candidate patch ids match exactly; integration-only cursor and test-fixture corrections are explicit. | clean local candidate; both ancestry checks and final gate pass; not pushed |
@@ -278,7 +278,7 @@ Any remote movement invalidates this map.
 
 | Boundary | Required independent proof | Snapshot result |
 | --- | --- | --- |
-| Cross-store cutover | Concurrent conflicting transitions are fenced/refused; retry/restart is idempotent; no dual mutable responsibility; rebound preserves Team scope. | **PASS on integrated `22e09bf`** — `harness-core` 65 + 13 and `harness-store` 58 + 15 + 4 all pass. The one-way fence, crash/retry, crash-gap Work advance, sparse mixed-writer recovery/refusal, append-only reconciliation, and higher-generation rebind are present. Live reconciliation remains a Host data action. |
+| Cross-store cutover | Concurrent conflicting transitions are fenced/refused; retry/restart is idempotent; no dual mutable responsibility; rebound preserves Team scope. | **PASS on integrated `22e09bf`** — `firm-core` 65 + 13 and `firm-store` 58 + 15 + 4 all pass. The one-way fence, crash/retry, crash-gap Work advance, sparse mixed-writer recovery/refusal, append-only reconciliation, and higher-generation rebind are present. Live reconciliation remains a Host data action. |
 | Provider compatibility | `review_required` cannot start, reopen/resume, recover/rebind, or rebound delivery before native drive; reviewed Codex/Claude modes still work. | **PASS on integrated `22e09bf`** — serial `team_run_api` passes 45/45, including Kimi 0.32 pre-ACP refusals and reviewed stable recovery; `team_run_start` passes 10 with 2 documented historical `claude_cli` ignores. Claude live sessions remain honest 403 history, not a positive live-provider claim. |
 | Runtime recovery | Honest cursor or explicitly bounded snapshot contract; same-size replace and deletion invalidate/recover without stale scope or duplicate Work. | **PASS on integrated `22e09bf`** — bounded snapshot contract remains explicit; `serve_sse_projects` passes 7/7, including typed replace/delete/reconnect selected-scope recovery. |
 | Company selection | Tab-local selection does not mutate CLI/global Company; externally created Company appears; stale scope cannot overwrite current scope. | **PASS on integrated `22e09bf`** — real browser selected non-default B while server default remained A, refreshed external C, and rejected a delayed stale response. |
@@ -370,33 +370,33 @@ Independent candidate checks:
 
 ```bash
 # Atomicity candidate 3b269d4
-cargo test -p harness-core       # 65 unit + 13 Company OS passed
-cargo test -p harness-store      # 54 unit + 15 Company OS + 4 delivery passed
-cargo check -p harness-cli       # passed
+cargo test -p firm-core       # 65 unit + 13 Company OS passed
+cargo test -p firm-store      # 54 unit + 15 Company OS + 4 delivery passed
+cargo check -p firm-cli       # passed
 
 # Runtime candidate 5565999; each exact filter ran one test and passed
-cargo test -p harness-cli --test team_run_api \
+cargo test -p firm-cli --test team_run_api \
   review_required_kimi_032_blocks_initial_start_and_http_work_rebind_before_acp -- --exact
-cargo test -p harness-cli --test team_run_api \
+cargo test -p firm-cli --test team_run_api \
   installed_kimi_upgrade_blocks_reopen_and_recovery_without_reusing_native_session -- --exact
-cargo test -p harness-cli --test team_run_api \
+cargo test -p firm-cli --test team_run_api \
   reviewed_recovery_redelivers_same_stable_member_without_duplicate_work_or_session -- --exact
-cargo test -p harness-cli --test claude_agent_sdk_member \
+cargo test -p firm-cli --test claude_agent_sdk_member \
   review_required_agent_sdk_package_is_refused_before_fake_runner_execution -- --exact
-cargo test -p harness-cli --test serve_sse_projects \
+cargo test -p firm-cli --test serve_sse_projects \
   typed_ledger_replace_delete_and_reconnect_recover_only_the_selected_scope -- --exact
-cargo test -p harness-cli --test provider_capacity_preflight # 9/9 passed
-cargo test -p harness-cli --test team_run_start               # 10 passed, 2 historical claude_cli tests ignored
-cargo test -p harness-cli --test claude_agent_sdk_member      # 10/10 passed
+cargo test -p firm-cli --test provider_capacity_preflight # 9/9 passed
+cargo test -p firm-cli --test team_run_start               # 10 passed, 2 historical claude_cli tests ignored
+cargo test -p firm-cli --test claude_agent_sdk_member      # 10/10 passed
 
 # Dashboard candidate 5ca2563
 pnpm check:dashboard:runtime-e2e  # 17/17 passed
 pnpm check:dashboard              # full component/browser/a11y/build gate passed
 
 # Exact repaired release candidate 22e09bf
-cargo test -p harness-core -p harness-store
+cargo test -p firm-core -p firm-store
 # core: 65 + 13; store: 58 + 15 + 4; all passed
-cargo test -p harness-cli --test team_run_api -- --test-threads=1
+cargo test -p firm-cli --test team_run_api -- --test-threads=1
 # 45/45 passed
 pnpm acceptance:mission-wave
 # MCP 4/4; Mission/Wave 4/4; TeamRun API 45/45;
@@ -407,7 +407,7 @@ pnpm acceptance:mission-wave
 One preliminary `cargo test --workspace` used default parallel test threads and
 hit an ephemeral-port collision: `team_run_api` was 44/45 and
 `kimi_model_switch_uses_only_the_new_models_advertised_effort_controls` failed
-before `harness serve` became ready with `Address already in use`. The complete
+before `firm serve` became ready with `Address already in use`. The complete
 suite then passed 45/45 under the repository's serial acceptance setting. This
 is recorded as test-harness flake evidence, not hidden or treated as a product
 failure.

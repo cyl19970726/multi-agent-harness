@@ -5,9 +5,9 @@ status: active commercial dogfood project
 legacy_compat_project_id: new-day-wanchengwanling
 external_software_project_id: wanchengwanling
 canonical_for: applying Company OS to a real AR tourism project whose software PRDs live in GitHub
-legacy_compat_store: /Users/hhh0x/.harness/projects/new-day-wanchengwanling
+legacy_compat_store: /Users/hhh0x/.firm/projects/new-day-wanchengwanling
 company_store_id: agent-company
-company_store: /Users/hhh0x/.harness/companies/agent-company
+company_store: /Users/hhh0x/.firm/companies/agent-company
 target_boundary: ADR 0042 Agent Company Workspace / Company Store
 ```
 
@@ -48,7 +48,7 @@ active local dogfood truth now lives in the explicit Company Store:
 
 ```text
 company_id: agent-company
-store root: /Users/hhh0x/.harness/companies/agent-company
+store root: /Users/hhh0x/.firm/companies/agent-company
 Wanchengwanling root document: document-wcw-root
 AgentOS dogfood document: document-cli-11-agentos-dogfood-external-gateway-agentos
 ```
@@ -112,10 +112,10 @@ fixture-only truth. They are not the authoring path for live dogfood.
 Use the explicit Company Store and governed commands instead:
 
 ```bash
-HARNESS_COMPANY=agent-company target/debug/harness company docs query \
+FIRM_COMPANY=agent-company target/debug/firm company docs query \
   --document document-wcw-project-home --json
 
-HARNESS_COMPANY=agent-company target/debug/harness company work list --json
+FIRM_COMPANY=agent-company target/debug/firm company work list --json
 ```
 
 If a migration from the legacy compatibility Store is required, use the
@@ -128,7 +128,7 @@ The unfinished-goal roadmap is maintained in
 and should be inspected or updated through the active Company Store:
 
 ```bash
-target/debug/harness --company agent-company company work list --json
+target/debug/firm --company agent-company company work list --json
 ```
 
 That roadmap covers CLI/API, skills, storage-backed custom pages, GitHub
@@ -142,7 +142,7 @@ dogfood WorkItems:
 
 | Surface | Store evidence |
 | --- | --- |
-| Company Store | `agent-company` -> `/Users/hhh0x/.harness/companies/agent-company` |
+| Company Store | `agent-company` -> `/Users/hhh0x/.firm/companies/agent-company` |
 | Docs | 12 `Document` rows in `space_id=wanchengwanling` |
 | Work | Wanchengwanling launch/replication/Company OS operating WorkItems plus AgentOS dogfood WorkItems such as `work-wcw-agentos-wecom-gateway-v0` |
 | Organization | Lead Agent, four Governance Agents, six Business Agents, human owner, external participant, org units, memberships |
@@ -169,10 +169,10 @@ Store-backed operating pages:
 Both pages were updated through the governed Docs CLI and verified with:
 
 ```bash
-target/debug/harness --company agent-company \
+target/debug/firm --company agent-company \
   company docs query --document document-wcw-project-home --json
 
-target/debug/harness --company agent-company \
+target/debug/firm --company agent-company \
   company docs query --document document-wcw-business-model --json
 ```
 
@@ -195,10 +195,10 @@ The second dogfood authoring pass established the next two commercial pages:
 Both pages were verified through CLI and frontend Store-live rendering:
 
 ```bash
-target/debug/harness --company agent-company \
+target/debug/firm --company agent-company \
   company docs query --document document-wcw-bracelet-product --json
 
-target/debug/harness --company agent-company \
+target/debug/firm --company agent-company \
   company docs query --document document-wcw-route-ar-experience --json
 ```
 
@@ -229,8 +229,8 @@ Initial product sources should be synced into the same persistent Store as
 Docs `TypedRecord`s:
 
 ```bash
-HARNESS_COMPANY_OS_TOKEN=<local-or-server-write-token> \
-target/debug/harness --company agent-company \
+FIRM_COMPANY_OS_TOKEN=<local-or-server-write-token> \
+target/debug/firm --company agent-company \
   company docs source sync \
   --definition page-wcw-software-product-sources \
   --module module-wcw-software-product-sources \

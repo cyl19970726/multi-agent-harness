@@ -29,12 +29,12 @@ does not own native coordination writes.
 
 The provider collaboration environment preserves the same separation:
 
-- `HARNESS_PROJECT_ID` carries stable Workspace identity;
-- `HARNESS_PROJECT` carries an executable selector (normally canonical
+- `FIRM_PROJECT_ID` carries stable Workspace identity;
+- `FIRM_PROJECT` carries an executable selector (normally canonical
   `project_root`) so a nested provider process resolves the same execution
   boundary even when its cwd is an unregistered linked worktree;
-- `HARNESS_SPACE` carries the coordination namespace independently;
-- `HARNESS_BIN` carries the exact Host executable so Member CLI calls cannot
+- `FIRM_SPACE` carries the coordination namespace independently;
+- `FIRM_BIN` carries the exact Host executable so Member CLI calls cannot
   drift to an older binary on `PATH`.
 
 An in-memory `serve` context created from an unregistered worktree retains its

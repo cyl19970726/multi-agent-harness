@@ -47,7 +47,7 @@ Provider-native questions and approvals that pause the current turn are
 
 ## Direction And Initial State
 
-- Member → Host is `manual_ack + delivered` when appended because the Harness
+- Member → Host is `manual_ack + delivered` when appended because the Firm
   control plane has received it.
 - Host → Member and Member → Member ordinary coordination begins `queued`.
 - Peer sender, recipient, correlation and causation must resolve inside the
@@ -75,7 +75,7 @@ so an Inject-descendant sibling cannot enter between two Control publications.
 The broader provider-effect-before-Control crash reservation gap remains a
 follow-up; this bounded convergence rule does not claim that gap is closed.
 
-Reading `harness team-run inbox` or `harness member-run show` is a projection;
+Reading `firm team-run inbox` or `firm member-run show` is a projection;
 it does not itself consume or semantically acknowledge mail.
 
 ## Latest-Row Selection
@@ -174,9 +174,9 @@ MemberRun.
 
 The same application behavior is exposed through:
 
-- `harness team-run inbox --id <run> --member-run-id <member> [--all] --json`;
-- `harness team-run host-inbox --surface <surface> --thread-id <native-host-task> [--all] --json`;
-- `harness member-run show --id <member> --json`;
+- `firm team-run inbox --id <run> --member-run-id <member> [--all] --json`;
+- `firm team-run host-inbox --surface <surface> --thread-id <native-host-task> [--all] --json`;
+- `firm member-run show --id <member> --json`;
 - Team message/status commands;
 - HTTP and MCP equivalents; and
 - Dashboard Team mailboxes, group conversation and Member Focus.
@@ -189,7 +189,7 @@ locator and on-demand projection, not copied into these results.
 
 The live app-server control handle is process-local, while the
 `TeamSupervisorLease` is durable cross-process authority. Its service locator
-lets a second Dashboard, MCP, CLI, or Harness service route control to the
+lets a second Dashboard, MCP, CLI, or Firm service route control to the
 owner, but only the current generation may claim a queued message or drive the
 handle. The owner fences the lease again immediately before the Provider
 operation. After a crash, an expired lease may be replaced; a delivery left

@@ -16,7 +16,7 @@ outputs, adapters, and the Agent Dashboard.
 | `TeamSupervisorLease` | Latest-wins TeamRun control owner, generation fence, heartbeat, and loopback locator |
 | `AgentMessageRoute` | Idempotent bridge from stable Agent Inbox mail to a MemberRun/TeamMessage |
 | `MemberAction` | Transitional action schema; target scope is Harness-owned coordination/control facts, never mirrored provider activity |
-| `DelegationRun` | Honest attribution for observed or harness-controlled delegation |
+| `DelegationRun` | Honest attribution for observed or firm-controlled delegation |
 | `TeamRunEvent` | Ordered sanitized event projection for one TeamRun |
 
 Dynamic Workflow and Host execution retain their distinct execution-specific
@@ -89,7 +89,7 @@ schema contracts are checked with valid and invalid fixtures.
 | Proposal | [proposal.schema.json](../schemas/proposal.schema.json) |
 | Evidence | [evidence.schema.json](../schemas/evidence.schema.json) |
 | Decision | [decision.schema.json](../schemas/decision.schema.json) |
-| Tool descriptor | [agent-harness-tool-descriptor.schema.json](../schemas/agent-harness-tool-descriptor.schema.json) |
+| Tool descriptor | [agent-firm-tool-descriptor.schema.json](../schemas/agent-firm-tool-descriptor.schema.json) |
 | Doc descriptor | [doc-descriptor.schema.json](../schemas/doc-descriptor.schema.json) |
 | Review | [review.schema.json](../schemas/review.schema.json) |
 | Gap | [gap.schema.json](../schemas/gap.schema.json) |
@@ -126,7 +126,7 @@ contracts define their own required migration and validation rules.
 - Open enums (`verdict`, `decision`, `review_kind`, `evidence_kind`,
   `decision_kind`) are free `string` in JSON Schema and validated against a
   canonical set in Rust (`#[serde(other)] Other(String)`). Only truly closed,
-  harness-owned sets (`Gap.severity`, `Gap.status`) use a hard JSON `enum`.
+  firm-owned sets (`Gap.severity`, `Gap.status`) use a hard JSON `enum`.
   Harness core carries zero domain vocabulary; domain values live in adapters,
   skills, or free `*_detail` / `source_type` fields.
 
@@ -134,7 +134,7 @@ contracts define their own required migration and validation rules.
 
 | Registry | File | Check |
 | --- | --- | --- |
-| Docs governance | [registry.json](registry.json) | `harness governance check` |
+| Docs governance | [registry.json](registry.json) | `firm governance check` |
 
 ## Fixture Validation
 
@@ -149,7 +149,7 @@ If a field affects storage, API, adapter behavior, or dashboard rendering, it
 must be represented in both:
 
 ```text
-crates/harness-core/src/*.rs
+crates/firm-core/src/*.rs
 schemas/*.schema.json
 ```
 

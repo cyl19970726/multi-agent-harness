@@ -139,8 +139,8 @@ See [Financial Relations](../financial-relations.md) and
 
 ## Native acceptance proof
 
-`crates/harness-cli/tests/company_os_api.rs` executes the operational core of
-this scenario against an isolated Harness Store. After administrative bootstrap
+`crates/firm-cli/tests/company_os_api.rs` executes the operational core of
+this scenario against an isolated Firm Store. After administrative bootstrap
 of the Human root, module/page declaration and source Document, governed Actions
 create the WorkItem and Assignment, propose the ¥3,000 Commitment, request and
 record Human Approval, execute and complete the WorkItem, append result evidence,

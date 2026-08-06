@@ -6,7 +6,7 @@
 # files that should survive worktree cleanup.
 #
 # Run:
-#   harness workflow run-script ./artifact-manifest.star \
+#   firm workflow run-script ./artifact-manifest.star \
 #     --args '{"topic":"workflow patch landing","artifact":"out/workflow-report.md"}'
 
 workflow(

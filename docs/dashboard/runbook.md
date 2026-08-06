@@ -1,6 +1,6 @@
 # Agent Workbench
 
-The Agent Workbench is the operational UI for the generic harness. Legacy
+The Agent Workbench is the operational UI for the generic firm. Legacy
 commands and package paths still use `dashboard`.
 
 Product-level design and acceptance are in
@@ -20,7 +20,7 @@ appear as links and typed evidence references supplied by adapters.
 Generate a snapshot for CLI/audit use:
 
 ```bash
-cargo run -p harness-cli -- dashboard snapshot > .harness/dashboard-snapshot.json
+cargo run -p firm-cli -- dashboard snapshot > .firm/dashboard-snapshot.json
 ```
 
 The web UI no longer loads pasted or file snapshots; it reads the live API.
@@ -31,7 +31,7 @@ For live local state, start the API and point the Workbench's top-bar API URL
 control at it:
 
 ```bash
-cargo run -p harness-cli -- serve --addr 127.0.0.1:8787
+cargo run -p firm-cli -- serve --addr 127.0.0.1:8787
 ```
 
 The Workbench fetches `GET /v1/snapshot`, subscribes to the `/v1/events` SSE
@@ -76,7 +76,7 @@ server logs:
 
 - `GET /v1/meta` returns `{ git_rev, built_at, store_root, latest_op_seq,
   server_version }`. `git_rev`/`built_at` are embedded at **compile time** by
-  `crates/harness-cli/build.rs` (a `git rev-parse --short HEAD` build-script
+  `crates/firm-cli/build.rs` (a `git rev-parse --short HEAD` build-script
   call, never shelled out per-request); `latest_op_seq` is a monotonic cursor
   over the store's `work_operations.jsonl` append log.
 - The Workbench's persistent footer shows that server `git_rev` +
@@ -86,7 +86,7 @@ server logs:
   any surface carries this strip, so a stale worktree is visible without
   asking. A prominent banner replaces the quiet strip only when the two revs
   disagree, or `/v1/meta` is unreachable — otherwise it stays out of the way.
-- `harness dashboard doctor --team-run-id <id> --api <base-url>
+- `firm dashboard doctor --team-run-id <id> --api <base-url>
   [--expected-git-rev <rev>]` is the operator/CI-facing check: it fetches
   `/v1/meta` and the same `GET /v1/team-runs/{id}/snapshot` the Workbench
   fetches, compares works/members/messages counts and `git_rev` against this

@@ -21,7 +21,7 @@ approved intent, specifications, selected comparisons, overlays and reviews.
 ## Final evidence
 
 The three P0 pages passed both gates on 2026-07-22. Product truth is backed by
-an authority-labelled Harness Store projection; visual fidelity is reviewed at
+an authority-labelled Firm Store projection; visual fidelity is reviewed at
 the exact `1536×1024` target size. The canonical human-readable entry point is
 [`review.html`](review.html); machine-readable status remains in
 [`visual-contract.json`](visual-contract.json), and the compact coverage ledger

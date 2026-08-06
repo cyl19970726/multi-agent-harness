@@ -87,7 +87,7 @@ risk below). It is no longer the default or the acceptance target.
 ## Consequences
 
 - **Keep:** the neutral object model (`AgentMember`, `AgentProviderConfig`,
-  `NativeSessionRef` plus explicit outcomes), the neutral seam, harness-owns-mailbox +
+  `NativeSessionRef` plus explicit outcomes), the neutral seam, firm-owns-mailbox +
   atomic claim/lease, JSONL-as-canonical, and SSE-as-delivery.
 - **Retire (later WP):** the Codex app-server WebSocket-over-UDS path — WS
   framing, socket lifecycle, the `--listen` spawn + socket-poll, and the dead

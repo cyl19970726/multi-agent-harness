@@ -23,9 +23,9 @@ The suite currently expands to:
 | Skill | Owning surface | Implementation status |
 | --- | --- | --- |
 | [`company-business-project-bootstrap`](../../skills/company-business-project-bootstrap/SKILL.md) | High-level commercial-project bootstrap across Docs IA/page contracts, Work, Org, Finance, external software/social sources, and custom pages | procedural orchestration skill |
-| [`company-docs-operator`](../../skills/company-docs-operator/SKILL.md) | Docs: Document, Block, page contract, TypedRecord, Relation, View, BusinessModule, custom page metadata | dedicated `harness company docs ...` CLI implemented |
-| [`company-work-operator`](../../skills/company-work-operator/SKILL.md) | Work: WorkItem, Milestone, Assignment, lifecycle, Approval links, execution/result refs shown through Docs page contracts | dedicated `harness company work ...` CLI implemented for list/query/create/update/assign/transition/close plus `work milestone ...` baseline lifecycle |
-| [`company-org-operator`](../../skills/company-org-operator/SKILL.md) | Organization: Human, Standing Agent, OrgUnit, role, permission, lifecycle and actor refs for Docs page context | dedicated flat `harness company org ...` plus nested `actor/unit/membership ...` baseline CLI implemented; proposal/promotion/grant-revoke workflows remain planned |
+| [`company-docs-operator`](../../skills/company-docs-operator/SKILL.md) | Docs: Document, Block, page contract, TypedRecord, Relation, View, BusinessModule, custom page metadata | dedicated `firm company docs ...` CLI implemented |
+| [`company-work-operator`](../../skills/company-work-operator/SKILL.md) | Work: WorkItem, Milestone, Assignment, lifecycle, Approval links, execution/result refs shown through Docs page contracts | dedicated `firm company work ...` CLI implemented for list/query/create/update/assign/transition/close plus `work milestone ...` baseline lifecycle |
+| [`company-org-operator`](../../skills/company-org-operator/SKILL.md) | Organization: Human, Standing Agent, OrgUnit, role, permission, lifecycle and actor refs for Docs page context | dedicated flat `firm company org ...` plus nested `actor/unit/membership ...` baseline CLI implemented; proposal/promotion/grant-revoke workflows remain planned |
 | [`company-module-designer`](../../skills/company-module-designer/SKILL.md) | Business module design, page contracts, frontend surface intent, and governance proposal | procedural design skill |
 | [`company-page-builder`](../../skills/company-page-builder/SKILL.md) | Code-declared custom page design/implementation from approved page contracts, visual expected images, and actual verification | procedural page-building skill |
 | [`dogfood-company-os`](../../skills/dogfood-company-os/SKILL.md) | Repeated, evidence-backed Company OS self-hosting across Docs, Work, Organization, external delivery, execution, and result return | procedural composition skill |
@@ -76,7 +76,7 @@ packaged as plugins that provide:
 - view extensions that declare how synced records appear in Docs, Work,
   Organization, and Agent detail surfaces.
 
-`harness company gateway social readiness` is a read-only device/API readiness
+`firm company gateway social readiness` is a read-only device/API readiness
 probe retained as a core bootstrap. It does not log in, publish, delete, pay
 for promotion, export private messages, or mutate Company Store truth by
 itself. Full social operations such as media upload, title/body/topic fill,
@@ -92,13 +92,13 @@ All operator skills must make Store selection explicit before reading or
 writing durable company records:
 
 ```bash
-harness company current
-harness company init --id <company-id> --name <display-name>
-harness company migrate-from-project --from-project <project-id|path> --id <company-id> --name <display-name>
-harness company migrate-from-project --from-project <project-id|path> --id <company-id> --verify-only
-harness --company <company-id> company migrations
-harness --company <company-id> company docs query --document <doc-id>
-HARNESS_COMPANY=<company-id> harness company work list
+firm company current
+firm company init --id <company-id> --name <display-name>
+firm company migrate-from-project --from-project <project-id|path> --id <company-id> --name <display-name>
+firm company migrate-from-project --from-project <project-id|path> --id <company-id> --verify-only
+firm --company <company-id> company migrations
+firm --company <company-id> company docs query --document <doc-id>
+FIRM_COMPANY=<company-id> firm company work list
 ```
 
 If no Company is selected, current commands still fall back to the
@@ -145,11 +145,11 @@ External software source sync is Company Store-routed (`--company`) and
 observes a Git worktree (`--repo-path`).
 
 ```bash
-harness --company <id> company docs source sync --definition <id> --module <id> --source-document <id> --actor <ref> --repo-path <path> --repo <owner/repo> --branch <branch> --project-id <id> [--path docs/prd] [--dry-run]
-harness company docs view create --definition <id> --module <id> --title <title> [--mode table|board|timeline] --source-kind typed_record [--query-json '…'] --actor <ref>
-harness company docs relation link --definition <id> --from-document <id> --to-record <id> --actor <ref>
-harness company docs relation unlink --definition <id> --relation <id> --actor <ref> (--dry-run|--confirm)
-harness company docs relation repair-missing --definition <id> --actor <ref> (--dry-run|--confirm)
+firm --company <id> company docs source sync --definition <id> --module <id> --source-document <id> --actor <ref> --repo-path <path> --repo <owner/repo> --branch <branch> --project-id <id> [--path docs/prd] [--dry-run]
+firm company docs view create --definition <id> --module <id> --title <title> [--mode table|board|timeline] --source-kind typed_record [--query-json '…'] --actor <ref>
+firm company docs relation link --definition <id> --from-document <id> --to-record <id> --actor <ref>
+firm company docs relation unlink --definition <id> --relation <id> --actor <ref> (--dry-run|--confirm)
+firm company docs relation repair-missing --definition <id> --actor <ref> (--dry-run|--confirm)
 ```
 
 Command contract:
@@ -190,7 +190,7 @@ Command contract:
   writes `lifecycle_status=archived` (preserves history, requires `--confirm`).
 
 All write commands dispatch through governed Action transport; no
-general store-write client. They require `HARNESS_COMPANY_OS_TOKEN` plus a
+general store-write client. They require `FIRM_COMPANY_OS_TOKEN` plus a
 matching `CustomPageDefinition` policy.
 
 ## Shared operating rules
@@ -318,8 +318,8 @@ deliverable_refs
 
 ### Completion rule
 
-The skill is complete only when `harness company work query` and/or
-`harness company work list` can reconstruct the WorkItem, its role chain,
+The skill is complete only when `firm company work query` and/or
+`firm company work list` can reconstruct the WorkItem, its role chain,
 detail fields, source/result provenance, and linked assignment/approval
 context. A document paragraph, chat message, fixture, or visual page alone is
 not a completed WorkItem.
@@ -472,7 +472,7 @@ membership, approve spending, or create governed Company OS records.
 | --- | --- |
 | Mission intent | Durable objective, completion criteria, constraints, and success standard. |
 | Current state | Mission Log, linked Teams, Works board, messages, pending interactions, Member/Supervisor health, and native-session bindings. |
-| Execution Space and Project Binding | Explicit `HARNESS_SPACE` and `HARNESS_PROJECT` selection. |
+| Execution Space and Project Binding | Explicit `FIRM_SPACE` and `FIRM_PROJECT` selection. |
 | Decision boundary | Work to assign, Members to compose, and acceptance authority for submitted Work. |
 
 ### Required output
@@ -508,7 +508,7 @@ manage Organization membership, or approve spending.
 
 | Input | Requirement |
 | --- | --- |
-| Collaboration envelope | `HARNESS_TEAM_RUN_ID`, `HARNESS_MEMBER_RUN_ID`, `HARNESS_BIN`, and current Work identity from `HARNESS_WORK_ID`/`HARNESS_WORK_VERSION`. |
+| Collaboration envelope | `FIRM_TEAM_RUN_ID`, `FIRM_MEMBER_RUN_ID`, `FIRM_BIN`, and current Work identity from `FIRM_WORK_ID`/`FIRM_WORK_VERSION`. |
 | Work context | Title, Markdown context, completion criteria, owner, owned paths, permission ceiling, and Team roster. |
 | Provider session | Native session id and execution driver (`host_driven`, `provider_driven`, or `user_driven`). |
 

@@ -25,7 +25,7 @@ The first implementation exposed two unsafe boundaries:
    Provider injection and record delivery afterwards, without a durable
    cross-process claim.
 
-Two Harness processes could therefore attach the same TeamRun or observe the
+Two Firm processes could therefore attach the same TeamRun or observe the
 same queued delivery. Public message surfaces also accepted a string sender id; Team
 membership validation does not prove that the caller is that Member.
 
@@ -39,7 +39,7 @@ a second execution driver.
 ### One Supervisor lease per TeamRun
 
 Before starting or resuming a Provider runtime, a Supervisor acquires a durable
-latest-wins `TeamSupervisorLease` under the Harness Store write lock:
+latest-wins `TeamSupervisorLease` under the Firm Store write lock:
 
 ```text
 TeamSupervisorLease
@@ -64,7 +64,7 @@ session ids and MemberRun identities remain unchanged. Lease replacement does
 not itself prove that an incomplete Provider operation is safe to retry.
 
 The active lease publishes a local-only service locator. CLI, MCP, Dashboard,
-and another Harness service process read that locator and route live control to
+and another Firm service process read that locator and route live control to
 the owning Supervisor. The owner validates the lease again immediately before
 touching its process-local Provider handle. A stale generation, expired lease,
 unroutable locator, or missing handle is an explicit failure; no client falls
@@ -195,7 +195,7 @@ and silently queued. The caller may deliberately use Message, or Interrupt then
 Message.
 
 Interrupt stops one current Provider activity and waits for a terminal native
-acknowledgement. Close ends the Harness-owned runtime while ADR 0049 preserves
+acknowledgement. Close ends the Firm-owned runtime while ADR 0049 preserves
 the closed MemberRun/native binding for explicit Reopen. Kimi ACP has no native
 session-close operation; closing its client runtime must not claim otherwise.
 
@@ -289,7 +289,7 @@ resuming Provider work.
 
 ### Positive
 
-- concurrent Harness processes cannot legitimately drive one TeamRun;
+- concurrent Firm processes cannot legitimately drive one TeamRun;
 - queued coordination cannot be duplicated through an ordinary race;
 - ambiguous post-crash delivery is visible instead of silently replayed;
 - external input retains provenance;
@@ -334,7 +334,7 @@ The current execution checklist is
 The accepted implementation must prove:
 
 - two concurrent Supervisor starts yield one owner;
-- a second Harness service can route control to the owning Supervisor, while a
+- a second Firm service can route control to the owning Supervisor, while a
   stale generation is fenced before the Provider call;
 - lease expiry creates one higher generation;
 - two concurrent claims yield one claim;

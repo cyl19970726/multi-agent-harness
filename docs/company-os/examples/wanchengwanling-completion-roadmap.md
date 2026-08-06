@@ -4,7 +4,7 @@
 status: active roadmap
 scope: unfinished goals required to make Wanchengwanling operable through Company OS
 company_store_id: agent-company
-store: /Users/hhh0x/.harness/companies/agent-company
+store: /Users/hhh0x/.firm/companies/agent-company
 dogfood_role: first real commercial Company OS dogfood project
 canonical_boundary: WorkItems in the Company Store are the execution backlog; this document explains the grouping and acceptance logic
 ```
@@ -45,13 +45,13 @@ On 2026-07-28, the first dogfood Docs foundation pass moved `00 Project Home`
 and `01 Business Model` beyond prose-only pages. The live Store now contains
 page contracts, structured business facts, standard Views, and explicit
 Document ↔ TypedRecord Relations for both pages. This was done through
-`harness company docs ...` CLI commands with `HARNESS_COMPANY_OS_TOKEN`, not by
+`firm company docs ...` CLI commands with `FIRM_COMPANY_OS_TOKEN`, not by
 editing JSONL ledgers directly and not by rerunning a seed script.
 
 Verified Store:
 
 ```text
-/Users/hhh0x/.harness/companies/agent-company
+/Users/hhh0x/.firm/companies/agent-company
 ```
 
 Current completed slice:
@@ -110,25 +110,25 @@ Frontend Store-live evidence:
 Verification commands:
 
 ```bash
-target/debug/harness --company agent-company \
+target/debug/firm --company agent-company \
   company docs query --document document-wcw-project-home --json
 
-target/debug/harness --company agent-company \
+target/debug/firm --company agent-company \
   company docs query --document document-wcw-business-model --json
 
-target/debug/harness --company agent-company \
+target/debug/firm --company agent-company \
   company docs query --document document-wcw-bracelet-product --json
 
-target/debug/harness --company agent-company \
+target/debug/firm --company agent-company \
   company docs query --document document-wcw-route-ar-experience --json
 
-target/debug/harness --company agent-company \
+target/debug/firm --company agent-company \
   company docs query --document document-wcw-merchant-network --json
 
-target/debug/harness --company agent-company \
+target/debug/firm --company agent-company \
   company docs query --document document-wcw-rewards-procurement-inventory --json
 
-target/debug/harness --company agent-company \
+target/debug/firm --company agent-company \
   company docs traverse --document document-wcw-root --depth 2 --json
 ```
 
@@ -331,8 +331,8 @@ node scripts/seed-company-os-wanchengwanling-roadmap-v1.mjs \
 
 That path is now historical acceptance/migration evidence, not the authoring
 interface for active dogfood. New roadmap changes should be made in
-`agent-company` through `harness company docs ...`, `harness company work ...`,
-`harness company org ...`, and `harness company finance ...` commands with the
+`agent-company` through `firm company docs ...`, `firm company work ...`,
+`firm company org ...`, and `firm company finance ...` commands with the
 owning operator skills.
 
 For acceptance-only validation, omit `--project`; the script creates an

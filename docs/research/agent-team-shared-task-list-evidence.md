@@ -183,8 +183,8 @@ The parent study turns this evidence into a bounded design recommendation:
 Snapshot locator:
 
 ```text
-Execution Space: star-harness-dogfood
-Store root: ~/.harness/execution-spaces/star-harness-dogfood
+Execution Space: firm-dogfood
+Store root: ~/.firm/execution-spaces/firm-dogfood
 TeamRun: team-run-1785417589241-p28630-0
 Snapshot date: 2026-08-02 Asia/Shanghai
 ```

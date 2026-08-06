@@ -10,7 +10,7 @@ product authority. You are a durable MemberRun with a Workspace, Provider-native
 session, mailbox, permission ceiling, and review responsibility. Your
 Provider-native subagents are implementation details.
 
-Use the exact `HARNESS_BIN` and identifiers supplied by the collaboration
+Use the exact `FIRM_BIN` and identifiers supplied by the collaboration
 envelope. Do not substitute another binary from `PATH` or infer identity from a
 display name.
 
@@ -30,10 +30,10 @@ Confirm these facts before side effects:
 Read the board and exact Work:
 
 ```bash
-"$HARNESS_BIN" team-run work list \
-  --team-run-id "$HARNESS_TEAM_RUN_ID"
-"$HARNESS_BIN" team-run work show \
-  --work-id "$HARNESS_WORK_ID"
+"$FIRM_BIN" team-run work list \
+  --team-run-id "$FIRM_TEAM_RUN_ID"
+"$FIRM_BIN" team-run work show \
+  --work-id "$FIRM_WORK_ID"
 ```
 
 The board is the sole responsibility/status authority. TeamMessage is conversation only — see shared hard invariants §1 (no Assignment Message compatibility path) and §4 (messages never change Work state).
@@ -41,9 +41,9 @@ The board is the sole responsibility/status authority. TeamMessage is conversati
 For a compact board overview when context is limited:
 
 ```bash
-"$HARNESS_BIN" team-run board-summary --id "$HARNESS_TEAM_RUN_ID"
-"$HARNESS_BIN" team-run work list --team-run-id "$HARNESS_TEAM_RUN_ID" --brief
-"$HARNESS_BIN" team-run work list --team-run-id "$HARNESS_TEAM_RUN_ID" --since <cursor>
+"$FIRM_BIN" team-run board-summary --id "$FIRM_TEAM_RUN_ID"
+"$FIRM_BIN" team-run work list --team-run-id "$FIRM_TEAM_RUN_ID" --brief
+"$FIRM_BIN" team-run work list --team-run-id "$FIRM_TEAM_RUN_ID" --since <cursor>
 ```
 
 `board-summary` prints a ≤500-character summary: open/in-progress/blocked/review/done/cancelled counts plus each Member's idle/working/awaiting-review state. `--brief` prints one plain-text line per Work. `--since` takes a monotonic cursor from a prior `list` response and returns only new or updated Works.
@@ -53,10 +53,10 @@ For a compact board overview when context is limited:
 For a ready unassigned Work you are eligible to take, atomically claim it:
 
 ```bash
-"$HARNESS_BIN" team-run work claim \
-  --team-run-id "$HARNESS_TEAM_RUN_ID" \
+"$FIRM_BIN" team-run work claim \
+  --team-run-id "$FIRM_TEAM_RUN_ID" \
   --work-id <work-id> \
-  --member-run-id "$HARNESS_MEMBER_RUN_ID" \
+  --member-run-id "$FIRM_MEMBER_RUN_ID" \
   --expected-version <latest-version> \
   --idempotency-key <stable-command-key>
 ```
@@ -64,11 +64,11 @@ For a ready unassigned Work you are eligible to take, atomically claim it:
 For Work already assigned to you, explicitly start it:
 
 ```bash
-"$HARNESS_BIN" team-run work start \
-  --team-run-id "$HARNESS_TEAM_RUN_ID" \
-  --work-id "$HARNESS_WORK_ID" \
-  --member-run-id "$HARNESS_MEMBER_RUN_ID" \
-  --expected-version "$HARNESS_WORK_VERSION" \
+"$FIRM_BIN" team-run work start \
+  --team-run-id "$FIRM_TEAM_RUN_ID" \
+  --work-id "$FIRM_WORK_ID" \
+  --member-run-id "$FIRM_MEMBER_RUN_ID" \
+  --expected-version "$FIRM_WORK_VERSION" \
   --idempotency-key <stable-command-key>
 ```
 
@@ -102,17 +102,17 @@ Use Provider-native subagents for bounded internal lanes. They inherit your Work
 Read actionable mail, or include history when needed:
 
 ```bash
-"$HARNESS_BIN" team-run inbox --id "$HARNESS_TEAM_RUN_ID" \
-  --member-run-id "$HARNESS_MEMBER_RUN_ID" --json
-"$HARNESS_BIN" team-run inbox --id "$HARNESS_TEAM_RUN_ID" \
-  --member-run-id "$HARNESS_MEMBER_RUN_ID" --all --json
+"$FIRM_BIN" team-run inbox --id "$FIRM_TEAM_RUN_ID" \
+  --member-run-id "$FIRM_MEMBER_RUN_ID" --json
+"$FIRM_BIN" team-run inbox --id "$FIRM_TEAM_RUN_ID" \
+  --member-run-id "$FIRM_MEMBER_RUN_ID" --all --json
 ```
 
 To acknowledge all delivered messages whose manual-ack delivery is still pending:
 
 ```bash
-"$HARNESS_BIN" team-run ack --id "$HARNESS_TEAM_RUN_ID" \
-  --member-run-id "$HARNESS_MEMBER_RUN_ID" --all-delivered
+"$FIRM_BIN" team-run ack --id "$FIRM_TEAM_RUN_ID" \
+  --member-run-id "$FIRM_MEMBER_RUN_ID" --all-delivered
 ```
 
 `--all-delivered` auto-selects every message with a delivered status in this run and batch-acks them.
@@ -120,27 +120,27 @@ To acknowledge all delivered messages whose manual-ack delivery is still pending
 Ask the Host a decision-shaped question:
 
 ```bash
-"$HARNESS_BIN" team-run send --id "$HARNESS_TEAM_RUN_ID" \
-  --from "$HARNESS_MEMBER_RUN_ID" --to host --kind message \
-  --work-id "$HARNESS_WORK_ID" \
+"$FIRM_BIN" team-run send --id "$FIRM_TEAM_RUN_ID" \
+  --from "$FIRM_MEMBER_RUN_ID" --to host --kind message \
+  --work-id "$FIRM_WORK_ID" \
   --body "QUESTION: <decision needed, options, recommendation>" --json
 ```
 
 Coordinate with a peer without transferring responsibility:
 
 ```bash
-"$HARNESS_BIN" team-run send --id "$HARNESS_TEAM_RUN_ID" \
-  --from "$HARNESS_MEMBER_RUN_ID" --to <peer-member-run-id> --kind message \
-  --work-id "$HARNESS_WORK_ID" \
+"$FIRM_BIN" team-run send --id "$FIRM_TEAM_RUN_ID" \
+  --from "$FIRM_MEMBER_RUN_ID" --to <peer-member-run-id> --kind message \
+  --work-id "$FIRM_WORK_ID" \
   --body "COORDINATION: <bounded context or request>" --json
 ```
 
 For a reply, preserve the conversation correlation and name the exact cause:
 
 ```bash
-"$HARNESS_BIN" team-run send --id "$HARNESS_TEAM_RUN_ID" \
-  --from "$HARNESS_MEMBER_RUN_ID" --to <host-or-peer> --kind message \
-  --work-id "$HARNESS_WORK_ID" \
+"$FIRM_BIN" team-run send --id "$FIRM_TEAM_RUN_ID" \
+  --from "$FIRM_MEMBER_RUN_ID" --to <host-or-peer> --kind message \
+  --work-id "$FIRM_WORK_ID" \
   --body "<reply>" \
   --correlation-id <conversation-correlation-id> \
   --causation-id <message-id> --json
@@ -162,10 +162,10 @@ mail. A tool status of `completed` is not the semantic answer.
 When safe progress is impossible, preserve ownership and record the blocker:
 
 ```bash
-"$HARNESS_BIN" team-run work block \
-  --team-run-id "$HARNESS_TEAM_RUN_ID" \
-  --work-id "$HARNESS_WORK_ID" \
-  --member-run-id "$HARNESS_MEMBER_RUN_ID" \
+"$FIRM_BIN" team-run work block \
+  --team-run-id "$FIRM_TEAM_RUN_ID" \
+  --work-id "$FIRM_WORK_ID" \
+  --member-run-id "$FIRM_MEMBER_RUN_ID" \
   --expected-version <latest-version> \
   --reason "<specific blocker and required decision>" \
   --idempotency-key <stable-command-key>
@@ -184,9 +184,9 @@ You may create self-owned or unassigned Work, and child Work beneath Work you
 own. Do not force assignment to a same-level peer.
 
 ```bash
-"$HARNESS_BIN" team-run work create \
-  --team-run-id "$HARNESS_TEAM_RUN_ID" \
-  --as-member-run-id "$HARNESS_MEMBER_RUN_ID" \
+"$FIRM_BIN" team-run work create \
+  --team-run-id "$FIRM_TEAM_RUN_ID" \
+  --as-member-run-id "$FIRM_MEMBER_RUN_ID" \
   --title "<follow-up responsibility>" \
   --context "<why it exists and relevant evidence>" \
   --completion-criteria "<observable completion criteria>" \
@@ -211,10 +211,10 @@ result summary. Add artifact and check refs when the completion criteria or
 Host review requires them; they are not universal submission fields:
 
 ```bash
-"$HARNESS_BIN" team-run work submit \
-  --team-run-id "$HARNESS_TEAM_RUN_ID" \
-  --work-id "$HARNESS_WORK_ID" \
-  --member-run-id "$HARNESS_MEMBER_RUN_ID" \
+"$FIRM_BIN" team-run work submit \
+  --team-run-id "$FIRM_TEAM_RUN_ID" \
+  --work-id "$FIRM_WORK_ID" \
+  --member-run-id "$FIRM_MEMBER_RUN_ID" \
   --expected-version <latest-version> \
   --result "<concise result summary>" \
   --idempotency-key <stable-command-key>
@@ -271,29 +271,29 @@ The current separate StandingAgent record is a compatibility implementation. New
 
 ## Collaboration Envelope
 
-The harness injects these environment variables when starting your runtime. The variables bind your identity and scope; never infer identity from a display name:
+The firm injects these environment variables when starting your runtime. The variables bind your identity and scope; never infer identity from a display name:
 
 | Variable | Presence | Meaning |
 | --- | --- | --- |
-| `HARNESS_TEAM_RUN_ID` | Yes | The TeamRun you belong to |
-| `HARNESS_MEMBER_RUN_ID` | Yes | Your own run identity — validated on every member Work command |
-| `HARNESS_BIN` | Yes | Absolute path to the harness CLI to use |
-| `HARNESS_SPACE` | Yes | Current Execution Space |
-| `HARNESS_PROJECT` | Yes | Active Project Binding path |
-| `HARNESS_PROJECT_ID` | Yes | Active Project Binding id |
-| `HARNESS_MISSION_ID` | When Mission-scoped | The Mission this TeamRun serves |
-| `HARNESS_WORK_ID` | When delivered with Work | The Work id for your current delivery |
-| `HARNESS_WORK_VERSION` | When delivered with Work | The Work version for your current delivery |
-| `HARNESS_ORIGIN_WAVE_ID` | Historical | Deprecated; preserved for compatibility reads only |
+| `FIRM_TEAM_RUN_ID` | Yes | The TeamRun you belong to |
+| `FIRM_MEMBER_RUN_ID` | Yes | Your own run identity — validated on every member Work command |
+| `FIRM_BIN` | Yes | Absolute path to the firm CLI to use |
+| `FIRM_SPACE` | Yes | Current Execution Space |
+| `FIRM_PROJECT` | Yes | Active Project Binding path |
+| `FIRM_PROJECT_ID` | Yes | Active Project Binding id |
+| `FIRM_MISSION_ID` | When Mission-scoped | The Mission this TeamRun serves |
+| `FIRM_WORK_ID` | When delivered with Work | The Work id for your current delivery |
+| `FIRM_WORK_VERSION` | When delivered with Work | The Work version for your current delivery |
+| `FIRM_ORIGIN_WAVE_ID` | Historical | Deprecated; preserved for compatibility reads only |
 
-`HARNESS_MEMBER_RUN_ID` and `HARNESS_TEAM_RUN_ID` are validated on every member-side Work command (`work claim`, `work start`, `work block`, `work submit`). The CLI rejects a call where the bound environment value does not match the command argument.
+`FIRM_MEMBER_RUN_ID` and `FIRM_TEAM_RUN_ID` are validated on every member-side Work command (`work claim`, `work start`, `work block`, `work submit`). The CLI rejects a call where the bound environment value does not match the command argument.
 
-**Wave vocabulary note.** The word **wave** (including `HARNESS_ORIGIN_WAVE_ID`
+**Wave vocabulary note.** The word **wave** (including `FIRM_ORIGIN_WAVE_ID`
 above) is a planning-rhythm / batch label, not a governed object. Wave as a
 writable governed object was retired by ADR 0051. `wave list|show|history` are
 historical read-only commands. Use lowercase `wave` as a batch noun; never use
 capitalized `Wave` as an object name in new work.
 
-When developing Star Harness itself and the product contract is in question,
+When developing Firm itself and the product contract is in question,
 read canonical repository files `docs/product/agent-team-works.md` and
 `docs/decisions/0050-agent-team-work-board-and-message-boundary.md`.

@@ -50,7 +50,7 @@ comparison, accessibility/command checks, and final acceptance.
 
 ## Consequences
 
-- Star Harness adopts a Notion-like experience, not Notion's full technical
+- Firm adopts a Notion-like experience, not Notion's full technical
   architecture or assumption that every interface is manually composed.
 - Most documents remain simple; custom code is justified only for stable,
   repeated, multi-information operating questions.

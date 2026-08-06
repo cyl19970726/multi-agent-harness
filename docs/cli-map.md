@@ -1,17 +1,17 @@
-# Harness CLI Map
+# Firm CLI Map
 
 status: stable  
 owner: lead-operations  
 last reviewed: 2026-08-05
 
-This map records the current `target/debug/harness` command surface. It separates
+This map records the current `target/debug/firm` command surface. It separates
 implemented CLI from API/store-backed capability that does not yet have a
 dedicated CLI.
 
 ## Status labels
 
-- **Implemented**: routed by `crates/harness-cli/src/main.rs` and callable from
-  the compiled `harness` binary.
+- **Implemented**: routed by `crates/firm-cli/src/main.rs` and callable from
+  the compiled `firm` binary.
 - **Partial**: supported by store/API/UI/scripts, but the CLI is incomplete or
   only covers metadata/control slices.
 - **Missing / next**: expected product surface with no dedicated CLI command yet.
@@ -22,7 +22,7 @@ dedicated CLI.
 | Area | Commands | Status | Notes |
 | --- | --- | --- | --- |
 | Execution Space / Project Binding routing | `init`, `space init/list/current/switch/show/migrate-from-project`, `project add/list/current/switch/remove/show/migrate` | Implemented | `--space` selects Mission/Wave/Agent Team/Workflow storage; `--project` independently selects provider cwd, instructions/Skills, Git/worktree and permission boundaries. Raw store overrides and project-derived execution stores are compatibility paths only. |
-| Company Store routing | `company init/list/current/switch/show/migrate-from-project`, global `--company <id>` for `company ...`, `HARNESS_COMPANY` | Implemented | ADR 0042 Phase 2 first slice. `harness company ...` uses the selected Company Store when explicit/current Company exists; execution commands still use Project routing. |
+| Company Store routing | `company init/list/current/switch/show/migrate-from-project`, global `--company <id>` for `company ...`, `FIRM_COMPANY` | Implemented | ADR 0042 Phase 2 first slice. `firm company ...` uses the selected Company Store when explicit/current Company exists; execution commands still use Project routing. |
 | Mission | `mission create/list/show/update-context/create-team/link-team/unlink-team/close`, `mission log append/show` | Implemented | Current durable intent surface. `mission log append --mission-id <id> --kind judgment\|replan\|recovery\|closeout_evidence --body <markdown>` and `mission log show --mission-id <id> [--tail <n>]` are the ADR 0051 append-only Mission Log that absorbed Wave as the Host's judgment record. |
 | Wave | `wave list/show/history` | Implemented (historical reads only) | `wave create/update/advance/gate` retired by the ADR 0051 Mission Log cutover — the CLI, HTTP (`/v1/waves`...), and MCP (`wave_create`...) surfaces all return the same retirement error pointing at `mission log append`. Existing Wave rows remain readable as historical context; no data migration. |
 | Agent Team definition | `team create/list/show/rename/add-member/remove-member/close/archive` | Implemented | Defines reusable teams independent of Mission/Wave. |
@@ -41,18 +41,18 @@ dedicated CLI.
 
 ### Company Store
 
-`harness company init/list/current/switch/show` manages the explicit Company
+`firm company init/list/current/switch/show` manages the explicit Company
 Store identity introduced by ADR 0042.
 
 | Capability | Commands | Status | Notes |
 | --- | --- | --- | --- |
-| Registry | `company init --id <company-id> [--name <name>]`, `company list`, `company current`, `company show [company-id]`, `company switch <company-id>` | Implemented | Stores live under `<HARNESS_HOME>/companies/<id>/`; `ACTIVE_COMPANY` and `companies/registry.json` track the current Company. |
-| Company OS routing | `harness --company <id> company ...`, `HARNESS_COMPANY=<id> harness company ...`, or active Company from `company switch/init` | Implemented | Applies only to `harness company ...`; Mission/Wave, Agent Team, Workflow, provider cwd, and Project selection remain separate. |
+| Registry | `company init --id <company-id> [--name <name>]`, `company list`, `company current`, `company show [company-id]`, `company switch <company-id>` | Implemented | Stores live under `<FIRM_HOME>/companies/<id>/`; `ACTIVE_COMPANY` and `companies/registry.json` track the current Company. |
+| Company OS routing | `firm --company <id> company ...`, `FIRM_COMPANY=<id> firm company ...`, or active Company from `company switch/init` | Implemented | Applies only to `firm company ...`; Mission/Wave, Agent Team, Workflow, provider cwd, and Project selection remain separate. |
 | Migration from project-derived stores | `company migrate-from-project --from-project <project-id\|path> --id <company-id> [--name <name>] [--force]`, `company migrate-from-project ... --verify-only`, `company migrations` | Implemented | Copies only `company_os_*.jsonl`, verifies every exact source row exists in the destination, appends a Company Store migration record, and writes an advisory source marker. `--verify-only` rechecks an existing destination without copying. The source remains audit evidence; no Mission/Wave, Agent Team, Workflow, provider session, prompt, or runtime ledger is copied. |
 
 ### Docs
 
-`harness company docs ...` is the most complete Company OS CLI surface.
+`firm company docs ...` is the most complete Company OS CLI surface.
 
 | Capability | Commands | Status | Notes |
 | --- | --- | --- | --- |
@@ -69,7 +69,7 @@ Store identity introduced by ADR 0042.
 
 ### Work
 
-`harness company work ...` exists and is the second real Company OS CLI surface.
+`firm company work ...` exists and is the second real Company OS CLI surface.
 
 | Capability | Commands | Status | Notes |
 | --- | --- | --- | --- |
@@ -80,7 +80,7 @@ Store identity introduced by ADR 0042.
 | Lifecycle | `work transition`, `work close` | Implemented | Updates WorkItem status/provenance through governed Action dispatch. |
 | Milestone management | `work milestone list`, `show`, `create`, `update`, `close` | Implemented | Uses native Milestone rows. Writes currently use Human-admin administrative governance because global Work milestone Actions are not yet modeled. |
 | WorkType/business-line management | `work update --work-type ... --module ...` | Partial | WorkItems can now be reclassified against native WorkType/module fields. Dedicated catalogs for WorkType/business-line governance remain planned. |
-| Approval request/decision | `harness company approval request`, `decide`, `list`, `show` | Implemented | Approval is a shared Company OS CLI group, not nested under Work. Requests/decisions dispatch governed Actions. |
+| Approval request/decision | `firm company approval request`, `decide`, `list`, `show` | Implemented | Approval is a shared Company OS CLI group, not nested under Work. Requests/decisions dispatch governed Actions. |
 
 ### Organization
 
@@ -89,7 +89,7 @@ Store identity introduced by ADR 0042.
 | Actors | `org actor list`, `show`, `create-human`, `create-agent`, `update-status` | Implemented | Native Human and Standing Agent authoring is available. Writes use Human-admin administrative governance. |
 | Org units | `org unit list`, `show`, `create`, `update-status` | Implemented | Native OrgUnit authoring is available. |
 | Membership/reporting | `org membership list`, `assign`, `update-status` | Implemented | Native Membership assignment is available. Move/retire are represented as status updates for now. |
-| Execution relation | `org link-execution --authority <human> --actor <standing-agent> --agent-member <id> --execution-space <id> [--replace]`, `org unlink-execution --authority <human> --actor <standing-agent> [--expect-agent-member <id>]` (also as `org actor link-execution`/`unlink-execution`) | Implemented | Links an EXISTING StandingAgent to an EXISTING AgentMember. Both ids are explicit; equal ids never bind implicitly. `--execution-space` is required and has no fallback because `harness company ...` resolves the Company Store and never reaches the `--space` selector (ADR 0042); the named space is opened read-only to validate the AgentMember. Only `execution_agent_member_ref` and `updated_at` change; the write is a governed administrative re-append, never a raw JSONL edit. Re-running the same pair is a no-op (`changed:false`), and repointing requires `--replace`. `--authority` is validated as an active Human `company_os.admin` on every invocation, including no-ops. |
+| Execution relation | `org link-execution --authority <human> --actor <standing-agent> --agent-member <id> --execution-space <id> [--replace]`, `org unlink-execution --authority <human> --actor <standing-agent> [--expect-agent-member <id>]` (also as `org actor link-execution`/`unlink-execution`) | Implemented | Links an EXISTING StandingAgent to an EXISTING AgentMember. Both ids are explicit; equal ids never bind implicitly. `--execution-space` is required and has no fallback because `firm company ...` resolves the Company Store and never reaches the `--space` selector (ADR 0042); the named space is opened read-only to validate the AgentMember. Only `execution_agent_member_ref` and `updated_at` change; the write is a governed administrative re-append, never a raw JSONL edit. Re-running the same pair is a no-op (`changed:false`), and repointing requires `--replace`. `--authority` is validated as an active Human `company_os.admin` on every invocation, including no-ops. |
 | Permissions/capabilities | actor create/update-status fields | Partial | Create commands can write permission/capability refs. Dedicated grant/revoke/proposal workflow is still missing. |
 | HR / business-agent lifecycle | `create-agent`, `membership assign`, `update-status` plus skill/docs contract | Partial | Basic lifecycle exists. Proposal/approval/promotion workflow remains next. |
 
@@ -110,7 +110,7 @@ Store identity introduced by ADR 0042.
 | GitHub source observation | `company docs source sync` | Implemented for local worktree observation | Writes external software source TypedRecords. First GitHub connector should be sync/projection-first and may call existing `gh`/Git rather than adding GitHub-specific core CLI. GitHub webhook/API delivery remains next. |
 | GitHub issue/PR/check connector | connector sync using existing `gh`/GitHub API/webhook; Company OS receives delivery refs and views | Planned / first connector priority | Sync issues, PRs, reviews, checks, branches, and source snapshots into WorkItem delivery panels, Agent detail development queues, and Docs source mapping views. No new MCP/plugin CLI is required for the first slice. |
 | WeCom merchant gateway | docs/WorkItems only | Planned | Needs schema/API/CLI/Agent inbox implementation. |
-| Social plugin actions/connectors/views | plugin Skill + MCP or plugin-owned CLI adapter; Company OS receives governed Actions/TypedRecords/Relations/WorkItems/evidence | Planned | Upload, title/body/topic fill, publish submit, comment/private-message sync, profile management, paid-promotion preparation, account sync, metrics sync, and view extensions should live in platform plugins rather than `harness-cli` core. |
+| Social plugin actions/connectors/views | plugin Skill + MCP or plugin-owned CLI adapter; Company OS receives governed Actions/TypedRecords/Relations/WorkItems/evidence | Planned | Upload, title/body/topic fill, publish submit, comment/private-message sync, profile management, paid-promotion preparation, account sync, metrics sync, and view extensions should live in platform plugins rather than `firm-cli` core. |
 | Social publication / metric evidence | Docs TypedRecords + WorkItems now; plugin connector commands next | Partial | Current Store can model accounts, campaigns, post plans, publications, external message threads, and metric snapshots. Dedicated publish/message/metrics/plugin commands must remain policy-gated and write back through Company OS records. |
 
 ### Company OS API resources with no equivalent dedicated CLI
@@ -153,7 +153,7 @@ store/API, CLI routing, UI, tests and ADRs.
 | `node scripts/check-company-os-work-cli-smoke.mjs` | Store-live Work CLI can create/assign/transition/close WorkItems. |
 | `node scripts/check-company-os-operator-cli-smoke.mjs` | Store-live Org, Milestone, Approval, Commitment and Payment operator CLI commands work together. |
 | `pnpm acceptance:mission-wave` | Deterministic Mission/Wave, TeamRun, MCP and dashboard contracts. |
-| `harness governance check` | Documentation registry/link/retired-surface governance. |
+| `firm governance check` | Documentation registry/link/retired-surface governance. |
 
 ## Recommended CLI roadmap
 

@@ -14,7 +14,7 @@
 # CONSTRAINTS, numbered DELIVERABLES, the exact GATE command, and a report
 # contract — the internal bar, not a one-liner.
 #
-# Run:  harness workflow run-script ./build-and-gate.star
+# Run:  firm workflow run-script ./build-and-gate.star
 
 workflow(
     "build-and-gate",
@@ -27,8 +27,8 @@ workflow(
 
 task = "add a --json flag to the `report` command that prints the report as JSON"
 gate = "cargo test -p report-cli && cargo clippy --all-targets -- -D warnings"
-artifact = "target/harness-workflow/build-report.json"
-artifact_root = "target/harness-workflow"
+artifact = "target/firm-workflow/build-report.json"
+artifact_root = "target/firm-workflow"
 owned_paths = ["crates/report-cli", "tests"]
 
 # ---- typed contracts ----------------------------------------------------------

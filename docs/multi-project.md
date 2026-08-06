@@ -5,7 +5,7 @@ status: implemented
 canonical_boundary: ADR 0042
 ```
 
-Star Harness separates coordination truth from the directory in which an
+Firm separates coordination truth from the directory in which an
 Agent executes:
 
 ```text
@@ -36,7 +36,7 @@ Finance, and governance. Execution does not require a Company.
 ## Physical layout
 
 ```text
-~/.harness/
+~/.firm/
 ├── execution-spaces/
 │   ├── registry.json
 │   └── <space-id>/
@@ -74,23 +74,23 @@ physical files.
 An Execution Space is a provider-neutral coordination namespace:
 
 ```bash
-harness space init \
+firm space init \
   --id company-dev \
   --name "Company Development" \
   --project-binding multi-agent-harness
 
-harness space list
-harness space current
-harness space show company-dev
-harness space switch company-dev
+firm space list
+firm space current
+firm space show company-dev
+firm space switch company-dev
 ```
 
 The optional default Project Binding is a convenience for provider execution;
 it does not transfer ownership. A command can override it:
 
 ```bash
-harness --space company-dev --project another-repo mission list
-harness --space company-dev --project another-repo team-run create ...
+firm --space company-dev --project another-repo mission list
+firm --space company-dev --project another-repo team-run create ...
 ```
 
 The Mission remains in `company-dev`; only the new TeamRun's execution binding
@@ -108,15 +108,15 @@ A Project Binding describes an execution resource:
 Commands:
 
 ```bash
-harness project add [<path>] [--switch]
-harness project list
-harness project current
-harness project show [<id|path>]
-harness project switch <id|path>
-harness project remove <id> [--force]
+firm project add [<path>] [--switch]
+firm project list
+firm project current
+firm project show [<id|path>]
+firm project switch <id|path>
+firm project remove <id> [--force]
 ```
 
-`harness project switch` changes the default Project Binding only. It does not
+`firm project switch` changes the default Project Binding only. It does not
 switch the active Execution Space or Company Store.
 
 ### Provider cwd precedence
@@ -158,17 +158,17 @@ contents, provider transcript, tool stream, credentials, or private thinking.
 Provider processes receive:
 
 ```text
-HARNESS_SPACE
-HARNESS_PROJECT_ID
-HARNESS_PROJECT
-HARNESS_TEAM_RUN_ID
-HARNESS_MEMBER_RUN_ID
-HARNESS_WORK_ID
-HARNESS_WORK_VERSION
-HARNESS_BIN
+FIRM_SPACE
+FIRM_PROJECT_ID
+FIRM_PROJECT
+FIRM_TEAM_RUN_ID
+FIRM_MEMBER_RUN_ID
+FIRM_WORK_ID
+FIRM_WORK_VERSION
+FIRM_BIN
 ```
 
-`HARNESS_PROJECT_ID` is the stable binding id. `HARNESS_PROJECT` is an
+`FIRM_PROJECT_ID` is the stable binding id. `FIRM_PROJECT` is an
 executable selector, normally the canonical project root.
 Conversation correlation belongs to an actual TeamMessage envelope; it is not
 a process-wide responsibility variable.
@@ -177,10 +177,10 @@ a process-wide responsibility variable.
 
 Coordination store:
 
-1. raw `--store`, workflow-child store, or `HARNESS_ROOT` compatibility
+1. raw `--store`, workflow-child store, or `FIRM_ROOT` compatibility
    override;
 2. `--space`;
-3. `HARNESS_SPACE`;
+3. `FIRM_SPACE`;
 4. active `ACTIVE_SPACE`;
 5. project-derived compatibility store only when no Execution Space exists;
 6. legacy repo-local `.harness`, then the active/global compatibility project.
@@ -188,7 +188,7 @@ Coordination store:
 Project Binding is resolved independently:
 
 1. `--project`;
-2. `HARNESS_PROJECT`;
+2. `FIRM_PROJECT`;
 3. selected Execution Space's `default_project_binding_id`;
 4. active `ACTIVE_PROJECT`.
 
@@ -200,7 +200,7 @@ Git repository and cannot produce diff evidence.
 
 ```bash
 cd <repository>
-harness init
+firm init
 ```
 
 `init` registers the repository as a Project Binding. If no active Execution
@@ -216,7 +216,7 @@ Legacy project-derived execution rows can be copied into a native Execution
 Space:
 
 ```bash
-harness space migrate-from-project \
+firm space migrate-from-project \
   --from-project <binding-id-or-path> \
   --id <space-id> \
   --name <display-name>
@@ -234,12 +234,12 @@ The migration:
   active space, and a rollback command;
 - never dual-writes.
 
-Company records use the separate guarded `harness company
+Company records use the separate guarded `firm company
 migrate-from-project` path.
 
 ## Dashboard and HTTP
 
-One `harness serve` exposes independent selectors:
+One `firm serve` exposes independent selectors:
 
 ```text
 GET  /v1/spaces
@@ -271,7 +271,7 @@ Old repo-local or project-derived stores remain readable until an explicit,
 verified migration and later governed retirement. They are not silently
 rewritten or deleted.
 
-Until a Company Store is selected, `harness company ...` alone may read and
+Until a Company Store is selected, `firm company ...` alone may read and
 write the selected Project Binding's legacy `company_os_*` compatibility
 ledgers. It never falls through into the active Execution Space. Selecting a
 Company Store removes that fallback.
@@ -282,9 +282,9 @@ The deterministic suite uses isolated HOME directories and fake providers:
 
 ```bash
 pnpm test:multi-project
-cargo test -p harness-cli --test execution_space_cli
-cargo test -p harness-cli --test team_run_start
-cargo test -p harness-cli --test workflow_cwd
+cargo test -p firm-cli --test execution_space_cli
+cargo test -p firm-cli --test team_run_start
+cargo test -p firm-cli --test workflow_cwd
 pnpm check:dashboard
 ```
 

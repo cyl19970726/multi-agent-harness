@@ -26,7 +26,7 @@ the same worktree and inherited different permission postures.
 
 ## Decision
 
-Star Harness models continuation through two independent concepts:
+Firm models continuation through two independent concepts:
 
 - **execution driver** — `host_driven`, `provider_driven`, or Workflow-only
   `bounded`;
@@ -54,7 +54,7 @@ state instead of relying only on a broad `goal_mode` label.
   to copy their APIs.
 - Provider Goal achievement stops provider continuation but does not accept a
   Work.
-- Normal TeamMessages stay in the Harness mailbox; busy delivery never
+- Normal TeamMessages stay in the Firm mailbox; busy delivery never
   silently interrupts native continuation.
 - Dashboard primary IA centers current Work, driver, continuation state,
   Workspace lease, permissions and PendingInteraction. Native turns remain

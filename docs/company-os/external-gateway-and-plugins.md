@@ -43,7 +43,7 @@ just an execution tool. It brings three separable capabilities:
 | `view extension` | Declares how plugin-provided records should appear in Docs, Work, Organization, and Agent detail surfaces. | A view reads Company OS records and declared projections; it does not become a second store or bypass underlying Documents, WorkItems, ActorRefs, approvals, or permissions. |
 
 The platform-specific implementation belongs in a plugin, skill, MCP server,
-or CLI adapter owned by that plugin. The generic Harness CLI must not hard-code
+or CLI adapter owned by that plugin. The generic Firm CLI must not hard-code
 how Xiaohongshu, Douyin, WeChat Channels, WeCom, Taobao, Pinduoduo, GitHub, or
 a logistics portal clicks buttons, handles pages, signs requests, stores
 tokens, or interprets platform-specific IDs. The core may expose generic
@@ -118,7 +118,7 @@ schema with a canonical JSON Schema definition, validation rules, and a
 Store-backed manifest registry is a separate product increment that belongs to
 the external gateway roadmap, not the governance retirement wave. Until that
 schema is contracted, plugins declare their manifests as unstructured
-projection documents, and the harness accepts them as capability claims without
+projection documents, and the firm accepts them as capability claims without
 schema enforcement.
 
 ## Social Content Gateway v0
@@ -345,7 +345,7 @@ The term "gateway" appears in two distinct domains and must not be conflated:
 
 | Term | Scope | Description |
 | --- | --- | --- |
-| **Provider agent-gateway** | Execution substrate | The transport adapter that connects a provider (Kimi ACP, Codex App Server, Claude Agent SDK) to the Harness Host. It handles session lifecycle, tool dispatch, event routing, and provider-native protocol translation. It is an execution concern, not a Company OS concern. |
+| **Provider agent-gateway** | Execution substrate | The transport adapter that connects a provider (Kimi ACP, Codex App Server, Claude Agent SDK) to the Firm Host. It handles session lifecycle, tool dispatch, event routing, and provider-native protocol translation. It is an execution concern, not a Company OS concern. |
 | **External gateway** (this document) | Company OS | An intake and delivery adapter for external business channels (WeCom, GitHub, Xiaohongshu, email, payment systems). It normalizes external events into Company OS records without becoming authority. |
 
 The provider agent-gateway is governed by the execution foundation contracts
@@ -356,7 +356,7 @@ The external gateway is governed by this document and the
 
 ## Kimi ACP integration envelope
 
-Kimi members connect to the Harness Host through the `kimi_acp` persistent
+Kimi members connect to the Firm Host through the `kimi_acp` persistent
 bidirectional mode. The integration envelope is:
 
 - **Transport:** Kimi ACP (Agent Communication Protocol) — the provider-native

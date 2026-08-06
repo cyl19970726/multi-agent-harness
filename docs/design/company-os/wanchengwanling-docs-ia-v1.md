@@ -21,7 +21,7 @@ surfaces over native `Document`, `Block`, `TypedRecord`, `Relation`, `View`,
 
 This IA is the product/page contract for the live Company OS dogfood project
 `new-day-wanchengwanling`. The authoritative business records should be
-inspectable from `/Users/hhh0x/.harness/projects/new-day-wanchengwanling`.
+inspectable from `/Users/hhh0x/.firm/projects/new-day-wanchengwanling`.
 Repo docs, expected images, generated HTML reports, and scripts can guide or
 verify the surface, but they are not the live commercial memory.
 

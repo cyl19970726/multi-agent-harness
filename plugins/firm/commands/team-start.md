@@ -1,5 +1,5 @@
 ---
-description: "Link or reuse an Agent Team, create a Mission-scoped TeamRun, create or assign shared Works, and start it. Usage: /star-harness:team-start [objective]"
+description: "Link or reuse an Agent Team, create a Mission-scoped TeamRun, create or assign shared Works, and start it. Usage: /firm:team-start [objective]"
 ---
 
 Follow `[[orchestrate-mission-waves]]`. Show the proposed roster, roles,

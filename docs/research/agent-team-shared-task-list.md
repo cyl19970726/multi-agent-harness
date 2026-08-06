@@ -31,7 +31,7 @@ durable intent and Host judgment rather than becoming task containers.
 
 ## Finding
 
-Star Harness Agent Team has a durable mailbox but no durable shared work list.
+Firm Agent Team has a durable mailbox but no durable shared work list.
 That omission forced `TeamMessage(kind=assignment) + correlation_id` to act as
 work request, ownership record, status, dependency marker, and conversation.
 
@@ -131,7 +131,7 @@ caller, while teammates remain independently addressable collaborators. See
 [Claude Code hooks](https://code.claude.com/docs/en/hooks) and
 [Claude Code subagents](https://code.claude.com/docs/en/agents).
 
-Star Harness should copy the separation of shared task state and communication,
+Firm should copy the separation of shared task state and communication,
 not Claude's provider-local storage or flat-team lifecycle limitations.
 
 ## Why Assignment Message Was Rejected

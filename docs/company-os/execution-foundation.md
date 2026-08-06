@@ -34,7 +34,7 @@ are implemented independently. Project-derived execution/Company stores remain
 an explicitly labelled compatibility path until their data is migrated and
 retired through governed operations.
 
-## Execution objects retained from the Harness
+## Execution objects retained from the Firm
 
 ### Mission and Wave
 
@@ -122,7 +122,7 @@ operator has independently confirmed that every provider process stopped*, the
 CLI recovery path is explicit and audited:
 
 ```bash
-harness team-run cancel --id <run> --confirm-provider-stopped \
+firm team-run cancel --id <run> --confirm-provider-stopped \
   --reason <why-the-host-disappeared> --cancelled-by <actor>
 ```
 

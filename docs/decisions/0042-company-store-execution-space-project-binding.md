@@ -29,7 +29,7 @@ Agent Company Workspace
 │   ├── merchant operations
 │   ├── procurement
 │   └── content operations
-└── AgentOS / Star Harness
+└── AgentOS / Firm
     ├── product strategy
     ├── development operations
     ├── plugin and gateway model
@@ -115,11 +115,11 @@ MemberRun.worktree_ref
 
 All three selectors now exist independently:
 
-- `harness company ...`, `--company`, and `HARNESS_COMPANY` select Company
+- `firm company ...`, `--company`, and `FIRM_COMPANY` select Company
   Store truth;
-- `harness space ...`, `--space`, and `HARNESS_SPACE` select Mission/Wave,
+- `firm space ...`, `--space`, and `FIRM_SPACE` select Mission/Wave,
   Agent Team, and Workflow coordination truth;
-- `harness project ...`, `--project`, and `HARNESS_PROJECT` select the Project
+- `firm project ...`, `--project`, and `FIRM_PROJECT` select the Project
   Binding used for provider cwd, repository instructions, Skills,
   Git/worktree, and permission boundaries.
 
@@ -129,18 +129,18 @@ from it. Its `store_root` is labelled `compatibility_store_root` in public
 projections and does not own new execution rows when an Execution Space is
 selected.
 
-`harness init` is the low-friction compatibility entry: it registers the
+`firm init` is the low-friction compatibility entry: it registers the
 current repository as a Project Binding and, when no prior execution history
 would be shadowed, creates a repo-derived Execution Space. It never creates a
 Company Store.
 
 Existing project-derived stores are not silently reinterpreted, dual-written,
-or deleted. `harness space migrate-from-project` performs an explicit,
+or deleted. `firm space migrate-from-project` performs an explicit,
 copy-only, byte-verified migration of active execution ledgers and whitelisted
 execution-evidence files, and leaves the source intact with a rollback command
 in the migration manifest.
 
-When no Company Store is selected, `harness company ...` retains a narrow
+When no Company Store is selected, `firm company ...` retains a narrow
 compatibility fallback to the selected Project Binding's old `company_os_*`
 ledgers. It never writes Company truth into an Execution Space.
 
@@ -149,7 +149,7 @@ ledgers. It never writes Company truth into an Execution Space.
 Logical separation is mandatory. Physical co-location is not.
 
 ```text
-~/.harness/
+~/.firm/
 ├── companies/
 │   └── <agent-company-id>/
 │       ├── company_os_documents.jsonl
@@ -180,16 +180,16 @@ Logical separation is mandatory. Physical co-location is not.
 Standalone execution remains possible:
 
 ```bash
-harness space init --id personal-dev --name "Personal Development"
-harness space switch personal-dev
-harness mission create --title "Refactor API" --objective "..."
+firm space init --id personal-dev --name "Personal Development"
+firm space switch personal-dev
+firm mission create --title "Refactor API" --objective "..."
 ```
 
 The current low-friction repo workflow remains a compatibility path:
 
 ```bash
 cd multi-agent-harness
-harness init
+firm init
 ```
 
 It should create or select a repo-derived compatibility Execution Space and a
@@ -198,25 +198,25 @@ Project Binding. It must not implicitly create a Company Store.
 Company OS commands resolve an explicit or current selected Company Store:
 
 ```bash
-harness company init --id <agent-company-id> --name <display-name>
-harness company switch <agent-company-id>
-harness company current
-harness --company <agent-company-id> company docs query --document <doc-id>
-harness company migrate-from-project \
+firm company init --id <agent-company-id> --name <display-name>
+firm company switch <agent-company-id>
+firm company current
+firm --company <agent-company-id> company docs query --document <doc-id>
+firm company migrate-from-project \
   --from-project <project-id-or-path> \
   --id <agent-company-id> \
   --name <display-name>
 
-harness company docs ...
-harness company work ...
-harness company org ...
-harness company finance ...
+firm company docs ...
+firm company work ...
+firm company org ...
+firm company finance ...
 ```
 
 Project selection becomes execution-resource selection:
 
 ```bash
-harness team-run create \
+firm team-run create \
   --space <execution-space-id> \
   --mission-id <mission> \
   --project multi-agent-harness

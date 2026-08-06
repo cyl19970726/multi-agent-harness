@@ -1,4 +1,4 @@
-# Star Harness Plugin
+# Firm Plugin
 
 This is the unified, provider-neutral distribution package for Codex, Claude
 Code, and Kimi.
@@ -25,25 +25,25 @@ The optional unbound MCP surface authors only as the Host, an Operator, or a
 Service. It cannot select `member_run` or `agent_member` by id; Member mail
 originates from that Member's bound persistent Provider runtime.
 
-The skill directories under `plugins/star-harness/skills/` are generated. Edit
+The skill directories under `plugins/firm/skills/` are generated. Edit
 their canonical sources under `skills/`, then run:
 
 ```bash
-node scripts/sync-star-harness-plugin-skills.mjs
-node scripts/sync-star-harness-plugin-skills.mjs --check
+node scripts/sync-firm-plugin-skills.mjs
+node scripts/sync-firm-plugin-skills.mjs --check
 ```
 
-The repository marketplace publishes this directory as `star-harness`. Install
-it after building and placing `harness` on `PATH`:
+The repository marketplace publishes this directory as `firm`. Install
+it after building and placing `firm` on `PATH`:
 
 ```bash
 # Codex CLI / Codex Desktop
 codex plugin marketplace add cyl19970726/multi-agent-harness
-codex plugin add star-harness@multi-agent-harness
+codex plugin add firm@multi-agent-harness
 
 # Claude Code
 claude plugin marketplace add cyl19970726/multi-agent-harness --scope user
-claude plugin install star-harness@multi-agent-harness --scope user
+claude plugin install firm@multi-agent-harness --scope user
 ```
 
 Start a new Codex task or Claude Code session after installation. Plugin
@@ -57,18 +57,18 @@ Repository maintainers can validate or publish one local canonical installation
 with:
 
 ```bash
-pnpm star-harness:install:check
-pnpm star-harness:install
+pnpm firm:install:check
+pnpm firm:install
 ```
 
-The apply command builds a versioned Harness binary, points the stable
+The apply command builds a versioned Firm binary, points the stable
 `~/.local/bin/harness` link at it, removes the duplicate personal Codex copy,
 refreshes the Git marketplace, updates Codex and Claude installations, and
-writes a rollback/audit record under `~/.local/state/star-harness/`. Existing
+writes a rollback/audit record under `~/.local/state/firm/`. Existing
 sessions keep the Plugin and Provider runtime they already loaded.
 
 The reviewed Kimi CLI does not currently expose a generic plugin-management
-command. Kimi Agent Team members use `kimi_acp`, the Harness collaboration
+command. Kimi Agent Team members use `kimi_acp`, the Firm collaboration
 envelope, and skills discovered from their explicit cwd or `--skills-dir`.
 `kimi.plugin.json` remains the unified package descriptor for a future native
 Kimi plugin installer; do not claim it is globally installed today.
@@ -76,15 +76,15 @@ Kimi plugin installer; do not claim it is globally installed today.
 On clients that support command manifests, the command basenames are:
 
 ```text
-/star-harness:mission-new
-/star-harness:team-start
-/star-harness:team-status
-/star-harness:new-run
-/star-harness:status
-/star-harness:dashboard
+/firm:mission-new
+/firm:team-start
+/firm:team-status
+/firm:new-run
+/firm:status
+/firm:dashboard
 ```
 
 The last three preserve the historical command basenames. The retired
-`agent-team` namespace cannot remain registered by the new `star-harness`
+`agent-team` namespace cannot remain registered by the new `firm`
 plugin id without installing a second compatibility plugin, which this package
 intentionally avoids so Skills and hooks have one owner.

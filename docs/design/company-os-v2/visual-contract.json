@@ -27,7 +27,7 @@
         "comparison_manifest": "store-live-comparison-manifest-v2.2.json",
         "gallery": "expected-vs-store-live-v2.2.html",
         "data_mode": "store-live",
-        "truth": "Browser-rendered V2.2 evidence from an authority-labelled Harness Store projection; action transport remains out of scope."
+        "truth": "Browser-rendered V2.2 evidence from an authority-labelled Firm Store projection; action transport remains out of scope."
       },
       "cases": [
         {

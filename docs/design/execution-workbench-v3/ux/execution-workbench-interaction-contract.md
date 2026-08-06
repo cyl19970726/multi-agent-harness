@@ -90,7 +90,7 @@ as only an Assignment plus Result.
   or fragment destinations; provider-supplied HTML is never interpreted.
 - The completed page opens on `Complete history`. `Focus` is an explicitly
   pressed toggle and preserves chronology when switched back.
-- Loading the Harness snapshot or native session uses a skeleton/status state;
+- Loading the Firm snapshot or native session uses a skeleton/status state;
   it must never flash `Member run not found` before the first read settles.
 
 ### V4 browser journeys

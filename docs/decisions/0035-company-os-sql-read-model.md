@@ -4,7 +4,7 @@
 status: active
 date: 2026-07-23
 supersedes: none
-amends: 0004 File Store Before Database, 0010 Harness Store Is Canonical, 0027 Company OS Primary Model
+amends: 0004 File Store Before Database, 0010 Firm Store Is Canonical, 0027 Company OS Primary Model
 ```
 
 ## Context
@@ -28,7 +28,7 @@ acceptance slices are still evolving:
 However, Agent-operated Docs needs stronger read/query capabilities than raw
 ledger scans should own long-term:
 
-- `harness company docs query` for one Document's complete operating context;
+- `firm company docs query` for one Document's complete operating context;
 - search over Documents, Blocks, TypedRecords, Relations, Views, and modules;
 - relation traversal and scoped repair suggestions;
 - standard View filtering, grouping, sorting, calendar, and chart modes;
@@ -80,7 +80,7 @@ add PostgreSQL as another read-model adapter.
 
 ## Initial implementation direction
 
-The first Docs query slice does not wait for SQL. `harness company docs query`
+The first Docs query slice does not wait for SQL. `firm company docs query`
 is implemented first against current latest projections, with output shaped as
 the stable Agent-facing read contract that a future SQL read model can serve:
 
@@ -130,7 +130,7 @@ Tradeoffs:
 
 ## Validation path
 
-- `harness company docs query` returns a stable machine-readable context from
+- `firm company docs query` returns a stable machine-readable context from
   current projections before any SQL dependency is required.
 - A future SQLite read-model wave proves rebuild from ledgers, deterministic
   query results, and no write authorization from SQL alone.

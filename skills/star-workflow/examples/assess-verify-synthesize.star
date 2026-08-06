@@ -14,7 +14,7 @@
 # overstatements, and the synthesis is built from the CORRECTED verdicts. Every
 # handoff is a multi-field schema, so the synthesis reads typed fields, not prose.
 #
-# Read-only. Run:  harness workflow run-script ./assess-verify-synthesize.star \
+# Read-only. Run:  firm workflow run-script ./assess-verify-synthesize.star \
 #   --args '{"subject":"the checkout service","dimensions":["correctness","safety","observability","performance"]}'
 
 workflow(

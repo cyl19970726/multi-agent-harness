@@ -3,14 +3,14 @@
 ```text
 status: Store-live frontend evidence
 project_id: new-day-wanchengwanling
-store: /Users/hhh0x/.harness/projects/new-day-wanchengwanling
+store: /Users/hhh0x/.firm/projects/new-day-wanchengwanling
 scope: Wanchengwanling 02-05 Docs foundation frontend verification
 captured_at: 2026-07-28
 ```
 
 This artifact records browser evidence for the Wanchengwanling commercial
 dogfood Docs foundation. It is not the source of truth. The source of truth is
-the Company OS Store, queried through `harness company docs ...`.
+the Company OS Store, queried through `firm company docs ...`.
 
 ## Actual Store-live screenshots
 
@@ -24,16 +24,16 @@ the Company OS Store, queried through `harness company docs ...`.
 ## CLI verification
 
 ```bash
-target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+target/debug/firm --project /Users/hhh0x/new-day/wanchengwanling \
   company docs query --document document-wcw-bracelet-product --json
 
-target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+target/debug/firm --project /Users/hhh0x/new-day/wanchengwanling \
   company docs query --document document-wcw-route-ar-experience --json
 
-target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+target/debug/firm --project /Users/hhh0x/new-day/wanchengwanling \
   company docs query --document document-wcw-merchant-network --json
 
-target/debug/harness --project /Users/hhh0x/new-day/wanchengwanling \
+target/debug/firm --project /Users/hhh0x/new-day/wanchengwanling \
   company docs query --document document-wcw-rewards-procurement-inventory --json
 ```
 

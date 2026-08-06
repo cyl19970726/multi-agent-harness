@@ -22,19 +22,19 @@ destructive delete: false
 The source compatibility Store remains available for audit:
 
 ```text
-/Users/hhh0x/.harness/projects/new-day-wanchengwanling
+/Users/hhh0x/.firm/projects/new-day-wanchengwanling
 ```
 
 The target Company Store is:
 
 ```text
-/Users/hhh0x/.harness/companies/agent-company
+/Users/hhh0x/.firm/companies/agent-company
 ```
 
 ## Command used
 
 ```bash
-harness company migrate-from-project \
+firm company migrate-from-project \
   --from-project new-day-wanchengwanling \
   --id agent-company \
   --name "Agent Company Workspace"
@@ -53,14 +53,14 @@ skipped identical files: 0
 Commands:
 
 ```bash
-harness company migrate-from-project \
+firm company migrate-from-project \
   --from-project new-day-wanchengwanling \
   --id agent-company \
   --verify-only
-harness --company agent-company company migrations
-harness --company agent-company company docs health
-harness --company agent-company company work list
-harness --company agent-company company org list
+firm --company agent-company company migrations
+firm --company agent-company company docs health
+firm --company agent-company company work list
+firm --company agent-company company org list
 ```
 
 The 2026-07-29 exact-row verification recorded:
@@ -106,19 +106,19 @@ not appended their required `source_for` Relations.
 The deterministic repair plan is:
 
 ```bash
-harness --company agent-company company docs relation repair-missing \
+firm --company agent-company company docs relation repair-missing \
   --definition page-wcw-software-product-sources \
   --actor agent-wcw-docs-governance \
   --dry-run
 # 30 unique Relations
 
-harness --company agent-company company docs relation repair-missing \
+firm --company agent-company company docs relation repair-missing \
   --definition page-wcw-ip-product-design \
   --actor agent-wcw-docs-governance \
   --dry-run
 # 3 unique Relations
 
-harness --company agent-company company docs relation repair-missing \
+firm --company agent-company company docs relation repair-missing \
   --definition page-wcw-launch-readiness \
   --actor agent-wcw-docs-governance \
   --dry-run

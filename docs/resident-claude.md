@@ -64,50 +64,50 @@ system prompt mid-flight, so a turn with a different fingerprint gets a differen
 (new) resident rather than a silently-wrong one.
 
 Leak safety: `ResidentClaude` closes stdin and reaps its child on `Drop`, so a
-pool that goes out of scope never leaks PIDs (the harness does not persist a
+pool that goes out of scope never leaks PIDs (the firm does not persist a
 resident PID today).
 
-## The `HARNESS_CLAUDE_RESIDENT` flag
+## The `FIRM_CLAUDE_RESIDENT` flag
 
 The resident path is gated entirely by an environment variable:
 
 ```bash
 # Default: fresh `claude -p` per turn (unchanged behavior).
-harness agent deliver --agent <id>
+firm agent deliver --agent <id>
 
 # Resident: hold `claude --input-format stream-json` open across turns.
-HARNESS_CLAUDE_RESIDENT=1 harness agent deliver --agent <id>
+FIRM_CLAUDE_RESIDENT=1 firm agent deliver --agent <id>
 ```
 
 When set, `run_claude_delivery` routes through `run_claude_resident_delivery_real`
 instead of `run_claude_exec_delivery_real`. Both return the same in-memory
-delivery outcome and Claude native session id. Harness binds a
+delivery outcome and Claude native session id. Firm binds a
 `NativeSessionRef`; it does not retain a second NDJSON/stdout transcript.
 
-This mirrors the documented `HARNESS_*_DELIVERY` selector convention: the feature
+This mirrors the documented `FIRM_*_DELIVERY` selector convention: the feature
 ships dark and opt-in, the default path is byte-for-byte unchanged, and the
 resident path can be enabled per invocation.
 
 ## The resident daemon (cross-invocation warmth, unix-only)
 
-A pool that lives inside one `harness deliver` process dies when that command
+A pool that lives inside one `firm deliver` process dies when that command
 exits, so it cannot keep a child warm across deliveries (each delivery is a fresh
-CLI process). The **resident daemon** is a long-lived, harness-owned host that
+CLI process). The **resident daemon** is a long-lived, firm-owned host that
 keeps the pool alive between invocations behind a per-workspace Unix socket. See
 [decisions/0021-resident-daemon.md](decisions/0021-resident-daemon.md) (amends
 0018).
 
 ```bash
 # Start the warm-child host (foreground; background it with & or a supervisor).
-HARNESS_ROOT=.harness harness daemon start [--idle-secs <n>] [--socket <path>]
+FIRM_ROOT=.firm firm daemon start [--idle-secs <n>] [--socket <path>]
 
 # Inspect / stop it.
-harness daemon status        # running | stale | absent
-harness daemon stop          # SIGTERM via the pidfile; clean shutdown
+firm daemon status        # running | stale | absent
+firm daemon stop          # SIGTERM via the pidfile; clean shutdown
 ```
 
-- **Socket:** `<store-root>/resident.sock` (i.e. `.harness/resident.sock` or
-  `$HARNESS_ROOT/resident.sock`). Both the daemon and the delivery client derive
+- **Socket:** `<store-root>/resident.sock` (i.e. `.firm/resident.sock` or
+  `$FIRM_ROOT/resident.sock`). Both the daemon and the delivery client derive
   this path from the store root, so no registry or handshake is needed. The path
   is validated against the AF_UNIX `sun_path` limit at startup. `--socket <path>`
   overrides it but must still name `<dir>/resident.sock` so discovery stays
@@ -137,7 +137,7 @@ harness daemon stop          # SIGTERM via the pidfile; clean shutdown
 
 ### How delivery chooses hot vs inline
 
-`run_claude_resident_delivery_real` (still gated by `HARNESS_CLAUDE_RESIDENT=1`)
+`run_claude_resident_delivery_real` (still gated by `FIRM_CLAUDE_RESIDENT=1`)
 is daemon-first: if `daemon_is_available(store_root)` (a successful probe-connect)
 it sends the turn over the socket and maps the response into the SAME
 `(success, events, session_id, stderr)` tuple. When no daemon is present it falls

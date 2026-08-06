@@ -27,10 +27,10 @@
 # never treat a green smoke run as evidence of design quality.
 #
 # Read-only (it produces an artifact held in variables; nothing edits files).
-# Run:  harness workflow run-script ./design-tournament.star \
-#         --args '{"subject":"the read-only Workflows dashboard surface","read":"crates/harness-core/src/lib.rs + apps/agent-dashboard"}'
+# Run:  firm workflow run-script ./design-tournament.star \
+#         --args '{"subject":"the read-only Workflows dashboard surface","read":"crates/firm-core/src/lib.rs + apps/agent-dashboard"}'
 # Smoke/plumbing-only dry run (never treat this as a quality signal):
-#       harness workflow run-script ./design-tournament.star --dry-run \
+#       firm workflow run-script ./design-tournament.star --dry-run \
 #         --args '{"subject":"...", "smoke": true}'
 
 workflow(

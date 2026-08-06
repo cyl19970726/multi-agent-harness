@@ -16,17 +16,17 @@ Before reading or writing Company OS records, identify the Company Store. Prefer
 one of:
 
 ```bash
-harness company current
-harness --company <company-id> company finance ...
-HARNESS_COMPANY=<company-id> harness company finance ...
+firm company current
+firm --company <company-id> company finance ...
+FIRM_COMPANY=<company-id> firm company finance ...
 ```
 
-If no Company is selected, `harness company ...` falls back to the current
+If no Company is selected, `firm company ...` falls back to the current
 project-derived compatibility Store. Treat that as legacy compatibility, not
 the target Agent Company Workspace boundary.
 
 To move legacy Company OS rows into a real Company Store, use
-`harness company migrate-from-project --from-project <project-id|path> --id <company-id>`.
+`firm company migrate-from-project --from-project <project-id|path> --id <company-id>`.
 It copies only `company_os_*.jsonl`; it does not migrate execution records,
 provider sessions, prompts, or runtimes.
 
@@ -94,48 +94,48 @@ imply payment, settlement, reimbursement, or budget approval.
 ## Current interface state
 
 Finance records exist through the Company OS Store/API and governed Action
-path. The first dedicated `harness company finance ...` command family is
+path. The first dedicated `firm company finance ...` command family is
 implemented for inspection, proposed Commitment creation, Approval routing,
 Commitment transitions, and Payment recording/transitions.
 
 Use:
 
 ```bash
-harness company finance list [--commitment-status <status>] [--payment-status <status>]
-harness company finance query --commitment <commitment-id>
-harness company finance query --payment <payment-id>
-harness company finance propose-commitment \
+firm company finance list [--commitment-status <status>] [--payment-status <status>]
+firm company finance query --commitment <commitment-id>
+firm company finance query --payment <payment-id>
+firm company finance propose-commitment \
   --source-document <document-id> \
   --amount <amount> \
   --currency <currency> \
   --submitted-by <actor-id> \
   --accountable-owner <human-id> \
   --authority <human-admin-id>
-harness company finance request-approval \
+firm company finance request-approval \
   --definition <custom-page-definition-id> \
   --commitment <commitment-id> \
   --requested-by <actor-id> \
   --approver <human-id> \
   --evidence <ref>
-harness company finance decide-approval \
+firm company finance decide-approval \
   --definition <custom-page-definition-id> \
   --approval <approval-id> \
   --actor <human-id> \
   --decision approved|rejected
-harness company finance transition-commitment \
+firm company finance transition-commitment \
   --definition <custom-page-definition-id> \
   --commitment <commitment-id> \
   --status proposed|pending_approval|approved|rejected|cancelled \
   --actor <actor-id> \
   [--approval <approval-id>] \
   [--evidence <ref>]
-harness company finance record-payment \
+firm company finance record-payment \
   --definition <custom-page-definition-id> \
   --commitment <commitment-id> \
   --actor <actor-id> \
   --approval <payment-approval-id> \
   --evidence <ref>
-harness company finance transition-payment \
+firm company finance transition-payment \
   --definition <custom-page-definition-id> \
   --payment <payment-id> \
   --status prepared|settled|failed|reversed \
@@ -150,7 +150,7 @@ Current v1 boundary:
   existing Human administrative import path.
 - `request-approval`, `decide-approval`, `transition-commitment`,
   `record-payment`, and `transition-payment` use the governed Action
-  dispatcher and require `HARNESS_COMPANY_OS_TOKEN`.
+  dispatcher and require `FIRM_COMPANY_OS_TOKEN`.
 - Payment approval is separate from Commitment approval. Do not reuse an
   approval for `commitment.append` as proof for `payment.append`.
 - `record-payment` creates a Payment record and does not imply settlement.
@@ -159,16 +159,16 @@ Current v1 boundary:
   the necessary finance and approval Actions:
 
 ```bash
-harness company finance commitment list
-harness company finance commitment show --commitment <commitment-id>
-harness company finance commitment propose --definition <page-definition-id> --work-item <work-item-id> --source-document <document-id> --submitted-by <actor-id> --accountable-owner <actor-id> --amount <amount> --currency <CURRENCY> --relation <relation-id>
-harness company finance commitment transition --definition <page-definition-id> --commitment <commitment-id> --status pending_approval|approved|cancelled|fulfilled --actor <actor-id> --approval <approval-id> --evidence <ref>
-harness company finance payment list
-harness company finance payment show --payment <payment-id>
-harness company finance payment record --definition <page-definition-id> --commitment <commitment-id> --source-document <document-id> --submitted-by <actor-id> --accountable-owner <actor-id> --amount <amount> --currency <CURRENCY> --approval <approval-id> --evidence <ref>
+firm company finance commitment list
+firm company finance commitment show --commitment <commitment-id>
+firm company finance commitment propose --definition <page-definition-id> --work-item <work-item-id> --source-document <document-id> --submitted-by <actor-id> --accountable-owner <actor-id> --amount <amount> --currency <CURRENCY> --relation <relation-id>
+firm company finance commitment transition --definition <page-definition-id> --commitment <commitment-id> --status pending_approval|approved|cancelled|fulfilled --actor <actor-id> --approval <approval-id> --evidence <ref>
+firm company finance payment list
+firm company finance payment show --payment <payment-id>
+firm company finance payment record --definition <page-definition-id> --commitment <commitment-id> --source-document <document-id> --submitted-by <actor-id> --accountable-owner <actor-id> --amount <amount> --currency <CURRENCY> --approval <approval-id> --evidence <ref>
 ```
 
-Use `harness company approval request|decide` for Human approval records linked
+Use `firm company approval request|decide` for Human approval records linked
 to finance policies such as `<definition>:commitment.append` and
 `<definition>:payment.append`.
 

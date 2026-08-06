@@ -1,6 +1,6 @@
 # Team War Room Works expected-design prompt
 
-The current browser captures are edit targets. Preserve Star Harness shell,
+The current browser captures are edit targets. Preserve Firm shell,
 identity, portraits, Works semantics, status vocabulary, and context modules.
 Do not invent data or restore Assignment Messages.
 

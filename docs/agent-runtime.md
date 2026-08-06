@@ -21,7 +21,7 @@ those truths.
 ## Vision Link
 
 The product needs provider turns that can be launched, correlated, observed,
-resumed and closed. A provider turn is useful only after the Harness can relate
+resumed and closed. A provider turn is useful only after the Firm can relate
 it to the executor or Host that requested it. Harness references the
 provider-native session without copying its transcript or activity stream and
 without inventing lifecycle control.
@@ -51,11 +51,11 @@ select Mission-linked execution, Host-plan context, or direct WorkItem action
 | Who decides the work is accepted? | The Team Host, using Work completion criteria and evidence; provider completion is only an execution signal. |
 | What happens when busy? | Harness-owned queue policy decides enqueue, interrupt, reject, or fail. |
 | How is context built? | Harness packages bounded execution context, artifact refs, skill refs and permissions per delivery. |
-| How are providers swapped? | Providers implement the same interfaces and cannot own harness state. |
+| How are providers swapped? | Providers implement the same interfaces and cannot own firm state. |
 
 ## Runtime contract updates and reconciliation
 
-A long-lived Agent may outlive the Harness binary or adapter configuration that
+A long-lived Agent may outlive the Firm binary or adapter configuration that
 started its current process. Updating the Dashboard bundle or a Docs projection
 does not require restarting provider runtimes. Updating an adapter protocol,
 provider-control mapping, permission envelope, provider version, or delivery
@@ -64,7 +64,7 @@ contract does.
 | Change | Required action |
 | --- | --- |
 | Docs/UI/read projection only | refresh the projection; keep MemberRun and native session |
-| Harness process restart with the same adapter contract | acquire a new Supervisor generation and reattach the same unclosed MemberRun/native session |
+| Firm process restart with the same adapter contract | acquire a new Supervisor generation and reattach the same unclosed MemberRun/native session |
 | adapter, protocol, permission, model/effort mapping, or Plugin contract change | drain or interrupt the active turn, release the old runtime owner, create an explicit replacement runtime generation, and resume the provider-native session only when that version/mode declares it compatible |
 | incompatible or unavailable native session | keep the old binding as historical evidence and start a new native session under an explicit replacement MemberRun; never replay Harness mail as a transcript |
 
@@ -90,7 +90,7 @@ permission to upgrade Codex, Claude Code, or Kimi.
 | `ProviderCapacitySnapshot` | execution-mode-specific runtime availability of one provider ACCOUNT, with observation time, evidence source and confidence | adapter compatibility, a synthesised usage number, or an availability claim from an absent observation |
 | `NativeContinuationProjection` | ephemeral observation of the selected provider's continuation condition, state, cycle and terminal reason | durable Goal identity, Work ownership, or Host acceptance |
 | `AgentEvent` | explicit Harness-owned lifecycle, control, and summary facts | provider transcript, tool stream, or turn history |
-| `ProviderChildThread` | provider-native subagent or child thread visibility | durable harness member identity by default |
+| `ProviderChildThread` | provider-native subagent or child thread visibility | durable firm member identity by default |
 | `PermissionProfile` | allowed tools, approval policy, sandbox, live/destructive boundaries | prompt-only safety |
 | `WorkspaceRef` | cwd, worktree, branch, environment, owned paths | implicit global workspace |
 
@@ -192,7 +192,7 @@ WorkItem, Approval, gate, or organization semantics.
 
 ## Queue And Context Policy
 
-The harness owns delivery policy:
+The firm owns delivery policy:
 
 | Member state | Message policy |
 | --- | --- |
@@ -310,7 +310,7 @@ generic runtime or product authority.
    canonical for per-agent transcript, activity, turn lifecycle, and resume.
 2. Hooks and provider notifications are event inputs, not assignment ownership.
 3. A runtime can fail while the member identity remains recoverable.
-4. Provider-native subagents are visible child threads, not harness members
+4. Provider-native subagents are visible child threads, not firm members
    unless explicitly promoted.
 5. Dashboard joins normalized Harness coordination with provider-adapter native
    session projections; browser code does not read private provider files
@@ -321,7 +321,7 @@ generic runtime or product authority.
 
 ## Real-Time Event Streaming (SSE)
 
-The harness serves real-time events via Server-Sent Events (SSE) at the `/v1/events` endpoint. This allows clients to maintain a live view of harness state without polling.
+The firm serves real-time events via Server-Sent Events (SSE) at the `/v1/events` endpoint. This allows clients to maintain a live view of firm state without polling.
 
 ### Endpoint: `GET /v1/events`
 

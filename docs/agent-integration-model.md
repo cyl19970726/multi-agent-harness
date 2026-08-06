@@ -1,7 +1,7 @@
 # Agent Integration Model
 
 This is the canonical answer to one question: **to integrate a new agent,
-provider, or platform into Star Harness, what do you have to define?**
+provider, or platform into Firm, what do you have to define?**
 
 It sits above the provider runtime implementation reference in
 [agent-runtime.md](agent-runtime.md) and the execution boundary in
@@ -86,14 +86,14 @@ the member to a Harness-controlled runtime.
 
 An `AgentMember` (see [agent-control-plane.md](company-os/execution-foundation.md)) is a
 durable identity. To make that identity *executable on a given platform* you
-must answer three independent questions, and the launch spec is how the harness
+must answer three independent questions, and the launch spec is how the firm
 hands a single turn to whatever platform sits behind the member:
 
 | Pillar | Question | Where it lives today |
 | --- | --- | --- |
 | 1 Base configuration | What does this agent *know and is allowed to be*? | `prompt_ref`, `skill_refs`, `capabilities`, `model`, `profile` on `AgentMember` |
 | 2 Environment | What can it *touch*? | `worktree_ref`, `runtime_workspace_roots`, `workspace_policy`; MCP via `AgentProviderConfig.mcp` |
-| 3 Platform adaptation | How does the harness *drive* the platform, select one continuation owner, resolve its native session, read it, and resume it? | `AgentProvider` / provider adapter, continuation controller, native-session resolver, ephemeral reducer, `ProviderCapabilities` |
+| 3 Platform adaptation | How does the firm *drive* the platform, select one continuation owner, resolve its native session, read it, and resume it? | `AgentProvider` / provider adapter, continuation controller, native-session resolver, ephemeral reducer, `ProviderCapabilities` |
 
 The pillars are deliberately separable: changing the platform (Pillar 3) must
 not require rewriting the prompt stack (Pillar 1) or the workspace contract
@@ -116,11 +116,11 @@ prompt artifact, not inline chat text**. The contract:
   prompts that change permissions or evidence policy must be files/refs, not
   hidden chat context.
 - The role prompt is **one layer** in the documented prompt stack from
-  [agent-control-plane.md](company-os/execution-foundation.md). The harness composes the
+  [agent-control-plane.md](company-os/execution-foundation.md). The firm composes the
   full system prompt per delivery from this stack:
 
 ```text
-harness base system prompt          (Mission/Wave, honest execution records, decisions)
+firm base system prompt          (Mission/Wave, honest execution records, decisions)
   -> repository / adapter rules      (project constraints, commands, safety)
   -> role-specific prompt            (prompt_ref → this member's responsibility)
   -> execution context               (Mission, current Host-plan Wave, run and Works)
@@ -136,29 +136,29 @@ identity is never rewritten per turn.
 
 ### Skills: the skill contract (WP-6 — implemented)
 
-`AgentMember.skill_refs` is a `string[]`. The harness implements the following
+`AgentMember.skill_refs` is a `string[]`. The firm implements the following
 contract for resolving and injecting skills:
 
 - **Location.** A skill lives at `.agents/skills/<id>/SKILL.md` with YAML
   frontmatter carrying `name` (matching the folder) and a complete `description`
-  (enforced by the `skills` gate in `harness governance check`).
-- **Resolution.** A `skill_ref` is the skill `<id>`. The harness resolves it via
-  the [`skill_resolver` module](../crates/harness-core/src/lib.rs): read
+  (enforced by the `skills` gate in `firm governance check`).
+- **Resolution.** A `skill_ref` is the skill `<id>`. The firm resolves it via
+  the [`skill_resolver` module](../crates/firm-core/src/lib.rs): read
   `.agents/skills/<id>/SKILL.md` (and any files it links). The ref is durable
   and inspectable; it is not a copy.
-- **Discovery.** The harness can enumerate `.agents/skills/*/SKILL.md`. A member
-  declares which skills apply via `skill_refs`; the harness does not force a
+- **Discovery.** The firm can enumerate `.agents/skills/*/SKILL.md`. A member
+  declares which skills apply via `skill_refs`; the firm does not force a
   model to self-search for skills.
-- **Validation.** The `skills` gate (`harness governance check`) validates that
+- **Validation.** The `skills` gate (`firm governance check`) validates that
   any `skill_ref` in a member JSON resolves to an existing skill directory.
   Dangling refs fail fast with a clear error message.
 - **Injection.** A provider injects resolved skills as **explicit turn input**,
   not as ambient context. On exec-stream this is part of the composed prompt /
   developer instructions (Pillar 1 prompt stack), referenced in the launch spec
   via `skill_refs`. Codex passes a skill input item on `turn/start`; Claude
-  injects via the system prompt. Either way the rule is the same: the harness
+  injects via the system prompt. Either way the rule is the same: the firm
   chooses skills, the platform consumes them.
-- **Kinds.** Two skill kinds are recognized: a **generic harness capability**
+- **Kinds.** Two skill kinds are recognized: a **generic firm capability**
   (how to use Mission/Wave and the selected executor honestly) and a
   **project/adapter skill** (how to use a project's CLI, Dashboard, acceptance
   evidence, and safety boundaries). Skills are optional tools, never product
@@ -170,7 +170,7 @@ contract for resolving and injecting skills:
 is meant to do (e.g. `code`, `review`, `research`, `live_ops`). It is
 member-level intent, distinct from the **provider capability declaration**
 (Pillar 3), which states what the *platform* can technically support
-(streaming, resume, mid-turn approval, subagents, MCP, hooks). The harness/UI
+(streaming, resume, mid-turn approval, subagents, MCP, hooks). The firm/UI
 should reconcile the two: a member may *want* a capability the platform cannot
 provide, and that gap must be shown honestly (see Pillar 3 and invariant 4 in
 [integration/README.md](integration/README.md)).
@@ -211,7 +211,7 @@ company identity, Work ownership, or native-session provenance.
 
 ## Pillar 2 — Environment & Resources (workspace, MCP)
 
-Pillar 2 describes what the agent can touch. It is enforced by the harness, not
+Pillar 2 describes what the agent can touch. It is enforced by the firm, not
 by prompt text alone (invariant: `PermissionProfile` "refuses prompt-only
 safety", per [agent-runtime.md](agent-runtime.md)).
 
@@ -242,7 +242,7 @@ the platform (`cwd` for Codex exec, `--add-dir` / process cwd for Claude).
 
 ### MCP integration (WP-6 — implemented)
 
-The harness now implements MCP server attachment via a neutral contract. Both
+The firm now implements MCP server attachment via a neutral contract. Both
 target platforms consume MCP servers uniformly.
 
 A neutral `mcp` block on the launch spec, sourced from `AgentProviderConfig.mcp`:
@@ -270,7 +270,7 @@ How each platform consumes the same neutral block:
 (additive field, defaults to None). The `build_launch_spec` function carries it
 to the neutral launch spec. Providers map the spec onto their own MCP config
 format (Codex `--config`, Claude `--mcp-config`). See
-[`skill_resolver` module](../crates/harness-core/src/lib.rs) for the
+[`skill_resolver` module](../crates/firm-core/src/lib.rs) for the
 `LaunchMcp` / `LaunchMcpServer` types.
 
 ### Declaring resource requirements
@@ -287,7 +287,7 @@ satisfy the member.
 
 ## Pillar 3 — Platform Adaptation (Codex, Claude, low-code, OpenCloud/Hermit)
 
-Pillar 3 is how the harness *drives* a platform and reads it back into neutral
+Pillar 3 is how the firm *drives* a platform and reads it back into neutral
 state. A new platform is integrated by implementing four things.
 
 ### 1. The `AgentProvider` interface
@@ -303,7 +303,7 @@ probe / ingest** as the canonical names; they map onto the runtime interface):
 | **probe** | `health(runtime)` | Report runtime health signals (below). |
 | **read/resume** | native-session adapter | Resolve, project, and resume provider-owned session state without copying it. |
 
-Delivery must respect the harness claim/lease: no platform side effect before
+Delivery must respect the firm claim/lease: no platform side effect before
 the latest queued `Message` is atomically claimed (see
 [agent-runtime.md](agent-runtime.md) "Delivery claims happen before provider
 side effects").
@@ -352,7 +352,7 @@ not a reason to start it as an Agent Team member.
 ### Provider capability declaration (WP-6 — implemented)
 
 The implemented `ProviderCapabilities` preset in
-[harness-core](../crates/harness-core/src/lib.rs) covers broad technical axes:
+[firm-core](../crates/firm-core/src/lib.rs) covers broad technical axes:
 streaming, resume, mid-turn approval, subagents, MCP, hooks, schema, cost, and
 enforced read-only execution. These booleans are execution-mode metadata, not
 provider-brand promises.
@@ -393,10 +393,10 @@ enumerating tools.
 The earning-engine example
 ([adapter.json](../examples/adapters/earning-engine/adapter.json))
 shows the generic split: an adapter supplies project tools, evidence policy,
-dashboard links, permission policy, and skills, while the generic harness owns
+dashboard links, permission policy, and skills, while the generic firm owns
 coordination. Generalized:
 
-| Generic harness owns | Adapter / platform owns |
+| Generic firm owns | Adapter / platform owns |
 | --- | --- |
 | Mission/Wave joins, Agent Team Works/messages, role routing | domain tool descriptors |
 | evidence references, review gates, decisions | project dashboard, artifacts |
@@ -404,8 +404,8 @@ coordination. Generalized:
 | the neutral launch spec and event reduction | platform-native CLI/SDK call shape |
 
 A platform integration (Pillar 3) and a project adapter are orthogonal: a
-provider teaches the harness *how to drive a runtime*; an adapter teaches the
-harness *what tools and evidence a project exposes*. Both plug into the same
+provider teaches the firm *how to drive a runtime*; an adapter teaches the
+firm *what tools and evidence a project exposes*. Both plug into the same
 `AgentMember` without changing core object semantics.
 
 ### Substrate decision
@@ -429,7 +429,7 @@ adapter starts `host_driven` and may promote a specific mode/version to
 
 The launch spec is one normalized delivery request. For Workflow it maps to one
 bounded invocation. For Agent Team it is delivered into one persistent native
-session under the selected execution driver. The harness builds it from the
+session under the selected execution driver. The firm builds it from the
 member (Pillars 1–2) and the claimed `Message`, and each platform adapter
 (Pillar 3) maps it onto its own protocol. This is the seam that keeps the
 operator composer and Dashboard uniform across Codex, Claude, and future
@@ -454,7 +454,7 @@ platforms.
 ### The Codex-vocabulary leak this spec abstracts
 
 Today `AgentProviderConfig`
-([crates/harness-core/src/lib.rs](../crates/harness-core/src/lib.rs)) and
+([crates/firm-core/src/lib.rs](../crates/firm-core/src/lib.rs)) and
 [schemas/agent-member.schema.json](../schemas/agent-member.schema.json) carry
 fields that are **Codex `app-server` parameter names mapped 1:1** into the
 supposedly neutral core:
@@ -504,7 +504,7 @@ is the concrete "define X, Y, Z" deliverable.
    leak platform wire vocabulary back into the neutral spec.
 5. **Declare provider and continuation capabilities.** Implement the `ProviderCapabilities`
    declaration (streaming, resume, mid-turn approval, subagents, mcp, hooks,
-   schema, cost, enforces_read_only) so the harness/UI can adapt and the
+   schema, cost, enforces_read_only) so the firm/UI can adapt and the
    Dashboard shows honest state. Select the default execution driver and state
    which native continuation operations are verified for the exact mode and
    version. Test that later provider-created cycles preserve the intended
@@ -520,7 +520,7 @@ is the concrete "define X, Y, Z" deliverable.
    [integration/README.md](integration/README.md).
 7. **Pass deterministic and live validation gates.** `npx pnpm@9.15.4 check` must be green
    (`validate:json`, `check:schema-fixtures`, `check:tool-descriptors`,
-   `check:dashboard`) and so must `harness governance check` (the doc/skill
+   `check:dashboard`) and so must `firm governance check` (the doc/skill
    gates: links, registry, size, skills). Live acceptance must prove one
    top-level execution driver, native-session resume, busy mailbox behavior,
    interrupt/close, permission continuity, typed actor provenance,

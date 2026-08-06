@@ -21,7 +21,7 @@ define whether the product works.
 
 ## Promise
 
-Star Harness should be able to develop and inspect itself through the same
+Firm should be able to develop and inspect itself through the same
 Mission/Wave, Agent Team, mailbox, native-session and lifecycle paths it offers
 to users. Dogfood therefore uses real persistent Provider members and normal
 Host controls. Deterministic fixtures are the baseline, not a substitute for a
@@ -76,10 +76,10 @@ report the absolute path, branch, commit, checks and conflicts.
 Build from the selected commit and verify:
 
 ```bash
-harness member providers --fail-on-review
+firm member providers --fail-on-review
 npx pnpm@9.15.4 acceptance:mission-wave
-npx pnpm@9.15.4 check:star-harness-plugin
-harness governance check
+npx pnpm@9.15.4 check:firm-plugin
+firm governance check
 ```
 
 `review_required` is not rewritten as `current`. The Host either reviews that
@@ -221,7 +221,7 @@ The default progression is:
 5. mixed three-member Host and peer messaging;
 6. busy, idle, crashed/resumed and multi-client delivery;
 7. Organization identity reuse and Standing Agent execution projection;
-8. repeated run from the published Plugin and latest accepted Harness binary.
+8. repeated run from the published Plugin and latest accepted Firm binary.
 
 Do not upgrade all Providers in the same run. A version change gets its own
 reviewable lane and rollback point.

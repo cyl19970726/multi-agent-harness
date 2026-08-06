@@ -9,7 +9,7 @@ canonical_for: using recursive Organization, Docs, and Work to continuously deve
 ## Dogfood means operating through the product
 
 AgentOS dogfood is not a scripted demo or one fixed `Docs -> Work -> Docs`
-pipeline. The team building Star Harness must use Company OS as its normal
+pipeline. The team building Firm must use Company OS as its normal
 operating system:
 
 - durable Members and nested Team authority are visible in Organization;
