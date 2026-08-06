@@ -46,14 +46,27 @@ delivered your Work context and set these env vars. Run these exact commands
 
 ## Start From Work, Not Chat
 
-Confirm these facts before side effects:
+Your Work comes with a mini mental model. Parse it in one pass:
 
-- TeamRun, MemberRun, current Work id and version;
-- Work title, Markdown context, completion criteria, owner, readiness, and
-  allowed paths;
-- Workspace, Project Binding, permission ceiling, Team roster, and Host/peer
-  addresses; and
-- Provider execution driver and native-session binding.
+```
+Work context structure (written by Lead):
+┌─ What ──────────┐  ← The problem, in one sentence
+├─ Mental Model ──┤  ← States, invariants, data flow. Study this.
+├─ Boundary ──────┤  ← Paths to touch / NEVER touch. Respect this.
+├─ Evidence ──────┤  ← What counts as done. Deliver this.
+└─────────────────┘
+
+Work criteria (written by Lead):
+  Acceptance checklist. Match every item before submitting.
+```
+
+Before any side effect, read the full Work with:
+
+```bash
+"$HARNESS_BIN" team-run work show --work-id "$HARNESS_WORK_ID" --json
+```
+
+Then confirm these facts from the output:
 
 Read the board and exact Work:
 
