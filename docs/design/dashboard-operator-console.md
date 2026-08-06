@@ -28,9 +28,10 @@ from the UI or explicitly marked unavailable with a reason.
 - **Providers**: only registered persistent bidirectional modes are
   selectable: `kimi/kimi_acp`, `codex/codex_app_server`,
   `claude/claude_agent_sdk`, `pi/pi_rpc` (mirrors
-  `validate_team_member_execution_mode`). Future providers (e.g. a DeepSeek
-  adapter) plug into the same registry; the UI lists what the registry
-  declares, nothing hardcoded beyond the display map in `lib/provider.ts`.
+  `validate_team_member_execution_mode`). The provider set is closed — no
+  new providers are planned; DeepSeek models are configured directly inside
+  kimi code. The UI lists what the registry declares, nothing hardcoded
+  beyond the display map in `lib/provider.ts`.
 
 ## 2. Backend changes
 
@@ -127,6 +128,7 @@ per AGENTS.md; this spec claims only deterministic contracts.
 - Resume as a standalone endpoint (reopen + `resume_native_session_id`
   cover it today).
 - HostAttention HTTP surface (no endpoint exists; needs its own design).
-- New provider adapters (DeepSeek etc.) — registry-driven later.
+- New provider adapters — the provider set is closed; DeepSeek models are
+  configured directly inside kimi code.
 - Work-delivery-claim reconciliation over HTTP (MCP-only today).
 - Company OS governance actions (token-gated, separate surface).
