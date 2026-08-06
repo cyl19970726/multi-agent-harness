@@ -1,7 +1,7 @@
 {
   "name": "star-harness",
   "version": "0.4.4",
-  "description": "Thin Mission/Wave and autonomous Agent Team integration for Kimi Code.",
+  "description": "Thin Mission and autonomous Agent Team integration for Kimi Code.",
   "interface": {
     "displayName": "Star Harness",
     "shortDescription": "Plan Missions and coordinate autonomous Agent Teams.",
@@ -16,7 +16,7 @@
   "sessionStart": {
     "skill": "orchestrate-mission-waves"
   },
-  "skillInstructions": "Use the Harness CLI as the complete path. Mission stores durable intent; Wave stores Host plan and judgment; Agent Team Works store responsibility, status, submission, and Host acceptance; TeamMessage is Work-linked conversation only. Members may use provider-native subagents internally, provider pauses use PendingInteraction, and provider-native sessions remain execution truth.",
+  "skillInstructions": "Use the Harness CLI as the complete path. Mission stores durable intent; Agent Team Works store responsibility, status, submission, and Host acceptance; TeamMessage is Work-linked conversation only. Members may use provider-native subagents internally, provider pauses use PendingInteraction, and provider-native sessions remain execution truth.",
   "mcpServers": {
     "harness": {
       "command": "harness",
@@ -37,8 +37,26 @@
       "timeout": 10
     },
     {
+      "event": "PreToolUse",
+      "matcher": "*",
+      "command": "$KIMI_PLUGIN_ROOT/scripts/star-harness-hook.sh",
+      "timeout": 10
+    },
+    {
+      "event": "PostToolUse",
+      "matcher": "*",
+      "command": "$KIMI_PLUGIN_ROOT/scripts/star-harness-hook.sh",
+      "timeout": 10
+    },
+    {
       "event": "Stop",
       "matcher": "*",
+      "command": "$KIMI_PLUGIN_ROOT/scripts/star-harness-hook.sh",
+      "timeout": 10
+    },
+    {
+      "event": "Notification",
+      "matcher": "task\\\\.completed",
       "command": "$KIMI_PLUGIN_ROOT/scripts/star-harness-hook.sh",
       "timeout": 10
     }

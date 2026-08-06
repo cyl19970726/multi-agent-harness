@@ -92,10 +92,15 @@ CLAUDE_PLUGINS_BEFORE="$(claude plugin list)"
 grep -A3 -B1 'star-harness@multi-agent-harness' <<<"${CLAUDE_PLUGINS_BEFORE}" || true
 
 echo
-echo "Kimi integration boundary:"
-echo "Kimi Code has no generic plugin-management command in the reviewed CLI."
-echo "Agent Team Kimi members use kimi_acp plus the Harness collaboration envelope"
-echo "and skills discovered from their explicit cwd/skills directories."
+echo "Current Kimi Code Star Harness installation:"
+KIMI_CODE_HOME="${KIMI_CODE_HOME:-${USER_HOME_DIR}/.kimi-code}"
+KIMI_MANAGED_DIR="${KIMI_CODE_HOME}/plugins/managed/star-harness"
+if [[ -f "${KIMI_MANAGED_DIR}/kimi.plugin.json" ]]; then
+  KIMI_INSTALLED_VERSION="$(node -e "console.log(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).version||'?')" "${KIMI_MANAGED_DIR}/kimi.plugin.json" 2>/dev/null || echo "?")"
+  echo "  installed v${KIMI_INSTALLED_VERSION} at ${KIMI_MANAGED_DIR}"
+else
+  echo "  not installed (run --apply to install)"
+fi
 
 if [[ "${MODE}" == "check" ]]; then
   echo
@@ -210,6 +215,17 @@ else
   claude plugin install "${PLUGIN_SELECTOR}" --scope user
 fi
 
+	echo
+	echo "Installing Kimi Code plugin..."
+	mkdir -p "${KIMI_MANAGED_DIR}/scripts" "${KIMI_MANAGED_DIR}/skills" "${KIMI_MANAGED_DIR}/commands"
+	cp "${REPO_ROOT}/plugins/star-harness/kimi.plugin.json" "${KIMI_MANAGED_DIR}/"
+	cp "${REPO_ROOT}/plugins/star-harness/scripts/star-harness-hook.sh" "${KIMI_MANAGED_DIR}/scripts/"
+	cp -R "${REPO_ROOT}/plugins/star-harness/skills/" "${KIMI_MANAGED_DIR}/skills/"
+	cp -R "${REPO_ROOT}/plugins/star-harness/commands/" "${KIMI_MANAGED_DIR}/commands/"
+	cp "${REPO_ROOT}/plugins/star-harness/.mcp.json" "${KIMI_MANAGED_DIR}/"
+	echo "  installed ${VERSION} to ${KIMI_MANAGED_DIR}"
+	echo "  Run /reload in Kimi Code to activate the plugin."
+
 node - "${STATE_FILE}" "${VERSION}" "${REPO_ROOT}" "${VERSION_BIN}" "${PREVIOUS_BIN}" "${INSTALLED_AT}" <<'NODE'
 const fs = require("node:fs");
 const [path, version, sourceRoot, binary, previousBinary, installedAt] = process.argv.slice(2);
@@ -221,7 +237,7 @@ fs.writeFileSync(path, `${JSON.stringify({
   rollback_harness_binary: previousBinary || null,
   codex_plugin: "star-harness@multi-agent-harness",
   claude_plugin: "star-harness@multi-agent-harness",
-  kimi_boundary: "kimi_acp + collaboration envelope + explicit cwd skill discovery",
+  kimi_plugin: "${KIMI_MANAGED_DIR}",
   installed_at: installedAt,
 }, null, 2)}\n`);
 NODE
@@ -230,4 +246,4 @@ APPLY_IN_PROGRESS="false"
 echo
 echo "Installed Star Harness ${VERSION}."
 echo "State: ${STATE_FILE}"
-echo "Start a new Codex task and a new Claude session to load the updated plugin."
+echo "Start a new Codex task, a new Claude session, and run /reload in Kimi Code to activate."

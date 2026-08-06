@@ -1,7 +1,7 @@
 {
   "name": "star-harness",
   "version": "0.4.4",
-  "description": "Thin Mission/Wave and autonomous Agent Team integration for Codex.",
+  "description": "Thin Mission and autonomous Agent Team integration for Codex.",
   "author": {
     "name": "Multi-Agent Harness",
     "email": "noreply@example.com",
@@ -10,7 +10,7 @@
   "homepage": "https://github.com/cyl19970726/multi-agent-harness",
   "repository": "https://github.com/cyl19970726/multi-agent-harness",
   "license": "MIT",
-  "keywords": ["codex", "agent-team", "mission", "wave", "mcp"],
+  "keywords": ["codex", "agent-team", "mission", "mcp"],
   "skills": "./skills/",
   "interface": {
     "displayName": "Star Harness",
@@ -23,7 +23,7 @@
     "privacyPolicyURL": "https://github.com/cyl19970726/multi-agent-harness",
     "termsOfServiceURL": "https://github.com/cyl19970726/multi-agent-harness",
     "defaultPrompt": [
-      "Create a Mission and plan its first Wave.",
+      "Create a Mission and plan its first phase.",
       "Start an Agent Team for this Mission.",
       "Show the active Team and Lead Inbox."
     ],

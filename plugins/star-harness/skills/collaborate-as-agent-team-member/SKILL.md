@@ -215,9 +215,11 @@ Work; never keep executing a Work already in `review`, `blocked`, `done`, or
   `--check-ref "<CI-run-URL>"`. These are not optional decoration — they are
   the verifiable evidence the Host inspects during review.
 - **Non-trivial work defaults to plan-first.** Before implementing a multi-file
-  change or a design decision, use ExitPlanMode / plan mode to get Lead
-  approval on the approach. Implementation without a reviewed plan on
-  non-trivial work is treated as un-reviewed delivery.
+  change or a design decision, present your plan as an ordinary Markdown
+  message to the Host and wait for approval before coding. Do NOT use
+  EnterPlanMode or ExitPlanMode — they block you indefinitely in headless
+  team context (ADR 0039: Harness has no Plan Gate). Implementation without
+  a reviewed plan on non-trivial work is treated as un-reviewed delivery.
 - **Never go silent.** When blocked, send a Work-linked message naming the
   specific blocker and the decision needed. Do not spin silently in a
   provider-native loop waiting for resolution — the Host cannot see a silent
