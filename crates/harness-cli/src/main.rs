@@ -26489,7 +26489,7 @@ fn write_http_response(
 ) -> CliResult<()> {
     write!(
         stream,
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, X-Harness-Company-OS-Token\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
     stream.write_all(body)?;
