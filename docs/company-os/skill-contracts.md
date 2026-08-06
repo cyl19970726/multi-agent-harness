@@ -136,19 +136,20 @@ skill. The surface includes read/query commands (`query`, `search`,
 `traverse`, `refs`, `related`, `health`, `snapshot`, `diff`,
 `change-report`), governance authoring (`module create`,
 `page-definition create`, `page scaffold`, `page verify`, `page publish`),
-and governed maintenance for `document create|rename|move|archive`,
-`template create|status`, `block append|update|archive|remove|reorder`,
-`typed-record append|update|validate`, `view create|update`, and
-`relation link|unlink|relink|repair-missing`.
+the v2 page surface (`page create|read|write|append|search|rename|move|archive`),
+and governed maintenance for `typed-record append|update|validate`,
+`view create|update`, and `relation link|unlink|relink|repair-missing`.
 
 Supersession note (ADR 0054): page/document creation and content authoring
-now belong to the AI-first Docs v2 surface (`page create|read|write|append|search`
+belong to the AI-first Docs v2 surface (`page create|read|write|append|search`
 over whole-page revisions; see `docs/company-os/ai-first-docs-spec.md`). The
-Block-era `document create` and `block *` commands above remain implemented
-but are on the retirement path (spec §13, stage R3); new Agent work should
-prefer the v2 page commands. Record-layer commands (`module`,
-`typed-record`, `view`, `relation`, `template`, health, source sync) are
-unaffected and stay current.
+Block-era `document create|rename|move|archive`, `template create|status`, and
+`block *` commands were deleted at retirement stage R3 (spec §13), together
+with the `document.append`/`block.append` API actions; legacy documents remain
+readable through `page read` as honest legacy projections. Record-layer
+commands (`module`, `typed-record`, `view`, `relation`, health, source sync)
+are unaffected and stay current; legacy template Documents remain readable
+records without an authoring surface.
 
 External software source sync is Company Store-routed (`--company`) and
 observes a Git worktree (`--repo-path`).
@@ -172,24 +173,18 @@ Command contract:
   plus `Document → source_for → TypedRecord` Relations (repo/branch/commit/path
   /hash/headings/source-class). GitHub/webhook is a transport, not authority.
 - **`docs health`**: read-only structural audit over the current projection.
-- **`docs document rename/move/archive`**: governed structure maintenance via
-  `document.append`. `move` may change `parent_document_id` within same space
-  (no parent cycles); `archive` requires `--confirm`. Docs-only, no side
-  effects.
-- **`docs block update/archive/remove`**: governed content maintenance via
-  `block.append`. Never physically deletes; no side effects.
+- **`docs page create/read/write/append/search`**: v2 page authoring over
+  whole-page immutable revisions with sha256 digests and `expected_revision`
+  optimistic concurrency; scoped reads (`outline/section/range/keyword`) and
+  revision selection; legacy ledger documents project read-only with
+  `legacy_projection=true`. Docs-only, no side effects.
+- **`docs page rename/move/archive`**: structure maintenance as metadata
+  revisions through the same revision mechanism. `move` may change
+  `parent_document_id` within same space (no parent cycles); `archive`
+  requires `--confirm` to commit. Docs-only, no side effects.
 - **`docs module create` / `docs page-definition create`**: require
   `company_os.admin`; create BusinessModule/View + CustomPageDefinition bundle.
   May declare BusinessModule relation rules but creates no TypedRecords.
-- **`docs document create --root`**: bootstrap a DocumentSpace (admin only,
-  writes root Document only).
-- **`docs template create`**: constructs `Document(kind=template)`; with
-  `--from-document` copies source Blocks. `docs template status` updates
-  template lifecycle only. `docs document create --template` records
-  provenance; `--instantiate-template` also copies the template's Blocks.
-- **`docs block append`**: creates Block + updates `Document.block_ids`.
-  Supports `rich_text`, `heading`, `callout`, `table`. Reorder is governed
-  `document.append` wrapper preserving the Block set.
 - **`docs typed-record append/update`**: append creates a source-linked
   TypedRecord; update writes a new latest row (preserves id, module, type,
   source, creator, created). `--merge-fields` overlays; dry-run previews.
@@ -198,9 +193,10 @@ Command contract:
 - **`docs relation link/unlink`**: `link` creates active relation; `unlink`
   writes `lifecycle_status=archived` (preserves history, requires `--confirm`).
 
-All write commands dispatch through governed Action transport; no
-general store-write client. They require `HARNESS_COMPANY_OS_TOKEN` plus a
-matching `CustomPageDefinition` policy.
+Record/view/relation write commands dispatch through governed Action transport
+and require `HARNESS_COMPANY_OS_TOKEN` plus a matching `CustomPageDefinition`
+policy; v2 page commands write through the revision mechanism behind the same
+Company OS write capability and need no PageDefinition policy bundle.
 
 ## Shared operating rules
 

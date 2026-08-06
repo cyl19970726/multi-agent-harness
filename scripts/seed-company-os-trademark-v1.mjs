@@ -331,7 +331,7 @@ export async function seedCompanyOsTrademark({ apiBaseUrl, token, fixture }) {
     }],
     approved_ui_components: ["DocumentCard", "WorkItemCard", "ApprovalCard", "FinancialRecordCard"],
     action_command_refs: [
-      "document.append", "block.append", "typed_record.append", "view.append", "relation.append",
+      "typed_record.append", "view.append", "relation.append",
       "work_item.append", "work_item.transition", "assignment.append",
       "commitment.propose", "commitment.append",
       "approval.request", "approval.decide", "payment.append",
@@ -343,8 +343,6 @@ export async function seedCompanyOsTrademark({ apiBaseUrl, token, fixture }) {
     fixture_ref: "company-os-trademark-v1",
     visual_contract_ref: "docs/design/company-os-v2/visual-contract.json",
     policy_refs: [
-      "page-trademark:document.append",
-      "page-trademark:block.append",
       "page-trademark:typed_record.append",
       "page-trademark:view.append",
       "page-trademark:relation.append",

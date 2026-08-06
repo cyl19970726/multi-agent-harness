@@ -396,7 +396,7 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
             }],
             "approved_ui_components": ["FinancialRecordCard", "ApprovalCard"],
             "action_command_refs": [
-                "document.append", "block.append", "typed_record.append", "relation.append",
+                "typed_record.append", "relation.append",
                 "work_item.append", "work_item.transition", "assignment.append",
                 "commitment.propose", "commitment.append",
                 "approval.request", "approval.decide", "payment.append"
@@ -408,8 +408,6 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
             "fixture_ref": "company-os-trademark-v1",
             "visual_contract_ref": "visual-contract-v1",
             "policy_refs": [
-                "page-trademark:document.append",
-                "page-trademark:block.append",
                 "page-trademark:typed_record.append",
                 "page-trademark:relation.append",
                 "page-trademark:work_item.append",
@@ -709,61 +707,6 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
             false,
             vec![],
             "audit-complete-merchant-outreach",
-        ),
-    );
-    post_ok(
-        &serve,
-        "/v1/company-os/actions/dispatch",
-        action_by(
-            "action-return-merchant-outreach-block",
-            "block.append",
-            json!({"kind": "document", "id": "document-merchant-outreach"}),
-            json!({
-                "id": "block-merchant-outreach-result",
-                "document_id": "document-merchant-outreach",
-                "kind": "callout",
-                "position": 0,
-                "content": {
-                    "title": "Merchant outreach completed",
-                    "text": "Three merchants contacted; two requested follow-up; no monetary commitment was made.",
-                    "evidence_refs": ["evidence-merchant-conversation-notes"]
-                },
-                "referenced_entities": [{"kind": "work_item", "id": "work-merchant-outreach"}],
-                "created_by": actor("agent", "agent-sales"),
-                "updated_by": actor("agent", "agent-sales"),
-                "created_at": "2026-07-20T10:15:00+08:00",
-                "updated_at": "2026-07-20T10:15:00+08:00"
-            }),
-            actor("agent", "agent-sales"),
-            "page-trademark:block.append",
-            "company.records.write",
-            "r1",
-            false,
-            vec![],
-            "audit-return-merchant-outreach-block",
-        ),
-    );
-    let mut returned_outreach_document = outreach_document.clone();
-    returned_outreach_document["block_ids"] = json!(["block-merchant-outreach-result"]);
-    returned_outreach_document["reference_refs"] =
-        json!([{"kind": "work_item", "id": "work-merchant-outreach"}]);
-    returned_outreach_document["updated_by"] = actor("agent", "agent-sales");
-    returned_outreach_document["updated_at"] = json!("2026-07-20T10:15:00+08:00");
-    post_ok(
-        &serve,
-        "/v1/company-os/actions/dispatch",
-        action_by(
-            "action-return-merchant-outreach-document",
-            "document.append",
-            json!({"kind": "document", "id": "document-merchant-outreach"}),
-            returned_outreach_document,
-            actor("agent", "agent-sales"),
-            "page-trademark:document.append",
-            "company.records.write",
-            "r1",
-            false,
-            vec![],
-            "audit-return-merchant-outreach-document",
         ),
     );
     let (status, nonfinancial_snapshot) =
@@ -1097,8 +1040,9 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
     );
     assert_eq!(replay["idempotent_replay"], true);
 
-    // The accepted outcome returns to the original Docs truth through declared
-    // Actions. These are latest-row-wins updates, not fixture projection hacks.
+    // The accepted outcome returns to the original Docs truth. Since R3 retired
+    // the document.append/block.append Actions, the return is written through the
+    // generic document/block resource endpoints (latest-row-wins appends).
     let result_block = json!({
         "id": "block-trademark-filing-result",
         "document_id": document["id"],
@@ -1118,23 +1062,7 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
         "created_at": "2026-07-20T10:21:00+08:00",
         "updated_at": "2026-07-20T10:21:00+08:00"
     });
-    post_ok(
-        &serve,
-        "/v1/company-os/actions/dispatch",
-        action_by(
-            "action-return-trademark-result-block",
-            "block.append",
-            json!({"kind": "document", "id": "document-trademark-cn-2026-018"}),
-            result_block,
-            actor("agent", "agent-trademark"),
-            "page-trademark:block.append",
-            "company.records.write",
-            "r1",
-            false,
-            vec![],
-            "audit-return-trademark-result-block",
-        ),
-    );
+    post_ok(&serve, "/v1/company-os/blocks", admin(result_block));
     let mut returned_document = document.clone();
     returned_document["block_ids"] = json!(["block-trademark-filing-result"]);
     returned_document["reference_refs"] = json!([
@@ -1144,23 +1072,7 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
     ]);
     returned_document["updated_by"] = actor("agent", "agent-trademark");
     returned_document["updated_at"] = json!("2026-07-20T10:21:00+08:00");
-    post_ok(
-        &serve,
-        "/v1/company-os/actions/dispatch",
-        action_by(
-            "action-return-trademark-source-document",
-            "document.append",
-            json!({"kind": "document", "id": "document-trademark-cn-2026-018"}),
-            returned_document,
-            actor("agent", "agent-trademark"),
-            "page-trademark:document.append",
-            "company.records.write",
-            "r1",
-            false,
-            vec![],
-            "audit-return-trademark-source-document",
-        ),
-    );
+    post_ok(&serve, "/v1/company-os/documents", admin(returned_document));
     let mut returned_record = json!({
         "id": "trademark-application-cn-2026-018",
         "module_id": "module-trademark",
@@ -1656,17 +1568,17 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
         snapshot["result"]["action_policy_definitions"]
             .as_array()
             .map(Vec::len),
-        Some(12)
+        Some(10)
     );
     assert_eq!(
         snapshot["result"]["action_commands"]
             .as_array()
             .map(Vec::len),
-        Some(26)
+        Some(22)
     );
     assert_eq!(
         snapshot["result"]["audit_events"].as_array().map(Vec::len),
-        Some(52)
+        Some(44)
     );
 
     let (status, detail) = serve.get_json("/v1/company-os/work-items/work-trademark-filing");

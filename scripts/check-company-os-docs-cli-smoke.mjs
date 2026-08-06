@@ -1,48 +1,31 @@
 #!/usr/bin/env node
 
+/**
+ * Docs CLI surface smoke (v2 era, retirement stage R3).
+ *
+ * Static mirror assertions: the AI-first Docs v2 page command surface exists,
+ * the record-layer commands survive, and the Block-era document/block/template
+ * command tree plus the document.append/block.append API actions are gone.
+ * Behavioral assertions live in check-company-os-docs-v2-smoke.mjs (CLI),
+ * check-company-os-docs-v2-api.mjs (serve), and the dashboard v2 checks.
+ */
+
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = join(fileURLToPath(import.meta.url), "..", "..");
-const mainPath = join(repoRoot, "crates", "harness-cli", "src", "main.rs");
-const source = await readFile(mainPath, "utf8");
-const companyStoreSource = await readFile(join(repoRoot, "crates", "harness-cli", "src", "company_store.rs"), "utf8");
-const docsOperatorSkill = await readFile(join(repoRoot, "skills", "company-docs-operator", "SKILL.md"), "utf8");
-const docsOperatorAgent = await readFile(join(repoRoot, "skills", "company-docs-operator", "agents", "openai.yaml"), "utf8");
-const docsSurfaceMatrix = await readFile(join(repoRoot, "docs", "company-os", "docs-operating-surface-matrix.md"), "utf8");
-const documentSystem = await readFile(join(repoRoot, "docs", "company-os", "document-system.md"), "utf8");
-const decisionsIndex = await readFile(join(repoRoot, "docs", "decisions", "README.md"), "utf8");
-const sqlReadModelAdr = await readFile(join(repoRoot, "docs", "decisions", "0035-company-os-sql-read-model.md"), "utf8");
-const agentOperatedDocsAdr = await readFile(join(repoRoot, "docs", "decisions", "0036-agent-operated-docs-and-code-declared-pages.md"), "utf8");
-const healthStart = source.indexOf("fn company_docs_health_command");
-const healthEnd = source.indexOf("fn company_docs_module_create_command");
-const healthSource = healthStart >= 0 && healthEnd > healthStart ? source.slice(healthStart, healthEnd) : "";
-const queryStart = source.indexOf("fn company_docs_query_command");
-const queryEnd = source.indexOf("fn company_docs_health_command");
-const querySource = queryStart >= 0 && queryEnd > queryStart ? source.slice(queryStart, queryEnd) : "";
-const sourceSyncStart = source.indexOf("fn company_docs_source_sync_command");
-const sourceSyncEnd = source.indexOf("fn company_docs_module_create_command");
-const sourceSyncSource = sourceSyncStart >= 0 && sourceSyncEnd > sourceSyncStart ? source.slice(sourceSyncStart, sourceSyncEnd) : "";
-const moduleStart = source.indexOf("fn company_docs_module_create_command");
-const moduleEnd = source.indexOf("fn company_docs_page_definition_create_command");
-const moduleSource = moduleStart >= 0 && moduleEnd > moduleStart ? source.slice(moduleStart, moduleEnd) : "";
-const pageDefinitionStart = source.indexOf("fn company_docs_page_definition_create_command");
-const pageDefinitionEnd = source.indexOf("fn company_docs_document_create_command");
-const pageDefinitionSource = pageDefinitionStart >= 0 && pageDefinitionEnd > pageDefinitionStart ? source.slice(pageDefinitionStart, pageDefinitionEnd) : "";
-const blockStart = source.indexOf("fn company_docs_block_append_command");
-const blockEnd = source.indexOf("fn company_docs_typed_record_append_command");
-const blockSource = blockStart >= 0 && blockEnd > blockStart ? source.slice(blockStart, blockEnd) : "";
-const typedRecordStart = source.indexOf("fn company_docs_typed_record_append_command");
-const typedRecordEnd = source.indexOf("fn company_docs_view_create_command");
-const typedRecordSource = typedRecordStart >= 0 && typedRecordEnd > typedRecordStart ? source.slice(typedRecordStart, typedRecordEnd) : "";
-const viewStart = source.indexOf("fn company_docs_view_create_command");
-const viewEnd = source.indexOf("fn company_docs_relation_link_command");
-const viewSource = viewStart >= 0 && viewEnd > viewStart ? source.slice(viewStart, viewEnd) : "";
+const read = (rel) => readFile(join(repoRoot, rel), "utf8");
+
+const mainSource = await read("crates/harness-cli/src/main.rs");
+const docsV2Source = await read("crates/harness-cli/src/docs_v2_page.rs");
+const apiSource = await read("crates/harness-cli/src/company_os_api.rs");
+const skillSource = await read("skills/company-docs-operator/SKILL.md");
+const cliMap = await read("docs/cli-map.md");
+const spec = await read("docs/company-os/ai-first-docs-spec.md");
 
 let passed = 0;
 let failed = 0;
-
 function check(condition, message) {
   if (condition) {
     console.log(`  PASS  ${message}`);
@@ -53,60 +36,84 @@ function check(condition, message) {
   }
 }
 
-check(source.includes('"company" => company_command'), "top-level harness company command is routed");
-check(source.includes("company init --id <company-id>") && source.includes("company list | company current | company switch <company-id> | company show [company-id]") && source.includes("company migrate-from-project --from-project <project-id|path>"), "help exposes Company Store registry and migration commands");
-check(source.includes("StoreSource::CompanyFlag") && source.includes("HARNESS_COMPANY") && source.includes("CompanyCurrent"), "store resolver routes harness company commands through explicit/current Company Store only");
-check(companyStoreSource.includes("CompanyRegistry") && companyStoreSource.includes("ACTIVE_COMPANY") && companyStoreSource.includes("companies") && companyStoreSource.includes("validate_company_id"), "Company Store registry has explicit metadata, active marker, companies directory, and id validation");
-check(source.includes("fn company_store_migrate_from_project_command") && source.includes("copy_company_os_ledgers") && source.includes("company_os_*.jsonl only") && source.includes("execution_space_migration") && source.includes("dual_write"), "Company Store migration copies only Company OS ledgers and declares execution/project boundaries");
-check(source.includes('company docs query') && source.includes('company docs search') && source.includes('company docs traverse') && source.includes('company docs refs') && source.includes('company docs related') && source.includes('company docs health') && source.includes('company docs source sync') && source.includes('company docs module create') && source.includes('company docs page scaffold') && source.includes('company docs page verify') && source.includes('company docs page publish') && source.includes('company docs page-definition create') && source.includes('company docs document create') && source.includes('company docs document rename') && source.includes('company docs document move') && source.includes('company docs document archive') && source.includes('company docs template create') && source.includes('company docs template status') && source.includes('company docs block append') && source.includes('company docs block update') && source.includes('company docs block archive') && source.includes('company docs block remove') && source.includes('company docs block reorder') && source.includes('company docs typed-record append') && source.includes('company docs typed-record update') && source.includes('company docs typed-record validate') && source.includes('company docs view create') && source.includes('company docs view update') && source.includes('company docs relation link') && source.includes('company docs relation unlink') && source.includes('company docs relation relink') && source.includes('company docs diff') && source.includes('company docs snapshot') && source.includes('company docs change-report'), "help and usage expose Docs query/search/traversal, source sync, page contracts, document/block/record/view/relation maintenance, diff, snapshot, and change-report commands");
-check(querySource.includes("fn company_docs_query_command") && querySource.includes("--document") && querySource.includes("--module") && querySource.includes("latest_projection") && querySource.includes("future_sql_role"), "Docs query command reads one Document or module context from latest projections and preserves the future SQL boundary");
-check(querySource.includes("fn company_docs_search_command") && querySource.includes("fn company_docs_traverse_command") && querySource.includes("fn company_docs_refs_command") && querySource.includes("fn company_docs_related_command") && querySource.includes("company_docs_read_boundaries"), "Docs search/traverse/refs/related expose Agent-readable projection context without writes");
-check(["document", "blocks", "children", "templates", "typed_records", "relations", "views", "business_module", "health_findings", "available_commands", "boundaries"].every((field) => querySource.includes(`\"${field}\"`)), "Docs query returns the stable Agent-facing operating context fields");
-check(querySource.includes("work_side_effects") && querySource.includes("finance_side_effects") && querySource.includes("organization_side_effects") && querySource.includes("execution_side_effects") && !querySource.includes("handle_post"), "Docs query is read-only and declares no Work, Finance, Organization, or Execution side effects");
-check(healthSource.includes("fn company_docs_health_command") && !/GoalPhase|Task Graph|compat-goal/.test(healthSource), "Docs health command is implemented without legacy Goal/Task terminology");
-check(source.includes('"missing_doc-record"') === false && source.includes('"missing_document_record_relation"'), "Docs health surfaces native missing Document-to-TypedRecord Relation findings");
-check(sourceSyncSource.includes("fn company_docs_source_sync_command") && sourceSyncSource.includes("external_project") && sourceSyncSource.includes("product_doc_source") && sourceSyncSource.includes("product_doc_snapshot") && sourceSyncSource.includes("source_sync_run"), "Docs source sync records external project sources, snapshots, and sync runs as native TypedRecords");
-check(sourceSyncSource.includes("--repo-path") && sourceSyncSource.includes("--path") && sourceSyncSource.includes("git_head_commit") && sourceSyncSource.includes("content_hash_hex16") && sourceSyncSource.includes("markdown_headings"), "Docs source sync reads local Git worktrees and records commit, content hash, and markdown headings");
-check(sourceSyncSource.includes("company_docs_source_sync_boundaries") && sourceSyncSource.includes("github_webhook_is_transport_not_authority") && sourceSyncSource.includes("commercial_truth_overwrite") && sourceSyncSource.includes("work_side_effects") && sourceSyncSource.includes("finance_side_effects") && sourceSyncSource.includes("organization_side_effects"), "Docs source sync declares GitHub webhook and cross-system side-effect boundaries");
-check(moduleSource.includes("fn company_docs_module_create_command") && moduleSource.includes('"/v1/company-os/business-modules"') && moduleSource.includes('"/v1/company-os/views"') && moduleSource.includes("--relation-rule-json"), "Docs module create builds a governance-scoped BusinessModule, fallback View, and optional relation rules");
-check(pageDefinitionSource.includes("fn company_docs_page_definition_create_command") && pageDefinitionSource.includes('"/v1/company-os/custom-page-packages"') && pageDefinitionSource.includes('"/v1/company-os/custom-page-definitions"') && pageDefinitionSource.includes("action_command_refs"), "Docs page-definition create installs a package and CustomPageDefinition policy bundle");
-check(pageDefinitionSource.includes("fn company_docs_page_scaffold_command") && pageDefinitionSource.includes("CodeDeclaredPage") && pageDefinitionSource.includes("page_is_not_second_truth") && pageDefinitionSource.includes("fn company_docs_page_verify_command") && pageDefinitionSource.includes("fn company_docs_page_publish_command"), "Docs page scaffold/verify/publish model code-declared custom pages as governed PageDefinition/PagePackage metadata");
-check(source.includes("fn company_docs_document_create_command") && source.includes('"document.append"') && source.includes("parent_document_id") && source.includes("--template") && source.includes("--instantiate-template"), "Docs document create builds scoped child Document records through document.append and can preserve or instantiate template provenance");
-check(source.includes("document create cannot combine --root and --parent-document") && source.includes("root document bootstrap cannot instantiate a template") && source.includes('"/v1/company-os/documents"') && source.includes('company_actor_ref_json("human", &authority)'), "Docs document create supports Human-authorized root Document bootstrap without PageDefinition action dispatch");
-check(source.includes("fn company_docs_document_rename_command") && source.includes("fn company_docs_document_move_command") && source.includes("fn company_docs_document_archive_command") && source.includes("--dry-run") && source.includes("document archive requires --confirm") && source.includes("company_docs_document_update_command"), "Docs document rename/move/archive are governed structure maintenance commands with dry-run and archive confirmation");
-check(source.includes("fn company_docs_template_create_command") && source.includes('"kind": "template"') && source.includes("--from-document") && source.includes("company_docs_copy_document_blocks"), "Docs template create builds reusable template Documents and can copy source Blocks through governed Actions");
-check(source.includes("fn company_docs_template_status_command") && source.includes("DocumentKind::Template") && source.includes("--status must be one of draft|active|paused|archived") && source.includes('"document.append"'), "Docs template status updates only template Document lifecycle through governed document.append");
-check(blockSource.includes("fn company_docs_block_append_command") && blockSource.includes('"block.append"') && blockSource.includes('"document.append"'), "Docs block append creates a Block and then updates Document.block_ids through governed Actions");
-check(blockSource.includes("block_ids.push") && blockSource.includes('document_record["block_ids"]'), "Docs block append preserves the Document-to-Block navigation invariant");
-check(blockSource.includes("--kind") && blockSource.includes("--content-json") && blockSource.includes("--text"), "Docs block append supports structured Block kind/content as well as text shorthand");
-check(blockSource.includes("fn company_docs_block_update_command") && blockSource.includes("fn company_docs_block_archive_command") && blockSource.includes("fn company_docs_block_remove_command") && blockSource.includes("block archive requires --confirm") && blockSource.includes("block remove requires --confirm") && blockSource.includes("physical_delete") && blockSource.includes("_archived"), "Docs block update/archive/remove preserve Block identity, support dry-run, require confirmation for removal from view, and avoid physical delete");
-check(blockSource.includes("fn company_docs_block_reorder_command") && blockSource.includes("--block-order") && blockSource.includes("existing Document.block_ids set") && blockSource.includes('"document.append"'), "Docs block reorder preserves the exact native Document.block_ids set through governed document.append");
-check(typedRecordSource.includes("fn company_docs_typed_record_append_command") && typedRecordSource.includes('"typed_record.append"') && typedRecordSource.includes("source_document_ref"), "Docs typed-record append builds scoped TypedRecord records from a source Document");
-check(typedRecordSource.includes("fn company_docs_typed_record_update_command") && typedRecordSource.includes("--merge-fields") && typedRecordSource.includes("--dry-run") && typedRecordSource.includes('"kind": "typed_record"'), "Docs typed-record update preserves identity/source and supports field merge plus dry-run");
-check(typedRecordSource.includes("fn company_docs_typed_record_validate_command") && typedRecordSource.includes("missing_required_field") && typedRecordSource.includes("field_type_mismatch") && typedRecordSource.includes("module_schema_persistence"), "Docs typed-record validate provides the first schema-validation slice without persisting a fake module schema");
-check(viewSource.includes("fn company_docs_view_create_command") && viewSource.includes('"view.append"') && viewSource.includes('"business_module"'), "Docs view create builds scoped View records under a BusinessModule subject");
-check(viewSource.includes("fn company_docs_view_update_command") && viewSource.includes("view_is_presentation_truth_not_record_store") && viewSource.includes("--dry-run"), "Docs view update maintains saved View/query configuration without becoming a second record store");
-check(source.includes('command_name": "relation.append"') && source.includes('"/v1/company-os/actions/dispatch"'), "Docs relation link builds relation.append and uses the governed Action dispatcher");
-check(source.includes("fn company_docs_relation_unlink_command") && source.includes("relation unlink requires --confirm") && source.includes('"lifecycle_status": "active"') && source.includes('"lifecycle_status"') && source.includes('"archived"') && source.includes("json_relation_is_active"), "Docs relation unlink archives the latest Relation row, requires confirmation, and active query/health filters ignore archived relations");
-check(source.includes("fn company_docs_relation_relink_command") && source.includes("two_governed_relation_append_actions") && source.includes("relation relink requires --confirm"), "Docs relation relink is an explicit governed archive-plus-link cleanup action");
-check(source.includes("fn company_docs_diff_command") && source.includes("fn company_docs_snapshot_command") && source.includes("fn company_docs_change_report_command") && source.includes("rollback_evidence_only"), "Docs diff/snapshot/change-report provide review evidence without dispatching mutations");
-check(!source.includes("append_relation") && !source.includes("append_block") && source.includes("company_os_api::handle_post"), "Docs authoring commands use the Company OS API instead of direct ledger appends");
-check(source.includes("HARNESS_COMPANY_OS_TOKEN") || source.includes("authenticate_write_transport"), "Docs write commands remain behind the Company OS capability");
-check(source.includes('"risk_tier": "r1"') && source.includes('"requires_human_approval": false'), "Docs relation link uses the low-risk Relation repair policy shape");
-check(docsOperatorSkill.includes("name: company-docs-operator") && docsOperatorAgent.includes("Company Docs Operator"), "Company Docs Operator skill is discoverable with Codex agent metadata");
-check(["query", "search", "traverse", "refs", "related", "health", "source sync", "module create", "page scaffold", "page verify", "page publish", "page-definition create", "document create", "document rename", "document move", "document archive", "template create", "template status", "block append", "block update", "block archive", "block remove", "block reorder", "typed-record append", "typed-record update", "typed-record validate", "view create", "view update", "relation link", "relation unlink", "relation relink", "diff", "snapshot", "change-report"].every((command) => docsOperatorSkill.includes(`harness company docs ${command}`)), "Company Docs Operator skill covers every implemented Docs CLI command");
-check(docsOperatorSkill.includes("document create --root") && docsOperatorSkill.includes("bootstrap escape hatch") && documentSystem.includes("document create --root"), "Company Docs Operator skill and product docs describe root Document bootstrap boundaries");
-check(["Docs may reference", "Work, Organization, Finance", "Execution records", "Never infer approval", "payment", "organization authority", "executor"].every((token) => docsOperatorSkill.includes(token)), "Company Docs Operator skill preserves system truth boundaries");
-check(docsOperatorSkill.includes("--kind callout") && docsOperatorSkill.includes("--content-json") && docsOperatorSkill.includes("Document.block_ids"), "Company Docs Operator skill documents structured Block authoring and navigation invariant");
-check(docsOperatorSkill.includes("--template <template-document-id>") && docsOperatorSkill.includes("--instantiate-template") && docsOperatorSkill.includes("Document.template_ref") && docsOperatorSkill.includes("does not create TypedRecords"), "Company Docs Operator skill documents template provenance and opt-in Block instantiation boundaries");
-check(["Docs Workspace", "Document Focus", "Business Module Focus", "Document Health Review"].every((surface) => docsSurfaceMatrix.includes(surface)), "Docs operating surface matrix covers all four Docs operating surfaces");
-check(["query", "search", "traverse", "refs", "related", "health", "source sync", "module create", "page scaffold", "page verify", "page publish", "page-definition create", "document create", "document rename", "document move", "document archive", "template create", "template status", "block append", "block update", "block archive", "block remove", "block reorder", "typed-record append", "typed-record update", "typed-record validate", "view create", "view update", "relation link", "relation unlink", "relation relink", "diff", "snapshot", "change-report"].every((command) => docsSurfaceMatrix.includes(`harness company docs ${command}`)), "Docs operating surface matrix covers every implemented Docs CLI command");
-check(["Document", "Block", "TypedRecord", "Relation", "View", "BusinessModule"].every((object) => docsSurfaceMatrix.includes(`\`${object}\``)), "Docs operating surface matrix names the native Docs objects");
-check(["Store-live", "company-docs-operator", "visual contract", "Current gaps", "No Docs page, CLI command, or skill may infer approval"].every((token) => docsSurfaceMatrix.includes(token)), "Docs operating surface matrix records UI/skill/visual evidence and cross-system boundaries");
-check(documentSystem.includes("Agent-operated, Human-reviewed") && /authoritative machine\s+interface is CLI\/API/.test(documentSystem) && docsSurfaceMatrix.includes("Agent primary interface: CLI/API") && docsSurfaceMatrix.includes("CLI-first backlog"), "Docs contracts preserve Agent-operated, Human-reviewed and CLI-first posture");
-check(decisionsIndex.includes("0035-company-os-sql-read-model.md") && documentSystem.includes("ADR 0035") && docsSurfaceMatrix.includes("SQL is introduced only as a derived read/query/index layer") && sqlReadModelAdr.includes("Do **not** replace the canonical Company OS Store with SQL now") && sqlReadModelAdr.includes("JSONL ledgers remain canonical"), "Docs storage contract preserves SQL as a derived read/query/index layer, not the current canonical Store");
-check(decisionsIndex.includes("0036-agent-operated-docs-and-code-declared-pages.md") && documentSystem.includes("ADR 0036") && docsSurfaceMatrix.includes("code-declared custom business pages") && agentOperatedDocsAdr.includes("Docs is not a Notion editor clone") && agentOperatedDocsAdr.includes("PageDefinition") && agentOperatedDocsAdr.includes("PagePackage"), "Docs product contract preserves Agent-operated substrate plus code-declared custom pages");
-check(docsSurfaceMatrix.includes("template_ref") && docsSurfaceMatrix.includes("--instantiate-template") && docsSurfaceMatrix.includes("template-to-typed-record relation policy"), "Docs operating surface matrix distinguishes template provenance, Block instantiation, and remaining template gaps");
+// --- v2 page command surface (docs_v2_page.rs) -----------------------------
+for (const fn of [
+  "fn page_create_command",
+  "fn page_read_command",
+  "fn page_write_command",
+  "fn page_append_command",
+  "fn page_search_command",
+  "fn page_rename_command",
+  "fn page_move_command",
+  "fn page_archive_command",
+]) {
+  check(docsV2Source.includes(fn), `v2 page surface implements ${fn.replace("fn ", "")}`);
+}
+check(docsV2Source.includes("pub struct PageReadOptions"), "v2 page read keeps scoped-read options (scope/detail/revision)");
+check(docsV2Source.includes("legacy_block_to_v2"), "v2 page read keeps the legacy read-only projection mapping");
+check(docsV2Source.includes("parent cycle"), "v2 page move keeps parent-cycle rejection");
+check(docsV2Source.includes("--confirm"), "v2 page archive keeps the --confirm gate");
 
-console.log(`\nCompany OS Docs CLI smoke: ${passed} pass, ${failed} fail`);
+// --- main.rs dispatch -------------------------------------------------------
+check(
+  mainSource.includes("company docs page create|read|write|append|search|rename|move|archive"),
+  "main.rs usage lists the full v2 page verb set",
+);
+check(
+  mainSource.includes("fn company_docs_typed_record_append_command") &&
+    mainSource.includes("fn company_docs_view_create_command") &&
+    mainSource.includes("fn company_docs_relation_link_command") &&
+    mainSource.includes("fn company_docs_module_create_command"),
+  "record-layer commands survive (typed-record/view/relation/module)",
+);
+check(
+  mainSource.includes("fn company_docs_query_command") &&
+    mainSource.includes("fn company_docs_health_command") &&
+    mainSource.includes("fn company_docs_source_sync_command"),
+  "read/health/source-sync commands survive",
+);
+
+// --- Block-era command tree is gone ----------------------------------------
+for (const dead of [
+  "fn company_docs_document_create_command",
+  "fn company_docs_document_rename_command",
+  "fn company_docs_document_move_command",
+  "fn company_docs_document_archive_command",
+  "fn company_docs_template_create_command",
+  "fn company_docs_template_status_command",
+  "fn company_docs_block_append_command",
+  "fn company_docs_block_update_command",
+  "fn company_docs_block_archive_command",
+  "fn company_docs_block_remove_command",
+  "fn company_docs_block_reorder_command",
+]) {
+  check(!mainSource.includes(dead), `Block-era command removed: ${dead.replace("fn company_docs_", "").replace("_command", "")}`);
+}
+
+// --- API actions retired -----------------------------------------------------
+check(!apiSource.includes('"document.append"'), "document.append action removed from the serve API");
+check(!apiSource.includes('"block.append"'), "block.append action removed from the serve API");
+check(!apiSource.includes("validate_document_append") && !apiSource.includes("validate_block_append"), "document/block append validators removed");
+check(
+  apiSource.includes('"typed_record.append"') &&
+    apiSource.includes('"view.append"') &&
+    apiSource.includes('"relation.append"'),
+  "record-layer governed actions survive (typed_record/view/relation)",
+);
+check(apiSource.includes("/v1/company-os/docs-v2/pages"), "v2 page endpoints remain registered");
+
+// --- Skill contract follows the v2 surface ----------------------------------
+check(skillSource.includes("page read") && skillSource.includes("page write"), "operator skill documents the v2 page commands");
+check(!/\bdocument (rename|move|archive)\b/.test(skillSource), "operator skill no longer teaches Block-era document maintenance");
+
+// --- Docs coherence -----------------------------------------------------------
+check(!cliMap.includes("Blocks (Block-era)"), "cli-map no longer lists the Block-era block rows");
+check(cliMap.includes("page rename") && cliMap.includes("page move") && cliMap.includes("page archive"), "cli-map lists the v2 metadata commands");
+check(spec.includes("R3 (done)"), "spec §13 marks R3 done");
+
+console.log(
+  failed === 0
+    ? `\ncompany-os docs CLI surface smoke (v2 era): ${passed} checks passed`
+    : `\ncompany-os docs CLI surface smoke (v2 era): ${failed} failure(s)`,
+);
 process.exit(failed === 0 ? 0 : 1);

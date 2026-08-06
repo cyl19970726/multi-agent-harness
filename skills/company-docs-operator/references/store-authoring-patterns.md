@@ -35,7 +35,8 @@ harness company docs health
 ```
 
 2. Define the page contract as a TypedRecord or explicit Document section.
-3. Update Blocks for human-readable narrative and local tables.
+3. Author page content through the v2 page surface (`page write`/`page append`)
+   for human-readable narrative and local tables.
 4. Create or update TypedRecords for reusable facts.
 5. Link Relations between Document, records, Work, Org, Finance, and source
    records.
@@ -45,12 +46,10 @@ harness company docs health
 ## Common command shape
 
 ```bash
-harness company docs block append \
-  --definition <page-definition-id> \
-  --document <document-id> \
-  --kind simple_table \
-  --content-json '<json>' \
-  --actor <actor-id>
+harness company docs page append \
+  --doc <document-id> \
+  --markdown '<markdown>' \
+  --summary '<change-summary>'
 
 harness company docs typed-record append \
   --definition <page-definition-id> \

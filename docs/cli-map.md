@@ -52,11 +52,10 @@ Store identity introduced by ADR 0042.
 
 ### Docs
 
-`harness company docs ...` is the most complete Company OS CLI surface. Two
-generations coexist during the ADR 0054 retirement plan
-(`docs/company-os/ai-first-docs-spec.md` §13): the AI-first Docs v2 page
-surface is current for page/document work; the Block-era document/block
-commands remain implemented until their retirement stage lands.
+`harness company docs ...` is the most complete Company OS CLI surface. Per
+the ADR 0054 retirement plan (`docs/company-os/ai-first-docs-spec.md` §13),
+the Block-era document/template/block command tree was deleted at retirement
+stage R3; the AI-first Docs v2 page surface is current for page/document work.
 
 | Capability | Commands | Status | Notes |
 | --- | --- | --- | --- |
@@ -65,9 +64,6 @@ commands remain implemented until their retirement stage lands.
 | Source sync | `source sync` | Implemented | Syncs external source state into Docs TypedRecords and idempotent `Document → source_for → TypedRecord` Relations with explicit boundaries. GitHub webhook transport is still a separate future adapter. |
 | Module setup | `module create` | Implemented | Creates BusinessModule plus default/fallback View through governed API path. |
 | Custom page metadata | `page-definition create`, `page scaffold`, `page verify`, `page publish` | Partial | Defines/scaffolds/verifies/publishes custom-page records and refs. It does not yet generate a complete production page from an arbitrary business brief. |
-| Document lifecycle (Block-era) | `document create`, `document rename`, `document move`, `document archive` | Superseded | Page/document creation, content, and rename/move/archive all belong to Pages v2 (spec §13 R1 done); the Block-era commands remain only until retirement stage R3 deletes them. |
-| Template lifecycle | `template create`, `template status` | Implemented | Template records exist; full template version approval workflow is still missing. Template handling under v2 is decided at retirement stage R1. |
-| Blocks (Block-era) | `block append`, `block update`, `block archive`, `block remove`, `block reorder` | Superseded | Replaced for page content by Pages v2 full-page writes; retired at stage R3 (spec §13). |
 | Typed records | `typed-record append`, `typed-record update`, `typed-record validate` | Implemented | Core structured memory primitive. |
 | Views | `view create`, `view update` | Partial | Basic view records exist. Advanced view editing, calendar/chart views and complex field configuration are still missing. |
 | Relations | `relation link`, `relation unlink`, `relation relink`, `relation repair-missing` | Implemented | Native relation maintenance across Docs and adjacent systems. `repair-missing` is definition/module-scoped, dry-run-first, confirmation-gated, and idempotent. |
@@ -154,7 +150,7 @@ store/API, CLI routing, UI, tests and ADRs.
 | Check | What it proves |
 | --- | --- |
 | `pnpm check:company-os` | Docs CLI smoke, Work CLI smoke, skill suite, Company OS UI/runtime/navigation/trademark checks and docs governance. |
-| `pnpm acceptance:company-os:docs-cli` | Store-live Docs CLI can create/update/query native Docs records. |
+| `pnpm check:docs-v2-live` | Store-live Docs v2 API and page store contracts (revision writes, scoped reads, legacy projection). |
 | `node scripts/check-company-os-work-cli-smoke.mjs` | Store-live Work CLI can create/assign/transition/close WorkItems. |
 | `node scripts/check-company-os-operator-cli-smoke.mjs` | Store-live Org, Milestone, Approval, Commitment and Payment operator CLI commands work together. |
 | `pnpm acceptance:mission-wave` | Deterministic Mission/Wave, TeamRun, MCP and dashboard contracts. |
