@@ -1,0 +1,13 @@
+{
+  "format_version": 1,
+  "current_company_id": "ai-first-docs",
+  "companies": [
+    {
+      "id": "ai-first-docs",
+      "name": "AI-first Docs Real Use",
+      "store_root": "/Users/hhh0x/multi-agent-harness/.worktrees/ai-first-docs-v1/.real-use/harness-home/companies/ai-first-docs",
+      "created_at": "unix-ms:1785951901497",
+      "last_opened_at": "unix-ms:1785951901497"
+    }
+  ]
+}

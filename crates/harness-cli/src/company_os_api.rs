@@ -10,8 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use harness_core::{
     ActionCommand, ActionCommandStatus, ActionEffect, ActionPolicyDefinition, ActorRef, ActorType,
     Approval, ApprovalStatus, Assignment, AuditEvent, AuditEventKind, Block, BusinessModule,
-    Commitment, CommitmentStatus, CustomPageDefinition, CustomPagePackage, Document, DocumentKind, EntityKind,
-    LifecycleStatus, MemberStatus, Milestone, OrgUnit, OrganizationMembership, Payment,
+    Commitment, CommitmentStatus, CustomPageDefinition, CustomPagePackage, Document, DocumentKind,
+    EntityKind, LifecycleStatus, MemberStatus, Milestone, OrgUnit, OrganizationMembership, Payment,
     PendingInteractionStatus, Relation, RiskTier, TypedRecord, ValidateCompanyOs, View, WorkItem,
     WorkItemStatus, WorkQuery,
 };
@@ -4078,7 +4078,8 @@ const DOCS_V2_PAGES: &str = "/v1/company-os/docs-v2/pages";
 fn docs_v2_error(error: crate::CliError) -> ApiError {
     match error {
         crate::CliError::Usage(message) => {
-            if message.starts_with("REVISION_CONFLICT") || message.starts_with("IDEMPOTENCY_CONFLICT")
+            if message.starts_with("REVISION_CONFLICT")
+                || message.starts_with("IDEMPOTENCY_CONFLICT")
             {
                 ApiError::conflict(message)
             } else if message.starts_with("document not found")
@@ -4120,7 +4121,11 @@ fn docs_v2_actor(body: &Value) -> Result<ActorRef, ApiError> {
                 .to_string();
             (kind, id)
         }
-        _ => return Err(ApiError::bad_request("actor must be an object or <kind>:<id> string")),
+        _ => {
+            return Err(ApiError::bad_request(
+                "actor must be an object or <kind>:<id> string",
+            ))
+        }
     };
     if actor_id.trim().is_empty() {
         return Err(ApiError::bad_request("actor id must be non-empty"));
@@ -4142,7 +4147,11 @@ fn docs_v2_actor(body: &Value) -> Result<ActorRef, ApiError> {
     })
 }
 
-fn docs_v2_body_string<'a>(body: &'a Value, field: &str, required: bool) -> Result<Option<&'a str>, ApiError> {
+fn docs_v2_body_string<'a>(
+    body: &'a Value,
+    field: &str,
+    required: bool,
+) -> Result<Option<&'a str>, ApiError> {
     match body.get(field).and_then(Value::as_str) {
         Some(value) => Ok(Some(value)),
         None if required => Err(ApiError::bad_request(format!("{field} is required"))),
@@ -4153,7 +4162,10 @@ fn docs_v2_body_string<'a>(body: &'a Value, field: &str, required: bool) -> Resu
 fn docs_v2_pages_index(store: &HarnessStore) -> Result<Value, ApiError> {
     let documents = store.latest_documents().map_err(ApiError::from)?;
     let mut items = Vec::new();
-    for document in documents.iter().filter(|d| matches!(d.kind, DocumentKind::Page)) {
+    for document in documents
+        .iter()
+        .filter(|d| matches!(d.kind, DocumentKind::Page))
+    {
         let history = store
             .document_revision_history(&document.id)
             .map_err(ApiError::from)?;
@@ -4232,7 +4244,8 @@ fn docs_v2_post(store: &HarnessStore, path: &str, body: &Value) -> Option<ApiRes
             let space = docs_v2_body_string(body, "space", false)?.unwrap_or("company");
             let parent = docs_v2_body_string(body, "parent", false)?;
             let summary = docs_v2_body_string(body, "summary", false)?.unwrap_or("page create");
-            let action_id = docs_v2_body_string(body, "action_command_id", false)?.map(str::to_string);
+            let action_id =
+                docs_v2_body_string(body, "action_command_id", false)?.map(str::to_string);
             let slug: String = title
                 .to_lowercase()
                 .chars()
@@ -4244,7 +4257,15 @@ fn docs_v2_post(store: &HarnessStore, path: &str, body: &Value) -> Option<ApiRes
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("document-api-{slug}"));
             crate::docs_v2_page::create_page_value(
-                store, &document_id, title, markdown, space, parent, actor, summary, action_id,
+                store,
+                &document_id,
+                title,
+                markdown,
+                space,
+                parent,
+                actor,
+                summary,
+                action_id,
             )
             .map_err(docs_v2_error)
         })()));
@@ -4261,9 +4282,17 @@ fn docs_v2_post(store: &HarnessStore, path: &str, body: &Value) -> Option<ApiRes
             let actor = docs_v2_actor(body)?;
             let title = docs_v2_body_string(body, "title", false)?;
             let summary = docs_v2_body_string(body, "summary", false)?.unwrap_or("page write");
-            let action_id = docs_v2_body_string(body, "action_command_id", false)?.map(str::to_string);
+            let action_id =
+                docs_v2_body_string(body, "action_command_id", false)?.map(str::to_string);
             crate::docs_v2_page::write_page_value(
-                store, document_id, markdown, expected_raw, title, actor, summary, action_id,
+                store,
+                document_id,
+                markdown,
+                expected_raw,
+                title,
+                actor,
+                summary,
+                action_id,
             )
             .map_err(docs_v2_error)
         })())),
@@ -4273,16 +4302,23 @@ fn docs_v2_post(store: &HarnessStore, path: &str, body: &Value) -> Option<ApiRes
             let after = docs_v2_body_string(body, "after", false)?;
             let expected = body.get("expected_revision").and_then(Value::as_u64);
             let summary = docs_v2_body_string(body, "summary", false)?.unwrap_or("page append");
-            let action_id = docs_v2_body_string(body, "action_command_id", false)?.map(str::to_string);
+            let action_id =
+                docs_v2_body_string(body, "action_command_id", false)?.map(str::to_string);
             crate::docs_v2_page::append_page_value(
-                store, document_id, markdown, after, expected, actor, summary, action_id,
+                store,
+                document_id,
+                markdown,
+                after,
+                expected,
+                actor,
+                summary,
+                action_id,
             )
             .map_err(docs_v2_error)
         })())),
         _ => None,
     }
 }
-
 
 /// F4: resolve entity_embed targets live from their owning ledgers so embed
 /// cards can show real titles instead of bare refs. Missing targets resolve
@@ -4339,17 +4375,14 @@ fn resolve_entity_embed_refs(store: &HarnessStore, page: &Value) -> Result<Value
                     "mode": serde_json::to_value(view.mode).unwrap_or(json!(null)),
                 })
             }),
-            "work_item" => work_items
-                .iter()
-                .find(|item| item.id == id)
-                .map(|item| {
-                    json!({
-                        "kind": "work_item",
-                        "found": true,
-                        "title": item.title,
-                        "status": serde_json::to_value(item.status).unwrap_or(json!(null)),
-                    })
-                }),
+            "work_item" => work_items.iter().find(|item| item.id == id).map(|item| {
+                json!({
+                    "kind": "work_item",
+                    "found": true,
+                    "title": item.title,
+                    "status": serde_json::to_value(item.status).unwrap_or(json!(null)),
+                })
+            }),
             _ => None,
         };
         resolved.insert(

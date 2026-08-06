@@ -1,0 +1,195 @@
+=== R0 company init ===
+{
+  "execution_dependency": "optional",
+  "id": "ai-first-docs",
+  "identity_boundary": "company_store",
+  "is_current": true,
+  "name": "AI-first Docs Real Use",
+  "project_binding": "external",
+  "store_root": "/Users/hhh0x/multi-agent-harness/.worktrees/ai-first-docs-v1/.real-use/harness-home/companies/ai-first-docs"
+}
+=== R1 create spec-brief / roadmap / ops-log first (embed targets must exist) ===
+{
+  "blocks": 12,
+  "content_digest": "695cb0fe8b129a20738327003f92b95bcc05935e4b5e651f760281140fa55b19",
+  "document_id": "ai-first-docs-spec-brief",
+  "result": "success",
+  "revision_id": "document-revision-ai-first-docs-spec-brief-r1",
+  "revision_number": 1
+}
+{
+  "blocks": 8,
+  "content_digest": "d441f77b0503825b5a5e39763b9344d1a5f5a9a9f1965a829a7ca378bdff3dd1",
+  "document_id": "ai-first-docs-roadmap",
+  "result": "success",
+  "revision_id": "document-revision-ai-first-docs-roadmap-r1",
+  "revision_number": 1
+}
+{
+  "blocks": 4,
+  "content_digest": "c35cee8679a4175b52d72d2a46a7b88f17194f94f30f8144359a8ca504d3de33",
+  "document_id": "ai-first-docs-ops-log",
+  "result": "success",
+  "revision_id": "document-revision-ai-first-docs-ops-log-r1",
+  "revision_number": 1
+}
+=== R1 create home (embeds resolve against existing pages) ===
+{
+  "blocks": 10,
+  "content_digest": "60f4d31137d224d6ac825231cfcf800ede4e639353e6bb54208e1a95e693012e",
+  "document_id": "ai-first-docs-home",
+  "result": "success",
+  "revision_id": "document-revision-ai-first-docs-home-r1",
+  "revision_number": 1
+}
+=== R2a outline of home ===
+{
+  "blocks": [
+    {
+      "id": "blk-v2-1785951901711-p30111-1",
+      "kind": "heading",
+      "markdown": "# AI-first Docs — Operating Home"
+    },
+    {
+      "id": "blk-v2-1785951901711-p30111-4",
+      "kind": "heading",
+      "markdown": "## Entry points"
+    },
+    {
+      "id": "blk-v2-1785951901711-p30111-6",
+      "kind": "heading",
+      "markdown": "## Roadmap (inline transclusion)"
+    },
+    {
+      "id": "blk-v2-1785951901711-p30111-8",
+      "kind": "heading",
+      "markdown": "## Related"
+    }
+  ],
+  "content_digest": "60f4d31137d224d6ac825231cfcf800ede4e639353e6bb54208e1a95e693012e",
+  "document_id": "ai-first-docs-home",
+  "lifecycle_status": "active",
+  "revision_id": "document-revision-ai-first-docs-home-r1",
+  "revision_number": 1,
+  "scope": {
+    "excerpts": [],
+    "fragment": true,
+    "mode": "outline"
+  },
+  "title": "AI-first Docs — Operating Home"
+}
+=== R2b keyword search 'Phase' across roadmap ===
+{
+  "blocks": [
+    {
+      "kind": "paragraph",
+      "markdown": "Phase truth for the AI-first Docs module. Updated by governed page writes with\n`expected_revision`; history is pinned by revisions."
+    },
+    {
+      "kind": "heading",
+      "markdown": "## Phases"
+    },
+    {
+      "kind": "table",
+      "markdown": "| Phase | Scope | State |\n| --- | --- | --- |\n| 0 | Schema + revision ledger + CLI + serve API + dashboard slice | accepted |\n| 1 | Authenticated remote Company API, multi-device two-member proof | planned |\n| 2 | Comments/mentions, propose-restore, BlockNote editor, Work revision pins | planned |\n| 3 | SQLite FTS search, S3-compatible blobs, backup/restore | planned |\n| 4 | Realtime Human co-editing PoC (Yjs), CRDT decision gate | deferred |"
+    },
+    {
+      "kind": "heading",
+      "markdown": "## Phase 0 checklist"
+    },
+    {
+      "kind": "checklist",
+      "markdown": "- [x] docs-v2 schema with closed block kind set\n- [x] harness-store revision ledger + optimistic concurrency + atomic writes\n- [x] CLI page create/read/write/append with scoped reads\n- [x] serve API docs-v2 endpoints (token-gated writes)\n- [x] dashboard docs-v2 surface (store-live, zero fixture path)\n- [x] independent acceptance audit (VERDICT: ACCEPTED, 13/13)\n- [ ] real-use acceptance session"
+    },
+    {
+      "kind": "heading",
+      "markdown": "## Known gaps carried forward"
+    },
+    {
+      "kind": "ordered_list",
+      "markdown": "1. `--detail full` not exercised by CLI checks (API uses it).\n2. Superseded-anchor rejection asserted by design, not by a negative check.\n3. Entity embed cards render refs only; live title resolution is Phase 1/2."
+    }
+  ],
+  "content_digest": "d441f77b0503825b5a5e39763b9344d1a5f5a9a9f1965a829a7ca378bdff3dd1",
+  "document_id": "ai-first-docs-roadmap",
+  "lifecycle_status": "active",
+  "revision_id": "document-revision-ai-first-docs-roadmap-r1",
+  "revision_number": 1,
+  "scope": {
+    "excerpts": [
+      "blk-v2-1785951901592-p30031-2",
+      "blk-v2-1785951901592-p30031-3",
+      "blk-v2-1785951901592-p30031-4",
+      "blk-v2-1785951901592-p30031-5",
+      "blk-v2-1785951901592-p30031-6",
+      "blk-v2-1785951901592-p30031-8"
+    ],
+    "fragment": true,
+    "keyword": "Phase|accepted",
+    "mode": "keyword"
+  },
+  "title": "AI-first Docs — Roadmap"
+=== R3 rewrite roadmap with expected-revision 1 ===
+{
+  "blocks": 8,
+  "content_digest": "0d5719b2d9d03abf61057868a9d654876397f929cefffb54fa5d40de2a5ecbe9",
+  "document_id": "ai-first-docs-roadmap",
+  "replayed": false,
+  "result": "success",
+  "revision_id": "document-revision-ai-first-docs-roadmap-r2",
+  "revision_number": 2
+}
+=== R4a read ops-log with-ids to find append anchor (honest two-step UX) ===
+      "id": "blk-v2-1785951901651-p30074-4",
+=== R4b append session-2 entry after anchor ===
+{
+  "appended_blocks": 2,
+  "content_digest": "5323c968979ad5f2647a3a1dd3833adba4bd63faecfe33829f472a0f29223f1d",
+  "document_id": "ai-first-docs-ops-log",
+  "result": "success",
+  "revision_id": "document-revision-ai-first-docs-ops-log-r2",
+  "revision_number": 2
+}
+=== R5a STALE writer attempts roadmap write from base r1 ===
+error: REVISION_CONFLICT: document ai-first-docs-roadmap is at revision 2, expected 1
+stale-exit=1
+=== R5b rebased writer re-reads current revision then resubmits ===
+  "revision_number": 2,
+{
+  "blocks": 8,
+  "content_digest": "dcb2ba8b998503ef0d6e5694f14f6dbe1bae1f3a071400c9c67e2f33322bd98b",
+  "document_id": "ai-first-docs-roadmap",
+  "replayed": false,
+  "result": "success",
+  "revision_id": "document-revision-ai-first-docs-roadmap-r3",
+  "revision_number": 3
+}
+=== R6 network retry replays the same command ===
+{
+  "blocks": 8,
+  "content_digest": "dcb2ba8b998503ef0d6e5694f14f6dbe1bae1f3a071400c9c67e2f33322bd98b",
+  "document_id": "ai-first-docs-roadmap",
+  "replayed": true,
+  "result": "success",
+  "revision_id": "document-revision-ai-first-docs-roadmap-r3",
+  "revision_number": 3
+}
+=== R7a roadmap revision history via API store ===
+# AI-first Docs — Roadmap
+
+Phase truth for the AI-first Docs module. Updated by governed page writes with
+`expected_revision`; history is pinned by revisions.
+
+## Phases
+
+| Phase | Scope | State |
+--- current r3 markdown (head) ---
+## Phase 0 checklist
+
+- [x] docs-v2 schema with closed block kind set
+- [x] harness-store revision ledger + optimistic concurrency + atomic writes
+- [x] CLI page create/read/write/append with scoped reads
+- [x] serve API docs-v2 endpoints (token-gated writes)
+- [x] dashboard docs-v2 surface (store-live, zero fixture path)
+- [x] independent acceptance audit (VERDICT: ACCEPTED, 13/13)
+- [x] real-use acceptance session (done — see ops log)

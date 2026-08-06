@@ -34,9 +34,9 @@ fn actor_ref_from_args(args: &[String]) -> CliResult<ActorRef> {
 fn markdown_input(args: &[String]) -> CliResult<Option<String>> {
     match (value(args, "--markdown"), value(args, "--markdown-file")) {
         (Some(text), None) => Ok(Some(text)),
-        (None, Some(path)) => std::fs::read_to_string(&path)
-            .map(Some)
-            .map_err(|error| CliError::Usage(format!("cannot read --markdown-file {path}: {error}"))),
+        (None, Some(path)) => std::fs::read_to_string(&path).map(Some).map_err(|error| {
+            CliError::Usage(format!("cannot read --markdown-file {path}: {error}"))
+        }),
         (Some(_), Some(_)) => Err(CliError::Usage(
             "cannot combine --markdown and --markdown-file".into(),
         )),
@@ -48,7 +48,10 @@ fn markdown_input(args: &[String]) -> CliResult<Option<String>> {
 /// derive deterministically from the action id so a resent payload matches the
 /// committed one and replays instead of tripping IDEMPOTENCY_CONFLICT. With an
 /// auto-generated action id every invocation is a fresh command anyway.
-fn block_id_generator(action_command_id: &str, action_id_is_explicit: bool) -> Box<dyn FnMut() -> String> {
+fn block_id_generator(
+    action_command_id: &str,
+    action_id_is_explicit: bool,
+) -> Box<dyn FnMut() -> String> {
     if action_id_is_explicit {
         let prefix = format!("{action_command_id}-blk");
         let mut counter: u64 = 0;
@@ -78,11 +81,7 @@ fn embed_warnings(store: &HarnessStore, blocks: &[BlockV2]) -> Vec<String> {
         if target.is_empty() {
             continue;
         }
-        let exists = store
-            .read_document_page(target)
-            .ok()
-            .flatten()
-            .is_some();
+        let exists = store.read_document_page(target).ok().flatten().is_some();
         if !exists {
             warnings.push(format!(
                 "page_embed target missing: {target} (renders broken-ref until created)"
@@ -131,18 +130,18 @@ fn is_table_separator(line: &str) -> bool {
     let trimmed = line.trim();
     trimmed.starts_with('|')
         && trimmed.len() >= 3
-        && trimmed
-            .trim_matches('|')
-            .split('|')
-            .all(|cell| {
-                let cell = cell.trim();
-                !cell.is_empty() && cell.chars().all(|c| c == '-' || c == ':')
-            })
+        && trimmed.trim_matches('|').split('|').all(|cell| {
+            let cell = cell.trim();
+            !cell.is_empty() && cell.chars().all(|c| c == '-' || c == ':')
+        })
 }
 
 fn split_table_row(line: &str) -> Vec<String> {
     let trimmed = line.trim().trim_matches('|');
-    trimmed.split('|').map(|cell| cell.trim().to_string()).collect()
+    trimmed
+        .split('|')
+        .map(|cell| cell.trim().to_string())
+        .collect()
 }
 
 fn flush_paragraph(
@@ -210,16 +209,46 @@ pub fn parse_markdown_blocks(
         let trimmed = line.trim();
 
         if trimmed.is_empty() {
-            flush_paragraph(&mut blocks, &mut paragraph, document_id, now, actor, &mut next_id);
-            flush_list(&mut blocks, &mut list_kind, &mut list_items, document_id, now, actor, &mut next_id);
+            flush_paragraph(
+                &mut blocks,
+                &mut paragraph,
+                document_id,
+                now,
+                actor,
+                &mut next_id,
+            );
+            flush_list(
+                &mut blocks,
+                &mut list_kind,
+                &mut list_items,
+                document_id,
+                now,
+                actor,
+                &mut next_id,
+            );
             index += 1;
             continue;
         }
 
         // Fenced code
         if let Some(language) = trimmed.strip_prefix("```") {
-            flush_paragraph(&mut blocks, &mut paragraph, document_id, now, actor, &mut next_id);
-            flush_list(&mut blocks, &mut list_kind, &mut list_items, document_id, now, actor, &mut next_id);
+            flush_paragraph(
+                &mut blocks,
+                &mut paragraph,
+                document_id,
+                now,
+                actor,
+                &mut next_id,
+            );
+            flush_list(
+                &mut blocks,
+                &mut list_kind,
+                &mut list_items,
+                document_id,
+                now,
+                actor,
+                &mut next_id,
+            );
             let language = language.trim().to_string();
             let mut body = Vec::new();
             index += 1;
@@ -246,10 +275,29 @@ pub fn parse_markdown_blocks(
         // Heading
         if trimmed.starts_with('#') {
             let level = trimmed.chars().take_while(|c| *c == '#').count();
-            if let Some(text) = trimmed.get(level..).map(str::trim).filter(|t| !t.is_empty()) {
+            if let Some(text) = trimmed
+                .get(level..)
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+            {
                 if level <= 6 {
-                    flush_paragraph(&mut blocks, &mut paragraph, document_id, now, actor, &mut next_id);
-                    flush_list(&mut blocks, &mut list_kind, &mut list_items, document_id, now, actor, &mut next_id);
+                    flush_paragraph(
+                        &mut blocks,
+                        &mut paragraph,
+                        document_id,
+                        now,
+                        actor,
+                        &mut next_id,
+                    );
+                    flush_list(
+                        &mut blocks,
+                        &mut list_kind,
+                        &mut list_items,
+                        document_id,
+                        now,
+                        actor,
+                        &mut next_id,
+                    );
                     blocks.push(new_block(
                         next_id(),
                         document_id,
@@ -270,8 +318,23 @@ pub fn parse_markdown_blocks(
             || trimmed.chars().all(|c| c == '_'))
             && trimmed.len() >= 3
         {
-            flush_paragraph(&mut blocks, &mut paragraph, document_id, now, actor, &mut next_id);
-            flush_list(&mut blocks, &mut list_kind, &mut list_items, document_id, now, actor, &mut next_id);
+            flush_paragraph(
+                &mut blocks,
+                &mut paragraph,
+                document_id,
+                now,
+                actor,
+                &mut next_id,
+            );
+            flush_list(
+                &mut blocks,
+                &mut list_kind,
+                &mut list_items,
+                document_id,
+                now,
+                actor,
+                &mut next_id,
+            );
             blocks.push(new_block(
                 next_id(),
                 document_id,
@@ -299,8 +362,23 @@ pub fn parse_markdown_blocks(
                     }
                 }
                 if !target_id.is_empty() {
-                    flush_paragraph(&mut blocks, &mut paragraph, document_id, now, actor, &mut next_id);
-                    flush_list(&mut blocks, &mut list_kind, &mut list_items, document_id, now, actor, &mut next_id);
+                    flush_paragraph(
+                        &mut blocks,
+                        &mut paragraph,
+                        document_id,
+                        now,
+                        actor,
+                        &mut next_id,
+                    );
+                    flush_list(
+                        &mut blocks,
+                        &mut list_kind,
+                        &mut list_items,
+                        document_id,
+                        now,
+                        actor,
+                        &mut next_id,
+                    );
                     let (kind, content) = if kind_part == "page" {
                         (
                             BlockKindV2::PageEmbed,
@@ -328,14 +406,38 @@ pub fn parse_markdown_blocks(
         if let Some(marker) = trimmed.strip_prefix("> [!") {
             if let Some(close) = marker.find(']') {
                 let tone_raw = marker[..close].to_lowercase();
-                if matches!(tone_raw.as_str(), "note" | "tip" | "warning" | "danger" | "info") {
-                    flush_paragraph(&mut blocks, &mut paragraph, document_id, now, actor, &mut next_id);
-                    flush_list(&mut blocks, &mut list_kind, &mut list_items, document_id, now, actor, &mut next_id);
+                if matches!(
+                    tone_raw.as_str(),
+                    "note" | "tip" | "warning" | "danger" | "info"
+                ) {
+                    flush_paragraph(
+                        &mut blocks,
+                        &mut paragraph,
+                        document_id,
+                        now,
+                        actor,
+                        &mut next_id,
+                    );
+                    flush_list(
+                        &mut blocks,
+                        &mut list_kind,
+                        &mut list_items,
+                        document_id,
+                        now,
+                        actor,
+                        &mut next_id,
+                    );
                     let title = marker[close + 1..].trim().to_string();
                     let mut body = Vec::new();
                     index += 1;
                     while index < lines.len() && lines[index].trim().starts_with('>') {
-                        body.push(lines[index].trim().trim_start_matches('>').trim().to_string());
+                        body.push(
+                            lines[index]
+                                .trim()
+                                .trim_start_matches('>')
+                                .trim()
+                                .to_string(),
+                        );
                         index += 1;
                     }
                     let mut content = json!({ "tone": tone_raw, "text": body.join("\n") });
@@ -357,8 +459,23 @@ pub fn parse_markdown_blocks(
 
         // Quote
         if trimmed.starts_with('>') {
-            flush_paragraph(&mut blocks, &mut paragraph, document_id, now, actor, &mut next_id);
-            flush_list(&mut blocks, &mut list_kind, &mut list_items, document_id, now, actor, &mut next_id);
+            flush_paragraph(
+                &mut blocks,
+                &mut paragraph,
+                document_id,
+                now,
+                actor,
+                &mut next_id,
+            );
+            flush_list(
+                &mut blocks,
+                &mut list_kind,
+                &mut list_items,
+                document_id,
+                now,
+                actor,
+                &mut next_id,
+            );
             let mut body = Vec::new();
             while index < lines.len() && lines[index].trim().starts_with('>') {
                 body.push(
@@ -382,10 +499,27 @@ pub fn parse_markdown_blocks(
         }
 
         // Table: header row + separator row
-        if trimmed.starts_with('|') && index + 1 < lines.len() && is_table_separator(lines[index + 1])
+        if trimmed.starts_with('|')
+            && index + 1 < lines.len()
+            && is_table_separator(lines[index + 1])
         {
-            flush_paragraph(&mut blocks, &mut paragraph, document_id, now, actor, &mut next_id);
-            flush_list(&mut blocks, &mut list_kind, &mut list_items, document_id, now, actor, &mut next_id);
+            flush_paragraph(
+                &mut blocks,
+                &mut paragraph,
+                document_id,
+                now,
+                actor,
+                &mut next_id,
+            );
+            flush_list(
+                &mut blocks,
+                &mut list_kind,
+                &mut list_items,
+                document_id,
+                now,
+                actor,
+                &mut next_id,
+            );
             let header = split_table_row(lines[index]);
             index += 2;
             let mut rows = Vec::new();
@@ -410,16 +544,29 @@ pub fn parse_markdown_blocks(
             .or_else(|| trimmed.strip_prefix("* ["));
         if let Some(rest) = checklist {
             if let Some(checked_char) = rest.chars().next() {
-                if matches!(checked_char, ' ' | 'x' | 'X')
-                    && rest.chars().nth(1) == Some(']')
-                {
+                if matches!(checked_char, ' ' | 'x' | 'X') && rest.chars().nth(1) == Some(']') {
                     let text = rest.get(2..).unwrap_or("").trim().to_string();
                     if list_kind != Some(BlockKindV2::Checklist) {
-                        flush_list(&mut blocks, &mut list_kind, &mut list_items, document_id, now, actor, &mut next_id);
+                        flush_list(
+                            &mut blocks,
+                            &mut list_kind,
+                            &mut list_items,
+                            document_id,
+                            now,
+                            actor,
+                            &mut next_id,
+                        );
                         list_kind = Some(BlockKindV2::Checklist);
                     }
                     list_items.push(json!({ "text": text, "checked": checked_char != ' ' }));
-                    flush_paragraph(&mut blocks, &mut paragraph, document_id, now, actor, &mut next_id);
+                    flush_paragraph(
+                        &mut blocks,
+                        &mut paragraph,
+                        document_id,
+                        now,
+                        actor,
+                        &mut next_id,
+                    );
                     index += 1;
                     continue;
                 }
@@ -431,11 +578,26 @@ pub fn parse_markdown_blocks(
             .or_else(|| trimmed.strip_prefix("+ "))
         {
             if list_kind != Some(BlockKindV2::BulletList) {
-                flush_list(&mut blocks, &mut list_kind, &mut list_items, document_id, now, actor, &mut next_id);
+                flush_list(
+                    &mut blocks,
+                    &mut list_kind,
+                    &mut list_items,
+                    document_id,
+                    now,
+                    actor,
+                    &mut next_id,
+                );
                 list_kind = Some(BlockKindV2::BulletList);
             }
             list_items.push(json!({ "text": text.trim() }));
-            flush_paragraph(&mut blocks, &mut paragraph, document_id, now, actor, &mut next_id);
+            flush_paragraph(
+                &mut blocks,
+                &mut paragraph,
+                document_id,
+                now,
+                actor,
+                &mut next_id,
+            );
             index += 1;
             continue;
         }
@@ -451,11 +613,26 @@ pub fn parse_markdown_blocks(
         }
         if let Some(text) = ordered_text {
             if list_kind != Some(BlockKindV2::OrderedList) {
-                flush_list(&mut blocks, &mut list_kind, &mut list_items, document_id, now, actor, &mut next_id);
+                flush_list(
+                    &mut blocks,
+                    &mut list_kind,
+                    &mut list_items,
+                    document_id,
+                    now,
+                    actor,
+                    &mut next_id,
+                );
                 list_kind = Some(BlockKindV2::OrderedList);
             }
             list_items.push(json!({ "text": text }));
-            flush_paragraph(&mut blocks, &mut paragraph, document_id, now, actor, &mut next_id);
+            flush_paragraph(
+                &mut blocks,
+                &mut paragraph,
+                document_id,
+                now,
+                actor,
+                &mut next_id,
+            );
             index += 1;
             continue;
         }
@@ -463,8 +640,23 @@ pub fn parse_markdown_blocks(
         paragraph.push(line.trim_end().to_string());
         index += 1;
     }
-    flush_paragraph(&mut blocks, &mut paragraph, document_id, now, actor, &mut next_id);
-    flush_list(&mut blocks, &mut list_kind, &mut list_items, document_id, now, actor, &mut next_id);
+    flush_paragraph(
+        &mut blocks,
+        &mut paragraph,
+        document_id,
+        now,
+        actor,
+        &mut next_id,
+    );
+    flush_list(
+        &mut blocks,
+        &mut list_kind,
+        &mut list_items,
+        document_id,
+        now,
+        actor,
+        &mut next_id,
+    );
     blocks
 }
 
@@ -481,12 +673,20 @@ fn block_markdown(block: &BlockV2) -> String {
             .unwrap_or("")
             .to_string(),
         BlockKindV2::Heading => {
-            let level = content.get("level").and_then(|v| v.as_u64()).unwrap_or(1).min(6) as usize;
+            let level = content
+                .get("level")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1)
+                .min(6) as usize;
             let text = content.get("text").and_then(|v| v.as_str()).unwrap_or("");
             format!("{} {}", "#".repeat(level.max(1)), text)
         }
         BlockKindV2::BulletList | BlockKindV2::OrderedList | BlockKindV2::Checklist => {
-            let items = content.get("items").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let items = content
+                .get("items")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
             let mut out = Vec::new();
             for (i, item) in items.iter().enumerate() {
                 let text = item.get("text").and_then(|v| v.as_str()).unwrap_or("");
@@ -494,8 +694,15 @@ fn block_markdown(block: &BlockV2) -> String {
                     BlockKindV2::BulletList => "-".to_string(),
                     BlockKindV2::OrderedList => format!("{}.", i + 1),
                     _ => {
-                        let checked = item.get("checked").and_then(|v| v.as_bool()).unwrap_or(false);
-                        if checked { "- [x]".to_string() } else { "- [ ]".to_string() }
+                        let checked = item
+                            .get("checked")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        if checked {
+                            "- [x]".to_string()
+                        } else {
+                            "- [ ]".to_string()
+                        }
                     }
                 };
                 out.push(format!("{prefix} {text}"));
@@ -504,10 +711,17 @@ fn block_markdown(block: &BlockV2) -> String {
         }
         BlockKindV2::Quote => {
             let text = content.get("text").and_then(|v| v.as_str()).unwrap_or("");
-            text.lines().map(|line| format!("> {line}")).collect::<Vec<_>>().join("\n")
+            text.lines()
+                .map(|line| format!("> {line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
         }
         BlockKindV2::Callout => {
-            let tone = content.get("tone").and_then(|v| v.as_str()).unwrap_or("note").to_uppercase();
+            let tone = content
+                .get("tone")
+                .and_then(|v| v.as_str())
+                .unwrap_or("note")
+                .to_uppercase();
             let title = content.get("title").and_then(|v| v.as_str()).unwrap_or("");
             let text = content.get("text").and_then(|v| v.as_str()).unwrap_or("");
             let mut out = vec![format!("> [!{tone}] {title}").trim_end().to_string()];
@@ -517,19 +731,37 @@ fn block_markdown(block: &BlockV2) -> String {
             out.join("\n")
         }
         BlockKindV2::Code => {
-            let language = content.get("language").and_then(|v| v.as_str()).unwrap_or("");
+            let language = content
+                .get("language")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let text = content.get("text").and_then(|v| v.as_str()).unwrap_or("");
             format!("```{language}\n{text}\n```")
         }
         BlockKindV2::Table => {
-            let header = content.get("header").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-            let rows = content.get("rows").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let header = content
+                .get("header")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let rows = content
+                .get("rows")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
             let header_cells: Vec<String> = header
                 .iter()
                 .map(|cell| cell.as_str().unwrap_or("").to_string())
                 .collect();
             let mut out = vec![format!("| {} |", header_cells.join(" | "))];
-            out.push(format!("| {} |", header_cells.iter().map(|_| "---").collect::<Vec<_>>().join(" | ")));
+            out.push(format!(
+                "| {} |",
+                header_cells
+                    .iter()
+                    .map(|_| "---")
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            ));
             for row in rows.iter().filter_map(|row| row.as_array()) {
                 let cells: Vec<String> = row
                     .iter()
@@ -541,42 +773,48 @@ fn block_markdown(block: &BlockV2) -> String {
         }
         BlockKindV2::Divider => "---".to_string(),
         BlockKindV2::PageEmbed => {
-            let target = content.get("target_document_id").and_then(|v| v.as_str()).unwrap_or("");
-            let display = content.get("display").and_then(|v| v.as_str()).unwrap_or("card");
+            let target = content
+                .get("target_document_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let display = content
+                .get("display")
+                .and_then(|v| v.as_str())
+                .unwrap_or("card");
             format!("![[page:{target} display={display}]]")
         }
         BlockKindV2::EntityEmbed => {
             let target = content.get("target").cloned().unwrap_or(json!({}));
             let kind = target.get("kind").and_then(|v| v.as_str()).unwrap_or("");
             let id = target.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            let display = content.get("display").and_then(|v| v.as_str()).unwrap_or("card");
+            let display = content
+                .get("display")
+                .and_then(|v| v.as_str())
+                .unwrap_or("card");
             format!("![[{kind}:{id} display={display}]]")
         }
         BlockKindV2::Image => {
-            let blob = content.get("blob_id").and_then(|v| v.as_str()).unwrap_or("");
+            let blob = content
+                .get("blob_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let alt = content.get("alt").and_then(|v| v.as_str()).unwrap_or("");
             format!("![{alt}](blob:{blob})")
         }
         BlockKindV2::Attachment => {
-            let blob = content.get("blob_id").and_then(|v| v.as_str()).unwrap_or("");
+            let blob = content
+                .get("blob_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let name = content.get("name").and_then(|v| v.as_str()).unwrap_or(blob);
             format!("[{name}](blob:{blob})")
         }
     }
 }
 
-fn serialize_blocks(blocks: &[BlockV2]) -> String {
-    blocks
-        .iter()
-        .map(block_markdown)
-        .collect::<Vec<_>>()
-        .join("\n\n")
-}
-
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
-
 
 // ---------------------------------------------------------------------------
 // Core page operations shared by the CLI and the serve API
@@ -609,10 +847,20 @@ pub fn read_page_value(
     document_id: &str,
     options: &PageReadOptions,
 ) -> CliResult<serde_json::Value> {
-    let scope = if options.scope.is_empty() { "full".to_string() } else { options.scope.clone() };
-    let detail = if options.detail.is_empty() { "simple".to_string() } else { options.detail.clone() };
+    let scope = if options.scope.is_empty() {
+        "full".to_string()
+    } else {
+        options.scope.clone()
+    };
+    let detail = if options.detail.is_empty() {
+        "simple".to_string()
+    } else {
+        options.detail.clone()
+    };
     if !matches!(detail.as_str(), "simple" | "with-ids" | "full") {
-        return Err(CliError::Usage("--detail must be simple|with-ids|full".into()));
+        return Err(CliError::Usage(
+            "--detail must be simple|with-ids|full".into(),
+        ));
     }
 
     let (document, blocks, revision): (
@@ -667,12 +915,17 @@ pub fn read_page_value(
                 .filter(|s| !s.is_empty())
                 .collect();
             if needles.is_empty() {
-                return Err(CliError::Usage("--keyword must contain at least one term".into()));
+                return Err(CliError::Usage(
+                    "--keyword must contain at least one term".into(),
+                ));
             }
             let mut matched: Vec<usize> = Vec::new();
             for (i, block) in blocks.iter().enumerate() {
                 let haystack = block_markdown(block).to_lowercase();
-                if needles.iter().any(|needle| haystack.contains(needle.as_str())) {
+                if needles
+                    .iter()
+                    .any(|needle| haystack.contains(needle.as_str()))
+                {
                     matched.push(i);
                 }
             }
@@ -798,6 +1051,7 @@ pub fn page_value_markdown(value: &serde_json::Value) -> String {
         .unwrap_or_default()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn create_page_value(
     store: &HarnessStore,
     document_id: &str,
@@ -874,6 +1128,7 @@ pub fn create_page_value(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn write_page_value(
     store: &HarnessStore,
     document_id: &str,
@@ -934,6 +1189,7 @@ pub fn write_page_value(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn append_page_value(
     store: &HarnessStore,
     document_id: &str,
@@ -948,7 +1204,11 @@ pub fn append_page_value(
     let current = resolve_page(store, document_id)?;
     let expected = match expected_revision {
         Some(value) => value,
-        None => current.revision.as_ref().map(|r| r.revision_number).unwrap_or(0),
+        None => current
+            .revision
+            .as_ref()
+            .map(|r| r.revision_number)
+            .unwrap_or(0),
     };
     if let Some(anchor_id) = after_block_id {
         if !current.document.block_ids.contains(&anchor_id.to_string()) {
@@ -1019,7 +1279,10 @@ pub fn append_page_value(
 // ---------------------------------------------------------------------------
 
 pub fn company_docs_page_v2_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    crate::require_subcommand(args, "company docs page create|read|write|append|search|scaffold|verify|publish")?;
+    crate::require_subcommand(
+        args,
+        "company docs page create|read|write|append|search|scaffold|verify|publish",
+    )?;
     match args[0].as_str() {
         "create" => page_create_command(store, &args[1..]),
         "read" => page_read_command(store, &args[1..]),
@@ -1034,10 +1297,9 @@ pub fn company_docs_page_v2_command(store: &HarnessStore, args: &[String]) -> Cl
 
 fn parse_expected_revision(args: &[String], required_flag: bool) -> CliResult<Option<u64>> {
     match value(args, "--expected-revision") {
-        Some(raw) => Ok(Some(
-            raw.parse::<u64>()
-                .map_err(|_| CliError::Usage("--expected-revision must be an integer".into()))?,
-        )),
+        Some(raw) => Ok(Some(raw.parse::<u64>().map_err(|_| {
+            CliError::Usage("--expected-revision must be an integer".into())
+        })?)),
         None if required_flag => Err(CliError::Usage(format!(
             "page write requires --expected-revision; {PAGE_USAGE}"
         ))),
@@ -1060,7 +1322,11 @@ fn page_create_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     let document_id = value(args, "--id").unwrap_or_else(|| {
         format!(
             "document-cli-{}",
-            if slug.is_empty() { generated_id("page") } else { slug }
+            if slug.is_empty() {
+                generated_id("page")
+            } else {
+                slug
+            }
         )
     });
     let markdown = markdown_input(args)?.unwrap_or_default();
@@ -1121,7 +1387,11 @@ fn page_write_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             result["revision_number"],
             &digest[..digest.len().min(12)],
             result["blocks"],
-            if result["replayed"].as_bool().unwrap_or(false) { ", replayed" } else { "" }
+            if result["replayed"].as_bool().unwrap_or(false) {
+                ", replayed"
+            } else {
+                ""
+            }
         );
         for warning in result["warnings"].as_array().unwrap_or(&vec![]) {
             println!("warning: {}", warning.as_str().unwrap_or(""));
@@ -1225,9 +1495,10 @@ fn page_read_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         scope: value(args, "--scope").unwrap_or_else(|| "full".to_string()),
         detail: value(args, "--detail").unwrap_or_else(|| "simple".to_string()),
         revision: match value(args, "--revision") {
-            Some(raw) if raw != "-1" => Some(raw.parse::<u64>().map_err(|_| {
-                CliError::Usage("--revision must be an integer or -1".into())
-            })?),
+            Some(raw) if raw != "-1" => Some(
+                raw.parse::<u64>()
+                    .map_err(|_| CliError::Usage("--revision must be an integer or -1".into()))?,
+            ),
             _ => None,
         },
         keyword: value(args, "--keyword"),
@@ -1262,18 +1533,26 @@ pub fn search_pages_value(
         .filter(|s| !s.is_empty())
         .collect();
     if needles.is_empty() {
-        return Err(CliError::Usage("--keyword must contain at least one term".into()));
+        return Err(CliError::Usage(
+            "--keyword must contain at least one term".into(),
+        ));
     }
     let documents = store.latest_documents().map_err(conflict_to_usage)?;
     let all_blocks = store.latest_blocks_v2().map_err(conflict_to_usage)?;
     let mut blocks_by_doc: std::collections::BTreeMap<String, Vec<BlockV2>> =
         std::collections::BTreeMap::new();
     for block in all_blocks {
-        blocks_by_doc.entry(block.document_id.clone()).or_default().push(block);
+        blocks_by_doc
+            .entry(block.document_id.clone())
+            .or_default()
+            .push(block);
     }
     let mut hits: Vec<serde_json::Value> = Vec::new();
     'outer: for document in documents.iter().filter(|d| d.kind == DocumentKind::Page) {
-        if needles.iter().any(|n| document.title.to_lowercase().contains(n.as_str())) {
+        if needles
+            .iter()
+            .any(|n| document.title.to_lowercase().contains(n.as_str()))
+        {
             hits.push(json!({
                 "document_id": document.id,
                 "title": document.title,
@@ -1288,7 +1567,10 @@ pub fn search_pages_value(
         let doc_blocks = blocks_by_doc.get(&document.id).cloned().unwrap_or_default();
         for block in &doc_blocks {
             let markdown = block_markdown(block);
-            if needles.iter().any(|n| markdown.to_lowercase().contains(n.as_str())) {
+            if needles
+                .iter()
+                .any(|n| markdown.to_lowercase().contains(n.as_str()))
+            {
                 let snippet: String = markdown.chars().take(160).collect();
                 hits.push(json!({
                     "document_id": document.id,
@@ -1324,5 +1606,9 @@ fn heading_level(block: &BlockV2) -> u64 {
     if block.kind != BlockKindV2::Heading {
         return 0;
     }
-    block.content.get("level").and_then(|v| v.as_u64()).unwrap_or(0)
+    block
+        .content
+        .get("level")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
 }

@@ -113,10 +113,7 @@ impl HarnessStore {
     }
 
     /// Latest committed revision number for a document (0 when none).
-    fn latest_revision_row(
-        &self,
-        document_id: &str,
-    ) -> StoreResult<Option<DocumentRevision>> {
+    fn latest_revision_row(&self, document_id: &str) -> StoreResult<Option<DocumentRevision>> {
         Ok(self
             .document_revision_history(document_id)?
             .into_iter()
@@ -127,9 +124,10 @@ impl HarnessStore {
     /// `Document.block_ids`, and the latest revision. Returns `Ok(None)` when
     /// the document itself does not exist.
     pub fn read_document_page(&self, document_id: &str) -> StoreResult<Option<DocumentPageState>> {
-        let document = match latest_by_id(self.read_jsonl::<Document>("company_os_documents.jsonl")?, |row: &Document| {
-            row.id.clone()
-        })
+        let document = match latest_by_id(
+            self.read_jsonl::<Document>("company_os_documents.jsonl")?,
+            |row: &Document| row.id.clone(),
+        )
         .remove(document_id)
         {
             Some(document) => document,
@@ -175,10 +173,7 @@ impl HarnessStore {
     /// Resolve the ordered block set for a write: new/updated rows take
     /// precedence over existing latest rows; every id in `block_ids` must
     /// resolve, and every supplied row must be referenced.
-    fn resolve_ordered_blocks(
-        &self,
-        request: &PageWriteRequest,
-    ) -> StoreResult<Vec<BlockV2>> {
+    fn resolve_ordered_blocks(&self, request: &PageWriteRequest) -> StoreResult<Vec<BlockV2>> {
         let existing = latest_by_id(self.blocks_v2()?, |row| row.id.clone());
         let supplied: std::collections::BTreeMap<String, &BlockV2> = request
             .block_rows
@@ -216,10 +211,7 @@ impl HarnessStore {
         Ok(ordered)
     }
 
-    fn replay_outcome(
-        &self,
-        committed: &DocumentChangeOperation,
-    ) -> StoreResult<PageWriteOutcome> {
+    fn replay_outcome(&self, committed: &DocumentChangeOperation) -> StoreResult<PageWriteOutcome> {
         let revision = self
             .document_revisions()?
             .into_iter()
@@ -249,22 +241,16 @@ impl HarnessStore {
         &self,
         request: &PageWriteRequest,
     ) -> StoreResult<PageWriteOutcome> {
-        request
-            .document
-            .validate()
-            .map_err(|error| validation(error))?;
+        request.document.validate().map_err(validation)?;
         for row in &request.block_rows {
-            row.validate().map_err(|error| validation(error))?;
+            row.validate().map_err(validation)?;
         }
         for mutation in &request.mutations {
             if let Some(block) = &mutation.block {
-                block.validate().map_err(|error| validation(error))?;
+                block.validate().map_err(validation)?;
             }
         }
-        request
-            .authored_by
-            .validate()
-            .map_err(|error| validation(error))?;
+        request.authored_by.validate().map_err(validation)?;
         if request.action_command_id.trim().is_empty() {
             return Err(validation("PageWriteRequest.action_command_id is required"));
         }
@@ -325,7 +311,7 @@ impl HarnessStore {
             action_command_id: request.action_command_id.clone(),
             created_at: request.created_at.clone(),
         };
-        revision.validate().map_err(|error| validation(error))?;
+        revision.validate().map_err(validation)?;
 
         let change_op = DocumentChangeOperation {
             action_command_id: request.action_command_id.clone(),
@@ -337,7 +323,7 @@ impl HarnessStore {
             document_revision_id: revision_id.clone(),
             created_at: request.created_at.clone(),
         };
-        change_op.validate().map_err(|error| validation(error))?;
+        change_op.validate().map_err(validation)?;
 
         // All appends share the single write lock; replay plus the revision
         // digest make any torn prefix detectable and re-drivable.
@@ -356,4 +342,3 @@ impl HarnessStore {
         })
     }
 }
-

@@ -64,32 +64,48 @@ fn display_mode(value: &Value, field: &'static str) -> Result<(), CompanyOsValid
     }
 }
 
-fn string_entry(content: &Value, key: &str, field: &'static str) -> Result<(), CompanyOsValidationError> {
+fn string_entry(
+    content: &Value,
+    key: &str,
+    field: &'static str,
+) -> Result<(), CompanyOsValidationError> {
     match content.get(key).and_then(Value::as_str) {
         Some(_) => Ok(()),
         None => Err(invalid(field, format!("content.{key} must be a string"))),
     }
 }
 
-fn validate_list_content(content: &Value, field: &'static str) -> Result<(), CompanyOsValidationError> {
+fn validate_list_content(
+    content: &Value,
+    field: &'static str,
+) -> Result<(), CompanyOsValidationError> {
     let items = content
         .get("items")
         .and_then(Value::as_array)
         .ok_or_else(|| invalid(field, "content.items must be an array"))?;
     for (index, item) in items.iter().enumerate() {
         if item.get("text").and_then(Value::as_str).is_none() {
-            return Err(invalid(field, format!("content.items[{index}].text must be a string")));
+            return Err(invalid(
+                field,
+                format!("content.items[{index}].text must be a string"),
+            ));
         }
         if let Some(checked) = item.get("checked") {
             if !checked.is_boolean() {
-                return Err(invalid(field, format!("content.items[{index}].checked must be a boolean")));
+                return Err(invalid(
+                    field,
+                    format!("content.items[{index}].checked must be a boolean"),
+                ));
             }
         }
     }
     Ok(())
 }
 
-fn validate_table_content(content: &Value, field: &'static str) -> Result<(), CompanyOsValidationError> {
+fn validate_table_content(
+    content: &Value,
+    field: &'static str,
+) -> Result<(), CompanyOsValidationError> {
     let header = content
         .get("header")
         .and_then(Value::as_array)
@@ -108,13 +124,19 @@ fn validate_table_content(content: &Value, field: &'static str) -> Result<(), Co
             .as_array()
             .ok_or_else(|| invalid(field, format!("content.rows[{index}] must be an array")))?;
         if cells.iter().any(|cell| !cell.is_string()) {
-            return Err(invalid(field, format!("content.rows[{index}] cells must be strings")));
+            return Err(invalid(
+                field,
+                format!("content.rows[{index}] cells must be strings"),
+            ));
         }
     }
     Ok(())
 }
 
-fn validate_block_content(kind: BlockKindV2, content: &Value) -> Result<(), CompanyOsValidationError> {
+fn validate_block_content(
+    kind: BlockKindV2,
+    content: &Value,
+) -> Result<(), CompanyOsValidationError> {
     let field = "BlockV2.content";
     if !content.is_object() {
         return Err(invalid(field, "content must be an object"));
@@ -127,7 +149,10 @@ fn validate_block_content(kind: BlockKindV2, content: &Value) -> Result<(), Comp
             match content.get("level").and_then(Value::as_u64) {
                 Some(level) if (1..=6).contains(&level) => {}
                 other => {
-                    return Err(invalid(field, format!("content.level must be 1..6, got {other:?}")))
+                    return Err(invalid(
+                        field,
+                        format!("content.level must be 1..6, got {other:?}"),
+                    ))
                 }
             }
             string_entry(content, "text", field)
@@ -136,7 +161,10 @@ fn validate_block_content(kind: BlockKindV2, content: &Value) -> Result<(), Comp
             validate_list_content(content, field)
         }
         BlockKindV2::Callout => {
-            let tone = content.get("tone").and_then(Value::as_str).unwrap_or_default();
+            let tone = content
+                .get("tone")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             if !matches!(tone, "note" | "tip" | "warning" | "danger" | "info") {
                 return Err(invalid(
                     field,
@@ -149,10 +177,16 @@ fn validate_block_content(kind: BlockKindV2, content: &Value) -> Result<(), Comp
         BlockKindV2::Divider => Ok(()),
         BlockKindV2::PageEmbed => {
             required(
-                content.get("target_document_id").and_then(Value::as_str).unwrap_or(""),
+                content
+                    .get("target_document_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
                 "BlockV2.content.target_document_id",
             )?;
-            display_mode(content.get("display").unwrap_or(&Value::Null), "BlockV2.content.display")
+            display_mode(
+                content.get("display").unwrap_or(&Value::Null),
+                "BlockV2.content.display",
+            )
         }
         BlockKindV2::EntityEmbed => {
             let target = content
@@ -166,7 +200,10 @@ fn validate_block_content(kind: BlockKindV2, content: &Value) -> Result<(), Comp
                 target.get("kind").and_then(Value::as_str).unwrap_or(""),
                 "BlockV2.content.target.kind",
             )?;
-            display_mode(content.get("display").unwrap_or(&Value::Null), "BlockV2.content.display")
+            display_mode(
+                content.get("display").unwrap_or(&Value::Null),
+                "BlockV2.content.display",
+            )
         }
         BlockKindV2::Image | BlockKindV2::Attachment => required(
             content.get("blob_id").and_then(Value::as_str).unwrap_or(""),
@@ -207,7 +244,10 @@ impl ValidateCompanyOs for BlockV2 {
 }
 
 fn is_sha256_hex(value: &str) -> bool {
-    value.len() == 64 && value.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    value.len() == 64
+        && value
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
 /// Immutable whole-page revision. The snapshot reconstructs the document at
@@ -236,7 +276,10 @@ impl ValidateCompanyOs for DocumentRevision {
             return Err(invalid("DocumentRevision.revision_number", "must be >= 1"));
         }
         if !self.content_snapshot.is_object() {
-            return Err(invalid("DocumentRevision.content_snapshot", "must be an object"));
+            return Err(invalid(
+                "DocumentRevision.content_snapshot",
+                "must be an object",
+            ));
         }
         if !is_sha256_hex(&self.content_digest) {
             return Err(invalid(
@@ -248,7 +291,10 @@ impl ValidateCompanyOs for DocumentRevision {
         if let Some(execution) = &self.execution_ref {
             execution.validate()?;
         }
-        required(&self.action_command_id, "DocumentRevision.action_command_id")?;
+        required(
+            &self.action_command_id,
+            "DocumentRevision.action_command_id",
+        )?;
         required(&self.created_at, "DocumentRevision.created_at")
     }
 }
@@ -293,7 +339,10 @@ pub struct DocumentChangeOperation {
 
 impl ValidateCompanyOs for DocumentChangeOperation {
     fn validate(&self) -> Result<(), CompanyOsValidationError> {
-        required(&self.action_command_id, "DocumentChangeOperation.action_command_id")?;
+        required(
+            &self.action_command_id,
+            "DocumentChangeOperation.action_command_id",
+        )?;
         required(&self.document_id, "DocumentChangeOperation.document_id")?;
         for mutation in &self.mutations {
             if let Some(block) = &mutation.block {

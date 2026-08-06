@@ -5,9 +5,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use harness_core::company_os::{
-    ActorRef, ActorType, Document, DocumentKind, LifecycleStatus,
-};
+use harness_core::company_os::{ActorRef, ActorType, Document, DocumentKind, LifecycleStatus};
 use harness_core::docs_v2::{BlockKindV2, BlockV2, ChangeMutation, ChangeMutationOp};
 use harness_store::docs_v2::PageWriteRequest;
 use harness_store::{HarnessStore, StoreError};
@@ -147,7 +145,10 @@ fn page_create_commits_revision_one_with_ordered_blocks() {
         .expect("read page")
         .expect("page exists");
     assert_eq!(page.blocks.len(), 2);
-    assert_eq!(page.blocks[0].id, "blk-1", "order follows Document.block_ids");
+    assert_eq!(
+        page.blocks[0].id, "blk-1",
+        "order follows Document.block_ids"
+    );
     assert_eq!(page.blocks[1].id, "blk-2");
     let revision = page.revision.expect("revision recorded");
     assert_eq!(revision.revision_number, 1);
@@ -352,7 +353,10 @@ fn unreferenced_or_missing_blocks_are_rejected() {
             "act-orphan",
         ))
         .expect_err("unreferenced block row is rejected");
-    assert!(matches!(orphan, StoreError::CompanyOsValidation(_)), "{orphan:?}");
+    assert!(
+        matches!(orphan, StoreError::CompanyOsValidation(_)),
+        "{orphan:?}"
+    );
 
     let missing = fixture
         .store
@@ -363,7 +367,10 @@ fn unreferenced_or_missing_blocks_are_rejected() {
             "act-missing",
         ))
         .expect_err("missing referenced block is rejected");
-    assert!(matches!(missing, StoreError::CompanyOsValidation(_)), "{missing:?}");
+    assert!(
+        matches!(missing, StoreError::CompanyOsValidation(_)),
+        "{missing:?}"
+    );
 
     assert!(
         fixture.store.blocks_v2().expect("ledger").is_empty(),
@@ -393,5 +400,8 @@ fn blocks_owned_by_another_document_cannot_be_adopted() {
             "act-doc2",
         ))
         .expect_err("cross-document adoption is rejected");
-    assert!(matches!(error, StoreError::CompanyOsValidation(_)), "{error:?}");
+    assert!(
+        matches!(error, StoreError::CompanyOsValidation(_)),
+        "{error:?}"
+    );
 }
