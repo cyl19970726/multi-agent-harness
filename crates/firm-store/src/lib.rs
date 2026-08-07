@@ -2279,6 +2279,100 @@ impl HarnessStore {
         )
     }
 
+    /// Refresh the GitHub linkage snapshot on a Work without touching its
+    /// lifecycle (issue #369 Phase 2, daemon CI poll). Host/Service actor
+    /// only. When the links are unchanged the current Work is returned without
+    /// appending a `Updated` operation, so a steady-state poll never churns
+    /// versions.
+    pub fn update_work_github_links(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        github_links: Vec<GitHubLink>,
+        context: WorkCommandContext,
+    ) -> StoreResult<Work> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.ensure_work_store_compatible_unlocked()?;
+        if let Some(existing) = self.idempotent_work_operation_unlocked(
+            &context.idempotency_key,
+            work_id,
+            WorkEventKind::Updated,
+        )? {
+            return Ok(existing.work);
+        }
+        require_host_actor(&context.performed_by_actor)?;
+        let current = self.current_work_unlocked(work_id, expected_version)?;
+        if current.github_links == github_links {
+            return Ok(current);
+        }
+        let mut next = current.clone();
+        next.github_links = github_links;
+        next.version += 1;
+        next.updated_at = context.created_at.clone();
+        self.append_work_transition_with_payload_unlocked(
+            current,
+            next,
+            WorkEventKind::Updated,
+            context,
+            serde_json::json!({ "reason": "github_ci_poll" }),
+        )
+    }
+
+    /// Host-side auto-submit when the daemon observes a linked pull request
+    /// reach `MERGED` (issue #369 Phase 2). The Work must be `in_progress` and
+    /// carry a `pull_request` link with `status == "MERGED"`; the fresh link
+    /// snapshot is stored with the transition. Host acceptance still moves the
+    /// Work from `review` to `done`; this only automates the submission step.
+    pub fn submit_work_on_pr_merge(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        result_summary: &str,
+        github_links: Vec<GitHubLink>,
+        context: WorkCommandContext,
+    ) -> StoreResult<Work> {
+        if result_summary.trim().is_empty() {
+            return Err(StoreError::Conflict("RESULT_REQUIRED".to_string()));
+        }
+        if !github_links.iter().any(|link| {
+            link.kind == harness_core::GitHubLinkKind::PullRequest
+                && link.status.as_deref() == Some("MERGED")
+        }) {
+            return Err(StoreError::Conflict(
+                "PR_MERGE_REQUIRED: auto-submit requires a pull_request link with status MERGED"
+                    .to_string(),
+            ));
+        }
+        self.transition_work_as_host(
+            work_id,
+            expected_version,
+            context,
+            WorkEventKind::Submitted,
+            WorkStatus::InProgress,
+            WorkStatus::Review,
+            serde_json::json!({ "reason": "github_pr_merge_observed" }),
+            |work| {
+                work.result_summary = Some(result_summary.to_string());
+                // The fresh observed snapshot replaces the stored one; any
+                // issue links attached at create time are carried forward.
+                let mut merged = Vec::new();
+                for link in github_links {
+                    if !merged.contains(&link) {
+                        merged.push(link);
+                    }
+                }
+                for link in &work.github_links {
+                    if !merged.contains(link) {
+                        merged.push(link.clone());
+                    }
+                }
+                work.github_links = merged;
+                work.blocker_reason = None;
+            },
+        )
+    }
+
     pub fn accept_work(
         &self,
         work_id: &str,
@@ -10844,6 +10938,164 @@ mod tests {
             "bound run must emit WorkReviewRequested on submit"
         );
         assert_eq!(review.unwrap().team_run_id, run.id);
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    fn test_github_link(status: &str, ci_status: Option<&str>) -> harness_core::GitHubLink {
+        harness_core::GitHubLink {
+            kind: harness_core::GitHubLinkKind::PullRequest,
+            owner: "cyl19970726".into(),
+            repo: "multi-agent-harness".into(),
+            number: 365,
+            url: "https://github.com/cyl19970726/multi-agent-harness/pull/365".into(),
+            status: Some(status.into()),
+            ci_status: ci_status.map(str::to_string),
+            ci_url: Some(
+                "https://github.com/cyl19970726/multi-agent-harness/actions/runs/1".into(),
+            ),
+        }
+    }
+
+    #[test]
+    fn update_work_github_links_refreshes_snapshot_without_churn() {
+        let (root, store, run, _member, _) = work_test_fixture("github-update");
+        let created = store
+            .insert_work(
+                unassigned_test_work(&run.id, "github-update-1"),
+                host_work_context("we-gu-1", "create-github-update", "unix-ms:2"),
+            )
+            .expect("create Work");
+        assert!(created.github_links.is_empty());
+
+        let refreshed = store
+            .update_work_github_links(
+                &created.id,
+                created.version,
+                vec![test_github_link("MERGED", Some("success"))],
+                host_work_context("we-gu-2", "poll-github-update-1", "unix-ms:3"),
+            )
+            .expect("refresh snapshot");
+        assert_eq!(refreshed.version, created.version + 1);
+        assert_eq!(refreshed.github_links.len(), 1);
+        assert_eq!(
+            refreshed.github_links[0].ci_status.as_deref(),
+            Some("success")
+        );
+
+        // Steady-state poll with identical links must not churn versions.
+        let unchanged = store
+            .update_work_github_links(
+                &created.id,
+                refreshed.version,
+                vec![test_github_link("MERGED", Some("success"))],
+                host_work_context("we-gu-3", "poll-github-update-2", "unix-ms:4"),
+            )
+            .expect("steady-state poll is a no-op");
+        assert_eq!(unchanged.version, refreshed.version);
+
+        // A changed CI outcome appends one more Updated operation.
+        let re_polled = store
+            .update_work_github_links(
+                &created.id,
+                unchanged.version,
+                vec![test_github_link("MERGED", Some("failure"))],
+                host_work_context("we-gu-4", "poll-github-update-3", "unix-ms:5"),
+            )
+            .expect("changed CI refreshes");
+        assert_eq!(re_polled.version, unchanged.version + 1);
+        assert_eq!(
+            re_polled.github_links[0].ci_status.as_deref(),
+            Some("failure")
+        );
+
+        // Stale expected version is rejected.
+        let stale = store.update_work_github_links(
+            &created.id,
+            created.version,
+            vec![test_github_link("MERGED", Some("success"))],
+            host_work_context("we-gu-5", "poll-github-update-4", "unix-ms:6"),
+        );
+        assert!(
+            stale.is_err() && stale.unwrap_err().to_string().contains("VERSION_CONFLICT"),
+            "stale poll must conflict"
+        );
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn submit_work_on_pr_merge_transitions_in_progress_work_to_review() {
+        let (root, store, run, member, _) = work_test_fixture("github-merge-submit");
+        let created = store
+            .insert_work(
+                unassigned_test_work(&run.id, "github-merge-submit-1"),
+                host_work_context("we-ms-1", "create-github-merge", "unix-ms:2"),
+            )
+            .expect("create Work");
+        let claimed = store
+            .claim_work(
+                &created.id,
+                created.version,
+                &member.id,
+                member_work_context(&member.id, "we-ms-2", "claim-github-merge", "unix-ms:3"),
+            )
+            .expect("claim Work");
+        assert_eq!(claimed.status, WorkStatus::InProgress);
+
+        // Refuses when no MERGED pull_request link is present.
+        let not_merged = store.submit_work_on_pr_merge(
+            &claimed.id,
+            claimed.version,
+            "auto-submit",
+            vec![test_github_link("OPEN", Some("success"))],
+            host_work_context("we-ms-3", "submit-merge-reject", "unix-ms:4"),
+        );
+        assert!(
+            not_merged.is_err()
+                && not_merged
+                    .unwrap_err()
+                    .to_string()
+                    .contains("PR_MERGE_REQUIRED"),
+            "auto-submit without a MERGED link must be refused"
+        );
+
+        // Observed merge transitions InProgress -> Review with the fresh
+        // snapshot stored.
+        let submitted = store
+            .submit_work_on_pr_merge(
+                &claimed.id,
+                claimed.version,
+                "auto-submitted by GitHub merge observation",
+                vec![test_github_link("MERGED", Some("success"))],
+                host_work_context("we-ms-4", "submit-merge-ok", "unix-ms:5"),
+            )
+            .expect("auto-submit on merge");
+        assert_eq!(submitted.status, WorkStatus::Review);
+        assert_eq!(
+            submitted.result_summary.as_deref(),
+            Some("auto-submitted by GitHub merge observation")
+        );
+        assert_eq!(submitted.github_links[0].status.as_deref(), Some("MERGED"));
+        assert_eq!(
+            submitted.github_links[0].ci_status.as_deref(),
+            Some("success")
+        );
+
+        // A review Work is not auto-submittable again.
+        let re_submit = store.submit_work_on_pr_merge(
+            &submitted.id,
+            submitted.version,
+            "again",
+            vec![test_github_link("MERGED", Some("success"))],
+            host_work_context("we-ms-5", "submit-merge-again", "unix-ms:6"),
+        );
+        assert!(
+            re_submit.is_err()
+                && re_submit
+                    .unwrap_err()
+                    .to_string()
+                    .contains("required state"),
+            "review Work must not be auto-submitted twice"
+        );
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 

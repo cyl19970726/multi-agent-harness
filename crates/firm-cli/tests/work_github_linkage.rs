@@ -295,6 +295,200 @@ fn github_issue_and_pr_linkage_roundtrip() {
             .any(|value| value.as_str() == Some(pr_url.as_str())),
         "show carries the PR artifact ref"
     );
+
+    // `work show` also renders the Phase 2 top-level GitHub linkage section,
+    // live-refreshed when `gh` is available.
+    let shown_github = shown["github_links"]
+        .as_array()
+        .expect("shown github section");
+    assert_eq!(shown_github.len(), 2);
+    assert_eq!(shown_github[0]["kind"].as_str(), Some("issue"));
+    assert_eq!(shown_github[0]["source"].as_str(), Some("live"));
+    assert_eq!(shown_github[1]["kind"].as_str(), Some("pull_request"));
+    assert_eq!(shown_github[1]["ci_status"].as_str(), Some(ci_status));
+    assert_eq!(shown_github[1]["url"].as_str(), Some(pr_url.as_str()));
+}
+
+#[test]
+fn github_pr_merge_auto_submits_in_progress_work() {
+    if !gh_ready() {
+        eprintln!("skipping live GitHub linkage assertions: `gh` is not authenticated");
+        return;
+    }
+    let (home, project_id, run_id, member_id) = github_fixture("github-merge-auto-submit");
+    // Merged PR with green CI (all checks SUCCESS).
+    let pr_ref = format!("{GH_REPO}#362");
+    let created = host_harness_json(
+        &home,
+        &project_id,
+        &[
+            "team-run",
+            "work",
+            "create",
+            "--team-run-id",
+            &run_id,
+            "--title",
+            "Auto-submit on merge",
+            "--completion-criteria",
+            "daemon submits when the linked PR merges",
+            "--owner-member-run-id",
+            &member_id,
+            "--github-pr",
+            &pr_ref,
+        ],
+    );
+    assert_eq!(created["status"].as_str(), Some("open"));
+    assert_eq!(
+        created["github_links"][0]["kind"].as_str(),
+        Some("pull_request")
+    );
+    assert_eq!(
+        created["github_links"][0]["status"].as_str(),
+        Some("MERGED")
+    );
+    let work_id = created["id"].as_str().expect("work id").to_string();
+
+    // Member starts; the Work is in_progress carrying the linked PR.
+    member_harness_json(
+        &home,
+        &project_id,
+        &run_id,
+        &member_id,
+        &[
+            "team-run",
+            "work",
+            "start",
+            "--team-run-id",
+            &run_id,
+            "--work-id",
+            &work_id,
+            "--expected-version",
+            "1",
+            "--member-run-id",
+            &member_id,
+        ],
+    );
+
+    // The poll observes the merged green PR and auto-submits to review.
+    let polled = host_harness_json(
+        &home,
+        &project_id,
+        &[
+            "team-run",
+            "work",
+            "poll-github-ci",
+            "--team-run-id",
+            &run_id,
+        ],
+    );
+    assert_eq!(polled["gh_unavailable"].as_bool(), Some(false));
+    assert!(
+        polled["auto_submitted"]
+            .as_array()
+            .expect("auto_submitted")
+            .iter()
+            .any(|value| value.as_str() == Some(work_id.as_str())),
+        "merged green PR must auto-submit the Work: {polled}"
+    );
+    let submitted = host_harness_json(
+        &home,
+        &project_id,
+        &["team-run", "work", "show", "--work-id", &work_id],
+    );
+    assert_eq!(submitted["work"]["status"].as_str(), Some("review"));
+    let result = submitted["work"]["result_summary"]
+        .as_str()
+        .expect("result");
+    assert!(
+        result.contains("auto-submitted by GitHub merge observation"),
+        "result must explain the merge observation: {result}"
+    );
+    assert!(result.contains("#362"), "result names the PR: {result}");
+}
+
+#[test]
+fn github_pr_merge_on_red_ci_is_held_for_host() {
+    if !gh_ready() {
+        eprintln!("skipping live GitHub linkage assertions: `gh` is not authenticated");
+        return;
+    }
+    let (home, project_id, run_id, member_id) = github_fixture("github-merge-red-ci");
+    // Merged PR with red CI (rust check FAILURE).
+    let pr_ref = format!("{GH_REPO}#{GH_PR_NUMBER}");
+    let created = host_harness_json(
+        &home,
+        &project_id,
+        &[
+            "team-run",
+            "work",
+            "create",
+            "--team-run-id",
+            &run_id,
+            "--title",
+            "Hold on red CI",
+            "--completion-criteria",
+            "red-CI merges stay open for Host judgment",
+            "--owner-member-run-id",
+            &member_id,
+            "--github-pr",
+            &pr_ref,
+        ],
+    );
+    let work_id = created["id"].as_str().expect("work id").to_string();
+    assert_eq!(
+        created["github_links"][0]["ci_status"].as_str(),
+        Some("failure"),
+        "fixture PR must have red CI"
+    );
+    member_harness_json(
+        &home,
+        &project_id,
+        &run_id,
+        &member_id,
+        &[
+            "team-run",
+            "work",
+            "start",
+            "--team-run-id",
+            &run_id,
+            "--work-id",
+            &work_id,
+            "--expected-version",
+            "1",
+            "--member-run-id",
+            &member_id,
+        ],
+    );
+
+    let polled = host_harness_json(
+        &home,
+        &project_id,
+        &[
+            "team-run",
+            "work",
+            "poll-github-ci",
+            "--team-run-id",
+            &run_id,
+        ],
+    );
+    assert!(
+        polled["blocked_on_failure"]
+            .as_array()
+            .expect("blocked_on_failure")
+            .iter()
+            .any(|value| value.as_str() == Some(work_id.as_str())),
+        "red-CI merge must be held for the Host, not auto-submitted: {polled}"
+    );
+    let held = host_harness_json(
+        &home,
+        &project_id,
+        &["team-run", "work", "show", "--work-id", &work_id],
+    );
+    assert_eq!(
+        held["work"]["status"].as_str(),
+        Some("in_progress"),
+        "work stays in_progress on red CI"
+    );
 }
 
 #[test]
