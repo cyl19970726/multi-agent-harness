@@ -685,6 +685,62 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
+name = "firm-cli"
+version = "0.1.0"
+dependencies = [
+ "crossbeam",
+ "firm-core",
+ "firm-governance",
+ "firm-store",
+ "firm-workflow",
+ "libc",
+ "notify",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "firm-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "firm-governance"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
+name = "firm-store"
+version = "0.1.0"
+dependencies = [
+ "firm-core",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "firm-workflow"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossbeam",
+ "firm-core",
+ "serde",
+ "serde_json",
+ "starlark",
+]
+
+[[package]]
 name = "fixedbitset"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -778,62 +834,6 @@ dependencies = [
  "rand_core",
  "wasip2",
  "wasip3",
-]
-
-[[package]]
-name = "harness-cli"
-version = "0.1.0"
-dependencies = [
- "crossbeam",
- "harness-core",
- "harness-governance",
- "harness-store",
- "harness-workflow",
- "libc",
- "notify",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "harness-core"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "harness-governance"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "toml",
-]
-
-[[package]]
-name = "harness-store"
-version = "0.1.0"
-dependencies = [
- "harness-core",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "harness-workflow"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "crossbeam",
- "harness-core",
- "serde",
- "serde_json",
- "starlark",
 ]
 
 [[package]]
