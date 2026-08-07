@@ -402,3 +402,97 @@ Worktree: [path], branch: [branch], commit: [hash].
 | 🟡 P1 | Worktree/PR/commit 信息强制填写 | 提高可追溯性 |
 | 🟢 P2 | 成员上报阻塞的 3 轮规则 | 减少静默 stuck |
 | 🟢 P2 | Phase 2 works 重新声明所有约束 | 减少 context 丢失 |
+
+---
+
+## 10. Session-Forensics 深度分析（Host Session）
+
+基于 session-forensics 脚本对 Host session `session_9c6cfb21` 的度量分析。
+
+### 10.1 关键指标
+
+| 指标 | 值 | 解读 |
+|------|-----|------|
+| 总行数 | 45,192 | 28.1 MB |
+| Turns | 246 | 含 246 个完整轮次 |
+| Execs (工具调用) | 1,697 | 平均每 turn 6.9 次调用 |
+| Failures | 325 | 19.15% 失败率 |
+| Goal-loop continuations | **135** | **54.9% 的 turns 是自主续跑** |
+| Background notifications | **175** | task completed/lost/failed 通知 |
+| narrative_to_evidence | 17.42 | 远高于合理基线 |
+| Peak context | 668,673 chars | 窗口接近饱和 |
+| Bash flood_share | **74.0%** | Bash 占用了 3/4 的上下文预算 |
+
+### 10.2 命令重复度分析（Harness 轮询低效）
+
+| 命令 | 出现次数 | 问题 |
+|------|---------|------|
+| `team-run status` | **178** | Host 无法被动接收状态变更，必须主动轮询 |
+| `team-run wait` | **126** | 阻塞等待，浪费 turn |
+| `team-run work` | **321** | create(94) + submit(57) + 其他(170) |
+| `git push` | **234** | 大量重复推送（多人多分支） |
+| `gh pr` | **244** | PR 创建/查看/合并操作频繁 |
+| `cargo test/build/...` | **159** | CI 替代成本高 |
+| "Continue working toward the active goal" | **135** | 54.9% turns 是 goal-loop 自动续跑 |
+
+### 10.3 诊断发现
+
+**发现 1: Goal-loop 严重浪费上下文**
+
+Host session 的 135 个 goal-loop 续跑 prompt 中，**92 个是相同的 "Continue working toward the active goal"** 消息。这些续跑发生在：
+- 后台 bash 任务完成通知后（94 个 notification restatements）
+- 每个 notification 消耗 ~300 bytes，累积 28KB — 但更严重的是每个通知触发一轮新 turn
+
+**发现 2: Polling 代替 Push 的模式**
+
+178 次 `team-run status` + 126 次 `team-run wait` = 304 次主动状态查询。这是 Host session 的核心低效模式：
+- 每次查询消耗一次 bash 调用 + JSON 输出解析
+- 大量查询结果为空（无变化时）
+
+**发现 3: 跨 Worktree PR 管理开销**
+
+234 次 `git push` 和 244 次 `gh pr` 反映 Host 在同时管理多个 worktree 的 PR：
+- 9 个 worktree 被触碰
+- 每个 worktree 独立 git push + gh pr create/merge
+
+**发现 4: failure_rate 19.15% 需要分层解读**
+
+325 次失败中，instruments 35 次、business 37 次。但 metrics 脚本指出：多数 business 失败是 cargo/test 迭代，属于 TDD 合法开销。需要语义判断，不能仅凭计数。
+
+**发现 5: Bash 占 74% 上下文预算**
+
+1,696 次 Bash 调用产生 1.27M chars（平均 750 bytes/次），但其中大量是重复的 harness 命令。
+
+### 10.4 Work 创建/提交完整性
+
+从 Host session 的命令行统计：
+- `work create`: 94 次（含 W1-W5 全部 waves 的创建工作）
+- `work submit`: 57 次
+
+与 store 中实际 Works 的对比：
+- W5 team-run 中有 14 个 Works
+- 10 个已 done（含 accepted/review 状态）
+- 2 个 cancelled（成员 stuck/failed）
+- 2 个 in_progress
+
+**提交结果格式审计**（基于 store 中的 result_summary）：
+
+| 成员 | result_summary 结构化程度 | 包含 WORKTREE? | 包含 PR URL? | 包含 COMMIT? |
+|------|------------------------|---------------|-------------|-------------|
+| github-link (p15167-3) | ⭐⭐⭐⭐⭐ 极详细 | ✅ (路径+分支) | ✅ | ❌ |
+| daemon-arch (p15167-1) | ⭐⭐⭐ 信息丰富但段落式 | ❌ | ❌ | ❌ |
+| rename-agent (p15167-2) | ⭐⭐⭐ 详细但段落式 | ❌ | ❌ | ❌ |
+| org-designer (p27732-0) | ⭐⭐⭐⭐ 结构清晰 | ❌ | ✅ (PR #379) | ❌ |
+
+**100% 的 result_summary 缺少 commit hash。75% 缺少 worktree 路径。**
+
+### 10.5 Host Session vs Member Sessions 对比
+
+| 维度 | Host (28.1MB) | daemon-arch (2.4MB) | github-link (2.0MB) |
+|------|--------------|--------------------|--------------------|
+| Lines | 45,192 | ~6,000 | ~5,000 |
+| Goal-loops | 135 | ~30 (estimated) | ~25 (estimated) |
+| Harness commands | 625 | ~50 (estimated) | ~40 (estimated) |
+| Context waste (notification) | 175 notif | ~20 notif | ~15 notif |
+
+Host session 的体积是 member sessions 的 10-14 倍，但实际的生产力产出（work create/submit）集中在少数 turns。大量 turns 被 polling 和 goal-loop 消耗。
