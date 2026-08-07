@@ -3962,7 +3962,7 @@
       ]
     },
     {
-      "path": "docs/design/task-gate-contracts.md",
+      "path": "docs/current/gate-contracts.md",
       "ownerRole": "execution-foundation",
       "status": "stable",
       "lifecycle": "stable",
@@ -3971,6 +3971,7 @@
         "GateSpec, GateVerdict, GateRegistry, GateEngine data model"
       ],
       "dependsOn": [
+        "docs/mental/agent-firm-mental-model.md",
         "docs/concept-model.md",
         "docs/architecture.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
@@ -3981,8 +3982,8 @@
         "cargo test -p firm-core --lib"
       ],
       "reorgTrigger": "Gate model or Work acceptance flow diverges from implemented code.",
-      "authorityClass": "design_intent",
-      "implementationState": "implemented",
+      "authorityClass": "implementation_reference",
+      "implementationState": "verified",
       "truthRefs": [
         {
           "kind": "schema",
@@ -3999,9 +4000,9 @@
       ]
     },
     {
-      "path": "docs/design/work-workspace-model.md",
+      "path": "docs/current/work-workspace.md",
       "ownerRole": "execution-foundation",
-      "status": "planned",
+      "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
         "Work workspace declaration",
@@ -4009,17 +4010,20 @@
         "workspace lifecycle (create, inject, cleanup)"
       ],
       "dependsOn": [
+        "docs/mental/agent-firm-mental-model.md",
         "docs/concept-model.md",
         "docs/architecture.md",
-        "docs/design/task-gate-contracts.md",
+        "docs/current/gate-contracts.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
       ],
       "machineConsumers": [],
       "reviewAfter": "2026-09-08",
-      "lastVerifiedWith": [],
+      "lastVerifiedWith": [
+        "cargo test -p firm-core --lib"
+      ],
       "reorgTrigger": "Work workspace or MemberRun cwd derivation diverges from implemented code.",
-      "authorityClass": "design_intent",
-      "implementationState": "design_only",
+      "authorityClass": "implementation_reference",
+      "implementationState": "verified",
       "truthRefs": [
         {
           "kind": "schema",
