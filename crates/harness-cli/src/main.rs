@@ -40502,8 +40502,7 @@ package:com.tencent.mm
         );
 
         let mut future = team_member_provider_profile("kimi");
-        apply_provider_version(&mut future, Some("0.32.0",
-                "0.33.0".to_string()));
+        apply_provider_version(&mut future, Some("0.32.0".to_string()));
         // 0.32.0 is adapter-reviewed for prompt delivery/resume/mail, but
         // cancel and native goal mode stay unclaimed (fail-closed per
         // capability, not inherited from 0.31.x).
@@ -40515,7 +40514,7 @@ package:com.tencent.mm
         );
 
         let mut unreviewed = team_member_provider_profile("kimi");
-        apply_provider_version(&mut unreviewed, Some("0.33.0".to_string()));
+        apply_provider_version(&mut unreviewed, Some("0.34.0".to_string()));
         assert_eq!(
             unreviewed.compatibility_status,
             ProviderCompatibilityStatus::ReviewRequired
@@ -42709,6 +42708,7 @@ package:com.tencent.mm
                     blocker_reason: None,
                     artifact_refs: Vec::new(),
                     check_refs: Vec::new(),
+                    github_links: Vec::new(),
                     version: 0,
                     created_at: String::new(),
                     updated_at: String::new(),
