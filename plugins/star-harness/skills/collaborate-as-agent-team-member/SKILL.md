@@ -357,7 +357,6 @@ Verify that:
 
 ## ADR 0052 Target Contract: Recursive Agent Teams
 
-ADR 0052 adopted [Nested Agent Team Organization](../docs/company-os/nested-agent-team-organization.md) as the accepted target contract. Under this contract, you are a durable AgentMember — your identity persists across MemberRuns, provider processes, native sessions, and execution attempts. MemberRun and provider-native Session remain the runtime/execution truth.
 
 The Organization is a recursive AgentTeam topology: the Lead Hosts the root AgentTeam, and any direct Member may create and Host one child AgentTeam. You may create a child Team when you own Work that benefits from delegated execution; you become that Team's Host and remain accountable for integrating child results.
 

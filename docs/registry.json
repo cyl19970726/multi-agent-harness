@@ -4882,42 +4882,6 @@
       ]
     },
     {
-      "path": "docs/company-os/nested-agent-team-organization.md",
-      "ownerRole": "product-architecture",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "AgentMember-based recursive Organization target",
-        "unified Work administration and Supervising Operator boundary"
-      ],
-      "dependsOn": [
-        "docs/company-os/organization-and-actors.md",
-        "docs/company-os/collaboration-and-agent-work.md",
-        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
-        "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md",
-        "specs/nested-agent-team-organization/requirements.md",
-        "specs/nested-agent-team-organization/design.md",
-        "specs/nested-agent-team-organization/tasks.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-09-04",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:docs-governance"
-      ],
-      "reorgTrigger": "Agent identity, recursive Team topology, Work administration, Supervising Operator, or Organization UI boundary changes.",
-      "authorityClass": "canonical_contract",
-      "implementationState": "design_only",
-      "truthRefs": [
-        {
-          "kind": "decision",
-          "ref": "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md"
-        }
-      ]
-    },
-    {
       "path": "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md",
       "ownerRole": "product-architecture",
       "status": "stable",
@@ -5607,58 +5571,6 @@
         {
           "kind": "runtime_evidence",
           "ref": ".real-use/session.log"
-        }
-      ]
-    },
-    {
-      "path": "docs/product/agent-team-mental-model.md",
-      "status": "stable",
-      "owner": "product",
-      "canonical_for": [
-        "agent-team-mental-model"
-      ],
-      "machineConsumers": [
-        "harness-cli",
-        "lead-skill",
-        "member-skill",
-        "check-doc-governance"
-      ],
-      "lastVerifiedWith": [
-        "harness-cli@0.4.4",
-        "dogfood-team-run-1786007520441-p27427-0"
-      ],
-      "reorgTrigger": "Architecture layers, state machines, event model, message push model, or Host operational loop changes.",
-      "reviewAfter": "2026-11-04",
-      "canonicalFor": [
-        "agent-team-mental-model",
-        "host-agent-reference",
-        "agent-team-operations"
-      ],
-      "dependsOn": [
-        "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
-        "docs/decisions/0044-durable-team-supervision-and-typed-mail.md",
-        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
-      ],
-      "ownerRole": "product",
-      "lifecycle": "stable",
-      "authorityClass": "canonical_contract",
-      "implementationState": "verified",
-      "truthRefs": [
-        {
-          "kind": "decision",
-          "ref": "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md"
-        },
-        {
-          "kind": "decision",
-          "ref": "docs/decisions/0044-durable-team-supervision-and-typed-mail.md"
-        },
-        {
-          "kind": "decision",
-          "ref": "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
-        },
-        {
-          "kind": "runtime_evidence",
-          "ref": "dogfood-team-run-1786007520441-p27427-0"
         }
       ]
     }

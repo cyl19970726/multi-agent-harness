@@ -31,7 +31,6 @@ Host (Lead)    = decision-maker: review, accept, assign, close, re-plan
 **Member receives**: daemon injects messages + work into CONTRACT prompt each round
 
 The full canonical reference is at
-[`../shared-references/agent-team-mental-model.md`](../shared-references/agent-team-mental-model.md)
 (synced from the repository main branch during plugin install).
 ```
 
@@ -449,7 +448,6 @@ A Member may use native subagents internally; they do not become Team Members or
 
 ## ADR 0052 Target Contract: Recursive Agent Teams
 
-ADR 0052 adopted [Nested Agent Team Organization](../docs/company-os/nested-agent-team-organization.md) as the accepted target contract. Under this contract:
 
 - **AgentMember is the organization-agent identity**, durable across MemberRuns, provider processes, native sessions, and execution attempts.
 - **Organization is recursive AgentTeam topology**: the Lead AgentMember Hosts the root AgentTeam; any Member may create and Host a child AgentTeam.

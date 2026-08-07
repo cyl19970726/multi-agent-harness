@@ -1,3 +1,4 @@
+status: superseded by docs/mental/agent-firm-mental-model.md
 # ADR 0042: Company Store, Execution Space, and Project Binding
 
 status: accepted historical — evolved into docs/mental/agent-firm-mental-model.md (Company as top-level, not three independent identities)
