@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
@@ -20,7 +21,7 @@ use firm_core::{
     WorkItemStatus, WorkOperation, WorkStatus, WorkflowArtifactManifest, WorkflowPatch,
     WorkflowRun, WorkflowStep,
 };
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
 
 mod company_os;
@@ -95,6 +96,41 @@ pub enum HostAttentionClaimResult {
     NotActionable,
 }
 
+/// Provider version admission policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderPolicy {
+    /// Unknown provider versions are blocked (current behavior).
+    Strict,
+    /// Unknown provider versions are warned but allowed to proceed.
+    Advisory,
+}
+
+impl Default for ProviderPolicy {
+    fn default() -> Self {
+        Self::Strict
+    }
+}
+
+/// Runtime-persisted settings stored as `settings.json` in the store root.
+/// Survives store upgrades — unknown fields are silently ignored on read and
+/// preserved on write.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HarnessSettings {
+    /// Admitted provider versions keyed by provider name (e.g. "kimi" → ["0.34.0"]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub admitted_provider_versions: BTreeMap<String, BTreeSet<String>>,
+    /// Provider compatibility policy.
+    #[serde(default, skip_serializing_if = "ProviderPolicy::is_strict")]
+    pub provider_policy: ProviderPolicy,
+}
+
+impl ProviderPolicy {
+    fn is_strict(&self) -> bool {
+        matches!(self, Self::Strict)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HarnessStore {
     root: PathBuf,
@@ -115,6 +151,68 @@ impl HarnessStore {
         fs::create_dir_all(self.root.join("runtimes"))?;
         Ok(())
     }
+
+    // ── Settings ──────────────────────────────────────────────────────
+
+    fn settings_path(&self) -> PathBuf {
+        self.root.join("settings.json")
+    }
+
+    /// Load [`HarnessSettings`] from the store root. Returns defaults when
+    /// the file does not exist (first boot / fresh store).
+    pub fn load_settings(&self) -> StoreResult<HarnessSettings> {
+        let path = self.settings_path();
+        if !path.exists() {
+            return Ok(HarnessSettings::default());
+        }
+        let raw = fs::read_to_string(&path)?;
+        Ok(serde_json::from_str(&raw).unwrap_or_default())
+    }
+
+    fn save_settings(&self, settings: &HarnessSettings) -> StoreResult<()> {
+        let raw = serde_json::to_string_pretty(settings)?;
+        fs::write(self.settings_path(), raw)?;
+        Ok(())
+    }
+
+    /// Admit a provider version into the runtime-reviewed list so future
+    /// compatibility gates treat it as [`ProviderCompatibilityStatus::Current`].
+    ///
+    /// Idempotent — duplicate admissions are silently accepted.
+    pub fn admit_provider_version(
+        &self,
+        provider: &str,
+        version: &str,
+    ) -> StoreResult<()> {
+        let mut settings = self.load_settings()?;
+        settings
+            .admitted_provider_versions
+            .entry(provider.to_string())
+            .or_default()
+            .insert(version.to_string());
+        self.save_settings(&settings)
+    }
+
+    /// Return all admitted provider versions.
+    pub fn list_admitted_versions(&self) -> StoreResult<BTreeMap<String, BTreeSet<String>>> {
+        let settings = self.load_settings()?;
+        Ok(settings.admitted_provider_versions)
+    }
+
+    /// Return the current [`ProviderPolicy`].
+    pub fn get_provider_policy(&self) -> StoreResult<ProviderPolicy> {
+        let settings = self.load_settings()?;
+        Ok(settings.provider_policy)
+    }
+
+    /// Set the provider compatibility policy.
+    pub fn set_provider_policy(&self, policy: ProviderPolicy) -> StoreResult<()> {
+        let mut settings = self.load_settings()?;
+        settings.provider_policy = policy;
+        self.save_settings(&settings)
+    }
+
+    // ── JSONL ledger helpers ──────────────────────────────────────────
 
     pub fn append_mission(&self, value: &Mission) -> StoreResult<()> {
         self.append_jsonl("missions.jsonl", value)
@@ -2403,7 +2501,7 @@ impl HarnessStore {
             return Err(StoreError::Conflict("RESULT_REQUIRED".to_string()));
         }
         if !github_links.iter().any(|link| {
-            link.kind == harness_core::GitHubLinkKind::PullRequest
+            link.kind == firm_core::GitHubLinkKind::PullRequest
                 && link.status.as_deref() == Some("MERGED")
         }) {
             return Err(StoreError::Conflict(
@@ -11015,9 +11113,9 @@ mod tests {
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
-    fn test_github_link(status: &str, ci_status: Option<&str>) -> harness_core::GitHubLink {
-        harness_core::GitHubLink {
-            kind: harness_core::GitHubLinkKind::PullRequest,
+    fn test_github_link(status: &str, ci_status: Option<&str>) -> firm_core::GitHubLink {
+        firm_core::GitHubLink {
+            kind: firm_core::GitHubLinkKind::PullRequest,
             owner: "cyl19970726".into(),
             repo: "multi-agent-harness".into(),
             number: 365,

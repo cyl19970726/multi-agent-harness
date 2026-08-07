@@ -43,7 +43,7 @@ use harness_core::{
 };
 use harness_store::{
     canonical_surface, HarnessStore, HostAttentionClaimResult, MessageDeliveryClaimResult,
-    StoreError, TeamMessageDeliveryClaimResult, WorkDeliveryClaimResult,
+    ProviderPolicy, StoreError, TeamMessageDeliveryClaimResult, WorkDeliveryClaimResult,
 };
 use thiserror::Error;
 
@@ -1462,6 +1462,8 @@ fn run() -> CliResult<()> {
         "hook" => hook_command(&store, &args[1..])?,
         "serve" => serve_command(&store, &resolved, &args[1..])?,
         "mcp" => mcp::run(&store, &resolved)?,
+        "provider" => provider_command(&store, &args[1..])?,
+        "config" => config_command(&store, &args[1..])?,
         #[cfg(unix)]
         "daemon" => daemon_command(&store, &args[1..])?,
         command if retired_command(command) => return Err(retired_surface_error(command)),
@@ -9126,6 +9128,7 @@ fn apply_provider_version(
 /// session. The caller decides whether and how to journal the refreshed row.
 fn refreshed_team_member_provider_profile(
     member: &MemberRun,
+    store: &HarnessStore,
 ) -> CliResult<(ProviderIntegrationProfile, Option<String>)> {
     // Base the refresh on the CURRENT adapter registry, not the stored
     // profile. The stored profile's reviewed_provider_versions is frozen at
@@ -9141,10 +9144,28 @@ fn refreshed_team_member_provider_profile(
         .map(|stored| stored.execution_mode.clone());
     let mut profile =
         team_member_provider_profile_for_mode(&member.provider, stored_mode.as_deref());
+    merge_store_admitted_versions(&mut profile, store);
     let detected = team_member_provider_version_output(&member.provider);
     let probe_error = detected.as_ref().err().cloned();
     apply_provider_version(&mut profile, detected.ok());
     Ok((profile, probe_error))
+}
+
+/// Merge runtime-admitted provider versions from the store settings into the
+/// profile's `reviewed_provider_versions` list. Hard-coded defaults are
+/// preserved; store admissions are additive (deduplicated by the set).
+fn merge_store_admitted_versions(profile: &mut ProviderIntegrationProfile, store: &HarnessStore) {
+    let Ok(admitted) = store.list_admitted_versions() else {
+        return;
+    };
+    let Some(versions) = admitted.get(&profile.provider) else {
+        return;
+    };
+    for version in versions {
+        if !profile.reviewed_provider_versions.contains(version) {
+            profile.reviewed_provider_versions.push(version.clone());
+        }
+    }
 }
 
 fn provider_compatibility_block_reason(
@@ -9152,6 +9173,7 @@ fn provider_compatibility_block_reason(
     profile: &ProviderIntegrationProfile,
     boundary: &str,
     probe_error: Option<&str>,
+    policy: ProviderPolicy,
 ) -> Option<String> {
     if member.is_external_interactive()
         || profile.compatibility_status == ProviderCompatibilityStatus::Current
@@ -9163,15 +9185,30 @@ fn provider_compatibility_block_reason(
     let probe = probe_error
         .map(|error| format!(" Version probe failed: {error}."))
         .unwrap_or_default();
-    Some(format!(
-        "PROVIDER_COMPATIBILITY_BLOCKED: member run {} cannot {boundary}; provider {} version {} in {} is {}. No provider process, native session start/resume, delivery claim, or Work rebound was performed.{} Run `harness member providers --fail-on-review`, regenerate protocol schemas, run deterministic provider acceptance and a live canary, then add the exact version to the adapter's reviewed_provider_versions before retrying the same durable MemberRun and Work.",
-        member.id,
-        profile.provider,
-        version,
-        profile.execution_mode,
-        status,
-        probe,
-    ))
+    match policy {
+        ProviderPolicy::Advisory => {
+            eprintln!(
+                "PROVIDER_COMPATIBILITY_WARNING: member run {} provider {} version {} in {} is {} (policy is advisory).{}",
+                member.id,
+                profile.provider,
+                version,
+                profile.execution_mode,
+                status,
+                probe,
+            );
+            None
+        }
+        ProviderPolicy::Strict => Some(format!(
+            "PROVIDER_COMPATIBILITY_BLOCKED: member run {} cannot {boundary}; provider {} version {} in {} is {}. No provider process, native session start/resume, delivery claim, or Work rebound was performed.{} Run `firm member providers --fail-on-review`, regenerate protocol schemas, run deterministic provider acceptance and a live canary, then use `firm provider admit --version {}` before retrying the same durable MemberRun and Work.",
+            member.id,
+            profile.provider,
+            version,
+            profile.execution_mode,
+            status,
+            probe,
+            version,
+        )),
+    }
 }
 
 /// Last pre-dispatch compatibility fence. It runs before provider capacity,
@@ -9186,9 +9223,11 @@ fn provider_compatibility_start_gate(
         return Ok(None);
     }
     let previous_profile = member.provider_profile.clone();
-    let (profile, probe_error) = refreshed_team_member_provider_profile(member)?;
+    let (profile, probe_error) =
+        refreshed_team_member_provider_profile(member, &ledger.store)?;
+    let policy = ledger.store.get_provider_policy().unwrap_or_default();
     let reason =
-        provider_compatibility_block_reason(member, &profile, boundary, probe_error.as_deref());
+        provider_compatibility_block_reason(member, &profile, boundary, probe_error.as_deref(), policy);
     member.provider_profile = Some(profile);
     member.last_event_at = Some(now_string());
     if reason.is_none() {
@@ -12246,12 +12285,14 @@ fn team_run_recover(
             continue;
         }
         let previous_profile = member.provider_profile.clone();
-        let (profile, probe_error) = refreshed_team_member_provider_profile(member)?;
+        let (profile, probe_error) = refreshed_team_member_provider_profile(member, store)?;
+        let policy = store.get_provider_policy().unwrap_or_default();
         let refusal = provider_compatibility_block_reason(
             member,
             &profile,
             "recover, reopen, or rebound durable Work",
             probe_error.as_deref(),
+            policy,
         );
         member.provider_profile = Some(profile);
         member.last_event_at = Some(now_string());
@@ -17174,12 +17215,14 @@ pub(crate) fn prepare_team_run_start_body(
             continue;
         }
         let previous_profile = member.provider_profile.clone();
-        let (profile, probe_error) = refreshed_team_member_provider_profile(member)?;
+        let (profile, probe_error) = refreshed_team_member_provider_profile(member, store)?;
+        let policy = store.get_provider_policy().unwrap_or_default();
         let refusal = provider_compatibility_block_reason(
             member,
             &profile,
             "start or resume persistent Agent Team execution",
             probe_error.as_deref(),
+            policy,
         );
         member.provider_profile = Some(profile);
         member.last_event_at = Some(now_string());
@@ -25728,7 +25771,7 @@ pub(crate) fn reopen_team_member_value(
         // installed upgrade cannot hide behind a formerly Current snapshot.
         let probe_error = if member.native_session.is_some() {
             let previous_profile = member.provider_profile.clone();
-            let (profile, probe_error) = refreshed_team_member_provider_profile(&member)?;
+            let (profile, probe_error) = refreshed_team_member_provider_profile(&member, store)?;
             member.provider_profile = Some(profile);
             member.last_event_at = Some(now_string());
             if member.provider_profile != previous_profile {
@@ -25756,6 +25799,7 @@ pub(crate) fn reopen_team_member_value(
                 profile,
                 "reopen or resume its provider-native session",
                 probe_error.as_deref(),
+                store.get_provider_policy().unwrap_or_default(),
             ) {
                 return Err(CliError::Usage(reason));
             }
@@ -26474,12 +26518,14 @@ fn require_reviewed_member_before_work_rebind(
         return Ok(());
     }
     let previous_profile = member.provider_profile.clone();
-    let (profile, probe_error) = refreshed_team_member_provider_profile(&member)?;
+    let (profile, probe_error) = refreshed_team_member_provider_profile(&member, store)?;
+    let policy = store.get_provider_policy().unwrap_or_default();
     let refusal = provider_compatibility_block_reason(
         &member,
         &profile,
         "receive rebound durable Work",
         probe_error.as_deref(),
+        policy,
     );
     member.provider_profile = Some(profile);
     member.last_event_at = Some(now_string());
@@ -35876,6 +35922,121 @@ fn stop_pid(pid: u32) -> CliResult<()> {
     } else {
         Err(CliError::Usage(format!("failed to stop pid {pid}")))
     }
+}
+
+// ── provider ─────────────────────────────────────────────────────────
+
+fn provider_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "provider admit")?;
+    match args[0].as_str() {
+        "admit" => provider_admit_command(store, args.get(1..).unwrap_or(&[])),
+        other => Err(CliError::Usage(format!(
+            "unknown provider subcommand: {other}; usage: firm provider admit --version <v> | firm provider admit --list"
+        ))),
+    }
+}
+
+fn provider_admit_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let list = args.iter().any(|a| a == "--list");
+    let version = value(args, "--version");
+    let provider = value(args, "--provider");
+    if list {
+        let admitted = store.list_admitted_versions().map_err(CliError::Store)?;
+        if admitted.is_empty() {
+            println!("No admitted provider versions.");
+        } else {
+            println!("Admitted provider versions:");
+            for (prov, versions) in &admitted {
+                let mut sorted: Vec<&String> = versions.iter().collect();
+                sorted.sort();
+                println!(
+                    "  {prov}: {}",
+                    sorted
+                        .into_iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+        }
+        return Ok(());
+    }
+    let version = match version {
+        Some(v) => v,
+        None => {
+            return Err(CliError::Usage(
+                "usage: firm provider admit --version <v> | firm provider admit --list".to_string(),
+            ))
+        }
+    };
+    let providers: Vec<&str> = match provider.as_deref() {
+        Some(p) => vec![p],
+        None => vec!["kimi", "codex", "claude", "pi"],
+    };
+    for p in &providers {
+        store
+            .admit_provider_version(p, &version)
+            .map_err(CliError::Store)?;
+    }
+    if providers.len() == 1 {
+        println!("Admitted version {version} for provider {}.", providers[0]);
+    } else {
+        println!("Admitted version {version} for all providers.");
+    }
+    Ok(())
+}
+
+// ── config ───────────────────────────────────────────────────────────
+
+fn config_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "config set")?;
+    match args[0].as_str() {
+        "set" => config_set_command(store, args.get(1..).unwrap_or(&[])),
+        other => Err(CliError::Usage(format!(
+            "unknown config subcommand: {other}; usage: firm config set <key> <value>"
+        ))),
+    }
+}
+
+fn config_set_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    if args.is_empty() {
+        return Err(CliError::Usage(
+            "usage: firm config set provider.policy strict|advisory".to_string(),
+        ));
+    }
+    let key = &args[0];
+    let val = args.get(1).map(String::as_str);
+    match (key.as_str(), val) {
+        ("provider.policy", Some("strict")) => {
+            store
+                .set_provider_policy(ProviderPolicy::Strict)
+                .map_err(CliError::Store)?;
+            println!("provider.policy = strict");
+        }
+        ("provider.policy", Some("advisory")) => {
+            store
+                .set_provider_policy(ProviderPolicy::Advisory)
+                .map_err(CliError::Store)?;
+            println!("provider.policy = advisory");
+        }
+        ("provider.policy", Some(other)) => {
+            return Err(CliError::Usage(format!(
+                "invalid provider.policy value: {other}; must be strict or advisory"
+            )))
+        }
+        ("provider.policy", None) => {
+            let policy = store.get_provider_policy().map_err(CliError::Store)?;
+            let label = match policy {
+                ProviderPolicy::Strict => "strict",
+                ProviderPolicy::Advisory => "advisory",
+            };
+            println!("provider.policy = {label}");
+        }
+        (key, _) => {
+            return Err(CliError::Usage(format!("unknown config key: {key}")))
+        }
+    }
+    Ok(())
 }
 
 fn require_subcommand(args: &[String], usage: &str) -> CliResult<()> {
