@@ -52,7 +52,7 @@ esac
 # unambiguous. Hook subprocesses inherit them; the user's shell must source
 # them separately for standalone CLI use.
 export STAR_HARNESS_HOST_SURFACE="$host_surface"
-export STAR_HARNESS_HOST_THREAD_ID="$session_id"
+export STAR_HARNESS_HOST_THREAD_ID="host-main"
 
 # Forward bound lifecycle events to Harness. Core ingestion owns sanitization;
 # unbound raw hook payloads are deliberately not persisted by this plugin.
