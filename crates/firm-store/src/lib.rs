@@ -15,10 +15,10 @@ use firm_core::{
     Review, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus,
     TeamMessage, TeamMessageKind, TeamRunEvent, TeamRunStatus, TeamSupervisorLease,
     TeamSupervisorLeaseStatus, Validate, Vision, Wave, WaveExecutorKind, WaveGateStatus,
-    WaveStatus, Work, WorkClaimMode, WorkCommandContext, WorkCutoverFence, WorkCutoverReport,
-    WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate, WorkEvent, WorkEventKind, WorkItem,
-    WorkItemStatus, WorkOperation, WorkStatus, WorkflowArtifactManifest, WorkflowPatch,
-    WorkflowRun, WorkflowStep,
+    WaveStatus, Work, WorkAcceptanceEvidence, WorkClaimMode, WorkCommandContext, WorkCutoverFence,
+    WorkCutoverReport, WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate, WorkEvent,
+    WorkEventKind, WorkItem, WorkItemStatus, WorkOperation, WorkStatus, WorkflowArtifactManifest,
+    WorkflowPatch, WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -2444,9 +2444,10 @@ impl HarnessStore {
         &self,
         work_id: &str,
         expected_version: u64,
+        evidence: Option<WorkAcceptanceEvidence>,
         context: WorkCommandContext,
     ) -> StoreResult<Work> {
-        self.accept_work_with_summary(work_id, expected_version, None, context)
+        self.accept_work_with_summary(work_id, expected_version, None, evidence, context)
     }
 
     pub fn accept_work_with_summary(
@@ -2454,12 +2455,19 @@ impl HarnessStore {
         work_id: &str,
         expected_version: u64,
         summary: Option<&str>,
+        evidence: Option<WorkAcceptanceEvidence>,
         context: WorkCommandContext,
     ) -> StoreResult<Work> {
         if summary.is_some_and(|value| value.trim().is_empty()) {
             return Err(StoreError::Conflict(
                 "acceptance summary must not be empty when provided".to_string(),
             ));
+        }
+        // Validate evidence if provided (issue #387 P1-2).
+        if let Some(ref evidence) = evidence {
+            if let Err(reason) = evidence.validate() {
+                return Err(StoreError::Conflict(reason));
+            }
         }
         self.init()?;
         let _lock = self.acquire_write_lock()?;
@@ -2482,9 +2490,21 @@ impl HarnessStore {
         next.status = WorkStatus::Done;
         next.version += 1;
         next.updated_at = context.created_at.clone();
-        let payload = summary
-            .map(|summary| serde_json::json!({ "summary": summary }))
-            .unwrap_or(serde_json::Value::Null);
+        next.acceptance_evidence = evidence.clone();
+        let mut payload_map = serde_json::Map::new();
+        if let Some(summary) = summary {
+            payload_map.insert("summary".to_string(), serde_json::Value::String(summary.to_string()));
+        }
+        if let Some(ref evidence) = evidence {
+            if let Ok(evidence_value) = serde_json::to_value(evidence) {
+                payload_map.insert("acceptance_evidence".to_string(), evidence_value);
+            }
+        }
+        let payload = if payload_map.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::Value::Object(payload_map)
+        };
         self.append_work_transition_with_payload_unlocked(
             current,
             next,
@@ -3081,6 +3101,66 @@ impl HarnessStore {
             reconciled.push(attention);
         }
         Ok(reconciled)
+    }
+
+    /// Detect Works that have exceeded their `review_timeout_hours` in Review
+    /// status and generate idempotent `WorkReviewTimedOut` HostAttention rows.
+    ///
+    /// Returns the newly created (or already-existing) HostAttention entries.
+    /// Safe to call repeatedly: already-generated rows are detected via
+    /// [`same_host_attention_fact`] and returned without duplication.
+    /// (issue #387 P1-2)
+    pub fn detect_review_timeouts(&self, now: &str) -> StoreResult<Vec<HostAttention>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let works = self.latest_works_unlocked()?;
+        let mut generated = Vec::new();
+        for work in works.values() {
+            if work.status != WorkStatus::Review {
+                continue;
+            }
+            let timeout_hours = match work.review_timeout_hours {
+                Some(h) if h > 0 => h,
+                _ => continue,
+            };
+            // Parse updated_at as an ISO-8601 timestamp and compute elapsed hours.
+            let updated = match crate::parse_iso8601_to_unix_ms(&work.updated_at) {
+                Some(ts) => ts,
+                None => continue,
+            };
+            let now_ms = match crate::parse_iso8601_to_unix_ms(now) {
+                Some(ts) => ts,
+                None => continue,
+            };
+            let elapsed_hours = now_ms.saturating_sub(updated) as f64 / (1000.0 * 3600.0);
+            if elapsed_hours < timeout_hours as f64 {
+                continue;
+            }
+            let attention = HostAttention {
+                id: format!(
+                    "host-attention-review-timeout-{}-v{}",
+                    work.id, work.version
+                ),
+                team_run_id: work.team_run_id.clone(),
+                kind: HostAttentionKind::WorkReviewTimedOut,
+                work_id: work.id.clone(),
+                work_version: work.version,
+                source_event_ref: format!("review-timeout-{}-v{}", work.id, work.version),
+                member_run_id: work.active_member_run_id.clone(),
+                status: HostAttentionStatus::Actionable,
+                attempt: 0,
+                claim_id: None,
+                claimed_host_surface: None,
+                claimed_host_thread_id: None,
+                provider_receipt_id: None,
+                last_failure_reason: None,
+                created_at: now.to_string(),
+                updated_at: now.to_string(),
+            };
+            let row = self.ensure_host_attention_unlocked(&attention)?;
+            generated.push(row);
+        }
+        Ok(generated)
     }
 
     fn host_attention_inbox_for_team_run_unreconciled(
@@ -8477,6 +8557,7 @@ mod tests {
                 &work.id,
                 3,
                 Some("Host accepted the checked implementation"),
+                None,
                 host_work_context("we-4", "accept-1", "unix-ms:5"),
             )
             .expect("Host accepts Work");
@@ -9200,6 +9281,7 @@ mod tests {
             .accept_work(
                 &submitted.id,
                 submitted.version,
+                None,
                 host_work_context("we-ready-5", "ready-accept-prereq", "unix-ms:7"),
             )
             .expect("accept prerequisite");
@@ -10139,6 +10221,7 @@ mod tests {
             .accept_work(
                 &first.id,
                 first.version,
+                None,
                 host_work_context("accept", "accept-key", "unix-ms:6"),
             )
             .expect("accept first Work");
@@ -11248,6 +11331,7 @@ mod tests {
                 &submitted.id,
                 submitted.version,
                 Some("Host accepted"),
+                None,
                 host_work_context("we-accept-4", "accept-accept-ha", "unix-ms:5"),
             )
             .expect("accept Work");
