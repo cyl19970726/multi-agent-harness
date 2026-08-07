@@ -86,7 +86,9 @@ coverage_roots = [
     "docs/integration",
     "plugins",
 ]
-coverage_exclude = []
+coverage_exclude = [
+    "plugins/star-harness/skills/shared-references/agent-team-mental-model.md",
+]
 
 [retired_vocabulary]
 terms = [
