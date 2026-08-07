@@ -3,7 +3,7 @@
 ```text
 status: canonical repository contract
 owner_role: Docs Governance
-canonical_for: documentation modules, authority, lifecycle, context packs, maintenance workflow, and archive policy
+canonical_for: documentation modules, authority, lifecycle, context packs, maintenance workflow, and retirement policy
 ```
 
 Documentation exists to reduce the context needed for a correct decision. More
@@ -103,7 +103,7 @@ For every new request, Docs Governance follows this sequence:
 3. **Design relations.** Name linked WorkItems, Actors, Approvals, Finance
    records, schemas, Actions and result Documents without copying their truth.
 4. **Choose lifecycle.** Record owner, status, canonical scope, review trigger,
-   replacement and archive policy.
+   replacement and retirement policy.
 5. **Create governed Work when needed.** Material restructuring, new product
    authority or cross-system changes require a WorkItem and proportional review.
 6. **Update entry points and registry.** One new authority must have one visible
@@ -111,13 +111,13 @@ For every new request, Docs Governance follows this sequence:
 7. **Validate and return the result.** Run governance checks, record evidence,
    and update the originating Document or decision.
 
-## Extend, split, merge or archive
+## Extend, split, merge or retire
 
 Extend an existing document when the owner, reader and lifecycle are the same.
 Split only when at least one of these changes materially. Merge when multiple
 files answer the same operator question or repeat the same object rules.
 
-Archive or replace a document when:
+Retire (delete) a document when:
 
 - its canonical scope moved elsewhere;
 - it teaches a retired object or workflow as current;
@@ -126,10 +126,9 @@ Archive or replace a document when:
 - a new Agent cannot tell whether it is current without reading another file.
 
 Historical evidence belongs in an immutable external export when it must travel
-with retired runtime data, or in a versioned design evidence workstream when it
-is still used for visual comparison. Active indexes must not place it in the
-default reading order. Git history is sufficient for abandoned prose that has
-no ongoing audit, compliance, compatibility or record-interpretation value.
+with retired runtime data, or in git history for abandoned prose. Active
+indexes must not place it in the default reading order. There is no archive
+folder; retirement means deletion (git history preserves recovery).
 
 ## Retention and redundancy audit
 
@@ -146,8 +145,8 @@ retention test:
 6. a live record or supported compatibility path still references it and cannot
    be migrated safely.
 
-“It may be useful later”, “it took effort to write”, and “it is already in an
-archive folder” are not retention reasons. If none of the tests pass, delete the
+“It may be useful later”, “it took effort to write”, and “it is historical”
+are not retention reasons. If none of the tests pass, delete the
 file; Git history already preserves recovery. A forwarding note is justified
 only while real inbound references still require that path.
 
@@ -165,12 +164,12 @@ The Docs Governance audit combines machine signals with an ownership review:
 
 Run the audit after a product-model change, a large feature lands, a design
 workstream closes, or the active document count grows materially. The result is
-a bounded cleanup WorkItem, not a permanent archive-building activity.
+a bounded cleanup WorkItem, not a permanent record-keeping activity.
 
 ## Governance roles
 
 - **Docs Governance Agent** proposes placement, merging, metadata, link repair,
-  review dates and archive actions. It does not change another system's product
+  review dates and retirement actions. It does not change another system's product
   truth by itself.
 - **System Governance Agent** for Docs, Work, Finance or Org/HR owns the content
   decision within that system.
@@ -184,7 +183,8 @@ rights.
 
 ## The Docs Governance operating loop
 
-Docs Governance is an Organization capability, not a background formatter. It
+Docs Governance is an Organization capability, not a background formatter.
+Roles below (Docs/System/Lead/Human) are company choices, not a fixed hierarchy. It
 maintains four visible Work queues:
 
 | Queue | Trigger | Output |
@@ -192,7 +192,7 @@ maintains four visible Work queues:
 | Intake and placement | a new business activity, policy, module or result has no obvious home | owning system, canonical parent, record type, relations and initial owner |
 | Authority conflicts | two active documents claim the same rule or disagree | one retained authority, repaired references, explicit replacement/decision |
 | Structural maintenance | a document becomes too large, a module gains new readers, or navigation no longer reveals the business shape | split/merge proposal, updated module/index/views and migration notes |
-| Retirement | a schema, product model, design or runbook is superseded | preserved evidence where required, forwarding note where old references exist, archival registry status and removal plan |
+| Retirement | a schema, product model, design or runbook is superseded | preserved evidence where required, forwarding note where old references exist, retired registry status and removal plan |
 
 Each queue item is a `WorkItem`, with the Docs Governance Agent assigned for
 information architecture. The Governance Agent of the affected system remains
@@ -256,7 +256,7 @@ the claim.
 
 The governance gate must prevent broken links, missing registered authorities,
 stale review dates and retired product vocabulary in active authority. Explicit
-compatibility, migration and archive contexts may mention retired terms, but
+compatibility, migration and historical contexts may mention retired terms, but
 must label them as such.
 
 ## Definition of healthy documentation
