@@ -10,8 +10,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{latest_by_id, HarnessStore, StoreError, StoreResult};
-use harness_core::company_os::{Document, ValidateCompanyOs};
-use harness_core::docs_v2::{BlockV2, ChangeMutation, DocumentChangeOperation, DocumentRevision};
+use firm_core::company_os::{Document, ValidateCompanyOs};
+use firm_core::docs_v2::{BlockV2, ChangeMutation, DocumentChangeOperation, DocumentRevision};
 
 const BLOCKS_V2: &str = "company_os_blocks_v2.jsonl";
 const DOCUMENT_REVISIONS: &str = "company_os_document_revisions.jsonl";
@@ -49,8 +49,8 @@ pub struct PageWriteRequest {
     pub mutations: Vec<ChangeMutation>,
     pub expected_revision: u64,
     pub change_summary: String,
-    pub authored_by: harness_core::company_os::ActorRef,
-    pub execution_ref: Option<harness_core::company_os::EntityRef>,
+    pub authored_by: firm_core::company_os::ActorRef,
+    pub execution_ref: Option<firm_core::company_os::EntityRef>,
     /// Canonical idempotency key (the governing ActionCommand id in the full
     /// Phase 2 dispatch path).
     pub action_command_id: String,

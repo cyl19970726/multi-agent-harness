@@ -14095,6 +14095,8 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 return Err(CliError::Usage(
                     "one or more gates did not pass (see results above)".to_string(),
                 ));
+            } else {
+                Ok(())
             }
         }
         "workspace" => {

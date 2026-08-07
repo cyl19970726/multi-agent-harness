@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use harness_core::{
+use firm_core::{
     ActionCommand, ActionCommandStatus, ActionPolicyDefinition, ActorRef, ActorType, ActorWorkload,
     Approval, ApprovalStatus, Assignment, AuditEvent, AuditEventKind, Block, BusinessModule,
     Commitment, CommitmentStatus, CustomPageDefinition, CustomPagePackage, Document, EntityKind,

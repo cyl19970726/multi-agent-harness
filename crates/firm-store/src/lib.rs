@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use harness_core::{
+use firm_core::{
     validate_agent_team_topology, validate_work_cutover_with_fences, AgentEvent, AgentMember,
     AgentMemberStatus, AgentMessageRoute, AgentRuntime, AgentTeam, AgentTeamRun, Decision,
     DelegationRun, DurableAgentMember, Evidence, Gap, GitHubLink, HostAttention,
@@ -475,12 +475,12 @@ impl HarnessStore {
             StoreError::Conflict(format!("compatibility AgentMember not found: {}", value.id))
         })?;
         let expected_status = match source.status {
-            AgentMemberStatus::Retired => harness_core::DurableAgentMemberStatus::Retired,
+            AgentMemberStatus::Retired => firm_core::DurableAgentMemberStatus::Retired,
             AgentMemberStatus::Paused
             | AgentMemberStatus::Stale
             | AgentMemberStatus::Closed
-            | AgentMemberStatus::Closing => harness_core::DurableAgentMemberStatus::Paused,
-            _ => harness_core::DurableAgentMemberStatus::Active,
+            | AgentMemberStatus::Closing => firm_core::DurableAgentMemberStatus::Paused,
+            _ => firm_core::DurableAgentMemberStatus::Active,
         };
         let expected_profile = source
             .profile
@@ -1378,7 +1378,7 @@ impl HarnessStore {
         }
         work.created_by_actor = context.performed_by_actor.clone();
         match context.performed_by_actor.kind {
-            harness_core::TeamActorKind::MemberRun => {
+            firm_core::TeamActorKind::MemberRun => {
                 let member = self.require_member_run_unlocked(
                     &context.performed_by_actor.id,
                     &work.team_run_id,
@@ -1571,9 +1571,9 @@ impl HarnessStore {
         if previous.coordination_is_active()
             && !matches!(
                 previous.status,
-                harness_core::MemberRunStatus::Completed
-                    | harness_core::MemberRunStatus::Failed
-                    | harness_core::MemberRunStatus::Stopped
+                firm_core::MemberRunStatus::Completed
+                    | firm_core::MemberRunStatus::Failed
+                    | firm_core::MemberRunStatus::Stopped
             )
         {
             return Err(StoreError::Conflict(format!(
@@ -1967,9 +1967,9 @@ impl HarnessStore {
             if previous.coordination_is_active()
                 && !matches!(
                     previous.status,
-                    harness_core::MemberRunStatus::Completed
-                        | harness_core::MemberRunStatus::Failed
-                        | harness_core::MemberRunStatus::Stopped
+                    firm_core::MemberRunStatus::Completed
+                        | firm_core::MemberRunStatus::Failed
+                        | firm_core::MemberRunStatus::Stopped
                 )
             {
                 return Err(StoreError::Conflict(format!(
@@ -2067,7 +2067,7 @@ impl HarnessStore {
         let member = self.require_member_run_unlocked(member_run_id, &current.team_run_id)?;
         if !matches!(
             member.status,
-            harness_core::MemberRunStatus::Idle | harness_core::MemberRunStatus::Running
+            firm_core::MemberRunStatus::Idle | firm_core::MemberRunStatus::Running
         ) || !member.coordination_is_active()
         {
             return Err(StoreError::Conflict(format!(
@@ -2136,7 +2136,7 @@ impl HarnessStore {
         let member = self.require_member_run_unlocked(member_run_id, &current.team_run_id)?;
         if !matches!(
             member.status,
-            harness_core::MemberRunStatus::Idle | harness_core::MemberRunStatus::Running
+            firm_core::MemberRunStatus::Idle | firm_core::MemberRunStatus::Running
         ) || !member.coordination_is_active()
         {
             return Err(StoreError::Conflict(format!(
@@ -3208,7 +3208,7 @@ impl HarnessStore {
         if !member.coordination_is_active()
             || matches!(
                 member.status,
-                harness_core::MemberRunStatus::Stopped | harness_core::MemberRunStatus::Failed
+                firm_core::MemberRunStatus::Stopped | firm_core::MemberRunStatus::Failed
             )
         {
             return Err(StoreError::Conflict(format!(
@@ -3583,7 +3583,7 @@ impl HarnessStore {
         // acknowledgement-only mail does not start rounds, so it must not
         // fence either — otherwise a Handoff would deadlock behind mail that
         // is intentionally never driven on its own (ADR 0046 §4).
-        if value.kind == harness_core::TeamMessageKind::Handoff
+        if value.kind == firm_core::TeamMessageKind::Handoff
             && messages.values().any(|message| {
                 message.team_run_id == value.team_run_id
                     && message.correlation_id == value.correlation_id
@@ -5540,12 +5540,12 @@ fn require_non_empty_store(value: &str, label: &str) -> StoreResult<()> {
     }
 }
 
-fn require_host_actor(actor: &harness_core::TeamActorRef) -> StoreResult<()> {
+fn require_host_actor(actor: &firm_core::TeamActorRef) -> StoreResult<()> {
     if matches!(
         actor.kind,
-        harness_core::TeamActorKind::Host
-            | harness_core::TeamActorKind::Operator
-            | harness_core::TeamActorKind::Service
+        firm_core::TeamActorKind::Host
+            | firm_core::TeamActorKind::Operator
+            | firm_core::TeamActorKind::Service
     ) {
         Ok(())
     } else {
@@ -5556,10 +5556,10 @@ fn require_host_actor(actor: &harness_core::TeamActorRef) -> StoreResult<()> {
 }
 
 fn require_member_actor(
-    actor: &harness_core::TeamActorRef,
+    actor: &firm_core::TeamActorRef,
     member_run_id: &str,
 ) -> StoreResult<()> {
-    if actor.kind == harness_core::TeamActorKind::MemberRun && actor.id == member_run_id {
+    if actor.kind == firm_core::TeamActorKind::MemberRun && actor.id == member_run_id {
         Ok(())
     } else {
         Err(StoreError::Conflict(format!(
@@ -5610,7 +5610,7 @@ mod tests {
     use std::sync::{mpsc, Arc, Barrier};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use harness_core::{
+    use firm_core::{
         DelegationMode, DelegationStatus, HostAttentionKind, MemberActionStatus, MemberRunStatus,
         MemberWorkspaceSnapshot, MessageKind, Mission, MissionLogEntry, MissionLogEntryKind,
         MissionStatus, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy,
@@ -8187,8 +8187,8 @@ mod tests {
     fn host_work_context(id: &str, key: &str, at: &str) -> WorkCommandContext {
         WorkCommandContext {
             event_id: id.into(),
-            performed_by_actor: harness_core::TeamActorRef {
-                kind: harness_core::TeamActorKind::Host,
+            performed_by_actor: firm_core::TeamActorRef {
+                kind: firm_core::TeamActorKind::Host,
                 id: "host".into(),
                 display_name: Some("Host".into()),
                 authn_source: Some("test".into()),
@@ -8209,8 +8209,8 @@ mod tests {
     ) -> WorkCommandContext {
         WorkCommandContext {
             event_id: id.into(),
-            performed_by_actor: harness_core::TeamActorRef {
-                kind: harness_core::TeamActorKind::MemberRun,
+            performed_by_actor: firm_core::TeamActorRef {
+                kind: firm_core::TeamActorKind::MemberRun,
                 id: member_run_id.into(),
                 display_name: None,
                 authn_source: Some("bound-runtime:test".into()),
@@ -8240,7 +8240,7 @@ mod tests {
             claim_mode: WorkClaimMode::TeamClaim,
             eligible_member_ids: Vec::new(),
             prerequisite_work_ids: Vec::new(),
-            priority: harness_core::WorkPriority::High,
+            priority: firm_core::WorkPriority::High,
             created_by_actor: host_work_context("ignored", "ignored", "unix-ms:1")
                 .performed_by_actor,
             result_summary: None,
@@ -9720,7 +9720,7 @@ mod tests {
 
         let mut closed_member = stopped_member;
         closed_member.status = MemberRunStatus::Idle;
-        closed_member.coordination_status = harness_core::MemberCoordinationStatus::Closed;
+        closed_member.coordination_status = firm_core::MemberCoordinationStatus::Closed;
         store
             .append_member_run(&closed_member)
             .expect("record closed coordination");
@@ -9771,7 +9771,7 @@ mod tests {
         // Close lands mid-execution: coordination flips Closed while the Work
         // stays owned and InProgress.
         let mut closed_member = member.clone();
-        closed_member.coordination_status = harness_core::MemberCoordinationStatus::Closed;
+        closed_member.coordination_status = firm_core::MemberCoordinationStatus::Closed;
         closed_member.status = MemberRunStatus::Stopped;
         store
             .append_member_run(&closed_member)
@@ -9818,7 +9818,7 @@ mod tests {
         // Reopen (coordination Active, next runtime generation) restores the
         // member-side transition path for the same durable Work.
         let mut reopened_member = closed_member.clone();
-        reopened_member.coordination_status = harness_core::MemberCoordinationStatus::Active;
+        reopened_member.coordination_status = firm_core::MemberCoordinationStatus::Active;
         reopened_member.status = MemberRunStatus::Idle;
         reopened_member.runtime_generation += 1;
         store
@@ -10217,7 +10217,7 @@ mod tests {
             name: format!("{id} name"),
             description: format!("{id} description"),
             owner_agent_id: "host".into(),
-            status: harness_core::AgentTeamStatus::Active,
+            status: firm_core::AgentTeamStatus::Active,
             member_ids: member_ids.iter().map(|id| id.to_string()).collect(),
             parent_team_id: parent_team_id.map(str::to_string),
             host_member_id: host_member_id.map(str::to_string),
@@ -10237,7 +10237,7 @@ mod tests {
             workspace_policy: Some("project_binding".into()),
             project_binding_id: Some("project-harness".into()),
             business_access_ceiling_refs: vec!["company_os.read".into()],
-            status: harness_core::DurableAgentMemberStatus::Active,
+            status: firm_core::DurableAgentMemberStatus::Active,
             created_by_member_id: None,
             created_at: "unix-ms:1".into(),
             updated_at: "unix-ms:2".into(),
@@ -10267,15 +10267,15 @@ mod tests {
         let teams = store.latest_teams().expect("latest teams");
         assert_eq!(teams.len(), 2);
         assert_eq!(
-            harness_core::team_subtree_ids(&teams, "root"),
+            firm_core::team_subtree_ids(&teams, "root"),
             vec!["root".to_string(), "child".to_string()]
         );
         assert_eq!(
-            harness_core::child_team_ids(&teams, "root"),
+            firm_core::child_team_ids(&teams, "root"),
             vec!["child".to_string()]
         );
         assert_eq!(
-            harness_core::team_ancestor_ids(&teams, "child"),
+            firm_core::team_ancestor_ids(&teams, "child"),
             vec!["root".to_string()]
         );
 
@@ -10399,7 +10399,7 @@ mod tests {
         let company_root = team_test_root("team-scope-retarget-company");
         let company_store = HarnessStore::new(&company_root);
         company_store.init().expect("init company store");
-        let archived_source: harness_core::WorkItem = serde_json::from_value(serde_json::json!({
+        let archived_source: firm_core::WorkItem = serde_json::from_value(serde_json::json!({
             "id": "company-work-persistent",
             "title": "Compatibility WorkItem",
             "objective": "cut over",
@@ -10483,8 +10483,8 @@ mod tests {
         );
 
         let mut closed_member = member_a.clone();
-        closed_member.coordination_status = harness_core::MemberCoordinationStatus::Closed;
-        closed_member.status = harness_core::MemberRunStatus::Stopped;
+        closed_member.coordination_status = firm_core::MemberCoordinationStatus::Closed;
+        closed_member.status = firm_core::MemberRunStatus::Stopped;
         closed_member.finished_at = Some("unix-ms:5".into());
         store
             .append_member_run(&closed_member)
@@ -10523,8 +10523,8 @@ mod tests {
         let mut successor_member = member_a.clone();
         successor_member.id = successor_run.member_run_ids[0].clone();
         successor_member.team_run_id = successor_run.id.clone();
-        successor_member.coordination_status = harness_core::MemberCoordinationStatus::Active;
-        successor_member.status = harness_core::MemberRunStatus::Idle;
+        successor_member.coordination_status = firm_core::MemberCoordinationStatus::Active;
+        successor_member.status = firm_core::MemberRunStatus::Idle;
         successor_member.finished_at = None;
         store
             .append_member_run(&successor_member)
@@ -10923,7 +10923,7 @@ mod tests {
             .expect("legacy migration report");
         assert!(!report.valid);
         assert!(report.issues.iter().any(|issue| {
-            issue.kind == harness_core::WorkCutoverIssueKind::MissingCompanyWorkItemFence
+            issue.kind == firm_core::WorkCutoverIssueKind::MissingCompanyWorkItemFence
         }));
 
         let unchanged = HarnessStore::new(&root)
