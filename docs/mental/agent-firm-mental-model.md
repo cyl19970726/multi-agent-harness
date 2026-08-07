@@ -41,7 +41,13 @@ Execution answers "what work is being done right now."
 
 **Agent Team Runs**: One execution instance with MemberRuns (runtime bindings), shared Work board, message inbox. Existing execution model — Work state machine, Message delivery, Daemon supervision — unchanged.
 
-**Work**: The responsibility kernel. Title, context, criteria, owner (AgentMember), team scope, status (open→in_progress→review→done). Optional `document_refs` (links to Docs) and `labels` (filtering). Work is NOT being merged with Company WorkItem — the existing model stays.
+**Work**: The responsibility kernel. Title, context, criteria, owner (AgentMember), team scope, status (open→in_progress→review→done). Optional `document_refs` (links to Docs) and `labels` (filtering).
+
+Work creation answers five questions: WHERE, WHAT, HOW, WHO.
+
+- **WHERE** — `workspace`: Where the member works. Three kinds: `worktree` (isolated git checkout, for code), `dir` (plain directory, for exploration), `inherit` (project root, for read-only). Harness creates before member start, cleans up on completion. CLI: `--worktree <path>`.
+- **HOW** — `gates`: Declarative verification gates that must pass before acceptance. Four built-in: `github-pr` (PR merged, CI pass), `code-review` (Review verdict), `artifact-exists` (output files present), `check-pass` (checks run). GateRegistry allows custom gates. Empty gates = manual accept (back-compat). CLI: `--gate <plugin>[:key=val,...]`, `work check-gates`, `work accept` (auto-checks gates).
+- **WHO** — `owner_member_id`, `assignee`.
 
 **Views**: All Execution visible on one page. Filters by Agent Team, status, date range. Tags on Work entries. Per-team views unchanged.
 
@@ -76,6 +82,8 @@ Agent Teams on different machines. Future requirement — design task, not imple
 | Component | Status | Notes |
 |---|---|---|
 | Agent Team execution | ✅ Live | Full lifecycle |
+| Work — gates | ✅ Live | PR #401 — GateSpec, GateEngine, 4 built-in gates, GateRegistry |
+| Work — workspace | ✅ Live | PR #406 — WorkWorkspace, ensure/cleanup, --worktree CLI |
 | Organization — Agent Teams | ✅ PR #385 | machine_id + labels |
 | Organization — Standing Agents | ❌ Not started | Design only |
 | Work → Docs links | ❌ Not started | Optional document_refs |
