@@ -27,6 +27,15 @@
     "blocker_reason": { "type": ["string", "null"], "minLength": 1 },
     "artifact_refs": { "type": "array", "items": { "type": "string", "minLength": 1 } },
     "check_refs": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "github_links": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/github_link" }
+    },
+    "gates": {
+      "type": "array",
+      "description": "Declared verification gates this Work must pass before acceptance. Empty vec preserves manual-accept semantics.",
+      "items": { "$ref": "#/$defs/gate_spec" }
+    },
     "version": { "type": "integer", "minimum": 1 },
     "created_at": { "type": "string", "minLength": 1 },
     "updated_at": { "type": "string", "minLength": 1 }
@@ -41,6 +50,30 @@
         "id": { "type": "string", "minLength": 1 },
         "display_name": { "type": ["string", "null"], "minLength": 1 },
         "authn_source": { "type": ["string", "null"], "minLength": 1 }
+      }
+    },
+    "github_link": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "owner", "repo", "number", "url"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["issue", "pull_request"] },
+        "owner": { "type": "string", "minLength": 1 },
+        "repo": { "type": "string", "minLength": 1 },
+        "number": { "type": "integer", "minimum": 1 },
+        "url": { "type": "string", "minLength": 1 },
+        "status": { "type": ["string", "null"] },
+        "ci_status": { "type": ["string", "null"] },
+        "ci_url": { "type": ["string", "null"] }
+      }
+    },
+    "gate_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plugin"],
+      "properties": {
+        "plugin": { "type": "string", "minLength": 1 },
+        "config": { "description": "Plugin-specific configuration (free JSON)" }
       }
     }
   }

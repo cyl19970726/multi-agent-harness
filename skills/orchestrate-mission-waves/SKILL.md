@@ -168,6 +168,10 @@ adds no new commands, only a discipline for the ones already listed.
   │ 3. Push branch to origin            │
   │ 4. Create PR with Summary/Changes   │
   │ 5. Wait for review → merge          │
+  ├─ Gates ────────────────────────────┤
+  │ Verification gates that must pass   │
+  │ before Host acceptance (see below)  │
+  │ github-pr / code-review / etc.      │
   ├─ Evidence ──────────────────────────┤
   │ What counts as done (merged PR etc) │
   │ Required artifact_refs / check_refs  │
@@ -207,6 +211,33 @@ harness team-run work create \
   --claim-mode host_assign \
   --idempotency-key <stable-command-key>
 ```
+
+Declare verification gates with `--gate` (repeatable). The Host's
+`work accept` checks declared gates; `--skip-gates` bypasses for
+explicit waiver. Gates are automatically injected into the Work
+context so the Member sees what must pass before acceptance.
+
+```bash
+# Code work requiring PR merge + CI pass
+harness team-run work create \
+  --team-run-id <team-run-id> \
+  --title "implement login" \
+  --context "..." --completion-criteria "..." \
+  --gate github-pr:require_merged=true,require_ci_pass=true \
+  --gate code-review:strategy=peer,reviewer=critic-1 \
+  --gate check-pass \
+  --gate artifact-exists:paths=src/auth/mod.rs
+
+# Exploration work -- no review gate needed
+harness team-run work create \
+  --team-run-id <team-run-id> \
+  --title "research async runtime options" \
+  --context "..." --completion-criteria "..." \
+  --gate artifact-exists:paths=docs/research/runtime-comparison.md
+```
+
+Empty `gates` (or omitting `--gate`) preserves the manual-accept
+behavior — the Host reviews and accepts without automated checks.
 
 Create a claimable shared-pool Work:
 
@@ -296,7 +327,20 @@ Provider completion and conversational updates never submit or accept Work.
 When a Member moves Work to `review`, inspect the required result summary plus
 the artifact/check refs, changed files, tests, and native session that its
 completion criteria and risk require. Empty artifact/check arrays are valid
-when the criteria need no such reference. Then choose exactly one:
+when the criteria need no such reference.
+
+**Gate-aware review.** If the Work has declared gates, run `work check-gates`
+to see which gates pass and which are blocked:
+
+```bash
+harness team-run work check-gates --work-id <work-id>
+```
+
+After `work poll-github-ci` refreshes CI snapshots, the summary includes
+`gate_ready` — a list of Work ids whose all declared gates now pass. These are
+ready for acceptance.
+
+Then choose exactly one:
 
 ```bash
 harness team-run work request-changes \
@@ -304,6 +348,7 @@ harness team-run work request-changes \
   --reason "<specific required change>" \
   --idempotency-key <stable-command-key>
 
+# Gates are evaluated before acceptance; use --skip-gates for explicit waiver
 harness team-run work accept \
   --work-id <work-id> --expected-version <latest-version> \
   --idempotency-key <stable-command-key>
