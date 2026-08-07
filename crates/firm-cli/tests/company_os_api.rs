@@ -1528,7 +1528,7 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
     let (status, snapshot) = serve.get_json(&format!("/v1/company-os/snapshot{query}"));
     assert_eq!(status, 200, "{snapshot}");
     assert_eq!(snapshot["result"]["snapshot_contract"], "company-os-v1");
-    assert_eq!(snapshot["result"]["source"]["kind"], "harness_store");
+    assert_eq!(snapshot["result"]["source"]["kind"], "firm_store");
     assert_eq!(snapshot["result"]["source"]["authoritative"], true);
     assert_eq!(snapshot["result"]["source"]["project_id"], project_id);
     assert_eq!(snapshot["result"]["source"]["schema"], "company-os/v1");

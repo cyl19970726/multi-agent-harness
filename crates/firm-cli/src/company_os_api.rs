@@ -319,7 +319,7 @@ pub fn snapshot_with_execution(
         .unwrap_or("unknown")
         .to_string();
     projection["source"] = json!({
-        "kind": "harness_store",
+        "kind": "firm_store",
         "authoritative": true,
         "project_id": project_id,
         "store_root": store.root().to_string_lossy(),
