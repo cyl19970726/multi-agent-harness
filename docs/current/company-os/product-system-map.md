@@ -33,7 +33,7 @@ repository/worktree **Project Bindings**.
 flowchart LR
   D["Docs<br/>company memory and business structure"]
   W["Work<br/>commitments, responsibility and outcomes"]
-  O["Organization<br/>humans · nested AgentTeams · AgentMembers"]
+  O["Organization<br/>humans · flat AgentTeams · AgentMembers"]
   F["Finance<br/>monetary state and evidence"]
   E["Execution Space<br/>Mission/Wave · Agent Team · Workflow · Host"]
   P["Project Bindings<br/>repos · worktrees · delivery refs"]
@@ -66,7 +66,7 @@ update all three. See
 
 ## Initial organization
 
-The first organization is a deliberately small recursive AgentTeam:
+The first organization is a deliberately small flat AgentTeam:
 
 ```text
 Supervising Operator
@@ -80,7 +80,7 @@ Supervising Operator
 ```
 
 The Lead assigns and accepts Work only in its direct Team. A Member may Host a
-child Team, delegate child Work, and remain accountable for its parent Work.
+Team delegation, and remain accountable for its parent Work.
 Role names are company choices rather than required architecture. The
 Supervising Operator can inspect all Teams, create unassigned intake Work, and
 message the Lead, but it does not impersonate a Member or become the hidden
@@ -108,7 +108,7 @@ cannot authorize legal filing, payment, permission, or organization mutation.
 | Layer | Native product objects | Boundary |
 | --- | --- | --- |
 | Docs | Document, Block, TypedRecord, Relation, View, BusinessModule | durable knowledge and business structure |
-| Organization | ActorRef, HumanMember, AgentMember, recursive AgentTeam, external/service actors; OrgUnit as optional business grouping | identity, direct-Team administration, authority and explicit availability/capacity |
+| Organization | ActorRef, HumanMember, AgentMember, flat AgentTeam, external/service actors; OrgUnit as optional business grouping | identity, direct-Team administration, authority and explicit availability/capacity |
 | Work | Work, WorkEvent, WorkDelivery, Milestone and typed business/Approval relations | commitment, responsibility, lifecycle, evidence and result routing |
 | Finance | Commitment, Invoice, Payment, Refund and financial evidence | monetary truth and transitions |
 | Plugins / Gateways | GatewayPlugin manifest, GatewayAction, GatewayEvent, connector sync records, view-extension declarations, evidence refs | platform capabilities, external state synchronization, and presentation extensions; never approval or business truth |
@@ -166,12 +166,12 @@ after the GitHub path proves the contract.
 
 | Area | Current truth | Next product gap |
 | --- | --- | --- |
-| Company / execution identity | ADR 0042 is implemented across independent Company Store, Execution Space, and Project Binding registries/selectors; TeamRun and Workflow pin their binding; current blended snapshots still join compatibility StandingAgent rows to execution participation | recursive AgentMember organization cutover, legacy-store retirement, and durable cross-process Team Supervisor |
+| Company / execution identity | ADR 0042 is implemented across independent Company Store, Execution Space, and Project Binding registries/selectors; TeamRun and Workflow pin their binding; current blended snapshots still join compatibility StandingAgent rows to execution participation | flat AgentMember organization cutover, legacy-store retirement, and durable cross-process Team Supervisor |
 | Docs substrate | native schemas, stores, APIs, standard views, and Store-live evidence exist | deeper document authoring and governed module evolution |
-| Organization substrate | actor kinds, OrgUnit membership, StandingAgent compatibility join, and mixed-actor UI exist | ADR 0052 recursive AgentTeam topology, truthful hierarchy, and shared Member/Team views |
-| Work read model | Team Works plus current Company WorkItem/Milestone projections exist | one persistent Team-scoped Work kernel, recursive Global Works, and explicit compatibility cutover |
+| Organization substrate | actor kinds, OrgUnit membership, StandingAgent compatibility join, and mixed-actor UI exist | ADR 0052 flat AgentTeam topology, truthful hierarchy, and shared Member/Team views |
+| Work read model | Team Works plus current Company WorkItem/Milestone projections exist | one persistent Team-scoped Work kernel, global Works across Teams, and explicit compatibility cutover |
 | Finance/Approval | native records, separation of Commitment and Payment, and governed action slices exist | actor-bound product sessions and broader operator controls |
-| Agent roles | current governance-role records and decision contracts exist | role-neutral AgentMembers organized by recursive Teams instead of a fixed governance hierarchy |
+| Agent roles | current governance-role records and decision contracts exist | role-neutral AgentMembers organized by flat Teams instead of a fixed governance hierarchy |
 | AgentOS self-hosting | AgentOS Lead and compatibility StandingAgent/WorkItem rows plus real execution evidence exist | Lead -> CTO -> child Team dogfood over one Work kernel, relation-correct UI, and durable Runtime Supervisor |
 | Execution foundation | Mission/Wave, Agent Team, Dynamic Workflow, Host, providers and Dashboard contracts exist | continue improving honest observation and adapter coverage without replacing company objects |
 | AgentOS plugins/gateways | generic external gateway and plugin contract exists; social readiness is a read-only bootstrap probe; local repo source sync exists | GitHub connector plugin first, then WeCom/social/ecommerce/logistics plugins with connector sync and view extensions |
@@ -187,7 +187,7 @@ separates baseline, Expected, Actual, historical, and deferred-reference assets.
 4. [Organization and actors](organization-and-actors.md)
 5. [Work Operating System](work-operating-system.md)
 6. [Document system](document-system.md) and [financial relations](financial-relations.md)
-7. [Nested Agent Team organization](nested-agent-team-organization.md)
+7. [Agent Firm Mental Model](nested-agent-team-organization.md)
 8. [External project product sources](external-project-product-sources.md)
 9. [External Gateway and Plugin Intake](external-gateway-and-plugins.md)
 10. [Frontend information architecture](frontend-information-architecture.md)

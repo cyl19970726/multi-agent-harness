@@ -73,9 +73,9 @@ The separate `star-workflow` plugin remains available for Dynamic Workflow:
 
 ```bash
 cargo build -p harness-cli
-./target/debug/harness init
-./target/debug/harness space list
-./target/debug/harness project list
+firm init
+firm space list
+firm project list
 ```
 
 An **Execution Space** owns Mission/Wave, Agent Team, Workflow, and coordination
@@ -89,10 +89,10 @@ explicitly with `--space` / `HARNESS_SPACE` and
 ## 3. Start the Harness service
 
 ```bash
-# build output: ./target/debug/harness
+# build output: firm
 
 # start the API + store (the dashboard and the run-script journal read this)
-./target/debug/harness serve --addr 127.0.0.1:8787
+firm serve --addr 127.0.0.1:8787
 
 # in another terminal, start the dashboard UI (Vite) to watch runs live
 pnpm install
@@ -112,24 +112,15 @@ mail to that owner. A Wave or TeamRun completing does not close a Member.
 ## 4. Create a Mission and persistent Agent Team
 
 ```bash
-./target/debug/harness mission create \
+firm mission create \
   --title "Dogfood Agent Team" \
   --objective "Prove persistent multi-member collaboration" \
   --context "## Context\nUse native provider sessions, shared Works, and explicit Host acceptance."
-./target/debug/harness member register \
+firm member register \
   --id builder-codex --name Builder --role builder --provider codex
-./target/debug/harness mission create-team \
+firm mission create-team \
   --id <mission-id> --name builders --description "Persistent builders" \
   --lead host --member builder-codex
-./target/debug/harness wave create \
-  --mission-id <mission-id> --title "Wave 1" \
-  --objective "Run and inspect the team" \
-  --context "## Host plan\nCreate disjoint Works and review submitted results."
-./target/debug/harness team-run create \
-  --mission-id <mission-id> --agent-team-id <team-id> \
-  --objective "Complete the current Host plan"
-./target/debug/harness team-run start --id <team-run-id>
-```
 
 Use `team-run send`, `inbox`, `host-inbox`, `status`, and `events` for durable
 coordination. Ordinary Message queues for the next safe provider cycle; Steer
@@ -161,7 +152,7 @@ findings = parallel([
 Run it through the harness:
 
 ```bash
-./target/debug/harness workflow run-script hello.star
+firm workflow run-script hello.star
 # bounded + safe options:
 #   --space <id>            select the Execution Space used by `serve`
 #   --store <path>          deprecated raw compatibility override
@@ -182,8 +173,8 @@ To get a text-producing workflow's **full deliverable** back (each leaf's comple
 reply, not the capped per-step summary):
 
 ```bash
-./target/debug/harness workflow get-output <run_id>            # JSON, all leaves
-./target/debug/harness workflow get-output <run_id> --step synthesis --text > plan.md
+firm workflow get-output <run_id>            # JSON, all leaves
+firm workflow get-output <run_id> --step synthesis --text > plan.md
 ```
 
 `get-output` reads the durable explicit `WorkflowStep` outcome and joins optional

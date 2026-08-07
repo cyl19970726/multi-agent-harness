@@ -225,23 +225,23 @@ or manually edit store evidence to make a run appear green.
 Useful local commands:
 
 ```bash
-target/debug/harness init
-target/debug/harness mission create --title <title> --objective <objective> \
+firm init
+firm mission create --title <title> --objective <objective> \
   --context <mission-markdown>
-target/debug/harness mission create-team --id <mission> --name <team> \
+firm mission create-team --id <mission> --name <team> \
   --description <purpose> --lead host --member <agent-member-id>
-target/debug/harness wave create --mission-id <mission> --title <title> \
+firm mission log append --mission-id <mission> --kind judgment \
   --objective <objective> --context <wave-markdown>
-target/debug/harness team-run create --mission-id <mission> \
+firm team-run create --mission-id <mission> \
   --agent-team-id <team> --objective <objective>
-target/debug/harness team-run work create --team-run-id <team-run> \
+firm team-run work create --team-run-id <team-run> \
   --title <title> --context <markdown> \
   --completion-criteria <criteria> --owner-member-run-id <member-run>
-target/debug/harness team-run work list --team-run-id <team-run>
-target/debug/harness wave advance --id <wave> --advanced-by <actor> \
+firm team-run work list --team-run-id <team-run>
+firm mission log append --mission-id <mission> --kind judgment \
   --outcome <summary>
-target/debug/harness dashboard snapshot
-target/debug/harness serve --addr 127.0.0.1:8787
+firm dashboard snapshot
+firm serve --addr 127.0.0.1:8787
 npx pnpm@9.15.4 acceptance:mission-wave
 ```
 

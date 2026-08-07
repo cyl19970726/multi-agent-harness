@@ -154,7 +154,7 @@ path as an execution root is a routing defect.
 8. Acknowledge consumed conversation with `team_message_acknowledge`; review
    submitted Works through the Work acceptance commands.
 9. Check Work results, artifacts, and checks; update the current Wave with the Host's actual
-   judgment, then `wave advance` or record `accepted | revise | blocked`. Active
+   judgment, then record `accepted | revise | blocked`. Active
    MemberRuns may carry forward; Wave advance never completes them implicitly.
 
 ## Message Receipt Boundary

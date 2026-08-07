@@ -65,7 +65,7 @@ collaborators, and services through common `ActorRef` references while
 preserving their distinct identity and runtime rules.
 
 The initial operating model is deliberately governance-led: one Human Owner,
-one Lead Agent, and four direct Governance Agents for Docs, Work, Finance, and
+one Lead Agent, with optional Governance Agents for Docs, Work, Finance, and
 Org/HR. All Business Agents report to Org/HR. Docs, Work, and Finance Governance
 Agents collaborate with them through governed records and Actions without
 becoming their organizational manager. `reports_to_actor_ref` and

@@ -576,7 +576,7 @@ completes or accepts the parent. The parent owner owns integration and
 correction.
 
 Organization adopts this mechanism directly under ADR 0052: multi-level Org
-Agents are durable AgentMembers in recursive AgentTeams. The target relations
+Agents are durable AgentMembers in flat AgentTeams. The target relations
 are explicit:
 
 ```text

@@ -14,7 +14,6 @@
         "docs/current/documentation-governance.md",
         "docs/current/product/prd.md",
         "docs/current/company-os/README.md",
-        "docs/archive/company-os/vision.md",
         "docs/current/product/mvp.md",
         "docs/current/architecture/design-basis.md",
         "docs/current/architecture/concept-model.md",
@@ -232,7 +231,6 @@
       "dependsOn": [
         "docs/current/architecture/architecture-map.md",
         "docs/current/company-os/README.md",
-        "docs/archive/company-os/vision.md",
         "docs/current/company-os/execution-foundation.md",
         "docs/decisions/0027-company-os-primary-model.md",
         "docs/decisions/0026-mission-wave-architecture.md",
@@ -454,7 +452,6 @@
       "dependsOn": [
         "docs/current/architecture/architecture.md",
         "docs/current/company-os/README.md",
-        "docs/archive/company-os/concept-model.md",
         "docs/current/company-os/execution-foundation.md",
         "docs/decisions/0027-company-os-primary-model.md",
         "docs/current/architecture/concept-model.md",
@@ -1774,46 +1771,6 @@
       ]
     },
     {
-      "path": "docs/archive/design/agent-team-mission-wave-layout.md",
-      "ownerRole": "product-design",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "agent team frontend information architecture (Missions / Waves / Agent Teams / member pages)",
-        "implemented Mission/Wave baseline and accepted Agent Team Works UI model",
-        "transient live-only thinking policy"
-      ],
-      "dependsOn": [
-        "docs/current/dashboard/pages/mission-wave-canvas.md",
-        "docs/current/dashboard/pages/team-run-war-room.md",
-        "docs/decisions/0025-agent-team-run-control-plane.md",
-        "docs/decisions/0026-mission-wave-architecture.md",
-        "docs/current/product/agent-team-works.md",
-        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-09-30",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
-      ],
-      "reorgTrigger": "The Mission/Wave Host-plan IA, Mission-Team relation, member page structure, active-navigation policy, or transient-thinking policy changes.",
-      "authorityClass": "design_intent",
-      "implementationState": "design_only",
-      "truthRefs": [
-        {
-          "kind": "decision",
-          "ref": "docs/decisions/0025-agent-team-run-control-plane.md"
-        },
-        {
-          "kind": "decision",
-          "ref": "docs/decisions/0026-mission-wave-architecture.md"
-        }
-      ]
-    },
-    {
       "path": "docs/current/company-os/README.md",
       "ownerRole": "product",
       "status": "stable",
@@ -1823,9 +1780,6 @@
         "Company OS canonical product entry and document map"
       ],
       "dependsOn": [
-        "docs/archive/company-os/implementation-truth-matrix.md",
-        "docs/archive/company-os/vision.md",
-        "docs/archive/company-os/concept-model.md",
         "docs/decisions/0027-company-os-primary-model.md",
         "docs/decisions/0029-agent-programmable-document-runtime.md"
       ],
@@ -1852,71 +1806,6 @@
       ]
     },
     {
-      "path": "docs/archive/company-os/implementation-truth-matrix.md",
-      "ownerRole": "lead-product-governance",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Docs Organization Work Finance and Company authority implementation truth matrix",
-        "Company OS contract to schema store API UI acceptance audit",
-        "native trademark closure gap"
-      ],
-      "dependsOn": [
-        "docs/current/company-os/document-system.md",
-        "docs/current/company-os/organization-and-actors.md",
-        "docs/current/company-os/work-items-and-approvals.md",
-        "docs/archive/company-os/financial-relations.md",
-        "docs/archive/company-os/company-constitution.md",
-        "docs/archive/company-os/scoped-authority-broker.md",
-        "crates/firm-core/src/company_os.rs",
-        "crates/firm-store/src/company_os.rs",
-        "crates/firm-cli/src/company_os_api.rs",
-        "apps/agent-dashboard/src/company-os/CompanyOsRouter.tsx",
-        "crates/firm-cli/tests/company_os_api.rs"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-22",
-      "lastVerifiedWith": [
-        "cargo test -p harness-cli --test company_os_api",
-        "cargo test -p harness-cli --test execution_space_cli",
-        "pnpm test:multi-project",
-        "npx pnpm@9.15.4 check:company-os",
-        "frontend-visual-contract validate_manifest.py"
-      ],
-      "reorgTrigger": "Any Company OS schema, store, Action, UI, acceptance test, or trademark closure state changes.",
-      "authorityClass": "actual_evidence",
-      "implementationState": "verified",
-      "truthRefs": [
-        {
-          "kind": "schema",
-          "ref": "schemas/company-os"
-        },
-        {
-          "kind": "store",
-          "ref": "crates/harness-store/src/company_os.rs"
-        },
-        {
-          "kind": "api",
-          "ref": "crates/harness-cli/src/company_os_api.rs"
-        },
-        {
-          "kind": "ui",
-          "ref": "apps/agent-dashboard/src/company-os"
-        },
-        {
-          "kind": "test",
-          "ref": "crates/harness-cli/tests/company_os_api.rs"
-        },
-        {
-          "kind": "runtime_evidence",
-          "ref": "docs/archive/design/company-os-v3/trademark-native-closure-v1/visual-contract.json"
-        }
-      ]
-    },
-    {
       "path": "docs/current/company-os/product-system-map.md",
       "ownerRole": "product-architecture",
       "status": "stable",
@@ -1927,8 +1816,6 @@
         "Company OS default reading order and superseded boundaries"
       ],
       "dependsOn": [
-        "docs/archive/company-os/vision.md",
-        "docs/archive/company-os/four-system-collaboration.md",
         "docs/current/company-os/organization-and-actors.md",
         "docs/current/company-os/work-operating-system.md",
         "docs/current/company-os/execution-foundation.md"
@@ -1947,69 +1834,6 @@
       "truthRefs": []
     },
     {
-      "path": "docs/archive/company-os/vision.md",
-      "ownerRole": "product",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "AI Company OS thesis",
-        "document-driven operating loop",
-        "Docs and Organization dual cores"
-      ],
-      "dependsOn": [
-        "docs/archive/company-os/concept-model.md",
-        "docs/current/company-os/execution-foundation.md",
-        "docs/decisions/0027-company-os-primary-model.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-20",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
-      ],
-      "reorgTrigger": "The Company OS thesis, operating loop, or primary-system boundary changes.",
-      "authorityClass": "canonical_contract",
-      "implementationState": "partial",
-      "truthRefs": [
-        {
-          "kind": "decision",
-          "ref": "docs/decisions/0027-company-os-primary-model.md"
-        }
-      ]
-    },
-    {
-      "path": "docs/archive/company-os/concept-model.md",
-      "ownerRole": "product-architecture",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Company OS object relationships",
-        "Actor and organization boundaries",
-        "Document, WorkItem, Approval, and execution-reference semantics"
-      ],
-      "dependsOn": [
-        "docs/archive/company-os/vision.md",
-        "docs/current/company-os/document-system.md",
-        "docs/current/company-os/organization-and-actors.md",
-        "docs/current/company-os/work-items-and-approvals.md",
-        "docs/current/company-os/execution-foundation.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-20",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
-      ],
-      "reorgTrigger": "Any Company OS object, source-of-truth boundary, or relationship invariant changes.",
-      "authorityClass": "canonical_contract",
-      "implementationState": "partial",
-      "truthRefs": []
-    },
-    {
       "path": "docs/current/company-os/document-system.md",
       "ownerRole": "product-architecture",
       "status": "stable",
@@ -2019,7 +1843,6 @@
         "typed records, relations, views, and document spaces"
       ],
       "dependsOn": [
-        "docs/archive/company-os/concept-model.md",
         "docs/current/company-os/module-design.md",
         "docs/current/company-os/governance.md"
       ],
@@ -2037,58 +1860,6 @@
       "truthRefs": []
     },
     {
-      "path": "docs/archive/company-os/docs-operating-surface-matrix.md",
-      "ownerRole": "docs-governance",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Docs operating surface implementation audit",
-        "Docs UI, CLI, skill, visual evidence, and remaining gap matrix"
-      ],
-      "dependsOn": [
-        "docs/current/company-os/document-system.md",
-        "docs/current/company-os/skill-contracts.md",
-        "docs/archive/company-os/implementation-truth-matrix.md",
-        "docs/decisions/0035-company-os-sql-read-model.md",
-        "skills/company-docs-operator/SKILL.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance",
-        "check:company-os"
-      ],
-      "reviewAfter": "2026-08-23",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:company-os",
-        "cargo run -q -p harness-cli -- governance check"
-      ],
-      "reorgTrigger": "Docs UI, CLI, skill coverage, Store-live evidence, SQL read model, or planned gap status changes.",
-      "authorityClass": "actual_evidence",
-      "implementationState": "verified",
-      "truthRefs": [
-        {
-          "kind": "api",
-          "ref": "crates/harness-cli/src/main.rs"
-        },
-        {
-          "kind": "ui",
-          "ref": "apps/agent-dashboard/src/company-os/docs"
-        },
-        {
-          "kind": "test",
-          "ref": "scripts/check-company-os-docs-cli-smoke.mjs"
-        },
-        {
-          "kind": "test",
-          "ref": "scripts/check-company-os-docs-cli-live.mjs"
-        },
-        {
-          "kind": "test",
-          "ref": "apps/agent-dashboard/tests/company-os-docs-check.mjs"
-        }
-      ]
-    },
-    {
       "path": "docs/current/company-os/organization-and-actors.md",
       "ownerRole": "product-architecture",
       "status": "stable",
@@ -2098,7 +1869,6 @@
         "OrgUnit and ActorRef lifecycles"
       ],
       "dependsOn": [
-        "docs/archive/company-os/concept-model.md",
         "docs/current/company-os/work-items-and-approvals.md",
         "docs/current/company-os/governance.md",
         "docs/current/company-os/execution-foundation.md"
@@ -2126,7 +1896,6 @@
         "responsibility, execution references, review, and approvals"
       ],
       "dependsOn": [
-        "docs/archive/company-os/concept-model.md",
         "docs/current/company-os/organization-and-actors.md",
         "docs/current/company-os/document-system.md",
         "docs/current/company-os/execution-foundation.md",
@@ -2146,34 +1915,6 @@
       "truthRefs": []
     },
     {
-      "path": "docs/archive/company-os/financial-relations.md",
-      "ownerRole": "product-architecture",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "FinancialRecord relationships",
-        "finance-to-module, WorkItem, Approval, and evidence linkage"
-      ],
-      "dependsOn": [
-        "docs/archive/company-os/concept-model.md",
-        "docs/current/company-os/work-items-and-approvals.md",
-        "docs/current/company-os/governance.md",
-        "docs/archive/company-os/examples/trademark-registration.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-20",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
-      ],
-      "reorgTrigger": "FinancialRecord types, cross-module financial relations, approval controls, or audit rules change.",
-      "authorityClass": "canonical_contract",
-      "implementationState": "partial",
-      "truthRefs": []
-    },
-    {
       "path": "docs/current/company-os/module-design.md",
       "ownerRole": "product-architecture",
       "status": "stable",
@@ -2186,7 +1927,6 @@
         "docs/current/company-os/document-system.md",
         "docs/current/company-os/organization-and-actors.md",
         "docs/current/company-os/work-items-and-approvals.md",
-        "docs/archive/company-os/financial-relations.md",
         "docs/current/company-os/governance.md"
       ],
       "machineConsumers": [
@@ -2212,11 +1952,9 @@
         "module evolution, authority, policies, and approval boundaries"
       ],
       "dependsOn": [
-        "docs/archive/company-os/concept-model.md",
         "docs/current/company-os/organization-and-actors.md",
         "docs/current/company-os/module-design.md",
-        "docs/current/company-os/work-items-and-approvals.md",
-        "docs/archive/company-os/company-constitution.md"
+        "docs/current/company-os/work-items-and-approvals.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2232,74 +1970,6 @@
       "truthRefs": []
     },
     {
-      "path": "docs/archive/company-os/four-system-collaboration.md",
-      "ownerRole": "product-architecture",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Docs, Organization, Work, and Finance responsibility boundaries",
-        "governance-led organization and cross-system operating loop"
-      ],
-      "dependsOn": [
-        "docs/current/company-os/organization-and-actors.md",
-        "docs/current/company-os/work-items-and-approvals.md",
-        "docs/archive/company-os/financial-relations.md",
-        "docs/current/company-os/governance.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-21",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
-      ],
-      "reorgTrigger": "A primary system changes ownership, a Governance Agent hierarchy changes, or a cross-system Action boundary changes.",
-      "authorityClass": "canonical_contract",
-      "implementationState": "partial",
-      "truthRefs": []
-    },
-    {
-      "path": "docs/archive/company-os/governance-agent-workspaces.md",
-      "ownerRole": "product-architecture",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Governance Agent responsibility and configuration contract",
-        "prompt, tools, Skills, permissions, and deferred workspace boundary"
-      ],
-      "dependsOn": [
-        "docs/current/company-os/organization-and-actors.md",
-        "docs/current/company-os/governance.md",
-        "docs/current/company-os/skill-contracts.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-21",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
-      ],
-      "reorgTrigger": "Governance role responsibilities, Agent configuration, Skill authority, or Agent workspace implementation priority changes.",
-      "authorityClass": "design_intent",
-      "implementationState": "partial",
-      "truthRefs": [
-        {
-          "kind": "schema",
-          "ref": "schemas/company-os/actors.schema.json"
-        },
-        {
-          "kind": "ui",
-          "ref": "apps/agent-dashboard/src/company-os/operations/pages.tsx"
-        },
-        {
-          "kind": "test",
-          "ref": "crates/harness-cli/tests/company_os_api.rs"
-        }
-      ]
-    },
-    {
       "path": "docs/current/company-os/work-operating-system.md",
       "ownerRole": "product",
       "status": "stable",
@@ -2309,9 +1979,7 @@
         "Work views, filters, responsibility, and Milestone boundary"
       ],
       "dependsOn": [
-        "docs/current/company-os/work-items-and-approvals.md",
-        "docs/archive/company-os/four-system-collaboration.md",
-        "docs/archive/company-os/frontend-information-architecture.md"
+        "docs/current/company-os/work-items-and-approvals.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2340,7 +2008,6 @@
         "docs/decisions/0026-mission-wave-architecture.md",
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
         "docs/decisions/0042-company-store-execution-space-project-binding.md",
-        "docs/archive/company-os/concept-model.md",
         "docs/current/company-os/work-items-and-approvals.md"
       ],
       "machineConsumers": [
@@ -2371,66 +2038,6 @@
       ]
     },
     {
-      "path": "docs/archive/company-os/frontend-information-architecture.md",
-      "ownerRole": "product-design",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Company OS navigation",
-        "Home, Docs, Agents, and Operations information architecture"
-      ],
-      "dependsOn": [
-        "docs/current/company-os/README.md",
-        "docs/current/company-os/core-page-matrix.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-20",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
-      ],
-      "reorgTrigger": "Primary navigation, page responsibility, responsive hierarchy, or execution-tool placement changes.",
-      "authorityClass": "design_intent",
-      "implementationState": "design_only",
-      "truthRefs": []
-    },
-    {
-      "path": "docs/archive/company-os/agent-programmable-pages.md",
-      "ownerRole": "product-platform",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "agent-programmable page tiers",
-        "CustomView authority and governed-action boundaries"
-      ],
-      "dependsOn": [
-        "docs/current/company-os/document-system.md",
-        "docs/current/company-os/module-design.md",
-        "docs/current/company-os/governance.md",
-        "docs/current/company-os/skill-contracts.md",
-        "docs/decisions/0029-agent-programmable-document-runtime.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-20",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
-      ],
-      "reorgTrigger": "Document/page tiers, CustomView registration, scoped read, or governed action boundaries change.",
-      "authorityClass": "canonical_contract",
-      "implementationState": "partial",
-      "truthRefs": [
-        {
-          "kind": "decision",
-          "ref": "docs/decisions/0029-agent-programmable-document-runtime.md"
-        }
-      ]
-    },
-    {
       "path": "skills/company-docs-operator/SKILL.md",
       "ownerRole": "docs-governance",
       "status": "stable",
@@ -2442,7 +2049,6 @@
       "dependsOn": [
         "docs/current/company-os/document-system.md",
         "docs/current/company-os/skill-contracts.md",
-        "docs/archive/company-os/docs-operating-surface-matrix.md",
         "docs/current/company-os/governance.md"
       ],
       "machineConsumers": [
@@ -2482,7 +2088,6 @@
         "docs/current/company-os/document-system.md",
         "docs/current/company-os/organization-and-actors.md",
         "docs/current/company-os/work-items-and-approvals.md",
-        "docs/archive/company-os/financial-relations.md",
         "docs/current/company-os/governance.md"
       ],
       "machineConsumers": [
@@ -2512,8 +2117,6 @@
         "screenshot-first custom page package procedure"
       ],
       "dependsOn": [
-        "docs/archive/company-os/agent-programmable-pages.md",
-        "docs/archive/company-os/frontend-information-architecture.md",
         "docs/current/company-os/skill-contracts.md",
         "docs/decisions/0029-agent-programmable-document-runtime.md"
       ],
@@ -2535,206 +2138,6 @@
       ]
     },
     {
-      "path": "docs/archive/company-os/examples/trademark-registration.md",
-      "ownerRole": "product",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Trademark Management cross-module acceptance scenario",
-        "document, work, finance, approval, and governance linkage example"
-      ],
-      "dependsOn": [
-        "docs/current/company-os/module-design.md",
-        "docs/archive/company-os/financial-relations.md",
-        "docs/current/company-os/work-items-and-approvals.md",
-        "docs/current/company-os/governance.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-20",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
-      ],
-      "reorgTrigger": "The primary cross-module acceptance scenario, trademark module contract, or finance/approval linkage changes.",
-      "authorityClass": "canonical_contract",
-      "implementationState": "partial",
-      "truthRefs": []
-    },
-    {
-      "path": "docs/archive/company-os/external-project-product-sources.md",
-      "ownerRole": "product-architecture",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "external software repository source mapping into Company OS",
-        "GitHub PRD snapshot and webhook boundary"
-      ],
-      "dependsOn": [
-        "docs/current/company-os/document-system.md",
-        "docs/current/company-os/work-items-and-approvals.md",
-        "docs/current/company-os/skill-contracts.md",
-        "docs/archive/company-os/examples/wanchengwanling-operations.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-27",
-      "lastVerifiedWith": [
-        "pnpm check:company-os"
-      ],
-      "reorgTrigger": "External repo sync, ProductDocSnapshot, SourceSyncRun, SourceChangeEvent, GitHub webhook, or DeliveryRef boundaries change.",
-      "authorityClass": "canonical_contract",
-      "implementationState": "partial",
-      "truthRefs": [
-        {
-          "kind": "api",
-          "ref": "crates/harness-cli/src/main.rs"
-        }
-      ]
-    },
-    {
-      "path": "docs/archive/company-os/external-gateway-and-plugins.md",
-      "ownerRole": "product-architecture",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "external gateway and plugin intake boundary for Company OS",
-        "WeCom merchant-message gateway contract for Wanchengwanling dogfood"
-      ],
-      "dependsOn": [
-        "docs/current/company-os/document-system.md",
-        "docs/current/company-os/work-items-and-approvals.md",
-        "docs/current/company-os/organization-and-actors.md",
-        "docs/archive/company-os/external-project-product-sources.md",
-        "docs/archive/company-os/examples/wanchengwanling-operations.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-27",
-      "lastVerifiedWith": [
-        "pnpm check:company-os"
-      ],
-      "reorgTrigger": "External gateway schema/API/CLI, plugin intake, WeCom merchant gateway, service actor, or Agent detail gateway inbox boundaries change.",
-      "authorityClass": "canonical_contract",
-      "implementationState": "partial",
-      "truthRefs": [
-        {
-          "kind": "store",
-          "ref": "agent-company:work-wcw-agentos-wecom-gateway-v0"
-        }
-      ]
-    },
-    {
-      "path": "docs/archive/company-os/examples/wanchengwanling-operations.md",
-      "ownerRole": "business-operations",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Wanchengwanling commercial project mapping into Company OS",
-        "AR tourism merchant, reward, content, creator, finance, and launch module example"
-      ],
-      "dependsOn": [
-        "docs/archive/company-os/external-project-product-sources.md",
-        "docs/archive/company-os/external-gateway-and-plugins.md",
-        "docs/archive/company-os/examples/wanchengwanling-completion-roadmap.md",
-        "docs/archive/company-os/examples/wanchengwanling-company-store-migration.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-27",
-      "lastVerifiedWith": [
-        "pnpm acceptance:company-os:wanchengwanling-roadmap"
-      ],
-      "reorgTrigger": "Wanchengwanling business model, module map, persistent Store bootstrap, source sync, or operating boundary changes.",
-      "authorityClass": "implementation_reference",
-      "implementationState": "partial",
-      "truthRefs": [
-        {
-          "kind": "store",
-          "ref": "agent-company"
-        }
-      ]
-    },
-    {
-      "path": "docs/archive/company-os/examples/wanchengwanling-company-store-migration.md",
-      "ownerRole": "business-operations",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Wanchengwanling Company Store migration evidence",
-        "verification that project-derived Company OS rows moved without execution ledgers"
-      ],
-      "dependsOn": [
-        "docs/decisions/0042-company-store-execution-space-project-binding.md",
-        "docs/archive/company-os/examples/wanchengwanling-operations.md",
-        "crates/firm-cli/src/company_store.rs",
-        "crates/firm-cli/tests/company_store_cli.rs"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-27",
-      "lastVerifiedWith": [
-        "target/debug/harness --company agent-company company docs health",
-        "target/debug/harness --company agent-company company work list",
-        "target/debug/harness --company agent-company company org list"
-      ],
-      "reorgTrigger": "Company Store migration command, Wanchengwanling Store ids, Company Store verification counts, or ADR 0042 migration boundary changes.",
-      "authorityClass": "actual_evidence",
-      "implementationState": "verified",
-      "truthRefs": [
-        {
-          "kind": "runtime_evidence",
-          "ref": "/Users/hhh0x/.harness/companies/agent-company"
-        },
-        {
-          "kind": "test",
-          "ref": "crates/harness-cli/tests/company_store_cli.rs"
-        }
-      ]
-    },
-    {
-      "path": "docs/archive/company-os/examples/wanchengwanling-completion-roadmap.md",
-      "ownerRole": "business-operations",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Wanchengwanling unfinished-goal roadmap",
-        "Company OS operating-surface, custom-page, GitHub sync, SQL read/search, launch data, and replication backlog"
-      ],
-      "dependsOn": [
-        "docs/archive/company-os/examples/wanchengwanling-operations.md",
-        "docs/archive/company-os/agent-programmable-pages.md",
-        "docs/current/company-os/skill-contracts.md",
-        "scripts/seed-company-os-wanchengwanling-roadmap-v1.mjs"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-27",
-      "lastVerifiedWith": [
-        "pnpm acceptance:company-os:wanchengwanling-roadmap"
-      ],
-      "reorgTrigger": "Wanchengwanling roadmap WorkItems, milestones, custom page plan, GitHub/source sync plan, SQL read-model plan, or replication plan changes.",
-      "authorityClass": "implementation_reference",
-      "implementationState": "partial",
-      "truthRefs": [
-        {
-          "kind": "test",
-          "ref": "scripts/seed-company-os-wanchengwanling-roadmap-v1.mjs"
-        }
-      ]
-    },
-    {
       "path": "docs/decisions/0027-company-os-primary-model.md",
       "ownerRole": "product-architecture",
       "status": "stable",
@@ -2744,8 +2147,6 @@
         "Docs and mixed Organization supersession of future-layer framing"
       ],
       "dependsOn": [
-        "docs/archive/company-os/vision.md",
-        "docs/archive/company-os/concept-model.md",
         "docs/current/company-os/execution-foundation.md",
         "docs/decisions/0026-mission-wave-architecture.md"
       ],
@@ -2815,8 +2216,7 @@
         "docs/current/company-os/execution-foundation.md",
         "docs/decisions/0026-mission-wave-architecture.md",
         "docs/current/product/agent-team-works.md",
-        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
-        "docs/archive/design/execution-workbench-v4/README.md"
+        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2851,8 +2251,7 @@
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
         "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
         "docs/current/product/agent-team-works.md",
-        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
-        "docs/archive/design/execution-workbench-v3/README.md"
+        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2930,111 +2329,6 @@
       ]
     },
     {
-      "path": "docs/archive/design/execution-workbench-v3/README.md",
-      "ownerRole": "product-design",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Execution Workbench V3 visual direction",
-        "Mission Canvas and Agent Team War Room expected-versus-actual evidence"
-      ],
-      "dependsOn": [
-        "docs/current/dashboard/pages/mission-wave-canvas.md",
-        "docs/current/dashboard/pages/team-run-war-room.md",
-        "docs/archive/design/execution-workbench-v3/visual-contract.json"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance",
-        "visual acceptance"
-      ],
-      "reviewAfter": "2026-09-30",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:dashboard"
-      ],
-      "reorgTrigger": "The approved Mission Canvas or Agent Team War Room visual direction changes.",
-      "authorityClass": "design_intent",
-      "implementationState": "design_only",
-      "truthRefs": []
-    },
-    {
-      "path": "docs/archive/design/execution-workbench-v3/visual-contract.json",
-      "ownerRole": "frontend-quality",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "machine-readable Execution Workbench V3 screenshot contract"
-      ],
-      "dependsOn": [
-        "docs/current/dashboard/pages/mission-wave-canvas.md",
-        "docs/current/dashboard/pages/team-run-war-room.md"
-      ],
-      "machineConsumers": [
-        "check-doc-governance",
-        "visual acceptance"
-      ],
-      "reviewAfter": "2026-09-30",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:dashboard"
-      ],
-      "reorgTrigger": "Expected, implemented, comparison, overlay, fixture, or route evidence changes.",
-      "authorityClass": "design_intent",
-      "implementationState": "design_only",
-      "truthRefs": []
-    },
-    {
-      "path": "docs/archive/design/execution-workbench-v4/README.md",
-      "ownerRole": "product-design",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "targeted post-Works Execution Workbench visual closure",
-        "current Team War Room Works visual evidence entrypoint"
-      ],
-      "dependsOn": [
-        "docs/current/dashboard/pages/team-run-war-room.md",
-        "docs/archive/design/execution-workbench-v4/team-war-room-works-closure-v1/visual-contract.json"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance",
-        "visual acceptance"
-      ],
-      "reviewAfter": "2026-09-30",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:dashboard"
-      ],
-      "reorgTrigger": "A targeted Workbench closure becomes accepted, superseded, or expands to another page.",
-      "authorityClass": "design_intent",
-      "implementationState": "partial",
-      "truthRefs": []
-    },
-    {
-      "path": "docs/archive/design/execution-workbench-v4/team-war-room-works-closure-v1/visual-contract.json",
-      "ownerRole": "frontend-quality",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "machine-readable Team War Room Works desktop, tablet, and mobile visual contract"
-      ],
-      "dependsOn": [
-        "docs/archive/design/execution-workbench-v4/README.md",
-        "docs/current/dashboard/pages/team-run-war-room.md"
-      ],
-      "machineConsumers": [
-        "check-doc-governance",
-        "visual acceptance"
-      ],
-      "reviewAfter": "2026-09-30",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:dashboard"
-      ],
-      "reorgTrigger": "Expected, actual, comparison, overlay, fixture, route, interaction, or review evidence changes.",
-      "authorityClass": "design_intent",
-      "implementationState": "partial",
-      "truthRefs": []
-    },
-    {
       "path": "docs/decisions/0029-agent-programmable-document-runtime.md",
       "ownerRole": "product-platform",
       "status": "stable",
@@ -3044,7 +2338,6 @@
         "Document, View, and Custom Page authority boundary"
       ],
       "dependsOn": [
-        "docs/archive/company-os/agent-programmable-pages.md",
         "docs/current/company-os/skill-contracts.md",
         "docs/current/company-os/document-system.md",
         "docs/current/company-os/governance.md"
@@ -3073,8 +2366,6 @@
       ],
       "dependsOn": [
         "docs/current/company-os/document-system.md",
-        "docs/archive/company-os/docs-operating-surface-matrix.md",
-        "docs/archive/company-os/implementation-truth-matrix.md",
         "docs/decisions/0004-file-store-before-database.md",
         "docs/decisions/0010-harness-store-is-canonical.md",
         "docs/decisions/0027-company-os-primary-model.md"
@@ -3110,8 +2401,6 @@
       ],
       "dependsOn": [
         "docs/current/company-os/document-system.md",
-        "docs/archive/company-os/docs-operating-surface-matrix.md",
-        "docs/archive/company-os/implementation-truth-matrix.md",
         "docs/decisions/0027-company-os-primary-model.md",
         "docs/decisions/0029-agent-programmable-document-runtime.md",
         "docs/decisions/0035-company-os-sql-read-model.md"
@@ -3135,96 +2424,6 @@
           "ref": "scripts/check-company-os-docs-cli-smoke.mjs"
         }
       ]
-    },
-    {
-      "path": "docs/archive/design/company-os-v1/fixture-contract.md",
-      "ownerRole": "product-design",
-      "status": "archival",
-      "lifecycle": "archival",
-      "canonicalFor": [
-        "legacy Company OS v1 fixture rules retained only for deterministic baseline compatibility"
-      ],
-      "dependsOn": [
-        "docs/archive/design/company-os-v1/fixtures/company-os-trademark-v1.json",
-        "docs/archive/company-os/examples/trademark-registration.md",
-        "docs/current/company-os/core-page-matrix.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance",
-        "Company OS fixture validation"
-      ],
-      "reviewAfter": "2026-08-20",
-      "lastVerifiedWith": [
-        "node apps/agent-dashboard/tests/company-os-trademark-acceptance.mjs"
-      ],
-      "reorgTrigger": "Remove when Company OS v2/v3 Store-live fixtures no longer depend on the v1 trademark fixture.",
-      "authorityClass": "historical_evidence",
-      "implementationState": "verified",
-      "truthRefs": [
-        {
-          "kind": "test",
-          "ref": "node apps/agent-dashboard/tests/company-os-trademark-acceptance.mjs"
-        }
-      ]
-    },
-    {
-      "path": "docs/archive/design/company-os-v1/implementation-acceptance.md",
-      "ownerRole": "frontend-quality",
-      "status": "archival",
-      "lifecycle": "archival",
-      "canonicalFor": [
-        "legacy Company OS v1 actual screenshot acceptance evidence retained as baseline context"
-      ],
-      "dependsOn": [
-        "docs/archive/design/company-os-v1/fixture-contract.md",
-        "docs/archive/design/company-os-v1/fixtures/company-os-trademark-v1.json"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance",
-        "Company OS acceptance"
-      ],
-      "reviewAfter": "2026-08-20",
-      "lastVerifiedWith": [
-        "node apps/agent-dashboard/tests/company-os-trademark-acceptance.mjs"
-      ],
-      "reorgTrigger": "Remove when no active visual comparison or live PRD references v1 actual screenshots.",
-      "authorityClass": "historical_evidence",
-      "implementationState": "verified",
-      "truthRefs": [
-        {
-          "kind": "test",
-          "ref": "node apps/agent-dashboard/tests/company-os-trademark-acceptance.mjs"
-        }
-      ]
-    },
-    {
-      "path": "docs/archive/design/company-os-v2/visual-index.md",
-      "ownerRole": "product-design",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Company OS V2 active visual artifact inventory",
-        "Expected Actual historical and deferred visual classifications"
-      ],
-      "dependsOn": [
-        "docs/current/company-os/product-system-map.md",
-        "docs/archive/design/company-os-v2/work-operating-system-v1/manifest.json",
-        "docs/archive/design/company-os-v2/company-os-four-systems-v1/manifest.json"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-22",
-      "lastVerifiedWith": [
-        "harness governance check"
-      ],
-      "reorgTrigger": "An active Company OS visual target, evidence package, historical baseline, or deferred-reference classification changes.",
-      "authorityClass": "entry",
-      "implementationState": "partial",
-      "truthRefs": []
     },
     {
       "path": "docs/current/integration/native-session-storage.md",
@@ -3494,132 +2693,6 @@
         {
           "kind": "test",
           "ref": "crates/harness-cli/tests/team_run_api.rs"
-        }
-      ]
-    },
-    {
-      "path": "docs/archive/design/company-os-v1/fixtures/company-os-trademark-v1.json",
-      "ownerRole": "product-architecture",
-      "status": "archival",
-      "lifecycle": "archival",
-      "canonicalFor": [
-        "legacy deterministic Company OS trademark fixture used by current Store-live seeding and browser checks"
-      ],
-      "dependsOn": [
-        "docs/archive/company-os/examples/trademark-registration.md",
-        "docs/archive/design/company-os-v1/fixture-contract.md"
-      ],
-      "machineConsumers": [
-        "check-doc-governance",
-        "Company OS fixture validation",
-        "Company OS acceptance"
-      ],
-      "reviewAfter": "2026-08-20",
-      "lastVerifiedWith": [
-        "node apps/agent-dashboard/tests/company-os-trademark-acceptance.mjs"
-      ],
-      "reorgTrigger": "Move to schemas/fixtures/company-os once tests and scripts no longer import from the legacy design path.",
-      "authorityClass": "historical_evidence",
-      "implementationState": "verified",
-      "truthRefs": [
-        {
-          "kind": "test",
-          "ref": "node apps/agent-dashboard/tests/company-os-trademark-acceptance.mjs"
-        }
-      ]
-    },
-    {
-      "path": "docs/archive/company-os/collaboration-and-agent-work.md",
-      "ownerRole": "product",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Company OS object-linked collaboration and result-promotion contract",
-        "Standing Agent and execution-member collaboration boundary"
-      ],
-      "dependsOn": [
-        "docs/current/company-os/organization-and-actors.md",
-        "docs/current/company-os/work-operating-system.md",
-        "docs/current/company-os/execution-foundation.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-22",
-      "lastVerifiedWith": [
-        "harness governance check"
-      ],
-      "reorgTrigger": "Collaboration subjects, Standing Agent participation, result promotion, or execution-member boundaries change.",
-      "authorityClass": "canonical_contract",
-      "implementationState": "partial",
-      "truthRefs": []
-    },
-    {
-      "path": "docs/archive/company-os/browser-action-transport.md",
-      "ownerRole": "company-os-runtime",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "implemented Company OS browser Action transport and session capability boundary"
-      ],
-      "dependsOn": [
-        "docs/archive/company-os/agent-programmable-pages.md",
-        "docs/current/company-os/work-items-and-approvals.md",
-        "apps/agent-dashboard/src/company-os/operations/approvalAction.ts"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance",
-        "Company OS runtime acceptance"
-      ],
-      "reviewAfter": "2026-08-22",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:company-os"
-      ],
-      "reorgTrigger": "Action transport authentication, authorization, idempotency, audit reservation, or browser capability handling changes.",
-      "authorityClass": "implementation_reference",
-      "implementationState": "verified",
-      "truthRefs": [
-        {
-          "kind": "ui",
-          "ref": "apps/agent-dashboard/src/company-os/operations/approvalAction.ts"
-        },
-        {
-          "kind": "test",
-          "ref": "npx pnpm@9.15.4 check:company-os"
-        }
-      ]
-    },
-    {
-      "path": "docs/archive/company-os/work-item-lifecycle-actions.md",
-      "ownerRole": "work-governance",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "implemented WorkItem transition Action and lifecycle authority boundary"
-      ],
-      "dependsOn": [
-        "docs/current/company-os/work-operating-system.md",
-        "docs/current/company-os/work-items-and-approvals.md",
-        "docs/archive/company-os/browser-action-transport.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance",
-        "Company OS operations acceptance"
-      ],
-      "reviewAfter": "2026-08-22",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:company-os"
-      ],
-      "reorgTrigger": "WorkItem transition graph, responsibility, result provenance, approval gate, or Action policy changes.",
-      "authorityClass": "implementation_reference",
-      "implementationState": "verified",
-      "truthRefs": [
-        {
-          "kind": "test",
-          "ref": "npx pnpm@9.15.4 check:company-os"
         }
       ]
     },
@@ -3985,147 +3058,6 @@
       ]
     },
     {
-      "path": "docs/archive/research/README.md",
-      "ownerRole": "docs-governance",
-      "status": "stable",
-      "lifecycle": "stable",
-      "canonicalFor": [
-        "repository navigation and lifecycle entry for unresolved research"
-      ],
-      "dependsOn": [
-        "docs/current/documentation-governance.md",
-        "docs/archive/research/ai-first-multi-device-docs-infrastructure.md",
-        "docs/archive/research/agent-team-shared-task-list.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-09-02",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:docs-governance"
-      ],
-      "reorgTrigger": "Research lifecycle, active study set, or promotion and retirement rules change.",
-      "authorityClass": "entry",
-      "implementationState": "partial",
-      "truthRefs": [
-        {
-          "kind": "decision",
-          "ref": "docs/current/documentation-governance.md"
-        }
-      ]
-    },
-    {
-      "path": "docs/archive/research/ai-first-multi-device-docs-infrastructure.md",
-      "ownerRole": "docs-governance",
-      "status": "planned",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "bounded research proposal for Agent-first multi-device Docs service, revision, remote access, and infrastructure boundaries"
-      ],
-      "dependsOn": [
-        "docs/current/company-os/document-system.md",
-        "docs/archive/company-os/docs-operating-surface-matrix.md",
-        "docs/current/company-os/organization-and-actors.md",
-        "docs/current/product/agent-team-works.md",
-        "docs/decisions/0029-agent-programmable-document-runtime.md",
-        "docs/decisions/0035-company-os-sql-read-model.md",
-        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
-        "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-18",
-      "lastVerifiedWith": [
-        "PR #302 b23b7ac over origin/master 52c0864",
-        "official upstream repositories reviewed 2026-08-04"
-      ],
-      "reorgTrigger": "ADR 0052 AgentMember/AgentTeam/Work fields, independent review, remote Docs API PoC evidence, a canonical Docs storage ADR, or a material change to ADR 0035/0050/0052.",
-      "authorityClass": "research",
-      "implementationState": "design_only",
-      "truthRefs": [
-        {
-          "kind": "decision",
-          "ref": "docs/decisions/0035-company-os-sql-read-model.md"
-        },
-        {
-          "kind": "decision",
-          "ref": "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
-        },
-        {
-          "kind": "decision",
-          "ref": "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md"
-        }
-      ]
-    },
-    {
-      "path": "docs/archive/research/agent-team-shared-task-list.md",
-      "ownerRole": "execution-foundation",
-      "status": "planned",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "publishable failure analysis for Agent Team shared Works and multi-level Organization delegation"
-      ],
-      "dependsOn": [
-        "docs/archive/research/agent-team-shared-task-list-evidence.md",
-        "docs/current/product/agent-team-works.md",
-        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
-        "docs/current/product/agent-team-foundation-closure-plan.md",
-        "docs/decisions/0037-agent-member-autonomy-and-collaboration.md",
-        "docs/decisions/0044-durable-team-supervision-and-typed-mail.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-16",
-      "lastVerifiedWith": [
-        "native TeamRun forensic snapshot 2026-08-02",
-        "official Claude Code Agent Teams documentation"
-      ],
-      "reorgTrigger": "Repeat dogfood changes the findings, publication review requests a split, or the evidence no longer explains the decision.",
-      "authorityClass": "research",
-      "implementationState": "design_only",
-      "truthRefs": [
-        {
-          "kind": "runtime_evidence",
-          "ref": "team-run-1785417589241-p28630-0"
-        }
-      ]
-    },
-    {
-      "path": "docs/archive/research/agent-team-shared-task-list-evidence.md",
-      "ownerRole": "execution-foundation",
-      "status": "planned",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "forensic reconstruction of the message-only Agent Team scheduling failure"
-      ],
-      "dependsOn": [
-        "docs/archive/research/agent-team-shared-task-list.md",
-        "docs/current/product/agent-team-dogfood-loop.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-16",
-      "lastVerifiedWith": [
-        "native TeamRun forensic snapshot 2026-08-02"
-      ],
-      "reorgTrigger": "A repeat dogfood run invalidates the reconstruction or the parent research is absorbed into canonical authority.",
-      "authorityClass": "research",
-      "implementationState": "design_only",
-      "truthRefs": [
-        {
-          "kind": "runtime_evidence",
-          "ref": "team-run-1785417589241-p28630-0"
-        }
-      ]
-    },
-    {
       "path": "docs/current/product/agent-team-works.md",
       "ownerRole": "execution-foundation",
       "status": "planned",
@@ -4137,7 +3069,6 @@
       ],
       "dependsOn": [
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
-        "docs/archive/research/agent-team-shared-task-list.md",
         "docs/decisions/0044-durable-team-supervision-and-typed-mail.md",
         "docs/decisions/0049-member-coordination-and-runtime-lifecycle.md",
         "docs/current/product/mission-wave-host-plan.md"
@@ -4168,42 +3099,6 @@
       ]
     },
     {
-      "path": "docs/archive/design/agent-team-works-implementation-plan.md",
-      "ownerRole": "execution-foundation",
-      "status": "planned",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Agent Team Works breaking cutover sequence",
-        "Agent Team Works frontend and self-dogfood acceptance matrix"
-      ],
-      "dependsOn": [
-        "docs/current/product/agent-team-works.md",
-        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
-        "docs/current/dashboard/pages/team-run-war-room.md",
-        "docs/current/dashboard/pages/member-run-focus.md",
-        "docs/current/dashboard/pages/mission-wave-canvas.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance",
-        "acceptance:agent-team-works"
-      ],
-      "reviewAfter": "2026-08-17",
-      "lastVerifiedWith": [
-        "architecture, UX, and implementation migration review 2026-08-03",
-        "npx pnpm@9.15.4 check:docs-governance"
-      ],
-      "reorgTrigger": "The Works cutover completes, implementation order changes, or the acceptance matrix moves into executable tests.",
-      "authorityClass": "design_intent",
-      "implementationState": "design_only",
-      "truthRefs": [
-        {
-          "kind": "decision",
-          "ref": "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
-        }
-      ]
-    },
-    {
       "path": "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
       "ownerRole": "architecture",
       "status": "stable",
@@ -4214,7 +3109,6 @@
         "Work creation authority and Mission non-replacement decision"
       ],
       "dependsOn": [
-        "docs/archive/research/agent-team-shared-task-list.md",
         "docs/decisions/0028-retire-goal-phase-task-graph.md",
         "docs/decisions/0034-host-plan-waves-and-mission-teams.md",
         "docs/decisions/0037-agent-member-autonomy-and-collaboration.md",
@@ -4255,7 +3149,6 @@
         "docs/decisions/0041-provider-neutral-member-continuation.md",
         "docs/current/architecture/member-continuation-model.md",
         "docs/current/architecture/agent-runtime.md",
-        "docs/archive/research/agent-team-shared-task-list.md",
         "docs/current/product/agent-team-works.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
       ],
@@ -4405,80 +3298,6 @@
       ]
     },
     {
-      "path": "docs/archive/company-os/agentos-self-hosting-loop.md",
-      "ownerRole": "agentos-lead",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "AgentOS continuous self-hosting dogfood operating loop",
-        "Supervising Operator, durable Lead, governance Agents, and Runtime Supervisor boundaries",
-        "coequal Docs, Work, and Organization iteration"
-      ],
-      "dependsOn": [
-        "docs/current/company-os/README.md",
-        "docs/current/company-os/organization-and-actors.md",
-        "docs/archive/company-os/collaboration-and-agent-work.md",
-        "docs/decisions/0042-company-store-execution-space-project-binding.md",
-        "docs/decisions/0045-company-owned-standing-agent-execution-relation.md",
-        "docs/decisions/0046-supervised-agentos-self-hosting-loop.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-30",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:docs-governance"
-      ],
-      "reorgTrigger": "AgentOS dogfood actor roles, system loop, authority, Inbox, runtime, or acceptance semantics change.",
-      "authorityClass": "canonical_contract",
-      "implementationState": "partial",
-      "truthRefs": []
-    },
-    {
-      "path": "docs/archive/company-os/agentos-wave6-work-queue.md",
-      "ownerRole": "agentos-work-governance",
-      "status": "planned",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "AgentOS Wave 6 WorkItem classification: covered/reconcile, genuine next, duplicate-obsolete, blocked",
-        "prioritized execution queue with owner roles, dependencies, and worktree collision boundaries"
-      ],
-      "dependsOn": [
-        "docs/archive/company-os/agentos-self-hosting-loop.md",
-        "docs/current/company-os/work-items-and-approvals.md",
-        "docs/current/operations/operations.md",
-        "skills/dogfood-company-os/SKILL.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-22",
-      "lastVerifiedWith": [
-        "harness company work list",
-        "harness company docs health",
-        "harness governance check"
-      ],
-      "reorgTrigger": "AgentOS WorkItems are closed, reclassified, or reprioritized; Wave 6 completes; or the dogfood execution roster or rolling-reconciliation rule changes.",
-      "authorityClass": "design_intent",
-      "implementationState": "partial",
-      "truthRefs": [
-        {
-          "kind": "store",
-          "ref": "harness company work list (agent-company Company Store)"
-        },
-        {
-          "kind": "runtime_evidence",
-          "ref": "master commit 869a870 and merged PRs #273 #276 #278 #279 #291 #292 #296"
-        },
-        {
-          "kind": "decision",
-          "ref": "docs/decisions/0046-supervised-agentos-self-hosting-loop.md"
-        }
-      ]
-    },
-    {
       "path": "docs/decisions/0046-supervised-agentos-self-hosting-loop.md",
       "ownerRole": "product-architecture",
       "status": "stable",
@@ -4491,8 +3310,7 @@
       "dependsOn": [
         "docs/decisions/0027-company-os-primary-model.md",
         "docs/decisions/0042-company-store-execution-space-project-binding.md",
-        "docs/decisions/0045-company-owned-standing-agent-execution-relation.md",
-        "docs/archive/company-os/agentos-self-hosting-loop.md"
+        "docs/decisions/0045-company-owned-standing-agent-execution-relation.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -4521,37 +3339,6 @@
       ]
     },
     {
-      "path": "docs/archive/company-os/scoped-authority-broker.md",
-      "ownerRole": "company-authority-architecture",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "least-privilege Company Action authority for bound Standing Agent execution",
-        "ScopedPermissionGrant and CapabilityLeaseReceipt target contracts"
-      ],
-      "dependsOn": [
-        "docs/current/company-os/README.md",
-        "docs/current/company-os/organization-and-actors.md",
-        "docs/current/company-os/work-items-and-approvals.md",
-        "docs/decisions/0044-durable-team-supervision-and-typed-mail.md",
-        "docs/decisions/0045-company-owned-standing-agent-execution-relation.md",
-        "docs/decisions/0046-supervised-agentos-self-hosting-loop.md",
-        "docs/decisions/0047-scoped-company-authority-broker.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-31",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:docs-governance"
-      ],
-      "reorgTrigger": "Scoped Company grant grammar, broker identity binding, lease fencing, denial audit, Human activation, or implementation truth changes.",
-      "authorityClass": "canonical_contract",
-      "implementationState": "design_only",
-      "truthRefs": []
-    },
-    {
       "path": "docs/decisions/0047-scoped-company-authority-broker.md",
       "ownerRole": "company-authority-architecture",
       "status": "stable",
@@ -4562,8 +3349,7 @@
       "dependsOn": [
         "docs/decisions/0044-durable-team-supervision-and-typed-mail.md",
         "docs/decisions/0045-company-owned-standing-agent-execution-relation.md",
-        "docs/decisions/0046-supervised-agentos-self-hosting-loop.md",
-        "docs/archive/company-os/scoped-authority-broker.md"
+        "docs/decisions/0046-supervised-agentos-self-hosting-loop.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -4579,38 +3365,6 @@
       "truthRefs": []
     },
     {
-      "path": "docs/archive/company-os/company-constitution.md",
-      "ownerRole": "company-authority-architecture",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Human-rooted Company authority topology and delegation invariants",
-        "Company authority exception routing and Store-truth Organization and Work operator requirements"
-      ],
-      "dependsOn": [
-        "docs/current/company-os/README.md",
-        "docs/current/company-os/organization-and-actors.md",
-        "docs/current/company-os/work-items-and-approvals.md",
-        "docs/archive/company-os/external-project-product-sources.md",
-        "docs/archive/company-os/scoped-authority-broker.md",
-        "docs/decisions/0046-supervised-agentos-self-hosting-loop.md",
-        "docs/decisions/0047-scoped-company-authority-broker.md",
-        "docs/decisions/0048-human-rooted-company-constitution.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-31",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:docs-governance"
-      ],
-      "reorgTrigger": "The Company authority root, Lead responsibilities, attenuation, resource reservation, exception routing, or Store-truth operator requirements change.",
-      "authorityClass": "canonical_contract",
-      "implementationState": "design_only",
-      "truthRefs": []
-    },
-    {
       "path": "docs/decisions/0048-human-rooted-company-constitution.md",
       "ownerRole": "company-authority-architecture",
       "status": "stable",
@@ -4620,8 +3374,7 @@
       ],
       "dependsOn": [
         "docs/decisions/0046-supervised-agentos-self-hosting-loop.md",
-        "docs/decisions/0047-scoped-company-authority-broker.md",
-        "docs/archive/company-os/company-constitution.md"
+        "docs/decisions/0047-scoped-company-authority-broker.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -4678,81 +3431,6 @@
       ]
     },
     {
-      "path": "docs/archive/design/company-os-v5/agentos-self-hosting-loop-v1/README.md",
-      "ownerRole": "product-design",
-      "status": "planned",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "AgentOS self-hosting P0 visual and interaction acceptance entry"
-      ],
-      "dependsOn": [
-        "docs/archive/company-os/agentos-self-hosting-loop.md",
-        "docs/archive/design/company-os-v5/agentos-self-hosting-loop-v1/page-matrix.md",
-        "docs/archive/design/company-os-v5/agentos-self-hosting-loop-v1/interaction-contract.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-15",
-      "lastVerifiedWith": [
-        "browser baseline capture at 1536x1024"
-      ],
-      "reorgTrigger": "P0 page scope, expected design, visual evidence, or interaction acceptance changes.",
-      "authorityClass": "design_intent",
-      "implementationState": "design_only",
-      "truthRefs": []
-    },
-    {
-      "path": "docs/archive/design/company-os-v5/agentos-self-hosting-loop-v1/page-matrix.md",
-      "ownerRole": "product-design",
-      "status": "planned",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "AgentOS self-hosting P0 page and evidence matrix"
-      ],
-      "dependsOn": [
-        "docs/archive/design/company-os-v5/agentos-self-hosting-loop-v1/README.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-15",
-      "lastVerifiedWith": [
-        "browser baseline capture at 1536x1024"
-      ],
-      "reorgTrigger": "P0 page scope, state, viewport, or evidence changes.",
-      "authorityClass": "design_intent",
-      "implementationState": "design_only",
-      "truthRefs": []
-    },
-    {
-      "path": "docs/archive/design/company-os-v5/agentos-self-hosting-loop-v1/interaction-contract.md",
-      "ownerRole": "product-design",
-      "status": "planned",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "AgentOS self-hosting navigation, action honesty, delivery, and motion contract"
-      ],
-      "dependsOn": [
-        "docs/archive/company-os/agentos-self-hosting-loop.md",
-        "docs/archive/design/company-os-v5/agentos-self-hosting-loop-v1/README.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-15",
-      "lastVerifiedWith": [
-        "browser baseline capture at 1536x1024"
-      ],
-      "reorgTrigger": "Navigation, action states, message delivery, or visual state semantics change.",
-      "authorityClass": "design_intent",
-      "implementationState": "design_only",
-      "truthRefs": []
-    },
-    {
       "path": "docs/current/architecture/cli-map.md",
       "ownerRole": "lead-operations",
       "status": "stable",
@@ -4764,9 +3442,7 @@
       "dependsOn": [
         "crates/firm-cli/src/main.rs",
         "crates/firm-cli/src/company_os_api.rs",
-        "docs/current/company-os/skill-contracts.md",
-        "docs/archive/company-os/docs-operating-surface-matrix.md",
-        "docs/archive/company-os/implementation-truth-matrix.md"
+        "docs/current/company-os/skill-contracts.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -4921,185 +3597,6 @@
       "truthRefs": []
     },
     {
-      "path": "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/README.md",
-      "ownerRole": "product-design",
-      "status": "planned",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "recursive Organization, global Works, Member Focus, Team War Room, and Docs-to-Work handoff visual and interaction acceptance entry"
-      ],
-      "dependsOn": [
-        "docs/archive/company-os/frontend-information-architecture.md",
-        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/data-provenance.md",
-        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/interaction-contract.md",
-        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/page-matrix.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-18",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:docs-governance"
-      ],
-      "reorgTrigger": "Surface scope, baseline viewports, evidence policy, or placement (company-os-v6) changes.",
-      "authorityClass": "design_intent",
-      "implementationState": "design_only",
-      "truthRefs": []
-    },
-    {
-      "path": "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/data-provenance.md",
-      "ownerRole": "product-design",
-      "status": "planned",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "field-level data provenance and IMPLEMENTED/TARGET/RESEARCH classes for the five recursive-org UI surfaces"
-      ],
-      "dependsOn": [
-        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/README.md",
-        "docs/archive/company-os/implementation-truth-matrix.md",
-        "docs/current/product/agent-team-works.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-18",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:docs-governance"
-      ],
-      "reorgTrigger": "Any rendered field, source contract, provenance class, or frozen discrepancy changes.",
-      "authorityClass": "design_intent",
-      "implementationState": "design_only",
-      "truthRefs": []
-    },
-    {
-      "path": "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/interaction-contract.md",
-      "ownerRole": "product-design",
-      "status": "planned",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "navigation, click, scroll, filter, loading, empty, and error rules for the five recursive-org UI surfaces"
-      ],
-      "dependsOn": [
-        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/README.md",
-        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/data-provenance.md",
-        "docs/archive/company-os/frontend-information-architecture.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-18",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:docs-governance"
-      ],
-      "reorgTrigger": "Interaction rules, motion policy, or responsive rules for any of the five surfaces change.",
-      "authorityClass": "design_intent",
-      "implementationState": "design_only",
-      "truthRefs": []
-    },
-    {
-      "path": "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/wireframes.md",
-      "ownerRole": "product-design",
-      "status": "planned",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Wave 0 Expected text wireframes for the five recursive-org UI surfaces at desktop, tablet, 390, and 320"
-      ],
-      "dependsOn": [
-        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/README.md",
-        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/interaction-contract.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-18",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:docs-governance"
-      ],
-      "reorgTrigger": "Any Expected layout, label, or viewport frame changes; replaced by approved Expected PNGs when captured.",
-      "authorityClass": "design_intent",
-      "implementationState": "design_only",
-      "truthRefs": []
-    },
-    {
-      "path": "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/page-matrix.md",
-      "ownerRole": "product-design",
-      "status": "planned",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "per-state, per-viewport acceptance rows for the five recursive-org UI surfaces"
-      ],
-      "dependsOn": [
-        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/README.md",
-        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/wireframes.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-18",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:docs-governance"
-      ],
-      "reorgTrigger": "Page priorities, states, viewports, baselines, or acceptance mechanism changes.",
-      "authorityClass": "design_intent",
-      "implementationState": "design_only",
-      "truthRefs": []
-    },
-    {
-      "path": "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/expected-vs-actual.md",
-      "ownerRole": "product-design",
-      "status": "planned",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "expected-vs-actual gap map and production-component seam freeze for the five recursive-org UI surfaces"
-      ],
-      "dependsOn": [
-        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/README.md",
-        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/data-provenance.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-18",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:docs-governance"
-      ],
-      "reorgTrigger": "Gap analysis, likely-to-change component list, non-goals, or acceptance criteria change.",
-      "authorityClass": "design_intent",
-      "implementationState": "design_only",
-      "truthRefs": []
-    },
-    {
-      "path": "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/visual-contract.json",
-      "ownerRole": "product-design",
-      "status": "planned",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "machine-readable visual acceptance case list for the recursive-org-docs-works-v1 slice"
-      ],
-      "dependsOn": [
-        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/page-matrix.md",
-        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/wireframes.md"
-      ],
-      "machineConsumers": [
-        "check-doc-governance",
-        "visual acceptance"
-      ],
-      "reviewAfter": "2026-08-18",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check:docs-governance"
-      ],
-      "reorgTrigger": "Cases, viewports, expected references, artifact policy, or wave0 policy changes.",
-      "authorityClass": "design_intent",
-      "implementationState": "design_only",
-      "truthRefs": []
-    },
-    {
       "path": "plugins/star-harness/README.md",
       "ownerRole": "platform",
       "status": "stable",
@@ -5107,9 +3604,7 @@
       "canonicalFor": [
         "Star Harness plugin entry point and scope"
       ],
-      "dependsOn": [
-        "docs/archive/company-os/external-gateway-and-plugins.md"
-      ],
+      "dependsOn": [],
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance"
@@ -5359,39 +3854,6 @@
       "truthRefs": []
     },
     {
-      "path": "docs/archive/company-os/ai-first-docs-spec.md",
-      "ownerRole": "product",
-      "status": "planned",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "AI-first Docs target model definition (design intent pending Phase 0 acceptance)"
-      ],
-      "dependsOn": [
-        "docs/archive/research/ai-first-multi-device-docs-infrastructure.md",
-        "docs/current/company-os/document-system.md",
-        "docs/decisions/0035-company-os-sql-read-model.md",
-        "docs/decisions/0036-agent-operated-docs-and-code-declared-pages.md",
-        "docs/decisions/0054-ai-first-docs-page-model-and-storage.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-09-05",
-      "lastVerifiedWith": [
-        "cargo run -q -p harness-cli -- governance check"
-      ],
-      "reorgTrigger": "Phase 0 slices land or the target page model, revision contract, storage, or blob choice changes.",
-      "authorityClass": "design_intent",
-      "implementationState": "design_only",
-      "truthRefs": [
-        {
-          "kind": "decision",
-          "ref": "docs/decisions/0054-ai-first-docs-page-model-and-storage.md"
-        }
-      ]
-    },
-    {
       "path": "docs/decisions/0054-ai-first-docs-page-model-and-storage.md",
       "ownerRole": "product-architecture",
       "status": "stable",
@@ -5402,7 +3864,6 @@
         "Docs canonical JSONL store with derived SQLite read layer and content-addressed blobs decision"
       ],
       "dependsOn": [
-        "docs/archive/company-os/ai-first-docs-spec.md",
         "docs/decisions/0027-company-os-primary-model.md",
         "docs/decisions/0035-company-os-sql-read-model.md",
         "docs/decisions/0036-agent-operated-docs-and-code-declared-pages.md"
@@ -5419,86 +3880,6 @@
       "authorityClass": "canonical_contract",
       "implementationState": "design_only",
       "truthRefs": []
-    },
-    {
-      "path": "docs/archive/company-os/ai-first-docs-phase0-acceptance.md",
-      "ownerRole": "product-architecture",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "AI-first Docs Phase 0 acceptance criteria, commands, and process"
-      ],
-      "dependsOn": [
-        "docs/archive/company-os/ai-first-docs-spec.md",
-        "docs/decisions/0054-ai-first-docs-page-model-and-storage.md",
-        "scripts/check-company-os-docs-v2-smoke.mjs",
-        "scripts/check-company-os-docs-v2-api.mjs",
-        "apps/agent-dashboard/tests/company-os-docs-v2-check.mjs",
-        "apps/agent-dashboard/tests/company-os-docs-v2-store-live-check.mjs"
-      ],
-      "machineConsumers": [
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-09-05",
-      "lastVerifiedWith": [
-        "node scripts/check-company-os-docs-v2-smoke.mjs",
-        "node apps/agent-dashboard/tests/company-os-docs-v2-store-live-check.mjs"
-      ],
-      "reorgTrigger": "Phase 0 acceptance completes, or the acceptance scope changes.",
-      "authorityClass": "canonical_contract",
-      "implementationState": "implemented",
-      "truthRefs": [
-        {
-          "kind": "test",
-          "ref": "scripts/check-company-os-docs-v2-smoke.mjs"
-        },
-        {
-          "kind": "test",
-          "ref": "scripts/check-company-os-docs-v2-api.mjs"
-        },
-        {
-          "kind": "test",
-          "ref": "apps/agent-dashboard/tests/company-os-docs-v2-check.mjs"
-        },
-        {
-          "kind": "test",
-          "ref": "apps/agent-dashboard/tests/company-os-docs-v2-store-live-check.mjs"
-        }
-      ]
-    },
-    {
-      "path": "docs/archive/company-os/ai-first-docs-phase0-real-use-evidence.md",
-      "ownerRole": "product",
-      "status": "stable",
-      "lifecycle": "stable",
-      "canonicalFor": [
-        "AI-first Docs Phase 0 real-use acceptance record and friction list"
-      ],
-      "dependsOn": [
-        "docs/archive/company-os/ai-first-docs-phase0-acceptance.md",
-        "docs/archive/company-os/ai-first-docs-spec.md",
-        "docs/decisions/0054-ai-first-docs-page-model-and-storage.md"
-      ],
-      "machineConsumers": [
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-09-05",
-      "lastVerifiedWith": [
-        "node scripts/capture-docs-v2-real-use.mjs"
-      ],
-      "reorgTrigger": "A new real-use session supersedes this record.",
-      "authorityClass": "actual_evidence",
-      "implementationState": "verified",
-      "truthRefs": [
-        {
-          "kind": "runtime_evidence",
-          "ref": ".visual-evidence/docs-v2-real-use-v1/capture-run.json"
-        },
-        {
-          "kind": "runtime_evidence",
-          "ref": ".real-use/session.log"
-        }
-      ]
     },
     {
       "path": "docs/current/company-os/core-page-matrix.md",
