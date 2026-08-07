@@ -1,6 +1,6 @@
 # Workflow runtime
 
-This document defines the canonical workflow runtime for `crates/harness-workflow`: a provider-neutral Starlark execution layer that lets the harness run authored multi-agent programs, journal their leaves, and expose the result as `WorkflowRun` / `WorkflowStep` records.
+This document defines the canonical workflow runtime for `crates/firm-workflow`: a provider-neutral Starlark execution layer that lets the harness run authored multi-agent programs, journal their leaves, and expose the result as `WorkflowRun` / `WorkflowStep` records.
 
 ## Vision Link
 
@@ -27,13 +27,13 @@ outcome, but the run remains independent of the Wave lifecycle.
 
 | Runtime surface | Owns | Cedes |
 | --- | --- | --- |
-| `crates/harness-workflow` | Provider-neutral `AgentStepSpec`, `StepResult`, scheduler, `parallel()`, streaming `pipeline()`, built-in registry workflows, Starlark evaluation, outcome shaping | Provider CLI spawning, store writes, project selection, worktree creation/cleanup, goal/task status updates |
+| `crates/firm-workflow` | Provider-neutral `AgentStepSpec`, `StepResult`, scheduler, `parallel()`, streaming `pipeline()`, built-in registry workflows, Starlark evaluation, outcome shaping | Provider CLI spawning, store writes, project selection, worktree creation/cleanup, goal/task status updates |
 | `starlark_front` | Hermetic script evaluation, host globals, required `workflow(...)` metadata, `args` injection, deterministic leaf ordinals, budget/replay control | Provider behavior, filesystem effects, CLI flag parsing |
-| `harness-cli workflow run-script` | Reads scripts, builds the real provider driver, appends `WorkflowRun` / `WorkflowStep`, retention/progress/resume policy | Starlark language semantics and scheduler internals |
+| `firm-cli workflow run-script` | Reads scripts, builds the real provider driver, appends `WorkflowRun` / `WorkflowStep`, retention/progress/resume policy | Starlark language semantics and scheduler internals |
 
-The crate was explicitly extracted so it contains no Codex or Claude provider code; the binary injects real delivery through `AgentStepFn`, while tests inject a mock driver (`crates/harness-workflow/src/lib.rs:1`, `crates/harness-workflow/src/lib.rs:3`, `crates/harness-workflow/src/lib.rs:4`, `crates/harness-workflow/src/lib.rs:146`). `AgentStepFn` returns `StepResult` instead of panicking so workflow control flow owns failure handling (`crates/harness-workflow/src/lib.rs:146`, `crates/harness-workflow/src/lib.rs:150`).
+The crate was explicitly extracted so it contains no Codex or Claude provider code; the binary injects real delivery through `AgentStepFn`, while tests inject a mock driver (`crates/firm-workflow/src/lib.rs:1`, `crates/firm-workflow/src/lib.rs:3`, `crates/firm-workflow/src/lib.rs:4`, `crates/firm-workflow/src/lib.rs:146`). `AgentStepFn` returns `StepResult` instead of panicking so workflow control flow owns failure handling (`crates/firm-workflow/src/lib.rs:146`, `crates/firm-workflow/src/lib.rs:150`).
 
-The Starlark front-end is the sole dynamic authoring surface: it lets an agent write loops, conditionals, and data-driven fan-out while driving the same ephemeral-worker backend through the injected driver (`crates/harness-workflow/src/starlark_front.rs:1`, `crates/harness-workflow/src/starlark_front.rs:3`, `crates/harness-workflow/src/starlark_front.rs:6`). The interpreter is hermetic: scripts get no clock, randomness, or IO; nondeterminism lives in journaled `agent()` leaves (`crates/harness-workflow/src/starlark_front.rs:10`, `crates/harness-workflow/src/starlark_front.rs:11`).
+The Starlark front-end is the sole dynamic authoring surface: it lets an agent write loops, conditionals, and data-driven fan-out while driving the same ephemeral-worker backend through the injected driver (`crates/firm-workflow/src/starlark_front.rs:1`, `crates/firm-workflow/src/starlark_front.rs:3`, `crates/firm-workflow/src/starlark_front.rs:6`). The interpreter is hermetic: scripts get no clock, randomness, or IO; nondeterminism lives in journaled `agent()` leaves (`crates/firm-workflow/src/starlark_front.rs:10`, `crates/firm-workflow/src/starlark_front.rs:11`).
 
 ## Runtime Objects
 
@@ -67,7 +67,7 @@ The Starlark front-end is the sole dynamic authoring surface: it lets an agent w
 | `writable` | Whether the leaf may edit files / run shell |
 | `ordinal` | Deterministic leaf ordinal used by `--resume` |
 
-The fields are defined in `crates/harness-workflow/src/lib.rs:40` through `crates/harness-workflow/src/lib.rs:83`. The only supported isolation constant is `worktree`; an isolated node runs in a throwaway git worktree whose diff is evidence and is not auto-merged by standalone workflow execution (`crates/harness-workflow/src/lib.rs:27`, `crates/harness-workflow/src/lib.rs:29`, `crates/harness-workflow/src/lib.rs:30`).
+The fields are defined in `crates/firm-workflow/src/lib.rs:40` through `crates/firm-workflow/src/lib.rs:83`. The only supported isolation constant is `worktree`; an isolated node runs in a throwaway git worktree whose diff is evidence and is not auto-merged by standalone workflow execution (`crates/firm-workflow/src/lib.rs:27`, `crates/firm-workflow/src/lib.rs:29`, `crates/firm-workflow/src/lib.rs:30`).
 
 ### `StepResult`
 
@@ -75,7 +75,7 @@ The fields are defined in `crates/harness-workflow/src/lib.rs:40` through `crate
 
 ### `WorkflowOutcome`
 
-`WorkflowOutcome` is the runtime's whole-run value: ordered steps, terminal status, summary, spawned-agent count, and optional final JSON output (`crates/harness-workflow/src/lib.rs:463`, `crates/harness-workflow/src/lib.rs:465`, `crates/harness-workflow/src/lib.rs:466`, `crates/harness-workflow/src/lib.rs:477`). `outcome_from_steps()` is shared by registry workflows and Starlark runs so all front-ends derive status, summary, and final output identically (`crates/harness-workflow/src/lib.rs:657`, `crates/harness-workflow/src/lib.rs:659`). A run with steps but zero successful leaves fails; otherwise partial success completes unless a Starlark `verdict()` overrides the outcome (`crates/harness-workflow/src/lib.rs:665`, `crates/harness-workflow/src/lib.rs:677`).
+`WorkflowOutcome` is the runtime's whole-run value: ordered steps, terminal status, summary, spawned-agent count, and optional final JSON output (`crates/firm-workflow/src/lib.rs:463`, `crates/firm-workflow/src/lib.rs:465`, `crates/firm-workflow/src/lib.rs:466`, `crates/firm-workflow/src/lib.rs:477`). `outcome_from_steps()` is shared by registry workflows and Starlark runs so all front-ends derive status, summary, and final output identically (`crates/firm-workflow/src/lib.rs:657`, `crates/firm-workflow/src/lib.rs:659`). A run with steps but zero successful leaves fails; otherwise partial success completes unless a Starlark `verdict()` overrides the outcome (`crates/firm-workflow/src/lib.rs:665`, `crates/firm-workflow/src/lib.rs:677`).
 
 `step_result_json()` is the machine-facing projection stored on `WorkflowStep.result` and inside final output. It includes phase, label, provider, isolation, ok, output summary, structured payload, ordinal, and merged telemetry details such as model, exit code, duration, tokens, failures, and worktree diffs. It does not embed provider transcript or session-history data.
 
@@ -87,7 +87,7 @@ Every Starlark program must call:
 workflow(name, design_intent, budget_usd=None, success_criterion=None)
 ```
 
-The header declares the run name and the durable reason for the workflow shape. Missing or too-short `design_intent` rejects the run (`crates/harness-workflow/src/starlark_front.rs:16`, `crates/harness-workflow/src/starlark_front.rs:18`, `crates/harness-workflow/src/starlark_front.rs:68`, `crates/harness-workflow/src/starlark_front.rs:1202`). The CLI persists the captured `design_intent` and snapshots the raw script under `spec = {"lang":"starlark","script": ...}` (`crates/harness-cli/src/main.rs:9473`, `crates/harness-cli/src/main.rs:9475`, `crates/harness-cli/src/main.rs:9733`).
+The header declares the run name and the durable reason for the workflow shape. Missing or too-short `design_intent` rejects the run (`crates/firm-workflow/src/starlark_front.rs:16`, `crates/firm-workflow/src/starlark_front.rs:18`, `crates/firm-workflow/src/starlark_front.rs:68`, `crates/firm-workflow/src/starlark_front.rs:1202`). The CLI persists the captured `design_intent` and snapshots the raw script under `spec = {"lang":"starlark","script": ...}` (`crates/firm-cli/src/main.rs:9473`, `crates/firm-cli/src/main.rs:9475`, `crates/firm-cli/src/main.rs:9733`).
 
 ### `agent()`
 
@@ -117,7 +117,7 @@ agent(
 )
 ```
 
-`agent()` runs one ephemeral provider worker synchronously. In text mode it returns the worker's output text. With `schema={...}`, it returns the parsed structured dict, or `None` when no valid JSON object with the required keys was produced (`crates/harness-workflow/src/starlark_front.rs:847`, `crates/harness-workflow/src/starlark_front.rs:849`, `crates/harness-workflow/src/starlark_front.rs:850`, `crates/harness-workflow/src/starlark_front.rs:902`).
+`agent()` runs one ephemeral provider worker synchronously. In text mode it returns the worker's output text. With `schema={...}`, it returns the parsed structured dict, or `None` when no valid JSON object with the required keys was produced (`crates/firm-workflow/src/starlark_front.rs:847`, `crates/firm-workflow/src/starlark_front.rs:849`, `crates/firm-workflow/src/starlark_front.rs:850`, `crates/firm-workflow/src/starlark_front.rs:902`).
 
 `return_status=True` is the self-healing control-flow surface. It preserves the journaled `StepResult`, but changes the script-visible value to a dict:
 
@@ -169,7 +169,7 @@ Argument semantics:
 | `writable` | Enables edit/shell behavior and implies worktree isolation |
 | `return_status` | Opt-in script return shape for inspecting failed leaves and branching to retry, alternative, or abort |
 
-The actual host function signature is defined at `crates/harness-workflow/src/starlark_front.rs:854` through `crates/harness-workflow/src/starlark_front.rs:867`. `schema`, `image`, and `add_dir` are validated as dict/list values before the spec is built (`crates/harness-workflow/src/starlark_front.rs:869`, `crates/harness-workflow/src/starlark_front.rs:878`, `crates/harness-workflow/src/starlark_front.rs:882`).
+The actual host function signature is defined at `crates/firm-workflow/src/starlark_front.rs:854` through `crates/firm-workflow/src/starlark_front.rs:867`. `schema`, `image`, and `add_dir` are validated as dict/list values before the spec is built (`crates/firm-workflow/src/starlark_front.rs:869`, `crates/firm-workflow/src/starlark_front.rs:878`, `crates/firm-workflow/src/starlark_front.rs:882`).
 
 ### `parallel()`
 
@@ -180,9 +180,9 @@ parallel([
 ])
 ```
 
-`parallel(specs)` is a barrier fan-out: all specs run concurrently, then the call returns a list in input order. Each spec requires `prompt` and accepts the same leaf fields as `agent()` where relevant, including per-spec `return_status=True` for status dict slots (`crates/harness-workflow/src/starlark_front.rs:28`, `crates/harness-workflow/src/starlark_front.rs:31`, `crates/harness-workflow/src/starlark_front.rs:915`, `crates/harness-workflow/src/starlark_front.rs:920`). The runtime extracts plain Rust specs before threading, so no Starlark heap values cross the barrier (`crates/harness-workflow/src/starlark_front.rs:927`).
+`parallel(specs)` is a barrier fan-out: all specs run concurrently, then the call returns a list in input order. Each spec requires `prompt` and accepts the same leaf fields as `agent()` where relevant, including per-spec `return_status=True` for status dict slots (`crates/firm-workflow/src/starlark_front.rs:28`, `crates/firm-workflow/src/starlark_front.rs:31`, `crates/firm-workflow/src/starlark_front.rs:915`, `crates/firm-workflow/src/starlark_front.rs:920`). The runtime extracts plain Rust specs before threading, so no Starlark heap values cross the barrier (`crates/firm-workflow/src/starlark_front.rs:927`).
 
-The scheduler bounds concurrency to `min(16, available_parallelism()-2)` and enforces a 1000-agent lifetime cap (`crates/harness-workflow/src/lib.rs:7`, `crates/harness-workflow/src/lib.rs:161`, `crates/harness-workflow/src/lib.rs:175`, `crates/harness-workflow/src/lib.rs:194`). Results are re-ordered back into input order (`crates/harness-workflow/src/lib.rs:302`).
+The scheduler bounds concurrency to `min(16, available_parallelism()-2)` and enforces a 1000-agent lifetime cap (`crates/firm-workflow/src/lib.rs:7`, `crates/firm-workflow/src/lib.rs:161`, `crates/firm-workflow/src/lib.rs:175`, `crates/firm-workflow/src/lib.rs:194`). Results are re-ordered back into input order (`crates/firm-workflow/src/lib.rs:302`).
 
 ### `pipeline()`
 
@@ -196,9 +196,9 @@ pipeline(
 )
 ```
 
-`pipeline(items, stages)` is a streaming fan-out: each item flows through every stage independently, with no barrier between stages. A fast item can reach stage 3 while another remains in stage 1 (`crates/harness-workflow/src/lib.rs:324`, `crates/harness-workflow/src/lib.rs:325`, `crates/harness-workflow/src/starlark_front.rs:944`, `crates/harness-workflow/src/starlark_front.rs:945`). Each stage `prompt` may contain `{input}`, replaced by the original item for stage 1 or by the prior stage's output for later stages (`crates/harness-workflow/src/starlark_front.rs:953`, `crates/harness-workflow/src/starlark_front.rs:954`, `crates/harness-workflow/src/starlark_front.rs:680`, `crates/harness-workflow/src/starlark_front.rs:711`). The script-visible return list is shaped by the last stage: when that stage has `return_status=True`, each returned item is the same status dict described for `agent()`.
+`pipeline(items, stages)` is a streaming fan-out: each item flows through every stage independently, with no barrier between stages. A fast item can reach stage 3 while another remains in stage 1 (`crates/firm-workflow/src/lib.rs:324`, `crates/firm-workflow/src/lib.rs:325`, `crates/firm-workflow/src/starlark_front.rs:944`, `crates/firm-workflow/src/starlark_front.rs:945`). Each stage `prompt` may contain `{input}`, replaced by the original item for stage 1 or by the prior stage's output for later stages (`crates/firm-workflow/src/starlark_front.rs:953`, `crates/firm-workflow/src/starlark_front.rs:954`, `crates/firm-workflow/src/starlark_front.rs:680`, `crates/firm-workflow/src/starlark_front.rs:711`). The script-visible return list is shaped by the last stage: when that stage has `return_status=True`, each returned item is the same status dict described for `agent()`.
 
-`pipeline()` accepts either the canonical list form `pipeline(items, [s1, s2])` or positional stage specs `pipeline(items, s1, s2)` (`crates/harness-workflow/src/starlark_front.rs:958`, `crates/harness-workflow/src/starlark_front.rs:960`, `crates/harness-workflow/src/starlark_front.rs:968`). Pipeline leaves currently advance ordinals but are excluded from `--resume` replay in v1 (`crates/harness-workflow/src/starlark_front.rs:386`, `crates/harness-workflow/src/starlark_front.rs:388`, `crates/harness-workflow/src/starlark_front.rs:1144`, `crates/harness-workflow/src/starlark_front.rs:1147`).
+`pipeline()` accepts either the canonical list form `pipeline(items, [s1, s2])` or positional stage specs `pipeline(items, s1, s2)` (`crates/firm-workflow/src/starlark_front.rs:958`, `crates/firm-workflow/src/starlark_front.rs:960`, `crates/firm-workflow/src/starlark_front.rs:968`). Pipeline leaves currently advance ordinals but are excluded from `--resume` replay in v1 (`crates/firm-workflow/src/starlark_front.rs:386`, `crates/firm-workflow/src/starlark_front.rs:388`, `crates/firm-workflow/src/starlark_front.rs:1144`, `crates/firm-workflow/src/starlark_front.rs:1147`).
 
 ### `phase()`
 
@@ -206,7 +206,7 @@ pipeline(
 phase("audit")
 ```
 
-`phase(name)` sets the default phase for subsequent steps that do not name one explicitly (`crates/harness-workflow/src/starlark_front.rs:45`, `crates/harness-workflow/src/starlark_front.rs:996`). Phase resolution is: explicit step phase, current `phase()`, then workflow name (`crates/harness-workflow/src/starlark_front.rs:133`, `crates/harness-workflow/src/starlark_front.rs:176`).
+`phase(name)` sets the default phase for subsequent steps that do not name one explicitly (`crates/firm-workflow/src/starlark_front.rs:45`, `crates/firm-workflow/src/starlark_front.rs:996`). Phase resolution is: explicit step phase, current `phase()`, then workflow name (`crates/firm-workflow/src/starlark_front.rs:133`, `crates/firm-workflow/src/starlark_front.rs:176`).
 
 ### `log()`
 
@@ -214,7 +214,7 @@ phase("audit")
 log("audit complete; starting fix fan-out")
 ```
 
-`log(message)` records a progress/narration line in the run context (`crates/harness-workflow/src/starlark_front.rs:46`, `crates/harness-workflow/src/starlark_front.rs:1036`). Logs are persisted under `final_output.logs` when the run completes (`crates/harness-workflow/src/starlark_front.rs:1251`, `crates/harness-workflow/src/starlark_front.rs:1260`).
+`log(message)` records a progress/narration line in the run context (`crates/firm-workflow/src/starlark_front.rs:46`, `crates/firm-workflow/src/starlark_front.rs:1036`). Logs are persisted under `final_output.logs` when the run completes (`crates/firm-workflow/src/starlark_front.rs:1251`, `crates/firm-workflow/src/starlark_front.rs:1260`).
 
 ### `output()`
 
@@ -222,18 +222,18 @@ log("audit complete; starting fix fan-out")
 output({"ok": True, "summary": "ready"})
 ```
 
-`output(value)` declares the run's first-class result. The last call wins, and the value is persisted under `final_output.result` rather than forcing callers to infer the answer from a step summary (`crates/harness-workflow/src/starlark_front.rs:1021`, `crates/harness-workflow/src/starlark_front.rs:1023`, `crates/harness-workflow/src/starlark_front.rs:1028`, `crates/harness-workflow/src/starlark_front.rs:1257`).
+`output(value)` declares the run's first-class result. The last call wins, and the value is persisted under `final_output.result` rather than forcing callers to infer the answer from a step summary (`crates/firm-workflow/src/starlark_front.rs:1021`, `crates/firm-workflow/src/starlark_front.rs:1023`, `crates/firm-workflow/src/starlark_front.rs:1028`, `crates/firm-workflow/src/starlark_front.rs:1257`).
 
 ### Supporting Globals
 
-`args` is the parsed JSON from `--args`, injected as a module global (`crates/harness-workflow/src/starlark_front.rs:47`, `crates/harness-workflow/src/starlark_front.rs:1190`). `json.encode()` / `json.decode()` are available through the Starlark JSON extension for structured forward-injection (`crates/harness-workflow/src/starlark_front.rs:1180`). `verdict(ok, reason="")` marks intent-relative success or failure; `ok=False` makes the run fail even if every worker executed (`crates/harness-workflow/src/starlark_front.rs:1005`, `crates/harness-workflow/src/starlark_front.rs:1006`, `crates/harness-workflow/src/starlark_front.rs:1228`).
+`args` is the parsed JSON from `--args`, injected as a module global (`crates/firm-workflow/src/starlark_front.rs:47`, `crates/firm-workflow/src/starlark_front.rs:1190`). `json.encode()` / `json.decode()` are available through the Starlark JSON extension for structured forward-injection (`crates/firm-workflow/src/starlark_front.rs:1180`). `verdict(ok, reason="")` marks intent-relative success or failure; `ok=False` makes the run fail even if every worker executed (`crates/firm-workflow/src/starlark_front.rs:1005`, `crates/firm-workflow/src/starlark_front.rs:1006`, `crates/firm-workflow/src/starlark_front.rs:1228`).
 
 ## CLI Surface
 
 The dynamic authoring command is:
 
 ```bash
-harness workflow run-script <prog.star> [flags]
+firm workflow run-script <prog.star> [flags]
 ```
 
 The script path can be positional or supplied as `--script <path>`. The command
@@ -243,13 +243,13 @@ is routed through `workflow_command`, which also exposes `workflow run`,
 Writable patch commands:
 
 ```bash
-harness workflow patch list [--run <run_id>]
-harness workflow patch show <patch_id|run_id> [--step <label|step_id>]
-harness workflow patch apply <patch_id|run_id> [--step <label|step_id>] [--allow-dirty]
-harness workflow patch reject <patch_id|run_id> [--step <label|step_id>]
+firm workflow patch list [--run <run_id>]
+firm workflow patch show <patch_id|run_id> [--step <label|step_id>]
+firm workflow patch apply <patch_id|run_id> [--step <label|step_id>] [--allow-dirty]
+firm workflow patch reject <patch_id|run_id> [--step <label|step_id>]
 ```
 
-`apply` enforces `owned_paths` against the paths git will ACTUALLY touch, parsed from `git apply --numstat -z` against the patch bytes themselves (`git_apply_numstat_paths`, `crates/harness-cli/src/main.rs:10111`) rather than from parsing `diff --git` header lines — the header form was bypassable (a header can name a path the hunk never touches) and false-positived on c-quoted/CJK filenames. Every numstat path must be covered by the patch's recorded `changed_paths` (itself captured at diff time via `git diff --name-status -z -M`, which records BOTH sides of a rename, `parse_name_status_z`, `crates/harness-cli/src/main.rs:10072`); any disagreement or `owned_paths` violation fails closed into `conflict`. Without `--allow-dirty`, apply refuses only when a path the patch touches already has local modifications, or a file it creates already exists untracked (`git_dirty_paths`, scoped to the patch's own paths) — unrelated dirty/untracked files elsewhere no longer block it. `--allow-dirty` bypasses the dirty check entirely. `apply` then runs `git apply --check`, and records `applied` or `conflict`. `reject` records `rejected`. Both update the same append-only `WorkflowPatch` id by latest-wins rows.
+`apply` enforces `owned_paths` against the paths git will ACTUALLY touch, parsed from `git apply --numstat -z` against the patch bytes themselves (`git_apply_numstat_paths`, `crates/firm-cli/src/main.rs:10111`) rather than from parsing `diff --git` header lines — the header form was bypassable (a header can name a path the hunk never touches) and false-positived on c-quoted/CJK filenames. Every numstat path must be covered by the patch's recorded `changed_paths` (itself captured at diff time via `git diff --name-status -z -M`, which records BOTH sides of a rename, `parse_name_status_z`, `crates/firm-cli/src/main.rs:10072`); any disagreement or `owned_paths` violation fails closed into `conflict`. Without `--allow-dirty`, apply refuses only when a path the patch touches already has local modifications, or a file it creates already exists untracked (`git_dirty_paths`, scoped to the patch's own paths) — unrelated dirty/untracked files elsewhere no longer block it. `--allow-dirty` bypasses the dirty check entirely. `apply` then runs `git apply --check`, and records `applied` or `conflict`. `reject` records `rejected`. Both update the same append-only `WorkflowPatch` id by latest-wins rows.
 
 Key `run-script` flags:
 
@@ -270,9 +270,9 @@ Key `run-script` flags:
 `--timeout-ms` is the global idle-since-last-output timer: streaming output resets it. `timeout_s` is a per-leaf wall-clock cap on `agent()`, `parallel()` specs, and `pipeline()` stages; it fails the step even if the worker is still streaming.
 | `--initiated-by <id>` | Initiator id; defaults to `HARNESS_AGENT_MEMBER_ID` or `operator` |
 
-These flags are parsed in `workflow_run_script_value` (`crates/harness-cli/src/main.rs:9600`, `crates/harness-cli/src/main.rs:9651`, `crates/harness-cli/src/main.rs:9661`, `crates/harness-cli/src/main.rs:9671`, `crates/harness-cli/src/main.rs:9681`, `crates/harness-cli/src/main.rs:9698`). The command prints the selected workflow store to stderr so stdout remains a single JSON result (`crates/harness-cli/src/main.rs:9393`, `crates/harness-cli/src/main.rs:9397`, `crates/harness-cli/src/main.rs:9404`).
+These flags are parsed in `workflow_run_script_value` (`crates/firm-cli/src/main.rs:9600`, `crates/firm-cli/src/main.rs:9651`, `crates/firm-cli/src/main.rs:9661`, `crates/firm-cli/src/main.rs:9671`, `crates/firm-cli/src/main.rs:9681`, `crates/firm-cli/src/main.rs:9698`). The command prints the selected workflow store to stderr so stdout remains a single JSON result (`crates/firm-cli/src/main.rs:9393`, `crates/firm-cli/src/main.rs:9397`, `crates/firm-cli/src/main.rs:9404`).
 
-`--resume` is intentionally strict: the prior run must exist and carry the identical snapshotted script, otherwise replay is rejected (`crates/harness-cli/src/main.rs:9614`, `crates/harness-cli/src/main.rs:9622`, `crates/harness-cli/src/main.rs:9633`, `crates/harness-cli/src/main.rs:9636`). The replay cache includes only completed steps with ordinals; failed leaves rerun (`crates/harness-cli/src/main.rs:9522`, `crates/harness-cli/src/main.rs:9536`, `crates/harness-cli/src/main.rs:9539`).
+`--resume` is intentionally strict: the prior run must exist and carry the identical snapshotted script, otherwise replay is rejected (`crates/firm-cli/src/main.rs:9614`, `crates/firm-cli/src/main.rs:9622`, `crates/firm-cli/src/main.rs:9633`, `crates/firm-cli/src/main.rs:9636`). The replay cache includes only completed steps with ordinals; failed leaves rerun (`crates/firm-cli/src/main.rs:9522`, `crates/firm-cli/src/main.rs:9536`, `crates/firm-cli/src/main.rs:9539`).
 
 ## Journaling
 
@@ -290,13 +290,13 @@ The run id is minted before evaluation so real leaves can journal live step rows
 
 The real driver appends a `WorkflowStep(status=Running)` before spawning the provider. Once the provider exposes its native session, the step receives a mode-aware `native_session` locator; Dashboard activity is read from that provider-owned record. When the leaf completes, the driver appends the terminal step immediately, and finalize recognizes already-journaled step ids so it does not double-write them.
 
-`journal_workflow_outcome()` finalizes the run by appending ordered step ids, terminal status, ended time, summary, agent count, and final output (`crates/harness-cli/src/main.rs:9824`, `crates/harness-cli/src/main.rs:9855`, `crates/harness-cli/src/main.rs:9859`, `crates/harness-cli/src/main.rs:9861`, `crates/harness-cli/src/main.rs:9865`, `crates/harness-cli/src/main.rs:9866`). If `HARNESS_WORKFLOW_ON_COMPLETE` is set, the terminal run is passed to that hook after journaling (`crates/harness-cli/src/main.rs:9548`, `crates/harness-cli/src/main.rs:9551`, `crates/harness-cli/src/main.rs:9867`).
+`journal_workflow_outcome()` finalizes the run by appending ordered step ids, terminal status, ended time, summary, agent count, and final output (`crates/firm-cli/src/main.rs:9824`, `crates/firm-cli/src/main.rs:9855`, `crates/firm-cli/src/main.rs:9859`, `crates/firm-cli/src/main.rs:9861`, `crates/firm-cli/src/main.rs:9865`, `crates/firm-cli/src/main.rs:9866`). If `HARNESS_WORKFLOW_ON_COMPLETE` is set, the terminal run is passed to that hook after journaling (`crates/firm-cli/src/main.rs:9548`, `crates/firm-cli/src/main.rs:9551`, `crates/firm-cli/src/main.rs:9867`).
 
 ## Store Records
 
 ### `WorkflowRun`
 
-`WorkflowRun` is the durable record for one workflow invocation (`crates/harness-core/src/lib.rs:2607`, `crates/harness-core/src/lib.rs:2611`).
+`WorkflowRun` is the durable record for one workflow invocation (`crates/firm-core/src/lib.rs:2607`, `crates/firm-core/src/lib.rs:2611`).
 
 | Field | Meaning |
 | --- | --- |
@@ -316,11 +316,11 @@ The real driver appends a `WorkflowStep(status=Running)` before spawning the pro
 | `host_pid` | Driver process id for abandoned-run reaping |
 | `dry_run` | Whether provider execution was mocked |
 
-The fields are defined at `crates/harness-core/src/lib.rs:2612` through `crates/harness-core/src/lib.rs:2675`. `step_ids` order the steps so the journal alone can reconstruct the run (`crates/harness-core/src/lib.rs:2607`, `crates/harness-core/src/lib.rs:2608`). `design_intent` and `spec` are populated for dynamic `run-script` rows, while registry runs may leave them empty (`crates/harness-core/src/lib.rs:2641`, `crates/harness-core/src/lib.rs:2647`).
+The fields are defined at `crates/firm-core/src/lib.rs:2612` through `crates/firm-core/src/lib.rs:2675`. `step_ids` order the steps so the journal alone can reconstruct the run (`crates/firm-core/src/lib.rs:2607`, `crates/firm-core/src/lib.rs:2608`). `design_intent` and `spec` are populated for dynamic `run-script` rows, while registry runs may leave them empty (`crates/firm-core/src/lib.rs:2641`, `crates/firm-core/src/lib.rs:2647`).
 
 ### `WorkflowStep`
 
-`WorkflowStep` is one agent leaf inside a run (`crates/harness-core/src/lib.rs:2684`, `crates/harness-core/src/lib.rs:2688`).
+`WorkflowStep` is one agent leaf inside a run (`crates/firm-core/src/lib.rs:2684`, `crates/firm-core/src/lib.rs:2688`).
 
 | Field | Meaning |
 | --- | --- |
@@ -339,17 +339,17 @@ The fields are defined at `crates/harness-core/src/lib.rs:2612` through `crates/
 
 ## Provider-Neutral Execution
 
-A workflow leaf names a provider, not a pre-existing `AgentMember`. The real driver spins up one-shot ephemeral workers and reduces them into `StepResult` (`crates/harness-cli/src/main.rs:7321`, `crates/harness-cli/src/main.rs:7325`, `crates/harness-cli/src/main.rs:7615`). The provider registry is the single source of supported provider ids and currently includes Codex, Claude, and Kimi (`crates/harness-cli/src/main.rs:14905`, `crates/harness-cli/src/main.rs:14907`, `crates/harness-cli/src/main.rs:14911`, `crates/harness-cli/src/main.rs:14918`).
+A workflow leaf names a provider, not a pre-existing `AgentMember`. The real driver spins up one-shot ephemeral workers and reduces them into `StepResult` (`crates/firm-cli/src/main.rs:7321`, `crates/firm-cli/src/main.rs:7325`, `crates/firm-cli/src/main.rs:7615`). The provider registry is the single source of supported provider ids and currently includes Codex, Claude, and Kimi (`crates/firm-cli/src/main.rs:14905`, `crates/firm-cli/src/main.rs:14907`, `crates/firm-cli/src/main.rs:14911`, `crates/firm-cli/src/main.rs:14918`).
 
-Codex leaves run through `codex exec`, receive `--cd`, sandbox selection, JSON stream output, optional `-m`, effort and service-tier config overrides, images, extra dirs, and optional output schema (`crates/harness-cli/src/main.rs:8388`, `crates/harness-cli/src/main.rs:8419`, `crates/harness-cli/src/main.rs:8421`, `crates/harness-cli/src/main.rs:8423`, `crates/harness-cli/src/main.rs:8431`, `crates/harness-cli/src/main.rs:8437`, `crates/harness-cli/src/main.rs:8440`, `crates/harness-cli/src/main.rs:8446`, `crates/harness-cli/src/main.rs:8449`). Claude leaves run through `claude -p`, stream JSON, use an allowed-tools gate, support `--json-schema`, `--model`, `--effort`, `--fallback-model`, and `--add-dir` (`crates/harness-cli/src/main.rs:8521`, `crates/harness-cli/src/main.rs:8560`, `crates/harness-cli/src/main.rs:8563`, `crates/harness-cli/src/main.rs:8568`, `crates/harness-cli/src/main.rs:8582`, `crates/harness-cli/src/main.rs:8585`, `crates/harness-cli/src/main.rs:8588`, `crates/harness-cli/src/main.rs:8592`, `crates/harness-cli/src/main.rs:8595`). Kimi is registered through the same adapter interface, but its `-p --output-format stream-json` surface is flatter and currently carries no usage/model/cost/structured frame (`crates/harness-cli/src/main.rs:14660`, `crates/harness-cli/src/main.rs:14766`, `crates/harness-cli/src/main.rs:14771`, `crates/harness-cli/src/main.rs:14793`, `crates/harness-cli/src/main.rs:14863`, `crates/harness-cli/src/main.rs:14868`).
+Codex leaves run through `codex exec`, receive `--cd`, sandbox selection, JSON stream output, optional `-m`, effort and service-tier config overrides, images, extra dirs, and optional output schema (`crates/firm-cli/src/main.rs:8388`, `crates/firm-cli/src/main.rs:8419`, `crates/firm-cli/src/main.rs:8421`, `crates/firm-cli/src/main.rs:8423`, `crates/firm-cli/src/main.rs:8431`, `crates/firm-cli/src/main.rs:8437`, `crates/firm-cli/src/main.rs:8440`, `crates/firm-cli/src/main.rs:8446`, `crates/firm-cli/src/main.rs:8449`). Claude leaves run through `claude -p`, stream JSON, use an allowed-tools gate, support `--json-schema`, `--model`, `--effort`, `--fallback-model`, and `--add-dir` (`crates/firm-cli/src/main.rs:8521`, `crates/firm-cli/src/main.rs:8560`, `crates/firm-cli/src/main.rs:8563`, `crates/firm-cli/src/main.rs:8568`, `crates/firm-cli/src/main.rs:8582`, `crates/firm-cli/src/main.rs:8585`, `crates/firm-cli/src/main.rs:8588`, `crates/firm-cli/src/main.rs:8592`, `crates/firm-cli/src/main.rs:8595`). Kimi is registered through the same adapter interface, but its `-p --output-format stream-json` surface is flatter and currently carries no usage/model/cost/structured frame (`crates/firm-cli/src/main.rs:14660`, `crates/firm-cli/src/main.rs:14766`, `crates/firm-cli/src/main.rs:14771`, `crates/firm-cli/src/main.rs:14793`, `crates/firm-cli/src/main.rs:14863`, `crates/firm-cli/src/main.rs:14868`).
 
-The selected project root, not the long-running harness process cwd, is the shared worker cwd and worktree base. The centralized store root remains separate (`crates/harness-cli/src/main.rs:7126`, `crates/harness-cli/src/main.rs:7127`, `crates/harness-cli/src/main.rs:7130`, `crates/harness-cli/src/main.rs:7531`, `crates/harness-cli/src/main.rs:7543`, `crates/harness-cli/src/main.rs:7566`, `crates/harness-cli/src/main.rs:7569`).
+The selected project root, not the long-running harness process cwd, is the shared worker cwd and worktree base. The centralized store root remains separate (`crates/firm-cli/src/main.rs:7126`, `crates/firm-cli/src/main.rs:7127`, `crates/firm-cli/src/main.rs:7130`, `crates/firm-cli/src/main.rs:7531`, `crates/firm-cli/src/main.rs:7543`, `crates/firm-cli/src/main.rs:7566`, `crates/firm-cli/src/main.rs:7569`).
 
 ### Worker Process Lifecycle
 
 Ephemeral provider workers run in their own process group so the harness can tear down the whole worker tree, not just the immediate CLI process, when an idle or per-leaf wall timeout fires. A worker that exits normally is cleaned up in-process, including removal of its temporary worker pidfile.
 
-If the orchestrating host process is killed before it can run that cleanup path, its provider worker process group can survive as an orphan. The workflow runtime writes per-worker pidfiles under `<store_root>/worker_pids/`, and `reap_orphaned_workers` reclaims those workers after their owning `WorkflowRun` is terminal, missing, or still `Running` but owned by a dead `host_pid`. The sweep runs before `workflow run-script` starts a fresh run, in the `serve` reaper loop after stale run rows and worktrees are handled, and manually through `harness workflow reap-workers [--dry-run]`.
+If the orchestrating host process is killed before it can run that cleanup path, its provider worker process group can survive as an orphan. The workflow runtime writes per-worker pidfiles under `<store_root>/worker_pids/`, and `reap_orphaned_workers` reclaims those workers after their owning `WorkflowRun` is terminal, missing, or still `Running` but owned by a dead `host_pid`. The sweep runs before `workflow run-script` starts a fresh run, in the `serve` reaper loop after stale run rows and worktrees are handled, and manually through `firm workflow reap-workers [--dry-run]`.
 
 Before killing a recorded pid group, the reaper checks the live process argv with `ps` and requires it to contain the recorded provider command marker (`codex`, `claude`, `kimi`, or a test marker such as `sleep`). It also verifies the current process group still matches the pidfile and that the live process did not start after the pidfile's recorded start window. If any identity check fails, the pid is treated as reused: the stale pidfile is removed, but the live process is left alone.
 
@@ -363,11 +363,11 @@ The worktree path is unique per run, node label, and Harness worker execution id
 
 The writable worktree base is the project-root checkout's HEAD, not the cwd used to launch `run-script`. Keep the selected project root on the intended branch before running writable or isolated workflow leaves.
 
-Writable or isolated leaves require a git-backed project. Non-git projects fail before worktree creation with an actionable message; read-only leaves can still run (`crates/harness-cli/src/main.rs:7646`, `crates/harness-cli/src/main.rs:7652`). `WorktreeGuard::create` also checks git-ness and reports how to recover by making the step read-only or running from a git repo (`crates/harness-cli/src/main.rs:7436`, `crates/harness-cli/src/main.rs:7441`, `crates/harness-cli/src/main.rs:7443`).
+Writable or isolated leaves require a git-backed project. Non-git projects fail before worktree creation with an actionable message; read-only leaves can still run (`crates/firm-cli/src/main.rs:7646`, `crates/firm-cli/src/main.rs:7652`). `WorktreeGuard::create` also checks git-ness and reports how to recover by making the step read-only or running from a git repo (`crates/firm-cli/src/main.rs:7436`, `crates/firm-cli/src/main.rs:7441`, `crates/firm-cli/src/main.rs:7443`).
 
-Standalone `run-script` writable work is durable-but-not-implicitly-landed. The throwaway worktree is still discarded, but any non-empty writable diff is saved as a pending `WorkflowPatch` when the step both succeeded (`ok`) and was `writable=True` (`should_persist_workflow_patch`, `crates/harness-cli/src/main.rs:11117`) — a failed leaf's diff is discarded, and `persist_changes="discard"` opts out explicitly. Apply it explicitly with `harness workflow patch apply ...`, reject it with `harness workflow patch reject ...`, or let workflow code declare `apply_patch()` / `reject_patch()` after an internal review.
+Standalone `run-script` writable work is durable-but-not-implicitly-landed. The throwaway worktree is still discarded, but any non-empty writable diff is saved as a pending `WorkflowPatch` when the step both succeeded (`ok`) and was `writable=True` (`should_persist_workflow_patch`, `crates/firm-cli/src/main.rs:11117`) — a failed leaf's diff is discarded, and `persist_changes="discard"` opts out explicitly. Apply it explicitly with `firm workflow patch apply ...`, reject it with `firm workflow patch reject ...`, or let workflow code declare `apply_patch()` / `reject_patch()` after an internal review.
 
-The diff itself is captured with `git diff --binary` (`ephemeral_worktree_diff`, `crates/harness-cli/src/main.rs:10038`) so a worktree that touched binary files produces a patch that applies cleanly instead of one that silently corrupts or refuses to apply.
+The diff itself is captured with `git diff --binary` (`ephemeral_worktree_diff`, `crates/firm-cli/src/main.rs:10038`) so a worktree that touched binary files produces a patch that applies cleanly instead of one that silently corrupts or refuses to apply.
 
 Direct write mode is for the opposite case: a small serial edit where the caller intentionally wants the worker to modify the selected project root now. A direct leaf must set both `writable=True` and `write_mode="direct"`, cannot also set `isolation="worktree"`, requires a git-backed clean project root before the step starts, and records the resulting shared-cwd diff as `direct_diff` evidence. It does not create a pending `WorkflowPatch` because the change is already in the working tree. The Starlark front-end rejects `write_mode="direct"` inside `parallel()` and `pipeline()` specs for now, because concurrent shared-tree mutations are not attributable or conflict-safe.
 
@@ -375,7 +375,7 @@ Security note: the throwaway worktree only contains writes made inside that chec
 
 ## Run And Landing Boundary
 
-`harness workflow run-script` evaluates an authored `.star` file, journals a
+`firm workflow run-script` evaluates an authored `.star` file, journals a
 `WorkflowRun` plus `WorkflowStep` rows, saves eligible writable diffs as
 `WorkflowPatch` rows, and discards worktrees after capture. A patch is applied
 or rejected explicitly. A Host Wave update or advance may cite the WorkflowRun

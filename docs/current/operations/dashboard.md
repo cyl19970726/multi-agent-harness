@@ -172,7 +172,7 @@ exists yet.
 | `docs/dashboard/pages/*.md` | page purpose, proof, actions, and layout contracts |
 | `docs/dashboard/frontend-architecture.md` | frontend modules, routing, and read-model plumbing |
 | `apps/agent-dashboard/src/model/*.ts` | implemented projections and selectors |
-| `docs/archive/design/execution-workbench-v4/team-war-room-works-closure-v1/visual-contract.json` | Team War Room Works browser, screenshot, responsive, and visual acceptance |
+| git history (design/execution-workbench-v4) | Team War Room Works browser, screenshot, responsive, and visual acceptance |
 | `docs/dashboard/runbook.md` | local run/build/snapshot entry points |
 | `docs/current/company-os/frontend-information-architecture.md` | shared visual doctrine and layout decisions |
 

@@ -189,8 +189,8 @@ session binding before it resumes delivery.
 
 ## Related contracts
 
-- [AgentOS self-hosting dogfood loop](../company-os/agentos-self-hosting-loop.md)
-- [Organization and actors](../company-os/organization-and-actors.md)
-- [Collaboration and Agent Work](../company-os/collaboration-and-agent-work.md)
+- AgentOS self-hosting dogfood loop
+- Organization and actors
+- Collaboration and Agent Work
 - [ADR 0042](0042-company-store-execution-space-project-binding.md)
 - [ADR 0045](0045-company-owned-standing-agent-execution-relation.md)

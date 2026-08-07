@@ -9,7 +9,7 @@ adapter reviewed at: 2026-08-05
 
 This document defines how Star Harness integrates Pi as a persistent Agent
 Team member. Provider-neutral lifecycle and mailbox semantics remain in
-[Agent Runtime](../agent-runtime.md); this file records only Pi-specific
+Agent Runtime; this file records only Pi-specific
 transport, session, delivery, privacy, and capability boundaries.
 
 ## Current Mode Boundary
@@ -160,16 +160,16 @@ tool-writing prompt, waits for `agent_settled`, and verifies the native session
 contains no persisted thinking. Run it with:
 
 ```bash
-cargo test -p harness-cli --test pi_canary --features pi-canary -- --nocapture
+cargo test -p firm-cli --test pi_canary --features pi-canary -- --nocapture
 ```
 
 The deterministic integration test is:
 
 ```bash
-cargo test -p harness-cli --test pi_team_member -- --nocapture
+cargo test -p firm-cli --test pi_team_member -- --nocapture
 ```
 
 Provider upgrades must return the adapter to `review_required` until the
 mode-specific deterministic gates and a proportional live canary pass. See
-[ADR 0031](../decisions/0031-interactive-provider-modes-and-version-drift.md)
+[ADR 0031](../../decisions/0031-interactive-provider-modes-and-version-drift.md)
 and [Native Session Storage](native-session-storage.md).

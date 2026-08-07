@@ -20,7 +20,7 @@ provider process create authority has no trustworthy root.
 
 ## Decision
 
-Adopt the target [Human-rooted Company Constitution](../company-os/company-constitution.md).
+Adopt the target Human-rooted Company Constitution.
 
 The Human Principal is the continuous requester, Constitution owner, and
 exception decider. The Company Lead triages intent, sets priority, allocates

@@ -214,7 +214,7 @@ resume and Codex/Kimi cooperative interruption.
 
 On 2026-07-22 the installed Codex CLI had advanced to
 `0.145.0-alpha.27`, while the reviewed live acceptance above remains pinned to
-`0.145.0-alpha.18`. `harness member providers --fail-on-review` therefore
+`0.145.0-alpha.18`. `firm member providers --fail-on-review` therefore
 reported Codex as `review_required`, exactly as ADR 0031 requires. This does not
 invalidate the historical run, and it is not permission to add alpha.27 to the
 reviewed set without mode-specific protocol and live acceptance. Installed

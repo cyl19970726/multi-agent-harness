@@ -6,7 +6,7 @@ binary-presence check.
 
 This document is canonical for the capacity contract, the per-provider truth
 matrix, the start guard, and the CLI/Dashboard projection. The provider-neutral
-runtime substrate stays in [../agent-runtime.md](../agent-runtime.md); each
+runtime substrate stays in ../agent-runtime.md; each
 provider's own adapter document keeps implementing its execution mode.
 
 ## Why This Exists
@@ -37,7 +37,7 @@ and `ProviderCapacitySnapshot` carries no compatibility field.
 
 ## The Snapshot
 
-`ProviderCapacitySnapshot` (`crates/harness-core/src/lib.rs`) is
+`ProviderCapacitySnapshot` (`crates/firm-core/src/lib.rs`) is
 provider-neutral and execution-mode-specific:
 
 | Field | Meaning |
@@ -208,10 +208,10 @@ Work submit operation with result/evidence refs.
 ## CLI
 
 ```bash
-harness member preflight --json
-harness member preflight --provider codex --json
-harness member preflight --provider claude --canary --timeout-s 120 --json
-harness member preflight --json --fail-on-unavailable
+firm member preflight --json
+firm member preflight --provider codex --json
+firm member preflight --provider claude --canary --timeout-s 120 --json
+firm member preflight --json --fail-on-unavailable
 ```
 
 With `--json` each row reports `capacity`, `capacity_freshness`,
@@ -223,7 +223,7 @@ reports its own answer as stale.
 `--fail-on-unavailable` exits non-zero when any provider returns a fresh
 known-unavailable state; it never fails on `unknown`.
 
-`harness member providers` remains the adapter-compatibility inventory and is
+`firm member providers` remains the adapter-compatibility inventory and is
 unchanged.
 
 ## Dashboard Projection
@@ -238,10 +238,10 @@ unknown rather than as healthy.
 
 | Concern | Test |
 | --- | --- |
-| Snapshot/state/freshness/decision rules | `crates/harness-core/src/lib.rs` (`capacity_*`, `fresh_known_unavailable_capacity_blocks_start`, `unknown_absent_and_stale_capacity_never_block_and_never_claim_available`) |
-| Codex payload parsing, thresholds, signed-out, no invented numbers | `crates/harness-cli/src/codex_app_server.rs` tests |
-| Claude proxy diagnosis, Kimi/Codex never fabricating capacity, structured-only classification, member text never classifying, URL redaction, TTL expiry, silence | `crates/harness-cli/src/main.rs` tests |
-| End-to-end preflight, start guard, queued-WorkDelivery preservation, capacity-vs-compatibility separation | `crates/harness-cli/tests/provider_capacity_preflight.rs` |
+| Snapshot/state/freshness/decision rules | `crates/firm-core/src/lib.rs` (`capacity_*`, `fresh_known_unavailable_capacity_blocks_start`, `unknown_absent_and_stale_capacity_never_block_and_never_claim_available`) |
+| Codex payload parsing, thresholds, signed-out, no invented numbers | `crates/firm-cli/src/codex_app_server.rs` tests |
+| Claude proxy diagnosis, Kimi/Codex never fabricating capacity, structured-only classification, member text never classifying, URL redaction, TTL expiry, silence | `crates/firm-cli/src/main.rs` tests |
+| End-to-end preflight, start guard, queued-WorkDelivery preservation, capacity-vs-compatibility separation | `crates/firm-cli/tests/provider_capacity_preflight.rs` |
 
 ## Known Limits
 

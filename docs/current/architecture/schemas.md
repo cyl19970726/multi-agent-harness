@@ -63,37 +63,37 @@ schema contracts are checked with valid and invalid fixtures.
 
 | Schema | File |
 | --- | --- |
-| Mission | [mission.schema.json](../schemas/mission.schema.json) |
-| Wave | [wave.schema.json](../schemas/wave.schema.json) |
-| Agent Team run | [agent-team-run.schema.json](../schemas/agent-team-run.schema.json) |
-| Member run | [member-run.schema.json](../schemas/member-run.schema.json) |
-| Work | [work.schema.json](../schemas/work.schema.json) |
-| Work event | [work-event.schema.json](../schemas/work-event.schema.json) |
-| Work delivery | [work-delivery.schema.json](../schemas/work-delivery.schema.json) |
-| Provider-native session locator | [native-session-ref.schema.json](../schemas/native-session-ref.schema.json) |
-| Team message | [team-message.schema.json](../schemas/team-message.schema.json) |
-| Team Supervisor lease | [team-supervisor-lease.schema.json](../schemas/team-supervisor-lease.schema.json) |
-| Durable Member Close | [team-member-close-request.schema.json](../schemas/team-member-close-request.schema.json) |
-| Stable Agent message route | [agent-message-route.schema.json](../schemas/agent-message-route.schema.json) |
-| Member action | [member-action.schema.json](../schemas/member-action.schema.json) |
-| Pending provider interaction | [pending-interaction.schema.json](../schemas/pending-interaction.schema.json) |
-| Delegation run | [delegation-run.schema.json](../schemas/delegation-run.schema.json) |
-| Team run event | [team-run-event.schema.json](../schemas/team-run-event.schema.json) |
-| Agent team | [agent-team.schema.json](../schemas/agent-team.schema.json) |
-| Agent member | [agent-member.schema.json](../schemas/agent-member.schema.json) |
-| Durable Organization Agent member | [durable-agent-member.schema.json](../schemas/durable-agent-member.schema.json) |
-| Message | [message.schema.json](../schemas/message.schema.json) |
-| Agent runtime | [agent-runtime.schema.json](../schemas/agent-runtime.schema.json) |
-| Agent event | [agent-event.schema.json](../schemas/agent-event.schema.json) |
-| Provider child thread | [provider-child-thread.schema.json](../schemas/provider-child-thread.schema.json) |
-| Proposal | [proposal.schema.json](../schemas/proposal.schema.json) |
-| Evidence | [evidence.schema.json](../schemas/evidence.schema.json) |
-| Decision | [decision.schema.json](../schemas/decision.schema.json) |
-| Tool descriptor | [agent-harness-tool-descriptor.schema.json](../schemas/agent-harness-tool-descriptor.schema.json) |
-| Doc descriptor | [doc-descriptor.schema.json](../schemas/doc-descriptor.schema.json) |
-| Review | [review.schema.json](../schemas/review.schema.json) |
-| Gap | [gap.schema.json](../schemas/gap.schema.json) |
-| Vision | [vision.schema.json](../schemas/vision.schema.json) |
+| Mission | [mission.schema.json](../../../schemas/mission.schema.json) |
+| Wave | [wave.schema.json](../../../schemas/wave.schema.json) |
+| Agent Team run | [agent-team-run.schema.json](../../../schemas/agent-team-run.schema.json) |
+| Member run | [member-run.schema.json](../../../schemas/member-run.schema.json) |
+| Work | [work.schema.json](../../../schemas/work.schema.json) |
+| Work event | [work-event.schema.json](../../../schemas/work-event.schema.json) |
+| Work delivery | [work-delivery.schema.json](../../../schemas/work-delivery.schema.json) |
+| Provider-native session locator | [native-session-ref.schema.json](../../../schemas/native-session-ref.schema.json) |
+| Team message | [team-message.schema.json](../../../schemas/team-message.schema.json) |
+| Team Supervisor lease | [team-supervisor-lease.schema.json](../../../schemas/team-supervisor-lease.schema.json) |
+| Durable Member Close | [team-member-close-request.schema.json](../../../schemas/team-member-close-request.schema.json) |
+| Stable Agent message route | [agent-message-route.schema.json](../../../schemas/agent-message-route.schema.json) |
+| Member action | [member-action.schema.json](../../../schemas/member-action.schema.json) |
+| Pending provider interaction | [pending-interaction.schema.json](../../../schemas/pending-interaction.schema.json) |
+| Delegation run | [delegation-run.schema.json](../../../schemas/delegation-run.schema.json) |
+| Team run event | [team-run-event.schema.json](../../../schemas/team-run-event.schema.json) |
+| Agent team | [agent-team.schema.json](../../../schemas/agent-team.schema.json) |
+| Agent member | [agent-member.schema.json](../../../schemas/agent-member.schema.json) |
+| Durable Organization Agent member | [durable-agent-member.schema.json](../../../schemas/durable-agent-member.schema.json) |
+| Message | [message.schema.json](../../../schemas/message.schema.json) |
+| Agent runtime | [agent-runtime.schema.json](../../../schemas/agent-runtime.schema.json) |
+| Agent event | [agent-event.schema.json](../../../schemas/agent-event.schema.json) |
+| Provider child thread | [provider-child-thread.schema.json](../../../schemas/provider-child-thread.schema.json) |
+| Proposal | [proposal.schema.json](../../../schemas/proposal.schema.json) |
+| Evidence | [evidence.schema.json](../../../schemas/evidence.schema.json) |
+| Decision | [decision.schema.json](../../../schemas/decision.schema.json) |
+| Tool descriptor | [agent-harness-tool-descriptor.schema.json](../../../schemas/agent-harness-tool-descriptor.schema.json) |
+| Doc descriptor | [doc-descriptor.schema.json](../../../schemas/doc-descriptor.schema.json) |
+| Review | [review.schema.json](../../../schemas/review.schema.json) |
+| Gap | [gap.schema.json](../../../schemas/gap.schema.json) |
+| Vision | [vision.schema.json](../../../schemas/vision.schema.json) |
 
 `WorkOperation` is the Store's crash-atomic replay envelope around one
 WorkEvent, its complete resulting Work, and delivery creates/updates. It is not
@@ -134,7 +134,7 @@ contracts define their own required migration and validation rules.
 
 | Registry | File | Check |
 | --- | --- | --- |
-| Docs governance | [registry.json](registry.json) | `harness governance check` |
+| Docs governance | [registry.json](../../registry.json) | `firm governance check` |
 
 ## Fixture Validation
 
@@ -149,7 +149,7 @@ If a field affects storage, API, adapter behavior, or dashboard rendering, it
 must be represented in both:
 
 ```text
-crates/harness-core/src/*.rs
+crates/firm-core/src/*.rs
 schemas/*.schema.json
 ```
 

@@ -380,17 +380,17 @@ needed for V1.
 Creation must reduce Host bottlenecks without allowing peers to silently assign
 each other.
 
-| Action | Team Host | Ordinary Member | Host of a child Team |
+| Action | Team Host | Ordinary Member |
 | --- | ---: | ---: | ---: |
-| create top-level Work | yes | self-owned or unassigned | yes, in child Team |
-| assign to any Member | yes | no | yes, in child Team |
+| create top-level Work | yes | self-owned or unassigned |
+| assign to any Member | yes | no |
 | create child Work | yes | under Work it owns | yes |
 | claim eligible Work | only through explicit Lead MemberRun | yes | only through explicit Lead MemberRun |
 | update owned Work | yes | yes | yes |
 | change peer ownership | yes | no | yes, for child Members |
 | submit for review | yes | yes | yes |
 | accept Work | yes | no | yes, for child Works |
-| cancel arbitrary Work | yes | no | yes, in child Team |
+| cancel arbitrary Work | yes | no |
 
 An ordinary Member may create an unassigned Work when it discovers necessary
 follow-up. The Host can reprioritize, merge, assign, or cancel it. This prevents
@@ -398,7 +398,7 @@ every discovered issue from becoming another Host conversation round.
 
 Direct peer assignment is not allowed. A Member may create an eligible
 unassigned Work and ask a peer to claim it. When a Member has permission to
-create a child Team, it becomes that Team's Host and can assign child Works
+delegate Work to another Team when it Hosts that Team
 directly. V1 needs only the structural Host/Member distinction plus
 `can_create_child_team`; it does not require a general RBAC engine.
 
@@ -575,13 +575,12 @@ relation. Child completion updates a roll-up projection but never automatically
 completes or accepts the parent. The parent owner owns integration and
 correction.
 
-Organization adopts this mechanism directly under ADR 0052: multi-level Org
-Agents are durable AgentMembers in recursive AgentTeams. The target relations
-are explicit:
+Organization adopts this mechanism directly: a Member may delegate a
+parent Work to another Agent Team. The target relations are explicit:
 
 ```text
-AgentTeam(parent_team_id, host_member_id) -> AgentMember
-parent Work -> child Team Works
+AgentTeam(machine_id, labels, host_member_id) -> AgentMember
+parent Work -> delegated Team Works
 Work -> optional business/Approval/Finance/Mission relations
 ```
 
@@ -619,7 +618,7 @@ conversation/events; Members owns factual capacity and runtime pressure.
 `By owner`. Capacity never invents a percentage without a configured limit.
 Full desktop/mobile interaction, density, state, identity, and accessibility
 contracts live in [Team Workbench](../dashboard/pages/team-run-war-room.md) and
-[the implementation/acceptance plan](../design/agent-team-works-implementation-plan.md).
+the implementation/acceptance plan.
 
 ## Acceptance
 

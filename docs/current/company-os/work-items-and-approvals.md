@@ -148,7 +148,7 @@ financial-record links remain referentially stable.
 Operational state changes use the governed `work_item.transition` Action rather
 than broad record authoring. Its implemented V1 state graph, responsibility
 rules, immutable fields, Approval completion gate, and browser evidence are
-canonicalized in [WorkItem lifecycle actions](work-item-lifecycle-actions.md).
+canonicalized in WorkItem lifecycle actions.
 Reassignment, owner/reviewer/approver correction, cancellation, archive, and
 reopening remain separate future commands so this transition cannot silently
 expand its authority. An `Assignment` delivery record may prove that someone
@@ -226,7 +226,7 @@ Docs-to-Work pipeline. A Work blocker may create an Organization capability
 proposal; an Org change may create documentation and migration WorkItems; a
 Docs audit may create corrective Work. Every WorkItem still requires explicit
 source context, accountability, lifecycle, review, and result promotion. See
-[AgentOS self-hosting dogfood loop](agentos-self-hosting-loop.md).
+AgentOS self-hosting dogfood loop.
 
 ## Approval contract
 

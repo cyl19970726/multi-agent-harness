@@ -17,7 +17,7 @@ The Host repeatedly reconstructed task state from conversation history and idle
 Members could not atomically claim known ready work.
 
 The failure reconstruction and Claude Code comparison are preserved in
-[Agent Team Shared Task List research](../research/agent-team-shared-task-list.md).
+Agent Team Shared Task List research.
 
 The product also needs one simple execution-board object that the Company
 operating surface can use. This ADR originally kept Company WorkItem as a

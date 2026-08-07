@@ -66,10 +66,10 @@ Build the binary, initialize/select the Workspace, then register its absolute
 path and explicit project identity:
 
 ```bash
-cargo build -p harness-cli
-target/debug/harness init
+cargo build -p firm-cli
+target/debug/firm init
 codex mcp add harness -- \
-  /absolute/path/to/target/debug/harness \
+  /absolute/path/to/target/debug/firm \
   --space <execution-space-id> \
   --project <project-binding-id> mcp
 codex mcp get harness
@@ -80,7 +80,7 @@ registered MCP tools appear. The API and Dashboard UI are separate long-running
 processes. Start the Vite UI with its same-origin proxy pointed at the API:
 
 ```bash
-target/debug/harness --space <execution-space-id> \
+target/debug/firm --space <execution-space-id> \
   --project <project-binding-id> serve --addr 127.0.0.1:8787
 HARNESS_CAPTURE_API_PROXY=http://127.0.0.1:8787 npm run dashboard:dev
 ```
@@ -154,7 +154,7 @@ path as an execution root is a routing defect.
 8. Acknowledge consumed conversation with `team_message_acknowledge`; review
    submitted Works through the Work acceptance commands.
 9. Check Work results, artifacts, and checks; update the current Wave with the Host's actual
-   judgment, then `wave advance` or record `accepted | revise | blocked`. Active
+   judgment, then record `accepted | revise | blocked`. Active
    MemberRuns may carry forward; Wave advance never completes them implicitly.
 
 ## Message Receipt Boundary
@@ -194,7 +194,7 @@ handle mail that arrived while the Host was busy. Mail arriving after an
 unowned Codex Desktop task is already idle remains actionable until the next
 `UserPromptSubmit` or `SessionStart`; Harness does not spawn a second app-server
 and pretend it owns the open Desktop task. See
-[ADR 0040](../decisions/0040-native-host-inbox-delivery.md).
+[ADR 0040](../../decisions/0040-native-host-inbox-delivery.md).
 
 This boundary is intentionally provider-neutral:
 

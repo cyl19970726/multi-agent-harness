@@ -25,7 +25,7 @@ and ad-hoc unlinked members remain execution-only. The Company OS snapshot
 derives `standing_assignments` from latest native rows; it never creates
 another assignment ledger or writes execution lifecycle back to Organization.
 
-The first edge is authored only by `harness company org link-execution` /
+The first edge is authored only by `firm company org link-execution` /
 `unlink-execution`, which validate the AgentMember against an explicitly named
 Execution Space. See `docs/current/company-os/organization-and-actors.md` for the write
 contract and the cross-store boundary.
@@ -50,7 +50,7 @@ Each entry names the ambiguity and the way out:
   "standing_agent_ids": ["<claimant>", "<claimant>"],
   "affected_member_run_ids": ["<withheld member run>"],
   "detail": "duplicate StandingAgent execution_agent_member_ref ...",
-  "resolution_hint": "harness company org actor unlink-execution ..."
+  "resolution_hint": "firm company org actor unlink-execution ..."
 }
 ```
 
@@ -138,7 +138,7 @@ Projection rules:
 
 Use the shared `FocusShell`: continuous activity/conversation in the center,
 sticky composer, and a composed Context Rail. The active execution-workbench
-visual contract is `docs/archive/design/execution-workbench-v3/visual-contract.json`;
+visual contract is in git history (design/execution-workbench-v3);
 the retired `workbench-layout-v2` concept package is no longer an active
 design source.
 

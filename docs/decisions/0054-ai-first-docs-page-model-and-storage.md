@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-05
 **Status:** accepted
-**Spec:** [docs/current/company-os/ai-first-docs-spec.md](../company-os/ai-first-docs-spec.md)
+**Spec:** docs/current/company-os/ai-first-docs-spec.md
 
 ## Decision
 

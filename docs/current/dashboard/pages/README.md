@@ -50,9 +50,9 @@ open_questions:
 
 The current product direction is Mission context -> ordered Host-plan Waves,
 with independent Agent Teams linked at Mission scope, owned by
-[ADR 0034](../../decisions/0034-host-plan-waves-and-mission-teams.md), while
+ADR 0034, while
 durable Team control and typed mail are owned by
-[ADR 0044](../../decisions/0044-durable-team-supervision-and-typed-mail.md). The
+ADR 0044. The
 implemented primary pages are the Mission/Wave Canvas and Agent Team War Room. Historical
 Vision/Goal/Task Work-board and Goal Workbench specs are archived; they do not
 define the new information architecture.
@@ -75,5 +75,5 @@ product input or recreated as compatibility pages.
 - Update the same page spec when the page purpose, canonical object ownership,
   information architecture, action model, dimensions, first viewport,
   breakpoint behavior, or scroll ownership changes.
-- Update [../layout-history.md](../../company-os/frontend-information-architecture.md) when a selected,
+- Update ../layout-history.md when a selected,
   rejected, or borrowed design decision changes.

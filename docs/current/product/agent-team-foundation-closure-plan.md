@@ -61,10 +61,10 @@ Organization UI or create a second Agent identity.
 The real self-hosting lifecycle exposed a separate scheduling gap: Agent Team
 has durable messages but no TeamRun-scoped shared Works surface. The evidence
 and Claude Code comparison are recorded in
-[Agent Team Shared Task List research](../research/agent-team-shared-task-list.md).
+Agent Team Shared Task List research.
 
 [Agent Team Works](agent-team-works.md) and
-[ADR 0050](../decisions/0050-agent-team-work-board-and-message-boundary.md)
+[ADR 0050](../../decisions/0050-agent-team-work-board-and-message-boundary.md)
 accept `Work` as the base scheduling primitive, remove Assignment-message
 ownership without compatibility, and keep Message as authored conversation.
 Implementation is still pending and does not authorize a Goal, GoalPhase, Plan

@@ -73,10 +73,10 @@ The resident path is gated entirely by an environment variable:
 
 ```bash
 # Default: fresh `claude -p` per turn (unchanged behavior).
-harness agent deliver --agent <id>
+firm agent deliver --agent <id>
 
 # Resident: hold `claude --input-format stream-json` open across turns.
-HARNESS_CLAUDE_RESIDENT=1 harness agent deliver --agent <id>
+HARNESS_CLAUDE_RESIDENT=1 firm agent deliver --agent <id>
 ```
 
 When set, `run_claude_delivery` routes through `run_claude_resident_delivery_real`
@@ -90,23 +90,23 @@ resident path can be enabled per invocation.
 
 ## The resident daemon (cross-invocation warmth, unix-only)
 
-A pool that lives inside one `harness deliver` process dies when that command
+A pool that lives inside one `firm deliver` process dies when that command
 exits, so it cannot keep a child warm across deliveries (each delivery is a fresh
 CLI process). The **resident daemon** is a long-lived, harness-owned host that
 keeps the pool alive between invocations behind a per-workspace Unix socket. See
-[decisions/0021-resident-daemon.md](decisions/0021-resident-daemon.md) (amends
+[decisions/0021-resident-daemon.md](../../decisions/0021-resident-daemon.md) (amends
 0018).
 
 ```bash
 # Start the warm-child host (foreground; background it with & or a supervisor).
-HARNESS_ROOT=.harness harness daemon start [--idle-secs <n>] [--socket <path>]
+HARNESS_ROOT=.firm firm daemon start [--idle-secs <n>] [--socket <path>]
 
 # Inspect / stop it.
-harness daemon status        # running | stale | absent
-harness daemon stop          # SIGTERM via the pidfile; clean shutdown
+firm daemon status        # running | stale | absent
+firm daemon stop          # SIGTERM via the pidfile; clean shutdown
 ```
 
-- **Socket:** `<store-root>/resident.sock` (i.e. `.harness/resident.sock` or
+- **Socket:** `<store-root>/resident.sock` (i.e. `.firm/resident.sock` or
   `$HARNESS_ROOT/resident.sock`). Both the daemon and the delivery client derive
   this path from the store root, so no registry or handshake is needed. The path
   is validated against the AF_UNIX `sun_path` limit at startup. `--socket <path>`
@@ -156,5 +156,5 @@ across all members in v1); per-member lock sharding is future work.
 
 This document covers **Claude only**. Codex stays on the `codex exec --json` +
 `codex exec resume <id>` respawn model — see
-[decisions/0020-codex-persistent-service-exploration.md](decisions/0020-codex-persistent-service-exploration.md)
+[decisions/0020-codex-persistent-service-exploration.md](../../decisions/0020-codex-persistent-service-exploration.md)
 for why a persistent Codex service was rejected.

@@ -2,7 +2,7 @@
 
 Do not read this repository as one book. Start with one context pack and follow
 links only when the current decision needs them. The placement, authority,
-lifecycle and archive rules are defined in
+lifecycle and retirement rules are defined in
 [Documentation Governance](current/documentation-governance.md).
 
 ## Directory layout
@@ -18,14 +18,9 @@ docs/
 │   ├── dashboard/   # Dashboard frontend architecture
 │   └── company-os/  # Company OS product contracts
 ├── decisions/       # ADRs (historical decisions, never deleted)
-└── archive/         # Retired docs (design workstreams, old research)
-    ├── design/      # Historical design versions (v1-v6)
-    ├── research/    # Old exploration records
-    ├── company-os/  # Retired Company OS designs
-    └── product/     # Retired product docs
 ```
 
-**Authority order**: `mental/` > `current/` > `decisions/` > `archive/`.
+**Authority order**: `mental/` > `current/` > `decisions/`.
 When `mental/` contradicts any other doc, `mental/` wins.
 
 ## Start here
@@ -50,8 +45,6 @@ When `mental/` contradicts any other doc, `mental/` wins.
 | Architecture | [Architecture map](current/architecture/architecture-map.md), [Concept model](current/architecture/concept-model.md), [Data model](current/architecture/data-model.md), [ADRs](decisions/README.md) |
 | Execution | [Dashboard](current/operations/dashboard.md), [Workflow runtime](current/operations/workflow-runtime.md), [Agent runtime](current/architecture/agent-runtime.md), [Agent Team Works](current/product/agent-team-works.md), [Integration](current/integration/README.md) |
 | Operations | [Getting started](current/operations/getting-started.md), [Operations](current/operations/operations.md), [Multi-project](current/operations/multi-project.md), [Governance engine](current/operations/governance-engine.md) |
-| Historical design | [`archive/design/`](archive/design/) — retired workstreams, read-only |
-| Historical research | [`archive/research/`](archive/research/) — retired exploration, read-only |
 | Historical evidence | Verified native exports and Git history; never default context |
 
 ## Governance
@@ -62,10 +55,10 @@ When adding, moving, or retiring documentation:
    `docs/mental/`. Other docs that contradict it must be corrected or retired.
 2. **Live docs live in `current/`.** New product/architecture/operations docs
    go under the matching `current/` subdirectory, not the root.
-3. **Retired docs go to `archive/`.** Move (not delete) obsolete docs to the
-   matching archive subdirectory. Keep ADRs in `decisions/` permanently.
+3. **Retired docs are deleted.** Obsolete docs are removed (git history is the
+   archive). ADRs in `decisions/` are kept permanently as historical records.
 4. **Registry must match.** Update `docs/registry.json` when adding, moving, or
-   removing any doc. `harness governance check` validates this.
+   removing any doc. `firm governance check` validates this.
 5. **Skills sync.** Skills live in `skills/` and mirror to
    `plugins/star-harness/skills/` via `sync-star-harness-plugin-skills.mjs`.
 6. **Cross-layer check.** `node scripts/check-cross-layer-consistency.mjs`

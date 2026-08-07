@@ -42,7 +42,7 @@ Workflow proof:
 Source docs:
 
 - [../runbook.md](../runbook.md)
-- [../acceptance.md](../../company-os/frontend-information-architecture.md)
+- ../acceptance.md
 - [../frontend-architecture.md](../frontend-architecture.md)
 
 Read-model inputs:

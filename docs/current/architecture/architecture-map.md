@@ -1,7 +1,7 @@
 # Architecture Map
 
 This is the canonical product-level architecture map. Detailed object contracts
-live under [company-os](current/company-os/README.md). Implemented execution details
+live under [company-os](../company-os/README.md). Implemented execution details
 remain documented by the Mission/Wave, Workflow, Agent Team, runtime, and
 provider specifications.
 
@@ -79,7 +79,7 @@ flowchart TB
 | Layer | Owns | Does not own |
 | --- | --- | --- |
 | Docs and Modules | business structure, content, record types, relations, views, templates | provider execution lifecycle |
-| Organization | Actor identity, Human Owner → Lead → four Governance Agents, Org/HR → Business Agent hierarchy, role, authority, permissions, availability, capacity | one TeamRun attempt or work-routing inference |
+| Organization | Actor identity, Human Owner → Lead Agent, optional role agents, role, authority, permissions, availability, capacity | one TeamRun attempt or work-routing inference |
 | Collaboration | cross-actor messages, interaction routing, artifacts, explicit outcomes, and provider-native session links | Work ownership, approval, finance truth, copied provider transcripts, or raw thinking |
 | Agent Team Works | TeamRun-scoped Work ownership, assigned/unassigned readiness, atomic claim, review, child delegation, and Kanban projection | authored conversation, company approval/finance, or provider transcript |
 | Company Work and Approval | WorkCore extension with Milestones, WorkItem responsibility, source/result provenance, policy gates, and execution reference | provider runtime or a second Agent Team scheduler |
@@ -96,10 +96,10 @@ MemberRun/native session/writable Workspace. A provider receipt proves
 transport acceptance, not semantic completion. Provider Goal satisfaction
 never implies Host acceptance. See
 [Member Continuation Model](member-continuation-model.md) and
-[ADR 0041](decisions/0041-provider-neutral-member-continuation.md), plus
-[ADR 0044](decisions/0044-durable-team-supervision-and-typed-mail.md) for
+[ADR 0041](../../decisions/0041-provider-neutral-member-continuation.md), plus
+[ADR 0044](../../decisions/0044-durable-team-supervision-and-typed-mail.md) for
 cross-process ownership and typed-mail guarantees, and
-[ADR 0050](decisions/0050-agent-team-work-board-and-message-boundary.md) for the
+[ADR 0050](../../decisions/0050-agent-team-work-board-and-message-boundary.md) for the
 Work/Message boundary.
 
 ## Source-of-truth rule

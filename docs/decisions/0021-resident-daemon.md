@@ -19,7 +19,7 @@ retired the bespoke `codex app-server` WebSocket-over-UDS *provider protocol* as
 the default. It explicitly allowed, in the Decision section, "one run per claimed
 delivery (optionally a small warm pool if latency matters)."
 
-The resident Claude path ([../resident-claude.md](../resident-claude.md),
+The resident Claude path (../resident-claude.md,
 `crates/harness-cli/src/resident.rs`) holds a `claude` child open across turns to
 amortize model + MCP warmup. That `ResidentPool` lives **in-process**, but the
 harness CLI is short-lived: every `harness agent deliver` is a fresh process, so

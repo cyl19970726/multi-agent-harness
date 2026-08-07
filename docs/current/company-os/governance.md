@@ -80,7 +80,7 @@ Risk is the greatest affected dimension (money, legal exposure, privacy,
 security, external commitment, or reversibility). Policies may elevate a tier;
 they must never silently lower one.
 
-The [Human-rooted Company Constitution](company-constitution.md) governs
+The Human-rooted Company Constitution governs
 delegation under an already approved root. A child grant or approved-template
 Standing Agent is routine consumption of that envelope only when it strictly
 narrows at least one authority or resource dimension, no scope or resource

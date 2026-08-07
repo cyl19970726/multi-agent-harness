@@ -76,10 +76,10 @@ report the absolute path, branch, commit, checks and conflicts.
 Build from the selected commit and verify:
 
 ```bash
-harness member providers --fail-on-review
+firm member providers --fail-on-review
 npx pnpm@9.15.4 acceptance:mission-wave
 npx pnpm@9.15.4 check:star-harness-plugin
-harness governance check
+firm governance check
 ```
 
 `review_required` is not rewritten as `current`. The Host either reviews that

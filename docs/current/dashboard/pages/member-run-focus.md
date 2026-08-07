@@ -76,7 +76,7 @@ state. Harness does not silently fall back to a mirrored history.
 ## Layout Contract
 
 The desktop/tablet/mobile MemberRun Focus V3 set in
-[`../../design/execution-workbench-v3/`](../../design/execution-workbench-v3/README.md).
+`../../design/execution-workbench-v3/`.
 It predates Works and is a legacy visual baseline, not ADR 0050 product-truth
 evidence. A new immutable expected/actual set must be registered before Works
 is accepted. The older Workbench V2 image is historical baseline only.

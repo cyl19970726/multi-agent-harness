@@ -122,7 +122,7 @@ operator has independently confirmed that every provider process stopped*, the
 CLI recovery path is explicit and audited:
 
 ```bash
-harness team-run cancel --id <run> --confirm-provider-stopped \
+firm team-run cancel --id <run> --confirm-provider-stopped \
   --reason <why-the-host-disappeared> --cancelled-by <actor>
 ```
 

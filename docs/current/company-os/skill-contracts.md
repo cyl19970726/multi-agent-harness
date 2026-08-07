@@ -22,16 +22,16 @@ The suite currently expands to:
 
 | Skill | Owning surface | Implementation status |
 | --- | --- | --- |
-| [`company-business-project-bootstrap`](../../skills/company-business-project-bootstrap/SKILL.md) | High-level commercial-project bootstrap across Docs IA/page contracts, Work, Org, Finance, external software/social sources, and custom pages | procedural orchestration skill |
-| [`company-docs-operator`](../../skills/company-docs-operator/SKILL.md) | Docs: Document, Block, page contract, TypedRecord, Relation, View, BusinessModule, custom page metadata | dedicated `harness company docs ...` CLI implemented |
-| [`company-work-operator`](../../skills/company-work-operator/SKILL.md) | Work: WorkItem, Milestone, Assignment, lifecycle, Approval links, execution/result refs shown through Docs page contracts | dedicated `harness company work ...` CLI implemented for list/query/create/update/assign/transition/close plus `work milestone ...` baseline lifecycle |
-| [`company-org-operator`](../../skills/company-org-operator/SKILL.md) | Organization: Human, Standing Agent, OrgUnit, role, permission, lifecycle and actor refs for Docs page context | dedicated flat `harness company org ...` plus nested `actor/unit/membership ...` baseline CLI implemented; proposal/promotion/grant-revoke workflows remain planned |
-| [`company-module-designer`](../../skills/company-module-designer/SKILL.md) | Business module design, page contracts, frontend surface intent, and governance proposal | procedural design skill |
-| [`company-page-builder`](../../skills/company-page-builder/SKILL.md) | Code-declared custom page design/implementation from approved page contracts, visual expected images, and actual verification | procedural page-building skill |
-| [`dogfood-company-os`](../../skills/dogfood-company-os/SKILL.md) | Repeated, evidence-backed Company OS self-hosting across Docs, Work, Organization, external delivery, execution, and result return | procedural composition skill |
-| [`connect-github-company-os`](../../skills/connect-github-company-os/SKILL.md) | GitHub repository/source observation and software-delivery evidence correlated to Company OS records without replacing company truth | procedural connector skill |
-| [`orchestrate-mission-waves`](../../skills/orchestrate-mission-waves/SKILL.md) | Host Lead coordination: Mission, Mission Log, AgentTeam, Works, review, and explicit Host acceptance | team coordination skill (Host-facing) |
-| [`collaborate-as-agent-team-member`](../../skills/collaborate-as-agent-team-member/SKILL.md) | Persistent Agent Team Member: Works board, lifecycle, mailbox, blocker, submission, and native session | team coordination skill (Member-facing) |
+| [`company-business-project-bootstrap`](../../../skills/company-business-project-bootstrap/SKILL.md) | High-level commercial-project bootstrap across Docs IA/page contracts, Work, Org, Finance, external software/social sources, and custom pages | procedural orchestration skill |
+| [`company-docs-operator`](../../../skills/company-docs-operator/SKILL.md) | Docs: Document, Block, page contract, TypedRecord, Relation, View, BusinessModule, custom page metadata | dedicated `firm company docs ...` CLI implemented |
+| [`company-work-operator`](../../../skills/company-work-operator/SKILL.md) | Work: WorkItem, Milestone, Assignment, lifecycle, Approval links, execution/result refs shown through Docs page contracts | dedicated `firm company work ...` CLI implemented for list/query/create/update/assign/transition/close plus `work milestone ...` baseline lifecycle |
+| [`company-org-operator`](../../../skills/company-org-operator/SKILL.md) | Organization: Human, Standing Agent, OrgUnit, role, permission, lifecycle and actor refs for Docs page context | dedicated flat `firm company org ...` plus nested `actor/unit/membership ...` baseline CLI implemented; proposal/promotion/grant-revoke workflows remain planned |
+| [`company-module-designer`](../../../skills/company-module-designer/SKILL.md) | Business module design, page contracts, frontend surface intent, and governance proposal | procedural design skill |
+| [`company-page-builder`](../../../skills/company-page-builder/SKILL.md) | Code-declared custom page design/implementation from approved page contracts, visual expected images, and actual verification | procedural page-building skill |
+| [`dogfood-company-os`](../../../skills/dogfood-company-os/SKILL.md) | Repeated, evidence-backed Company OS self-hosting across Docs, Work, Organization, external delivery, execution, and result return | procedural composition skill |
+| [`connect-github-company-os`](../../../skills/connect-github-company-os/SKILL.md) | GitHub repository/source observation and software-delivery evidence correlated to Company OS records without replacing company truth | procedural connector skill |
+| [`orchestrate-mission-waves`](../../../skills/orchestrate-mission-waves/SKILL.md) | Host Lead coordination: Mission, Mission Log, AgentTeam, Works, review, and explicit Host acceptance | team coordination skill (Host-facing) |
+| [`collaborate-as-agent-team-member`](../../../skills/collaborate-as-agent-team-member/SKILL.md) | Persistent Agent Team Member: Works board, lifecycle, mailbox, blocker, submission, and native session | team coordination skill (Member-facing) |
 
 This ten-Skill suite includes the dogfood and GitHub connector packages
 because its bootstrap and operator Skills delegate work to them. Installation
@@ -76,7 +76,7 @@ packaged as plugins that provide:
 - view extensions that declare how synced records appear in Docs, Work,
   Organization, and Agent detail surfaces.
 
-`harness company gateway social readiness` is a read-only device/API readiness
+`firm company gateway social readiness` is a read-only device/API readiness
 probe retained as a core bootstrap. It does not log in, publish, delete, pay
 for promotion, export private messages, or mutate Company Store truth by
 itself. Full social operations such as media upload, title/body/topic fill,
@@ -92,13 +92,13 @@ All operator skills must make Store selection explicit before reading or
 writing durable company records:
 
 ```bash
-harness company current
-harness company init --id <company-id> --name <display-name>
-harness company migrate-from-project --from-project <project-id|path> --id <company-id> --name <display-name>
-harness company migrate-from-project --from-project <project-id|path> --id <company-id> --verify-only
+firm company current
+firm company init --id <company-id> --name <display-name>
+firm company migrate-from-project --from-project <project-id|path> --id <company-id> --name <display-name>
+firm company migrate-from-project --from-project <project-id|path> --id <company-id> --verify-only
 harness --company <company-id> company migrations
 harness --company <company-id> company docs query --document <doc-id>
-HARNESS_COMPANY=<company-id> harness company work list
+HARNESS_COMPANY=<company-id> firm company work list
 ```
 
 If no Company is selected, current commands still fall back to the
@@ -131,7 +131,7 @@ or invoked merely because an Agent has a governance title, and it never expands
 that Agent's permission policy.
 
 The first implemented Docs Governance primitives are CLI-backed and exposed
-through the optional [`company-docs-operator`](../../skills/company-docs-operator/SKILL.md)
+through the optional [`company-docs-operator`](../../../skills/company-docs-operator/SKILL.md)
 skill. The surface includes read/query commands (`query`, `search`,
 `traverse`, `refs`, `related`, `health`, `snapshot`, `diff`,
 `change-report`), governance authoring (`module create`,
@@ -156,10 +156,10 @@ observes a Git worktree (`--repo-path`).
 
 ```bash
 harness --company <id> company docs source sync --definition <id> --module <id> --source-document <id> --actor <ref> --repo-path <path> --repo <owner/repo> --branch <branch> --project-id <id> [--path docs/prd] [--dry-run]
-harness company docs view create --definition <id> --module <id> --title <title> [--mode table|board|timeline] --source-kind typed_record [--query-json '…'] --actor <ref>
-harness company docs relation link --definition <id> --from-document <id> --to-record <id> --actor <ref>
-harness company docs relation unlink --definition <id> --relation <id> --actor <ref> (--dry-run|--confirm)
-harness company docs relation repair-missing --definition <id> --actor <ref> (--dry-run|--confirm)
+firm company docs view create --definition <id> --module <id> --title <title> [--mode table|board|timeline] --source-kind typed_record [--query-json '…'] --actor <ref>
+firm company docs relation link --definition <id> --from-document <id> --to-record <id> --actor <ref>
+firm company docs relation unlink --definition <id> --relation <id> --actor <ref> (--dry-run|--confirm)
+firm company docs relation repair-missing --definition <id> --actor <ref> (--dry-run|--confirm)
 ```
 
 Command contract:
@@ -323,8 +323,8 @@ deliverable_refs
 
 ### Completion rule
 
-The skill is complete only when `harness company work query` and/or
-`harness company work list` can reconstruct the WorkItem, its role chain,
+The skill is complete only when `firm company work query` and/or
+`firm company work list` can reconstruct the WorkItem, its role chain,
 detail fields, source/result provenance, and linked assignment/approval
 context. A document paragraph, chat message, fixture, or visual page alone is
 not a completed WorkItem.
@@ -386,7 +386,7 @@ or document tree was generated.
 ### Job
 
 Use this skill only after a page is justified under
-[Agent-Programmable Pages](agent-programmable-pages.md), and only with an
+Agent-Programmable Pages, and only with an
 approved or explicitly review-pending module/page specification. It designs
 and implements a custom page whose governed `CustomPageDefinition` registers a
 versioned `CustomPagePackage`. Its primary job is to make a stable
@@ -565,4 +565,4 @@ a payment.
 
 The builder produces the expected image, implements the registered view against
 a fixture, captures it, and compares; fallback is the standard module document
-and Views. Full detail: [trademark registration example](examples/trademark-registration.md).
+and Views. Full detail: trademark registration example.

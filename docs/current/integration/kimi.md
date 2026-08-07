@@ -5,7 +5,7 @@ Kimi 变成 harness 里的第三个 registry-routed provider：可以创建、�
 观察状态、回收运行时，并以 Kimi 原生 session 作为执行记录与 resume 真相；
 Harness 只保存 session binding、跨系统协调、显式 outcome 与 artifact/check refs。
 
-Provider-neutral runtime contracts live in [../agent-runtime.md](../agent-runtime.md).
+Provider-neutral runtime contracts live in ../agent-runtime.md.
 This file should explain only how Kimi implements those contracts. Shared object
 semantics such as `Task`, `Message`, `Evidence`, `Proposal`, and `Decision` must
 not be redefined here.
@@ -43,7 +43,7 @@ Binary resolution order is implemented by `resolve_kimi_bin()`:
 3. default install path `~/.kimi-code/bin/kimi`;
 4. bare `kimi` as the final fallback, so spawn failure is explicit.
 
-Source: `crates/harness-cli/src/main.rs:14317-14345`.
+Source: `crates/firm-cli/src/main.rs:14317-14345`.
 
 ## Bounded AgentRuntime / Workflow Delivery (Not Agent Team)
 
@@ -73,7 +73,7 @@ kimi -p "{structured_prompt}" --output-format stream-json --session <session_id>
 
 `run_kimi_exec_delivery_real` 会把 developer instructions 折叠进 prompt，因为 Kimi 没有
 Claude 的 `--append-system-prompt`；resume 使用 `--session <id>`；model 使用 `--model <model>`
-(`crates/harness-cli/src/main.rs:14587-14606`)。
+(`crates/firm-cli/src/main.rs:14587-14606`)。
 
 Kimi delivery 明确不传这些 Claude-only 或非真实 headless flags：
 
@@ -87,8 +87,8 @@ Kimi delivery 明确不传这些 Claude-only 或非真实 headless flags：
 --effort
 ```
 
-Source: `crates/harness-cli/src/main.rs:14562-14567`,
-`crates/harness-cli/src/main.rs:14607-14612`.
+Source: `crates/firm-cli/src/main.rs:14562-14567`,
+`crates/firm-cli/src/main.rs:14607-14612`.
 
 Kimi 执行时产生 flat NDJSON transport frames，Harness 在内存归约并返回：
 
@@ -97,7 +97,7 @@ Kimi 执行时产生 flat NDJSON transport frames，Harness 在内存归约并�
 - `Evidence`（source_type = `kimi_delivery_session`）；
 - `DeliveryOutcome.summary`（来自 assistant content）；
 - no native usage/model/cost/structured frame in `-p` mode，走 degraded fallback
-  (`crates/harness-cli/src/main.rs:14658-14763`)。
+  (`crates/firm-cli/src/main.rs:14658-14763`)。
 
 ## Event Sources
 
@@ -119,7 +119,7 @@ Kimi 产生的事件通过以下源进来：
    - source_ref = `native-session:kimi:{resolved_session_id}`
    - summary = Kimi stream-json delivery summary
 
-Source: `crates/harness-cli/src/main.rs:14687-14733`.
+Source: `crates/firm-cli/src/main.rs:14687-14733`.
 
 ## Reducer Mapping
 
@@ -140,7 +140,7 @@ Kimi uses kimi-native parsing:
 - `infer_kimi_status` treats clean exit with frames as success, clean empty output as stale,
   and non-zero exit as failed.
 
-Source: `crates/harness-cli/src/main.rs:14360-14430`.
+Source: `crates/firm-cli/src/main.rs:14360-14430`.
 
 Kimi frames are reduced in memory to a delivery result and a mode-aware native
 session binding. There is no durable Kimi stream-ingest ledger; chat, tool,
@@ -151,7 +151,7 @@ Queue discipline（来自 harness，不由 provider 定义）：
 - 投递前：消息锁定在 `delivery_status = queued`
 - 投递中：更新为 `delivery_status = in_progress`
 - 投递后：若成功则 `delivery_status = delivered`；若失败重试或 `failed`
-- claim/lease 原子性由 harness-store 负责，provider adapter 只执行 delivery
+- claim/lease 原子性由 firm-store 负责，provider adapter 只执行 delivery
 
 ## Permission Model
 
@@ -166,7 +166,7 @@ Kimi interactive CLI exposes standalone permission flags:
 The adapter keeps a `map_permission` implementation for trait conformance and for the ACP
 session driver below — what was previously "possible future interactive/ACP invocation" is now
 the v0 selected path for Agent Team member runs (see
-[../decisions/0025-agent-team-run-control-plane.md](../decisions/0025-agent-team-run-control-plane.md)):
+[../decisions/0025-agent-team-run-control-plane.md](../../decisions/0025-agent-team-run-control-plane.md)):
 
 ```text
 ReadOnly        -> --plan
@@ -174,7 +174,7 @@ WorkspaceWrite  -> --auto
 FullAccess      -> --yolo
 ```
 
-Source: `crates/harness-cli/src/main.rs:14779-14790`.
+Source: `crates/firm-cli/src/main.rs:14779-14790`.
 
 But the real `kimi -p` headless delivery path does **not** use them. Kimi v0.18 rejects permission
 flags combined with `--prompt` / `-p`, so `spawn_kimi_ephemeral` and `run_kimi_exec_delivery_real`
@@ -188,11 +188,11 @@ Kimi CLI flag. Kimi declares `enforces_read_only = false` in `ProviderCapabiliti
 leaf runner reads that capability: a read-only leaf whose provider can't enforce read-only is run in
 a throwaway git worktree anyway, so any writes land in a discardable checkout instead of the live
 repo (`provider_enforces_read_only` / `step_needs_isolation`,
-`crates/harness-cli/src/main.rs`). On a non-git project there is no worktree to isolate into, so the
+`crates/firm-cli/src/main.rs`). On a non-git project there is no worktree to isolate into, so the
 leaf degrades to the shared cwd with a printed warning that its writes are not contained.
 
-Source: `crates/harness-cli/src/main.rs:14471-14478`,
-`crates/harness-cli/src/main.rs:14607-14612`.
+Source: `crates/firm-cli/src/main.rs:14471-14478`,
+`crates/firm-cli/src/main.rs:14607-14612`.
 
 Provider config remains provider-neutral:
 
@@ -210,7 +210,7 @@ Provider config remains provider-neutral:
 ## ACP Session Driver (Agent Team v0)
 
 For Agent Team (ADR
-[0025](../decisions/0025-agent-team-run-control-plane.md)) the kimi member drive surface is the
+[0025](../../decisions/0025-agent-team-run-control-plane.md)) the kimi member drive surface is the
 ACP (Agent Client Protocol) JSON-RPC session over stdio, not one-shot print mode:
 
 `initialize -> session/new|session/resume -> session/prompt`; `session/load` is
@@ -333,11 +333,11 @@ redacted user operation under ADR 0032.
 
 `spawn_kimi_ephemeral` sets `tokens`, `model`, `structured`, and `cost_usd` to `None`
 because Kimi `-p` stream-json carries no usage/model/cost frame
-(`crates/harness-cli/src/main.rs:14497-14516`).
+(`crates/firm-cli/src/main.rs:14497-14516`).
 
 ## Dashboard Health Signals
 
-Dashboard reads `runtime_health` / session records computed by harness-cli:
+Dashboard reads `runtime_health` / session records computed by firm-cli:
 
 ```json
 {
@@ -365,7 +365,7 @@ so the meaningful layers are binary endpoint, session, and delivery.
 The reviewed ACP surface is `initialize` and
 `session/{new,resume,load,set_config_option,prompt,cancel,update,request_permission}`.
 None of them reports account quota, usage, or rate limits, so
-`harness member preflight --provider kimi` returns
+`firm member preflight --provider kimi` returns
 `state: unknown, evidence_source: not_exposed` with an empty `windows` list.
 No percentage may be approximated from local logs.
 
@@ -395,16 +395,16 @@ cost              false (token-estimate fallback)
 ```
 
 Source: `ProviderCapabilities::kimi_exec` in
-`crates/harness-core/src/lib.rs`.
+`crates/firm-core/src/lib.rs`.
 
 The registry tests assert that Kimi is registered, reports `ProviderCapabilities::kimi_exec()`,
 uses `kimi.stream-json.ndjson`, and keeps schema/cost/resume false until proven
-(`crates/harness-cli/src/main.rs:17029-17049`).
+(`crates/firm-cli/src/main.rs:17029-17049`).
 
 `provider_price_per_mtok("kimi")` currently returns placeholder estimate `(0.60, 2.50)`.
 The source warns this is only a workflow spend bound, not billing truth, and must be confirmed
 against Moonshot pricing or a future live usage frame before spend decisions are trusted
-(`provider_price_per_mtok` in `crates/harness-core/src/lib.rs`).
+(`provider_price_per_mtok` in `crates/firm-core/src/lib.rs`).
 
 ## Fallback Modes
 
@@ -427,7 +427,7 @@ against Moonshot pricing or a future live usage frame before spend decisions are
 
 6. **Resume fallback** — only a parsed `session.resume_hint.session_id` is exposed as resumable.
    Synthetic fallback session ids are not surfaced as resume tokens
-   (`crates/harness-cli/src/main.rs:14675-14685`).
+   (`crates/firm-cli/src/main.rs:14675-14685`).
 
 7. **Reconciliation hook** — 可通过 `agent reconcile` 手工修复状态（与 Codex / Claude 同）。
 
@@ -450,7 +450,7 @@ against Moonshot pricing or a future live usage frame before spend decisions are
 6. **Stale comments must not override parser truth** — any old comment claiming Claude-shaped Kimi
    output is superseded by the live v0.18 parser tests and kimi-native reducer. The regression test
    proves Claude reply extraction fails on real Kimi frames
-   (`crates/harness-cli/src/main.rs:16945-16980`).
+   (`crates/firm-cli/src/main.rs:16945-16980`).
 
 ## Validation Gates
 
@@ -479,18 +479,18 @@ against Moonshot pricing or a future live usage frame before spend decisions are
 Kimi is the third registry-routed provider after Codex and Claude. The relevant sequencing is:
 
 1. **Provider registry** — Kimi is registered through `provider_registry()` and resolved through
-   `provider_adapter(name)`, not hard-coded dispatch (`crates/harness-cli/src/main.rs:14905-14915`).
+   `provider_adapter(name)`, not hard-coded dispatch (`crates/firm-cli/src/main.rs:14905-14915`).
 
 2. **Kimi-native parser** — flat NDJSON parser and reducer are required because Claude parser cannot
-   extract Kimi replies (`crates/harness-cli/src/main.rs:14349-14417`,
-   `crates/harness-cli/src/main.rs:16968-16980`).
+   extract Kimi replies (`crates/firm-cli/src/main.rs:14349-14417`,
+   `crates/firm-cli/src/main.rs:16968-16980`).
 
 3. **Delivery implementation** — `run_kimi_delivery` binds NativeSessionRef and records only
    delivery status, explicit outcome, and promoted evidence under provider `kimi`.
 
 4. **Capability honesty** — core keeps Kimi degraded except streaming until live behavior proves
    resume/schema/cost/MCP/hooks/subagents
-   (`ProviderCapabilities::kimi_exec` in `crates/harness-core/src/lib.rs`).
+   (`ProviderCapabilities::kimi_exec` in `crates/firm-core/src/lib.rs`).
 
 5. **Future hardening** — once Kimi live usage, schema, resume, or tool control become stable,
    update `ProviderCapabilities::kimi_exec()`, parser tests, integration docs, and dashboard health

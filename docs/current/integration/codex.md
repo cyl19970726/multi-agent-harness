@@ -6,7 +6,7 @@ status: implementation reference; Work/WorkDelivery target pending ADR 0050
 
 This document defines the current Codex provider contract for Star Harness.
 Provider-neutral lifecycle and mailbox semantics live in
-[Agent Runtime](../agent-runtime.md); this file only explains how Codex
+Agent Runtime; this file only explains how Codex
 implements them.
 
 ## Current Mode Boundary
@@ -20,7 +20,7 @@ implements them.
 Harness never silently falls back from app-server to exec. Provider brand,
 execution-mode capability, adapter coverage, and product permission remain
 separate claims. See
-[ADR 0031](../decisions/0031-interactive-provider-modes-and-version-drift.md).
+[ADR 0031](../../decisions/0031-interactive-provider-modes-and-version-drift.md).
 
 ### Model, effort, and service tier
 
@@ -126,7 +126,7 @@ owned by Harness; the user's Codex Desktop Host task is normally owned by the
 Desktop app. TeamRuns therefore bind the Host explicitly:
 
 ```bash
-harness team-run create ... \
+firm team-run create ... \
   --host-surface codex-app \
   --host-thread-id <Codex hook session_id>
 ```
@@ -140,7 +140,7 @@ continuation loop.
 If mail arrives after Desktop is already idle, no hook event occurs. Unless
 Harness owns a live app-server connection for that Host, the mail remains
 durable until the next prompt/resume. Known thread identity is not live
-connection ownership. Full contract: [ADR 0040](../decisions/0040-native-host-inbox-delivery.md).
+connection ownership. Full contract: [ADR 0040](../../decisions/0040-native-host-inbox-delivery.md).
 
 ## Collaboration And Planning
 
@@ -159,14 +159,14 @@ Host -> Member: DECISION: Execute.
 Codex may use native Goal/Plan features internally in the same native thread,
 but their raw updates remain provider-native activity. They do not change Work
 owner/status, Harness permission, or Host acceptance. See
-[ADR 0039](../decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md).
+[ADR 0039](../../decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md).
 
 ## Native Continuation
 
 Codex app-server exposes a native Goal continuation path, but Harness must not
 confuse that capability with the current Work or run it beside the
 ordinary Host-driven loop. The provider-neutral contract is
-[Member Continuation Model](../member-continuation-model.md).
+Member Continuation Model.
 
 A 2026-07-28 canary proved the failure mode: `thread/goal/set(active)` started a
 provider-owned cycle while Harness also called `turn/start`. Two top-level
@@ -260,9 +260,9 @@ resume from native session
 MCP uses `team_run_close_member` and `team_run_reopen_member`. CLI uses:
 
 ```bash
-harness team-run close-member --id <team-run-id> \
+firm team-run close-member --id <team-run-id> \
   --member-run-id <member-run-id> --requested-by host --reason <reason>
-harness team-run reopen-member --id <team-run-id> \
+firm team-run reopen-member --id <team-run-id> \
   --member-run-id <member-run-id> --reopened-by host --reason <reason>
 ```
 
@@ -271,7 +271,7 @@ harness team-run reopen-member --id <team-run-id> \
 Provider capability claims are execution-mode and version specific. Run:
 
 ```bash
-harness member providers --fail-on-review
+firm member providers --fail-on-review
 ```
 
 An unreviewed Codex version is `review_required`, not silently compatible.
@@ -292,7 +292,7 @@ RPCs, which complete after `initialize` + `initialized` and therefore require
 no `thread/start`, no rollout, and no billable turn:
 
 ```bash
-harness member preflight --provider codex --json
+firm member preflight --provider codex --json
 ```
 
 The contract, classification thresholds, start guard, and truth matrix live in

@@ -43,13 +43,13 @@ consequences, affected modules, and validation path.
 | [0042](0042-company-store-execution-space-project-binding.md) | active | Company Store, Execution Space, and Project Binding are distinct identities |
 | [0044](0044-durable-team-supervision-and-typed-mail.md) | active | One durable Supervisor lease owns Provider control; typed mail and atomic delivery claims make multi-client coordination safe |
 | [0045](0045-company-owned-standing-agent-execution-relation.md) | historical implementation; target superseded by 0052 | Current StandingAgent-to-AgentMember compatibility join; not the target identity model |
-| [0046](0046-supervised-agentos-self-hosting-loop.md) | amended by 0052 | Supervising Operator and Runtime Supervisor boundaries remain; separate StandingAgent target is superseded |
+| [0046](0046-supervised-agentos-self-hosting-loop.md) | superseded by the Agent Firm Mental Model | Supervising Operator and Runtime Supervisor boundaries remain; separate StandingAgent target is superseded |
 | [0047](0047-scoped-company-authority-broker.md) | scoped target; implementation pending | Sensitive Company effects only; routine Team scheduling follows 0052 topology |
 | [0048](0048-human-rooted-company-constitution.md) | scoped target; implementation pending | Sensitive or root Company effects only; routine Team scheduling follows 0052 topology |
 | [0049](0049-member-coordination-and-runtime-lifecycle.md) | active, implemented | Member coordination and disposable adapter runtime have separate Close, Reopen, and Retire semantics |
-| [0050](0050-agent-team-work-board-and-message-boundary.md) | amended by 0052; implementation pending | Work is the scheduling primitive; permanent Company WorkItem separation is superseded |
+| [0050](0050-agent-team-work-board-and-message-boundary.md) | superseded by the Agent Firm Mental Model; implementation pending | Work is the scheduling primitive; permanent Company WorkItem separation is superseded |
 | [0051](0051-single-intent-spine.md) | accepted; staged breaking cutover | Mission absorbs Wave as an append-only Mission Log; provider-native goal/plan are derived drive cache, never truth |
-| [0052](0052-nested-agent-teams-are-the-agent-organization.md) | accepted target; implementation pending | AgentMember is the durable agent identity; Organization is recursive AgentTeam topology over one Work kernel; it amends the Work scope in 0050 |
+| [0052](0052-nested-agent-teams-are-the-agent-organization.md) | superseded by [mental model](../mental/agent-firm-mental-model.md) | Proposed recursive AgentTeam topology; replaced by flat Agent Teams (no nesting). See the Agent Firm Mental Model. |
 | [0053](0053-finance-contract-layer-retirement.md) | accepted; staged retirement | Finance contract layer retired; Commitment/Payment code remains dormant until decommission |
 | [0054](0054-ai-first-docs-page-model-and-storage.md) | accepted; implementation pending | AI-first Docs: closed block kind set, Markdown-first serialization, whole-page revisions, JSONL canonical store with derived SQLite read layer and content-addressed blobs |
 
