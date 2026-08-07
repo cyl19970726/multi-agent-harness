@@ -13225,6 +13225,363 @@ fn team_run_board_summary_text(store: &HarnessStore, team_run_id: &str) -> CliRe
     Ok(lines.join("\n"))
 }
 
+// ── team-run reconcile (issue #387 P1-3) ──────────────────────────────
+
+/// One row in the reconcile ledger: a single Work linked to its
+/// GitHub issues and PRs, plus the landing status of any linked PR.
+#[derive(Debug, Clone, serde::Serialize)]
+struct ReconciledRow {
+    work_id: String,
+    work_title: String,
+    work_status: String,
+    owner_member_id: Option<String>,
+    /// GitHub issues linked to this Work (owner/repo#N).
+    #[serde(default)]
+    issues: Vec<String>,
+    /// GitHub PRs linked to this Work with live merge status.
+    #[serde(default)]
+    pull_requests: Vec<ReconciledPr>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ReconciledPr {
+    url: String,
+    /// owner/repo#N compact form.
+    ref_: String,
+    /// `open`, `closed`, `merged`, or `unknown` (when gh is unavailable).
+    status: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ReconcileResult {
+    team_run_id: String,
+    works_total: usize,
+    rows: Vec<ReconciledRow>,
+    /// Discrepancy flags found during reconciliation.
+    discrepancies: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ReconcileSummary {
+    team_run_id: String,
+    works_total: usize,
+    done_count: usize,
+    cancelled_count: usize,
+    open_count: usize,
+    in_progress_count: usize,
+    review_count: usize,
+    blocked_count: usize,
+    /// Works done but with no merged PR.
+    done_no_merged_pr: Vec<String>,
+    /// Works cancelled but a linked PR still exists (open/merged).
+    cancelled_with_pr: Vec<String>,
+    /// Works in review for longer than the timeout (hours).
+    review_beyond_timeout: Vec<String>,
+    /// Cancelled works that still have open GitHub issues.
+    cancelled_open_issues: Vec<String>,
+    rows: Vec<ReconciledRow>,
+    discrepancies: Vec<String>,
+}
+
+/// Default review timeout in hours (24h per ADR for accept).
+const REVIEW_TIMEOUT_HOURS: u64 = 24;
+
+/// Fetch live PR status from GitHub API. Returns `None` when `gh` is
+/// unavailable; `unknown` when the PR can't be found (e.g. deleted).
+fn live_pr_status(owner: &str, repo: &str, number: u64) -> Option<String> {
+    if !gh_available() {
+        return None;
+    }
+    let value = gh_json(&[
+        "pr",
+        "view",
+        &number.to_string(),
+        "--repo",
+        &format!("{owner}/{repo}"),
+        "--json",
+        "state",
+    ])
+    .ok()?;
+    value
+        .get("state")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Fetch live issue status from GitHub API.
+fn live_issue_status(owner: &str, repo: &str, number: u64) -> Option<String> {
+    if !gh_available() {
+        return None;
+    }
+    let value = gh_json(&[
+        "issue",
+        "view",
+        &number.to_string(),
+        "--repo",
+        &format!("{owner}/{repo}"),
+        "--json",
+        "state",
+    ])
+    .ok()?;
+    value
+        .get("state")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Build the reconcile ledger for a team run.
+///
+/// When `refresh` is true, live GitHub status is fetched for every linked
+/// PR and issue; otherwise the stored snapshot is used. See issue #387 P1-3.
+fn team_run_reconcile(
+    store: &HarnessStore,
+    team_run_id: &str,
+    refresh: bool,
+) -> CliResult<ReconcileSummary> {
+    latest_team_run(store, team_run_id)?;
+    let works: Vec<Work> = store
+        .latest_works()?
+        .into_iter()
+        .filter(|work| work.team_run_id == team_run_id)
+        .collect();
+
+    let mut rows: Vec<ReconciledRow> = Vec::new();
+    let mut done_no_merged_pr: Vec<String> = Vec::new();
+    let mut cancelled_with_pr: Vec<String> = Vec::new();
+    let mut review_beyond_timeout: Vec<String> = Vec::new();
+    let mut cancelled_open_issues: Vec<String> = Vec::new();
+
+    let now_epoch = current_unix_ms_u64();
+    let review_timeout_ms = REVIEW_TIMEOUT_HOURS * 3600 * 1000;
+
+    for work in &works {
+        let mut issues: Vec<String> = Vec::new();
+        let mut pull_requests: Vec<ReconciledPr> = Vec::new();
+
+        for link in &work.github_links {
+            match link.kind {
+                GitHubLinkKind::Issue => {
+                    let ref_ = format!("{}/{}#{}", link.owner, link.repo, link.number);
+                    issues.push(ref_);
+                }
+                GitHubLinkKind::PullRequest => {
+                    let ref_ = format!("{}/{}#{}", link.owner, link.repo, link.number);
+                    let status = if refresh {
+                        live_pr_status(&link.owner, &link.repo, link.number)
+                            .unwrap_or_else(|| {
+                                link.status.clone().unwrap_or_else(|| "unknown".to_string())
+                            })
+                    } else {
+                        link.status.clone().unwrap_or_else(|| "unknown".to_string())
+                    };
+                    pull_requests.push(ReconciledPr {
+                        url: link.url.clone(),
+                        ref_,
+                        status,
+                    });
+                }
+            }
+        }
+
+        let work_status = serde_snake_label(&work.status);
+
+        // ── Discrepancy detection ────────────────────────────────────
+        // 1. Work done but no merged PR (when PR links exist).
+        if work.status == WorkStatus::Done
+            && !pull_requests.is_empty()
+            && !pull_requests.iter().any(|pr| pr.status == "MERGED")
+        {
+            done_no_merged_pr.push(work.id.clone());
+        }
+
+        // 2. Work cancelled but a linked PR exists.
+        if work.status == WorkStatus::Cancelled && !pull_requests.is_empty() {
+            cancelled_with_pr.push(work.id.clone());
+        }
+
+        // 3. Work in review beyond timeout.
+        if work.status == WorkStatus::Review {
+            // updated_at is `unix-ms:<millis>`; parse the millis portion.
+            if let Some(ms_str) = work.updated_at.strip_prefix("unix-ms:") {
+                if let Ok(ts_ms) = ms_str.parse::<u64>() {
+                    let age_ms = now_epoch.saturating_sub(ts_ms);
+                    if age_ms > review_timeout_ms {
+                        review_beyond_timeout.push(format!(
+                            "{} ({}h)",
+                            work.id,
+                            age_ms / 3600 / 1000
+                        ));
+                    }
+                }
+            }
+        }
+
+        // 4. Cancelled work with linked issues that are still open.
+        if work.status == WorkStatus::Cancelled && !issues.is_empty() {
+            for link in &work.github_links {
+                if link.kind == GitHubLinkKind::Issue {
+                    let issue_status = if refresh {
+                        live_issue_status(&link.owner, &link.repo, link.number)
+                    } else {
+                        link.status.clone()
+                    };
+                    if issue_status.as_deref() == Some("OPEN") {
+                        cancelled_open_issues.push(format!(
+                            "{} ({}/{}/issues/{})",
+                            work.id, link.owner, link.repo, link.number
+                        ));
+                    }
+                }
+            }
+        }
+
+        rows.push(ReconciledRow {
+            work_id: work.id.clone(),
+            work_title: work.title.clone(),
+            work_status,
+            owner_member_id: work.owner_member_id.clone(),
+            issues,
+            pull_requests,
+        });
+    }
+
+    let mut discrepancies: Vec<String> = Vec::new();
+    if !done_no_merged_pr.is_empty() {
+        discrepancies.push(format!(
+            "done without merged PR: {}",
+            done_no_merged_pr.join(", ")
+        ));
+    }
+    if !cancelled_with_pr.is_empty() {
+        discrepancies.push(format!(
+            "cancelled but PR exists: {}",
+            cancelled_with_pr.join(", ")
+        ));
+    }
+    if !review_beyond_timeout.is_empty() {
+        discrepancies.push(format!(
+            "review beyond {}h timeout: {}",
+            REVIEW_TIMEOUT_HOURS,
+            review_beyond_timeout.join(", ")
+        ));
+    }
+    if !cancelled_open_issues.is_empty() {
+        discrepancies.push(format!(
+            "cancelled with open issues: {}",
+            cancelled_open_issues.join(", ")
+        ));
+    }
+
+    let mut done_count = 0usize;
+    let mut cancelled_count = 0usize;
+    let mut open_count = 0usize;
+    let mut in_progress_count = 0usize;
+    let mut review_count = 0usize;
+    let mut blocked_count = 0usize;
+    for work in &works {
+        match work.status {
+            WorkStatus::Open => open_count += 1,
+            WorkStatus::InProgress => in_progress_count += 1,
+            WorkStatus::Blocked => blocked_count += 1,
+            WorkStatus::Review => review_count += 1,
+            WorkStatus::Done => done_count += 1,
+            WorkStatus::Cancelled => cancelled_count += 1,
+        }
+    }
+
+    Ok(ReconcileSummary {
+        team_run_id: team_run_id.to_string(),
+        works_total: works.len(),
+        done_count,
+        cancelled_count,
+        open_count,
+        in_progress_count,
+        review_count,
+        blocked_count,
+        done_no_merged_pr,
+        cancelled_with_pr,
+        review_beyond_timeout,
+        cancelled_open_issues,
+        rows,
+        discrepancies,
+    })
+}
+
+fn reconcile_json(result: &ReconcileSummary) -> serde_json::Value {
+    serde_json::to_value(result).unwrap_or_default()
+}
+
+/// Print the reconcile ledger as a terminal table.
+fn print_reconcile_table(result: &ReconcileSummary) {
+    // Header: status summary.
+    println!(
+        "team-run {}  works={}  done={}  cancelled={}  open={}  in_progress={}  review={}  blocked={}",
+        result.team_run_id,
+        result.works_total,
+        result.done_count,
+        result.cancelled_count,
+        result.open_count,
+        result.in_progress_count,
+        result.review_count,
+        result.blocked_count,
+    );
+
+    // Table: work_id | status | issues | PRs
+    println!(
+        "{:<36}  {:<12}  {:<24}  {}",
+        "WORK", "STATUS", "ISSUES", "PRS"
+    );
+    println!(
+        "{:-<36}  {:-<12}  {:-<24}  {:-<40}",
+        "", "", "", ""
+    );
+
+    for row in &result.rows {
+        let issues_str = if row.issues.is_empty() {
+            "-".to_string()
+        } else {
+            row.issues.join(", ")
+        };
+        let prs_str = if row.pull_requests.is_empty() {
+            "-".to_string()
+        } else {
+            row.pull_requests
+                .iter()
+                .map(|pr| format!("{} [{}]", pr.ref_, pr.status))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        println!(
+            "{:<36}  {:<12}  {:<24}  {}",
+            truncate_or(&row.work_id, 36),
+            &row.work_status,
+            truncate_or(&issues_str, 24),
+            prs_str,
+        );
+    }
+
+    // Discrepancies.
+    if !result.discrepancies.is_empty() {
+        println!();
+        println!("── Discrepancies ──");
+        for discrepancy in &result.discrepancies {
+            println!("  • {discrepancy}");
+        }
+    }
+
+    if result.works_total == 0 {
+        println!("(no works)");
+    }
+}
+
+fn truncate_or(text: &str, max_len: usize) -> String {
+    if text.len() <= max_len {
+        text.to_string()
+    } else {
+        format!("{}…", &text[..max_len.saturating_sub(1)])
+    }
+}
+
 /// Parse `owner/repo#N` into `(owner, repo, number)` for the `--github-issue`
 /// and `--github-pr` flags. `N` must be a positive integer.
 fn parse_github_ref(raw: &str) -> CliResult<(String, String, u64)> {
@@ -14301,7 +14658,7 @@ fn team_run_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run create|list|status|board-summary|work|recover|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|wait|complete|cancel",
+        "team-run create|list|status|board-summary|work|recover|host-inbox|bind-host|inbox|ack|reconcile|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|wait|complete|cancel",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
@@ -14885,6 +15242,16 @@ fn team_run_command(
                         "queued"
                     }
                 );
+            }
+        }
+        "reconcile" => {
+            let id = required(args, "--id")?;
+            let json = has_flag(args, "--json");
+            let result = team_run_reconcile(store, &id, has_flag(args, "--refresh"))?;
+            if json {
+                print_json(&reconcile_json(&result))?;
+            } else {
+                print_reconcile_table(&result);
             }
         }
         "send" => {
