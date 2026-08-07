@@ -270,6 +270,36 @@ Work; never keep executing a Work already in `review`, `blocked`, `done`, or
   main checkout or in `.worktrees/`. Report the absolute worktree path, branch,
   and commit in your submission.
 
+- **Submission format.** Every `work submit --result` must follow this
+  format so the Host can review efficiently:
+
+  ```
+  ## RESULT
+  done | blocked | failed
+
+  ## SUMMARY
+  <=10 lines of what was accomplished
+
+  ## COVERAGE
+  - bullet list of what the output covers
+  - each major area addressed
+
+  ## KEY DECISIONS
+  - decisions made and why (if applicable)
+
+  ## WORKTREE
+  Absolute path, branch, commit hash
+
+  ## ARTIFACTS
+  - PR URL (if code/docs changed)
+  - CI run URL (if applicable)
+  ```
+
+  The `--result` should be pasted from this template, not re-typed.
+  The `## WORKTREE` section tells Host where to find your changes.
+  After Host accepts, the review feedback is in the work's `result_summary`
+  and the PR comments — check both.
+
 When criteria are met, refresh the latest Work version and submit a durable
 result summary. Add artifact and check refs when the completion criteria or
 Host review requires them; they are not universal submission fields:
