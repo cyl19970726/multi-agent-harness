@@ -3,7 +3,7 @@
 set -uo pipefail
 
 payload="$(cat 2>/dev/null || true)"
-harness_bin="${HARNESS_BIN:-harness}"
+harness_bin="${HARNESS_BIN:-${HOME}/.local/bin/harness}"
 command -v "$harness_bin" >/dev/null 2>&1 || exit 0
 
 hook_fields="$(
