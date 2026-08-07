@@ -113,7 +113,7 @@ echo
 echo "Building Harness..."
 (
   cd "${REPO_ROOT}"
-  cargo build -p harness-cli
+  cargo build -p firm-cli
 )
 
 VERSION_DIR="${INSTALL_BASE}/${VERSION}"
