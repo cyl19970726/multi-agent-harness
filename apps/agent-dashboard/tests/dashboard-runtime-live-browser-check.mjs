@@ -367,7 +367,7 @@ try {
   await context.setOffline(true);
   await waitForDomain(page, "runtime", "reconnecting");
   runHarness([
-    "--company", "company-a", "company", "org", "create-unit",
+    "company", "org", "create-unit",
     "--id", "org-reconnect-live", "--organization", "company",
     "--name", "Reconnect Org Unit", "--purpose", "Written while Runtime is disconnected",
     "--human-lead", "human-live-owner", "--policy", "company.records.write",
