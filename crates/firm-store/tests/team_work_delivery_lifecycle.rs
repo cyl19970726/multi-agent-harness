@@ -182,6 +182,8 @@ fn base_work(run_id: &str, id: &str) -> Work {
         github_links: Vec::new(),
         gates: Vec::new(),
         workspace: None,
+        acceptance_evidence: None,
+        review_timeout_hours: None,
         version: 0,
         created_at: String::new(),
         updated_at: String::new(),

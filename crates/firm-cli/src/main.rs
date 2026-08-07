@@ -17,7 +17,7 @@ use harness_core::{
     validate_agent_team_topology, validate_host_authority_cutover, AgentEvent, AgentMember,
     AgentMemberStatus, AgentMessageRoute, AgentProviderConfig, AgentRuntime, AgentRuntimeHealth,
     AgentRuntimeStatus, AgentTeam, AgentTeamRun, AgentTeamStatus, DelegationRun,
-    DurableAgentMember, DurableAgentMemberStatus, Evidence, ExecutionSpace, GateEngine, GateResult,
+    DurableAgentMember, DurableAgentMemberStatus, Evidence, ExecutionSpace, GateEngine,
     GateSpec, GateVerdict, GitHubLink,
     GitHubLinkKind, HostAttention, HostAttentionStatus, HostControlMode, HostDispatchConfig,
     LaunchMcp,
@@ -36,8 +36,10 @@ use harness_core::{
     TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind,
     TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
     TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Wave, WaveExecutorKind, WaveStatus,
-    Work, WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkDelivery, WorkDeliveryStatus,
-    WorkPriority, WorkStatus, WorkWorkspace, WorkWorkspaceKind, WorkflowArtifactFile, WorkflowArtifactManifest,
+    Work, WorkAcceptanceEvidence, WorkCausationRef, WorkClaimMode, WorkCommandContext,
+    WorkDelivery, WorkDeliveryStatus,
+    WorkPriority, WorkStatus, WorkWorkspace, WorkWorkspaceKind, WorkflowArtifactFile,
+    WorkflowArtifactManifest,
     WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
     WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
     EXECUTION_MODE_EXTERNAL_INTERACTIVE,
@@ -10870,6 +10872,8 @@ fn create_team_run(
                     github_links: Vec::new(),
                     gates: Vec::new(),
                     workspace: None,
+                    acceptance_evidence: None,
+                    review_timeout_hours: None,
                     version: 0,
                     created_at: String::new(),
                     updated_at: String::new(),
@@ -11006,6 +11010,8 @@ fn add_team_run_member(
                         github_links: Vec::new(),
                         gates: Vec::new(),
                         workspace: None,
+                        acceptance_evidence: None,
+                        review_timeout_hours: None,
                         version: 0,
                         created_at: String::new(),
                         updated_at: String::new(),
@@ -13593,7 +13599,7 @@ fn github_poll_host_context(run_id: &str, work_id: &str) -> WorkCommandContext {
 fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery|poll-github-ci|check-gates|workspace",
+        "team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery|poll-github-ci|check-gates|workspace|evidence-show",
     )?;
     match args[0].as_str() {
         "list" => {
@@ -13841,6 +13847,8 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 github_links,
                 gates,
                 workspace,
+                acceptance_evidence: None,
+                review_timeout_hours: None,
                 version: 0,
                 created_at: String::new(),
                 updated_at: String::new(),
@@ -14197,9 +14205,47 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                     }
                 }
             }
+            // Evidence gate (issue #387 P1-2): Host must provide delivery
+            // evidence or explicitly bypass with a reason.
+            let bypass_evidence = has_flag(args, "--bypass-evidence");
+            let bypass_reason = if bypass_evidence {
+                Some(required(args, "--reason")?)
+            } else {
+                None
+            };
+            let evidence_flag = has_flag(args, "--evidence");
+            let pr_url = value(args, "--pr-url");
+            let verification_output = value(args, "--verification-output");
+            let screenshot_path = value(args, "--screenshot-path");
+            let evidence = if bypass_evidence {
+                Some(WorkAcceptanceEvidence {
+                    pr_url: None,
+                    verification_output: None,
+                    screenshot_path: None,
+                    bypass_reason,
+                })
+            } else if evidence_flag || pr_url.is_some() || verification_output.is_some() || screenshot_path.is_some() {
+                let evidence = WorkAcceptanceEvidence {
+                    pr_url,
+                    verification_output,
+                    screenshot_path,
+                    bypass_reason: None,
+                };
+                if let Err(reason) = evidence.validate() {
+                    return Err(CliError::Usage(reason));
+                }
+                Some(evidence)
+            } else {
+                return Err(CliError::Usage(
+                    "evidence required: use --evidence with --pr-url, --verification-output, or \
+                     --screenshot-path; or --bypass-evidence --reason <reason> for non-code \
+                     deliverables".to_string(),
+                ));
+            };
             let work = store.accept_work(
                 &work_id,
                 expected_version,
+                evidence,
                 host_work_context(args),
             )?;
             append_work_event(
@@ -14267,8 +14313,25 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             current_unix_ms_u64(),
             &now_string(),
         )?),
+        "evidence-show" => {
+            let work_id = required(args, "--work-id")?;
+            let works = store.latest_works()?;
+            let work = works
+                .iter()
+                .find(|w| w.id == work_id)
+                .ok_or_else(|| CliError::Usage(format!("Work not found: {work_id}")))?;
+            match &work.acceptance_evidence {
+                Some(evidence) => print_json(evidence),
+                None => print_json(&serde_json::json!({
+                    "work_id": work_id,
+                    "status": work.status,
+                    "acceptance_evidence": null,
+                    "hint": "This work has not been accepted or was accepted before the evidence gate was enforced."
+                })),
+            }
+        }
         other => Err(CliError::Usage(format!(
-            "unknown team-run work command: {other}; usage: team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery"
+            "unknown team-run work command: {other}; usage: team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery|evidence-show"
         ))),
     }
 }
@@ -26874,6 +26937,8 @@ fn create_team_work_value(
         github_links: Vec::new(),
         gates: Vec::new(),
         workspace: None,
+        acceptance_evidence: None,
+        review_timeout_hours: None,
         version: 0,
         created_at: String::new(),
         updated_at: String::new(),
@@ -26954,7 +27019,38 @@ fn mutate_team_work_value(
             )
         }
         "accept" => {
-            let work = store.accept_work(work_id, expected_version, context)?;
+            // Evidence gate (issue #387 P1-2): parse optional evidence from the body.
+            let evidence = if let Some(evidence_obj) = body.get("evidence") {
+                let pr_url = evidence_obj
+                    .get("pr_url")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let verification_output = evidence_obj
+                    .get("verification_output")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let screenshot_path = evidence_obj
+                    .get("screenshot_path")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let bypass_reason = evidence_obj
+                    .get("bypass_reason")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let evidence = WorkAcceptanceEvidence {
+                    pr_url,
+                    verification_output,
+                    screenshot_path,
+                    bypass_reason,
+                };
+                if let Err(reason) = evidence.validate() {
+                    return Err(CliError::Usage(reason));
+                }
+                Some(evidence)
+            } else {
+                None
+            };
+            let work = store.accept_work(work_id, expected_version, evidence, context)?;
             let title = work.title.clone();
             (work, "accepted", format!("Work accepted: {title}"))
         }
