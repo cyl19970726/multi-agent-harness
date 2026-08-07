@@ -14008,6 +14008,7 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                     "one or more gates did not pass (see results above)".to_string(),
                 ));
             }
+            Ok(())
         }
         "request-changes" => {
             let reason = required(args, "--reason")?;
