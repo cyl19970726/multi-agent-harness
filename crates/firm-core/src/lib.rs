@@ -1155,52 +1155,6 @@ pub struct Evidence {
     pub goal_id: Option<String>,
 }
 
-/// Evidence attached to a Work acceptance by the Host.
-///
-/// The Host must provide at least one of `pr_url`, `verification_output`, or
-/// `screenshot_path` to prove delivery before accepting a Work. The
-/// `bypass_reason` field is set only when the Host explicitly overrides this
-/// requirement via `--bypass-evidence`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkAcceptanceEvidence {
-    /// URL of the merged/approved pull request that delivered the Work.
-    #[serde(default)]
-    pub pr_url: Option<String>,
-    /// Free-form verification output (e.g. command stdout proving success).
-    #[serde(default)]
-    pub verification_output: Option<String>,
-    /// Path to a screenshot or image file that proves delivery.
-    #[serde(default)]
-    pub screenshot_path: Option<String>,
-    /// If set, evidence requirement was bypassed. Stores the mandatory reason.
-    #[serde(default)]
-    pub bypass_reason: Option<String>,
-}
-
-impl WorkAcceptanceEvidence {
-    /// Requires at least one evidence ref or a bypass reason.
-    pub fn validate(&self) -> Result<(), String> {
-        if self.bypass_reason.is_some() {
-            return Ok(());
-        }
-        if self.pr_url.is_none()
-            && self.verification_output.is_none()
-            && self.screenshot_path.is_none()
-        {
-            return Err(
-                "evidence: at least one of --pr-url, --verification-output, or --screenshot-path \
-                 is required; use --bypass-evidence --reason <reason> for non-code deliverables"
-                    .to_string(),
-            );
-        }
-        Ok(())
-    }
-
-    pub fn is_bypass(&self) -> bool {
-        self.bypass_reason.is_some()
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Decision {
     pub id: String,
@@ -2237,6 +2191,42 @@ pub enum MemberRunStatus {
     Completed,
     Failed,
     Stopped,
+}
+
+/// Classification produced by a daemon-side progress probe of a member's
+/// provider-native session wire. The supervisor uses this signal to
+/// decide whether to raise a host attention, leave the member alone, or
+/// suggest a steer intervention.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberProbeClassification {
+    /// The member produced at least one edit (Write/Edit) in its recent turns.
+    Producing { edit_count: u32 },
+    /// High tool-fail rate (errors / non-zero exits on ≥ 50 % of tool calls)
+    /// AND zero edits in the probed window. The member is stuck.
+    Failing {
+        total_tool_calls: u32,
+        failed_tool_calls: u32,
+    },
+    /// Read/search/exec tool calls observed but no edits yet — the member is
+    /// still gathering context. Harmless, no intervention needed.
+    Investigating {
+        reads: u32,
+        execs: u32,
+        searches: u32,
+    },
+    /// At least 5 repeated identical tool invocations with zero edits.
+    /// The member is in a retry loop. After ≥ 3 consecutive WaitLoop
+    /// probes the daemon should emit a steer suggestion.
+    WaitLoop {
+        repeated_call: String,
+        repetition_count: u32,
+    },
+    /// The session wire has not been modified since the last probe.
+    /// The member is unresponsive (process may have died silently).
+    Dead {
+        last_modified_secs_ago: u64,
+    },
 }
 
 /// Durable coordination lifecycle of one MemberRun, separate from its
@@ -3290,10 +3280,6 @@ pub enum WorkStatus {
     Review,
     Done,
     Cancelled,
-    /// Work whose owning MemberRun was closed while it was InProgress.
-    /// The Work is no longer owned by any active member; the Host must
-    /// explicitly reassign it through the reassign queue (#387 P1-1).
-    Orphaned,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -3322,52 +3308,6 @@ pub struct WorkRef {
 pub struct WorkCausationRef {
     pub kind: String,
     pub id: String,
-}
-
-/// A work that was orphaned when its owning MemberRun was closed while
-/// the work was in progress.  Entries live in the reassign queue until the
-/// Host explicitly reassigns or cancels the work (#387 P1-1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReassignQueueStatus {
-    Pending,
-    Reassigned,
-    Cancelled,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReassignQueueEntry {
-    pub id: String,
-    pub work_id: String,
-    pub team_run_id: String,
-    pub member_run_id: String,
-    pub orphaned_at: String,
-    pub reason: String,
-    pub status: ReassignQueueStatus,
-    /// When status moved away from Pending.
-    #[serde(default)]
-    pub resolved_at: Option<String>,
-    /// The actor (Host/Member) that resolved this entry.
-    #[serde(default)]
-    pub resolved_by: Option<String>,
-    #[serde(default)]
-    pub created_at: String,
-    #[serde(default)]
-    pub updated_at: String,
-}
-
-/// Who or what caused a Work cancellation (#387 P1-1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CancellationInitiator {
-    /// Host explicitly cancelled the work.
-    HostIntervention,
-    /// Environment issue (e.g., workspace broken, provider down).
-    Environment,
-    /// Member's own output triggered cancellation (e.g., member-reported failure).
-    MemberOutput,
-    /// Owning MemberRun was closed while the work was in progress.
-    MemberClosed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3857,10 +3797,6 @@ pub struct Work {
     pub result_summary: Option<String>,
     #[serde(default)]
     pub blocker_reason: Option<String>,
-    /// Who or what initiated the cancellation (when status is Cancelled).
-    /// Records the provenance of the cancel event for attribution (#387 P1-1).
-    #[serde(default)]
-    pub cancellation_initiator: Option<CancellationInitiator>,
     #[serde(default)]
     pub artifact_refs: Vec<String>,
     #[serde(default)]
@@ -3873,15 +3809,6 @@ pub struct Work {
     /// Empty vec → manual-accept semantics preserved (back-compat).
     #[serde(default)]
     pub gates: Vec<GateSpec>,
-    /// Evidence the Host provided when accepting this Work (issue #387 P1-2).
-    /// `None` for Works accepted before this gate was enforced; `Some` after.
-    #[serde(default)]
-    pub acceptance_evidence: Option<WorkAcceptanceEvidence>,
-    /// If set, the Host must be alerted when this Work stays in `Review` longer
-    /// than this many hours. A `WorkReviewTimedOut` HostAttention is generated
-    /// when the timeout is exceeded (issue #387 P1-2).
-    #[serde(default)]
-    pub review_timeout_hours: Option<u32>,
     /// Where this Work executes. `None` → Member inherits the project root
     /// (back-compat with today's implicit behaviour). The harness creates
     /// the workspace before first member start and cleans it up on Work
@@ -3896,13 +3823,6 @@ pub struct Work {
 impl Work {
     pub fn is_terminal(&self) -> bool {
         matches!(self.status, WorkStatus::Done | WorkStatus::Cancelled)
-    }
-
-    /// Whether the work is orphaned — its owning member was closed while it
-    /// was in progress.  Orphaned works are not terminal; the Host can
-    /// reassign them.
-    pub fn is_orphaned(&self) -> bool {
-        matches!(self.status, WorkStatus::Orphaned)
     }
 
     /// Whether every declared prerequisite has reached Host-accepted `Done`.
@@ -3963,9 +3883,6 @@ pub enum WorkEventKind {
     ChangesRequested,
     Accepted,
     Cancelled,
-    /// Work was orphaned when its owning MemberRun was closed while it was
-    /// in progress (#387 P1-1).
-    Orphaned,
     Updated,
     Rebound,
     /// A compatibility TeamRun-scoped Work was explicitly promoted onto the
@@ -4408,13 +4325,12 @@ pub enum HostAttentionKind {
     WorkCancelled,
     WorkPrerequisiteCompleted,
     WorkDeliveryFailed,
-    /// A Work has stayed in `Review` beyond its `review_timeout_hours`.
-    WorkReviewTimedOut,
     MemberStoppedWithOwnedReadyWork,
     MemberFailedWithOwnedReadyWork,
-    /// A work was orphaned when its owning member was closed while the
-    /// work was in progress.  The Host should reassign or cancel it (#387 P1-1).
-    WorkReassignPending,
+    /// Daemon-internal probe classified the member as FAILING (high tool-fail
+    /// rate + zero edits). The Host must investigate — the daemon does NOT
+    /// auto-cancel on this signal.
+    MemberDistress,
 }
 
 /// Transport/intake state for one Host attention row.

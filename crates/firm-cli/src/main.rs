@@ -69,6 +69,7 @@ mod sse;
 mod supervisor_daemon;
 mod supervisor_wake;
 mod host_dispatcher;
+mod member_probe;
 mod workflow;
 
 #[derive(Debug, Error)]
@@ -14358,7 +14359,7 @@ fn team_run_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run create|list|status|board-summary|work|recover|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|wait|complete|cancel",
+        "team-run create|list|status|board-summary|work|recover|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|wait|complete|cancel|probe",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
@@ -14560,6 +14561,58 @@ fn team_run_command(
                 print_json(&interaction)?;
             } else {
                 println!("{}", interaction["id"].as_str().unwrap_or(&interaction_id));
+            }
+        }
+        "probe" => {
+            let member_run_id = required(args, "--member-run-id")?;
+            let tail_lines: usize = value(args, "--tail-lines")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(200);
+            let stale_secs: u64 = value(args, "--stale-secs")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(600);
+            let run_id = required(args, "--id")?;
+            let run = latest_team_run(store, &run_id)?;
+            let member = store
+                .member_runs()
+                .map_err(|e| CliError::Usage(format!("store error: {e}")))?
+                .into_iter()
+                .find(|m| m.id == member_run_id)
+                .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+            if member.team_run_id != run.id {
+                return Err(CliError::Usage(format!(
+                    "member run {member_run_id} does not belong to team run {}",
+                    run.id
+                )));
+            }
+            let session = member.native_session.as_ref().ok_or_else(|| {
+                CliError::Usage(format!(
+                    "member run {member_run_id} has no native session"
+                ))
+            })?;
+            let result = member_probe::probe_member(
+                session,
+                &member_run_id,
+                tail_lines,
+                std::time::Duration::from_secs(stale_secs),
+            )?;
+            if json {
+                print_json(&serde_json::json!({
+                    "member_run_id": result.member_run_id,
+                    "classification": serde_json::to_value(&result.classification).unwrap_or_default(),
+                    "lines_parsed": result.lines_parsed,
+                    "wire_path": result.wire_path,
+                }))?;
+            } else {
+                println!("member-run: {}", result.member_run_id);
+                println!(
+                    "  classification: {}",
+                    serde_json::to_string(&result.classification).unwrap_or_default()
+                );
+                println!("  lines parsed: {}", result.lines_parsed);
+                if let Some(ref path) = result.wire_path {
+                    println!("  wire path: {}", path.display());
+                }
             }
         }
         "list" => {
@@ -17789,6 +17842,10 @@ pub(crate) fn drive_prepared_team_run(
     let host_dispatch_config = HostDispatchConfig::default();
     let mut last_host_dispatch_poll = Instant::now()
         - Duration::from_secs(host_dispatch_config.poll_interval_secs);
+    // Probe tracker for member progress classification (issue #387 P1-4).
+    let probe_tracker = host_dispatcher::ProbeTracker::new(
+        Duration::from_secs(host_dispatch_config.poll_interval_secs),
+    );
     loop {
         if !lease_lost {
             if let Err(error) = ledger.require_supervisor_lease() {
@@ -17996,11 +18053,27 @@ pub(crate) fn drive_prepared_team_run(
                 >= Duration::from_secs(host_dispatch_config.poll_interval_secs)
         {
             last_host_dispatch_poll = Instant::now();
+            let active_members: Vec<MemberRun> = handles
+                .iter()
+                .map(|(_, (member, _))| member.clone())
+                .chain(
+                    latest_member_runs_in_append_order(&ledger.store)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|m| {
+                            m.team_run_id == run_id
+                                && m.coordination_is_active()
+                                && !handles.contains_key(&m.id)
+                        }),
+                )
+                .collect();
             match host_dispatcher::poll_and_dispatch(
                 &ledger.store,
                 &ledger,
                 &objective,
                 &host_dispatch_config,
+                &probe_tracker,
+                &active_members,
             ) {
                 Ok(outcome) if !outcome.is_noop() => {
                     ledger.fold_event(
@@ -18010,11 +18083,12 @@ pub(crate) fn drive_prepared_team_run(
                         &run_id,
                         "host_dispatcher",
                         &format!(
-                            "host dispatcher poll: inspected={}, handled={}, escalated={}, failed={}",
+                            "host dispatcher poll: inspected={}, handled={}, escalated={}, failed={}, probes={}",
                             outcome.inspected,
                             outcome.handled.len(),
                             outcome.escalated.len(),
                             outcome.failed.len(),
+                            outcome.probes.len(),
                         ),
                     )?;
                 }
