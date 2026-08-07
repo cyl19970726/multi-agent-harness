@@ -1,9 +1,12 @@
 import { useMemo, useState } from "react";
 import {
   AlertTriangle,
+  ArrowUpRight,
   Bot,
+  BriefcaseBusiness,
   ChevronDown,
   ChevronRight,
+  Monitor,
   Network,
   Search,
   ShieldCheck,
@@ -134,7 +137,7 @@ export function AgentTeamOrganization({
           <div className="space-y-2">{model.roots.map((root) => <TeamTreeBranch key={root.team.id} node={root} model={model} selectedId={selected?.team.id} expanded={expanded} visible={visible} onSelect={selectTeam} onToggle={toggleTeam} />)}</div>
         </section>
         <section className="min-h-0 overflow-y-auto p-5 lg:p-7" aria-label="Selected Agent Team detail">
-          {selected && <TeamDetail node={selected} snapshot={snapshot} onOpenTeam={() => openTeam(selected)} onOpenMember={(memberRun) => onSelectionChange?.({ surface: "team", teamId: memberRun.team_run_id, memberRunId: memberRun.id, orgView: undefined, orgTeamId: undefined, orgExpanded: undefined })} />}
+          {selected && <TeamDetail node={selected} snapshot={snapshot} onOpenTeam={() => openTeam(selected)} onOpenMember={(memberRun) => onSelectionChange?.({ surface: "team", teamId: memberRun.team_run_id, memberRunId: memberRun.id, orgView: undefined, orgTeamId: undefined, orgExpanded: undefined })} onSelectionChange={onSelectionChange} />}
         </section>
       </div>
 
@@ -143,7 +146,7 @@ export function AgentTeamOrganization({
           <button type="button" onClick={() => onSelectionChange?.({ orgTeamId: undefined })} className="min-h-11 px-1 text-primary">Organization</button>
           {path.map((entry) => <span key={entry.team.id} className="inline-flex items-center gap-1"><ChevronRight className="size-3" /><button type="button" onClick={() => selectTeam(entry.team.id)} className="min-h-11 max-w-40 truncate px-1">{entry.team.name ?? entry.team.id}</button></span>)}
         </nav>
-        {selected && <TeamDetail node={selected} snapshot={snapshot} compact onOpenTeam={() => openTeam(selected)} onOpenMember={(memberRun) => onSelectionChange?.({ surface: "team", teamId: memberRun.team_run_id, memberRunId: memberRun.id, orgView: undefined, orgTeamId: undefined, orgExpanded: undefined })} />}
+        {selected && <TeamDetail node={selected} snapshot={snapshot} compact onOpenTeam={() => openTeam(selected)} onOpenMember={(memberRun) => onSelectionChange?.({ surface: "team", teamId: memberRun.team_run_id, memberRunId: memberRun.id, orgView: undefined, orgTeamId: undefined, orgExpanded: undefined })} onSelectionChange={onSelectionChange} />}
         <div className="mt-4 space-y-2">
           <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Child Teams</p>
           {mobileChildren.length ? mobileChildren.map((child) => <button key={child.team.id} type="button" onClick={() => selectTeam(child.team.id)} className="flex min-h-12 w-full items-center justify-between rounded-xl border border-border bg-card px-3 text-left text-sm"><span>{child.team.name ?? child.team.id}</span><ChevronRight className="size-4 text-muted-foreground" /></button>) : <p className="rounded-xl border border-dashed border-border p-4 text-xs text-muted-foreground">No child Teams</p>}
@@ -163,7 +166,7 @@ function TeamTreeBranch({ node, model, selectedId, expanded, visible, onSelect, 
         <button type="button" aria-label={`${open ? "Collapse" : "Expand"} ${node.team.name ?? node.team.id}`} disabled={!children.length} onClick={() => onToggle(node.team.id)} className="grid size-10 shrink-0 place-items-center rounded-lg text-muted-foreground disabled:opacity-25">{open ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}</button>
         <button type="button" onClick={() => onSelect(node.team.id)} className="min-w-0 flex-1 rounded-lg px-2 py-1 text-left">
           <span className="block truncate text-sm font-semibold">{node.team.name ?? node.team.id}</span>
-          <span className="mt-1 flex flex-wrap gap-1"><Badge tone="muted" data-durable-status={node.team.status ?? "unknown"}>Durable · {node.team.status ?? "unknown"}</Badge><Badge tone={node.runtime.running ? "running" : "muted"} data-runtime-state={node.runtime.running ? "running" : "idle"}>Runtime · {node.runtime.running}/{node.runtime.total}</Badge></span>
+          <span className="mt-1 flex flex-wrap gap-1"><Badge tone="muted" data-durable-status={node.team.status ?? "unknown"}>Durable · {node.team.status ?? "unknown"}</Badge>{node.team.machine_id && <Badge tone="info"><Monitor className="size-2.5" /> {node.team.machine_id}</Badge>}<Badge tone={node.runtime.running ? "running" : "muted"} data-runtime-state={node.runtime.running ? "running" : "idle"}>Runtime · {node.runtime.running}/{node.runtime.total}</Badge></span>
         </button>
       </div>
       {open && children.length > 0 && <div className="ml-5 mt-2 space-y-2 border-l border-border pl-3">{children.map((child) => <TeamTreeBranch key={child.team.id} node={child} model={model} selectedId={selectedId} expanded={expanded} visible={visible} onSelect={onSelect} onToggle={onToggle} />)}</div>}
@@ -187,7 +190,7 @@ function OrganizationFilterControls({ query, durableStatus, runtimeFilter, unass
   </>;
 }
 
-function TeamDetail({ node, snapshot, compact = false, onOpenTeam, onOpenMember }: { node: OrgTeamNode; snapshot: DashboardSnapshot; compact?: boolean; onOpenTeam: () => void; onOpenMember: (member: MemberRun) => void }) {
+function TeamDetail({ node, snapshot, compact = false, onOpenTeam, onOpenMember, onSelectionChange }: { node: OrgTeamNode; snapshot: DashboardSnapshot; compact?: boolean; onOpenTeam: () => void; onOpenMember: (member: MemberRun) => void; onSelectionChange?: (selection: Partial<SelectionState>) => void }) {
   const runIds = new Set((snapshot.team_runs ?? []).filter((run) => run.agent_team_id === node.team.id).map((run) => run.id));
   const latestMemberRun = (memberId: string) => [...(snapshot.member_runs ?? [])]
     .filter((run) => Boolean(run.team_run_id && runIds.has(run.team_run_id)) && run.agent_member_id === memberId)
@@ -199,9 +202,22 @@ function TeamDetail({ node, snapshot, compact = false, onOpenTeam, onOpenMember 
           <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-primary">AgentTeam · depth {node.depth}</p>
           <h2 className="mt-1 break-words text-2xl font-semibold">{node.team.name ?? node.team.id}</h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">{node.team.description || "No durable Team description supplied."}</p>
+          {node.team.machine_id && (
+            <div className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground">
+              <Monitor className="size-3.5 text-primary" />
+              <span>Runs on <span className="font-mono text-foreground">{node.team.machine_id}</span></span>
+            </div>
+          )}
           <code className="mt-2 block break-all text-[10px] text-muted-foreground">{node.team.id}</code>
         </div>
-        <Button onClick={onOpenTeam} disabled={!node.latestRunId} title={node.latestRunId ? "Open newest TeamRun" : "No TeamRun exists for this Team"}>Open War Room</Button>
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={onOpenTeam} disabled={!node.latestRunId} title={node.latestRunId ? "Open newest TeamRun" : "No TeamRun exists for this Team"}>Open War Room</Button>
+          {node.team.id && (
+            <Button variant="secondary" onClick={() => onSelectionChange?.({ surface: "work", workView: "team-works", workTeamId: node.team.id, workItemId: undefined, workHostId: undefined, workMemberId: undefined, workStatus: undefined, workPriority: undefined, workSource: undefined, workDemand: undefined })} title="Filter Company Work by this Team">
+              <BriefcaseBusiness className="size-3.5" /> View Works
+            </Button>
+          )}
+        </div>
       </div>
       <div className="mt-4 grid gap-2 sm:grid-cols-3">
         <Fact label="Durable status" value={node.team.status ?? "unknown"} icon={<ShieldCheck className="size-3.5" />} dataAttribute="durable" />

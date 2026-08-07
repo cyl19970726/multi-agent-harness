@@ -32,6 +32,7 @@ export function TeamWorks({ snapshot, selection, loading = false, onSelectionCha
     hostId: selection.workHostId,
     memberId: selection.workMemberId,
     status: selection.workStatus,
+    priority: selection.workPriority,
     source: selection.workSource,
     demand: isDemand(selection.workDemand) ? selection.workDemand : undefined,
   };
@@ -45,11 +46,11 @@ export function TeamWorks({ snapshot, selection, loading = false, onSelectionCha
   }
 
   function clearFilters(): void {
-    onSelectionChange?.({ workTeamId: undefined, workHostId: undefined, workMemberId: undefined, workStatus: undefined, workSource: undefined, workDemand: undefined });
+    onSelectionChange?.({ workTeamId: undefined, workHostId: undefined, workMemberId: undefined, workStatus: undefined, workPriority: undefined, workSource: undefined, workDemand: undefined });
   }
 
   function openWork(work: Work): void {
-    onSelectionChange?.({ surface: "team", teamId: work.team_run_id, teamWorkId: work.id, memberRunId: undefined, workView: undefined, workTeamId: undefined, workHostId: undefined, workMemberId: undefined, workStatus: undefined, workSource: undefined, workDemand: undefined });
+    onSelectionChange?.({ surface: "team", teamId: work.team_run_id, teamWorkId: work.id, memberRunId: undefined, workView: undefined, workTeamId: undefined, workHostId: undefined, workMemberId: undefined, workStatus: undefined, workPriority: undefined, workSource: undefined, workDemand: undefined });
   }
 
   return (
@@ -57,9 +58,9 @@ export function TeamWorks({ snapshot, selection, loading = false, onSelectionCha
       <header className="shrink-0 border-b border-border bg-card/70 px-4 py-4 sm:px-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-primary">Work · Team Works</p>
-            <h1 className="mt-1 text-2xl font-semibold tracking-tight">Recursive Team demand</h1>
-            <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">One projection over native Team Work rows. Company WorkItems remain in their own view and are never blended into this list.</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-primary">Work · Company Work</p>
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight">All Works</h1>
+            <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">Cross-Team Company Work projection. Filter by Team, Status, or Priority. Individual Works belong to their owning War Room.</p>
           </div>
           <div className="flex flex-wrap gap-2">
             <Badge tone={model.counts.unassigned ? "warn" : "muted"}>{model.counts.unassigned} unassigned</Badge>
@@ -79,6 +80,7 @@ export function TeamWorks({ snapshot, selection, loading = false, onSelectionCha
           <Filter label="Host" value={selection.workHostId} onChange={(value) => updateFilter("workHostId", value)} options={model.facets.hosts} />
           <Filter label="Member" value={selection.workMemberId} onChange={(value) => updateFilter("workMemberId", value)} options={model.facets.members} />
           <Filter label="Status" value={selection.workStatus} onChange={(value) => updateFilter("workStatus", value)} options={model.facets.statuses.map((status) => ({ id: status, label: status }))} />
+          <Filter label="Priority" value={selection.workPriority} onChange={(value) => updateFilter("workPriority", value)} options={model.facets.priorities.map((p) => ({ id: p, label: p }))} />
           <Filter label="Source" value={selection.workSource} onChange={(value) => updateFilter("workSource", value)} options={model.facets.sources} />
           <Filter label="Demand" value={selection.workDemand} onChange={(value) => updateFilter("workDemand", value)} options={demandGroups.map((group) => ({ id: group.id, label: group.label }))} />
           <button type="button" disabled title="Milestone filter requires the target WorkRelation projection" className="min-h-11 shrink-0 rounded-lg border border-dashed border-border px-3 text-xs text-muted-foreground opacity-65 sm:min-h-9">Milestone unavailable</button>
@@ -121,11 +123,13 @@ export function TeamWorks({ snapshot, selection, loading = false, onSelectionCha
 
 function TeamWorkRow({ row, onOpen }: { row: ReturnType<typeof buildTeamWorksModel>["rows"][number]; onOpen: () => void }) {
   const statusLabel = row.work.status === "review" ? "Awaiting Host acceptance" : row.work.status;
+  const created = row.work.created_at ? formatShortDate(row.work.created_at) : undefined;
+  const due = row.work.due_at ? formatShortDate(row.work.due_at) : undefined;
   return (
     <button type="button" onClick={onOpen} className="group grid min-h-20 w-full gap-3 rounded-xl border border-border bg-card p-3 text-left shadow-sm transition-colors hover:border-primary/35 sm:grid-cols-[minmax(0,1fr)_auto]" data-team-work-id={row.work.id}>
       <span className="min-w-0">
         <span className="flex flex-wrap items-center gap-2"><span className="font-semibold text-foreground">{row.work.title}</span><Badge tone={workTone(row.work.status)}>{statusLabel}</Badge><Badge tone="muted">{row.work.priority}</Badge></span>
-        <span className="mt-1 block break-words text-xs text-muted-foreground">{row.teamPath} · {row.ownerLabel ? `Owner ${row.ownerLabel}` : "Unassigned"}</span>
+        <span className="mt-1 block break-words text-xs text-muted-foreground">{row.teamPath} · {row.ownerLabel ? `Owner ${row.ownerLabel}` : "Unassigned"}{created ? ` · Created ${created}` : ""}{due ? ` · Due ${due}` : ""}</span>
         <span className="mt-1 block break-all font-mono text-[9px] text-muted-foreground">{row.work.id} · {row.sourceLabel}</span>
         {row.work.blocker_reason && <span className="mt-2 flex items-start gap-1.5 text-xs text-status-bad"><AlertTriangle className="mt-0.5 size-3.5 shrink-0" />{row.work.blocker_reason}</span>}
       </span>
@@ -156,4 +160,18 @@ function workTone(status: string): "good" | "warn" | "bad" | "info" | "muted" {
   if (status === "review") return "warn";
   if (status === "in_progress") return "info";
   return "muted";
+}
+
+function formatShortDate(value: string): string {
+  try {
+    if (value.startsWith("unix-ms:")) {
+      const ms = Number(value.slice("unix-ms:".length));
+      if (Number.isFinite(ms)) return new Date(ms).toLocaleDateString();
+    }
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return value;
+    return d.toLocaleDateString();
+  } catch {
+    return value;
+  }
 }

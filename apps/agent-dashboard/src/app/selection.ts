@@ -89,6 +89,7 @@ export interface SelectionState {
   workHostId?: string;
   workMemberId?: string;
   workStatus?: string;
+  workPriority?: string;
   workSource?: string;
   workDemand?: string;
 }
@@ -277,6 +278,7 @@ function selectionFromSearch(search: string, pathname = "/"): SelectionState {
     ["workHost", "workHostId"],
     ["workMember", "workMemberId"],
     ["workStatus", "workStatus"],
+    ["workPriority", "workPriority"],
     ["workSource", "workSource"],
     ["workDemand", "workDemand"],
   ] as const;
@@ -360,6 +362,7 @@ export function syncSelectionToLocation(selection: SelectionState): void {
   setOrDelete("workHost", selection.workHostId);
   setOrDelete("workMember", selection.workMemberId);
   setOrDelete("workStatus", selection.workStatus);
+  setOrDelete("workPriority", selection.workPriority);
   setOrDelete("workSource", selection.workSource);
   setOrDelete("workDemand", selection.workDemand);
 
@@ -411,6 +414,7 @@ const selectionCompareKeys = [
   "workHostId",
   "workMemberId",
   "workStatus",
+  "workPriority",
   "workSource",
   "workDemand",
 ] as const;
