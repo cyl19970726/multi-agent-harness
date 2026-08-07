@@ -18,26 +18,27 @@ use harness_core::{
     AgentMemberStatus, AgentMessageRoute, AgentProviderConfig, AgentRuntime, AgentRuntimeHealth,
     AgentRuntimeStatus, AgentTeam, AgentTeamRun, AgentTeamStatus, DelegationRun,
     DurableAgentMember, DurableAgentMemberStatus, Evidence, ExecutionSpace, GitHubLink,
-    GitHubLinkKind, HostAttention, HostAttentionStatus, HostControlMode, LaunchMcp, LaunchPermission, LaunchSpec, MemberAction,
-    MemberActionStatus, MemberCoordinationStatus, MemberExecutionDriver, MemberRun,
-    MemberRunStatus, MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus,
-    MessageKind, MessageTerminalSource, Mission, MissionLogEntry, MissionLogEntryKind,
-    MissionStatus, NativeSessionAvailability, NativeSessionRef, OrdinaryMessageBoundary,
-    PendingInteraction, PendingInteractionKind, PendingInteractionOption, PendingInteractionRoute,
-    PendingInteractionStatus, ProjectContext, ProjectKind, ProviderAccountRef,
-    ProviderCapabilities, ProviderCapacityConfidence, ProviderCapacityEvidence,
-    ProviderCapacitySnapshot, ProviderCapacityState, ProviderCompatibilityStatus,
-    ProviderControlValue, ProviderEventFidelity, ProviderExecutionControls,
-    ProviderExecutionStatus, ProviderFeatureMode, ProviderIntegrationProfile,
-    ProviderInteractionMode, ProviderRuntimeContextFact, SenderKind, TeamActorKind, TeamActorRef,
-    TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus,
-    TeamMessage, TeamMessageDelivery, TeamMessageKind, TeamMessageResponseIntent,
-    TeamRecipientKind, TeamRecipientRef, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus,
-    TeamSupervisorLease, Wave, WaveExecutorKind, WaveStatus, Work, WorkCausationRef, WorkClaimMode,
-    WorkCommandContext, WorkDelivery, WorkDeliveryStatus, WorkPriority, WorkStatus,
-    WorkflowArtifactFile, WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch,
-    WorkflowPatchStatus, WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
-    WorkflowTerminalReason, EXECUTION_MODE_EXTERNAL_INTERACTIVE,
+    GitHubLinkKind, HostAttention, HostAttentionStatus, HostControlMode, LaunchMcp,
+    LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus, MemberCoordinationStatus,
+    MemberExecutionDriver, MemberRun, MemberRunStatus, MemberWorkspaceSnapshot, Message,
+    MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Mission,
+    MissionLogEntry, MissionLogEntryKind, MissionStatus, NativeSessionAvailability,
+    NativeSessionRef, OrdinaryMessageBoundary, PendingInteraction, PendingInteractionKind,
+    PendingInteractionOption, PendingInteractionRoute, PendingInteractionStatus, ProjectContext,
+    ProjectKind, ProviderAccountRef, ProviderCapabilities, ProviderCapacityConfidence,
+    ProviderCapacityEvidence, ProviderCapacitySnapshot, ProviderCapacityState,
+    ProviderCompatibilityStatus, ProviderControlValue, ProviderEventFidelity,
+    ProviderExecutionControls, ProviderExecutionStatus, ProviderFeatureMode,
+    ProviderIntegrationProfile, ProviderInteractionMode, ProviderRuntimeContextFact, SenderKind,
+    TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
+    TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind,
+    TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
+    TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Wave, WaveExecutorKind, WaveStatus,
+    Work, WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkDelivery, WorkDeliveryStatus,
+    WorkPriority, WorkStatus, WorkflowArtifactFile, WorkflowArtifactManifest,
+    WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
+    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
+    EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
     canonical_surface, HarnessStore, HostAttentionClaimResult, MessageDeliveryClaimResult,
@@ -16620,8 +16621,7 @@ fn wait_for_idle_member_wake(
                         // peer messages). Without this, a Host reply sent
                         // between rounds is silently lost when the wake
                         // reason is ActiveWorkContinuation.
-                        let pending =
-                            ledger.claim_round_triggering_messages_for(&member_row.id)?;
+                        let pending = ledger.claim_round_triggering_messages_for(&member_row.id)?;
                         if !pending.is_empty() {
                             backoff.reset();
                             member_row.status = MemberRunStatus::Running;
