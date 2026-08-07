@@ -10,7 +10,7 @@ This is the generalization of what used to be `scripts/check-doc-*.mjs` +
 `check-skills.mjs` (Node/pnpm only, hardcoded to this repo's `docs/` layout). The
 portable methodology stays in the
 [bootstrap-project-workflow](../../../skills/bootstrap-project-workflow/references/governance.md)
-skill (the Governance Contract); the harness binary is the enforcer.
+skill (the Governance Contract); the firm binary is the enforcer.
 
 ## Commands
 
@@ -112,7 +112,7 @@ audit set — is unchanged.
 
 ## Status / roadmap
 
-- First cut (done): the crate + the four native gate ports + `harness governance
+- First cut (done): the crate + the four native gate ports + `firm governance
   check|init|describe` + this repo's `.governance.toml` + byte-parity + the
   self-host test.
 - Full cut (done): the #168 doc-sync phase + the `registered_doc` gate now read

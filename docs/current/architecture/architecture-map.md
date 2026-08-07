@@ -79,7 +79,7 @@ flowchart TB
 | Layer | Owns | Does not own |
 | --- | --- | --- |
 | Docs and Modules | business structure, content, record types, relations, views, templates | provider execution lifecycle |
-| Organization | Actor identity, Human Owner → Lead → four Governance Agents, Org/HR → Business Agent hierarchy, role, authority, permissions, availability, capacity | one TeamRun attempt or work-routing inference |
+| Organization | Actor identity, Human Owner → Lead Agent, optional role agents, role, authority, permissions, availability, capacity | one TeamRun attempt or work-routing inference |
 | Collaboration | cross-actor messages, interaction routing, artifacts, explicit outcomes, and provider-native session links | Work ownership, approval, finance truth, copied provider transcripts, or raw thinking |
 | Agent Team Works | TeamRun-scoped Work ownership, assigned/unassigned readiness, atomic claim, review, child delegation, and Kanban projection | authored conversation, company approval/finance, or provider transcript |
 | Company Work and Approval | WorkCore extension with Milestones, WorkItem responsibility, source/result provenance, policy gates, and execution reference | provider runtime or a second Agent Team scheduler |

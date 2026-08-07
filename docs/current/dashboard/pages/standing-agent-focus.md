@@ -138,7 +138,7 @@ Projection rules:
 
 Use the shared `FocusShell`: continuous activity/conversation in the center,
 sticky composer, and a composed Context Rail. The active execution-workbench
-visual contract is `docs/archive/design/execution-workbench-v3/visual-contract.json`;
+visual contract is in git history (design/execution-workbench-v3);
 the retired `workbench-layout-v2` concept package is no longer an active
 design source.
 

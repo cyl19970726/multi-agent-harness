@@ -76,7 +76,7 @@ in the generic core.
 
 For company operations, the native product objects are `Document`,
 `BusinessModule`, `TypedRecord`, `Relation`, `ActorRef`, `HumanMember`,
-`AgentMember`, recursive `AgentTeam`, `Work`, `Approval`,
+`AgentMember`, flat `AgentTeam`, `Work`, `Approval`,
 `FinancialRecord`, and `MetricObservation`. Some of these are currently design
 contracts rather than implemented schemas; current `OrgUnit`, `StandingAgent`,
 `WorkItem`, and `Assignment` rows remain compatibility implementation truth.

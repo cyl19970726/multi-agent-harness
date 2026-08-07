@@ -11,10 +11,9 @@ cores are:
 
 1. **Docs** — the company memory, business structure, decision surface, and
    default place where work begins and returns.
-2. **A recursive mixed organization** — humans, durable `AgentMember`
-   identities, external participants, and services. Agent hierarchy is the
-   topology of persistent, nested `AgentTeam`s: a Member can remain a member of
-   its parent Team while hosting a child Team of its own.
+2. **A mixed organization** — humans, durable `AgentMember`
+   identities, external participants, and services. Agent Teams are flat and
+   do not nest (see the [Agent Firm Mental Model](../../mental/agent-firm-mental-model.md)).
 
 This is not a rename of the execution harness. Mission/Wave, Dynamic Workflow,
 Agent Team, provider sessions, plugins, and host execution remain the execution
@@ -45,8 +44,8 @@ inspection and **bootstrap-only** Human administrative authoring of Humans,
 Standing Agents, OrgUnits, Memberships, declared actor status, and
 permission/capability refs. That boundary is not target delegated authority and
 cannot substitute for a governed Approval, scoped grant, or broker dispatch. It
-does not yet implement the flat AgentTeam organization in
-Nested Agent Team organization. Those
+does not yet implement the flat AgentTeam organization
+(see [Organization and actors](organization-and-actors.md)). Those
 records remain current implementation truth during an explicit cutover; they
 must not be presented as the target identity model.
 
@@ -115,7 +114,7 @@ For a visual, navigable overview of how the core pages, business lines, truth
 systems, and governed handoffs fit together, open the
 Company OS Live PRD. Its Expected designs, browser-rendered
 Actual evidence links, and review contract are indexed under
-`docs/archive/design/company-os-v3/live-prd-v1`;
+`design/company-os-v3/live-prd-v1` (git history);
 the source Actual comparison plates remain with their owning acceptance slice.
 
 ## Knowledge boundary
@@ -145,7 +144,7 @@ rules live in [Documentation Governance](../documentation-governance.md).
 | --- | --- |
 | Product thesis and whole-system orientation | Vision, [Product system map](product-system-map.md), Concept model |
 | Docs and business modules | [Document system](document-system.md), Docs operating surface matrix, [Module design](module-design.md) |
-| Organization and collaboration | Nested Agent Team organization, [Organization and actors](organization-and-actors.md), Collaboration and Agent work, [ADR 0052](../../decisions/0052-nested-agent-teams-are-the-agent-organization.md) |
+| Organization and collaboration | [Organization and actors](organization-and-actors.md), [Agent Firm Mental Model](../../mental/agent-firm-mental-model.md) |
 | AgentOS self-hosting | AgentOS self-hosting dogfood loop, [ADR 0046](../../decisions/0046-supervised-agentos-self-hosting-loop.md) |
 | Work and Approval | [WorkItems and approvals](work-items-and-approvals.md), [Work Operating System](work-operating-system.md) |
 | Finance | Financial relations |

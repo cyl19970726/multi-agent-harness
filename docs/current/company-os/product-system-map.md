@@ -70,17 +70,14 @@ The first organization is a deliberately small flat AgentTeam:
 
 ```text
 Supervising Operator
-  <-> Lead AgentMember (root Team Host)
+  <-> Lead AgentMember (Team Host)
         ├── Docs Member
         ├── Work / Product Member
         └── CTO Member
-            └── optional child AgentTeam
-                ├── implementation Member
-                └── reviewer Member
 ```
 
-The Lead assigns and accepts Work only in its direct Team. A Member may Host a
-child Team, delegate child Work, and remain accountable for its parent Work.
+Teams are flat; there is no child AgentTeam. A Member may delegate Work to
+another Team and remain accountable for the parent Work (WorkDelegation).
 Role names are company choices rather than required architecture. The
 Supervising Operator can inspect all Teams, create unassigned intake Work, and
 message the Lead, but it does not impersonate a Member or become the hidden
@@ -171,7 +168,7 @@ after the GitHub path proves the contract.
 | Organization substrate | actor kinds, OrgUnit membership, StandingAgent compatibility join, and mixed-actor UI exist | ADR 0052 flat AgentTeam topology, truthful hierarchy, and shared Member/Team views |
 | Work read model | Team Works plus current Company WorkItem/Milestone projections exist | one persistent Team-scoped Work kernel, recursive Global Works, and explicit compatibility cutover |
 | Finance/Approval | native records, separation of Commitment and Payment, and governed action slices exist | actor-bound product sessions and broader operator controls |
-| Agent roles | current governance-role records and decision contracts exist | role-neutral AgentMembers organized by recursive Teams instead of a fixed governance hierarchy |
+| Agent roles | current governance-role records and decision contracts exist | role-neutral AgentMembers organized by flat Teams instead of a fixed governance hierarchy |
 | AgentOS self-hosting | AgentOS Lead and compatibility StandingAgent/WorkItem rows plus real execution evidence exist | Lead -> CTO -> child Team dogfood over one Work kernel, relation-correct UI, and durable Runtime Supervisor |
 | Execution foundation | Mission/Wave, Agent Team, Dynamic Workflow, Host, providers and Dashboard contracts exist | continue improving honest observation and adapter coverage without replacing company objects |
 | AgentOS plugins/gateways | generic external gateway and plugin contract exists; social readiness is a read-only bootstrap probe; local repo source sync exists | GitHub connector plugin first, then WeCom/social/ecommerce/logistics plugins with connector sync and view extensions |
@@ -187,7 +184,7 @@ separates baseline, Expected, Actual, historical, and deferred-reference assets.
 4. [Organization and actors](organization-and-actors.md)
 5. [Work Operating System](work-operating-system.md)
 6. [Document system](document-system.md) and financial relations
-7. Nested Agent Team organization
+7. Agent Firm Mental Model
 8. External project product sources
 9. External Gateway and Plugin Intake
 10. Frontend information architecture

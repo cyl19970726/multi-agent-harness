@@ -113,8 +113,8 @@ Documentation mirrors authority rather than implementation folders:
 | `docs/architecture*.md`, `docs/concept-model.md`, `docs/data-model.md` | executable architecture and object relationships |
 | `docs/decisions/` | durable decisions and supersession records |
 | `docs/dashboard/`, `docs/integration/`, runtime/workflow docs | execution implementation and operations |
-| `docs/archive/design/<workstream>/` | versioned visual intent and evidence |
-| `docs/archive/` | historical provenance excluded from normal planning |
+| `design/<workstream>/` (git history) | versioned visual intent and evidence |
+| git history | historical provenance excluded from normal planning |
 
 The creation, ownership, lifecycle, registry and archive rules live in
 [Documentation Governance](../documentation-governance.md). Stable fields belong

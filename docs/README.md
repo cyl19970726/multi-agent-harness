@@ -58,7 +58,7 @@ When adding, moving, or retiring documentation:
 3. **Retired docs are deleted.** Obsolete docs are removed (git history is the
    archive). ADRs in `decisions/` are kept permanently as historical records.
 4. **Registry must match.** Update `docs/registry.json` when adding, moving, or
-   removing any doc. `harness governance check` validates this.
+   removing any doc. `firm governance check` validates this.
 5. **Skills sync.** Skills live in `skills/` and mirror to
    `plugins/star-harness/skills/` via `sync-star-harness-plugin-skills.mjs`.
 6. **Cross-layer check.** `node scripts/check-cross-layer-consistency.mjs`
