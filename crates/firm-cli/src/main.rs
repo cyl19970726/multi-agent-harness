@@ -232,7 +232,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
         }
     }
 
-    let harness_home = match project::harness_home() {
+    let firm_home = match project::firm_home() {
         Ok(h) => h,
         // No HOME: fall back to the historical `./.harness` so we never panic.
         Err(_) => {
@@ -255,7 +255,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             },
         };
         if let Some(selector) = company_selector {
-            let ctx = company_store::context_for_id(&harness_home, &selector)
+            let ctx = company_store::context_for_id(&firm_home, &selector)
                 .map_err(company_store_err)?
                 .ok_or_else(|| CliError::Usage(format!("unknown company: {selector}")))?;
             return Ok(ResolvedStore {
@@ -267,9 +267,9 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             });
         }
         if let Some(id) =
-            company_store::active_company_id(&harness_home).map_err(company_store_err)?
+            company_store::active_company_id(&firm_home).map_err(company_store_err)?
         {
-            let ctx = company_store::context_for_id(&harness_home, &id)
+            let ctx = company_store::context_for_id(&firm_home, &id)
                 .map_err(company_store_err)?
                 .ok_or_else(|| CliError::Usage(format!("active company is unknown: {id}")))?;
             return Ok(ResolvedStore {
@@ -293,7 +293,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
     };
     let explicit_project_context = match project_selector.as_deref() {
         Some(selector) => Some(
-            resolve_project_selector(&harness_home, selector)
+            resolve_project_selector(&firm_home, selector)
                 .ok_or_else(|| CliError::Usage(format!("unknown project binding: {selector}")))?,
         ),
         None => None,
@@ -305,9 +305,9 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
     if command == Some("company") {
         let (context, source) = match explicit_project_context {
             Some(context) => (context, selector_source),
-            None => match project::active_project_id(&harness_home).map_err(project_err)? {
+            None => match project::active_project_id(&firm_home).map_err(project_err)? {
                 Some(id) => (
-                    project::context_for_id(&harness_home, &id)
+                    project::context_for_id(&firm_home, &id)
                         .map_err(project_err)?
                         .ok_or_else(|| {
                             CliError::Usage(format!("active project binding is unknown: {id}"))
@@ -315,7 +315,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
                     StoreSource::RegistryCurrent,
                 ),
                 None => (
-                    project::global_context(&harness_home).map_err(project_err)?,
+                    project::global_context(&firm_home).map_err(project_err)?,
                     StoreSource::GlobalDefault,
                 ),
             },
@@ -339,24 +339,24 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
         {
             Some(value) => (Some(value), StoreSource::SpaceEnv),
             None => (
-                execution_space::active_space_id(&harness_home).map_err(execution_space_err)?,
+                execution_space::active_space_id(&firm_home).map_err(execution_space_err)?,
                 StoreSource::SpaceCurrent,
             ),
         },
     };
     if let Some(space_id) = space_selector {
-        let space = execution_space::context_for_id(&harness_home, &space_id)
+        let space = execution_space::context_for_id(&firm_home, &space_id)
             .map_err(execution_space_err)?
             .ok_or_else(|| CliError::Usage(format!("unknown execution space: {space_id}")))?;
         let project_context = match explicit_project_context {
             Some(context) => Some(context),
             None => match space.default_project_binding_id.as_deref() {
                 Some(binding_id) => {
-                    project::context_for_id(&harness_home, binding_id).map_err(project_err)?
+                    project::context_for_id(&firm_home, binding_id).map_err(project_err)?
                 }
-                None => project::active_project_id(&harness_home)
+                None => project::active_project_id(&firm_home)
                     .map_err(project_err)?
-                    .and_then(|id| project::context_for_id(&harness_home, &id).ok().flatten()),
+                    .and_then(|id| project::context_for_id(&firm_home, &id).ok().flatten()),
             },
         };
         return Ok(ResolvedStore {
@@ -401,7 +401,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             // convergence holds for cwds inside the home tree).
             let found = discover_harness_from(&cwd).filter(|p| {
                 project::canonicalize_best_effort(p)
-                    != project::canonicalize_best_effort(&harness_home)
+                    != project::canonicalize_best_effort(&firm_home)
             });
             if let Some(found) = found {
                 match project::read_migrated_marker(&found) {
@@ -467,8 +467,8 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
     // 6. Registry current project (the cwd-independent convergence point) — the
     // resolver for project roots with NO repo-local `.harness` (e.g. a centrally
     // `init`ed project) and the cross-cwd convergence point (issue #89).
-    if let Ok(Some(id)) = project::active_project_id(&harness_home) {
-        if let Ok(Some(ctx)) = project::context_for_id(&harness_home, &id) {
+    if let Ok(Some(id)) = project::active_project_id(&firm_home) {
+        if let Ok(Some(ctx)) = project::context_for_id(&firm_home, &id) {
             return Ok(ResolvedStore {
                 root: ctx.store_root.clone(),
                 source: StoreSource::RegistryCurrent,
@@ -480,7 +480,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
     }
 
     // 7. Reserved GLOBAL project, auto-created on first use.
-    if let Ok(ctx) = project::global_context(&harness_home) {
+    if let Ok(ctx) = project::global_context(&firm_home) {
         return Ok(ResolvedStore {
             root: ctx.store_root.clone(),
             source: StoreSource::GlobalDefault,
@@ -504,11 +504,11 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
 /// a path to a project root. Returns `None` if it cannot be resolved (caller then
 /// continues down the precedence chain).
 fn resolve_project_selector(
-    harness_home: &Path,
+    firm_home: &Path,
     selector: &str,
 ) -> Option<harness_core::ProjectContext> {
     // First: treat as a known id (registry / metadata / reserved `_global`).
-    if let Ok(Some(ctx)) = project::context_for_id(harness_home, selector) {
+    if let Ok(Some(ctx)) = project::context_for_id(firm_home, selector) {
         return Some(ctx);
     }
     // Otherwise: treat as a path to a project root and derive its identity.
@@ -517,14 +517,14 @@ fn resolve_project_selector(
         let canonical = project::canonicalize_best_effort(candidate);
         // Prefer a registered entry pinned to this canonical path (keeps a pinned
         // store_root even if path→id derivation later changes).
-        if let Ok(registry) = project::ProjectRegistry::load(harness_home) {
+        if let Ok(registry) = project::ProjectRegistry::load(firm_home) {
             if let Some(entry) = registry.find_by_path(&canonical) {
-                if let Ok(Some(ctx)) = project::context_for_id(harness_home, &entry.id) {
+                if let Ok(Some(ctx)) = project::context_for_id(firm_home, &entry.id) {
                     return Some(ctx);
                 }
             }
         }
-        if let Ok(ctx) = project::context_for_root(candidate, harness_home) {
+        if let Ok(ctx) = project::context_for_root(candidate, firm_home) {
             return Some(ctx);
         }
     }
@@ -634,7 +634,7 @@ fn init_routed(store: &HarnessStore, resolved: &ResolvedStore) -> CliResult<()> 
         return Ok(());
     }
 
-    let harness_home = project::harness_home().map_err(project_err)?;
+    let firm_home = project::firm_home().map_err(project_err)?;
     // An explicit `--project`/`HARNESS_PROJECT` selector pins the root via the
     // resolved context; otherwise `init` materializes the CURRENT directory as a
     // project (never the GLOBAL default, never an ancestor's `.harness`).
@@ -646,7 +646,7 @@ fn init_routed(store: &HarnessStore, resolved: &ResolvedStore) -> CliResult<()> 
             .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
         _ => env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
     };
-    let ctx = project::register_and_activate(&harness_home, &project_root, &now_string())
+    let ctx = project::register_and_activate(&firm_home, &project_root, &now_string())
         .map_err(project_err)?;
     let registered = HarnessStore::new(ctx.store_root.clone());
     registered.init()?;
@@ -654,13 +654,13 @@ fn init_routed(store: &HarnessStore, resolved: &ResolvedStore) -> CliResult<()> 
         .iter()
         .map(|ledger| count_non_empty_lines(&ctx.store_root.join(ledger)).unwrap_or(0))
         .sum::<u64>();
-    if execution_space::active_space_id(&harness_home)
+    if execution_space::active_space_id(&firm_home)
         .map_err(execution_space_err)?
         .is_none()
         && existing_execution_rows == 0
     {
         let space = execution_space::register_and_activate(
-            &harness_home,
+            &firm_home,
             &ctx.id,
             &format!("{} execution", ctx.id),
             Some(ctx.id.clone()),
@@ -750,14 +750,14 @@ fn execution_space_command(args: &[String]) -> CliResult<()> {
         args,
         "space init|list|current|switch|show|migrate-from-project",
     )?;
-    let harness_home = execution_space::harness_home().map_err(execution_space_err)?;
+    let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
     match args[0].as_str() {
         "init" => {
             let id = required(args, "--id")?;
             let name = value(args, "--name").unwrap_or_else(|| id.clone());
             let default_project_binding_id = value(args, "--project-binding");
             if let Some(binding) = default_project_binding_id.as_deref() {
-                if project::binding_for_id(&harness_home, binding)
+                if project::binding_for_id(&firm_home, binding)
                     .map_err(project_err)?
                     .is_none()
                 {
@@ -768,7 +768,7 @@ fn execution_space_command(args: &[String]) -> CliResult<()> {
             }
             let company_id = value(args, "--company");
             if let Some(company) = company_id.as_deref() {
-                if company_store::context_for_id(&harness_home, company)
+                if company_store::context_for_id(&firm_home, company)
                     .map_err(company_store_err)?
                     .is_none()
                 {
@@ -776,7 +776,7 @@ fn execution_space_command(args: &[String]) -> CliResult<()> {
                 }
             }
             let context = execution_space::register_and_activate(
-                &harness_home,
+                &firm_home,
                 &id,
                 &name,
                 default_project_binding_id,
@@ -788,11 +788,11 @@ fn execution_space_command(args: &[String]) -> CliResult<()> {
             print_json(&execution_space_json(&context, &context.id))
         }
         "list" => {
-            let current = execution_space::active_space_id(&harness_home)
+            let current = execution_space::active_space_id(&firm_home)
                 .map_err(execution_space_err)?
                 .unwrap_or_default();
             let spaces =
-                execution_space::list_spaces(&harness_home).map_err(execution_space_err)?;
+                execution_space::list_spaces(&firm_home).map_err(execution_space_err)?;
             print_json(
                 &spaces
                     .iter()
@@ -802,9 +802,9 @@ fn execution_space_command(args: &[String]) -> CliResult<()> {
         }
         "current" => {
             let current =
-                execution_space::active_space_id(&harness_home).map_err(execution_space_err)?;
+                execution_space::active_space_id(&firm_home).map_err(execution_space_err)?;
             match current {
-                Some(id) => match execution_space::context_for_id(&harness_home, &id)
+                Some(id) => match execution_space::context_for_id(&firm_home, &id)
                     .map_err(execution_space_err)?
                 {
                     Some(space) => print_json(&execution_space_json(&space, &id)),
@@ -821,7 +821,7 @@ fn execution_space_command(args: &[String]) -> CliResult<()> {
                 .skip(1)
                 .find(|value| !value.starts_with("--"))
                 .ok_or_else(|| CliError::Usage("usage: harness space switch <id>".into()))?;
-            let space = execution_space::switch_current_space(&harness_home, id, &now_string())
+            let space = execution_space::switch_current_space(&firm_home, id, &now_string())
                 .map_err(execution_space_err)?;
             print_json(&execution_space_json(&space, &space.id))
         }
@@ -831,17 +831,17 @@ fn execution_space_command(args: &[String]) -> CliResult<()> {
                 .skip(1)
                 .find(|value| !value.starts_with("--"))
                 .cloned()
-                .or(execution_space::active_space_id(&harness_home).map_err(execution_space_err)?)
+                .or(execution_space::active_space_id(&firm_home).map_err(execution_space_err)?)
                 .ok_or_else(|| CliError::Usage("no active execution space".into()))?;
-            let current = execution_space::active_space_id(&harness_home)
+            let current = execution_space::active_space_id(&firm_home)
                 .map_err(execution_space_err)?
                 .unwrap_or_default();
-            let space = execution_space::context_for_id(&harness_home, &selector)
+            let space = execution_space::context_for_id(&firm_home, &selector)
                 .map_err(execution_space_err)?
                 .ok_or_else(|| CliError::Usage(format!("unknown execution space: {selector}")))?;
             print_json(&execution_space_json(&space, &current))
         }
-        "migrate-from-project" => execution_space_migrate_from_project(&harness_home, &args[1..]),
+        "migrate-from-project" => execution_space_migrate_from_project(&firm_home, &args[1..]),
         other => Err(CliError::Usage(format!("unknown space command: {other}"))),
     }
 }
@@ -880,17 +880,17 @@ const EXECUTION_LEDGER_NAMES: &[&str] = &[
     "workflow_artifact_manifests.jsonl",
 ];
 
-fn execution_space_migrate_from_project(harness_home: &Path, args: &[String]) -> CliResult<()> {
+fn execution_space_migrate_from_project(firm_home: &Path, args: &[String]) -> CliResult<()> {
     let project_selector = required(args, "--from-project")?;
     let id = required(args, "--id")?;
     execution_space::validate_space_id(&id).map_err(execution_space_err)?;
     let name = value(args, "--name").unwrap_or_else(|| id.clone());
     let force = has_flag(args, "--force");
-    let project_context = resolve_project_selector(harness_home, &project_selector)
+    let project_context = resolve_project_selector(firm_home, &project_selector)
         .ok_or_else(|| CliError::Usage(format!("unknown project binding: {project_selector}")))?;
     let previous_active_space_id =
-        execution_space::active_space_id(harness_home).map_err(execution_space_err)?;
-    let target = execution_space::space_store_root(harness_home, &id);
+        execution_space::active_space_id(firm_home).map_err(execution_space_err)?;
+    let target = execution_space::space_store_root(firm_home, &id);
     std::fs::create_dir_all(&target)?;
 
     let mut copied_files = 0u64;
@@ -942,7 +942,7 @@ fn execution_space_migrate_from_project(harness_home: &Path, args: &[String]) ->
     }
 
     let context = execution_space::register_and_activate(
-        harness_home,
+        firm_home,
         &id,
         &name,
         Some(project_context.id.clone()),
@@ -1006,15 +1006,15 @@ fn execution_space_migrate_from_project(harness_home: &Path, args: &[String]) ->
 /// Native coordination routing remains owned by `harness space`.
 fn project_command(args: &[String]) -> CliResult<()> {
     require_subcommand(args, "project add|list|current|switch|remove|show|migrate")?;
-    let harness_home = project::harness_home().map_err(project_err)?;
+    let firm_home = project::firm_home().map_err(project_err)?;
     match args[0].as_str() {
-        "add" => project_add(&harness_home, &args[1..]),
-        "list" => project_list(&harness_home),
-        "current" => project_current(&harness_home),
-        "switch" => project_switch_cmd(&harness_home, &args[1..]),
-        "remove" => project_remove(&harness_home, &args[1..]),
-        "show" => project_show(&harness_home, &args[1..]),
-        "migrate" => project_migrate(&harness_home, &args[1..]),
+        "add" => project_add(&firm_home, &args[1..]),
+        "list" => project_list(&firm_home),
+        "current" => project_current(&firm_home),
+        "switch" => project_switch_cmd(&firm_home, &args[1..]),
+        "remove" => project_remove(&firm_home, &args[1..]),
+        "show" => project_show(&firm_home, &args[1..]),
+        "migrate" => project_migrate(&firm_home, &args[1..]),
         other => Err(CliError::Usage(format!("unknown project command: {other}"))),
     }
 }
@@ -1022,7 +1022,7 @@ fn project_command(args: &[String]) -> CliResult<()> {
 /// `harness project add [<path>] [--switch]` — register a project root (defaulting
 /// to the current directory) WITHOUT changing the active project, unless `--switch`
 /// is passed. Materializes the central store + `metadata.json` and a registry entry.
-fn project_add(harness_home: &Path, args: &[String]) -> CliResult<()> {
+fn project_add(firm_home: &Path, args: &[String]) -> CliResult<()> {
     let switch = has_flag(args, "--switch");
     // First non-flag positional is an optional explicit project root.
     let path = args.iter().find(|a| !a.starts_with("--")).cloned();
@@ -1034,27 +1034,27 @@ fn project_add(harness_home: &Path, args: &[String]) -> CliResult<()> {
     // `register_and_activate` materializes store + metadata + registry entry and
     // marks current. When `--switch` is NOT requested we restore the previously
     // active project so `add` is non-disruptive (inspectable before a switch).
-    let prev_active = project::active_project_id(harness_home).map_err(project_err)?;
+    let prev_active = project::active_project_id(firm_home).map_err(project_err)?;
     let ctx =
-        project::register_and_activate(harness_home, &project_root, &now).map_err(project_err)?;
+        project::register_and_activate(firm_home, &project_root, &now).map_err(project_err)?;
     if !switch {
         match prev_active {
             Some(prev) if prev != ctx.id => {
-                project::switch_current_project(harness_home, &prev, &now).map_err(project_err)?;
+                project::switch_current_project(firm_home, &prev, &now).map_err(project_err)?;
             }
             None => {
                 // There was no active project before; clear the pointer so `add`
                 // alone never silently flips the default away from local/_global.
                 let mut registry =
-                    project::ProjectRegistry::load(harness_home).map_err(project_err)?;
+                    project::ProjectRegistry::load(firm_home).map_err(project_err)?;
                 registry.current_project_id = None;
-                registry.save(harness_home).map_err(project_err)?;
-                project::clear_active_project(harness_home).map_err(project_err)?;
+                registry.save(firm_home).map_err(project_err)?;
+                project::clear_active_project(firm_home).map_err(project_err)?;
             }
             _ => {}
         }
     }
-    let current = project::active_project_id(harness_home)
+    let current = project::active_project_id(firm_home)
         .map_err(project_err)?
         .unwrap_or_default();
     print_json(&project_context_json(&ctx, &current))
@@ -1062,11 +1062,11 @@ fn project_add(harness_home: &Path, args: &[String]) -> CliResult<()> {
 
 /// `harness project list` — enumerate every known project (registry + on-disk
 /// stores + the reserved `_global`), marking the current one.
-fn project_list(harness_home: &Path) -> CliResult<()> {
-    let current = project::active_project_id(harness_home)
+fn project_list(firm_home: &Path) -> CliResult<()> {
+    let current = project::active_project_id(firm_home)
         .map_err(project_err)?
         .unwrap_or_default();
-    let projects = project::list_projects(harness_home).map_err(project_err)?;
+    let projects = project::list_projects(firm_home).map_err(project_err)?;
     let json: Vec<serde_json::Value> = projects
         .iter()
         .map(|c| project_context_json(c, &current))
@@ -1077,9 +1077,9 @@ fn project_list(harness_home: &Path) -> CliResult<()> {
 /// `harness project current` — print the currently-active project context (the
 /// convergence point `serve` + CLI workers resolve), or a `null`-id placeholder if
 /// none has been selected yet.
-fn project_current(harness_home: &Path) -> CliResult<()> {
-    match project::active_project_id(harness_home).map_err(project_err)? {
-        Some(id) => match project::context_for_id(harness_home, &id).map_err(project_err)? {
+fn project_current(firm_home: &Path) -> CliResult<()> {
+    match project::active_project_id(firm_home).map_err(project_err)? {
+        Some(id) => match project::context_for_id(firm_home, &id).map_err(project_err)? {
             Some(ctx) => print_json(&project_context_json(&ctx, &id)),
             None => print_json(&serde_json::json!({ "id": id, "is_current": true })),
         },
@@ -1093,20 +1093,20 @@ fn project_current(harness_home: &Path) -> CliResult<()> {
 /// `harness project switch <id|path>` — flip the active project, updating BOTH the
 /// registry `current_project_id` and the `ACTIVE_PROJECT` marker so the next CLI
 /// invocation and a live `serve` converge on the same central store.
-fn project_switch_cmd(harness_home: &Path, args: &[String]) -> CliResult<()> {
+fn project_switch_cmd(firm_home: &Path, args: &[String]) -> CliResult<()> {
     let selector = args
         .first()
         .filter(|a| !a.starts_with("--"))
         .cloned()
         .ok_or_else(|| CliError::Usage("usage: harness project switch <id|path>".to_string()))?;
     // Accept either a registered id / `_global`, or a path to a project root.
-    let id = match project::context_for_id(harness_home, &selector).map_err(project_err)? {
+    let id = match project::context_for_id(firm_home, &selector).map_err(project_err)? {
         Some(ctx) => ctx.id,
-        None => match resolve_project_selector(harness_home, &selector) {
+        None => match resolve_project_selector(firm_home, &selector) {
             Some(ctx) => {
                 // A path that is not yet registered: register it first so the switch
                 // never strands the pointer on an unknown id.
-                project::register_and_activate(harness_home, &ctx.project_root, &now_string())
+                project::register_and_activate(firm_home, &ctx.project_root, &now_string())
                     .map_err(project_err)?;
                 ctx.id
             }
@@ -1118,7 +1118,7 @@ fn project_switch_cmd(harness_home: &Path, args: &[String]) -> CliResult<()> {
         },
     };
     let ctx =
-        project::switch_current_project(harness_home, &id, &now_string()).map_err(project_err)?;
+        project::switch_current_project(firm_home, &id, &now_string()).map_err(project_err)?;
     print_json(&project_context_json(&ctx, &ctx.id))
 }
 
@@ -1126,7 +1126,7 @@ fn project_switch_cmd(harness_home: &Path, args: &[String]) -> CliResult<()> {
 /// central store is left intact; this is a pointer operation). The reserved
 /// `_global` cannot be removed. Removing the CURRENT project requires `--force` and
 /// clears the active pointer so resolution falls back safely.
-fn project_remove(harness_home: &Path, args: &[String]) -> CliResult<()> {
+fn project_remove(firm_home: &Path, args: &[String]) -> CliResult<()> {
     let force = has_flag(args, "--force");
     let id = args
         .iter()
@@ -1135,13 +1135,13 @@ fn project_remove(harness_home: &Path, args: &[String]) -> CliResult<()> {
         .ok_or_else(|| {
             CliError::Usage("usage: harness project remove <id> [--force]".to_string())
         })?;
-    let current = project::active_project_id(harness_home).map_err(project_err)?;
+    let current = project::active_project_id(firm_home).map_err(project_err)?;
     if current.as_deref() == Some(id.as_str()) && !force {
         return Err(CliError::Usage(format!(
             "`{id}` is the current project; switch away first or pass --force to remove it"
         )));
     }
-    let outcome = project::remove_project(harness_home, &id).map_err(project_err)?;
+    let outcome = project::remove_project(firm_home, &id).map_err(project_err)?;
     if !outcome.removed {
         return Err(CliError::Usage(format!(
             "no registered project with id `{id}`"
@@ -1161,16 +1161,16 @@ fn project_remove(harness_home: &Path, args: &[String]) -> CliResult<()> {
 
 /// `harness project show <id|path>` — print one project's resolved context. With no
 /// argument, shows the current project (alias for `current`).
-fn project_show(harness_home: &Path, args: &[String]) -> CliResult<()> {
+fn project_show(firm_home: &Path, args: &[String]) -> CliResult<()> {
     let selector = args.iter().find(|a| !a.starts_with("--")).cloned();
-    let current = project::active_project_id(harness_home)
+    let current = project::active_project_id(firm_home)
         .map_err(project_err)?
         .unwrap_or_default();
     let ctx = match selector {
-        None => return project_current(harness_home),
-        Some(sel) => match project::context_for_id(harness_home, &sel).map_err(project_err)? {
+        None => return project_current(firm_home),
+        Some(sel) => match project::context_for_id(firm_home, &sel).map_err(project_err)? {
             Some(ctx) => ctx,
-            None => resolve_project_selector(harness_home, &sel)
+            None => resolve_project_selector(firm_home, &sel)
                 .ok_or_else(|| CliError::Usage(format!("unknown project: {sel}")))?,
         },
     };
@@ -1193,7 +1193,7 @@ const STORE_PAYLOAD_DIRS: &[&str] = &["prompts", "runtimes"];
 /// Idempotent / fail-safe: if the local store is ALREADY marked migrated it reports
 /// success without recopying; if the central store already has ledger rows it
 /// refuses (to avoid clobbering newer central data) unless `--force` is given.
-fn project_migrate(harness_home: &Path, args: &[String]) -> CliResult<()> {
+fn project_migrate(firm_home: &Path, args: &[String]) -> CliResult<()> {
     let force = has_flag(args, "--force");
     let switch = has_flag(args, "--switch");
 
@@ -1228,7 +1228,7 @@ fn project_migrate(harness_home: &Path, args: &[String]) -> CliResult<()> {
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| local_store.clone());
-    let ctx = project::context_for_root(&project_root, harness_home).map_err(project_err)?;
+    let ctx = project::context_for_root(&project_root, firm_home).map_err(project_err)?;
 
     // Refuse to clobber a central store that already holds ledger data, unless
     // forced. A central store that only has metadata.json (freshly created) is fine.
@@ -1249,22 +1249,22 @@ fn project_migrate(harness_home: &Path, args: &[String]) -> CliResult<()> {
     // `register_and_activate` (which itself writes a `migrated_from`-less
     // metadata.json) so the breadcrumb is the one that survives.
     let now = now_string();
-    let prev_active = project::active_project_id(harness_home).map_err(project_err)?;
-    project::register_and_activate(harness_home, &project_root, &now).map_err(project_err)?;
+    let prev_active = project::active_project_id(firm_home).map_err(project_err)?;
+    project::register_and_activate(firm_home, &project_root, &now).map_err(project_err)?;
     project::write_metadata(&ctx, Some(local_store.clone())).map_err(project_err)?;
     if !switch {
         // Non-disruptive by default: restore the previously active project (or clear
         // if none) so a bare `migrate` does not silently flip the active project.
         match prev_active {
             Some(prev) if prev != ctx.id => {
-                project::switch_current_project(harness_home, &prev, &now).map_err(project_err)?;
+                project::switch_current_project(firm_home, &prev, &now).map_err(project_err)?;
             }
             None => {
                 let mut registry =
-                    project::ProjectRegistry::load(harness_home).map_err(project_err)?;
+                    project::ProjectRegistry::load(firm_home).map_err(project_err)?;
                 registry.current_project_id = None;
-                registry.save(harness_home).map_err(project_err)?;
-                project::clear_active_project(harness_home).map_err(project_err)?;
+                registry.save(firm_home).map_err(project_err)?;
+                project::clear_active_project(firm_home).map_err(project_err)?;
             }
             _ => {}
         }
@@ -1740,19 +1740,19 @@ fn social_gateway_readiness_boundaries() -> serde_json::Value {
 fn company_store_init_command(args: &[String]) -> CliResult<()> {
     let id = required(args, "--id")?;
     let name = value(args, "--name").unwrap_or_else(|| id.clone());
-    let harness_home = company_store::harness_home().map_err(company_store_err)?;
-    let ctx = company_store::register_and_activate(&harness_home, &id, &name, &now_string())
+    let firm_home = company_store::firm_home().map_err(company_store_err)?;
+    let ctx = company_store::register_and_activate(&firm_home, &id, &name, &now_string())
         .map_err(company_store_err)?;
     HarnessStore::new(ctx.store_root.clone()).init()?;
     print_json(&company_context_json(&ctx, &ctx.id))
 }
 
 fn company_store_list_command() -> CliResult<()> {
-    let harness_home = company_store::harness_home().map_err(company_store_err)?;
-    let current = company_store::active_company_id(&harness_home)
+    let firm_home = company_store::firm_home().map_err(company_store_err)?;
+    let current = company_store::active_company_id(&firm_home)
         .map_err(company_store_err)?
         .unwrap_or_default();
-    let companies = company_store::list_companies(&harness_home).map_err(company_store_err)?;
+    let companies = company_store::list_companies(&firm_home).map_err(company_store_err)?;
     let json: Vec<serde_json::Value> = companies
         .iter()
         .map(|ctx| company_context_json(ctx, &current))
@@ -1761,10 +1761,10 @@ fn company_store_list_command() -> CliResult<()> {
 }
 
 fn company_store_current_command() -> CliResult<()> {
-    let harness_home = company_store::harness_home().map_err(company_store_err)?;
-    match company_store::active_company_id(&harness_home).map_err(company_store_err)? {
+    let firm_home = company_store::firm_home().map_err(company_store_err)?;
+    match company_store::active_company_id(&firm_home).map_err(company_store_err)? {
         Some(id) => {
-            match company_store::context_for_id(&harness_home, &id).map_err(company_store_err)? {
+            match company_store::context_for_id(&firm_home, &id).map_err(company_store_err)? {
                 Some(ctx) => print_json(&company_context_json(&ctx, &id)),
                 None => print_json(&serde_json::json!({ "id": id, "is_current": true })),
             }
@@ -1782,23 +1782,23 @@ fn company_store_switch_command(args: &[String]) -> CliResult<()> {
         .find(|a| !a.starts_with("--"))
         .cloned()
         .ok_or_else(|| CliError::Usage("usage: harness company switch <id>".to_string()))?;
-    let harness_home = company_store::harness_home().map_err(company_store_err)?;
-    let ctx = company_store::switch_current_company(&harness_home, &id, &now_string())
+    let firm_home = company_store::firm_home().map_err(company_store_err)?;
+    let ctx = company_store::switch_current_company(&firm_home, &id, &now_string())
         .map_err(company_store_err)?;
     print_json(&company_context_json(&ctx, &ctx.id))
 }
 
 fn company_store_show_command(args: &[String]) -> CliResult<()> {
-    let harness_home = company_store::harness_home().map_err(company_store_err)?;
+    let firm_home = company_store::firm_home().map_err(company_store_err)?;
     let selector = args.iter().find(|a| !a.starts_with("--")).cloned();
-    let current = company_store::active_company_id(&harness_home)
+    let current = company_store::active_company_id(&firm_home)
         .map_err(company_store_err)?
         .unwrap_or_default();
     let id = match selector {
         Some(id) => id,
         None => return company_store_current_command(),
     };
-    let ctx = company_store::context_for_id(&harness_home, &id)
+    let ctx = company_store::context_for_id(&firm_home, &id)
         .map_err(company_store_err)?
         .ok_or_else(|| CliError::Usage(format!("unknown company: {id}")))?;
     print_json(&company_context_json(&ctx, &current))
@@ -1810,15 +1810,15 @@ fn company_store_migrate_from_project_command(args: &[String]) -> CliResult<()> 
     let name = value(args, "--name").unwrap_or_else(|| id.clone());
     let force = has_flag(args, "--force");
     let verify_only = has_flag(args, "--verify-only");
-    let harness_home = company_store::harness_home().map_err(company_store_err)?;
+    let firm_home = company_store::firm_home().map_err(company_store_err)?;
     let source_project =
-        resolve_project_selector(&harness_home, &from_project).ok_or_else(|| {
+        resolve_project_selector(&firm_home, &from_project).ok_or_else(|| {
             CliError::Usage(format!(
                 "unknown source project: {from_project}; pass a registered project id or path"
             ))
         })?;
     let ctx = if verify_only {
-        company_store::context_for_id(&harness_home, &id)
+        company_store::context_for_id(&firm_home, &id)
             .map_err(company_store_err)?
             .ok_or_else(|| {
                 CliError::Usage(format!(
@@ -1826,7 +1826,7 @@ fn company_store_migrate_from_project_command(args: &[String]) -> CliResult<()> 
                 ))
             })?
     } else {
-        company_store::register_and_activate(&harness_home, &id, &name, &now_string())
+        company_store::register_and_activate(&firm_home, &id, &name, &now_string())
             .map_err(company_store_err)?
     };
     let outcome = if verify_only {
@@ -2479,8 +2479,8 @@ fn company_org_require_admin_authority(store: &HarnessStore, authority: &str) ->
 fn company_execution_space_store(
     space_id: &str,
 ) -> CliResult<(harness_core::ExecutionSpace, HarnessStore)> {
-    let harness_home = execution_space::harness_home().map_err(execution_space_err)?;
-    let space = execution_space::context_for_id(&harness_home, space_id)
+    let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
+    let space = execution_space::context_for_id(&firm_home, space_id)
         .map_err(execution_space_err)?
         .ok_or_else(|| {
             CliError::Usage(format!(
@@ -7510,8 +7510,8 @@ fn legacy_goal_task_command(args: &mut Vec<String>) -> CliResult<()> {
             let selector = take_flag_value(args, "--project").ok_or_else(|| {
                 CliError::Usage("--project requires an id or existing project path".into())
             })?;
-            let harness_home = project::harness_home().map_err(project_err)?;
-            let context = resolve_project_selector(&harness_home, &selector).ok_or_else(|| {
+            let firm_home = project::firm_home().map_err(project_err)?;
+            let context = resolve_project_selector(&firm_home, &selector).ok_or_else(|| {
                 CliError::Usage(format!(
                     "project selector did not resolve; refusing fallback: {selector}"
                 ))
@@ -7568,7 +7568,7 @@ fn governance_command(args: &[String]) -> CliResult<()> {
             }
         }
         "init" => {
-            let config = harness_governance::GovernanceConfig::default_harness();
+            let config = harness_governance::GovernanceConfig::default_firm();
             let path = root.join(".governance.toml");
             if path.exists() {
                 return Err(CliError::Usage(format!(
@@ -14095,6 +14095,8 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 return Err(CliError::Usage(
                     "one or more gates did not pass (see results above)".to_string(),
                 ));
+            } else {
+                Ok(())
             }
         }
         "workspace" => {
@@ -14273,7 +14275,7 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
 }
 
 fn selected_company_store_for_work_cutover(args: &[String]) -> CliResult<HarnessStore> {
-    let home = company_store::harness_home().map_err(company_store_err)?;
+    let home = company_store::firm_home().map_err(company_store_err)?;
     let company_id = value(args, "--company")
         .or_else(|| {
             env::var("HARNESS_COMPANY")
@@ -17633,6 +17635,31 @@ pub(crate) fn team_run_start(
         // here gives the CLI user an immediate error for unrecoverable problems.
         let _body = prepare_team_run_start_body(store, run_id, max_concurrency)?;
 
+        // Try the multi-team daemon first (#366). If the supervisor socket is
+        // reachable, delegate the start command and return immediately.
+        // P0-4 fix: errors from the daemon are propagated, not swallowed.
+        match crate::supervisor_daemon::try_delegate_to_daemon(store, run_id) {
+            Ok(response) => {
+                let parsed: serde_json::Value = serde_json::from_str(&response).unwrap_or_default();
+                if parsed["ok"].as_bool() == Some(true) {
+                    println!("team run {run_id}\tdelegated to supervisor daemon");
+                    return Ok(());
+                }
+                let err = parsed["error"]
+                    .as_str()
+                    .unwrap_or("daemon returned error");
+                return Err(CliError::Usage(format!(
+                    "supervisor daemon rejected {run_id}: {err}"
+                )));
+            }
+            Err(_) => {
+                // Daemon not reachable — fall through to per-run daemon.
+                eprintln!(
+                    "[star-harness] multi-team daemon not reachable, using per-run daemon"
+                );
+            }
+        }
+
         let daemon =
             match crate::supervisor_daemon::check_existing_supervisor_daemon(store, run_id)? {
                 Some(info) => {
@@ -17693,7 +17720,7 @@ pub(crate) fn drive_prepared_team_run(
     } = prepared;
     let project_context = match running.project_binding_id.as_deref() {
         Some(binding_id) => {
-            let pinned = project::harness_home()
+            let pinned = project::firm_home()
                 .ok()
                 .and_then(|home| project::context_for_id(&home, binding_id).ok().flatten());
             match pinned {
@@ -23155,7 +23182,7 @@ fn dashboard_command(
     match args[0].as_str() {
         "doctor" => dashboard_doctor_command(store, &args[1..])?,
         "snapshot" => {
-            let company_store = if let Ok(home) = company_store::harness_home() {
+            let company_store = if let Ok(home) = company_store::firm_home() {
                 match company_store::active_company_id(&home).map_err(company_store_err)? {
                     Some(id) => {
                         let context = company_store::context_for_id(&home, &id)
@@ -23861,7 +23888,7 @@ fn sse_post_snapshot_test_pause() -> Option<std::time::Duration> {
 struct ServeProjects {
     /// `~/.harness` — `None` only when serve was started with a raw
     /// `--store`/`HARNESS_ROOT` override (no registry to consult).
-    harness_home: Option<PathBuf>,
+    firm_home: Option<PathBuf>,
     /// The id of the project `serve` started for (the active/`_global` project, or a
     /// synthetic id in raw-override mode). Used as the default when no `?project`.
     default_id: String,
@@ -23883,8 +23910,8 @@ impl ServeProjects {
         // global path (not a raw `--store`/`HARNESS_ROOT` override).
         let registry_backed =
             resolved.context.is_some() || resolved.execution_space_context.is_some();
-        let harness_home = registry_backed
-            .then(project::harness_home)
+        let firm_home = registry_backed
+            .then(project::firm_home)
             .and_then(Result::ok);
         let default_id = resolved
             .context
@@ -23892,7 +23919,7 @@ impl ServeProjects {
             .map(|context| context.id.clone())
             .unwrap_or_else(|| "_store".to_string());
         Self {
-            harness_home,
+            firm_home,
             default_id: resolved
                 .execution_space_context
                 .as_ref()
@@ -23914,7 +23941,7 @@ impl ServeProjects {
         if id == self.default_id {
             return Ok((self.default_id.clone(), self.default_store.clone()));
         }
-        if let Some(home) = &self.harness_home {
+        if let Some(home) = &self.firm_home {
             if let Some(space) =
                 execution_space::context_for_id(home, id).map_err(execution_space_err)?
             {
@@ -23948,7 +23975,7 @@ impl ServeProjects {
                 return default.clone();
             }
         }
-        if let (Some(home), Some(id)) = (&self.harness_home, project_binding_id) {
+        if let (Some(home), Some(id)) = (&self.firm_home, project_binding_id) {
             if let Ok(Some(context)) = project::context_for_id(home, id) {
                 return context;
             }
@@ -23959,7 +23986,7 @@ impl ServeProjects {
                 .and_then(|space| space.default_project_binding_id)
             {
                 if let Some(context) = self
-                    .harness_home
+                    .firm_home
                     .as_ref()
                     .and_then(|home| project::context_for_id(home, &binding_id).ok().flatten())
                 {
@@ -23980,7 +24007,7 @@ impl ServeProjects {
     }
 
     fn current_space_id(&self) -> String {
-        if let Some(home) = &self.harness_home {
+        if let Some(home) = &self.firm_home {
             if let Ok(Some(id)) = execution_space::active_space_id(home) {
                 return id;
             }
@@ -23989,7 +24016,7 @@ impl ServeProjects {
     }
 
     fn current_project_binding_id(&self) -> String {
-        if let Some(home) = &self.harness_home {
+        if let Some(home) = &self.firm_home {
             if let Ok(Some(id)) = project::active_project_id(home) {
                 return id;
             }
@@ -24003,7 +24030,7 @@ impl ServeProjects {
     /// Enumerate known projects for `GET /v1/projects`. In raw-override mode there is
     /// no registry, so only the served store is reported (as the synthetic default).
     fn list_project_bindings(&self) -> Vec<ProjectContext> {
-        match &self.harness_home {
+        match &self.firm_home {
             Some(home) => {
                 let mut contexts = project::list_projects(home).unwrap_or_default();
                 if let Some(default) = &self.default_context {
@@ -24024,7 +24051,7 @@ impl ServeProjects {
     }
 
     fn list_spaces(&self) -> Vec<ExecutionSpace> {
-        match &self.harness_home {
+        match &self.firm_home {
             Some(home) => {
                 let mut spaces = execution_space::list_spaces(home).unwrap_or_default();
                 if let Some(default) = &self.default_space {
@@ -24046,7 +24073,7 @@ impl ServeProjects {
         {
             return self.default_space.clone();
         }
-        self.harness_home
+        self.firm_home
             .as_ref()
             .and_then(|home| execution_space::context_for_id(home, id).ok().flatten())
     }
@@ -24080,7 +24107,7 @@ impl ServeProjects {
         for company in self.list_companies() {
             map.insert(company.id, company.store_root);
         }
-        if self.harness_home.is_some() {
+        if self.firm_home.is_some() {
             for project in self.list_project_bindings() {
                 map.entry(format!("project-compat:{}", project.id))
                     .or_insert(project.store_root);
@@ -24090,12 +24117,12 @@ impl ServeProjects {
     }
 
     fn current_company_id(&self) -> Option<String> {
-        let home = self.harness_home.as_ref()?;
+        let home = self.firm_home.as_ref()?;
         company_store::active_company_id(home).ok().flatten()
     }
 
     fn list_companies(&self) -> Vec<company_store::CompanyContext> {
-        match &self.harness_home {
+        match &self.firm_home {
             Some(home) => company_store::list_companies(home).unwrap_or_default(),
             None => Vec::new(),
         }
@@ -24106,7 +24133,7 @@ impl ServeProjects {
         company: Option<&str>,
         project_binding_id: Option<&str>,
     ) -> CliResult<Option<(String, HarnessStore)>> {
-        let Some(home) = &self.harness_home else {
+        let Some(home) = &self.firm_home else {
             if company.is_some() {
                 return Err(CliError::Usage(
                     "serve is running with a raw --store/HARNESS_ROOT override; Company Store selection is unavailable"
@@ -24252,11 +24279,29 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
 /// socket is present, and falls back to an inline single turn when it is not.
 #[cfg(unix)]
 fn daemon_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "daemon start|status|stop|supervisor")?;
+    require_subcommand(args, "daemon start|status|stop|supervisor|serve")?;
     let harness_root = store.root().to_path_buf();
     match args[0].as_str() {
         "supervisor" => {
             supervisor_daemon::supervisor_daemon_command(store, &args[1..])?;
+        }
+        "serve" => {
+            // Multi-team supervisor daemon — manages N team-runs in one process.
+            let max_concurrency: usize = value(args, "--max-concurrency")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(4);
+            let idle_timeout_secs: u64 = value(args, "--idle-timeout-secs")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(300);
+            let scan_interval_secs: u64 = value(args, "--scan-interval-secs")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(5);
+            supervisor_daemon::MultiTeamDaemon::run(
+                store.clone(),
+                max_concurrency,
+                idle_timeout_secs,
+                scan_interval_secs,
+            )?;
         }
         "start" => {
             let idle_secs = value(args, "--idle-secs")
@@ -25222,7 +25267,7 @@ fn handle_http_connection(
     // Raw --store compatibility mode has no registered project_root. Do not
     // mislabel its centralized store_root as an execution workspace.
     let project_context = projects
-        .harness_home
+        .firm_home
         .as_ref()
         .map(|_| projects.context_for(project_param.as_deref(), Some(&project_id), store));
     match handle_http_action(store, project_context.as_ref(), &path_only, &body_json) {
@@ -25251,7 +25296,7 @@ fn retired_http_path(path: &str) -> bool {
 
 /// Apply a `POST /v1/projects/switch {project: <id>}` request: switch the active
 /// project atomically and return the new `(id, store)`. In raw-override mode (no
-/// `harness_home`) there is no registry to switch, so it is rejected.
+/// `firm_home`) there is no registry to switch, so it is rejected.
 fn handle_project_switch(
     projects: &ServeProjects,
     body: &serde_json::Value,
@@ -25260,7 +25305,7 @@ fn handle_project_switch(
         .or_else(|| json_string(body, "id"))
         .or_else(|| json_string(body, "project_id"))
         .ok_or_else(|| CliError::Usage("missing `project` id to switch to".to_string()))?;
-    let home = projects.harness_home.as_ref().ok_or_else(|| {
+    let home = projects.firm_home.as_ref().ok_or_else(|| {
         CliError::Usage(
             "serve is running with a raw --store/HARNESS_ROOT override; project switch is unavailable"
                 .to_string(),
@@ -25278,7 +25323,7 @@ fn handle_space_switch(
         .or_else(|| json_string(body, "id"))
         .or_else(|| json_string(body, "space_id"))
         .ok_or_else(|| CliError::Usage("missing `space` id to switch to".to_string()))?;
-    let home = projects.harness_home.as_ref().ok_or_else(|| {
+    let home = projects.firm_home.as_ref().ok_or_else(|| {
         CliError::Usage(
             "serve is running with a raw --store/HARNESS_ROOT override; Execution Space switch is unavailable"
                 .to_string(),
@@ -25300,7 +25345,7 @@ fn handle_company_switch(
         .or_else(|| json_string(body, "id"))
         .or_else(|| json_string(body, "company_id"))
         .ok_or_else(|| CliError::Usage("missing `company` id to switch to".to_string()))?;
-    let home = projects.harness_home.as_ref().ok_or_else(|| {
+    let home = projects.firm_home.as_ref().ok_or_else(|| {
         CliError::Usage(
             "serve is running with a raw --store/HARNESS_ROOT override; Company Store switch is unavailable"
                 .to_string(),
@@ -25315,7 +25360,7 @@ fn handle_company_switch(
 /// project-derived store remains visible only as an explicitly labelled
 /// compatibility locator; it is not the binding's owned state.
 fn project_context_json(ctx: &ProjectContext, current: &str) -> serde_json::Value {
-    let binding = project::harness_home()
+    let binding = project::firm_home()
         .ok()
         .and_then(|home| project::binding_for_root(&ctx.project_root, &home).ok());
     serde_json::json!({
@@ -27637,7 +27682,7 @@ fn workflow_child_store_root(session_dir: &Path) -> PathBuf {
     session_dir.join("nested-harness-store")
 }
 
-fn workflow_child_harness_home(session_dir: &Path) -> PathBuf {
+fn workflow_child_firm_home(session_dir: &Path) -> PathBuf {
     session_dir.join("nested-harness-home")
 }
 
@@ -27658,7 +27703,7 @@ fn apply_workflow_child_store_guard(
         HARNESS_WORKFLOW_CHILD_STORE_ROOT_ENV,
         workflow_child_store_root(session_dir),
     )
-    .env("HARNESS_HOME", workflow_child_harness_home(session_dir))
+    .env("HARNESS_HOME", workflow_child_firm_home(session_dir))
     .env("HARNESS_WORKFLOW_STORE_GUARD", "isolated")
     .env_remove("HARNESS_PROJECT");
 }
@@ -28077,7 +28122,7 @@ fn workflow_project_context(store: &HarnessStore) -> ProjectContext {
     let store_root = store.root().to_path_buf();
     if let Ok(Some(space)) = execution_space::read_metadata(&store_root) {
         if let Some(binding_id) = space.default_project_binding_id.as_deref() {
-            if let Ok(home) = project::harness_home() {
+            if let Ok(home) = project::firm_home() {
                 if let Ok(Some(context)) = project::context_for_id(&home, binding_id) {
                     return context;
                 }
@@ -28123,7 +28168,7 @@ fn workflow_project_context_for_run(
                 )));
             }
         }
-        let home = project::harness_home().map_err(project_err)?;
+        let home = project::firm_home().map_err(project_err)?;
         if let Some(context) = project::context_for_id(&home, &binding_id).map_err(project_err)? {
             return Ok(context);
         }
@@ -39832,7 +39877,7 @@ new file mode 100644
         assert_eq!(
             envs.get("HARNESS_HOME").cloned().flatten(),
             Some(
-                workflow_child_harness_home(&session_dir)
+                workflow_child_firm_home(&session_dir)
                     .to_string_lossy()
                     .to_string()
             )
@@ -45504,7 +45549,7 @@ mod sse_tests {
             is_git_repo: true,
         };
         let projects = ServeProjects {
-            harness_home: Some(std::env::temp_dir().join(generated_id("unrelated-registry"))),
+            firm_home: Some(std::env::temp_dir().join(generated_id("unrelated-registry"))),
             default_id: expected.id.clone(),
             default_store: store.clone(),
             default_space: None,
@@ -45544,7 +45589,7 @@ mod sse_tests {
             // Single-project serve mode (no registry): default project routes to the
             // served store, watcher multiplexes over just that one.
             let projects = ServeProjects {
-                harness_home: None,
+                firm_home: None,
                 default_id: "_test".to_string(),
                 default_store: serve_store.clone(),
                 default_space: None,

@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use firm_core::MemberRunStatus;
+use harness_core::MemberRunStatus;
 
 // ---------------------------------------------------------------------------
 // Types

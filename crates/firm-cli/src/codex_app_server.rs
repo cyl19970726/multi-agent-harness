@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
-use firm_core::{
+use harness_core::{
     ProviderAccountRef, ProviderCapacityConfidence, ProviderCapacityEvidence,
     ProviderCapacitySnapshot, ProviderCapacityState, ProviderCapacityWindow,
 };
@@ -786,7 +786,7 @@ pub(crate) fn codex_capacity_snapshot(
             let latest_reset = |windows: &mut dyn Iterator<Item = &ProviderCapacityWindow>| {
                 windows
                     .filter_map(|window| window.resets_at.as_deref())
-                    .filter_map(firm_core::parse_harness_unix_ms)
+                    .filter_map(harness_core::parse_harness_unix_ms)
                     .max()
                     .map(|millis| format!("unix-ms:{millis}"))
             };

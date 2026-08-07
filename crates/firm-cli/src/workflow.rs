@@ -8,4 +8,4 @@
 //!
 //! See `crates/firm-workflow/src/lib.rs` for the implementation and tests.
 
-pub use firm_workflow::*;
+pub use harness_workflow::*;

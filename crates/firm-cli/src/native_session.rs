@@ -8,7 +8,7 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-use firm_core::{NativeSessionAvailability, NativeSessionRef};
+use harness_core::{NativeSessionAvailability, NativeSessionRef};
 
 use crate::{CliError, CliResult};
 
