@@ -65,6 +65,7 @@ mod resident_daemon;
 mod sse;
 #[cfg(unix)]
 mod supervisor_daemon;
+mod host_dispatcher;
 mod supervisor_wake;
 mod workflow;
 
@@ -17807,8 +17808,26 @@ pub(crate) fn drive_prepared_team_run(
                 >= Duration::from_secs(host_dispatch_config.poll_interval_secs)
         {
             last_host_dispatch_poll = Instant::now();
-            // host_dispatcher pending #392 integration — module file missing
-            // TODO: restore when host_dispatcher.rs is available from P0-2
+            match host_dispatcher::poll_and_dispatch(
+                &ledger.store,
+                &run_id,
+                &objective,
+                &host_dispatch_config,
+            ) {
+                Ok(outcome) if !outcome.is_noop() => {
+                    eprintln!(
+                        "[supervisor] host dispatcher: inspected={}, handled={}, escalated={}, failed={}",
+                        outcome.inspected,
+                        outcome.handled.len(),
+                        outcome.escalated.len(),
+                        outcome.failed.len(),
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    eprintln!("[supervisor] host dispatcher error: {error}");
+                }
+            }
         }
         std::thread::sleep(Duration::from_millis(50));
     }
