@@ -1,3 +1,5 @@
+# Note: Work and WorkItem remain separate. See docs/mental/agent-firm-mental-model.md for current Work model (optional document_refs, no unification).
+
 # Company OS Concept Model
 
 ## Status and scope

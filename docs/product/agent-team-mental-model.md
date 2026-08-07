@@ -1,4 +1,5 @@
 # Agent Team Mental Model
+status: SUPERSEDED — canonical source is now docs/mental/agent-firm-mental-model.md
 
 ```text
 status: canonical product reference

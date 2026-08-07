@@ -1,3 +1,6 @@
+# Status: SUPERSEDED by docs/mental/agent-firm-mental-model.md
+# Agent Team topology is now FLAT, not nested.
+
 # Nested Agent Team Organization
 
 ```text

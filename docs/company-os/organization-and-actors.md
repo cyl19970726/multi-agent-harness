@@ -1,3 +1,5 @@
+# Note: nested AgentTeam topology has been removed. See docs/mental/agent-firm-mental-model.md for current flat model.
+
 # Organization and Actors
 
 ```text
