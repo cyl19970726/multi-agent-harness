@@ -3892,8 +3892,10 @@ pub enum HostAttentionKind {
 /// Transport/intake state for one Host attention row.
 ///
 /// `Delivered` proves only that the exact provider-native Host task accepted
-/// the notification. `Acknowledged` proves Host intake. Neither state accepts,
-/// rejects, resumes, or otherwise mutates the referenced Work.
+/// the notification. `Acknowledged` proves Host intake. `EscalationRequired`
+/// is set by a headless host dispatcher when the attention needs explicit human
+/// decision (accept/merge/cancel) that the triage-only host cannot make.
+/// Neither `Acknowledged` nor `EscalationRequired` mutates the referenced Work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HostAttentionStatus {
@@ -3901,6 +3903,7 @@ pub enum HostAttentionStatus {
     Claimed,
     Delivered,
     Acknowledged,
+    EscalationRequired,
 }
 
 /// Durable notification derived from a Work-state or member-runtime fact.
@@ -3942,10 +3945,11 @@ pub struct HostAttention {
 
 impl HostAttention {
     /// Delivered rows remain actionable until the exact Host explicitly ACKs
-    /// intake. A claim is also visible so another transport cannot double-wake
-    /// the same Host while the first attempt is in flight.
+    /// intake or escalates. A claim is also visible so another transport cannot
+    /// double-wake the same Host while the first attempt is in flight.
     pub fn needs_host_action(&self) -> bool {
         self.status != HostAttentionStatus::Acknowledged
+            && self.status != HostAttentionStatus::EscalationRequired
     }
 }
 
@@ -3991,6 +3995,78 @@ pub struct HostAttentionInbox {
     pub warning: Option<String>,
     #[serde(default)]
     pub attentions: Vec<HostAttention>,
+}
+
+/// Configuration for the daemon-driven headless host dispatcher.
+///
+/// The dispatcher watches for actionable [`HostAttention`] rows older than
+/// `attention_age_threshold_secs` and spawns a headless host round when the
+/// host binding lease is not held by a live human session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HostDispatchConfig {
+    /// Minimum age in seconds before a pending attention is eligible for
+    /// headless dispatch. Default 300 (5 minutes).
+    #[serde(default = "HostDispatchConfig::default_age_threshold")]
+    pub attention_age_threshold_secs: u64,
+    /// How often the supervisor daemon polls for actionable attentions, in
+    /// seconds. Default 60.
+    #[serde(default = "HostDispatchConfig::default_poll_interval_secs")]
+    pub poll_interval_secs: u64,
+    /// When false (default), the headless host is triage-only: it may inspect
+    /// attentions, reply to members, and escalate, but MUST NOT accept, merge,
+    /// or cancel Work. Set true to allow those mutations without human review.
+    #[serde(default)]
+    pub accept_merge_enabled: bool,
+}
+
+impl Default for HostDispatchConfig {
+    fn default() -> Self {
+        Self {
+            attention_age_threshold_secs: Self::default_age_threshold(),
+            poll_interval_secs: Self::default_poll_interval_secs(),
+            accept_merge_enabled: false,
+        }
+    }
+}
+
+impl HostDispatchConfig {
+    pub const fn default_age_threshold() -> u64 {
+        300
+    }
+    pub const fn default_poll_interval_secs() -> u64 {
+        60
+    }
+}
+
+/// Result from one invocation of the headless host dispatcher.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HostDispatchOutcome {
+    /// Number of attentions the headless host inspected.
+    pub inspected: usize,
+    /// Attentions escalated to human (terminal `EscalationRequired`).
+    pub escalated: Vec<String>,
+    /// Attentions the headless host was able to handle (replied / noted).
+    pub handled: Vec<String>,
+    /// Attentions the dispatcher could not process (error / unavailable).
+    pub failed: Vec<String>,
+    /// Human-readable summary of what the headless host did.
+    pub summary: Option<String>,
+}
+
+impl HostDispatchOutcome {
+    pub fn empty() -> Self {
+        Self {
+            inspected: 0,
+            escalated: Vec::new(),
+            handled: Vec::new(),
+            failed: Vec::new(),
+            summary: None,
+        }
+    }
+
+    pub fn is_noop(&self) -> bool {
+        self.inspected == 0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
