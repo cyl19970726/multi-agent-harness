@@ -166,6 +166,12 @@ export interface AgentTeam {
    * `owner_agent_id` — that legacy field is rendered separately.
    */
   host_member_id?: string | null;
+  /** Owning Company id (Organization model §3.1). null = unbound execution-only Team. */
+  company_id?: string | null;
+  /** Machine where this Team's Supervisor runs (§3.1). null = default/unknown. */
+  machine_id?: string | null;
+  /** User-defined tags for grouping and filtering (§3.1). */
+  labels?: string[];
 }
 
 export interface Message {
@@ -747,6 +753,8 @@ export type WorkStatus =
 export interface Work {
   id: string;
   team_run_id: string;
+  /** Durable AgentTeam scope (ADR 0052, §4.1). Absent on legacy rows. */
+  team_id?: string | null;
   parent_work_id?: string | null;
   source_work_item_ref?: string | null;
   title: string;
@@ -767,6 +775,8 @@ export interface Work {
   version: number;
   created_at: string;
   updated_at: string;
+  /** Optional deadline (§4.1). Rendered in the Company Work view when present. */
+  due_at?: string | null;
 }
 
 export interface WorkEvent {

@@ -706,6 +706,7 @@ function AppRail({
           workHostId: undefined,
           workMemberId: undefined,
           workStatus: undefined,
+          workPriority: undefined,
           workSource: undefined,
           workDemand: undefined,
     });

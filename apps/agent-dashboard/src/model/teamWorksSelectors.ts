@@ -37,6 +37,8 @@ export interface TeamWorkRow {
   sourceLabel: string;
   parentWorkId?: string | null;
   sourceWorkItemRef?: string | null;
+  /** Durable team scope from Work.team_id, falling back to run.agent_team_id. */
+  durableTeamId?: string;
 }
 
 export interface TeamWorksFacets {
@@ -44,6 +46,7 @@ export interface TeamWorksFacets {
   hosts: Array<{ id: string; label: string }>;
   members: Array<{ id: string; label: string }>;
   statuses: string[];
+  priorities: string[];
   sources: Array<{ id: string; label: string }>;
 }
 
@@ -65,11 +68,13 @@ export interface TeamWorksFilters {
   hostId?: string;
   memberId?: string;
   status?: string;
+  priority?: string;
   source?: string;
   demand?: TeamWorkDemandClass;
 }
 
 const STATUS_ORDER = ["open", "in_progress", "blocked", "review", "done", "cancelled"];
+const PRIORITY_ORDER = ["urgent", "high", "normal", "low"];
 
 export function buildTeamWorksModel(snapshot: DashboardSnapshot): TeamWorksModel {
   const works = snapshot.works ?? [];
@@ -121,6 +126,7 @@ export function buildTeamWorksModel(snapshot: DashboardSnapshot): TeamWorksModel
         : `${work.created_by_actor?.kind ?? "unknown"} intake`,
       parentWorkId: work.parent_work_id ?? null,
       sourceWorkItemRef: work.source_work_item_ref ?? null,
+      durableTeamId: work.team_id ?? team?.id,
     };
   });
 
@@ -155,6 +161,7 @@ export function buildTeamWorksModel(snapshot: DashboardSnapshot): TeamWorksModel
         })),
     ),
     statuses: STATUS_ORDER.filter((status) => rows.some((row) => row.work.status === status)),
+    priorities: PRIORITY_ORDER.filter((p) => rows.some((row) => row.work.priority === p)),
     sources: uniq(
       rows.map((row) => ({
         id: row.sourceWorkItemRef ? "work-item" : (row.work.created_by_actor?.kind ?? "unknown"),
@@ -184,6 +191,7 @@ export function filterTeamWorks(rows: TeamWorkRow[], filters: TeamWorksFilters):
     if (filters.hostId && row.hostId !== filters.hostId) return false;
     if (filters.memberId && row.work.owner_member_id !== filters.memberId) return false;
     if (filters.status && row.work.status !== filters.status) return false;
+    if (filters.priority && row.work.priority !== filters.priority) return false;
     if (filters.source) {
       const sourceId = row.sourceWorkItemRef
         ? "work-item"
