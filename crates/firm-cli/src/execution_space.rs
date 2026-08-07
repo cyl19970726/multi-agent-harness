@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use firm_core::ExecutionSpace;
+use harness_core::ExecutionSpace;
 use serde::{Deserialize, Serialize};
 
 use crate::project;

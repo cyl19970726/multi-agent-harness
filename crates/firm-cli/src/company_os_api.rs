@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use firm_core::{
+use harness_core::{
     ActionCommand, ActionCommandStatus, ActionEffect, ActionPolicyDefinition, ActorRef, ActorType,
     Approval, ApprovalStatus, Assignment, AuditEvent, AuditEventKind, Block, BusinessModule,
     Commitment, CommitmentStatus, CustomPageDefinition, CustomPagePackage, Document, DocumentKind,
@@ -15,7 +15,7 @@ use firm_core::{
     PendingInteractionStatus, Relation, RiskTier, TypedRecord, ValidateCompanyOs, View, WorkItem,
     WorkItemStatus, WorkQuery,
 };
-use firm_store::{ActionCommandClaimResult, CompanyActor, HarnessStore, StoreError};
+use harness_store::{ActionCommandClaimResult, CompanyActor, HarnessStore, StoreError};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 
@@ -888,7 +888,7 @@ fn display_money(amount: &str, currency: &str) -> String {
 // repair, or migrate anything.
 // ---------------------------------------------------------------------------
 
-/// Keep in sync with `firm_store::company_os::work_item_is_active`.
+/// Keep in sync with `harness_store::company_os::work_item_is_active`.
 fn work_status_is_active(status: WorkItemStatus) -> bool {
     !matches!(
         status,
@@ -1310,7 +1310,7 @@ pub fn docs_health_report(store: &HarnessStore) -> Result<Value, StoreError> {
 #[cfg(test)]
 mod projection_tests {
     use super::*;
-    use firm_core::{
+    use harness_core::{
         AgentTeamRun, DurableAgentMember, DurableAgentMemberStatus, MemberRun, StandingAgent,
     };
 
@@ -1598,7 +1598,7 @@ mod projection_tests {
         for (id, created_at) in [("work-1", "2"), ("work-2", "3")] {
             store
                 .insert_work(
-                    firm_core::Work {
+                    harness_core::Work {
                         id: id.to_string(),
                         team_run_id: "run".to_string(),
                         team_id: None,
@@ -1608,15 +1608,15 @@ mod projection_tests {
                         title: id.to_string(),
                         context_markdown: "projection".to_string(),
                         completion_criteria_markdown: "done".to_string(),
-                        status: firm_core::WorkStatus::Open,
+                        status: harness_core::WorkStatus::Open,
                         owner_member_id: Some("member-linked".to_string()),
                         active_member_run_id: Some("run-linked".to_string()),
-                        claim_mode: firm_core::WorkClaimMode::HostAssign,
+                        claim_mode: harness_core::WorkClaimMode::HostAssign,
                         eligible_member_ids: Vec::new(),
                         prerequisite_work_ids: Vec::new(),
-                        priority: firm_core::WorkPriority::Normal,
-                        created_by_actor: firm_core::TeamActorRef {
-                            kind: firm_core::TeamActorKind::Host,
+                        priority: harness_core::WorkPriority::Normal,
+                        created_by_actor: harness_core::TeamActorRef {
+                            kind: harness_core::TeamActorKind::Host,
                             id: "host".to_string(),
                             display_name: None,
                             authn_source: Some("test".to_string()),
@@ -1632,10 +1632,10 @@ mod projection_tests {
                         created_at: String::new(),
                         updated_at: String::new(),
                     },
-                    firm_core::WorkCommandContext {
+                    harness_core::WorkCommandContext {
                         event_id: format!("event-{id}"),
-                        performed_by_actor: firm_core::TeamActorRef {
-                            kind: firm_core::TeamActorKind::Host,
+                        performed_by_actor: harness_core::TeamActorRef {
+                            kind: harness_core::TeamActorKind::Host,
                             id: "host".to_string(),
                             display_name: None,
                             authn_source: Some("test".to_string()),
@@ -2595,7 +2595,7 @@ fn validate_definition_scope(
             record
                 .get(*field)
                 .cloned()
-                .and_then(|value| serde_json::from_value::<firm_core::EntityRef>(value).ok())
+                .and_then(|value| serde_json::from_value::<harness_core::EntityRef>(value).ok())
                 .is_some_and(|reference| entity_in_module(store, definition, &reference, 0))
         }),
         "work_item.append" | "work_item.update" | "work_item.transition" => {
@@ -2619,7 +2619,7 @@ fn validate_definition_scope(
                             entity_in_module(
                                 store,
                                 definition,
-                                &firm_core::EntityRef {
+                                &harness_core::EntityRef {
                                     kind: EntityKind::TypedRecord,
                                     id: id.clone(),
                                 },
@@ -2719,7 +2719,7 @@ fn work_item_in_module(
 fn entity_in_module(
     store: &HarnessStore,
     definition: &CustomPageDefinition,
-    reference: &firm_core::EntityRef,
+    reference: &harness_core::EntityRef,
     depth: usize,
 ) -> bool {
     if depth > 8 {

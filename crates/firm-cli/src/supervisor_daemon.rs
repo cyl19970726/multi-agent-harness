@@ -3,13 +3,16 @@
 //! supervisor serve` command calls [`run_supervisor_daemon`] in the foreground.
 //! `harness team-run start` spawns the daemon as a child and exits.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::io::{BufRead, Write};
 use std::net::TcpStream;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::{
     current_unix_ms_u64, drive_prepared_team_run, prepare_team_run_start_body,
@@ -107,7 +110,7 @@ pub(crate) fn run_supervisor_daemon(
     ));
 
     use crate::{now_string, store_conflict_as_usage};
-    use firm_core::{TeamRunStatus, WaveStatus};
+    use harness_core::{TeamRunStatus, WaveStatus};
 
     let running = if body.run.status == TeamRunStatus::Planning {
         let mut running = body.run.clone();
@@ -125,7 +128,7 @@ pub(crate) fn run_supervisor_daemon(
     };
 
     ledger.fold_event(
-        firm_core::TeamRunEventSourceKind::Host,
+        harness_core::TeamRunEventSourceKind::Host,
         None,
         "team_run",
         run_id,
@@ -253,7 +256,7 @@ pub(crate) fn supervisor_daemon_status(
     let Some(lease) = store.latest_team_supervisor_lease(team_run_id)? else {
         return Ok(SupervisorDaemonStatus::Absent);
     };
-    if lease.status != firm_core::TeamSupervisorLeaseStatus::Active {
+    if lease.status != harness_core::TeamSupervisorLeaseStatus::Active {
         return Ok(SupervisorDaemonStatus::Absent);
     }
     let now_ms = current_unix_ms_u64();
@@ -320,7 +323,7 @@ pub(crate) fn check_existing_supervisor_daemon(
     let Some(lease) = store.latest_team_supervisor_lease(team_run_id)? else {
         return Ok(None);
     };
-    if lease.status != firm_core::TeamSupervisorLeaseStatus::Active {
+    if lease.status != harness_core::TeamSupervisorLeaseStatus::Active {
         return Ok(None);
     }
     let now_ms = current_unix_ms_u64();
@@ -410,7 +413,7 @@ pub(crate) fn spawn_supervisor_daemon(
         std::thread::sleep(Duration::from_millis(200));
         if let Some(lease) = store.latest_team_supervisor_lease(run_id)? {
             if lease.heartbeat_unix_ms > 0
-                && lease.status == firm_core::TeamSupervisorLeaseStatus::Active
+                && lease.status == harness_core::TeamSupervisorLeaseStatus::Active
             {
                 let (alive, _) = supervisor_lease_live_diagnosis(&lease);
                 if alive {
@@ -545,6 +548,676 @@ pub(crate) fn supervisor_daemon_command(store: &HarnessStore, args: &[String]) -
 }
 
 // ---------------------------------------------------------------------------
+// Multi-team supervisor daemon (#366)
+// ---------------------------------------------------------------------------
+// The multi-team daemon manages N team-runs in a single process.
+// It scans the store for active runs, spawns one supervisor thread per run,
+// and exposes a Unix-domain control socket for start/status/stop commands.
+// This supersedes the per-run detached daemon as the primary path; the
+// per-run daemon remains available as a fallback when the multi-team daemon
+// is not running.
+
+/// Socket path for the multi-team daemon's control socket.
+/// Uses a hash-based fallback under /tmp when the store root path exceeds
+/// the macOS AF_UNIX 104-byte limit.
+pub(crate) fn multi_team_socket_path(store_root: &std::path::Path) -> PathBuf {
+    let direct = store_root.join("supervisor.sock");
+    let direct_str = direct.to_string_lossy();
+    if direct_str.len() < 100 {
+        return direct;
+    }
+    // Hash-based fallback for long paths (macOS AF_UNIX 104-byte limit).
+    let mut hasher = DefaultHasher::new();
+    store_root.to_string_lossy().hash(&mut hasher);
+    let hash = hasher.finish();
+    std::path::Path::new("/tmp").join(format!("firm-supervisor-{hash:x}.sock"))
+}
+
+/// A managed team-run context inside the multi-team daemon.
+struct MultiTeamContext {
+    run_id: String,
+    heartbeat_valid: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<CliResult<()>>>,
+    started_at: Instant,
+}
+
+/// The multi-team supervisor daemon.
+pub(crate) struct MultiTeamDaemon {
+    store: HarnessStore,
+    contexts: Mutex<Vec<MultiTeamContext>>,
+    max_concurrency: usize,
+    idle_timeout_secs: u64,
+    scan_interval: Duration,
+    shutdown: Arc<AtomicBool>,
+}
+
+impl MultiTeamDaemon {
+    /// Run the multi-team daemon in the foreground. Blocks until SIGTERM/SIGINT
+    /// or until the control socket receives a "stop" command.
+    pub(crate) fn run(
+        store: HarnessStore,
+        max_concurrency: usize,
+        idle_timeout_secs: u64,
+        scan_interval_secs: u64,
+    ) -> CliResult<()> {
+        let shutdown = Arc::new(AtomicBool::new(false));
+
+        // Signal handling: use a self-contained pattern where the handler
+        // sets an AtomicBool — no static raw pointer (fixes P0-8).
+        let shutdown_sig = Arc::clone(&shutdown);
+        install_signal_handlers_mt(Arc::clone(&shutdown_sig));
+
+        let socket_path = multi_team_socket_path(store.root());
+        let _ = std::fs::remove_file(&socket_path);
+
+        let listener = UnixListener::bind(&socket_path).map_err(|e| {
+            CliError::Usage(format!(
+                "cannot bind supervisor socket at {}: {e}",
+                socket_path.display()
+            ))
+        })?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| CliError::Usage(format!("cannot set socket non-blocking: {e}")))?;
+
+        eprintln!(
+            "[multi-team-daemon] listening on {}",
+            socket_path.display()
+        );
+
+        let daemon = MultiTeamDaemon {
+            store,
+            contexts: Mutex::new(Vec::new()),
+            max_concurrency,
+            idle_timeout_secs,
+            scan_interval: Duration::from_secs(scan_interval_secs),
+            shutdown: shutdown_sig,
+        };
+
+        // Crash recovery: adopt orphaned runs on startup.
+        daemon.recover_orphaned_runs()?;
+
+        // Main loop: scan store + poll control socket.
+        daemon.serve_loop(&listener)?;
+
+        // Graceful shutdown.
+        drop(listener);
+        let _ = std::fs::remove_file(&socket_path);
+        daemon.graceful_shutdown()?;
+
+        eprintln!("[multi-team-daemon] shutdown complete");
+        Ok(())
+    }
+
+    /// Enumerate non-terminal team-runs and adopt runs whose supervisor lease
+    /// is expired (no live supervisor elsewhere).
+    fn recover_orphaned_runs(&self) -> CliResult<()> {
+        let runs = self
+            .store
+            .team_runs()
+            .map_err(|e| CliError::Store(harness_store::StoreError::Conflict(format!("list team runs: {e}"))))?;
+        let now_ms = current_unix_ms_u64();
+        let mut adopted = 0usize;
+
+        for run in &runs {
+            use harness_core::TeamRunStatus;
+            // P0-2 fix: only adopt Running runs (not Planning) and check lease.
+            if !matches!(run.status, TeamRunStatus::Running) {
+                continue;
+            }
+
+            let lease = self
+                .store
+                .latest_team_supervisor_lease(&run.id)
+                .ok()
+                .flatten();
+            let should_adopt = match &lease {
+                None => true,
+                Some(l) => {
+                    l.status != harness_core::TeamSupervisorLeaseStatus::Active
+                        || (l.expires_unix_ms > 0 && l.expires_unix_ms < now_ms)
+                }
+            };
+
+            if should_adopt {
+                eprintln!(
+                    "[multi-team-daemon] adopting orphaned run {}",
+                    run.id
+                );
+                if let Err(e) = self.start_supervising(&run.id) {
+                    eprintln!(
+                        "[multi-team-daemon] failed to adopt run {}: {e}",
+                        run.id
+                    );
+                } else {
+                    adopted += 1;
+                }
+            }
+        }
+
+        if adopted > 0 {
+            eprintln!("[multi-team-daemon] adopted {adopted} orphaned run(s)");
+        }
+        Ok(())
+    }
+
+    /// Main loop: scan for new runs, reap finished contexts, poll control socket.
+    fn serve_loop(&self, listener: &UnixListener) -> CliResult<()> {
+        let mut buf = String::new();
+
+        while !self.shutdown.load(Ordering::SeqCst) {
+            // 1. Scan for active team-runs that aren't yet managed.
+            self.scan_and_adopt()?;
+
+            // 2. Reap finished contexts.
+            self.reap_finished()?;
+
+            // 3. Poll control socket for one command (non-blocking).
+            self.poll_control_socket(listener, &mut buf)?;
+
+            // 4. Sleep the scan interval with shutdown-aware wake-up.
+            let deadline = Instant::now() + self.scan_interval;
+            while Instant::now() < deadline && !self.shutdown.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+        Ok(())
+    }
+
+    /// Scan store for active Running team-runs not yet managed.
+    /// Does NOT hold the context lock across store I/O (fixes P0-7).
+    fn scan_and_adopt(&self) -> CliResult<()> {
+        let runs = self
+            .store
+            .team_runs()
+            .map_err(|e| CliError::Store(harness_store::StoreError::Conflict(format!("list team runs: {e}"))))?;
+
+        let managed_ids: Vec<String> = {
+            let ctx = self
+                .contexts
+                .lock()
+                .map_err(|e| CliError::Usage(format!("context lock poisoned: {e}")))?;
+            ctx.iter().map(|c| c.run_id.clone()).collect()
+        };
+
+        for run in &runs {
+            use harness_core::TeamRunStatus;
+            if !matches!(run.status, TeamRunStatus::Running) {
+                continue;
+            }
+            if managed_ids.contains(&run.id) {
+                continue;
+            }
+            // P0-2 fix: check lease before adopting.
+            let now_ms = current_unix_ms_u64();
+            let should_start = match self
+                .store
+                .latest_team_supervisor_lease(&run.id)
+                .ok()
+                .flatten()
+            {
+                None => true,
+                Some(l) => {
+                    l.status != harness_core::TeamSupervisorLeaseStatus::Active
+                        || (l.expires_unix_ms > 0 && l.expires_unix_ms < now_ms)
+                }
+            };
+            if !should_start {
+                continue;
+            }
+
+            eprintln!(
+                "[multi-team-daemon] starting supervisor for run {}",
+                run.id
+            );
+            // P0-4 fix: errors propagate, not just stderr.
+            if let Err(e) = self.start_supervising(&run.id) {
+                eprintln!(
+                    "[multi-team-daemon] failed to start run {}: {e}",
+                    run.id
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Spawn a supervisor thread for a single team-run.
+    fn start_supervising(&self, run_id: &str) -> CliResult<()> {
+        // P0-2 fix: enforce concurrent team-run limit.
+        {
+            let contexts = self
+                .contexts
+                .lock()
+                .map_err(|e| CliError::Usage(format!("context lock poisoned: {e}")))?;
+            if contexts.len() >= self.max_concurrency {
+                return Err(CliError::Usage(format!(
+                    "multi-team daemon at capacity ({}/{} runs); cannot start {run_id}",
+                    contexts.len(),
+                    self.max_concurrency,
+                )));
+            }
+        }
+
+        let store = self.store.clone();
+        let run_id = run_id.to_string();
+        let max_concurrency = self.max_concurrency;
+        let idle_timeout_secs = self.idle_timeout_secs;
+
+        // Validate and create registration outside the context lock (fixes P0-7).
+        let body = prepare_team_run_start_body(&store, &run_id, max_concurrency)?;
+        let registration = TeamSupervisorRegistration::start(&store, &run_id)?;
+        let heartbeat_valid = Arc::clone(&registration.heartbeat_valid);
+
+        // Transition Planning→Running if needed (same as per-run daemon).
+        use crate::{now_string, store_conflict_as_usage};
+        use harness_core::{TeamRunStatus, WaveStatus};
+
+        let running = if body.run.status == TeamRunStatus::Planning {
+            let mut running = body.run.clone();
+            running.status = TeamRunStatus::Running;
+            running.updated_at = now_string();
+            store_conflict_as_usage(store.compare_and_append_team_run_with_wave_status(
+                &body.run,
+                &running,
+                WaveStatus::Running,
+                &now_string(),
+            ))?;
+            running
+        } else {
+            body.run.clone()
+        };
+
+        let ledger = Arc::new(TeamRunLedger::new(
+            &store,
+            &run_id,
+            &registration.supervisor_id,
+            registration.generation,
+            Arc::clone(&registration.heartbeat_valid),
+        ));
+
+        ledger.fold_event(
+            harness_core::TeamRunEventSourceKind::Host,
+            None,
+            "team_run",
+            &run_id,
+            "updated",
+            &format!(
+                "member supervisor {} generation {} {} ({} unclosed member(s), max-concurrency {max_concurrency})",
+                registration.supervisor_id,
+                registration.generation,
+                if body.run.status == TeamRunStatus::Planning {
+                    "started"
+                } else {
+                    "reattached"
+                },
+                body.members.len(),
+            ),
+        )?;
+
+        let prepared = PreparedTeamRunStart {
+            run_id: body.run_id,
+            objective: body.objective,
+            running,
+            members: body.members,
+            ledger,
+            supervisor_registration: registration,
+        };
+
+        eprintln!(
+            "[multi-team-daemon] team run {}: serving (pid {}, gen {})",
+            run_id,
+            std::process::id(),
+            prepared.supervisor_registration.generation,
+        );
+
+        let thread = std::thread::spawn(move || {
+            drive_prepared_team_run(
+                prepared,
+                None, // execution_space — daemon resolves from store
+                None, // project_context — daemon resolves from store
+                max_concurrency,
+                Duration::from_secs(idle_timeout_secs),
+                None,
+            )
+        });
+
+        // P0-7 fix: lock only for the insert, not around store I/O.
+        {
+            let mut contexts = self
+                .contexts
+                .lock()
+                .map_err(|e| CliError::Usage(format!("context lock poisoned: {e}")))?;
+            contexts.push(MultiTeamContext {
+                run_id,
+                heartbeat_valid,
+                thread: Some(thread),
+                started_at: Instant::now(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Reap finished supervisor threads and remove them from the context registry.
+    fn reap_finished(&self) -> CliResult<()> {
+        let mut contexts = self
+            .contexts
+            .lock()
+            .map_err(|e| CliError::Usage(format!("context lock poisoned: {e}")))?;
+
+        let mut finished = Vec::new();
+        let mut still_running = Vec::new();
+
+        for ctx in contexts.drain(..) {
+            let is_done = ctx
+                .thread
+                .as_ref()
+                .map(|t| t.is_finished())
+                .unwrap_or(true);
+            if is_done {
+                finished.push(ctx);
+            } else {
+                still_running.push(ctx);
+            }
+        }
+
+        *contexts = still_running;
+
+        for ctx in finished {
+            if let Some(thread) = ctx.thread {
+                match thread.join() {
+                    Ok(Ok(())) => {
+                        eprintln!(
+                            "[multi-team-daemon] run {} completed",
+                            ctx.run_id
+                        );
+                    }
+                    Ok(Err(e)) => {
+                        eprintln!(
+                            "[multi-team-daemon] run {} error: {e}",
+                            ctx.run_id
+                        );
+                    }
+                    Err(_) => {
+                        eprintln!(
+                            "[multi-team-daemon] run {} panicked",
+                            ctx.run_id
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Poll the control socket for one incoming command (non-blocking).
+    fn poll_control_socket(
+        &self,
+        listener: &UnixListener,
+        buf: &mut String,
+    ) -> CliResult<()> {
+        match listener.accept() {
+            Ok((mut stream, _addr)) => {
+                buf.clear();
+                let mut reader = std::io::BufReader::new(&mut stream);
+                if reader.read_line(buf).is_ok() {
+                    self.handle_control_command(&mut stream, buf.trim())?;
+                }
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(e) => {
+                eprintln!("[multi-team-daemon] socket accept error: {e}");
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle a single control socket command.
+    fn handle_control_command(
+        &self,
+        stream: &mut UnixStream,
+        cmd_line: &str,
+    ) -> CliResult<()> {
+        let cmd: serde_json::Value = match serde_json::from_str(cmd_line) {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = writeln!(stream, r#"{{"ok":false,"error":"invalid json: {}"}}"#, e);
+                return Ok(());
+            }
+        };
+
+        let cmd_name = cmd["cmd"].as_str().unwrap_or("");
+        match cmd_name {
+            "start" => {
+                let run_id = cmd["run_id"].as_str().unwrap_or("");
+                if run_id.is_empty() {
+                    let _ = writeln!(
+                        stream,
+                        r#"{{"ok":false,"error":"run_id is required"}}"#
+                    );
+                    return Ok(());
+                }
+                // P0-4 fix: propagate actual error, not "delegated to daemon".
+                match self.start_supervising(run_id) {
+                    Ok(()) => {
+                        let _ = writeln!(
+                            stream,
+                            r#"{{"ok":true,"run_id":"{}"}}"#,
+                            run_id
+                        );
+                    }
+                    Err(e) => {
+                        let _ = writeln!(
+                            stream,
+                            r#"{{"ok":false,"run_id":"{}","error":"{}"}}"#,
+                            run_id, e
+                        );
+                    }
+                }
+            }
+            "status" => {
+                let runs: Vec<serde_json::Value> = {
+                    let contexts = self
+                        .contexts
+                        .lock()
+                        .map_err(|e| CliError::Usage(format!("context lock poisoned: {e}")))?;
+                    contexts
+                        .iter()
+                        .map(|ctx| {
+                            let is_finished = ctx
+                                .thread
+                                .as_ref()
+                                .map(|t| t.is_finished())
+                                .unwrap_or(true);
+                            serde_json::json!({
+                                "run_id": ctx.run_id,
+                                "status": if is_finished { "finished" } else { "running" },
+                                "elapsed_secs": ctx.started_at.elapsed().as_secs(),
+                            })
+                        })
+                        .collect()
+                };
+                let resp = serde_json::json!({"ok": true, "runs": runs});
+                let _ = writeln!(
+                    stream,
+                    "{}",
+                    serde_json::to_string(&resp).unwrap_or_default()
+                );
+            }
+            "stop" => {
+                // P0-1 fix: actually set shutdown, not just reply ok.
+                self.shutdown.store(true, Ordering::SeqCst);
+                let _ = writeln!(stream, r#"{{"ok":true}}"#);
+            }
+            _ => {
+                let _ = writeln!(
+                    stream,
+                    r#"{{"ok":false,"error":"unknown command: {}"}}"#,
+                    cmd_name
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Graceful shutdown: signal all managed contexts to stop, drain them,
+    /// and join threads with a deadline.
+    fn graceful_shutdown(&self) -> CliResult<()> {
+        eprintln!("[multi-team-daemon] graceful shutdown initiated");
+
+        // Drain contexts from the registry.
+        let contexts: Vec<MultiTeamContext> = {
+            let mut guard = self
+                .contexts
+                .lock()
+                .map_err(|e| CliError::Usage(format!("context lock poisoned: {e}")))?;
+            std::mem::take(&mut *guard)
+        };
+
+        if contexts.is_empty() {
+            return Ok(());
+        }
+
+        eprintln!(
+            "[multi-team-daemon] waiting for {} run(s) to finish...",
+            contexts.len()
+        );
+
+        // P0-1 fix: signal every managed context to stop by invalidating
+        // their heartbeat.  This causes drive_prepared_team_run to detect
+        // lease loss and exit its main loop promptly.
+        for ctx in &contexts {
+            ctx.heartbeat_valid.store(false, Ordering::Release);
+        }
+
+        // P0-3 fix: join threads with a deadline.  Since std::thread::JoinHandle
+        // lacks join_timeout, we poll is_finished() with a sleep loop.
+        const JOIN_DEADLINE_SECS: u64 = 30;
+        let deadline = Instant::now() + Duration::from_secs(JOIN_DEADLINE_SECS);
+
+        for ctx in contexts {
+            let Some(thread) = ctx.thread else { continue };
+            loop {
+                if thread.is_finished() {
+                    let _ = thread.join();
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    eprintln!(
+                        "[multi-team-daemon] shutdown deadline exceeded for run {}",
+                        ctx.run_id
+                    );
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Multi-team daemon signal handling (channel-based, no static raw pointer)
+// ---------------------------------------------------------------------------
+
+fn install_signal_handlers_mt(shutdown: Arc<AtomicBool>) {
+    // P0-8 fix: leak the Arc to get a 'static reference for the signal
+    // handler. The leaked memory is reclaimed at process exit. This avoids
+    // the dangling raw pointer pattern of the per-run daemon while still
+    // being async-signal-safe.
+    let leaked: &'static AtomicBool = Box::leak(Box::new(shutdown));
+
+    extern "C" fn handle(sig: i32) {
+        let _ = sig;
+        // SAFETY: MT_SIGNAL_FLAG is set before signal handlers are installed
+        // and lives for the process lifetime. The store is async-signal-safe.
+        // We access the static mut via raw pointer to avoid the static_mut_refs
+        // warning in Rust 2024 edition.
+        unsafe {
+            let ptr: *const Option<&'static AtomicBool> = &raw const MT_SIGNAL_FLAG;
+            if let Some(flag) = &*ptr {
+                flag.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    unsafe {
+        MT_SIGNAL_FLAG = Some(leaked);
+        signal(SIGTERM, handle as SigHandler);
+        signal(SIGINT, handle as SigHandler);
+    }
+}
+
+static mut MT_SIGNAL_FLAG: Option<&'static AtomicBool> = None;
+
+// ---------------------------------------------------------------------------
+// CLI integration: delegate team-run start to multi-team daemon
+// ---------------------------------------------------------------------------
+
+/// Try to send a start command to the multi-team daemon via its control socket.
+/// Returns the response line on success.
+pub(crate) fn try_delegate_to_daemon(
+    store: &HarnessStore,
+    run_id: &str,
+) -> Result<String, std::io::Error> {
+    let socket_path = multi_team_socket_path(store.root());
+    let mut stream = UnixStream::connect(&socket_path)?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+
+    let cmd = serde_json::json!({"cmd": "start", "run_id": run_id});
+    let cmd_str = serde_json::to_string(&cmd)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    writeln!(stream, "{cmd_str}")?;
+    stream.flush()?;
+
+    let mut buf = String::new();
+    let mut reader = std::io::BufReader::new(&mut stream);
+    reader.read_line(&mut buf)?;
+    Ok(buf.trim().to_string())
+}
+
+/// Send a status request to the multi-team daemon.
+pub(crate) fn daemon_status_via_socket(store: &HarnessStore) -> Option<String> {
+    let socket_path = multi_team_socket_path(store.root());
+    let mut stream = UnixStream::connect(&socket_path).ok()?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .ok()?;
+
+    let cmd = r#"{"cmd":"status"}"#;
+    writeln!(stream, "{cmd}").ok()?;
+    stream.flush().ok()?;
+
+    let mut buf = String::new();
+    let mut reader = std::io::BufReader::new(&mut stream);
+    reader.read_line(&mut buf).ok()?;
+    let response = buf.trim().to_string();
+    if response.is_empty() {
+        return None;
+    }
+    Some(response)
+}
+
+/// Send a stop command to the multi-team daemon.
+pub(crate) fn daemon_stop_via_socket(store: &HarnessStore) -> Option<String> {
+    let socket_path = multi_team_socket_path(store.root());
+    let mut stream = UnixStream::connect(&socket_path).ok()?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .ok()?;
+
+    let cmd = r#"{"cmd":"stop"}"#;
+    writeln!(stream, "{cmd}").ok()?;
+    stream.flush().ok()?;
+
+    let mut buf = String::new();
+    let mut reader = std::io::BufReader::new(&mut stream);
+    reader.read_line(&mut buf).ok()?;
+    Some(buf.trim().to_string())
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -562,5 +1235,29 @@ mod tests {
         };
         assert_eq!(info.pid, 12345);
         assert_eq!(info.generation, 3);
+    }
+
+    #[test]
+    fn multi_team_socket_path_short_root() {
+        let root = std::path::Path::new("/tmp/firm-test");
+        let path = multi_team_socket_path(root);
+        assert_eq!(path, root.join("supervisor.sock"));
+    }
+
+    #[test]
+    fn multi_team_socket_path_long_root_fallback() {
+        let long = "/tmp/very-long-directory-name-that-makes-the-path-exceed-the-af-unix-limit-on-macos-which-is-104-bytes".repeat(2);
+        let root = std::path::Path::new(&long);
+        let path = multi_team_socket_path(root);
+        assert!(path.starts_with("/tmp/firm-supervisor-"));
+        assert!(path.to_string_lossy().len() < 104);
+    }
+
+    #[test]
+    fn multi_team_socket_path_deterministic() {
+        let root = std::path::Path::new("/some/store/root");
+        let p1 = multi_team_socket_path(root);
+        let p2 = multi_team_socket_path(root);
+        assert_eq!(p1, p2);
     }
 }

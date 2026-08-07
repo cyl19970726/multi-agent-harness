@@ -17,7 +17,7 @@
 
 use std::path::{Path, PathBuf};
 
-use firm_core::{
+use harness_core::{
     project_id_for_path, project_store_root, ProjectBinding, ProjectContext, ProjectKind,
     GLOBAL_PROJECT_ID,
 };

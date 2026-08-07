@@ -19,11 +19,11 @@ use std::{
     time::Duration,
 };
 
-use firm_core::{
+use harness_core::{
     MemberRunStatus, PendingInteractionStatus, TeamActorKind, TeamActorRef, TeamRunEvent,
     TeamRunStatus, TeamSupervisorLeaseStatus, WaveStatus,
 };
-use firm_store::HarnessStore;
+use harness_store::HarnessStore;
 use serde_json::{json, Value};
 
 use crate::{
