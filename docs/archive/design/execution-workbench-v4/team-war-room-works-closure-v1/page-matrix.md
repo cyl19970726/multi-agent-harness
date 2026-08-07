@@ -1,9 +1,0 @@
-# Page matrix
-
-| Priority | Page | State | Viewport | Baseline | Expected | Implemented | Review |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| P0 | Team War Room | Works default · active pressure | 1440×1000 | `.visual-evidence/team-war-room-works-closure-v1/baseline/team-war-room--running-needs-you--desktop-1440x1000.png` | `expected/team-war-room/works-default--desktop-1440x1000-v1.png` | `.visual-evidence/team-war-room-works-closure-v1/final/team-war-room--running-needs-you--desktop-1440x1000.png` | Pass with truth-preserving deviations |
-| P0 | Team War Room | Works default · active pressure | 900×1180 | `.visual-evidence/team-war-room-works-closure-v1/baseline/responsive/team-war-room--running-needs-you--tablet-900x1180.png` | `expected/team-war-room/works-default--tablet-900x1180-v1.png` | `.visual-evidence/team-war-room-works-closure-v1/final/responsive/team-war-room--running-needs-you--tablet-900x1180.png` | Pass; one-row capacity/composer and honest empty slots |
-| P0 | Team War Room | Works default · active pressure | 390×844 | `.visual-evidence/team-war-room-works-closure-v1/baseline/responsive/team-war-room--running-needs-you--mobile-390x844.png` | `expected/team-war-room/works-default--mobile-390x844-v1.png` | `.visual-evidence/team-war-room-works-closure-v1/final/responsive/team-war-room--running-needs-you--mobile-390x844.png` | Pass; first-viewport Work and split toolbar |
-| P1 | Team War Room | Activity · group conversation | 1440×1000 | Baseline capture in the same run | Existing approved group-chat direction | Browser-verified in final capture run | Pass; conversation precedes mailbox pressure and filters remain reachable |
-| P1 | Team War Room | Members · capacity | 1440×1000 | Baseline capture in the same run | Derived from the desktop capacity strip | Browser-verified in final capture run | Pass; absent capacity reads “Not observed” and no utilization is invented |
