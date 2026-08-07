@@ -25,7 +25,7 @@ function ok(msg) {
 
 // ── Rule 1: CONTRACT prompt must match skill invariants ──────────────────
 console.log("Rule 1: CONTRACT prompt ↔ skills/shared-references");
-const mainRs = read(join(ROOT, "crates/harness-cli/src/main.rs"));
+const mainRs = read(join(ROOT, "crates/firm-cli/src/main.rs"));
 const shared = read(join(ROOT, "skills/shared-references/SKILL.md"));
 
 if (mainRs && shared) {
