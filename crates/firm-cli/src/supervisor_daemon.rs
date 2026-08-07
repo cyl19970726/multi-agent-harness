@@ -783,6 +783,21 @@ impl MultiTeamDaemon {
 
     /// Spawn a supervisor thread for a single team-run.
     fn start_supervising(&self, run_id: &str) -> CliResult<()> {
+        // P0-2 fix: enforce concurrent team-run limit.
+        {
+            let contexts = self
+                .contexts
+                .lock()
+                .map_err(|e| CliError::Usage(format!("context lock poisoned: {e}")))?;
+            if contexts.len() >= self.max_concurrency {
+                return Err(CliError::Usage(format!(
+                    "multi-team daemon at capacity ({}/{} runs); cannot start {run_id}",
+                    contexts.len(),
+                    self.max_concurrency,
+                )));
+            }
+        }
+
         let store = self.store.clone();
         let run_id = run_id.to_string();
         let max_concurrency = self.max_concurrency;
@@ -1044,7 +1059,8 @@ impl MultiTeamDaemon {
         Ok(())
     }
 
-    /// Graceful shutdown: drain all managed contexts, join threads with deadline.
+    /// Graceful shutdown: signal all managed contexts to stop, drain them,
+    /// and join threads with a deadline.
     fn graceful_shutdown(&self) -> CliResult<()> {
         eprintln!("[multi-team-daemon] graceful shutdown initiated");
 
@@ -1066,20 +1082,33 @@ impl MultiTeamDaemon {
             contexts.len()
         );
 
-        // P0-3 fix: join with deadline, not infinite.
+        // P0-1 fix: signal every managed context to stop by invalidating
+        // their heartbeat.  This causes drive_prepared_team_run to detect
+        // lease loss and exit its main loop promptly.
+        for ctx in &contexts {
+            ctx.heartbeat_valid.store(false, Ordering::Release);
+        }
+
+        // P0-3 fix: join threads with a deadline.  Since std::thread::JoinHandle
+        // lacks join_timeout, we poll is_finished() with a sleep loop.
         const JOIN_DEADLINE_SECS: u64 = 30;
         let deadline = Instant::now() + Duration::from_secs(JOIN_DEADLINE_SECS);
 
         for ctx in contexts {
-            if let Some(thread) = ctx.thread {
+            let Some(thread) = ctx.thread else { continue };
+            loop {
+                if thread.is_finished() {
+                    let _ = thread.join();
+                    break;
+                }
                 if Instant::now() >= deadline {
                     eprintln!(
                         "[multi-team-daemon] shutdown deadline exceeded for run {}",
                         ctx.run_id
                     );
-                    continue;
+                    break;
                 }
-                let _ = thread.join();
+                std::thread::sleep(Duration::from_millis(250));
             }
         }
 
