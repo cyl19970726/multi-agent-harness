@@ -318,7 +318,7 @@ fn github_pr_merge_auto_submits_in_progress_work() {
     let (home, project_id, run_id, member_id) = github_fixture("github-merge-auto-submit");
     // Merged PR with green CI (all checks SUCCESS).
     let pr_ref = format!("{GH_REPO}#362");
-    let created = host_harness_json(
+    let created = host_firm_json(
         &home,
         &project_id,
         &[
@@ -349,7 +349,7 @@ fn github_pr_merge_auto_submits_in_progress_work() {
     let work_id = created["id"].as_str().expect("work id").to_string();
 
     // Member starts; the Work is in_progress carrying the linked PR.
-    member_harness_json(
+    member_firm_json(
         &home,
         &project_id,
         &run_id,
@@ -370,7 +370,7 @@ fn github_pr_merge_auto_submits_in_progress_work() {
     );
 
     // The poll observes the merged green PR and auto-submits to review.
-    let polled = host_harness_json(
+    let polled = host_firm_json(
         &home,
         &project_id,
         &[
@@ -390,7 +390,7 @@ fn github_pr_merge_auto_submits_in_progress_work() {
             .any(|value| value.as_str() == Some(work_id.as_str())),
         "merged green PR must auto-submit the Work: {polled}"
     );
-    let submitted = host_harness_json(
+    let submitted = host_firm_json(
         &home,
         &project_id,
         &["team-run", "work", "show", "--work-id", &work_id],
@@ -415,7 +415,7 @@ fn github_pr_merge_on_red_ci_is_held_for_host() {
     let (home, project_id, run_id, member_id) = github_fixture("github-merge-red-ci");
     // Merged PR with red CI (rust check FAILURE).
     let pr_ref = format!("{GH_REPO}#{GH_PR_NUMBER}");
-    let created = host_harness_json(
+    let created = host_firm_json(
         &home,
         &project_id,
         &[
@@ -440,7 +440,7 @@ fn github_pr_merge_on_red_ci_is_held_for_host() {
         Some("failure"),
         "fixture PR must have red CI"
     );
-    member_harness_json(
+    member_firm_json(
         &home,
         &project_id,
         &run_id,
@@ -460,7 +460,7 @@ fn github_pr_merge_on_red_ci_is_held_for_host() {
         ],
     );
 
-    let polled = host_harness_json(
+    let polled = host_firm_json(
         &home,
         &project_id,
         &[
@@ -479,7 +479,7 @@ fn github_pr_merge_on_red_ci_is_held_for_host() {
             .any(|value| value.as_str() == Some(work_id.as_str())),
         "red-CI merge must be held for the Host, not auto-submitted: {polled}"
     );
-    let held = host_harness_json(
+    let held = host_firm_json(
         &home,
         &project_id,
         &["team-run", "work", "show", "--work-id", &work_id],

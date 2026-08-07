@@ -69,6 +69,7 @@ fn team_fixture(label: &str) -> (TestStore, AgentTeamRun, MemberRun, MemberRun) 
         project_binding_id: None,
         host_surface: "codex-app".into(),
         host_thread_id: Some(format!("host-{label}")),
+        host_lease_last_seen: None,
         host_actor: None,
         host_control_mode: Default::default(),
         objective: "prove WorkDelivery lifecycle".into(),
