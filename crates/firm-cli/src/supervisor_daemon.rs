@@ -134,7 +134,7 @@ pub(crate) fn run_supervisor_daemon(
         run_id,
         "updated",
         &format!(
-            "member supervisor {} generation {} {} ({} unclosed member(s), max-concurrency {max_concurrency})",
+            "member supervisor {} generation {} {} ({} unclosed member(s), max-concurrency {max_concurrency}, initiator: {})",
             supervisor_registration.supervisor_id,
             supervisor_registration.generation,
             if body.run.status == TeamRunStatus::Planning {
@@ -143,6 +143,11 @@ pub(crate) fn run_supervisor_daemon(
                 "reattached"
             },
             body.members.len(),
+            if body.run.status == TeamRunStatus::Planning {
+                "host-cli-start"
+            } else {
+                "daemon-crash-recovery"
+            },
         ),
     )?;
 
@@ -842,7 +847,7 @@ impl MultiTeamDaemon {
             &run_id,
             "updated",
             &format!(
-                "member supervisor {} generation {} {} ({} unclosed member(s), max-concurrency {max_concurrency})",
+                "member supervisor {} generation {} {} ({} unclosed member(s), max-concurrency {max_concurrency}, initiator: {})",
                 registration.supervisor_id,
                 registration.generation,
                 if body.run.status == TeamRunStatus::Planning {
@@ -851,6 +856,11 @@ impl MultiTeamDaemon {
                     "reattached"
                 },
                 body.members.len(),
+                if body.run.status == TeamRunStatus::Planning {
+                    "host-cli-start"
+                } else {
+                    "daemon-crash-recovery"
+                },
             ),
         )?;
 
@@ -1046,7 +1056,10 @@ impl MultiTeamDaemon {
             "stop" => {
                 // P0-1 fix: actually set shutdown, not just reply ok.
                 self.shutdown.store(true, Ordering::SeqCst);
-                let _ = writeln!(stream, r#"{{"ok":true}}"#);
+                let _ = writeln!(
+                    stream,
+                    r#"{{"ok":true,"initiator":"host-stop-command"}}"#
+                );
             }
             _ => {
                 let _ = writeln!(
@@ -1063,6 +1076,11 @@ impl MultiTeamDaemon {
     /// and join threads with a deadline.
     fn graceful_shutdown(&self) -> CliResult<()> {
         eprintln!("[multi-team-daemon] graceful shutdown initiated");
+
+        // Record daemon stop initiator in the last event fold (#387 P1-1).
+        // Determine initiator: signal if triggered by SIGTERM/SIGINT, else command.
+        // (We can't know for certain inside graceful_shutdown; mark as signal-default.)
+        let initiator = "daemon-signal-or-stop-command";
 
         // Drain contexts from the registry.
         let contexts: Vec<MultiTeamContext> = {

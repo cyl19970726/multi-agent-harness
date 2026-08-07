@@ -16,10 +16,12 @@ use harness_core::{
     build_launch_spec, content_hash_hex16, resolve_team_host_authority,
     validate_agent_team_topology, validate_host_authority_cutover, AgentEvent, AgentMember,
     AgentMemberStatus, AgentMessageRoute, AgentProviderConfig, AgentRuntime, AgentRuntimeHealth,
-    AgentRuntimeStatus, AgentTeam, AgentTeamRun, AgentTeamStatus, DelegationRun,
+    AgentRuntimeStatus, AgentTeam, AgentTeamRun, AgentTeamStatus, CancellationInitiator,
+    DelegationRun,
     DurableAgentMember, DurableAgentMemberStatus, Evidence, ExecutionSpace, GateEngine, GateResult,
     GateSpec, GateVerdict, GitHubLink,
-    GitHubLinkKind, HostAttention, HostAttentionStatus, HostControlMode, HostDispatchConfig,
+    GitHubLinkKind, HostAttention, HostAttentionKind, HostAttentionStatus, HostControlMode,
+    HostDispatchConfig,
     LaunchMcp,
     LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus, MemberCoordinationStatus,
     MemberExecutionDriver, MemberRun, MemberRunStatus, MemberWorkspaceSnapshot, Message,
@@ -31,13 +33,15 @@ use harness_core::{
     ProviderCapacityEvidence, ProviderCapacitySnapshot, ProviderCapacityState,
     ProviderCompatibilityStatus, ProviderControlValue, ProviderEventFidelity,
     ProviderExecutionControls, ProviderExecutionStatus, ProviderFeatureMode,
-    ProviderIntegrationProfile, ProviderInteractionMode, ProviderRuntimeContextFact, SenderKind,
+    ProviderIntegrationProfile, ProviderInteractionMode, ProviderRuntimeContextFact,
+    ReassignQueueEntry, ReassignQueueStatus, SenderKind,
     TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
     TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind,
     TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
     TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Wave, WaveExecutorKind, WaveStatus,
     Work, WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkDelivery, WorkDeliveryStatus,
-    WorkPriority, WorkStatus, WorkWorkspace, WorkWorkspaceKind, WorkflowArtifactFile, WorkflowArtifactManifest,
+    WorkEventKind, WorkPriority, WorkStatus, WorkWorkspace, WorkWorkspaceKind,
+    WorkflowArtifactFile, WorkflowArtifactManifest,
     WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
     WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
     EXECUTION_MODE_EXTERNAL_INTERACTIVE,
@@ -12957,6 +12961,16 @@ fn work_causation(args: &[String]) -> Option<WorkCausationRef> {
     })
 }
 
+fn parse_cancellation_initiator(value: &str) -> Option<CancellationInitiator> {
+    match value {
+        "host-intervention" => Some(CancellationInitiator::HostIntervention),
+        "environment" => Some(CancellationInitiator::Environment),
+        "member-output" => Some(CancellationInitiator::MemberOutput),
+        "member-closed" => Some(CancellationInitiator::MemberClosed),
+        _ => None,
+    }
+}
+
 fn host_work_context(args: &[String]) -> WorkCommandContext {
     WorkCommandContext {
         event_id: value(args, "--event-id").unwrap_or_else(|| generated_id("work-event")),
@@ -13950,7 +13964,7 @@ fn github_poll_host_context(run_id: &str, work_id: &str) -> WorkCommandContext {
 fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery|poll-github-ci|check-gates|workspace",
+        "team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|reassign-list|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery|poll-github-ci|check-gates|workspace",
     )?;
     match args[0].as_str() {
         "list" => {
@@ -14571,10 +14585,13 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
         }
         "cancel" => {
             let reason = required(args, "--reason")?;
-            let work = store.cancel_work(
+            let initiator = value(args, "--cancellation-initiator")
+                .and_then(|s| parse_cancellation_initiator(&s));
+            let work = store.cancel_work_with_initiator(
                 &required(args, "--work-id")?,
                 required_work_version(args)?,
                 &reason,
+                initiator,
                 host_work_context(args),
             )?;
             append_work_event(
@@ -14586,6 +14603,13 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 &format!("Work cancelled: {reason}"),
             )?;
             print_json(&work)
+        }
+        "reassign-list" => {
+            let entries = store_conflict_as_usage(store.latest_reassign_pending())?;
+            print_json(&serde_json::json!({
+                "pending": entries.len(),
+                "entries": entries,
+            }))
         }
         "promote" => {
             let company_store = selected_company_store_for_work_cutover(args)?;
@@ -14625,7 +14649,7 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             &now_string(),
         )?),
         other => Err(CliError::Usage(format!(
-            "unknown team-run work command: {other}; usage: team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery"
+            "unknown team-run work command: {other}; usage: team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|reassign-list|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery"
         ))),
     }
 }
@@ -26122,6 +26146,67 @@ fn require_member_interrupt_capability(
     Ok(())
 }
 
+/// Orphan all InProgress works owned by the given member run when it is
+/// closed.  Orphaned works move to [`WorkStatus::Orphaned`] and enter the
+/// reassign queue; the Host must explicitly reassign or cancel them (#387 P1-1).
+fn orphan_member_works(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member_run_id: &str,
+    requested_by: &str,
+    reason: &str,
+) -> CliResult<Vec<Work>> {
+    let mut orphaned_works = Vec::new();
+    for work in store.latest_works()? {
+        if work.team_run_id != team_run_id || work.is_terminal() || work.is_orphaned() {
+            continue;
+        }
+        if work.status != WorkStatus::InProgress {
+            continue;
+        }
+        if work.active_member_run_id.as_deref() != Some(member_run_id) {
+            continue;
+        }
+        let context = WorkCommandContext {
+            event_id: format!("orphan-{}-{}", member_run_id, work.id),
+            performed_by_actor: TeamActorRef {
+                kind: TeamActorKind::Host,
+                id: requested_by.to_string(),
+            },
+            authority_actor: None,
+            causation_ref: None,
+            idempotency_key: format!("orphan-{}-{}", member_run_id, work.id),
+            created_at: now_string(),
+            duplicate_ok: true,
+        };
+        let orphaned = store_conflict_as_usage(store.orphan_work(
+            &work.id,
+            work.version,
+            member_run_id,
+            reason,
+            context,
+        ))?;
+        orphaned_works.push(orphaned);
+
+        // Record in the reassign queue.
+        let entry = ReassignQueueEntry {
+            id: format!("reassign-{}-{}", member_run_id, work.id),
+            work_id: work.id.clone(),
+            team_run_id: team_run_id.to_string(),
+            member_run_id: member_run_id.to_string(),
+            orphaned_at: now_string(),
+            reason: format!("{}: {}", requested_by, reason),
+            status: ReassignQueueStatus::Pending,
+            resolved_at: None,
+            resolved_by: None,
+            created_at: now_string(),
+            updated_at: now_string(),
+        };
+        store_conflict_as_usage(store.append_reassign_queue_entry(&entry))?;
+    }
+    Ok(orphaned_works)
+}
+
 fn cancel_pending_member_interactions(
     store: &HarnessStore,
     team_run_id: &str,
@@ -26234,6 +26319,10 @@ fn close_team_member_value(
             "closed",
             &format!("member {} coordination closed", member.name),
         )?;
+        // Orphan any in-progress works owned by this member (#387 P1-1).
+        let orphaned = orphan_member_works(
+            store, team_run_id, member_run_id, &requested_by, &reason,
+        )?;
         return Ok(serde_json::json!({
             "member_run_id": member.id,
             "status": serde_snake_label(&member.status),
@@ -26242,6 +26331,7 @@ fn close_team_member_value(
             "runtime_effect": if external_interactive { "none" } else { "already_terminal" },
             "coordination_effect": "already_closed",
             "idempotent": true,
+            "orphaned_works": orphaned.len(),
         }));
     }
 
@@ -26308,6 +26398,10 @@ fn close_team_member_value(
         "closed",
         &format!("member {} coordination closed", member.name),
     )?;
+    // Orphan any in-progress works owned by this member (#387 P1-1).
+    let orphaned = orphan_member_works(
+        store, team_run_id, member_run_id, &requested_by, &reason,
+    )?;
     Ok(serde_json::json!({
         "member_run_id": member.id,
         "status": "stopped",
@@ -26316,6 +26410,7 @@ fn close_team_member_value(
         "runtime_effect": if external_interactive { "none" } else if reaped_stale_runtime { "stale_runtime_reaped" } else { "not_started" },
         "coordination_effect": "member_closed",
         "idempotent": false,
+        "orphaned_works": orphaned.len(),
     }))
 }
 
@@ -36892,7 +36987,7 @@ fn print_help() {
   team-run board-summary --id <team-run-id>
       <=500-char plain-text board digest: counts by status, assigned/unassigned,
       ready, and one idle|working|awaiting-review line per active member.
-  team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|reconcile-delivery
+  team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|reassign-list|reconcile-delivery
   team-run work list [--brief] [--since <cursor>] --team-run-id <id> [--status <status>] [--member-run-id <id>]
       --brief: one plain-text line per Work, no JSON wrapper.
       --since <cursor>: only Works whose latest WorkOperation postdates the
