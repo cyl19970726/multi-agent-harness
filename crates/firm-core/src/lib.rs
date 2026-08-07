@@ -1155,6 +1155,52 @@ pub struct Evidence {
     pub goal_id: Option<String>,
 }
 
+/// Evidence attached to a Work acceptance by the Host.
+///
+/// The Host must provide at least one of `pr_url`, `verification_output`, or
+/// `screenshot_path` to prove delivery before accepting a Work. The
+/// `bypass_reason` field is set only when the Host explicitly overrides this
+/// requirement via `--bypass-evidence`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkAcceptanceEvidence {
+    /// URL of the merged/approved pull request that delivered the Work.
+    #[serde(default)]
+    pub pr_url: Option<String>,
+    /// Free-form verification output (e.g. command stdout proving success).
+    #[serde(default)]
+    pub verification_output: Option<String>,
+    /// Path to a screenshot or image file that proves delivery.
+    #[serde(default)]
+    pub screenshot_path: Option<String>,
+    /// If set, evidence requirement was bypassed. Stores the mandatory reason.
+    #[serde(default)]
+    pub bypass_reason: Option<String>,
+}
+
+impl WorkAcceptanceEvidence {
+    /// Requires at least one evidence ref or a bypass reason.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.bypass_reason.is_some() {
+            return Ok(());
+        }
+        if self.pr_url.is_none()
+            && self.verification_output.is_none()
+            && self.screenshot_path.is_none()
+        {
+            return Err(
+                "evidence: at least one of --pr-url, --verification-output, or --screenshot-path \
+                 is required; use --bypass-evidence --reason <reason> for non-code deliverables"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    pub fn is_bypass(&self) -> bool {
+        self.bypass_reason.is_some()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Decision {
     pub id: String,
@@ -3827,6 +3873,15 @@ pub struct Work {
     /// Empty vec → manual-accept semantics preserved (back-compat).
     #[serde(default)]
     pub gates: Vec<GateSpec>,
+    /// Evidence the Host provided when accepting this Work (issue #387 P1-2).
+    /// `None` for Works accepted before this gate was enforced; `Some` after.
+    #[serde(default)]
+    pub acceptance_evidence: Option<WorkAcceptanceEvidence>,
+    /// If set, the Host must be alerted when this Work stays in `Review` longer
+    /// than this many hours. A `WorkReviewTimedOut` HostAttention is generated
+    /// when the timeout is exceeded (issue #387 P1-2).
+    #[serde(default)]
+    pub review_timeout_hours: Option<u32>,
     /// Where this Work executes. `None` → Member inherits the project root
     /// (back-compat with today's implicit behaviour). The harness creates
     /// the workspace before first member start and cleans it up on Work
@@ -4353,6 +4408,8 @@ pub enum HostAttentionKind {
     WorkCancelled,
     WorkPrerequisiteCompleted,
     WorkDeliveryFailed,
+    /// A Work has stayed in `Review` beyond its `review_timeout_hours`.
+    WorkReviewTimedOut,
     MemberStoppedWithOwnedReadyWork,
     MemberFailedWithOwnedReadyWork,
     /// A work was orphaned when its owning member was closed while the

@@ -29,11 +29,21 @@ pub fn poll_and_dispatch(
     objective: &str,
     config: &HostDispatchConfig,
 ) -> Result<DispatchOutcome, crate::CliError> {
-    // Stub: no host attention dispatching yet.
-    // Full implementation will read HostAttention from the store and
-    // dispatch accordingly (#387).
+    // Stub: minimal dispatch scaffold (issue #387).
+    let now = crate::now_string();
+
+    // P1-2: detect review timeouts and generate HostAttention rows.
+    let timeouts = match store.detect_review_timeouts(&now) {
+        Ok(rows) => rows,
+        Err(error) => {
+            eprintln!("host-dispatcher: review timeout detection failed: {error}");
+            vec![]
+        }
+    };
+    let timeout_count = timeouts.len();
+
     Ok(DispatchOutcome {
-        inspected: 0,
+        inspected: timeout_count,
         handled: vec![],
         escalated: vec![],
         failed: vec![],
