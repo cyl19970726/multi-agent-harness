@@ -1,14 +1,23 @@
 # Documentation
 
 Do not read this repository as one book. Start with one context pack and follow
-links only when the current decision needs them. The placement, authority,
-lifecycle and archive rules are defined in
-[Documentation Governance](documentation-governance.md).
+links only when the current decision needs them.
+
+## Document Governance
+
+This repository has many documents across `docs/`, `skills/`, and `specs/`. To prevent divergence:
+
+1. **`docs/mental/` is canonical.** Documents in `docs/mental/` are the single source of truth for product architecture and mental models. When any other document contradicts a mental model document, update the other document — not the mental model.
+2. **Skills are auto-synced.** `skills/` files are mirrored into `plugins/star-harness/skills/` by `sync-star-harness-plugin-skills.mjs`. The check runs on every install.
+3. **ADRs record decisions.** `docs/decisions/` contains Architecture Decision Records (ADRs). They are historical records of why decisions were made. When a decision is superseded, add a note in the ADR header — do not delete it.
+4. **Cross-layer check.** `node scripts/check-cross-layer-consistency.mjs` verifies that skills, code prompts, and plugin manifests are consistent. Run before committing.
+5. **Governance check.** `harness governance check` validates the docs registry and skill references. Run before pushing.
 
 ## Start here
 
 | Need | Smallest useful entry |
 | --- | --- |
+| Understand the product architecture | [Agent Firm Mental Model](mental/agent-firm-mental-model.md) — canonical, single source of truth |
 | Understand the AI Company OS | [Company OS product system map](company-os/product-system-map.md) |
 | Change Company OS product behavior | [Company OS contracts](company-os/README.md) |
 | Change Mission/Wave or Agent Team orchestration | [Host-plan contract](product/mission-wave-host-plan.md), [Agent Team Works](product/agent-team-works.md), [Works implementation/acceptance](design/agent-team-works-implementation-plan.md), [Agent Team foundation](product/agent-team-foundation-closure-plan.md), [Dogfood loop](product/agent-team-dogfood-loop.md), [Member continuation](member-continuation-model.md), [ADR 0034](decisions/0034-host-plan-waves-and-mission-teams.md), [ADR 0037](decisions/0037-agent-member-autonomy-and-collaboration.md), [ADR 0044](decisions/0044-durable-team-supervision-and-typed-mail.md), [ADR 0050](decisions/0050-agent-team-work-board-and-message-boundary.md), and [Architecture map](architecture-map.md) |

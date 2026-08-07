@@ -5635,6 +5635,48 @@
           "ref": "dogfood-team-run-1786007520441-p27427-0"
         }
       ]
+    },
+    {
+      "path": "docs/mental/agent-firm-mental-model.md",
+      "ownerRole": "product",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": [
+        "agent-firm-product-architecture",
+        "agent-firm-mental-model"
+      ],
+      "dependsOn": [
+        "docs/decisions/0025-agent-team-run-control-plane.md",
+        "docs/decisions/0042-company-store-execution-space-project-binding.md",
+        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
+      ],
+      "machineConsumers": [
+        "harness-cli",
+        "lead-skill",
+        "member-skill",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-11-07",
+      "lastVerifiedWith": [
+        "harness-cli@0.4.4"
+      ],
+      "reorgTrigger": "product",
+      "authorityClass": "canonical_contract",
+      "implementationState": "design_only",
+      "truthRefs": [
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0025-agent-team-run-control-plane.md"
+        },
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0042-company-store-execution-space-project-binding.md"
+        },
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
+        }
+      ]
     }
   ]
 }
