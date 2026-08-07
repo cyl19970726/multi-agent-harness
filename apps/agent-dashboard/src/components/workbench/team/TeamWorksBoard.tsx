@@ -176,9 +176,12 @@ export function TeamWorksBoard({
         )}
       >
         <div className="flex items-start justify-between gap-2"><Badge tone={workTone(work.status)}>{work.status.replace(/_/g, " ")}</Badge><span className="text-[9px] uppercase tracking-wider text-muted-foreground">{work.priority}</span></div>
-        <h3 className="mt-1.5 line-clamp-2 text-[12px] font-semibold leading-snug text-foreground">{work.title}</h3>
+        {/* The title is the card's primary fact; a two-line clamp hid the rest
+            of long Host-written titles behind an ellipsis, which read as an
+            incomplete card. The full title wraps and long tokens break. */}
+        <h3 className="mt-1.5 break-words text-[12px] font-semibold leading-snug text-foreground">{work.title}</h3>
         <p className="mt-1 line-clamp-1 text-[10px] leading-relaxed text-muted-foreground sm:line-clamp-2">{work.completion_criteria_markdown || "No completion criteria"}</p>
-        <div className="mt-1.5 flex items-center gap-1.5 border-t border-border/55 pt-1.5">{owner ? <><Avatar name={owner.name ?? owner.id} tone={memberTone(owner.status)} /><span className="min-w-0 flex-1 truncate text-[10px] text-foreground">{owner.name ?? owner.id}</span></> : <><span className="grid size-6 place-items-center rounded-full border border-dashed border-border text-muted-foreground"><Users className="size-3" /></span><span className="text-[10px] text-muted-foreground">Unassigned</span></>}<span className="ml-auto font-mono text-[9px] text-muted-foreground">v{work.version}</span></div>
+        <div className="mt-1.5 flex items-center gap-1.5 border-t border-border/55 pt-1.5">{owner ? <><Avatar name={owner.name ?? owner.id} tone={memberTone(owner.status)} /><span className="min-w-0 flex-1 break-words text-[10px] leading-snug text-foreground" title={owner.name ?? owner.id}>{owner.name ?? owner.id}</span></> : <><span className="grid size-6 shrink-0 place-items-center rounded-full border border-dashed border-border text-muted-foreground"><Users className="size-3" /></span><span className="text-[10px] text-muted-foreground">Unassigned</span></>}<span className="ml-auto shrink-0 font-mono text-[9px] text-muted-foreground">v{work.version}</span></div>
       </button>
     );
   };
