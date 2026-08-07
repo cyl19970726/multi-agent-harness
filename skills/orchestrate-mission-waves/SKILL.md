@@ -162,8 +162,10 @@ adds no new commands, only a discipline for the ones already listed.
   │ Worktree convention (OUTSIDE repo)  │
   │ Other members' lanes (don't collide) │
   ├─ Delivery Requirements ─────────────┤
-  │ 1. Create clean worktree:           │
-  │    ../multi-agent-harness-<task>    │
+  │ 1. Work in the workspace assigned    │
+  │    (see Work.workspace — already     │
+  │     created by `work workspace       │
+  │     ensure`)                          │
   │ 2. Commit ALL changes before submit │
   │ 3. Push branch to origin            │
   │ 4. Create PR with Summary/Changes   │
@@ -183,12 +185,39 @@ adds no new commands, only a discipline for the ones already listed.
   the `--completion-criteria` should make the Host accept/reject in one look.
 
   **Standard delivery requirements** (include in every code-changing work):
-  - Worktree: `../multi-agent-harness-<task-name>` (OUTSIDE main repo)
+  - Workspace: declared via `--worktree` (harness creates and cleans up)
   - Commit: ALL changes must be committed before `work submit`
   - Push: Branch must be pushed to origin
   - PR: Create PR with Summary/Changes/Verification sections
   - Review: Wait for Host review → merge after approval
   - No half-finished work: if blocked, report why, don't leave uncommitted changes
+
+## Workspace Management
+
+Declare where a Work executes. The harness creates the workspace before
+the first member starts and cleans it up on completion (when
+`auto_cleanup` is true, the default).
+
+```bash
+# Code work: isolated worktree (most common)
+firm work create --title "implement login" \
+  --worktree ../repo-feat-login \
+  --gate github-pr:require_merged=true
+
+# Exploration work: plain directory, keep after done
+firm work create --title "research async runtime" \
+  --workspace-kind dir --workspace-path ../research-runtime \
+  --workspace-no-cleanup
+
+# Explicit lifecycle management
+firm team-run work workspace ensure --work-id <id>
+firm team-run work workspace cleanup --work-id <id>
+```
+
+Workspace is declared at Work creation time and available on
+`Work.workspace`. When a member claims the Work, the harness populates
+`MemberRun.worktree_ref` and injects the path as cwd via
+`LaunchSpec.workspace`.
 
 ## Create And Allocate Works
 
@@ -223,6 +252,7 @@ harness team-run work create \
   --team-run-id <team-run-id> \
   --title "implement login" \
   --context "..." --completion-criteria "..." \
+  --worktree ../repo-feat-login \
   --gate github-pr:require_merged=true,require_ci_pass=true \
   --gate code-review:strategy=peer,reviewer=critic-1 \
   --gate check-pass \

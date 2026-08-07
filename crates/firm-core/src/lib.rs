@@ -3290,6 +3290,41 @@ pub struct WorkCommandContext {
     pub duplicate_ok: bool,
 }
 
+/// Where a Work executes. The harness creates the workspace before the first
+/// member start, injects it as the member's cwd, and cleans it up on Work
+/// completion or cancellation (when `auto_cleanup` is true).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkWorkspaceKind {
+    /// A git worktree: isolated checkout with its own branch. Required for
+    /// code-producing Work where parallel members need disjoint paths.
+    Worktree,
+    /// A plain directory (no git isolation). For exploration, research, or
+    /// single-file documentation work.
+    Dir,
+    /// The project root. For read-only analysis or ops work that doesn't need
+    /// isolation. Member's cwd is the project root.
+    Inherit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkWorkspace {
+    pub kind: WorkWorkspaceKind,
+    /// Absolute or project-relative path. For worktrees, this is OUTSIDE the
+    /// main repository (e.g. "../repo-feat-login").
+    pub path: String,
+    /// For worktrees: the base ref to branch from (e.g. "origin/master").
+    #[serde(default)]
+    pub base_ref: Option<String>,
+    /// Whether the workspace should be removed after Work completes.
+    #[serde(default = "default_workspace_auto_cleanup")]
+    pub auto_cleanup: bool,
+}
+
+fn default_workspace_auto_cleanup() -> bool {
+    true
+}
+
 /// Kind of GitHub object a [`Work`] is linked to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -3738,6 +3773,12 @@ pub struct Work {
     /// Empty vec → manual-accept semantics preserved (back-compat).
     #[serde(default)]
     pub gates: Vec<GateSpec>,
+    /// Where this Work executes. `None` → Member inherits the project root
+    /// (back-compat with today's implicit behaviour). The harness creates
+    /// the workspace before first member start and cleans it up on Work
+    /// completion when `auto_cleanup` is true.
+    #[serde(default)]
+    pub workspace: Option<WorkWorkspace>,
     pub version: u64,
     pub created_at: String,
     pub updated_at: String,
@@ -5840,6 +5881,7 @@ mod tests {
                 check_refs: Vec::new(),
                 github_links: Vec::new(),
                 gates: Vec::new(),
+                workspace: None,
                 version: 1,
                 created_at: "unix-ms:1".into(),
                 updated_at: "unix-ms:1".into(),
@@ -6341,6 +6383,7 @@ mod tests {
             check_refs: Vec::new(),
             github_links,
             gates,
+            workspace: None,
             version: 1,
             created_at: "unix-ms:1".into(),
             updated_at: "unix-ms:2".into(),

@@ -37,7 +37,7 @@ use harness_core::{
     TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
     TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Wave, WaveExecutorKind, WaveStatus,
     Work, WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkDelivery, WorkDeliveryStatus,
-    WorkPriority, WorkStatus, WorkflowArtifactFile, WorkflowArtifactManifest,
+    WorkPriority, WorkStatus, WorkWorkspace, WorkWorkspaceKind, WorkflowArtifactFile, WorkflowArtifactManifest,
     WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
     WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
     EXECUTION_MODE_EXTERNAL_INTERACTIVE,
@@ -10869,6 +10869,7 @@ fn create_team_run(
                     check_refs: Vec::new(),
                     github_links: Vec::new(),
                     gates: Vec::new(),
+                    workspace: None,
                     version: 0,
                     created_at: String::new(),
                     updated_at: String::new(),
@@ -11004,6 +11005,7 @@ fn add_team_run_member(
                         check_refs: Vec::new(),
                         github_links: Vec::new(),
                         gates: Vec::new(),
+                        workspace: None,
                         version: 0,
                         created_at: String::new(),
                         updated_at: String::new(),
@@ -12818,6 +12820,130 @@ fn parse_work_status(value: &str) -> CliResult<WorkStatus> {
     })
 }
 
+fn parse_workspace(args: &[String]) -> CliResult<Option<WorkWorkspace>> {
+    // Shorthand: --worktree <path> implies kind=worktree, base=origin/master
+    if let Some(path) = value(args, "--worktree") {
+        return Ok(Some(WorkWorkspace {
+            kind: WorkWorkspaceKind::Worktree,
+            path,
+            base_ref: value(args, "--workspace-base"),
+            auto_cleanup: !has_flag(args, "--workspace-no-cleanup"),
+        }));
+    }
+    // Explicit: --workspace-kind worktree|dir|inherit --workspace-path <path>
+    if let Some(kind_str) = value(args, "--workspace-kind") {
+        let kind = match kind_str.as_str() {
+            "worktree" => WorkWorkspaceKind::Worktree,
+            "dir" => WorkWorkspaceKind::Dir,
+            "inherit" => WorkWorkspaceKind::Inherit,
+            other => {
+                return Err(CliError::Usage(format!(
+                    "unknown workspace kind `{other}` (worktree|dir|inherit)"
+                )));
+            }
+        };
+        if kind == WorkWorkspaceKind::Inherit {
+            return Ok(Some(WorkWorkspace {
+                kind,
+                path: String::new(),
+                base_ref: None,
+                auto_cleanup: false,
+            }));
+        }
+        let path = required(args, "--workspace-path")
+            .map_err(|_| {
+                CliError::Usage(
+                    "--workspace-path is required for worktree/dir workspace kinds".to_string(),
+                )
+            })?;
+        return Ok(Some(WorkWorkspace {
+            kind,
+            path,
+            base_ref: value(args, "--workspace-base"),
+            auto_cleanup: !has_flag(args, "--workspace-no-cleanup"),
+        }));
+    }
+    Ok(None)
+}
+
+/// Create the workspace declared by a Work (or ensure it exists if
+/// it's a plain directory). For worktrees, calls `git worktree add`.
+/// Returns the resolved path.
+fn ensure_workspace(
+    workspace: &WorkWorkspace,
+    project_root: &std::path::Path,
+) -> CliResult<std::path::PathBuf> {
+    let path = if workspace.path.starts_with('/') {
+        std::path::PathBuf::from(&workspace.path)
+    } else {
+        project_root.join(&workspace.path)
+    };
+    match workspace.kind {
+        WorkWorkspaceKind::Worktree => {
+            if path.exists() {
+                return Ok(path); // already exists
+            }
+            let base = workspace.base_ref.as_deref().unwrap_or("origin/master");
+            let output = std::process::Command::new("git")
+                .args(["worktree", "add", &workspace.path, base])
+                .current_dir(project_root)
+                .output()
+                .map_err(|e| CliError::Usage(format!("git worktree add failed: {e}")))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(CliError::Usage(format!(
+                    "git worktree add failed: {stderr}"
+                )));
+            }
+            Ok(path)
+        }
+        WorkWorkspaceKind::Dir => {
+            std::fs::create_dir_all(&path)
+                .map_err(|e| CliError::Usage(format!("mkdir failed: {e}")))?;
+            Ok(path)
+        }
+        WorkWorkspaceKind::Inherit => Ok(project_root.to_path_buf()),
+    }
+}
+
+/// Remove the workspace created for a Work (if auto_cleanup is
+/// enabled). For worktrees, calls `git worktree remove --force`.
+fn cleanup_workspace(
+    workspace: &WorkWorkspace,
+    project_root: &std::path::Path,
+) -> CliResult<()> {
+    if !workspace.auto_cleanup {
+        return Ok(());
+    }
+    let path: std::path::PathBuf = if workspace.path.starts_with('/') {
+        workspace.path.clone().into()
+    } else {
+        project_root.join(&workspace.path)
+    };
+    match workspace.kind {
+        WorkWorkspaceKind::Worktree => {
+            if !path.exists() {
+                return Ok(());
+            }
+            std::process::Command::new("git")
+                .args(["worktree", "remove", "--force"])
+                .arg(&path)
+                .current_dir(project_root)
+                .output()
+                .map_err(|e| CliError::Usage(format!("git worktree remove failed: {e}")))?;
+            Ok(())
+        }
+        WorkWorkspaceKind::Dir => {
+            if path.exists() {
+                std::fs::remove_dir_all(&path)
+                    .map_err(|e| CliError::Usage(format!("rmdir failed: {e}")))?;
+            }
+            Ok(())
+        }
+        WorkWorkspaceKind::Inherit => Ok(()),
+    }
+}
+
 fn required_work_version(args: &[String]) -> CliResult<u64> {
     required(args, "--expected-version")?
         .parse::<u64>()
@@ -13467,7 +13593,7 @@ fn github_poll_host_context(run_id: &str, work_id: &str) -> WorkCommandContext {
 fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery|poll-github-ci|check-gates",
+        "team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery|poll-github-ci|check-gates|workspace",
     )?;
     match args[0].as_str() {
         "list" => {
@@ -13665,6 +13791,8 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             }
             // Parse `--gate plugin[:key=val[,key=val...]]` flags.
             let gates = parse_gate_specs(args)?;
+            // Parse `--workspace-*` / `--worktree` flags.
+            let workspace = parse_workspace(args)?;
             // Append declared gates to context so the worker sees them.
             let context_markdown = {
                 let mut ctx = value(args, "--context").unwrap_or_default();
@@ -13712,6 +13840,7 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 check_refs,
                 github_links,
                 gates,
+                workspace,
                 version: 0,
                 created_at: String::new(),
                 updated_at: String::new(),
@@ -13966,6 +14095,50 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 return Err(CliError::Usage(
                     "one or more gates did not pass (see results above)".to_string(),
                 ));
+            }
+        }
+        "workspace" => {
+            require_subcommand(args, "team-run work workspace ensure|cleanup")?;
+            match args[1].as_str() {
+                "ensure" => {
+                    let work_id = required(args, "--work-id")?;
+                    let work = store
+                        .latest_works()?
+                        .into_iter()
+                        .find(|w| w.id == work_id)
+                        .ok_or_else(|| CliError::Usage(format!("Work not found: {work_id}")))?;
+                    let ws = work.workspace.as_ref().ok_or_else(|| {
+                        CliError::Usage(format!("Work {work_id} has no workspace declaration"))
+                    })?;
+                    let project_root = std::env::current_dir()
+                        .map_err(|e| CliError::Usage(format!("cannot determine cwd: {e}")))?;
+                    let path = ensure_workspace(ws, &project_root)?;
+                    print_json(&serde_json::json!({
+                        "work_id": work_id,
+                        "workspace": ws,
+                        "resolved_path": path,
+                    }))
+                }
+                "cleanup" => {
+                    let work_id = required(args, "--work-id")?;
+                    let work = store
+                        .latest_works()?
+                        .into_iter()
+                        .find(|w| w.id == work_id)
+                        .ok_or_else(|| CliError::Usage(format!("Work not found: {work_id}")))?;
+                    let ws = work.workspace.as_ref().ok_or_else(|| {
+                        CliError::Usage(format!("Work {work_id} has no workspace declaration"))
+                    })?;
+                    let project_root = std::env::current_dir()
+                        .map_err(|e| CliError::Usage(format!("cannot determine cwd: {e}")))?;
+                    cleanup_workspace(ws, &project_root)?;
+                    print_json(&serde_json::json!({
+                        "work_id": work_id,
+                        "workspace": ws,
+                        "status": "cleaned_up",
+                    }))
+                }
+                other => Err(CliError::Usage(format!("unknown workspace command: {other}"))),
             }
         }
         "request-changes" => {
@@ -26699,6 +26872,7 @@ fn create_team_work_value(
         check_refs: Vec::new(),
         github_links: Vec::new(),
         gates: Vec::new(),
+        workspace: None,
         version: 0,
         created_at: String::new(),
         updated_at: String::new(),
@@ -36259,6 +36433,8 @@ const CHEATSHEET_WORK: &str = r#"work create          --team-run-id <id> --title
                     [--prerequisite-work-id <id>] [--idempotency-key <key>]
                     [--github-issue owner/repo#N]
                     [--gate plugin[:key=val[,key=val...]]]
+                    [--worktree <path> [--workspace-base <ref>] [--workspace-no-cleanup]]
+                    [--workspace-kind worktree|dir|inherit --workspace-path <path>]
 work list            --team-run-id <id> [--brief] [--since <cursor>]
                     [--status <status>] [--member-run-id <id>]
 work show            --work-id <id>
@@ -36305,6 +36481,7 @@ work create --team-run-id <id> --title <text> --completion-criteria <text>
   [--claim-mode team_claim --eligible-member-id <id>] [--idempotency-key <key>]
   [--github-issue owner/repo#N]
   [--gate plugin[:key=val[,key=val...]]]
+  [--worktree <path> [--workspace-base <ref>]]
 work list --team-run-id <id> [--brief] [--since <cursor>]
 work show --work-id <id>
 work assign --work-id <id> --expected-version <n> --member-run-id <id> [--idempotency-key <key>]
@@ -43194,6 +43371,7 @@ package:com.tencent.mm
                     check_refs: Vec::new(),
                     github_links: Vec::new(),
                     gates: Vec::new(),
+                    workspace: None,
                     version: 0,
                     created_at: String::new(),
                     updated_at: String::new(),
