@@ -41,15 +41,16 @@ function cli(args) {
 
 // --- seed a real Company Store through the governed CLI --------------------
 cli(["company", "init", "--id", companyId, "--name", "Docs V2 Browser"]);
+cli(["company", "switch", companyId]);
 cli([
-  "--company", companyId, "company", "docs", "page", "create",
+  "company", "docs", "page", "create",
   "--title", "Browser Target",
   "--id", "document-browser-target",
   "--actor", "agent-browser-seed",
   "--markdown", "Target body **resolved live**.",
 ]);
 cli([
-  "--company", companyId, "company", "docs", "page", "create",
+  "company", "docs", "page", "create",
   "--title", "Browser Main",
   "--id", "document-browser-main",
   "--actor", "agent-browser-seed",
