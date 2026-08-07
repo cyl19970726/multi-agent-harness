@@ -3470,11 +3470,6 @@ impl GateEngine {
             .collect()
     }
 
-    // Evaluate a single gate (convenience).
-    pub fn evaluate_gate(gate: &GateSpec, work: &Work) -> GateVerdict {
-        GateRegistry::default().evaluate(gate, work, &[])
-    }
-
     // ── Built-in gate implementations (pub so registry can reference) ─
 
     fn evaluate_github_pr(gate: &GateSpec, work: &Work) -> GateVerdict {
@@ -3558,7 +3553,7 @@ impl GateEngine {
     // ── code-review gate ────────────────────────────────────────────
 
     fn evaluate_code_review(
-        gate: &GateSpec,
+        _gate: &GateSpec,
         work: &Work,
         reviews: &[Review],
     ) -> GateVerdict {
