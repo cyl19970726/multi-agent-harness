@@ -40515,7 +40515,7 @@ package:com.tencent.mm
         );
 
         let mut unreviewed = team_member_provider_profile("kimi");
-        apply_provider_version(&mut unreviewed, Some("0.34.0".to_string()));
+        apply_provider_version(&mut unreviewed, Some("0.99.0".to_string()));
         assert_eq!(
             unreviewed.compatibility_status,
             ProviderCompatibilityStatus::ReviewRequired
