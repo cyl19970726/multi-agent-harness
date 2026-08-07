@@ -3244,6 +3244,10 @@ pub enum WorkStatus {
     Review,
     Done,
     Cancelled,
+    /// Work whose owning MemberRun was closed while it was InProgress.
+    /// The Work is no longer owned by any active member; the Host must
+    /// explicitly reassign it through the reassign queue (#387 P1-1).
+    Orphaned,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -3272,6 +3276,52 @@ pub struct WorkRef {
 pub struct WorkCausationRef {
     pub kind: String,
     pub id: String,
+}
+
+/// A work that was orphaned when its owning MemberRun was closed while
+/// the work was in progress.  Entries live in the reassign queue until the
+/// Host explicitly reassigns or cancels the work (#387 P1-1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReassignQueueStatus {
+    Pending,
+    Reassigned,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReassignQueueEntry {
+    pub id: String,
+    pub work_id: String,
+    pub team_run_id: String,
+    pub member_run_id: String,
+    pub orphaned_at: String,
+    pub reason: String,
+    pub status: ReassignQueueStatus,
+    /// When status moved away from Pending.
+    #[serde(default)]
+    pub resolved_at: Option<String>,
+    /// The actor (Host/Member) that resolved this entry.
+    #[serde(default)]
+    pub resolved_by: Option<String>,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+/// Who or what caused a Work cancellation (#387 P1-1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancellationInitiator {
+    /// Host explicitly cancelled the work.
+    HostIntervention,
+    /// Environment issue (e.g., workspace broken, provider down).
+    Environment,
+    /// Member's own output triggered cancellation (e.g., member-reported failure).
+    MemberOutput,
+    /// Owning MemberRun was closed while the work was in progress.
+    MemberClosed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3761,6 +3811,10 @@ pub struct Work {
     pub result_summary: Option<String>,
     #[serde(default)]
     pub blocker_reason: Option<String>,
+    /// Who or what initiated the cancellation (when status is Cancelled).
+    /// Records the provenance of the cancel event for attribution (#387 P1-1).
+    #[serde(default)]
+    pub cancellation_initiator: Option<CancellationInitiator>,
     #[serde(default)]
     pub artifact_refs: Vec<String>,
     #[serde(default)]
@@ -3787,6 +3841,13 @@ pub struct Work {
 impl Work {
     pub fn is_terminal(&self) -> bool {
         matches!(self.status, WorkStatus::Done | WorkStatus::Cancelled)
+    }
+
+    /// Whether the work is orphaned — its owning member was closed while it
+    /// was in progress.  Orphaned works are not terminal; the Host can
+    /// reassign them.
+    pub fn is_orphaned(&self) -> bool {
+        matches!(self.status, WorkStatus::Orphaned)
     }
 
     /// Whether every declared prerequisite has reached Host-accepted `Done`.
@@ -3847,6 +3908,9 @@ pub enum WorkEventKind {
     ChangesRequested,
     Accepted,
     Cancelled,
+    /// Work was orphaned when its owning MemberRun was closed while it was
+    /// in progress (#387 P1-1).
+    Orphaned,
     Updated,
     Rebound,
     /// A compatibility TeamRun-scoped Work was explicitly promoted onto the
@@ -4291,6 +4355,9 @@ pub enum HostAttentionKind {
     WorkDeliveryFailed,
     MemberStoppedWithOwnedReadyWork,
     MemberFailedWithOwnedReadyWork,
+    /// A work was orphaned when its owning member was closed while the
+    /// work was in progress.  The Host should reassign or cancel it (#387 P1-1).
+    WorkReassignPending,
 }
 
 /// Transport/intake state for one Host attention row.

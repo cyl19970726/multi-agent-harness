@@ -7,12 +7,14 @@ use std::time::{Duration, Instant};
 
 use firm_core::{
     validate_agent_team_topology, validate_work_cutover_with_fences, AgentEvent, AgentMember,
-    AgentMemberStatus, AgentMessageRoute, AgentRuntime, AgentTeam, AgentTeamRun, Decision,
+    AgentMemberStatus, AgentMessageRoute, AgentRuntime, AgentTeam, AgentTeamRun, CancellationInitiator,
+    Decision,
     DelegationRun, DurableAgentMember, Evidence, Gap, GitHubLink, HostAttention,
     HostAttentionInbox, HostAttentionKind, HostAttentionStatus, MemberAction, MemberRun, Message,
     MessageDelivery, MessageDeliveryStatus, MessageTerminalSource, Mission, MissionLogEntry,
     MissionStatus, PendingInteraction, Proposal, ProviderChildThread, ProviderExecutionStatus,
-    Review, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus,
+    ReassignQueueEntry, ReassignQueueStatus, Review, TeamDeliveryPolicy, TeamDeliveryStatus,
+    TeamMemberCloseRequest, TeamMemberCloseStatus,
     TeamMessage, TeamMessageKind, TeamRunEvent, TeamRunStatus, TeamSupervisorLease,
     TeamSupervisorLeaseStatus, Validate, Vision, Wave, WaveExecutorKind, WaveGateStatus,
     WaveStatus, Work, WorkClaimMode, WorkCommandContext, WorkCutoverFence, WorkCutoverReport,
@@ -38,6 +40,7 @@ const LOCK_NB: i32 = 4;
 const LOCK_UN: i32 = 8;
 const COMPANY_WORK_ITEMS_LEDGER: &str = "company_os_work_items.jsonl";
 const WORK_CUTOVER_FENCES_LEDGER: &str = "company_os_work_cutover_fences.jsonl";
+const REASSIGN_QUEUE_LEDGER: &str = "team_reassign_queue.jsonl";
 
 /// Normalize surface identifiers into their canonical form.
 /// All surface comparisons and storage MUST route through this.
@@ -2543,6 +2546,18 @@ impl HarnessStore {
         reason: &str,
         context: WorkCommandContext,
     ) -> StoreResult<Work> {
+        self.cancel_work_with_initiator(work_id, expected_version, reason, None, context)
+    }
+
+    /// Cancel a Work with an explicit cancellation initiator (#387 P1-1).
+    pub fn cancel_work_with_initiator(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        reason: &str,
+        initiator: Option<CancellationInitiator>,
+        context: WorkCommandContext,
+    ) -> StoreResult<Work> {
         if reason.trim().is_empty() {
             return Err(StoreError::Conflict(
                 "cancellation reason is required".to_string(),
@@ -2569,9 +2584,55 @@ impl HarnessStore {
         let mut next = current.clone();
         next.status = WorkStatus::Cancelled;
         next.blocker_reason = Some(reason.to_string());
+        next.cancellation_initiator = initiator;
         next.version += 1;
         next.updated_at = context.created_at.clone();
         self.append_work_transition_unlocked(current, next, WorkEventKind::Cancelled, context)
+    }
+
+    /// Transition a Work from InProgress to Orphaned when its owning MemberRun
+    /// is closed.  Orphaned works remain non-terminal: the Host must explicitly
+    /// reassign or cancel them (#387 P1-1).
+    pub fn orphan_work(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        member_run_id: &str,
+        reason: &str,
+        context: WorkCommandContext,
+    ) -> StoreResult<Work> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.ensure_work_store_compatible_unlocked()?;
+        if let Some(existing) = self.idempotent_work_operation_unlocked(
+            &context.idempotency_key,
+            work_id,
+            WorkEventKind::Orphaned,
+        )? {
+            return Ok(existing.work);
+        }
+        require_host_actor(&context.performed_by_actor)?;
+        let current = self.current_work_unlocked(work_id, expected_version)?;
+        if current.status != WorkStatus::InProgress {
+            return Err(StoreError::Conflict(format!(
+                "work {work_id} is not in progress (current: {:?})",
+                current.status
+            )));
+        }
+        if current.active_member_run_id.as_deref() != Some(member_run_id) {
+            return Err(StoreError::Conflict(format!(
+                "work {work_id} is not owned by member {member_run_id}"
+            )));
+        }
+        self.ensure_deliveries_reassignable_unlocked(&current)?;
+        let mut next = current.clone();
+        next.status = WorkStatus::Orphaned;
+        next.active_member_run_id = None;
+        next.blocker_reason = Some(reason.to_string());
+        next.cancellation_initiator = Some(CancellationInitiator::MemberClosed);
+        next.version += 1;
+        next.updated_at = context.created_at.clone();
+        self.append_work_transition_unlocked(current, next, WorkEventKind::Orphaned, context)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3020,6 +3081,7 @@ impl HarnessStore {
             WorkEventKind::Accepted => HostAttentionKind::WorkAccepted,
             WorkEventKind::ChangesRequested => HostAttentionKind::WorkChangesRequested,
             WorkEventKind::Cancelled => HostAttentionKind::WorkCancelled,
+            WorkEventKind::Orphaned => HostAttentionKind::WorkReassignPending,
             _ => return None,
         };
         Some(HostAttention {
@@ -5148,6 +5210,39 @@ impl HarnessStore {
             },
         )?;
         Ok(delivery)
+    }
+
+    /// Append a new entry to the reassign queue when a Work is orphaned
+    /// (owning MemberRun closed while work was in progress).  #387 P1-1.
+    pub fn append_reassign_queue_entry(&self, value: &ReassignQueueEntry) -> StoreResult<()> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        if self
+            .reassign_queue_entries()?
+            .iter()
+            .any(|entry| entry.id == value.id)
+        {
+            return Err(StoreError::Conflict(format!(
+                "reassign queue entry {} already exists",
+                value.id
+            )));
+        }
+        self.append_jsonl_unlocked(REASSIGN_QUEUE_LEDGER, value)
+    }
+
+    /// Raw reassign queue entries in append order.
+    pub fn reassign_queue_entries(&self) -> StoreResult<Vec<ReassignQueueEntry>> {
+        self.read_jsonl(REASSIGN_QUEUE_LEDGER)
+    }
+
+    /// Reassign queue entries with Pending status, latest-wins per id.
+    pub fn latest_reassign_pending(&self) -> StoreResult<Vec<ReassignQueueEntry>> {
+        Ok(latest_by_id(self.reassign_queue_entries()?, |entry| {
+            entry.id.clone()
+        })
+        .into_values()
+        .filter(|entry| entry.status == ReassignQueueStatus::Pending)
+        .collect())
     }
 
     pub fn team_supervisor_leases(&self) -> StoreResult<Vec<TeamSupervisorLease>> {
