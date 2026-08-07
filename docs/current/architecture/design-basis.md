@@ -117,7 +117,7 @@ Documentation mirrors authority rather than implementation folders:
 | `docs/archive/` | historical provenance excluded from normal planning |
 
 The creation, ownership, lifecycle, registry and archive rules live in
-[Documentation Governance](documentation-governance.md). Stable fields belong
+[Documentation Governance](../documentation-governance.md). Stable fields belong
 in schema; stable behavior belongs in code; stable operations belong in CLI or
 API; documentation owns rationale, boundaries, exceptions and upgrade rules.
 

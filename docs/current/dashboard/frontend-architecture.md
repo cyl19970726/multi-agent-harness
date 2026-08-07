@@ -2,9 +2,9 @@
 
 This document owns the implemented frontend stack, module boundaries, data
 flow, and component policy. Product semantics live in
-[the Workbench product contract](../dashboard.md); page behavior lives in
+the Workbench product contract; page behavior lives in
 [page specs](pages/README.md); the approved visual baseline lives in
-[`execution-workbench-v3`](../design/execution-workbench-v3/README.md).
+`execution-workbench-v3`.
 
 ## Implemented Decision
 
@@ -124,7 +124,7 @@ sizes; layout rhythm, continuous flow, semantic icons, pressure placement, and
 responsive behavior are acceptance criteria.
 
 The active contract is
-[`docs/archive/design/execution-workbench-v3/visual-contract.json`](../design/execution-workbench-v3/visual-contract.json).
+`docs/archive/design/execution-workbench-v3/visual-contract.json`.
 
 ## Validation
 

@@ -94,13 +94,10 @@ and [getting started](docs/current/operations/getting-started.md).
 ## Start here
 
 - [Company OS documentation](docs/current/company-os/README.md)
-- [Vision](docs/current/company-os/vision.md)
-- [Concept model](docs/current/company-os/concept-model.md)
 - [Document system](docs/current/company-os/document-system.md)
 - [Organization and actors](docs/current/company-os/organization-and-actors.md)
 - [WorkItems and approvals](docs/current/company-os/work-items-and-approvals.md)
 - [Module design](docs/current/company-os/module-design.md)
-- [Financial relations](docs/current/company-os/financial-relations.md)
 - [Governance](docs/current/company-os/governance.md)
 - [Execution foundation](docs/current/company-os/execution-foundation.md)
 - [Mission/Wave Host-plan product contract](docs/current/product/mission-wave-host-plan.md)
@@ -109,7 +106,7 @@ and [getting started](docs/current/operations/getting-started.md).
 - [Host-plan Wave and Mission Team decision](docs/decisions/0034-host-plan-waves-and-mission-teams.md)
 - [Product requirements](docs/current/product/prd.md)
 - [Architecture map](docs/current/architecture/architecture-map.md)
-- [Provider integrations](docs/integration/README.md)
+- [Provider integrations](docs/current/integration/README.md)
 - [Operations](docs/current/operations/operations.md)
 - [Architecture decisions](docs/decisions/README.md)
 

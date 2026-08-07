@@ -6,7 +6,7 @@ status: implementation reference; Work/WorkDelivery target pending ADR 0050
 
 This document defines the Claude-specific implementation of Star Harness Agent
 Team members. Provider-neutral runtime contracts live in
-[agent-runtime.md](../agent-runtime.md); native session ownership lives in
+agent-runtime.md; native session ownership lives in
 [native-session-storage.md](native-session-storage.md).
 
 ## Mode boundary
@@ -156,7 +156,7 @@ This repository does not claim that a Claude Code/Desktop Host session owned by
 another process can be background-woken. A future Claude Host adapter must own
 the live Agent SDK streaming connection before it reports idle push delivery.
 Without that connection, it uses the same exact native binding and
-safe-boundary pull contract as [ADR 0040](../decisions/0040-native-host-inbox-delivery.md).
+safe-boundary pull contract as [ADR 0040](../../decisions/0040-native-host-inbox-delivery.md).
 
 Provider-paused questions and approvals use `PendingInteraction`. A provider
 `completed` status alone is not proof that an answer, approval, Work
@@ -193,7 +193,7 @@ permission continuity.
 
 The durable Work, WorkEvent/WorkDelivery, Workspace, submission, and Host
 acceptance remain Harness-owned regardless of the selected driver. See
-[Member Continuation Model](../member-continuation-model.md) and
+Member Continuation Model and
 [Claude Code goal docs](https://code.claude.com/docs/en/goal).
 
 ## Workspace and permissions
@@ -246,7 +246,7 @@ Desktop is observation-only while Harness owns the Member's execution driver.
 Import is always an explicit operator action; member startup never opens
 Desktop automatically.
 
-`harness member-run open-native --id <member-run-id>` performs that explicit
+`firm member-run open-native --id <member-run-id>` performs that explicit
 macOS import. `--print-only` returns the target without opening an application.
 The Dashboard exposes the same provider URI only for a bound
 `claude_agent_sdk` session. Harness continues storing the original SDK session
@@ -262,8 +262,8 @@ and this host's direct egress is blocked; the identical request succeeded
 through the proxy (`apps/claude-member-runner/FINDINGS.md` §F).
 
 ```bash
-harness member preflight --provider claude --json            # metadata only
-harness member preflight --provider claude --canary --json   # a real request
+firm member preflight --provider claude --json            # metadata only
+firm member preflight --provider claude --canary --json   # a real request
 ```
 
 Without `--canary` the state stays `unknown` with
@@ -300,7 +300,7 @@ Claude Code and Agent SDK maintenance follows ADR 0031's Agent-managed,
 one-Provider-at-a-time update loop. Do not hot-replace an active
 MemberRun/native session. After a change:
 
-1. run `harness member providers --fail-on-review`;
+1. run `firm member providers --fail-on-review`;
 2. run mode-specific deterministic tests;
 3. run a proportional live canary;
 4. update the reviewed-version set only when the evidence supports it.
@@ -318,8 +318,8 @@ Repository gates:
 
 ```bash
 node --test apps/claude-member-runner/test/*.test.mjs
-cargo test -p harness-cli --test claude_agent_sdk_member
-cargo test -p harness-cli
+cargo test -p firm-cli --test claude_agent_sdk_member
+cargo test -p firm-cli
 npx pnpm@9.15.4 acceptance:mission-wave
 ```
 

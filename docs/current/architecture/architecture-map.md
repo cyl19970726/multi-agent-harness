@@ -1,7 +1,7 @@
 # Architecture Map
 
 This is the canonical product-level architecture map. Detailed object contracts
-live under [company-os](current/company-os/README.md). Implemented execution details
+live under [company-os](../company-os/README.md). Implemented execution details
 remain documented by the Mission/Wave, Workflow, Agent Team, runtime, and
 provider specifications.
 
@@ -96,10 +96,10 @@ MemberRun/native session/writable Workspace. A provider receipt proves
 transport acceptance, not semantic completion. Provider Goal satisfaction
 never implies Host acceptance. See
 [Member Continuation Model](member-continuation-model.md) and
-[ADR 0041](decisions/0041-provider-neutral-member-continuation.md), plus
-[ADR 0044](decisions/0044-durable-team-supervision-and-typed-mail.md) for
+[ADR 0041](../../decisions/0041-provider-neutral-member-continuation.md), plus
+[ADR 0044](../../decisions/0044-durable-team-supervision-and-typed-mail.md) for
 cross-process ownership and typed-mail guarantees, and
-[ADR 0050](decisions/0050-agent-team-work-board-and-message-boundary.md) for the
+[ADR 0050](../../decisions/0050-agent-team-work-board-and-message-boundary.md) for the
 Work/Message boundary.
 
 ## Source-of-truth rule

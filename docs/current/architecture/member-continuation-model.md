@@ -228,7 +228,7 @@ rebound Work drive. It must run before a provider process/session is started,
 before a WorkDelivery is claimed, and before Work responsibility is rebound.
 Historical native-session locators remain readable and are never promoted or
 replayed by the refusal. The Host promotion path is explicit: inspect
-`harness member providers --fail-on-review`, regenerate protocol schemas, run
+`firm member providers --fail-on-review`, regenerate protocol schemas, run
 deterministic acceptance plus a live canary for the exact version and mode,
 then add that exact version to the Adapter's reviewed set before retrying the
 same durable MemberRun and Work.

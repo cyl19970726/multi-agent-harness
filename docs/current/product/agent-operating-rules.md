@@ -6,7 +6,7 @@ owner_role: lead-operations
 canonical_for: full agent operating rules relocated from root AGENTS.md, plus the relocation map
 ```
 
-Root [AGENTS.md](../AGENTS.md) states product identity, hard invariants,
+Root [AGENTS.md](../../../../AGENTS.md) states product identity, hard invariants,
 repository execution rules, routing links, and proportional acceptance. This
 companion carries the operating detail behind those invariants so the root file
 stays slim. Where a canonical contract doc exists, it is linked and wins any
@@ -19,7 +19,7 @@ system for company memory and operating structure, and a mixed Organization of
 humans, Standing Agents, external collaborators, and services. Documents create
 WorkItems and Approvals; accountable actors execute them; results, evidence,
 metrics, and financial effects return to the originating records
-([prd.md](prd.md), [company-os/README.md](current/company-os/README.md)).
+([prd.md](prd.md), [company-os/README.md](../company-os/README.md)).
 
 Mission/Wave, Agent Team, Dynamic Workflow, Host execution, providers, plugins,
 and MCP are the shared execution foundation. `Mission` is durable intent and
@@ -56,14 +56,14 @@ the live canary fails. Authentication, payment, license acceptance, new
 credentials and other protected actions still require the appropriate Human or
 policy approval.
 
-Docs plus recursive AgentTeam Organization is the accepted target direction.
+Docs plus flat AgentTeam Organization is the accepted target direction.
 AgentMember is the target durable agent identity and Work is the target shared
 responsibility kernel. Current StandingAgent, Company WorkItem, OrgUnit, and
 explicit execution-ref rows remain compatibility implementation truth until an
 explicit verified cutover. Do not claim target objects or fields exist until
 schemas, stores, APIs, and acceptance checks prove them. See
-[company-os/README.md](current/company-os/README.md) and
-[ADR 0052](decisions/0052-nested-agent-teams-are-the-agent-organization.md).
+[company-os/README.md](../company-os/README.md) and
+[ADR 0052](../../decisions/0052-nested-agent-teams-are-the-agent-organization.md).
 
 The first Company OS acceptance scenario is a governed Trademark Management
 module whose filing WorkItem, human approval, ¥3,000 financial commitment,
@@ -81,11 +81,11 @@ For company operations, the native product objects are `Document`,
 contracts rather than implemented schemas; current `OrgUnit`, `StandingAgent`,
 `WorkItem`, and `Assignment` rows remain compatibility implementation truth.
 Keep that distinction explicit. See
-[concept-model.md](concept-model.md).
+concept-model.md.
 
 `Mission` and `Wave` are the only native coordination objects for new work. The
 superseded coordination stack is being removed under
-[ADR 0028](decisions/0028-retire-goal-phase-task-graph.md): do not load it into
+[ADR 0028](../../decisions/0028-retire-goal-phase-task-graph.md): do not load it into
 normal planning context, create new records, use its commands, or add new
 dependencies. Historical stores must be exported and verified before their old
 ledgers or code are deleted.
@@ -100,8 +100,8 @@ ownership model must be reset or explicitly migrated rather than dual-read.
 The provider's native session store is the sole execution truth for that member's transcript, tool
 calls, commands, file events, and provider turn lifecycle; do not mirror those
 streams into Harness ledgers
-([ADR 0032](decisions/0032-provider-native-session-is-execution-truth.md),
-[integration/native-session-storage.md](integration/native-session-storage.md)).
+([ADR 0032](../../decisions/0032-provider-native-session-is-execution-truth.md),
+[integration/native-session-storage.md](../integration/native-session-storage.md)).
 
 Each MemberRun snapshots its concrete `ProviderIntegrationProfile`; platform
 capability, execution-mode capability, adapter coverage, and product permission
@@ -151,8 +151,8 @@ provider-driven member may complete many native cycles without creating a new
 MemberRun, but provider satisfaction never implies Host acceptance. Providers
 without a reviewed native continuation capability remain first-class
 host-driven members. See
-[member-continuation-model.md](member-continuation-model.md) and
-[ADR 0041](decisions/0041-provider-neutral-member-continuation.md).
+member-continuation-model.md and
+[ADR 0041](../../decisions/0041-provider-neutral-member-continuation.md).
 
 Provider-native or chat-side subagents are implementation details of the Host
 or member that invoked them. Optional hooks may record honest attribution, but
@@ -189,8 +189,8 @@ without inventing controlled child objects.
 
 The Lead Agent should use this sequence for non-trivial new work:
 
-1. Inspect relevant code/docs and native state with `harness mission list`,
-   `harness wave list`, and the Agent Team/Dynamic Workflow surfaces needed.
+1. Inspect relevant code/docs and native state with `firm mission list`,
+   `firm wave list`, and the Agent Team/Dynamic Workflow surfaces needed.
 2. Create or select the Mission, link any independent teams the Host may use,
    and write the current ordered Wave as Markdown plan and judgment.
 3. Let each executor own its internal plan. A Wave records what changed, what
@@ -216,7 +216,7 @@ The Lead Agent should use this sequence for non-trivial new work:
    with an explicit outcome summary. Closing never archives or deletes a team.
 
 When the work is a Harness dogfood run, follow
-[product/agent-team-dogfood-loop.md](product/agent-team-dogfood-loop.md). A
+[product/agent-team-dogfood-loop.md](agent-team-dogfood-loop.md). A
 discovered defect is not the end of dogfood: the Host classifies it, opens a
 Repair Wave or tracked issue, fixes it on a clean lane, reruns the original
 scenario, and only then expands the pressure matrix. Do not weaken the scenario
@@ -225,23 +225,22 @@ or manually edit store evidence to make a run appear green.
 Useful local commands:
 
 ```bash
-target/debug/harness init
-target/debug/harness mission create --title <title> --objective <objective> \
+target/debug/firm init
+target/debug/firm mission create --title <title> --objective <objective> \
   --context <mission-markdown>
-target/debug/harness mission create-team --id <mission> --name <team> \
+target/debug/firm mission create-team --id <mission> --name <team> \
   --description <purpose> --lead host --member <agent-member-id>
-target/debug/harness wave create --mission-id <mission> --title <title> \
   --objective <objective> --context <wave-markdown>
-target/debug/harness team-run create --mission-id <mission> \
+target/debug/firm team-run create --mission-id <mission> \
   --agent-team-id <team> --objective <objective>
-target/debug/harness team-run work create --team-run-id <team-run> \
+target/debug/firm team-run work create --team-run-id <team-run> \
   --title <title> --context <markdown> \
   --completion-criteria <criteria> --owner-member-run-id <member-run>
-target/debug/harness team-run work list --team-run-id <team-run>
-target/debug/harness wave advance --id <wave> --advanced-by <actor> \
+target/debug/firm team-run work list --team-run-id <team-run>
+target/debug/firm mission log append --mission-id <mission> --kind judgment --body "<decision>" \
   --outcome <summary>
-target/debug/harness dashboard snapshot
-target/debug/harness serve --addr 127.0.0.1:8787
+target/debug/firm dashboard snapshot
+target/debug/firm serve --addr 127.0.0.1:8787
 npx pnpm@9.15.4 acceptance:mission-wave
 ```
 
@@ -252,13 +251,13 @@ live-provider evidence.
 
 ## Execution Space And Project Binding
 
-Canonical contract: [multi-project.md](multi-project.md),
-[ADR 0033](decisions/0033-agent-team-workspace-contract.md),
-[ADR 0042](decisions/0042-company-store-execution-space-project-binding.md).
+Canonical contract: multi-project.md,
+[ADR 0033](../../decisions/0033-agent-team-workspace-contract.md),
+[ADR 0042](../../decisions/0042-company-store-execution-space-project-binding.md).
 The operator rules are:
 
 One `serve` / dashboard manages independent Execution Spaces and Project
-Bindings. Execution Spaces under `~/.harness/execution-spaces/<id>/` own
+Bindings. Execution Spaces under `~/.firm/execution-spaces/<id>/` own
 Mission/Wave, Agent Team, and Workflow coordination. Project Bindings identify
 the registered Git repository/directory where providers execute and discover
 instructions, Skills, plugins, and MCP configuration. Selecting `--project`
@@ -271,19 +270,19 @@ or a Git worktree sharing its Git common directory; external Codex worktrees
 are valid. Treat cwd as an explicit execution and permission boundary.
 
 - Select the Execution Space explicitly (`--space <id>`, `HARNESS_SPACE`, or
-  `harness space switch`) before writing coordination records.
+  `firm space switch`) before writing coordination records.
 - Select the Project Binding explicitly (`--project <id|path>`,
-  `HARNESS_PROJECT`, or `harness project switch`) before spawning workers.
+  `HARNESS_PROJECT`, or `firm project switch`) before spawning workers.
 - `AgentTeamRun.project_binding_id` and `WorkflowRun.project_binding_id` pin
   the execution resource; later selector changes must not retarget them.
 - `--store` / `HARNESS_ROOT` still win as back-compat overrides but are
-  deprecation-warned — prefer `harness init` / `harness space switch`.
+  deprecation-warned — prefer `firm init` / `firm space switch`.
 - The reserved GLOBAL `_global` (`~/`) project is non-git: read-only work runs
   there, but `writable` / `isolation="worktree"` nodes are rejected with an
   actionable message (and have no diff evidence).
 - Copy project-derived execution history with explicit
-  `harness space migrate-from-project`; the source is retained and verified.
-  Centralize a repo-local `.harness` first with `harness project migrate` when
+  `firm space migrate-from-project`; the source is retained and verified.
+  Centralize a repo-local `.harness` first with `firm project migrate` when
   needed. Never silently migrate or dual-write.
 
 `ProjectContext` is compatibility infrastructure. Do not infer that a Git
@@ -339,8 +338,8 @@ mechanism, but must say so and add focused acceptance for the path it creates.
 
 Scenario execution rosters and research budgets are scenario policy, not
 repository-wide invariants. The current dogfood roster and per-member research
-budget live in [operations.md](operations.md) and
-[../skills/dogfood-company-os/SKILL.md](../skills/dogfood-company-os/SKILL.md);
+budget live in operations.md and
+[../skills/dogfood-company-os/SKILL.md](../../../skills/dogfood-company-os/SKILL.md);
 do not mirror quota-specific rosters here — update those scenario carriers
 instead.
 
@@ -374,34 +373,34 @@ resume-or-new-session decision to the governing record.
 ## Relocation Map
 
 How the pre-slimming root `AGENTS.md` (337 lines) maps to the current layout.
-"Root" means the current slim [AGENTS.md](../AGENTS.md); "here" means this
+"Root" means the current slim [AGENTS.md](../../../../AGENTS.md); "here" means this
 companion.
 
 | Former AGENTS.md content | Now lives in | Notes |
 | --- | --- | --- |
-| Product We Are Building — two primary systems | Root §Product Identity | Canonical: [prd.md](prd.md), [company-os/README.md](current/company-os/README.md) |
+| Product We Are Building — two primary systems | Root §Product Identity | Canonical: [prd.md](prd.md), [company-os/README.md](../company-os/README.md) |
 | Product We Are Building — Mission/Wave relations diagram and semantics | Root §Product Identity; here §Product Context | Full prose kept here |
 | Product We Are Building — Work responsibility, Work-linked conversation, thinking-as-transient contract | Here §Product Context | Thinking stays non-persisted; live display channel still pending |
-| Product We Are Building — shared substrate, capability claims, interactive controls | Root invariant 5 (gate); here §Product Context | Substrate contract: [agent-runtime.md](agent-runtime.md) |
+| Product We Are Building — shared substrate, capability claims, interactive controls | Root invariant 5 (gate); here §Product Context | Substrate contract: agent-runtime.md |
 | Product We Are Building — provider release discovery and version maintenance | Root invariant 5; here §Product Context | Full procedure kept here |
-| Product We Are Building — recursive AgentTeams + Docs direction, honesty about planned objects | Root invariant 10; here §Product Context | ADR 0052 |
+| Product We Are Building — flat AgentTeams + Docs direction, honesty about planned objects | Root invariant 10; here §Product Context | ADR 0052 |
 | Product We Are Building — Trademark scenario, module placement | Here §Product Context | Canonical scenario: [prd.md](prd.md) |
-| Native Product And Execution Objects — object inventory | Here §Native Product And Execution Objects | [concept-model.md](concept-model.md) |
+| Native Product And Execution Objects — object inventory | Here §Native Product And Execution Objects | concept-model.md |
 | Native Product And Execution Objects — Mission/Wave only, ADR 0028 retirement | Root invariant 3; here §Native Product And Execution Objects | — |
 | Agent Team execution records, Work responsibility/delivery proof, native-session boundary | Root invariants 1–2; here §Native Product And Execution Objects and §Acceptance Evidence | ADR 0032; the exact phrases `provider's native`, `streams into Harness ledgers`, and `Resume must use the provider-native session id` must stay in root AGENTS.md — `scripts/check-native-session-boundary.mjs` greps for them |
 | MemberRun ProviderIntegrationProfile, PendingInteraction, `completed` ≠ success | Root invariants 1–2; here §Native Product And Execution Objects | — |
 | Trusted-development Team policy and worktree norms | Root invariant 6; here §Native Product And Execution Objects | — |
 | Member modes, interrupt/close, Team Supervisor lease, reconciliation | Root invariant 7; here §Agent Team Member Lifecycle And Control | — |
 | No Plan Mode / Plan Gate | Root invariant 9; here §Agent Team Member Lifecycle And Control | — |
-| Assignment vs provider-native Goal, single execution driver | Root invariant 8; here §Agent Team Member Lifecycle And Control | [member-continuation-model.md](member-continuation-model.md), ADR 0041 |
+| Assignment vs provider-native Goal, single execution driver | Root invariant 8; here §Agent Team Member Lifecycle And Control | member-continuation-model.md, ADR 0041 |
 | Subagents as implementation details | Root invariant 9; here §Agent Team Member Lifecycle And Control | — |
 | Acceptance checklist for Mission-scoped Team work; workflow/host truth | Root §Proportional Acceptance (condensed); here §Acceptance Evidence (full) | — |
 | How To Develop This Repository — 8-step Lead sequence | Root §Repository Execution Rules (condensed); here §Developing This Repository (full) | — |
-| Dogfood defect/repair paragraph | Root §Repository Execution Rules; here §Developing This Repository | Canonical method: [product/agent-team-dogfood-loop.md](product/agent-team-dogfood-loop.md) |
-| Useful local commands block | Here §Developing This Repository | Gates: [operations.md](operations.md) |
-| Execution Space And Project Binding section | Root invariant 4; here §Execution Space And Project Binding | Canonical contract: [multi-project.md](multi-project.md), ADR 0033, ADR 0042 |
+| Dogfood defect/repair paragraph | Root §Repository Execution Rules; here §Developing This Repository | Canonical method: [product/agent-team-dogfood-loop.md](agent-team-dogfood-loop.md) |
+| Useful local commands block | Here §Developing This Repository | Gates: operations.md |
+| Execution Space And Project Binding section | Root invariant 4; here §Execution Space And Project Binding | Canonical contract: multi-project.md, ADR 0033, ADR 0042 |
 | Skills Are Optional Capabilities | Root invariant 11; here §Skills Are Optional Capabilities | — |
 | Self-Hosting Rules | Root §Repository Execution Rules (condensed); here §Self-Hosting Rules (full) | — |
 | Staged Acceptance | Root §Proportional Acceptance | Not duplicated here |
 | What Counts As Done | Root §Proportional Acceptance | Not duplicated here |
-| Provider-neutral rolling reconciliation principle (aligned post-slimming, not relocated) | Root invariant 7; here §Runtime Replacement And Rolling Reconciliation | Scenario rosters and research budgets stay in scenario policy — [operations.md](operations.md) and [../skills/dogfood-company-os/SKILL.md](../skills/dogfood-company-os/SKILL.md) — and are deliberately not mirrored in root instructions |
+| Provider-neutral rolling reconciliation principle (aligned post-slimming, not relocated) | Root invariant 7; here §Runtime Replacement And Rolling Reconciliation | Scenario rosters and research budgets stay in scenario policy — operations.md and [../skills/dogfood-company-os/SKILL.md](../../../skills/dogfood-company-os/SKILL.md) — and are deliberately not mirrored in root instructions |

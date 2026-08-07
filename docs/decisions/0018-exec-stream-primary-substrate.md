@@ -77,7 +77,7 @@ providers — one mental model, one parser family.
   delivery handle (process/session descriptor); neither provider needs a
   long-lived socket in the target design.
 - The integration contract is the three pillars + neutral launch spec in
-  [../agent-integration-model.md](../agent-integration-model.md). New platforms
+  ../agent-integration-model.md. New platforms
   integrate via their documented exec/stream mode first.
 
 **Persistent `app-server` is retained only as an optional, explicitly-flagged
@@ -128,6 +128,6 @@ This decision is documentation-level: it sets substrate direction and the
 integration model. Behavior-changing work (exec delivery path behind a flag,
 real Claude integration, store/SSE correctness fixes, then retiring the
 app-server path) lands in separate gated work packages. See
-[../agent-integration-model.md](../agent-integration-model.md),
-[../integration/codex.md](../integration/codex.md), and
-[../integration/claude.md](../integration/claude.md).
+../agent-integration-model.md,
+../integration/codex.md, and
+../integration/claude.md.

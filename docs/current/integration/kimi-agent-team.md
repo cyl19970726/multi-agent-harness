@@ -9,7 +9,7 @@ canonical_for: Kimi persistent Agent Team execution, controls, mailbox boundary,
 This document defines Kimi's persistent Agent Team mode. The provider overview,
 installation, bounded Workflow mode, native record parsing, and permission
 limitations remain in [Kimi integration](kimi.md). Provider-neutral runtime
-rules remain in [Agent runtime](../agent-runtime.md).
+rules remain in Agent runtime.
 
 ## Planning and continuation
 
@@ -37,8 +37,8 @@ Host/Member coordination is persisted.
 
 A provider-owned pause that actually blocks the session is a
 `PendingInteraction`; ACP `completed` is not semantic Host acceptance. See
-[ADR 0039](../decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md)
-and the [Member Continuation Model](../member-continuation-model.md).
+[ADR 0039](../../decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md)
+and the Member Continuation Model.
 
 ## Mode and compatibility boundary
 

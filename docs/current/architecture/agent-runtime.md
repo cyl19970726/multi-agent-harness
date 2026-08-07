@@ -90,7 +90,7 @@ permission to upgrade Codex, Claude Code, or Kimi.
 | `ProviderCapacitySnapshot` | execution-mode-specific runtime availability of one provider ACCOUNT, with observation time, evidence source and confidence | adapter compatibility, a synthesised usage number, or an availability claim from an absent observation |
 | `NativeContinuationProjection` | ephemeral observation of the selected provider's continuation condition, state, cycle and terminal reason | durable Goal identity, Work ownership, or Host acceptance |
 | `AgentEvent` | explicit Harness-owned lifecycle, control, and summary facts | provider transcript, tool stream, or turn history |
-| `ProviderChildThread` | provider-native subagent or child thread visibility | durable harness member identity by default |
+| `ProviderChildThread` | provider-native subagent or child thread visibility | durable firm member identity by default |
 | `PermissionProfile` | allowed tools, approval policy, sandbox, live/destructive boundaries | prompt-only safety |
 | `WorkspaceRef` | cwd, worktree, branch, environment, owned paths | implicit global workspace |
 
@@ -146,7 +146,7 @@ a fake current-turn ACK.
 This is the provider-neutral interface model, not a claim that every operation
 is one public Rust trait today. Implemented V1 native reads return a bounded
 projection with `truncated`; cursor pagination remains an extension documented
-in [integration/native-session-storage.md](integration/native-session-storage.md).
+in [integration/native-session-storage.md](../integration/native-session-storage.md).
 
 ```text
 AgentProvider
@@ -392,4 +392,4 @@ The end-to-end model of how these events, the four-layer `runtime_health`
 probe, `MessageDelivery`, and the native session binding compose into an `AgentMember`'s
 real-time state — and how that state reaches the Agent Dashboard — is the
 canonical contract in
-[member-runtime-observability.md](member-runtime-observability.md).
+member-runtime-observability.md.

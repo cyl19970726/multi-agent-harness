@@ -6,19 +6,19 @@ page specs, page-local layout contracts, architecture, acceptance, and rejected
 implementations live in separate files so future implementation cannot drift
 from vague prose.
 
-Product purpose stays in [../dashboard.md](../dashboard.md). Durable design
-principles stay in [design-principles.md](../company-os/frontend-information-architecture.md). Layout
+Product purpose stays in ../dashboard.md. Durable design
+principles stay in design-principles.md. Layout
 candidates, critique, and the selected/killed/deprecated decision ledger stay in
-[layout-history.md](../company-os/frontend-information-architecture.md). Page-level specs live under
+layout-history.md. Page-level specs live under
 [pages/](pages/), and each page file owns its current `## Layout Contract`
 with detailed desktop/tablet/mobile ASCII diagrams. Architecture and stack
 decisions stay in [frontend-architecture.md](frontend-architecture.md) and ADR
-[0016](../decisions/0016-tailwind-shadcn-adoption.md) (stack). Acceptance gates stay in
-[acceptance.md](../company-os/frontend-information-architecture.md).
+[0016](../../decisions/0016-tailwind-shadcn-adoption.md) (stack). Acceptance gates stay in
+acceptance.md.
 
 Mission/Wave direction is canonical in
-[../architecture-map.md](../architecture-map.md) and
-[ADR 0026](../decisions/0026-mission-wave-architecture.md). Existing
+../architecture-map.md and
+[ADR 0026](../../decisions/0026-mission-wave-architecture.md). Existing
 Vision/Goal/Task work-board and Goal Workbench contracts are archived; they no
 longer define the top-level product IA.
 
@@ -55,16 +55,16 @@ status:
 The Agent Workbench uses Tailwind v4 + shadcn/ui (Radix) + lucide-react + Geist
 with generated identity art and purpose-built execution primitives. Historical
 shell decisions are retained only as design provenance in
-[the frontend IA](../company-os/frontend-information-architecture.md). New
+the frontend IA. New
 Mission/Wave changes must:
 
-- start from [the architecture map](../architecture-map.md), ADR 0026, and the
+- start from the architecture map, ADR 0026, and the
   implemented Mission/Wave Canvas and Agent Team War Room page specs;
 - follow the architecture and stack decision in
   [frontend-architecture.md](frontend-architecture.md) and ADR
-  [0016](../decisions/0016-tailwind-shadcn-adoption.md);
+  [0016](../../decisions/0016-tailwind-shadcn-adoption.md);
 - keep desktop/tablet/mobile ASCII diagrams in each changed page spec current;
-- pass screenshot-first acceptance in [acceptance.md](../company-os/frontend-information-architecture.md).
+- pass screenshot-first acceptance in acceptance.md.
 
 ## Workbench Product Flow
 
@@ -85,18 +85,18 @@ review evidence without changing the Mission/Wave object hierarchy.
 
 ## Reading Order
 
-1. [../dashboard.md](../dashboard.md): product-level purpose and information
+1. ../dashboard.md: product-level purpose and information
    architecture.
-2. [design-principles.md](../company-os/frontend-information-architecture.md): durable UI doctrine and
+2. design-principles.md: durable UI doctrine and
    failure modes.
-3. [layout-history.md](../company-os/frontend-information-architecture.md): candidate layout directions,
+3. layout-history.md: candidate layout directions,
    critique, and the selected/rejected/borrowed decision ledger.
 4. [pages/README.md](pages/README.md): page-spec index and template.
 5. Page specs under [pages/](pages/): product/UX contract plus page-local
    layout contract per core page.
 6. [frontend-architecture.md](frontend-architecture.md): technical stack,
    module boundaries, old-code disposition.
-7. [acceptance.md](../company-os/frontend-information-architecture.md): screenshot-first browser and PM/User gates.
+7. acceptance.md: screenshot-first browser and PM/User gates.
 
 ## Page Specs
 
@@ -127,7 +127,7 @@ warnings page.
 | `acceptance.md` | Browser screenshot rubric, PM/User prompts, web-quality gates, waiver policy. | Layout candidates or component architecture. |
 
 If a layout change alters page meaning, update the relevant page spec and
-[layout-history.md](../company-os/frontend-information-architecture.md) first. If it only changes dimensions,
+layout-history.md first. If it only changes dimensions,
 breakpoints, or scroll ownership, update the `## Layout Contract` in that same
 page spec.
 
@@ -137,4 +137,4 @@ Frontend implementation starts from current page specs, V3 visual evidence,
 and the current component tree. It must not restore a retired coordination
 surface or rejected shell. The architecture decision lives in
 [frontend-architecture.md](frontend-architecture.md), and ADR
-[0016](../decisions/0016-tailwind-shadcn-adoption.md).
+[0016](../../decisions/0016-tailwind-shadcn-adoption.md).

@@ -57,8 +57,8 @@ pending `WorkflowPatch`; the throwaway worktree is then removed. Apply or reject
 the patch explicitly:
 
 ```bash
-harness workflow patch apply <patch-id>
-harness workflow patch reject <patch-id>
+firm workflow patch apply <patch-id>
+firm workflow patch reject <patch-id>
 ```
 
 `persist_changes="discard"` opts out of patch retention. Direct write mode is a

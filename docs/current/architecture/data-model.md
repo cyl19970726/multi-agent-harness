@@ -116,7 +116,7 @@ WorkItems, Approvals, finance, metrics, and documents are defined by the
 Company OS contracts rather than by a generic task graph.
 
 Retired object fields that remain in internal schemas are removal debt governed
-by [ADR 0028](decisions/0028-retire-goal-phase-task-graph.md). They must not be
+by [ADR 0028](../../decisions/0028-retire-goal-phase-task-graph.md). They must not be
 read into native Mission/Wave projections or used as a reason to retain old UI.
 
 ## Projection Rules

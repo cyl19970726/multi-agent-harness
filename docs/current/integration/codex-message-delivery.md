@@ -6,7 +6,7 @@ status: implemented Message baseline; WorkDelivery redesign pending ADR 0050
 
 This document defines how a Codex Agent Team Member receives durable Harness
 coordination. It extends [Codex Integration](codex.md) and the
-[provider-neutral runtime contract](../agent-runtime.md).
+provider-neutral runtime contract.
 
 ## Boundary
 
@@ -75,7 +75,7 @@ so an Inject-descendant sibling cannot enter between two Control publications.
 The broader provider-effect-before-Control crash reservation gap remains a
 follow-up; this bounded convergence rule does not claim that gap is closed.
 
-Reading `harness team-run inbox` or `harness member-run show` is a projection;
+Reading `firm team-run inbox` or `firm member-run show` is a projection;
 it does not itself consume or semantically acknowledge mail.
 
 ## Latest-Row Selection
@@ -174,9 +174,9 @@ MemberRun.
 
 The same application behavior is exposed through:
 
-- `harness team-run inbox --id <run> --member-run-id <member> [--all] --json`;
-- `harness team-run host-inbox --surface <surface> --thread-id <native-host-task> [--all] --json`;
-- `harness member-run show --id <member> --json`;
+- `firm team-run inbox --id <run> --member-run-id <member> [--all] --json`;
+- `firm team-run host-inbox --surface <surface> --thread-id <native-host-task> [--all] --json`;
+- `firm member-run show --id <member> --json`;
 - Team message/status commands;
 - HTTP and MCP equivalents; and
 - Dashboard Team mailboxes, group conversation and Member Focus.
@@ -207,7 +207,7 @@ Host delivery follows the same ownership rule. Codex `Stop` is a real
 same-task safe boundary and may continue once with actionable Host mail.
 An already-idle Desktop task cannot be asynchronously woken by its thread id
 alone; it receives mail at its next prompt or resume. See
-[ADR 0040](../decisions/0040-native-host-inbox-delivery.md).
+[ADR 0040](../../decisions/0040-native-host-inbox-delivery.md).
 
 ## Acceptance
 

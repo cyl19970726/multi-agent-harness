@@ -28,7 +28,7 @@ connected through adapters.
 
 Mission/Wave is the only active coordination vocabulary and native contract
 for new work. The superseded coordination stack is governed by
-[ADR 0028](decisions/0028-retire-goal-phase-task-graph.md) and is not exposed
+[ADR 0028](../../decisions/0028-retire-goal-phase-task-graph.md) and is not exposed
 through product projections or authoring paths. Optional review and evaluation
 records may strengthen a high-risk gate, but they do not replace Mission
 closeout or become mandatory hierarchy levels.

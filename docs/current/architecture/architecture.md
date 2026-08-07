@@ -66,7 +66,7 @@ authoring, Mission-Team linkage, Wave history/advance, and Mission closeout are
 implemented. ADR 0050 accepts Agent Team Works as the replacement for
 Assignment-message ownership; its schemas/runtime/UI cutover is in progress and
 must land without a compatibility ownership path. The superseded stack is removed from active reads,
-commands, and UI under [ADR 0028](decisions/0028-retire-goal-phase-task-graph.md).
+commands, and UI under [ADR 0028](../../decisions/0028-retire-goal-phase-task-graph.md).
 Optional evaluation remains governance layered on an outcome, not a second
 closeout model.
 

@@ -42,7 +42,7 @@ This decision is not MVP-complete until:
 - the delivered turn has a stable harness envelope;
 - Dashboard warnings use the same projection as the dispatcher.
 
-See [../integration/codex.md](../integration/codex.md) and
-[../integration/codex-message-delivery.md](../integration/codex-message-delivery.md)
+See ../integration/codex.md and
+../integration/codex-message-delivery.md
 for the message delivery contract, plus
-[../integration/codex-source-audit.md](../integration/codex.md).
+../integration/codex-source-audit.md.

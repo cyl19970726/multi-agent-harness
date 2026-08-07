@@ -33,7 +33,7 @@ repository/worktree **Project Bindings**.
 flowchart LR
   D["Docs<br/>company memory and business structure"]
   W["Work<br/>commitments, responsibility and outcomes"]
-  O["Organization<br/>humans · nested AgentTeams · AgentMembers"]
+  O["Organization<br/>humans · flat AgentTeams · AgentMembers"]
   F["Finance<br/>monetary state and evidence"]
   E["Execution Space<br/>Mission/Wave · Agent Team · Workflow · Host"]
   P["Project Bindings<br/>repos · worktrees · delivery refs"]
@@ -62,11 +62,11 @@ scenario, Docs, Work, and Organization form a continuous loop: an Org gap may
 create Work and a role-charter Document; a Work blocker may request a new
 capability; a Document audit may create Work; an accepted implementation may
 update all three. See
-[AgentOS self-hosting dogfood loop](agentos-self-hosting-loop.md).
+AgentOS self-hosting dogfood loop.
 
 ## Initial organization
 
-The first organization is a deliberately small recursive AgentTeam:
+The first organization is a deliberately small flat AgentTeam:
 
 ```text
 Supervising Operator
@@ -84,7 +84,7 @@ child Team, delegate child Work, and remain accountable for its parent Work.
 Role names are company choices rather than required architecture. The
 Supervising Operator can inspect all Teams, create unassigned intake Work, and
 message the Lead, but it does not impersonate a Member or become the hidden
-scheduler. See [ADR 0052](../decisions/0052-nested-agent-teams-are-the-agent-organization.md).
+scheduler. See [ADR 0052](../../decisions/0052-nested-agent-teams-are-the-agent-organization.md).
 
 ## One company operation
 
@@ -108,7 +108,7 @@ cannot authorize legal filing, payment, permission, or organization mutation.
 | Layer | Native product objects | Boundary |
 | --- | --- | --- |
 | Docs | Document, Block, TypedRecord, Relation, View, BusinessModule | durable knowledge and business structure |
-| Organization | ActorRef, HumanMember, AgentMember, recursive AgentTeam, external/service actors; OrgUnit as optional business grouping | identity, direct-Team administration, authority and explicit availability/capacity |
+| Organization | ActorRef, HumanMember, AgentMember, flat AgentTeam, external/service actors; OrgUnit as optional business grouping | identity, direct-Team administration, authority and explicit availability/capacity |
 | Work | Work, WorkEvent, WorkDelivery, Milestone and typed business/Approval relations | commitment, responsibility, lifecycle, evidence and result routing |
 | Finance | Commitment, Invoice, Payment, Refund and financial evidence | monetary truth and transitions |
 | Plugins / Gateways | GatewayPlugin manifest, GatewayAction, GatewayEvent, connector sync records, view-extension declarations, evidence refs | platform capabilities, external state synchronization, and presentation extensions; never approval or business truth |
@@ -123,7 +123,7 @@ MemberRun and provider-native subagents remain execution details.
 An external GitHub repository may own the software product contract for a real
 application. Company OS still owns the commercial model, operating modules,
 Works, Organization, Finance, and launch readiness around that application.
-The integration contract is [External Project Product Sources](external-project-product-sources.md).
+The integration contract is External Project Product Sources.
 Under ADR 0042, the Git repository is a Project Binding and/or external source,
 not the owner of the Company Store. One Agent Company Workspace may contain
 multiple operating areas, such as Wanchengwanling and AgentOS / Star Harness,
@@ -166,9 +166,9 @@ after the GitHub path proves the contract.
 
 | Area | Current truth | Next product gap |
 | --- | --- | --- |
-| Company / execution identity | ADR 0042 is implemented across independent Company Store, Execution Space, and Project Binding registries/selectors; TeamRun and Workflow pin their binding; current blended snapshots still join compatibility StandingAgent rows to execution participation | recursive AgentMember organization cutover, legacy-store retirement, and durable cross-process Team Supervisor |
+| Company / execution identity | ADR 0042 is implemented across independent Company Store, Execution Space, and Project Binding registries/selectors; TeamRun and Workflow pin their binding; current blended snapshots still join compatibility StandingAgent rows to execution participation | flat AgentMember organization cutover, legacy-store retirement, and durable cross-process Team Supervisor |
 | Docs substrate | native schemas, stores, APIs, standard views, and Store-live evidence exist | deeper document authoring and governed module evolution |
-| Organization substrate | actor kinds, OrgUnit membership, StandingAgent compatibility join, and mixed-actor UI exist | ADR 0052 recursive AgentTeam topology, truthful hierarchy, and shared Member/Team views |
+| Organization substrate | actor kinds, OrgUnit membership, StandingAgent compatibility join, and mixed-actor UI exist | ADR 0052 flat AgentTeam topology, truthful hierarchy, and shared Member/Team views |
 | Work read model | Team Works plus current Company WorkItem/Milestone projections exist | one persistent Team-scoped Work kernel, recursive Global Works, and explicit compatibility cutover |
 | Finance/Approval | native records, separation of Commitment and Payment, and governed action slices exist | actor-bound product sessions and broader operator controls |
 | Agent roles | current governance-role records and decision contracts exist | role-neutral AgentMembers organized by recursive Teams instead of a fixed governance hierarchy |
@@ -181,18 +181,18 @@ separates baseline, Expected, Actual, historical, and deferred-reference assets.
 
 ## Canonical reading order
 
-1. [Vision](vision.md)
+1. Vision
 2. [This product system map](product-system-map.md)
-3. [Four-system collaboration](four-system-collaboration.md)
+3. Four-system collaboration
 4. [Organization and actors](organization-and-actors.md)
 5. [Work Operating System](work-operating-system.md)
-6. [Document system](document-system.md) and [financial relations](financial-relations.md)
-7. [Nested Agent Team organization](nested-agent-team-organization.md)
-8. [External project product sources](external-project-product-sources.md)
-9. [External Gateway and Plugin Intake](external-gateway-and-plugins.md)
-10. [Frontend information architecture](frontend-information-architecture.md)
+6. [Document system](document-system.md) and financial relations
+7. Nested Agent Team organization
+8. External project product sources
+9. External Gateway and Plugin Intake
+10. Frontend information architecture
 11. [Execution foundation](execution-foundation.md)
-12. [Company OS V2 visual inventory](../design/company-os-v2/visual-index.md)
+12. Company OS V2 visual inventory
 
 Detailed schemas, Actions, examples, and implementation audits remain linked
 from [the Company OS index](README.md). If a detailed document conflicts with

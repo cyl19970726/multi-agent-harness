@@ -40,7 +40,7 @@ explicit Close. Bounded Codex/Claude/Kimi exec paths belong to Dynamic
 Workflow and are never Agent Team fallbacks.
 
 Real self-hosting follows the canonical
-[Agent Team Dogfood Loop](product/agent-team-dogfood-loop.md). A failed live
+[Agent Team Dogfood Loop](../product/agent-team-dogfood-loop.md). A failed live
 scenario becomes a Host-triaged Repair Wave or tracked issue, then the original
 scenario is rerun before the matrix expands. Finding a bug is evidence, not
 Mission closeout.
@@ -55,8 +55,8 @@ action, not a replacement execution history.
 Use focused Rust tests while iterating on one slice:
 
 ```bash
-cargo test -p harness-cli --test mcp_stdio --test team_run_start -- --test-threads=1
-cargo test -p harness-cli --test team_run_api \
+cargo test -p firm-cli --test mcp_stdio --test team_run_start -- --test-threads=1
+cargo test -p firm-cli --test team_run_api \
   persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_completion \
   -- --test-threads=1
 ```
@@ -100,7 +100,7 @@ window is:
    and exact rollback;
 3. leave active MemberRuns/native sessions on the current runtime;
 4. install the candidate for new sessions and run
-   `harness member providers --fail-on-review`;
+   `firm member providers --fail-on-review`;
 5. run the mode-specific deterministic acceptance and one proportional live
    canary;
 6. promote the reviewed version only after green evidence, otherwise roll back
@@ -135,7 +135,7 @@ The dogfood execution roster is deliberate: Kimi `kimi_acp` with the reviewed
 K3 model alias at `max` thinking effort is primary (verify the MemberRun
 requested-vs-effective `provider_controls` receipt); Claude `claude_agent_sdk`
 joins only while its installed SDK passes
-`harness member providers --fail-on-review`; Codex providers are not dogfood
+`firm member providers --fail-on-review`; Codex providers are not dogfood
 execution members. Each member also runs under a strict research budget: one
 evidence pass over the Work, owned paths, and directly linked records,
 then produce deliverables or report a blocked verdict with the exact missing
@@ -155,25 +155,23 @@ of the active command surface.
 Start the operator surface with an explicit Workspace selection:
 
 ```bash
-harness serve --addr 127.0.0.1:8787
+firm serve --addr 127.0.0.1:8787
 ```
 
 The current Mission/Team authoring path is available through Cargo:
 
 ```bash
-cargo run -p harness-cli -- --help
-cargo run -p harness-cli -- init
-cargo run -p harness-cli -- mission create --title <title> --objective <objective> --context "<mission-markdown>"
-cargo run -p harness-cli -- mission create-team --id <mission-id> --name <team-name> --description <purpose> --lead host
-cargo run -p harness-cli -- wave create --mission-id <mission-id> --title <title> --objective <objective> --context "<wave-markdown>"
-cargo run -p harness-cli -- team-run create --mission-id <mission-id> \
+cargo run -p firm-cli -- --help
+cargo run -p firm-cli -- init
+cargo run -p firm-cli -- mission create --title <title> --objective <objective> --context "<mission-markdown>"
+cargo run -p firm-cli -- mission create-team --id <mission-id> --name <team-name> --description <purpose> --lead host
+cargo run -p firm-cli -- team-run create --mission-id <mission-id> \
   --agent-team-id <team-id> --objective <objective> \
   --member-owned-path <member-name>:crates
-cargo run -p harness-cli -- team-run start --id <team-run-id>
-cargo run -p harness-cli -- wave advance --id <wave-id> --outcome "<host-decision>" --advanced-by host
-cargo run -p harness-cli -- wave create --mission-id <mission-id> --title <next-title> --objective <next-objective> --context "<next-wave-markdown>"
-cargo run -p harness-cli -- dashboard snapshot
-cargo run -p harness-cli -- serve --addr 127.0.0.1:8787
+cargo run -p firm-cli -- team-run start --id <team-run-id>
+cargo run -p firm-cli -- mission log append --mission-id <mission-id> --kind judgment --body "<host-decision>"
+cargo run -p firm-cli -- dashboard snapshot
+cargo run -p firm-cli -- serve --addr 127.0.0.1:8787
 ```
 
 Omit ad-hoc `--member` overrides when starting from a reusable AgentTeam
@@ -185,8 +183,8 @@ authority.
 Select the Execution Space and Project Binding explicitly:
 
 ```bash
-harness space switch <execution-space-id>
-harness project switch <project-binding-id>
+firm space switch <execution-space-id>
+firm project switch <project-binding-id>
 ```
 
 `--space` / `HARNESS_SPACE` selects Mission/Wave, Agent Team, Workflow, and

@@ -5,10 +5,10 @@ provider, or platform into Star Harness, what do you have to define?**
 
 It sits above the provider runtime implementation reference in
 [agent-runtime.md](agent-runtime.md) and the execution boundary in
-[execution-foundation.md](current/company-os/execution-foundation.md), and above the concrete
-provider implementations in [integration/codex.md](integration/codex.md),
-[integration/claude.md](integration/claude.md), and
-[integration/kimi.md](integration/kimi.md). It does not redefine Mission/Wave,
+[execution-foundation.md](../company-os/execution-foundation.md), and above the concrete
+provider implementations in [integration/codex.md](../integration/codex.md),
+[integration/claude.md](../integration/claude.md), and
+[integration/kimi.md](../integration/kimi.md). It does not redefine Mission/Wave,
 executor-native records, WorkItems, Approvals, or organization authority.
 Continuous Member execution follows the separate
 [Member Continuation Model](member-continuation-model.md).
@@ -38,7 +38,7 @@ Harness-spawned transport at all (see the impersonation invariant below). The
 provider-native session store remains the sole durable transcript/tool/turn
 history and resume source; Harness retains a mode-aware native session
 binding, not a second event store. See
-[ADR 0031](decisions/0031-interactive-provider-modes-and-version-drift.md).
+[ADR 0031](../../decisions/0031-interactive-provider-modes-and-version-drift.md).
 
 For every persistent Team mode, the integration also selects exactly one
 top-level `execution_driver`: `host_driven`, `provider_driven`, or — for
@@ -84,7 +84,7 @@ MemberRun's queued mail at native prompt boundaries. Stop remains user-driven
 by default; cooperative same-task continuation is opt-in and never upgrades
 the member to a Harness-controlled runtime.
 
-An `AgentMember` (see [agent-control-plane.md](current/company-os/execution-foundation.md)) is a
+An `AgentMember` (see [agent-control-plane.md](../company-os/execution-foundation.md)) is a
 durable identity. To make that identity *executable on a given platform* you
 must answer three independent questions, and the launch spec is how the harness
 hands a single turn to whatever platform sits behind the member:
@@ -116,7 +116,7 @@ prompt artifact, not inline chat text**. The contract:
   prompts that change permissions or evidence policy must be files/refs, not
   hidden chat context.
 - The role prompt is **one layer** in the documented prompt stack from
-  [agent-control-plane.md](current/company-os/execution-foundation.md). The harness composes the
+  [agent-control-plane.md](../company-os/execution-foundation.md). The harness composes the
   full system prompt per delivery from this stack:
 
 ```text
@@ -141,15 +141,15 @@ contract for resolving and injecting skills:
 
 - **Location.** A skill lives at `.agents/skills/<id>/SKILL.md` with YAML
   frontmatter carrying `name` (matching the folder) and a complete `description`
-  (enforced by the `skills` gate in `harness governance check`).
+  (enforced by the `skills` gate in `firm governance check`).
 - **Resolution.** A `skill_ref` is the skill `<id>`. The harness resolves it via
-  the [`skill_resolver` module](../crates/harness-core/src/lib.rs): read
+  the [`skill_resolver` module](../../../crates/firm-core/src/lib.rs): read
   `.agents/skills/<id>/SKILL.md` (and any files it links). The ref is durable
   and inspectable; it is not a copy.
 - **Discovery.** The harness can enumerate `.agents/skills/*/SKILL.md`. A member
   declares which skills apply via `skill_refs`; the harness does not force a
   model to self-search for skills.
-- **Validation.** The `skills` gate (`harness governance check`) validates that
+- **Validation.** The `skills` gate (`firm governance check`) validates that
   any `skill_ref` in a member JSON resolves to an existing skill directory.
   Dangling refs fail fast with a clear error message.
 - **Injection.** A provider injects resolved skills as **explicit turn input**,
@@ -173,7 +173,7 @@ member-level intent, distinct from the **provider capability declaration**
 (streaming, resume, mid-turn approval, subagents, MCP, hooks). The harness/UI
 should reconcile the two: a member may *want* a capability the platform cannot
 provide, and that gap must be shown honestly (see Pillar 3 and invariant 4 in
-[integration/README.md](integration/README.md)).
+[integration/README.md](../integration/README.md)).
 
 ### Model, reasoning and service selection
 
@@ -270,7 +270,7 @@ How each platform consumes the same neutral block:
 (additive field, defaults to None). The `build_launch_spec` function carries it
 to the neutral launch spec. Providers map the spec onto their own MCP config
 format (Codex `--config`, Claude `--mcp-config`). See
-[`skill_resolver` module](../crates/harness-core/src/lib.rs) for the
+[`skill_resolver` module](../../../crates/firm-core/src/lib.rs) for the
 `LaunchMcp` / `LaunchMcpServer` types.
 
 ### Declaring resource requirements
@@ -345,14 +345,14 @@ present process health as execution readiness when delivery health is unknown.
 A platform must map the **neutral permission** (Pillar 2 / launch spec) onto its
 own controls and **declare what it cannot do**. Unsupported surfaces must be
 explicit so the Dashboard shows honest capability state (invariant 4,
-[integration/README.md](integration/README.md)). Example: a bounded Workflow
+[integration/README.md](../integration/README.md)). Example: a bounded Workflow
 CLI may have no mid-turn interrupt; that is a declared unsupported surface,
 not a reason to start it as an Agent Team member.
 
 ### Provider capability declaration (WP-6 — implemented)
 
 The implemented `ProviderCapabilities` preset in
-[harness-core](../crates/harness-core/src/lib.rs) covers broad technical axes:
+[firm-core](../../../crates/firm-core/src/lib.rs) covers broad technical axes:
 streaming, resume, mid-turn approval, subagents, MCP, hooks, schema, cost, and
 enforced read-only execution. These booleans are execution-mode metadata, not
 provider-brand promises.
@@ -381,8 +381,8 @@ the exact provider option ids and route to Lead, Policy, or Human. The
 PendingInteraction/control acknowledgement records provider and semantic
 resolution; ordinary provider tool lifecycle remains in the native session.
 
-See [ADR 0030](decisions/0030-provider-interaction-contract.md) and
-[ADR 0032](decisions/0032-provider-native-session-is-execution-truth.md). New provider
+See [ADR 0030](../../decisions/0030-provider-interaction-contract.md) and
+[ADR 0032](../../decisions/0032-provider-native-session-is-execution-truth.md). New provider
 integrations must audit execution modes, reverse RPC, lifecycle, errors,
 permissions, subagents, background work, context/compaction, native-store
 discovery/read/resume, artifacts, auth/quota, and privacy in addition to
@@ -391,7 +391,7 @@ enumerating tools.
 ### The adapter boundary (generalized from earning-engine)
 
 The earning-engine example
-([adapter.json](../examples/adapters/earning-engine/adapter.json))
+([adapter.json](../../../examples/adapters/earning-engine/adapter.json))
 shows the generic split: an adapter supplies project tools, evidence policy,
 dashboard links, permission policy, and skills, while the generic harness owns
 coordination. Generalized:
@@ -410,7 +410,7 @@ harness *what tools and evidence a project exposes*. Both plug into the same
 
 ### Substrate decision
 
-Per [decisions/0018-exec-stream-primary-substrate.md](decisions/0018-exec-stream-primary-substrate.md):
+Per [decisions/0018-exec-stream-primary-substrate.md](../../decisions/0018-exec-stream-primary-substrate.md):
 headless exec-stream remains the primary substrate for **bounded Dynamic
 Workflow execution**. It is not an Agent Team fallback. A new Agent Team
 provider must expose a persistent, bidirectional native session through an
@@ -454,8 +454,8 @@ platforms.
 ### The Codex-vocabulary leak this spec abstracts
 
 Today `AgentProviderConfig`
-([crates/harness-core/src/lib.rs](../crates/harness-core/src/lib.rs)) and
-[schemas/agent-member.schema.json](../schemas/agent-member.schema.json) carry
+([crates/firm-core/src/lib.rs](../../../crates/firm-core/src/lib.rs)) and
+[schemas/agent-member.schema.json](../../../schemas/agent-member.schema.json) carry
 fields that are **Codex `app-server` parameter names mapped 1:1** into the
 supposedly neutral core:
 
@@ -510,17 +510,17 @@ is the concrete "define X, Y, Z" deliverable.
    version. Test that later provider-created cycles preserve the intended
    permission posture.
 6. **Write `docs/integration/<provider>.md`** from the provider template in
-   [integration/README.md](integration/README.md). Answer every section:
+   [integration/README.md](../integration/README.md). Answer every section:
    capability summary, runtime model, message delivery, claim/retry, event
    sources, reducer mapping, queue constraints, context packaging, permission
    model, workspace model, native multi-agent features, evidence/report
    extraction, dashboard health signals, fallback modes, unsupported surfaces,
    and validation gates. Register the new doc in
-   [registry.json](registry.json) and link it from
-   [integration/README.md](integration/README.md).
+   [registry.json](../../registry.json) and link it from
+   [integration/README.md](../integration/README.md).
 7. **Pass deterministic and live validation gates.** `npx pnpm@9.15.4 check` must be green
    (`validate:json`, `check:schema-fixtures`, `check:tool-descriptors`,
-   `check:dashboard`) and so must `harness governance check` (the doc/skill
+   `check:dashboard`) and so must `firm governance check` (the doc/skill
    gates: links, registry, size, skills). Live acceptance must prove one
    top-level execution driver, native-session resume, busy mailbox behavior,
    interrupt/close, permission continuity, typed actor provenance,

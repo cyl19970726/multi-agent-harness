@@ -47,9 +47,9 @@ must be manually assembled by humans from generic blocks. Its underlying model m
 ownership, relationships, permissions, evidence, and auditability while
 allowing an Agent to compose a purpose-built core page when the business needs
 one. This product decision is recorded in
-[ADR 0036: Agent-operated Docs and Code-declared Pages](../decisions/0036-agent-operated-docs-and-code-declared-pages.md).
+[ADR 0036: Agent-operated Docs and Code-declared Pages](../../decisions/0036-agent-operated-docs-and-code-declared-pages.md).
 The current implementation status of each Docs surface is tracked in the
-[Docs operating surface matrix](docs-operating-surface-matrix.md).
+Docs operating surface matrix.
 
 ## Interface priority
 
@@ -82,7 +82,7 @@ write Store. It should serve Agent-facing query/search/view/health/diff/export
 needs after the CLI/API read contracts stabilize. A SQL row may speed up a
 query, but it must be rebuildable from the canonical ledgers and must not
 authorize a write by itself. The governing decision is
-[ADR 0035: Company OS SQL Read Model](../decisions/0035-company-os-sql-read-model.md).
+[ADR 0035: Company OS SQL Read Model](../../decisions/0035-company-os-sql-read-model.md).
 
 ## Operating loop
 
@@ -175,9 +175,9 @@ directly changes application status or moves money.
 The first CLI contract for this layer is:
 
 ```text
-harness company docs page scaffold
-harness company docs page verify
-harness company docs page publish
+firm company docs page scaffold
+firm company docs page verify
+firm company docs page publish
 ```
 
 `page scaffold` creates governed `CustomPageDefinition` and
@@ -253,35 +253,35 @@ clarifies ownership, but a relation is preferred over duplicating a record into
 multiple folders.
 
 The current CLI-backed read and authoring primitives cover the first safe
-subset: `harness company docs query` returns one read-only Agent operating
+subset: `firm company docs query` returns one read-only Agent operating
 context for a Document or BusinessModule over latest projections, including
 ordered Blocks, child Documents, templates, TypedRecords, Relations, Views,
 scoped health findings, available commands, and explicit side-effect
-boundaries; `harness company docs module create` creates a governance-scoped
+boundaries; `firm company docs module create` creates a governance-scoped
 BusinessModule with a fallback View and optional explicit relation rules such
-as Document → TypedRecord `source_for`, `harness company docs page-definition
+as Document → TypedRecord `source_for`, `firm company docs page-definition
 create` installs a CustomPageDefinition, package, server ActionPolicyDefinition
 bundle, and module reference. Page authoring uses the v2 page surface under
-ADR 0054: `harness company docs page create` creates a page (top-level without
+ADR 0054: `firm company docs page create` creates a page (top-level without
 `--parent`, replacing the retired root bootstrap), `page read` projects pages
 read-only with scoped reads and revision selection (legacy ledger documents
 project with `legacy_projection=true`), `page write`/`page append` author
 Markdown through whole-page immutable revisions with `expected_revision`
 optimistic concurrency, and `page search` finds pages by keyword.
-`harness company docs page rename|move|archive` perform structure maintenance
+`firm company docs page rename|move|archive` perform structure maintenance
 as metadata revisions through the same mechanism: `move` rejects parent cycles,
 and `archive` requires `--confirm` to commit. The Block-era
 `document create/rename/move/archive`, `template create/status`, and
 `block append/update/archive/remove/reorder` commands plus their
 `document.append`/`block.append` API actions were deleted at retirement stage
 R3; legacy template Documents and Block rows remain readable records,
-`harness company docs typed-record append` creates a source-linked TypedRecord
-in a BusinessModule, `harness company docs typed-record update` writes a
+`firm company docs typed-record append` creates a source-linked TypedRecord
+in a BusinessModule, `firm company docs typed-record update` writes a
 governed latest-row update for an existing TypedRecord while preserving its
 identity, module, record type, source Document, creator, and creation time,
-`harness company docs view create` creates a standard View for that module, and
-`harness company docs relation link` creates a scoped active Document ↔
-TypedRecord Relation. `harness company docs relation unlink` is lifecycle
+`firm company docs view create` creates a standard View for that module, and
+`firm company docs relation link` creates a scoped active Document ↔
+TypedRecord Relation. `firm company docs relation unlink` is lifecycle
 archive, not deletion: it writes a new latest Relation row with
 `lifecycle_status=archived`, preserves endpoints/type/provenance/creation
 metadata, requires `--confirm` unless dry-run, and makes active query/health

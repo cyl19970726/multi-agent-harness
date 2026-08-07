@@ -36,7 +36,7 @@ Finance, and governance. Execution does not require a Company.
 ## Physical layout
 
 ```text
-~/.harness/
+~/.firm/
 ├── execution-spaces/
 │   ├── registry.json
 │   └── <space-id>/
@@ -74,15 +74,15 @@ physical files.
 An Execution Space is a provider-neutral coordination namespace:
 
 ```bash
-harness space init \
+firm space init \
   --id company-dev \
   --name "Company Development" \
   --project-binding multi-agent-harness
 
-harness space list
-harness space current
-harness space show company-dev
-harness space switch company-dev
+firm space list
+firm space current
+firm space show company-dev
+firm space switch company-dev
 ```
 
 The optional default Project Binding is a convenience for provider execution;
@@ -108,15 +108,15 @@ A Project Binding describes an execution resource:
 Commands:
 
 ```bash
-harness project add [<path>] [--switch]
-harness project list
-harness project current
-harness project show [<id|path>]
-harness project switch <id|path>
-harness project remove <id> [--force]
+firm project add [<path>] [--switch]
+firm project list
+firm project current
+firm project show [<id|path>]
+firm project switch <id|path>
+firm project remove <id> [--force]
 ```
 
-`harness project switch` changes the default Project Binding only. It does not
+`firm project switch` changes the default Project Binding only. It does not
 switch the active Execution Space or Company Store.
 
 ### Provider cwd precedence
@@ -200,7 +200,7 @@ Git repository and cannot produce diff evidence.
 
 ```bash
 cd <repository>
-harness init
+firm init
 ```
 
 `init` registers the repository as a Project Binding. If no active Execution
@@ -216,7 +216,7 @@ Legacy project-derived execution rows can be copied into a native Execution
 Space:
 
 ```bash
-harness space migrate-from-project \
+firm space migrate-from-project \
   --from-project <binding-id-or-path> \
   --id <space-id> \
   --name <display-name>
@@ -234,12 +234,12 @@ The migration:
   active space, and a rollback command;
 - never dual-writes.
 
-Company records use the separate guarded `harness company
+Company records use the separate guarded `firm company
 migrate-from-project` path.
 
 ## Dashboard and HTTP
 
-One `harness serve` exposes independent selectors:
+One `firm serve` exposes independent selectors:
 
 ```text
 GET  /v1/spaces
@@ -271,7 +271,7 @@ Old repo-local or project-derived stores remain readable until an explicit,
 verified migration and later governed retirement. They are not silently
 rewritten or deleted.
 
-Until a Company Store is selected, `harness company ...` alone may read and
+Until a Company Store is selected, `firm company ...` alone may read and
 write the selected Project Binding's legacy `company_os_*` compatibility
 ledgers. It never falls through into the active Execution Space. Selecting a
 Company Store removes that fallback.
@@ -282,9 +282,9 @@ The deterministic suite uses isolated HOME directories and fake providers:
 
 ```bash
 pnpm test:multi-project
-cargo test -p harness-cli --test execution_space_cli
-cargo test -p harness-cli --test team_run_start
-cargo test -p harness-cli --test workflow_cwd
+cargo test -p firm-cli --test execution_space_cli
+cargo test -p firm-cli --test team_run_start
+cargo test -p firm-cli --test workflow_cwd
 pnpm check:dashboard
 ```
 
