@@ -2065,6 +2065,10 @@ pub struct AgentTeamRun {
     pub host_surface: String,
     #[serde(default)]
     pub host_thread_id: Option<String>,
+    /// Last heartbeat from the bound Host process (unix-ms:<ms>).
+    /// Absent until the first bind or heartbeat.
+    #[serde(default)]
+    pub host_lease_last_seen: Option<String>,
     /// Typed Lead identity for new writes. Historical rows infer the reserved
     /// Host actor from `host_surface` and `host_thread_id`.
     #[serde(default)]
@@ -3132,6 +3136,12 @@ pub struct TeamMessageDelivery {
     /// [`TeamDeliveryStatus::Failed`].
     #[serde(default)]
     pub failure_reason: Option<String>,
+    /// When this delivery was first marked Delivered (unix-ms:<ms>).
+    #[serde(default)]
+    pub delivered_at: Option<String>,
+    /// When the recipient acknowledged this delivery (unix-ms:<ms>).
+    #[serde(default)]
+    pub acked_at: Option<String>,
     pub updated_at: String,
 }
 
@@ -4250,6 +4260,7 @@ pub enum HostAttentionKind {
     WorkDeliveryFailed,
     MemberStoppedWithOwnedReadyWork,
     MemberFailedWithOwnedReadyWork,
+    HostBindingStale,
 }
 
 /// Transport/intake state for one Host attention row.

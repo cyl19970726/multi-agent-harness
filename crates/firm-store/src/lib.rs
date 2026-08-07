@@ -3617,6 +3617,29 @@ impl HarnessStore {
                 value.id
             )));
         }
+        // Dedup: reject same (from, to-set, correlation, body) for this run.
+        // Skip Handoff messages — the handoff fence below handles that case.
+        if value.kind != TeamMessageKind::Handoff
+            && messages.values().any(|existing| {
+                existing.team_run_id == value.team_run_id
+                    && existing.from_member_id == value.from_member_id
+                    && {
+                        let mut existing_to: Vec<&str> =
+                            existing.to_member_ids.iter().map(|s| s.as_str()).collect();
+                        existing_to.sort();
+                        let mut value_to: Vec<&str> =
+                            value.to_member_ids.iter().map(|s| s.as_str()).collect();
+                        value_to.sort();
+                        existing_to == value_to
+                    }
+                    && existing.correlation_id == value.correlation_id
+                    && existing.body == value.body
+            })
+        {
+            return Err(StoreError::Conflict(
+                "duplicate team message: same from, to, and correlation_id".to_string(),
+            ));
+        }
         if let Some(work_id) = value.work_id.as_deref() {
             let work = self
                 .latest_works_unlocked()?
@@ -4104,6 +4127,7 @@ impl HarnessStore {
             }
         }
         delivery.status = TeamDeliveryStatus::Acknowledged;
+        delivery.acked_at = Some(updated_at.to_string());
         delivery.updated_at = updated_at.to_string();
         self.append_jsonl_unlocked("team_messages.jsonl", &message)?;
         Ok(message)
@@ -6031,6 +6055,7 @@ mod tests {
                         project_binding_id: Some("project-concurrent".into()),
                         host_surface: "test".into(),
                         host_thread_id: None,
+                        host_lease_last_seen: None,
                         host_actor: None,
                         host_control_mode: Default::default(),
                         objective: "attempt".into(),
@@ -6588,6 +6613,7 @@ mod tests {
             project_binding_id: None,
             host_surface: "codex-app".into(),
             host_thread_id: host_thread_id.map(str::to_string),
+            host_lease_last_seen: None,
             host_actor: None,
             host_control_mode: Default::default(),
             objective: "prove exact Host attention".into(),
@@ -6986,6 +7012,7 @@ mod tests {
                 project_binding_id: None,
                 host_surface: "codex-app".into(),
                 host_thread_id: None,
+                host_lease_last_seen: None,
                 host_actor: None,
                 host_control_mode: Default::default(),
                 objective: "lease test".into(),
@@ -7158,6 +7185,7 @@ mod tests {
             project_binding_id: Some("project-example".into()),
             host_surface: "codex-app".into(),
             host_thread_id: Some("thread-1".into()),
+            host_lease_last_seen: None,
             host_actor: None,
             host_control_mode: Default::default(),
             objective: "Ship the feature".into(),
@@ -7295,6 +7323,8 @@ mod tests {
                 claim_expires_unix_ms: None,
                 provider_receipt_id: Some("test-receipt".into()),
                 failure_reason: None,
+                delivered_at: None,
+                acked_at: None,
                 updated_at: "unix-ms:2".into(),
             }],
             created_at: "unix-ms:1".into(),
@@ -7356,6 +7386,8 @@ mod tests {
                 claim_expires_unix_ms: None,
                 provider_receipt_id: None,
                 failure_reason: None,
+                delivered_at: None,
+                acked_at: None,
                 updated_at: "unix-ms:1".into(),
             }],
             created_at: "unix-ms:1".into(),
@@ -7390,6 +7422,8 @@ mod tests {
                 claim_expires_unix_ms: None,
                 provider_receipt_id: Some("harness-control-plane".into()),
                 failure_reason: None,
+                delivered_at: None,
+                acked_at: None,
                 updated_at: "unix-ms:2".into(),
             }],
             created_at: "unix-ms:2".into(),
@@ -7457,6 +7491,8 @@ mod tests {
                 claim_expires_unix_ms: None,
                 provider_receipt_id: None,
                 failure_reason: None,
+                delivered_at: None,
+                acked_at: None,
                 updated_at: "unix-ms:1".into(),
             }],
             created_at: "unix-ms:1".into(),
@@ -7492,6 +7528,8 @@ mod tests {
                 claim_expires_unix_ms: None,
                 provider_receipt_id: Some("harness-control-plane".into()),
                 failure_reason: None,
+                delivered_at: None,
+                acked_at: None,
                 updated_at: "unix-ms:2".into(),
             }],
             created_at: "unix-ms:2".into(),
@@ -7596,6 +7634,8 @@ mod tests {
                 claim_expires_unix_ms: None,
                 provider_receipt_id: Some("codex-turn-1".into()),
                 failure_reason: None,
+                delivered_at: None,
+                acked_at: None,
                 updated_at: "unix-ms:1".into(),
             }],
             created_at: "unix-ms:1".into(),
@@ -7630,6 +7670,8 @@ mod tests {
                 claim_expires_unix_ms: None,
                 provider_receipt_id: Some("harness-control-plane".into()),
                 failure_reason: None,
+                delivered_at: None,
+                acked_at: None,
                 updated_at: "unix-ms:2".into(),
             }],
             created_at: "unix-ms:2".into(),
@@ -7685,6 +7727,7 @@ mod tests {
             project_binding_id: None,
             host_surface: "codex-app".into(),
             host_thread_id: Some("thread-claim".into()),
+            host_lease_last_seen: None,
             host_actor: None,
             host_control_mode: Default::default(),
             objective: "claim exactly once".into(),
@@ -7738,6 +7781,8 @@ mod tests {
                 claim_expires_unix_ms: None,
                 provider_receipt_id: None,
                 failure_reason: None,
+                delivered_at: None,
+                acked_at: None,
                 updated_at: "unix-ms:2".into(),
             }],
             created_at: "unix-ms:2".into(),
@@ -7862,6 +7907,7 @@ mod tests {
             project_binding_id: None,
             host_surface: "codex-app".into(),
             host_thread_id: None,
+            host_lease_last_seen: None,
             host_actor: None,
             host_control_mode: Default::default(),
             objective: "fail orphaned mail".into(),
@@ -7913,6 +7959,8 @@ mod tests {
                 claim_expires_unix_ms: None,
                 provider_receipt_id: None,
                 failure_reason: None,
+                delivered_at: None,
+                acked_at: None,
                 updated_at: "unix-ms:2".into(),
             }],
             created_at: "unix-ms:2".into(),
@@ -8016,6 +8064,7 @@ mod tests {
             project_binding_id: None,
             host_surface: "codex-app".into(),
             host_thread_id: Some("thread-close".into()),
+            host_lease_last_seen: None,
             host_actor: None,
             host_control_mode: Default::default(),
             objective: "close once".into(),
@@ -8237,6 +8286,7 @@ mod tests {
             project_binding_id: None,
             host_surface: "codex-app".into(),
             host_thread_id: Some(format!("host-{name}")),
+            host_lease_last_seen: None,
             host_actor: None,
             host_control_mode: Default::default(),
             objective: "prove Works".into(),
@@ -10106,6 +10156,8 @@ mod tests {
                 claim_expires_unix_ms: None,
                 provider_receipt_id: None,
                 failure_reason: None,
+                delivered_at: None,
+                acked_at: None,
                 updated_at: "unix-ms:3".into(),
             }],
             created_at: "unix-ms:3".into(),
@@ -11519,6 +11571,7 @@ mod tests {
             project_binding_id: None,
             host_surface: "codex-app".into(),
             host_thread_id: None,
+            host_lease_last_seen: None,
             host_actor: None,
             host_control_mode: Default::default(),
             objective: "prove unbound graceful".into(),
