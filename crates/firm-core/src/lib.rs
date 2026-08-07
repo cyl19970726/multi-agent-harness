@@ -2193,6 +2193,42 @@ pub enum MemberRunStatus {
     Stopped,
 }
 
+/// Classification produced by a daemon-side progress probe of a member's
+/// provider-native session wire. The supervisor uses this signal to
+/// decide whether to raise a host attention, leave the member alone, or
+/// suggest a steer intervention.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberProbeClassification {
+    /// The member produced at least one edit (Write/Edit) in its recent turns.
+    Producing { edit_count: u32 },
+    /// High tool-fail rate (errors / non-zero exits on ≥ 50 % of tool calls)
+    /// AND zero edits in the probed window. The member is stuck.
+    Failing {
+        total_tool_calls: u32,
+        failed_tool_calls: u32,
+    },
+    /// Read/search/exec tool calls observed but no edits yet — the member is
+    /// still gathering context. Harmless, no intervention needed.
+    Investigating {
+        reads: u32,
+        execs: u32,
+        searches: u32,
+    },
+    /// At least 5 repeated identical tool invocations with zero edits.
+    /// The member is in a retry loop. After ≥ 3 consecutive WaitLoop
+    /// probes the daemon should emit a steer suggestion.
+    WaitLoop {
+        repeated_call: String,
+        repetition_count: u32,
+    },
+    /// The session wire has not been modified since the last probe.
+    /// The member is unresponsive (process may have died silently).
+    Dead {
+        last_modified_secs_ago: u64,
+    },
+}
+
 /// Durable coordination lifecycle of one MemberRun, separate from its
 /// provider runtime/work status. Close is reversible; Retire is permanent.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -4291,6 +4327,10 @@ pub enum HostAttentionKind {
     WorkDeliveryFailed,
     MemberStoppedWithOwnedReadyWork,
     MemberFailedWithOwnedReadyWork,
+    /// Daemon-internal probe classified the member as FAILING (high tool-fail
+    /// rate + zero edits). The Host must investigate — the daemon does NOT
+    /// auto-cancel on this signal.
+    MemberDistress,
 }
 
 /// Transport/intake state for one Host attention row.
