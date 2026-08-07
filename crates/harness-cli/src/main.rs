@@ -18,26 +18,27 @@ use harness_core::{
     AgentMemberStatus, AgentMessageRoute, AgentProviderConfig, AgentRuntime, AgentRuntimeHealth,
     AgentRuntimeStatus, AgentTeam, AgentTeamRun, AgentTeamStatus, DelegationRun,
     DurableAgentMember, DurableAgentMemberStatus, Evidence, ExecutionSpace, GitHubLink,
-    GitHubLinkKind, HostAttention, HostAttentionStatus, HostControlMode, LaunchMcp, LaunchPermission, LaunchSpec, MemberAction,
-    MemberActionStatus, MemberCoordinationStatus, MemberExecutionDriver, MemberRun,
-    MemberRunStatus, MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus,
-    MessageKind, MessageTerminalSource, Mission, MissionLogEntry, MissionLogEntryKind,
-    MissionStatus, NativeSessionAvailability, NativeSessionRef, OrdinaryMessageBoundary,
-    PendingInteraction, PendingInteractionKind, PendingInteractionOption, PendingInteractionRoute,
-    PendingInteractionStatus, ProjectContext, ProjectKind, ProviderAccountRef,
-    ProviderCapabilities, ProviderCapacityConfidence, ProviderCapacityEvidence,
-    ProviderCapacitySnapshot, ProviderCapacityState, ProviderCompatibilityStatus,
-    ProviderControlValue, ProviderEventFidelity, ProviderExecutionControls,
-    ProviderExecutionStatus, ProviderFeatureMode, ProviderIntegrationProfile,
-    ProviderInteractionMode, ProviderRuntimeContextFact, SenderKind, TeamActorKind, TeamActorRef,
-    TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus,
-    TeamMessage, TeamMessageDelivery, TeamMessageKind, TeamMessageResponseIntent,
-    TeamRecipientKind, TeamRecipientRef, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus,
-    TeamSupervisorLease, Wave, WaveExecutorKind, WaveStatus, Work, WorkCausationRef, WorkClaimMode,
-    WorkCommandContext, WorkDelivery, WorkDeliveryStatus, WorkPriority, WorkStatus,
-    WorkflowArtifactFile, WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch,
-    WorkflowPatchStatus, WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
-    WorkflowTerminalReason, EXECUTION_MODE_EXTERNAL_INTERACTIVE,
+    GitHubLinkKind, HostAttention, HostAttentionStatus, HostControlMode, LaunchMcp,
+    LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus, MemberCoordinationStatus,
+    MemberExecutionDriver, MemberRun, MemberRunStatus, MemberWorkspaceSnapshot, Message,
+    MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Mission,
+    MissionLogEntry, MissionLogEntryKind, MissionStatus, NativeSessionAvailability,
+    NativeSessionRef, OrdinaryMessageBoundary, PendingInteraction, PendingInteractionKind,
+    PendingInteractionOption, PendingInteractionRoute, PendingInteractionStatus, ProjectContext,
+    ProjectKind, ProviderAccountRef, ProviderCapabilities, ProviderCapacityConfidence,
+    ProviderCapacityEvidence, ProviderCapacitySnapshot, ProviderCapacityState,
+    ProviderCompatibilityStatus, ProviderControlValue, ProviderEventFidelity,
+    ProviderExecutionControls, ProviderExecutionStatus, ProviderFeatureMode,
+    ProviderIntegrationProfile, ProviderInteractionMode, ProviderRuntimeContextFact, SenderKind,
+    TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
+    TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind,
+    TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
+    TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Wave, WaveExecutorKind, WaveStatus,
+    Work, WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkDelivery, WorkDeliveryStatus,
+    WorkPriority, WorkStatus, WorkflowArtifactFile, WorkflowArtifactManifest,
+    WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
+    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
+    EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
     canonical_surface, HarnessStore, HostAttentionClaimResult, MessageDeliveryClaimResult,
@@ -13211,10 +13212,176 @@ fn github_pr_link(raw: &str) -> CliResult<GitHubLink> {
     })
 }
 
+/// Poll interval for the supervisor loop's GitHub CI refresh (issue #369
+/// Phase 2). Long enough that a team run does not hammer the GitHub API;
+/// the poll is best-effort and skipped entirely when `gh` is unavailable.
+const GITHUB_CI_POLL_INTERVAL: Duration = Duration::from_secs(60);
+
+/// What one `poll-github-ci` pass observed (issue #369 Phase 2).
+#[derive(Default)]
+pub(crate) struct GithubPollSummary {
+    pub works_checked: usize,
+    pub links_refreshed: usize,
+    pub auto_submitted: Vec<String>,
+    /// Work(s) whose linked PR merged but whose CI was `failure`; left for the
+    /// Host to decide instead of auto-submitting a red submission.
+    pub blocked_on_failure: Vec<String>,
+    pub gh_unavailable: bool,
+}
+
+impl GithubPollSummary {
+    pub fn is_noop(&self) -> bool {
+        self.links_refreshed == 0
+            && self.auto_submitted.is_empty()
+            && self.blocked_on_failure.is_empty()
+    }
+}
+
+/// Refresh the stored GitHub linkage snapshot for every Work on the run that
+/// carries a pull-request link (issue #369 Phase 2): the daemon calls this on
+/// `GITHUB_CI_POLL_INTERVAL`, and `team-run work poll-github-ci` triggers it
+/// on demand.
+///
+/// - CI status/`ci_url` are re-fetched from `gh pr checks` and persisted only
+///   when they changed, so a steady-state poll never churns Work versions.
+/// - When a linked PR is observed `MERGED` and the Work is `in_progress` (and
+///   not on red CI), the Work is auto-submitted to `review`; Host acceptance
+///   still moves it to `done`.
+/// - `gh` missing/unauthenticated is a soft skip: stored snapshots are kept.
+pub(crate) fn poll_team_run_github_linkages(
+    store: &HarnessStore,
+    run_id: &str,
+) -> CliResult<GithubPollSummary> {
+    let mut summary = GithubPollSummary::default();
+    if !gh_available() {
+        summary.gh_unavailable = true;
+        return Ok(summary);
+    }
+    let works = store.latest_works()?;
+    for work in works {
+        if work.team_run_id != run_id || work.is_terminal() {
+            continue;
+        }
+        let pr_links = work
+            .github_links
+            .iter()
+            .filter(|link| link.kind == GitHubLinkKind::PullRequest)
+            .cloned()
+            .collect::<Vec<_>>();
+        if pr_links.is_empty() {
+            continue;
+        }
+        summary.works_checked += 1;
+        let mut refreshed_links = work.github_links.clone();
+        let mut changed = false;
+        for link in &pr_links {
+            let raw = format!("{}/{}#{}", link.owner, link.repo, link.number);
+            let Ok(fresh) = github_pr_link(&raw) else {
+                // gh call failed (network/auth/unknown PR): keep the snapshot.
+                continue;
+            };
+            if let Some(stored) = refreshed_links.iter_mut().find(|candidate| {
+                candidate.kind == fresh.kind
+                    && candidate.owner == fresh.owner
+                    && candidate.repo == fresh.repo
+                    && candidate.number == fresh.number
+            }) {
+                if *stored != fresh {
+                    *stored = fresh.clone();
+                    changed = true;
+                    summary.links_refreshed += 1;
+                }
+            } else {
+                refreshed_links.push(fresh.clone());
+                changed = true;
+                summary.links_refreshed += 1;
+            }
+            // A merge observation may auto-submit even when the link fields
+            // themselves changed, so evaluate against the fresh link.
+            let merged_and_green = fresh.status.as_deref() == Some("MERGED")
+                && fresh.ci_status.as_deref() != Some("failure");
+            if merged_and_green && work.status == WorkStatus::InProgress {
+                let context = github_poll_host_context(run_id, &work.id);
+                let result = format!(
+                    "auto-submitted by GitHub merge observation: PR {}/{}#{} merged; CI: {}",
+                    fresh.owner,
+                    fresh.repo,
+                    fresh.number,
+                    fresh.ci_status.as_deref().unwrap_or("unknown")
+                );
+                store
+                    .submit_work_on_pr_merge(
+                        &work.id,
+                        work.version,
+                        &result,
+                        refreshed_links.clone(),
+                        context,
+                    )
+                    .map_err(|error| {
+                        CliError::Usage(format!("github poll auto-submit failed: {error}"))
+                    })?;
+                summary.auto_submitted.push(work.id.clone());
+                changed = false; // transition already persisted the snapshot
+                break;
+            }
+            if fresh.status.as_deref() == Some("MERGED")
+                && fresh.ci_status.as_deref() == Some("failure")
+                && work.status == WorkStatus::InProgress
+                && !summary.blocked_on_failure.contains(&work.id)
+            {
+                summary.blocked_on_failure.push(work.id.clone());
+            }
+        }
+        if changed {
+            let context = github_poll_host_context(run_id, &work.id);
+            store
+                .update_work_github_links(&work.id, work.version, refreshed_links, context)
+                .map_err(|error| {
+                    CliError::Usage(format!("github poll link update failed: {error}"))
+                })?;
+        }
+    }
+    Ok(summary)
+}
+
+/// `gh` binary presence check for the poll; auth is validated per call.
+fn gh_available() -> bool {
+    Command::new("gh")
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+/// Host-authority context for daemon/poll store mutations (issue #369
+/// Phase 2). The supervisor is a Service actor under Host authority; each
+/// operation gets its own generated idempotency key.
+fn github_poll_host_context(run_id: &str, work_id: &str) -> WorkCommandContext {
+    WorkCommandContext {
+        event_id: generated_id("github-poll-event"),
+        performed_by_actor: TeamActorRef {
+            kind: TeamActorKind::Service,
+            id: format!("github-ci-poll:{run_id}"),
+            display_name: None,
+            authn_source: Some("supervisor_daemon".to_string()),
+        },
+        authority_actor: Some(TeamActorRef {
+            kind: TeamActorKind::Host,
+            id: "host".to_string(),
+            display_name: None,
+            authn_source: Some("host_authority_supervisor".to_string()),
+        }),
+        causation_ref: None,
+        idempotency_key: generated_id(&format!("github-poll-{work_id}")),
+        created_at: now_string(),
+        duplicate_ok: false,
+    }
+}
+
 fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery",
+        "team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery|poll-github-ci",
     )?;
     match args[0].as_str() {
         "list" => {
@@ -13334,10 +13501,35 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 .into_iter()
                 .filter(|delivery| delivery.work_id == work_id)
                 .collect::<Vec<_>>();
+            // GitHub linkage display (issue #369 Phase 2): render each stored
+            // link, live-refreshing state/CI through `gh` when available.
+            // `source` distinguishes a fresh observation from the stored
+            // snapshot so a reader never mistakes stale data for live state.
+            let mut github_links = Vec::new();
+            for link in &work.github_links {
+                let raw = format!("{}/{}#{}", link.owner, link.repo, link.number);
+                let live = match link.kind {
+                    GitHubLinkKind::Issue => github_issue_link(&raw).ok(),
+                    GitHubLinkKind::PullRequest => github_pr_link(&raw).ok(),
+                };
+                let shown = live.as_ref().unwrap_or(link);
+                github_links.push(serde_json::json!({
+                    "kind": shown.kind,
+                    "owner": shown.owner,
+                    "repo": shown.repo,
+                    "number": shown.number,
+                    "url": shown.url,
+                    "status": shown.status,
+                    "ci_status": shown.ci_status,
+                    "ci_url": shown.ci_url,
+                    "source": if live.is_some() { "live" } else { "snapshot" },
+                }));
+            }
             print_json(&serde_json::json!({
                 "work": work,
                 "events": events,
                 "deliveries": deliveries,
+                "github_links": github_links,
             }))
         }
         "create" => {
@@ -13357,14 +13549,31 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 } else {
                     WorkClaimMode::TeamClaim
                 });
-            // `--github-issue owner/repo#N` links the Work to a GitHub issue and
-            // auto-populates artifact_refs with the issue URL (issue #369).
+            // `--github-issue owner/repo#N` links the Work to a GitHub issue;
+            // `--github-pr owner/repo#N` links it to a pull request (issue
+            // #369). Both auto-populate artifact_refs (object URL) and PR
+            // links also populate check_refs (CI checks URL). A create-time
+            // PR link is what lets the daemon poll CI on the open/in-progress
+            // Work and auto-submit when the PR merges (Phase 2).
             let mut github_links = Vec::new();
             let mut artifact_refs = Vec::new();
+            let mut check_refs = Vec::new();
             if let Some(raw) = value(args, "--github-issue") {
                 let link = github_issue_link(&raw)?;
                 if !artifact_refs.contains(&link.url) {
                     artifact_refs.push(link.url.clone());
+                }
+                github_links.push(link);
+            }
+            if let Some(raw) = value(args, "--github-pr") {
+                let link = github_pr_link(&raw)?;
+                if !artifact_refs.contains(&link.url) {
+                    artifact_refs.push(link.url.clone());
+                }
+                if let Some(ci_url) = &link.ci_url {
+                    if !check_refs.contains(ci_url) {
+                        check_refs.push(ci_url.clone());
+                    }
                 }
                 github_links.push(link);
             }
@@ -13392,7 +13601,7 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 result_summary: None,
                 blocker_reason: None,
                 artifact_refs,
-                check_refs: Vec::new(),
+                check_refs,
                 github_links,
                 version: 0,
                 created_at: String::new(),
@@ -13614,6 +13823,18 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 &format!("Work submitted by {member_run_id}: {result}"),
             )?;
             print_json(&work)
+        }
+        "poll-github-ci" => {
+            let team_run_id = required(args, "--team-run-id")?;
+            let summary = poll_team_run_github_linkages(store, &team_run_id)?;
+            print_json(&serde_json::json!({
+                "team_run_id": team_run_id,
+                "works_checked": summary.works_checked,
+                "links_refreshed": summary.links_refreshed,
+                "auto_submitted": summary.auto_submitted,
+                "blocked_on_failure": summary.blocked_on_failure,
+                "gh_unavailable": summary.gh_unavailable,
+            }))
         }
         "request-changes" => {
             let reason = required(args, "--reason")?;
@@ -16619,8 +16840,7 @@ fn wait_for_idle_member_wake(
                         // peer messages). Without this, a Host reply sent
                         // between rounds is silently lost when the wake
                         // reason is ActiveWorkContinuation.
-                        let pending =
-                            ledger.claim_round_triggering_messages_for(&member_row.id)?;
+                        let pending = ledger.claim_round_triggering_messages_for(&member_row.id)?;
                         if !pending.is_empty() {
                             backoff.reset();
                             member_row.status = MemberRunStatus::Running;
@@ -17162,6 +17382,9 @@ pub(crate) fn drive_prepared_team_run(
     let mut outcomes = Vec::new();
     let turn_leases = Arc::new(ActiveTurnLeasePool::new(max_concurrency));
     let mut lease_lost = false;
+    // Fire the GitHub CI poll on the first iteration, then every
+    // GITHUB_CI_POLL_INTERVAL (issue #369 Phase 2).
+    let mut last_github_ci_poll = Instant::now() - GITHUB_CI_POLL_INTERVAL;
     loop {
         if !lease_lost {
             if let Err(error) = ledger.require_supervisor_lease() {
@@ -17322,6 +17545,45 @@ pub(crate) fn drive_prepared_team_run(
         // runtime has ended explicitly (or a test-only idle bound retires it).
         if handles.is_empty() {
             break;
+        }
+        // GitHub linkage CI poll (issue #369 Phase 2): throttled, best-effort,
+        // never fatal to the supervisor loop.
+        if last_github_ci_poll.elapsed() >= GITHUB_CI_POLL_INTERVAL {
+            last_github_ci_poll = Instant::now();
+            match poll_team_run_github_linkages(&ledger.store, &run_id) {
+                Ok(summary) if !summary.is_noop() => {
+                    let mut detail = format!(
+                        "github linkage poll: {} link(s) refreshed",
+                        summary.links_refreshed
+                    );
+                    if !summary.auto_submitted.is_empty() {
+                        detail.push_str(&format!(
+                            "; auto-submitted {} on PR merge: {}",
+                            summary.auto_submitted.len(),
+                            summary.auto_submitted.join(", ")
+                        ));
+                    }
+                    if !summary.blocked_on_failure.is_empty() {
+                        detail.push_str(&format!(
+                            "; held {} on red CI: {}",
+                            summary.blocked_on_failure.len(),
+                            summary.blocked_on_failure.join(", ")
+                        ));
+                    }
+                    ledger.fold_event(
+                        TeamRunEventSourceKind::Host,
+                        None,
+                        "team_run",
+                        &run_id,
+                        "updated",
+                        &detail,
+                    )?;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    eprintln!("[supervisor] github linkage poll skipped: {error}");
+                }
+            }
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -35790,6 +36052,7 @@ work accept          --work-id <id> --expected-version <n>
                     [--idempotency-key <key>]
 work request-changes --work-id <id> --expected-version <n>
                     --reason <text> [--idempotency-key <key>]
+work poll-github-ci  --team-run-id <id>   # refresh CI snapshots + PR-merge auto-submit
 "#;
 
 const CHEATSHEET_MISSION: &str = r#"mission create        --title <text> --objective <text> [--id <id>]
@@ -35828,10 +36091,10 @@ work list --team-run-id <id> [--brief] [--since <cursor>]
 work show --work-id <id>
 work assign --work-id <id> --expected-version <n> --member-run-id <id> [--idempotency-key <key>]
 work submit --team-run-id <id> --member-run-id <id> --work-id <id>
-  --expected-version <n> --result <text> [--artifact-ref <url>] [--check-ref <url>]
-  [--github-pr owner/repo#N]
+  --expected-version <n> --result <text> [--github-pr owner/repo#N]
 work accept --work-id <id> --expected-version <n> [--idempotency-key <key>]
 work request-changes --work-id <id> --expected-version <n> --reason <text> [--idempotency-key <key>]
+work poll-github-ci --team-run-id <id>
 
 mission create --title <text> --objective <text> [--id <id>]
   [--context <text>] [--json]
@@ -40502,8 +40765,7 @@ package:com.tencent.mm
         );
 
         let mut future = team_member_provider_profile("kimi");
-        apply_provider_version(&mut future, Some("0.32.0",
-                "0.33.0".to_string()));
+        apply_provider_version(&mut future, Some("0.32.0".to_string()));
         // 0.32.0 is adapter-reviewed for prompt delivery/resume/mail, but
         // cancel and native goal mode stay unclaimed (fail-closed per
         // capability, not inherited from 0.31.x).
@@ -40515,7 +40777,9 @@ package:com.tencent.mm
         );
 
         let mut unreviewed = team_member_provider_profile("kimi");
-        apply_provider_version(&mut unreviewed, Some("0.33.0".to_string()));
+        // 0.34.0 is ahead of the reviewed adapter list (0.27.0..0.33.0) and
+        // must fail closed to ReviewRequired rather than inherit claims.
+        apply_provider_version(&mut unreviewed, Some("0.34.0".to_string()));
         assert_eq!(
             unreviewed.compatibility_status,
             ProviderCompatibilityStatus::ReviewRequired
@@ -42709,6 +42973,7 @@ package:com.tencent.mm
                     blocker_reason: None,
                     artifact_refs: Vec::new(),
                     check_refs: Vec::new(),
+                    github_links: Vec::new(),
                     version: 0,
                     created_at: String::new(),
                     updated_at: String::new(),
