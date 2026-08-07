@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-firm-core = { path = "../firm-core" }
+harness_core = { package = "firm-core", path = "../firm-core" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

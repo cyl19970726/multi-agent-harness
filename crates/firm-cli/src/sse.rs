@@ -9,7 +9,7 @@ use std::thread;
 use std::time::Duration;
 
 use crossbeam::channel::{bounded, Receiver, Sender};
-use firm_core::{
+use harness_core::{
     AgentEvent, AgentMessageRoute, AgentTeamRun, MemberAction, MemberRun, Message, Mission,
     PendingInteraction, TeamMemberCloseRequest, TeamMessage, TeamRunEvent, TeamSupervisorLease,
     Wave, WorkflowRun, WorkflowStep,
@@ -1040,7 +1040,7 @@ mod tests {
     use std::io::Write as _;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use firm_core::{
+    use harness_core::{
         MemberActionStatus, Message, MessageDeliveryStatus, MessageKind, SenderKind,
         WorkflowRunStatus, WorkflowStepStatus,
     };

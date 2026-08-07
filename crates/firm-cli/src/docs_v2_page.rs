@@ -7,13 +7,13 @@
 
 use serde_json::json;
 
-use firm_core::company_os::{
+use harness_core::company_os::{
     ActorRef, ActorType, Block as LegacyBlock, BlockKind as LegacyBlockKind, Document,
     DocumentKind, LifecycleStatus,
 };
-use firm_core::docs_v2::{BlockKindV2, BlockV2, ChangeMutation, ChangeMutationOp};
-use firm_store::docs_v2::PageWriteRequest;
-use firm_store::{HarnessStore, StoreError};
+use harness_core::docs_v2::{BlockKindV2, BlockV2, ChangeMutation, ChangeMutationOp};
+use harness_store::docs_v2::PageWriteRequest;
+use harness_store::{HarnessStore, StoreError};
 
 use crate::{
     docs_actor_kind, generated_id, now_string, print_json, required, value, CliError, CliResult,
@@ -996,7 +996,7 @@ fn page_blocks_with_legacy_fallback(
 fn resolve_page(
     store: &HarnessStore,
     document_id: &str,
-) -> CliResult<firm_store::docs_v2::DocumentPageState> {
+) -> CliResult<harness_store::docs_v2::DocumentPageState> {
     store
         .read_document_page(document_id)
         .map_err(conflict_to_usage)?
@@ -1040,7 +1040,7 @@ pub fn read_page_value(
     let (document, blocks, revision): (
         Document,
         Vec<BlockV2>,
-        Option<firm_core::docs_v2::DocumentRevision>,
+        Option<harness_core::docs_v2::DocumentRevision>,
     ) = match options.revision {
         Some(number) => {
             let revision = store
@@ -1710,7 +1710,7 @@ pub fn update_page_meta_value(
     document_id: &str,
     new_title: Option<&str>,
     new_parent: Option<Option<String>>,
-    new_lifecycle: Option<firm_core::company_os::LifecycleStatus>,
+    new_lifecycle: Option<harness_core::company_os::LifecycleStatus>,
     expected_revision: Option<u64>,
     actor: ActorRef,
     summary: &str,
@@ -1930,7 +1930,7 @@ fn page_archive_command(store: &HarnessStore, args: &[String]) -> CliResult<()> 
         &document_id,
         None,
         None,
-        Some(firm_core::company_os::LifecycleStatus::Archived),
+        Some(harness_core::company_os::LifecycleStatus::Archived),
         parse_expected_revision(args, false)?,
         actor,
         &summary,
