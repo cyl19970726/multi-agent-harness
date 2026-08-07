@@ -319,7 +319,7 @@ pub fn snapshot_with_execution(
         .unwrap_or("unknown")
         .to_string();
     projection["source"] = json!({
-        "kind": "firm_store",
+        "kind": "harness_store",
         "authoritative": true,
         "project_id": project_id,
         "store_root": store.root().to_string_lossy(),
@@ -1627,6 +1627,7 @@ mod projection_tests {
                         check_refs: Vec::new(),
                         github_links: Vec::new(),
                         gates: Vec::new(),
+                        workspace: None,
                         version: 0,
                         created_at: String::new(),
                         updated_at: String::new(),

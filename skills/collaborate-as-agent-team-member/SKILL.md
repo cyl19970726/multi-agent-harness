@@ -52,6 +52,7 @@ Your Work comes with a mini mental model. Parse it in one pass:
 Work context structure (written by Lead):
 ┌─ What ──────────┐  ← The problem, in one sentence
 ├─ Mental Model ──┤  ← States, invariants, data flow. Study this.
+├─ Workspace ─────┤  ← Your cwd is already set up. Work here.
 ├─ Boundary ──────┤  ← Paths to touch / NEVER touch. Respect this.
 ├─ Gates ─────────┤  ← Verification gates that must pass. Deliver what
 │                    each gate needs (PR merge, artifacts, checks).

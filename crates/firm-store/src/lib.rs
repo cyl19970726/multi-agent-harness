@@ -1,4 +1,3 @@
-use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
@@ -21,7 +20,7 @@ use firm_core::{
     WorkItemStatus, WorkOperation, WorkStatus, WorkflowArtifactManifest, WorkflowPatch,
     WorkflowRun, WorkflowStep,
 };
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
 
 mod company_os;
@@ -96,41 +95,6 @@ pub enum HostAttentionClaimResult {
     NotActionable,
 }
 
-/// Provider version admission policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderPolicy {
-    /// Unknown provider versions are blocked (current behavior).
-    Strict,
-    /// Unknown provider versions are warned but allowed to proceed.
-    Advisory,
-}
-
-impl Default for ProviderPolicy {
-    fn default() -> Self {
-        Self::Strict
-    }
-}
-
-/// Runtime-persisted settings stored as `settings.json` in the store root.
-/// Survives store upgrades — unknown fields are silently ignored on read and
-/// preserved on write.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct HarnessSettings {
-    /// Admitted provider versions keyed by provider name (e.g. "kimi" → ["0.34.0"]).
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub admitted_provider_versions: BTreeMap<String, BTreeSet<String>>,
-    /// Provider compatibility policy.
-    #[serde(default, skip_serializing_if = "ProviderPolicy::is_strict")]
-    pub provider_policy: ProviderPolicy,
-}
-
-impl ProviderPolicy {
-    fn is_strict(&self) -> bool {
-        matches!(self, Self::Strict)
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct HarnessStore {
     root: PathBuf,
@@ -151,68 +115,6 @@ impl HarnessStore {
         fs::create_dir_all(self.root.join("runtimes"))?;
         Ok(())
     }
-
-    // ── Settings ──────────────────────────────────────────────────────
-
-    fn settings_path(&self) -> PathBuf {
-        self.root.join("settings.json")
-    }
-
-    /// Load [`HarnessSettings`] from the store root. Returns defaults when
-    /// the file does not exist (first boot / fresh store).
-    pub fn load_settings(&self) -> StoreResult<HarnessSettings> {
-        let path = self.settings_path();
-        if !path.exists() {
-            return Ok(HarnessSettings::default());
-        }
-        let raw = fs::read_to_string(&path)?;
-        Ok(serde_json::from_str(&raw).unwrap_or_default())
-    }
-
-    fn save_settings(&self, settings: &HarnessSettings) -> StoreResult<()> {
-        let raw = serde_json::to_string_pretty(settings)?;
-        fs::write(self.settings_path(), raw)?;
-        Ok(())
-    }
-
-    /// Admit a provider version into the runtime-reviewed list so future
-    /// compatibility gates treat it as [`ProviderCompatibilityStatus::Current`].
-    ///
-    /// Idempotent — duplicate admissions are silently accepted.
-    pub fn admit_provider_version(
-        &self,
-        provider: &str,
-        version: &str,
-    ) -> StoreResult<()> {
-        let mut settings = self.load_settings()?;
-        settings
-            .admitted_provider_versions
-            .entry(provider.to_string())
-            .or_default()
-            .insert(version.to_string());
-        self.save_settings(&settings)
-    }
-
-    /// Return all admitted provider versions.
-    pub fn list_admitted_versions(&self) -> StoreResult<BTreeMap<String, BTreeSet<String>>> {
-        let settings = self.load_settings()?;
-        Ok(settings.admitted_provider_versions)
-    }
-
-    /// Return the current [`ProviderPolicy`].
-    pub fn get_provider_policy(&self) -> StoreResult<ProviderPolicy> {
-        let settings = self.load_settings()?;
-        Ok(settings.provider_policy)
-    }
-
-    /// Set the provider compatibility policy.
-    pub fn set_provider_policy(&self, policy: ProviderPolicy) -> StoreResult<()> {
-        let mut settings = self.load_settings()?;
-        settings.provider_policy = policy;
-        self.save_settings(&settings)
-    }
-
-    // ── JSONL ledger helpers ──────────────────────────────────────────
 
     pub fn append_mission(&self, value: &Mission) -> StoreResult<()> {
         self.append_jsonl("missions.jsonl", value)
@@ -3617,29 +3519,6 @@ impl HarnessStore {
                 value.id
             )));
         }
-        // Dedup: reject same (from, to-set, correlation, body) for this run.
-        // Skip Handoff messages — the handoff fence below handles that case.
-        if value.kind != TeamMessageKind::Handoff
-            && messages.values().any(|existing| {
-                existing.team_run_id == value.team_run_id
-                    && existing.from_member_id == value.from_member_id
-                    && {
-                        let mut existing_to: Vec<&str> =
-                            existing.to_member_ids.iter().map(|s| s.as_str()).collect();
-                        existing_to.sort();
-                        let mut value_to: Vec<&str> =
-                            value.to_member_ids.iter().map(|s| s.as_str()).collect();
-                        value_to.sort();
-                        existing_to == value_to
-                    }
-                    && existing.correlation_id == value.correlation_id
-                    && existing.body == value.body
-            })
-        {
-            return Err(StoreError::Conflict(
-                "duplicate team message: same from, to, and correlation_id".to_string(),
-            ));
-        }
         if let Some(work_id) = value.work_id.as_deref() {
             let work = self
                 .latest_works_unlocked()?
@@ -4127,7 +4006,6 @@ impl HarnessStore {
             }
         }
         delivery.status = TeamDeliveryStatus::Acknowledged;
-        delivery.acked_at = Some(updated_at.to_string());
         delivery.updated_at = updated_at.to_string();
         self.append_jsonl_unlocked("team_messages.jsonl", &message)?;
         Ok(message)
@@ -6055,7 +5933,6 @@ mod tests {
                         project_binding_id: Some("project-concurrent".into()),
                         host_surface: "test".into(),
                         host_thread_id: None,
-                        host_lease_last_seen: None,
                         host_actor: None,
                         host_control_mode: Default::default(),
                         objective: "attempt".into(),
@@ -6613,7 +6490,6 @@ mod tests {
             project_binding_id: None,
             host_surface: "codex-app".into(),
             host_thread_id: host_thread_id.map(str::to_string),
-            host_lease_last_seen: None,
             host_actor: None,
             host_control_mode: Default::default(),
             objective: "prove exact Host attention".into(),
@@ -6683,6 +6559,7 @@ mod tests {
                     check_refs: Vec::new(),
                     github_links: Vec::new(),
                     gates: Vec::new(),
+                    workspace: None,
                     version: 0,
                     created_at: String::new(),
                     updated_at: String::new(),
@@ -7012,7 +6889,6 @@ mod tests {
                 project_binding_id: None,
                 host_surface: "codex-app".into(),
                 host_thread_id: None,
-                host_lease_last_seen: None,
                 host_actor: None,
                 host_control_mode: Default::default(),
                 objective: "lease test".into(),
@@ -7185,7 +7061,6 @@ mod tests {
             project_binding_id: Some("project-example".into()),
             host_surface: "codex-app".into(),
             host_thread_id: Some("thread-1".into()),
-            host_lease_last_seen: None,
             host_actor: None,
             host_control_mode: Default::default(),
             objective: "Ship the feature".into(),
@@ -7323,8 +7198,6 @@ mod tests {
                 claim_expires_unix_ms: None,
                 provider_receipt_id: Some("test-receipt".into()),
                 failure_reason: None,
-                delivered_at: None,
-                acked_at: None,
                 updated_at: "unix-ms:2".into(),
             }],
             created_at: "unix-ms:1".into(),
@@ -7386,8 +7259,6 @@ mod tests {
                 claim_expires_unix_ms: None,
                 provider_receipt_id: None,
                 failure_reason: None,
-                delivered_at: None,
-                acked_at: None,
                 updated_at: "unix-ms:1".into(),
             }],
             created_at: "unix-ms:1".into(),
@@ -7422,8 +7293,6 @@ mod tests {
                 claim_expires_unix_ms: None,
                 provider_receipt_id: Some("harness-control-plane".into()),
                 failure_reason: None,
-                delivered_at: None,
-                acked_at: None,
                 updated_at: "unix-ms:2".into(),
             }],
             created_at: "unix-ms:2".into(),
@@ -7491,8 +7360,6 @@ mod tests {
                 claim_expires_unix_ms: None,
                 provider_receipt_id: None,
                 failure_reason: None,
-                delivered_at: None,
-                acked_at: None,
                 updated_at: "unix-ms:1".into(),
             }],
             created_at: "unix-ms:1".into(),
@@ -7528,8 +7395,6 @@ mod tests {
                 claim_expires_unix_ms: None,
                 provider_receipt_id: Some("harness-control-plane".into()),
                 failure_reason: None,
-                delivered_at: None,
-                acked_at: None,
                 updated_at: "unix-ms:2".into(),
             }],
             created_at: "unix-ms:2".into(),
@@ -7634,8 +7499,6 @@ mod tests {
                 claim_expires_unix_ms: None,
                 provider_receipt_id: Some("codex-turn-1".into()),
                 failure_reason: None,
-                delivered_at: None,
-                acked_at: None,
                 updated_at: "unix-ms:1".into(),
             }],
             created_at: "unix-ms:1".into(),
@@ -7670,8 +7533,6 @@ mod tests {
                 claim_expires_unix_ms: None,
                 provider_receipt_id: Some("harness-control-plane".into()),
                 failure_reason: None,
-                delivered_at: None,
-                acked_at: None,
                 updated_at: "unix-ms:2".into(),
             }],
             created_at: "unix-ms:2".into(),
@@ -7727,7 +7588,6 @@ mod tests {
             project_binding_id: None,
             host_surface: "codex-app".into(),
             host_thread_id: Some("thread-claim".into()),
-            host_lease_last_seen: None,
             host_actor: None,
             host_control_mode: Default::default(),
             objective: "claim exactly once".into(),
@@ -7781,8 +7641,6 @@ mod tests {
                 claim_expires_unix_ms: None,
                 provider_receipt_id: None,
                 failure_reason: None,
-                delivered_at: None,
-                acked_at: None,
                 updated_at: "unix-ms:2".into(),
             }],
             created_at: "unix-ms:2".into(),
@@ -7907,7 +7765,6 @@ mod tests {
             project_binding_id: None,
             host_surface: "codex-app".into(),
             host_thread_id: None,
-            host_lease_last_seen: None,
             host_actor: None,
             host_control_mode: Default::default(),
             objective: "fail orphaned mail".into(),
@@ -7959,8 +7816,6 @@ mod tests {
                 claim_expires_unix_ms: None,
                 provider_receipt_id: None,
                 failure_reason: None,
-                delivered_at: None,
-                acked_at: None,
                 updated_at: "unix-ms:2".into(),
             }],
             created_at: "unix-ms:2".into(),
@@ -8064,7 +7919,6 @@ mod tests {
             project_binding_id: None,
             host_surface: "codex-app".into(),
             host_thread_id: Some("thread-close".into()),
-            host_lease_last_seen: None,
             host_actor: None,
             host_control_mode: Default::default(),
             objective: "close once".into(),
@@ -8286,7 +8140,6 @@ mod tests {
             project_binding_id: None,
             host_surface: "codex-app".into(),
             host_thread_id: Some(format!("host-{name}")),
-            host_lease_last_seen: None,
             host_actor: None,
             host_control_mode: Default::default(),
             objective: "prove Works".into(),
@@ -8396,6 +8249,7 @@ mod tests {
             check_refs: Vec::new(),
             github_links: Vec::new(),
             gates: Vec::new(),
+            workspace: None,
             version: 0,
             created_at: String::new(),
             updated_at: String::new(),
@@ -10156,8 +10010,6 @@ mod tests {
                 claim_expires_unix_ms: None,
                 provider_receipt_id: None,
                 failure_reason: None,
-                delivered_at: None,
-                acked_at: None,
                 updated_at: "unix-ms:3".into(),
             }],
             created_at: "unix-ms:3".into(),
@@ -11571,7 +11423,6 @@ mod tests {
             project_binding_id: None,
             host_surface: "codex-app".into(),
             host_thread_id: None,
-            host_lease_last_seen: None,
             host_actor: None,
             host_control_mode: Default::default(),
             objective: "prove unbound graceful".into(),

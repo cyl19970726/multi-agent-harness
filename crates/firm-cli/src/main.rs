@@ -12,15 +12,15 @@ use std::sync::mpsc::{sync_channel, Receiver as ControlReceiver, SyncSender};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use firm_core::{
+use harness_core::{
     build_launch_spec, content_hash_hex16, resolve_team_host_authority,
     validate_agent_team_topology, validate_host_authority_cutover, AgentEvent, AgentMember,
     AgentMemberStatus, AgentMessageRoute, AgentProviderConfig, AgentRuntime, AgentRuntimeHealth,
     AgentRuntimeStatus, AgentTeam, AgentTeamRun, AgentTeamStatus, DelegationRun,
     DurableAgentMember, DurableAgentMemberStatus, Evidence, ExecutionSpace, GateEngine, GateResult,
     GateSpec, GateVerdict, GitHubLink,
-    GitHubLinkKind, HostAttention, HostAttentionKind, HostAttentionStatus, HostControlMode,
-    HostDispatchConfig, LaunchMcp,
+    GitHubLinkKind, HostAttention, HostAttentionStatus, HostControlMode, HostDispatchConfig,
+    LaunchMcp,
     LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus, MemberCoordinationStatus,
     MemberExecutionDriver, MemberRun, MemberRunStatus, MemberWorkspaceSnapshot, Message,
     MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Mission,
@@ -37,14 +37,14 @@ use firm_core::{
     TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
     TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Wave, WaveExecutorKind, WaveStatus,
     Work, WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkDelivery, WorkDeliveryStatus,
-    WorkPriority, WorkStatus, WorkflowArtifactFile, WorkflowArtifactManifest,
+    WorkPriority, WorkStatus, WorkWorkspace, WorkWorkspaceKind, WorkflowArtifactFile, WorkflowArtifactManifest,
     WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
     WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
     EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
-use firm_store::{
+use harness_store::{
     canonical_surface, HarnessStore, HostAttentionClaimResult, MessageDeliveryClaimResult,
-    ProviderPolicy, StoreError, TeamMessageDeliveryClaimResult, WorkDeliveryClaimResult,
+    StoreError, TeamMessageDeliveryClaimResult, WorkDeliveryClaimResult,
 };
 use thiserror::Error;
 
@@ -65,8 +65,8 @@ mod resident_daemon;
 mod sse;
 #[cfg(unix)]
 mod supervisor_daemon;
-mod host_dispatcher;
 mod supervisor_wake;
+mod host_dispatcher;
 mod workflow;
 
 #[derive(Debug, Error)]
@@ -76,7 +76,7 @@ enum CliError {
     #[error("{0}")]
     SupervisorLeaseLost(String),
     #[error("store error: {0}")]
-    Store(#[from] firm_store::StoreError),
+    Store(#[from] harness_store::StoreError),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("json error: {0}")]
@@ -171,7 +171,7 @@ enum StoreSource {
 pub(crate) struct ResolvedStore {
     root: PathBuf,
     source: StoreSource,
-    pub(crate) context: Option<firm_core::ProjectContext>,
+    pub(crate) context: Option<harness_core::ProjectContext>,
     pub(crate) company_context: Option<company_store::CompanyContext>,
     pub(crate) execution_space_context: Option<ExecutionSpace>,
 }
@@ -232,7 +232,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
         }
     }
 
-    let firm_home = match project::firm_home() {
+    let harness_home = match project::harness_home() {
         Ok(h) => h,
         // No HOME: fall back to the historical `./.harness` so we never panic.
         Err(_) => {
@@ -255,7 +255,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             },
         };
         if let Some(selector) = company_selector {
-            let ctx = company_store::context_for_id(&firm_home, &selector)
+            let ctx = company_store::context_for_id(&harness_home, &selector)
                 .map_err(company_store_err)?
                 .ok_or_else(|| CliError::Usage(format!("unknown company: {selector}")))?;
             return Ok(ResolvedStore {
@@ -267,9 +267,9 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             });
         }
         if let Some(id) =
-            company_store::active_company_id(&firm_home).map_err(company_store_err)?
+            company_store::active_company_id(&harness_home).map_err(company_store_err)?
         {
-            let ctx = company_store::context_for_id(&firm_home, &id)
+            let ctx = company_store::context_for_id(&harness_home, &id)
                 .map_err(company_store_err)?
                 .ok_or_else(|| CliError::Usage(format!("active company is unknown: {id}")))?;
             return Ok(ResolvedStore {
@@ -293,7 +293,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
     };
     let explicit_project_context = match project_selector.as_deref() {
         Some(selector) => Some(
-            resolve_project_selector(&firm_home, selector)
+            resolve_project_selector(&harness_home, selector)
                 .ok_or_else(|| CliError::Usage(format!("unknown project binding: {selector}")))?,
         ),
         None => None,
@@ -305,9 +305,9 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
     if command == Some("company") {
         let (context, source) = match explicit_project_context {
             Some(context) => (context, selector_source),
-            None => match project::active_project_id(&firm_home).map_err(project_err)? {
+            None => match project::active_project_id(&harness_home).map_err(project_err)? {
                 Some(id) => (
-                    project::context_for_id(&firm_home, &id)
+                    project::context_for_id(&harness_home, &id)
                         .map_err(project_err)?
                         .ok_or_else(|| {
                             CliError::Usage(format!("active project binding is unknown: {id}"))
@@ -315,7 +315,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
                     StoreSource::RegistryCurrent,
                 ),
                 None => (
-                    project::global_context(&firm_home).map_err(project_err)?,
+                    project::global_context(&harness_home).map_err(project_err)?,
                     StoreSource::GlobalDefault,
                 ),
             },
@@ -339,24 +339,24 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
         {
             Some(value) => (Some(value), StoreSource::SpaceEnv),
             None => (
-                execution_space::active_space_id(&firm_home).map_err(execution_space_err)?,
+                execution_space::active_space_id(&harness_home).map_err(execution_space_err)?,
                 StoreSource::SpaceCurrent,
             ),
         },
     };
     if let Some(space_id) = space_selector {
-        let space = execution_space::context_for_id(&firm_home, &space_id)
+        let space = execution_space::context_for_id(&harness_home, &space_id)
             .map_err(execution_space_err)?
             .ok_or_else(|| CliError::Usage(format!("unknown execution space: {space_id}")))?;
         let project_context = match explicit_project_context {
             Some(context) => Some(context),
             None => match space.default_project_binding_id.as_deref() {
                 Some(binding_id) => {
-                    project::context_for_id(&firm_home, binding_id).map_err(project_err)?
+                    project::context_for_id(&harness_home, binding_id).map_err(project_err)?
                 }
-                None => project::active_project_id(&firm_home)
+                None => project::active_project_id(&harness_home)
                     .map_err(project_err)?
-                    .and_then(|id| project::context_for_id(&firm_home, &id).ok().flatten()),
+                    .and_then(|id| project::context_for_id(&harness_home, &id).ok().flatten()),
             },
         };
         return Ok(ResolvedStore {
@@ -401,7 +401,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             // convergence holds for cwds inside the home tree).
             let found = discover_harness_from(&cwd).filter(|p| {
                 project::canonicalize_best_effort(p)
-                    != project::canonicalize_best_effort(&firm_home)
+                    != project::canonicalize_best_effort(&harness_home)
             });
             if let Some(found) = found {
                 match project::read_migrated_marker(&found) {
@@ -413,7 +413,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
                             target.display()
                         );
                         let context = project::read_metadata(&target).ok().flatten().map(|meta| {
-                            firm_core::ProjectContext {
+                            harness_core::ProjectContext {
                                 id: meta.project_id,
                                 project_root: meta.canonical_path,
                                 store_root: target.clone(),
@@ -467,8 +467,8 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
     // 6. Registry current project (the cwd-independent convergence point) — the
     // resolver for project roots with NO repo-local `.harness` (e.g. a centrally
     // `init`ed project) and the cross-cwd convergence point (issue #89).
-    if let Ok(Some(id)) = project::active_project_id(&firm_home) {
-        if let Ok(Some(ctx)) = project::context_for_id(&firm_home, &id) {
+    if let Ok(Some(id)) = project::active_project_id(&harness_home) {
+        if let Ok(Some(ctx)) = project::context_for_id(&harness_home, &id) {
             return Ok(ResolvedStore {
                 root: ctx.store_root.clone(),
                 source: StoreSource::RegistryCurrent,
@@ -480,7 +480,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
     }
 
     // 7. Reserved GLOBAL project, auto-created on first use.
-    if let Ok(ctx) = project::global_context(&firm_home) {
+    if let Ok(ctx) = project::global_context(&harness_home) {
         return Ok(ResolvedStore {
             root: ctx.store_root.clone(),
             source: StoreSource::GlobalDefault,
@@ -504,11 +504,11 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
 /// a path to a project root. Returns `None` if it cannot be resolved (caller then
 /// continues down the precedence chain).
 fn resolve_project_selector(
-    firm_home: &Path,
+    harness_home: &Path,
     selector: &str,
-) -> Option<firm_core::ProjectContext> {
+) -> Option<harness_core::ProjectContext> {
     // First: treat as a known id (registry / metadata / reserved `_global`).
-    if let Ok(Some(ctx)) = project::context_for_id(firm_home, selector) {
+    if let Ok(Some(ctx)) = project::context_for_id(harness_home, selector) {
         return Some(ctx);
     }
     // Otherwise: treat as a path to a project root and derive its identity.
@@ -517,14 +517,14 @@ fn resolve_project_selector(
         let canonical = project::canonicalize_best_effort(candidate);
         // Prefer a registered entry pinned to this canonical path (keeps a pinned
         // store_root even if path→id derivation later changes).
-        if let Ok(registry) = project::ProjectRegistry::load(firm_home) {
+        if let Ok(registry) = project::ProjectRegistry::load(harness_home) {
             if let Some(entry) = registry.find_by_path(&canonical) {
-                if let Ok(Some(ctx)) = project::context_for_id(firm_home, &entry.id) {
+                if let Ok(Some(ctx)) = project::context_for_id(harness_home, &entry.id) {
                     return Some(ctx);
                 }
             }
         }
-        if let Ok(ctx) = project::context_for_root(candidate, firm_home) {
+        if let Ok(ctx) = project::context_for_root(candidate, harness_home) {
             return Some(ctx);
         }
     }
@@ -634,7 +634,7 @@ fn init_routed(store: &HarnessStore, resolved: &ResolvedStore) -> CliResult<()> 
         return Ok(());
     }
 
-    let firm_home = project::firm_home().map_err(project_err)?;
+    let harness_home = project::harness_home().map_err(project_err)?;
     // An explicit `--project`/`HARNESS_PROJECT` selector pins the root via the
     // resolved context; otherwise `init` materializes the CURRENT directory as a
     // project (never the GLOBAL default, never an ancestor's `.harness`).
@@ -646,7 +646,7 @@ fn init_routed(store: &HarnessStore, resolved: &ResolvedStore) -> CliResult<()> 
             .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
         _ => env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
     };
-    let ctx = project::register_and_activate(&firm_home, &project_root, &now_string())
+    let ctx = project::register_and_activate(&harness_home, &project_root, &now_string())
         .map_err(project_err)?;
     let registered = HarnessStore::new(ctx.store_root.clone());
     registered.init()?;
@@ -654,13 +654,13 @@ fn init_routed(store: &HarnessStore, resolved: &ResolvedStore) -> CliResult<()> 
         .iter()
         .map(|ledger| count_non_empty_lines(&ctx.store_root.join(ledger)).unwrap_or(0))
         .sum::<u64>();
-    if execution_space::active_space_id(&firm_home)
+    if execution_space::active_space_id(&harness_home)
         .map_err(execution_space_err)?
         .is_none()
         && existing_execution_rows == 0
     {
         let space = execution_space::register_and_activate(
-            &firm_home,
+            &harness_home,
             &ctx.id,
             &format!("{} execution", ctx.id),
             Some(ctx.id.clone()),
@@ -750,14 +750,14 @@ fn execution_space_command(args: &[String]) -> CliResult<()> {
         args,
         "space init|list|current|switch|show|migrate-from-project",
     )?;
-    let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
+    let harness_home = execution_space::harness_home().map_err(execution_space_err)?;
     match args[0].as_str() {
         "init" => {
             let id = required(args, "--id")?;
             let name = value(args, "--name").unwrap_or_else(|| id.clone());
             let default_project_binding_id = value(args, "--project-binding");
             if let Some(binding) = default_project_binding_id.as_deref() {
-                if project::binding_for_id(&firm_home, binding)
+                if project::binding_for_id(&harness_home, binding)
                     .map_err(project_err)?
                     .is_none()
                 {
@@ -768,7 +768,7 @@ fn execution_space_command(args: &[String]) -> CliResult<()> {
             }
             let company_id = value(args, "--company");
             if let Some(company) = company_id.as_deref() {
-                if company_store::context_for_id(&firm_home, company)
+                if company_store::context_for_id(&harness_home, company)
                     .map_err(company_store_err)?
                     .is_none()
                 {
@@ -776,7 +776,7 @@ fn execution_space_command(args: &[String]) -> CliResult<()> {
                 }
             }
             let context = execution_space::register_and_activate(
-                &firm_home,
+                &harness_home,
                 &id,
                 &name,
                 default_project_binding_id,
@@ -788,11 +788,11 @@ fn execution_space_command(args: &[String]) -> CliResult<()> {
             print_json(&execution_space_json(&context, &context.id))
         }
         "list" => {
-            let current = execution_space::active_space_id(&firm_home)
+            let current = execution_space::active_space_id(&harness_home)
                 .map_err(execution_space_err)?
                 .unwrap_or_default();
             let spaces =
-                execution_space::list_spaces(&firm_home).map_err(execution_space_err)?;
+                execution_space::list_spaces(&harness_home).map_err(execution_space_err)?;
             print_json(
                 &spaces
                     .iter()
@@ -802,9 +802,9 @@ fn execution_space_command(args: &[String]) -> CliResult<()> {
         }
         "current" => {
             let current =
-                execution_space::active_space_id(&firm_home).map_err(execution_space_err)?;
+                execution_space::active_space_id(&harness_home).map_err(execution_space_err)?;
             match current {
-                Some(id) => match execution_space::context_for_id(&firm_home, &id)
+                Some(id) => match execution_space::context_for_id(&harness_home, &id)
                     .map_err(execution_space_err)?
                 {
                     Some(space) => print_json(&execution_space_json(&space, &id)),
@@ -821,7 +821,7 @@ fn execution_space_command(args: &[String]) -> CliResult<()> {
                 .skip(1)
                 .find(|value| !value.starts_with("--"))
                 .ok_or_else(|| CliError::Usage("usage: harness space switch <id>".into()))?;
-            let space = execution_space::switch_current_space(&firm_home, id, &now_string())
+            let space = execution_space::switch_current_space(&harness_home, id, &now_string())
                 .map_err(execution_space_err)?;
             print_json(&execution_space_json(&space, &space.id))
         }
@@ -831,17 +831,17 @@ fn execution_space_command(args: &[String]) -> CliResult<()> {
                 .skip(1)
                 .find(|value| !value.starts_with("--"))
                 .cloned()
-                .or(execution_space::active_space_id(&firm_home).map_err(execution_space_err)?)
+                .or(execution_space::active_space_id(&harness_home).map_err(execution_space_err)?)
                 .ok_or_else(|| CliError::Usage("no active execution space".into()))?;
-            let current = execution_space::active_space_id(&firm_home)
+            let current = execution_space::active_space_id(&harness_home)
                 .map_err(execution_space_err)?
                 .unwrap_or_default();
-            let space = execution_space::context_for_id(&firm_home, &selector)
+            let space = execution_space::context_for_id(&harness_home, &selector)
                 .map_err(execution_space_err)?
                 .ok_or_else(|| CliError::Usage(format!("unknown execution space: {selector}")))?;
             print_json(&execution_space_json(&space, &current))
         }
-        "migrate-from-project" => execution_space_migrate_from_project(&firm_home, &args[1..]),
+        "migrate-from-project" => execution_space_migrate_from_project(&harness_home, &args[1..]),
         other => Err(CliError::Usage(format!("unknown space command: {other}"))),
     }
 }
@@ -880,17 +880,17 @@ const EXECUTION_LEDGER_NAMES: &[&str] = &[
     "workflow_artifact_manifests.jsonl",
 ];
 
-fn execution_space_migrate_from_project(firm_home: &Path, args: &[String]) -> CliResult<()> {
+fn execution_space_migrate_from_project(harness_home: &Path, args: &[String]) -> CliResult<()> {
     let project_selector = required(args, "--from-project")?;
     let id = required(args, "--id")?;
     execution_space::validate_space_id(&id).map_err(execution_space_err)?;
     let name = value(args, "--name").unwrap_or_else(|| id.clone());
     let force = has_flag(args, "--force");
-    let project_context = resolve_project_selector(firm_home, &project_selector)
+    let project_context = resolve_project_selector(harness_home, &project_selector)
         .ok_or_else(|| CliError::Usage(format!("unknown project binding: {project_selector}")))?;
     let previous_active_space_id =
-        execution_space::active_space_id(firm_home).map_err(execution_space_err)?;
-    let target = execution_space::space_store_root(firm_home, &id);
+        execution_space::active_space_id(harness_home).map_err(execution_space_err)?;
+    let target = execution_space::space_store_root(harness_home, &id);
     std::fs::create_dir_all(&target)?;
 
     let mut copied_files = 0u64;
@@ -942,7 +942,7 @@ fn execution_space_migrate_from_project(firm_home: &Path, args: &[String]) -> Cl
     }
 
     let context = execution_space::register_and_activate(
-        firm_home,
+        harness_home,
         &id,
         &name,
         Some(project_context.id.clone()),
@@ -1006,15 +1006,15 @@ fn execution_space_migrate_from_project(firm_home: &Path, args: &[String]) -> Cl
 /// Native coordination routing remains owned by `harness space`.
 fn project_command(args: &[String]) -> CliResult<()> {
     require_subcommand(args, "project add|list|current|switch|remove|show|migrate")?;
-    let firm_home = project::firm_home().map_err(project_err)?;
+    let harness_home = project::harness_home().map_err(project_err)?;
     match args[0].as_str() {
-        "add" => project_add(&firm_home, &args[1..]),
-        "list" => project_list(&firm_home),
-        "current" => project_current(&firm_home),
-        "switch" => project_switch_cmd(&firm_home, &args[1..]),
-        "remove" => project_remove(&firm_home, &args[1..]),
-        "show" => project_show(&firm_home, &args[1..]),
-        "migrate" => project_migrate(&firm_home, &args[1..]),
+        "add" => project_add(&harness_home, &args[1..]),
+        "list" => project_list(&harness_home),
+        "current" => project_current(&harness_home),
+        "switch" => project_switch_cmd(&harness_home, &args[1..]),
+        "remove" => project_remove(&harness_home, &args[1..]),
+        "show" => project_show(&harness_home, &args[1..]),
+        "migrate" => project_migrate(&harness_home, &args[1..]),
         other => Err(CliError::Usage(format!("unknown project command: {other}"))),
     }
 }
@@ -1022,7 +1022,7 @@ fn project_command(args: &[String]) -> CliResult<()> {
 /// `harness project add [<path>] [--switch]` — register a project root (defaulting
 /// to the current directory) WITHOUT changing the active project, unless `--switch`
 /// is passed. Materializes the central store + `metadata.json` and a registry entry.
-fn project_add(firm_home: &Path, args: &[String]) -> CliResult<()> {
+fn project_add(harness_home: &Path, args: &[String]) -> CliResult<()> {
     let switch = has_flag(args, "--switch");
     // First non-flag positional is an optional explicit project root.
     let path = args.iter().find(|a| !a.starts_with("--")).cloned();
@@ -1034,27 +1034,27 @@ fn project_add(firm_home: &Path, args: &[String]) -> CliResult<()> {
     // `register_and_activate` materializes store + metadata + registry entry and
     // marks current. When `--switch` is NOT requested we restore the previously
     // active project so `add` is non-disruptive (inspectable before a switch).
-    let prev_active = project::active_project_id(firm_home).map_err(project_err)?;
+    let prev_active = project::active_project_id(harness_home).map_err(project_err)?;
     let ctx =
-        project::register_and_activate(firm_home, &project_root, &now).map_err(project_err)?;
+        project::register_and_activate(harness_home, &project_root, &now).map_err(project_err)?;
     if !switch {
         match prev_active {
             Some(prev) if prev != ctx.id => {
-                project::switch_current_project(firm_home, &prev, &now).map_err(project_err)?;
+                project::switch_current_project(harness_home, &prev, &now).map_err(project_err)?;
             }
             None => {
                 // There was no active project before; clear the pointer so `add`
                 // alone never silently flips the default away from local/_global.
                 let mut registry =
-                    project::ProjectRegistry::load(firm_home).map_err(project_err)?;
+                    project::ProjectRegistry::load(harness_home).map_err(project_err)?;
                 registry.current_project_id = None;
-                registry.save(firm_home).map_err(project_err)?;
-                project::clear_active_project(firm_home).map_err(project_err)?;
+                registry.save(harness_home).map_err(project_err)?;
+                project::clear_active_project(harness_home).map_err(project_err)?;
             }
             _ => {}
         }
     }
-    let current = project::active_project_id(firm_home)
+    let current = project::active_project_id(harness_home)
         .map_err(project_err)?
         .unwrap_or_default();
     print_json(&project_context_json(&ctx, &current))
@@ -1062,11 +1062,11 @@ fn project_add(firm_home: &Path, args: &[String]) -> CliResult<()> {
 
 /// `harness project list` — enumerate every known project (registry + on-disk
 /// stores + the reserved `_global`), marking the current one.
-fn project_list(firm_home: &Path) -> CliResult<()> {
-    let current = project::active_project_id(firm_home)
+fn project_list(harness_home: &Path) -> CliResult<()> {
+    let current = project::active_project_id(harness_home)
         .map_err(project_err)?
         .unwrap_or_default();
-    let projects = project::list_projects(firm_home).map_err(project_err)?;
+    let projects = project::list_projects(harness_home).map_err(project_err)?;
     let json: Vec<serde_json::Value> = projects
         .iter()
         .map(|c| project_context_json(c, &current))
@@ -1077,9 +1077,9 @@ fn project_list(firm_home: &Path) -> CliResult<()> {
 /// `harness project current` — print the currently-active project context (the
 /// convergence point `serve` + CLI workers resolve), or a `null`-id placeholder if
 /// none has been selected yet.
-fn project_current(firm_home: &Path) -> CliResult<()> {
-    match project::active_project_id(firm_home).map_err(project_err)? {
-        Some(id) => match project::context_for_id(firm_home, &id).map_err(project_err)? {
+fn project_current(harness_home: &Path) -> CliResult<()> {
+    match project::active_project_id(harness_home).map_err(project_err)? {
+        Some(id) => match project::context_for_id(harness_home, &id).map_err(project_err)? {
             Some(ctx) => print_json(&project_context_json(&ctx, &id)),
             None => print_json(&serde_json::json!({ "id": id, "is_current": true })),
         },
@@ -1093,20 +1093,20 @@ fn project_current(firm_home: &Path) -> CliResult<()> {
 /// `harness project switch <id|path>` — flip the active project, updating BOTH the
 /// registry `current_project_id` and the `ACTIVE_PROJECT` marker so the next CLI
 /// invocation and a live `serve` converge on the same central store.
-fn project_switch_cmd(firm_home: &Path, args: &[String]) -> CliResult<()> {
+fn project_switch_cmd(harness_home: &Path, args: &[String]) -> CliResult<()> {
     let selector = args
         .first()
         .filter(|a| !a.starts_with("--"))
         .cloned()
         .ok_or_else(|| CliError::Usage("usage: harness project switch <id|path>".to_string()))?;
     // Accept either a registered id / `_global`, or a path to a project root.
-    let id = match project::context_for_id(firm_home, &selector).map_err(project_err)? {
+    let id = match project::context_for_id(harness_home, &selector).map_err(project_err)? {
         Some(ctx) => ctx.id,
-        None => match resolve_project_selector(firm_home, &selector) {
+        None => match resolve_project_selector(harness_home, &selector) {
             Some(ctx) => {
                 // A path that is not yet registered: register it first so the switch
                 // never strands the pointer on an unknown id.
-                project::register_and_activate(firm_home, &ctx.project_root, &now_string())
+                project::register_and_activate(harness_home, &ctx.project_root, &now_string())
                     .map_err(project_err)?;
                 ctx.id
             }
@@ -1118,7 +1118,7 @@ fn project_switch_cmd(firm_home: &Path, args: &[String]) -> CliResult<()> {
         },
     };
     let ctx =
-        project::switch_current_project(firm_home, &id, &now_string()).map_err(project_err)?;
+        project::switch_current_project(harness_home, &id, &now_string()).map_err(project_err)?;
     print_json(&project_context_json(&ctx, &ctx.id))
 }
 
@@ -1126,7 +1126,7 @@ fn project_switch_cmd(firm_home: &Path, args: &[String]) -> CliResult<()> {
 /// central store is left intact; this is a pointer operation). The reserved
 /// `_global` cannot be removed. Removing the CURRENT project requires `--force` and
 /// clears the active pointer so resolution falls back safely.
-fn project_remove(firm_home: &Path, args: &[String]) -> CliResult<()> {
+fn project_remove(harness_home: &Path, args: &[String]) -> CliResult<()> {
     let force = has_flag(args, "--force");
     let id = args
         .iter()
@@ -1135,13 +1135,13 @@ fn project_remove(firm_home: &Path, args: &[String]) -> CliResult<()> {
         .ok_or_else(|| {
             CliError::Usage("usage: harness project remove <id> [--force]".to_string())
         })?;
-    let current = project::active_project_id(firm_home).map_err(project_err)?;
+    let current = project::active_project_id(harness_home).map_err(project_err)?;
     if current.as_deref() == Some(id.as_str()) && !force {
         return Err(CliError::Usage(format!(
             "`{id}` is the current project; switch away first or pass --force to remove it"
         )));
     }
-    let outcome = project::remove_project(firm_home, &id).map_err(project_err)?;
+    let outcome = project::remove_project(harness_home, &id).map_err(project_err)?;
     if !outcome.removed {
         return Err(CliError::Usage(format!(
             "no registered project with id `{id}`"
@@ -1161,16 +1161,16 @@ fn project_remove(firm_home: &Path, args: &[String]) -> CliResult<()> {
 
 /// `harness project show <id|path>` — print one project's resolved context. With no
 /// argument, shows the current project (alias for `current`).
-fn project_show(firm_home: &Path, args: &[String]) -> CliResult<()> {
+fn project_show(harness_home: &Path, args: &[String]) -> CliResult<()> {
     let selector = args.iter().find(|a| !a.starts_with("--")).cloned();
-    let current = project::active_project_id(firm_home)
+    let current = project::active_project_id(harness_home)
         .map_err(project_err)?
         .unwrap_or_default();
     let ctx = match selector {
-        None => return project_current(firm_home),
-        Some(sel) => match project::context_for_id(firm_home, &sel).map_err(project_err)? {
+        None => return project_current(harness_home),
+        Some(sel) => match project::context_for_id(harness_home, &sel).map_err(project_err)? {
             Some(ctx) => ctx,
-            None => resolve_project_selector(firm_home, &sel)
+            None => resolve_project_selector(harness_home, &sel)
                 .ok_or_else(|| CliError::Usage(format!("unknown project: {sel}")))?,
         },
     };
@@ -1193,7 +1193,7 @@ const STORE_PAYLOAD_DIRS: &[&str] = &["prompts", "runtimes"];
 /// Idempotent / fail-safe: if the local store is ALREADY marked migrated it reports
 /// success without recopying; if the central store already has ledger rows it
 /// refuses (to avoid clobbering newer central data) unless `--force` is given.
-fn project_migrate(firm_home: &Path, args: &[String]) -> CliResult<()> {
+fn project_migrate(harness_home: &Path, args: &[String]) -> CliResult<()> {
     let force = has_flag(args, "--force");
     let switch = has_flag(args, "--switch");
 
@@ -1228,7 +1228,7 @@ fn project_migrate(firm_home: &Path, args: &[String]) -> CliResult<()> {
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| local_store.clone());
-    let ctx = project::context_for_root(&project_root, firm_home).map_err(project_err)?;
+    let ctx = project::context_for_root(&project_root, harness_home).map_err(project_err)?;
 
     // Refuse to clobber a central store that already holds ledger data, unless
     // forced. A central store that only has metadata.json (freshly created) is fine.
@@ -1249,22 +1249,22 @@ fn project_migrate(firm_home: &Path, args: &[String]) -> CliResult<()> {
     // `register_and_activate` (which itself writes a `migrated_from`-less
     // metadata.json) so the breadcrumb is the one that survives.
     let now = now_string();
-    let prev_active = project::active_project_id(firm_home).map_err(project_err)?;
-    project::register_and_activate(firm_home, &project_root, &now).map_err(project_err)?;
+    let prev_active = project::active_project_id(harness_home).map_err(project_err)?;
+    project::register_and_activate(harness_home, &project_root, &now).map_err(project_err)?;
     project::write_metadata(&ctx, Some(local_store.clone())).map_err(project_err)?;
     if !switch {
         // Non-disruptive by default: restore the previously active project (or clear
         // if none) so a bare `migrate` does not silently flip the active project.
         match prev_active {
             Some(prev) if prev != ctx.id => {
-                project::switch_current_project(firm_home, &prev, &now).map_err(project_err)?;
+                project::switch_current_project(harness_home, &prev, &now).map_err(project_err)?;
             }
             None => {
                 let mut registry =
-                    project::ProjectRegistry::load(firm_home).map_err(project_err)?;
+                    project::ProjectRegistry::load(harness_home).map_err(project_err)?;
                 registry.current_project_id = None;
-                registry.save(firm_home).map_err(project_err)?;
-                project::clear_active_project(firm_home).map_err(project_err)?;
+                registry.save(harness_home).map_err(project_err)?;
+                project::clear_active_project(harness_home).map_err(project_err)?;
             }
             _ => {}
         }
@@ -1463,8 +1463,6 @@ fn run() -> CliResult<()> {
         "hook" => hook_command(&store, &args[1..])?,
         "serve" => serve_command(&store, &resolved, &args[1..])?,
         "mcp" => mcp::run(&store, &resolved)?,
-        "provider" => provider_command(&store, &args[1..])?,
-        "config" => config_command(&store, &args[1..])?,
         #[cfg(unix)]
         "daemon" => daemon_command(&store, &args[1..])?,
         command if retired_command(command) => return Err(retired_surface_error(command)),
@@ -1742,19 +1740,19 @@ fn social_gateway_readiness_boundaries() -> serde_json::Value {
 fn company_store_init_command(args: &[String]) -> CliResult<()> {
     let id = required(args, "--id")?;
     let name = value(args, "--name").unwrap_or_else(|| id.clone());
-    let firm_home = company_store::firm_home().map_err(company_store_err)?;
-    let ctx = company_store::register_and_activate(&firm_home, &id, &name, &now_string())
+    let harness_home = company_store::harness_home().map_err(company_store_err)?;
+    let ctx = company_store::register_and_activate(&harness_home, &id, &name, &now_string())
         .map_err(company_store_err)?;
     HarnessStore::new(ctx.store_root.clone()).init()?;
     print_json(&company_context_json(&ctx, &ctx.id))
 }
 
 fn company_store_list_command() -> CliResult<()> {
-    let firm_home = company_store::firm_home().map_err(company_store_err)?;
-    let current = company_store::active_company_id(&firm_home)
+    let harness_home = company_store::harness_home().map_err(company_store_err)?;
+    let current = company_store::active_company_id(&harness_home)
         .map_err(company_store_err)?
         .unwrap_or_default();
-    let companies = company_store::list_companies(&firm_home).map_err(company_store_err)?;
+    let companies = company_store::list_companies(&harness_home).map_err(company_store_err)?;
     let json: Vec<serde_json::Value> = companies
         .iter()
         .map(|ctx| company_context_json(ctx, &current))
@@ -1763,10 +1761,10 @@ fn company_store_list_command() -> CliResult<()> {
 }
 
 fn company_store_current_command() -> CliResult<()> {
-    let firm_home = company_store::firm_home().map_err(company_store_err)?;
-    match company_store::active_company_id(&firm_home).map_err(company_store_err)? {
+    let harness_home = company_store::harness_home().map_err(company_store_err)?;
+    match company_store::active_company_id(&harness_home).map_err(company_store_err)? {
         Some(id) => {
-            match company_store::context_for_id(&firm_home, &id).map_err(company_store_err)? {
+            match company_store::context_for_id(&harness_home, &id).map_err(company_store_err)? {
                 Some(ctx) => print_json(&company_context_json(&ctx, &id)),
                 None => print_json(&serde_json::json!({ "id": id, "is_current": true })),
             }
@@ -1784,23 +1782,23 @@ fn company_store_switch_command(args: &[String]) -> CliResult<()> {
         .find(|a| !a.starts_with("--"))
         .cloned()
         .ok_or_else(|| CliError::Usage("usage: harness company switch <id>".to_string()))?;
-    let firm_home = company_store::firm_home().map_err(company_store_err)?;
-    let ctx = company_store::switch_current_company(&firm_home, &id, &now_string())
+    let harness_home = company_store::harness_home().map_err(company_store_err)?;
+    let ctx = company_store::switch_current_company(&harness_home, &id, &now_string())
         .map_err(company_store_err)?;
     print_json(&company_context_json(&ctx, &ctx.id))
 }
 
 fn company_store_show_command(args: &[String]) -> CliResult<()> {
-    let firm_home = company_store::firm_home().map_err(company_store_err)?;
+    let harness_home = company_store::harness_home().map_err(company_store_err)?;
     let selector = args.iter().find(|a| !a.starts_with("--")).cloned();
-    let current = company_store::active_company_id(&firm_home)
+    let current = company_store::active_company_id(&harness_home)
         .map_err(company_store_err)?
         .unwrap_or_default();
     let id = match selector {
         Some(id) => id,
         None => return company_store_current_command(),
     };
-    let ctx = company_store::context_for_id(&firm_home, &id)
+    let ctx = company_store::context_for_id(&harness_home, &id)
         .map_err(company_store_err)?
         .ok_or_else(|| CliError::Usage(format!("unknown company: {id}")))?;
     print_json(&company_context_json(&ctx, &current))
@@ -1812,15 +1810,15 @@ fn company_store_migrate_from_project_command(args: &[String]) -> CliResult<()> 
     let name = value(args, "--name").unwrap_or_else(|| id.clone());
     let force = has_flag(args, "--force");
     let verify_only = has_flag(args, "--verify-only");
-    let firm_home = company_store::firm_home().map_err(company_store_err)?;
+    let harness_home = company_store::harness_home().map_err(company_store_err)?;
     let source_project =
-        resolve_project_selector(&firm_home, &from_project).ok_or_else(|| {
+        resolve_project_selector(&harness_home, &from_project).ok_or_else(|| {
             CliError::Usage(format!(
                 "unknown source project: {from_project}; pass a registered project id or path"
             ))
         })?;
     let ctx = if verify_only {
-        company_store::context_for_id(&firm_home, &id)
+        company_store::context_for_id(&harness_home, &id)
             .map_err(company_store_err)?
             .ok_or_else(|| {
                 CliError::Usage(format!(
@@ -1828,7 +1826,7 @@ fn company_store_migrate_from_project_command(args: &[String]) -> CliResult<()> 
                 ))
             })?
     } else {
-        company_store::register_and_activate(&firm_home, &id, &name, &now_string())
+        company_store::register_and_activate(&harness_home, &id, &name, &now_string())
             .map_err(company_store_err)?
     };
     let outcome = if verify_only {
@@ -2480,9 +2478,9 @@ fn company_org_require_admin_authority(store: &HarnessStore, authority: &str) ->
 /// Project Binding: a link validated against an unnamed store is not governed.
 fn company_execution_space_store(
     space_id: &str,
-) -> CliResult<(firm_core::ExecutionSpace, HarnessStore)> {
-    let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
-    let space = execution_space::context_for_id(&firm_home, space_id)
+) -> CliResult<(harness_core::ExecutionSpace, HarnessStore)> {
+    let harness_home = execution_space::harness_home().map_err(execution_space_err)?;
+    let space = execution_space::context_for_id(&harness_home, space_id)
         .map_err(execution_space_err)?
         .ok_or_else(|| {
             CliError::Usage(format!(
@@ -7512,8 +7510,8 @@ fn legacy_goal_task_command(args: &mut Vec<String>) -> CliResult<()> {
             let selector = take_flag_value(args, "--project").ok_or_else(|| {
                 CliError::Usage("--project requires an id or existing project path".into())
             })?;
-            let firm_home = project::firm_home().map_err(project_err)?;
-            let context = resolve_project_selector(&firm_home, &selector).ok_or_else(|| {
+            let harness_home = project::harness_home().map_err(project_err)?;
+            let context = resolve_project_selector(&harness_home, &selector).ok_or_else(|| {
                 CliError::Usage(format!(
                     "project selector did not resolve; refusing fallback: {selector}"
                 ))
@@ -7562,15 +7560,15 @@ fn governance_command(args: &[String]) -> CliResult<()> {
     match args[0].as_str() {
         "check" => {
             let config =
-                firm_governance::GovernanceConfig::load(&root).map_err(CliError::Usage)?;
-            let report = firm_governance::run_check(&root, &config);
+                harness_governance::GovernanceConfig::load(&root).map_err(CliError::Usage)?;
+            let report = harness_governance::run_check(&root, &config);
             print_governance_report(&report, json);
             if !report.passed() {
                 std::process::exit(1);
             }
         }
         "init" => {
-            let config = firm_governance::GovernanceConfig::default_firm();
+            let config = harness_governance::GovernanceConfig::default_harness();
             let path = root.join(".governance.toml");
             if path.exists() {
                 return Err(CliError::Usage(format!(
@@ -7587,7 +7585,7 @@ fn governance_command(args: &[String]) -> CliResult<()> {
         }
         "describe" => {
             let config =
-                firm_governance::GovernanceConfig::load(&root).map_err(CliError::Usage)?;
+                harness_governance::GovernanceConfig::load(&root).map_err(CliError::Usage)?;
             print!("{}", config.to_toml().map_err(CliError::Usage)?);
         }
         other => {
@@ -7602,7 +7600,7 @@ fn governance_command(args: &[String]) -> CliResult<()> {
 /// Print a governance report mirroring the legacy gates: per gate, warnings to
 /// stderr (`console.warn`), then either the success summary (stdout) or the
 /// failures (stderr). `--json` emits a machine-readable summary instead.
-fn print_governance_report(report: &firm_governance::GovernanceReport, json: bool) {
+fn print_governance_report(report: &harness_governance::GovernanceReport, json: bool) {
     if json {
         let gates: Vec<serde_json::Value> = report
             .gates
@@ -9129,7 +9127,6 @@ fn apply_provider_version(
 /// session. The caller decides whether and how to journal the refreshed row.
 fn refreshed_team_member_provider_profile(
     member: &MemberRun,
-    store: &HarnessStore,
 ) -> CliResult<(ProviderIntegrationProfile, Option<String>)> {
     // Base the refresh on the CURRENT adapter registry, not the stored
     // profile. The stored profile's reviewed_provider_versions is frozen at
@@ -9145,28 +9142,10 @@ fn refreshed_team_member_provider_profile(
         .map(|stored| stored.execution_mode.clone());
     let mut profile =
         team_member_provider_profile_for_mode(&member.provider, stored_mode.as_deref());
-    merge_store_admitted_versions(&mut profile, store);
     let detected = team_member_provider_version_output(&member.provider);
     let probe_error = detected.as_ref().err().cloned();
     apply_provider_version(&mut profile, detected.ok());
     Ok((profile, probe_error))
-}
-
-/// Merge runtime-admitted provider versions from the store settings into the
-/// profile's `reviewed_provider_versions` list. Hard-coded defaults are
-/// preserved; store admissions are additive (deduplicated by the set).
-fn merge_store_admitted_versions(profile: &mut ProviderIntegrationProfile, store: &HarnessStore) {
-    let Ok(admitted) = store.list_admitted_versions() else {
-        return;
-    };
-    let Some(versions) = admitted.get(&profile.provider) else {
-        return;
-    };
-    for version in versions {
-        if !profile.reviewed_provider_versions.contains(version) {
-            profile.reviewed_provider_versions.push(version.clone());
-        }
-    }
 }
 
 fn provider_compatibility_block_reason(
@@ -9174,7 +9153,6 @@ fn provider_compatibility_block_reason(
     profile: &ProviderIntegrationProfile,
     boundary: &str,
     probe_error: Option<&str>,
-    policy: ProviderPolicy,
 ) -> Option<String> {
     if member.is_external_interactive()
         || profile.compatibility_status == ProviderCompatibilityStatus::Current
@@ -9186,30 +9164,15 @@ fn provider_compatibility_block_reason(
     let probe = probe_error
         .map(|error| format!(" Version probe failed: {error}."))
         .unwrap_or_default();
-    match policy {
-        ProviderPolicy::Advisory => {
-            eprintln!(
-                "PROVIDER_COMPATIBILITY_WARNING: member run {} provider {} version {} in {} is {} (policy is advisory).{}",
-                member.id,
-                profile.provider,
-                version,
-                profile.execution_mode,
-                status,
-                probe,
-            );
-            None
-        }
-        ProviderPolicy::Strict => Some(format!(
-            "PROVIDER_COMPATIBILITY_BLOCKED: member run {} cannot {boundary}; provider {} version {} in {} is {}. No provider process, native session start/resume, delivery claim, or Work rebound was performed.{} Run `firm member providers --fail-on-review`, regenerate protocol schemas, run deterministic provider acceptance and a live canary, then use `firm provider admit --version {}` before retrying the same durable MemberRun and Work.",
-            member.id,
-            profile.provider,
-            version,
-            profile.execution_mode,
-            status,
-            probe,
-            version,
-        )),
-    }
+    Some(format!(
+        "PROVIDER_COMPATIBILITY_BLOCKED: member run {} cannot {boundary}; provider {} version {} in {} is {}. No provider process, native session start/resume, delivery claim, or Work rebound was performed.{} Run `harness member providers --fail-on-review`, regenerate protocol schemas, run deterministic provider acceptance and a live canary, then add the exact version to the adapter's reviewed_provider_versions before retrying the same durable MemberRun and Work.",
+        member.id,
+        profile.provider,
+        version,
+        profile.execution_mode,
+        status,
+        probe,
+    ))
 }
 
 /// Last pre-dispatch compatibility fence. It runs before provider capacity,
@@ -9224,11 +9187,9 @@ fn provider_compatibility_start_gate(
         return Ok(None);
     }
     let previous_profile = member.provider_profile.clone();
-    let (profile, probe_error) =
-        refreshed_team_member_provider_profile(member, &ledger.store)?;
-    let policy = ledger.store.get_provider_policy().unwrap_or_default();
+    let (profile, probe_error) = refreshed_team_member_provider_profile(member)?;
     let reason =
-        provider_compatibility_block_reason(member, &profile, boundary, probe_error.as_deref(), policy);
+        provider_compatibility_block_reason(member, &profile, boundary, probe_error.as_deref());
     member.provider_profile = Some(profile);
     member.last_event_at = Some(now_string());
     if reason.is_none() {
@@ -10014,7 +9975,7 @@ fn capacity_ttl_ms() -> u64 {
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok())
         .filter(|value| *value > 0)
-        .unwrap_or(firm_core::PROVIDER_CAPACITY_DEFAULT_TTL_MS)
+        .unwrap_or(harness_core::PROVIDER_CAPACITY_DEFAULT_TTL_MS)
 }
 
 /// The start guard is on by default. `HARNESS_CAPACITY_PREFLIGHT=off` disables
@@ -10178,7 +10139,7 @@ fn capacity_from_provider_error_actions(
 }
 
 fn parse_unix_ms_timestamp(raw: &str) -> Option<u64> {
-    firm_core::parse_harness_unix_ms(raw)
+    harness_core::parse_harness_unix_ms(raw)
 }
 
 /// Observe this member's provider capacity and decide whether it may start.
@@ -10228,7 +10189,7 @@ fn provider_capacity_start_gate(
         }
     }
     let decision =
-        firm_core::provider_capacity_start_decision(Some(&snapshot), now_unix_ms, ttl_ms);
+        harness_core::provider_capacity_start_decision(Some(&snapshot), now_unix_ms, ttl_ms);
     member.provider_capacity = Some(snapshot.clone());
     member.last_event_at = Some(now_string());
     if !decision.is_blocked() {
@@ -10334,7 +10295,7 @@ fn provider_preflight_row(
     // its own answer look future-dated, which would report it as stale.
     let now_unix_ms = current_unix_ms_u64();
     let decision =
-        firm_core::provider_capacity_start_decision(Some(&capacity), now_unix_ms, ttl_ms);
+        harness_core::provider_capacity_start_decision(Some(&capacity), now_unix_ms, ttl_ms);
     Ok(serde_json::json!({
         "provider": provider,
         "execution_mode": execution_mode,
@@ -10831,8 +10792,7 @@ fn create_team_run(
         wave_id,
         project_binding_id: project_context.map(|context| context.id.clone()),
         host_surface: host_surface.to_string(),
-        host_thread_id: host_thread_id.clone(),
-        host_lease_last_seen: if host_thread_id.is_some() { Some(now_string()) } else { None },
+        host_thread_id,
         host_actor: Some(compatibility_team_actor("host", "team_run_create")),
         host_control_mode: HostControlMode::External,
         objective: objective.to_string(),
@@ -10909,6 +10869,7 @@ fn create_team_run(
                     check_refs: Vec::new(),
                     github_links: Vec::new(),
                     gates: Vec::new(),
+                    workspace: None,
                     version: 0,
                     created_at: String::new(),
                     updated_at: String::new(),
@@ -11044,6 +11005,7 @@ fn add_team_run_member(
                         check_refs: Vec::new(),
                         github_links: Vec::new(),
                         gates: Vec::new(),
+                        workspace: None,
                         version: 0,
                         created_at: String::new(),
                         updated_at: String::new(),
@@ -11296,8 +11258,6 @@ fn queued_team_delivery(member_id: &str) -> TeamMessageDelivery {
         claim_expires_unix_ms: None,
         provider_receipt_id: None,
         failure_reason: None,
-        delivered_at: None,
-        acked_at: None,
         updated_at: now_string(),
     }
 }
@@ -11336,7 +11296,7 @@ fn ensure_member_coordination_open(member: &MemberRun) -> CliResult<()> {
     Ok(())
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy)]
 enum TeamMessageDeliveryMode {
     Routed,
     InjectDelivered,
@@ -11601,60 +11561,46 @@ fn prepare_team_message_as(
         evidence_refs: Vec::new(),
         deliveries: to_member_ids
             .iter()
-            .map(|member_id| {
-                let is_delivered_now = matches!(
-                    delivery_mode,
-                    TeamMessageDeliveryMode::InjectDelivered
-                ) || (delivery_mode == TeamMessageDeliveryMode::Routed
-                    && member_id == "host"
-                    && sender.kind != TeamActorKind::Host);
-                TeamMessageDelivery {
-                    member_id: member_id.clone(),
-                    // The Host control plane receives member-originated mail at
-                    // creation time. Provider members, by contrast, consume
-                    // ordinary coordination mail at their next available round.
-                    policy: match delivery_mode {
-                        TeamMessageDeliveryMode::InjectDelivered => TeamDeliveryPolicy::Inject,
-                        TeamMessageDeliveryMode::Routed
-                            if member_id == "host" && sender.kind != TeamActorKind::Host =>
-                        {
-                            TeamDeliveryPolicy::ManualAck
-                        }
-                        TeamMessageDeliveryMode::Routed => TeamDeliveryPolicy::Queue,
-                    },
-                    status: match delivery_mode {
-                        TeamMessageDeliveryMode::InjectDelivered => TeamDeliveryStatus::Delivered,
-                        TeamMessageDeliveryMode::Routed
-                            if member_id == "host" && sender.kind != TeamActorKind::Host =>
-                        {
-                            TeamDeliveryStatus::Delivered
-                        }
-                        TeamMessageDeliveryMode::Routed => TeamDeliveryStatus::Queued,
-                    },
-                    attempt: match delivery_mode {
-                        TeamMessageDeliveryMode::InjectDelivered => 1,
-                        TeamMessageDeliveryMode::Routed
-                            if member_id == "host" && sender.kind != TeamActorKind::Host =>
-                        {
-                            1
-                        }
-                        TeamMessageDeliveryMode::Routed => 0,
-                    },
-                    claim_id: None,
-                    claimed_by_supervisor_id: None,
-                    claimed_generation: None,
-                    claimed_unix_ms: None,
-                    claim_expires_unix_ms: None,
-                    provider_receipt_id: None,
-                    failure_reason: None,
-                    delivered_at: if is_delivered_now {
-                        Some(now_string())
-                    } else {
-                        None
-                    },
-                    acked_at: None,
-                    updated_at: now_string(),
-                }
+            .map(|member_id| TeamMessageDelivery {
+                member_id: member_id.clone(),
+                // The Host control plane receives member-originated mail at
+                // creation time. Provider members, by contrast, consume
+                // ordinary coordination mail at their next available round.
+                policy: match delivery_mode {
+                    TeamMessageDeliveryMode::InjectDelivered => TeamDeliveryPolicy::Inject,
+                    TeamMessageDeliveryMode::Routed
+                        if member_id == "host" && sender.kind != TeamActorKind::Host =>
+                    {
+                        TeamDeliveryPolicy::ManualAck
+                    }
+                    TeamMessageDeliveryMode::Routed => TeamDeliveryPolicy::Queue,
+                },
+                status: match delivery_mode {
+                    TeamMessageDeliveryMode::InjectDelivered => TeamDeliveryStatus::Delivered,
+                    TeamMessageDeliveryMode::Routed
+                        if member_id == "host" && sender.kind != TeamActorKind::Host =>
+                    {
+                        TeamDeliveryStatus::Delivered
+                    }
+                    TeamMessageDeliveryMode::Routed => TeamDeliveryStatus::Queued,
+                },
+                attempt: match delivery_mode {
+                    TeamMessageDeliveryMode::InjectDelivered => 1,
+                    TeamMessageDeliveryMode::Routed
+                        if member_id == "host" && sender.kind != TeamActorKind::Host =>
+                    {
+                        1
+                    }
+                    TeamMessageDeliveryMode::Routed => 0,
+                },
+                claim_id: None,
+                claimed_by_supervisor_id: None,
+                claimed_generation: None,
+                claimed_unix_ms: None,
+                claim_expires_unix_ms: None,
+                provider_receipt_id: None,
+                failure_reason: None,
+                updated_at: now_string(),
             })
             .collect(),
         created_at: now_string(),
@@ -12210,8 +12156,8 @@ fn classify_member_recovery_path(
             if native_session.supports_resume
                 && !matches!(
                     native_session.availability,
-                    firm_core::NativeSessionAvailability::Missing
-                        | firm_core::NativeSessionAvailability::Incompatible
+                    harness_core::NativeSessionAvailability::Missing
+                        | harness_core::NativeSessionAvailability::Incompatible
                 )
             {
                 // Also check provider profile.
@@ -12305,14 +12251,12 @@ fn team_run_recover(
             continue;
         }
         let previous_profile = member.provider_profile.clone();
-        let (profile, probe_error) = refreshed_team_member_provider_profile(member, store)?;
-        let policy = store.get_provider_policy().unwrap_or_default();
+        let (profile, probe_error) = refreshed_team_member_provider_profile(member)?;
         let refusal = provider_compatibility_block_reason(
             member,
             &profile,
             "recover, reopen, or rebound durable Work",
             probe_error.as_deref(),
-            policy,
         );
         member.provider_profile = Some(profile);
         member.last_event_at = Some(now_string());
@@ -12444,7 +12388,7 @@ fn team_run_recover(
         if let Some(claimed_gen) = delivery.claimed_generation {
             if let Some(ref lease) = supervisor {
                 if claimed_gen < lease.generation
-                    && lease.status == firm_core::TeamSupervisorLeaseStatus::Active
+                    && lease.status == harness_core::TeamSupervisorLeaseStatus::Active
                 {
                     let _ = store.reconcile_stale_work_delivery_claim(
                         team_run_id,
@@ -12874,6 +12818,130 @@ fn parse_work_status(value: &str) -> CliResult<WorkStatus> {
             "unknown Work status `{value}` (open|in_progress|blocked|review|done|cancelled)"
         ))
     })
+}
+
+fn parse_workspace(args: &[String]) -> CliResult<Option<WorkWorkspace>> {
+    // Shorthand: --worktree <path> implies kind=worktree, base=origin/master
+    if let Some(path) = value(args, "--worktree") {
+        return Ok(Some(WorkWorkspace {
+            kind: WorkWorkspaceKind::Worktree,
+            path,
+            base_ref: value(args, "--workspace-base"),
+            auto_cleanup: !has_flag(args, "--workspace-no-cleanup"),
+        }));
+    }
+    // Explicit: --workspace-kind worktree|dir|inherit --workspace-path <path>
+    if let Some(kind_str) = value(args, "--workspace-kind") {
+        let kind = match kind_str.as_str() {
+            "worktree" => WorkWorkspaceKind::Worktree,
+            "dir" => WorkWorkspaceKind::Dir,
+            "inherit" => WorkWorkspaceKind::Inherit,
+            other => {
+                return Err(CliError::Usage(format!(
+                    "unknown workspace kind `{other}` (worktree|dir|inherit)"
+                )));
+            }
+        };
+        if kind == WorkWorkspaceKind::Inherit {
+            return Ok(Some(WorkWorkspace {
+                kind,
+                path: String::new(),
+                base_ref: None,
+                auto_cleanup: false,
+            }));
+        }
+        let path = required(args, "--workspace-path")
+            .map_err(|_| {
+                CliError::Usage(
+                    "--workspace-path is required for worktree/dir workspace kinds".to_string(),
+                )
+            })?;
+        return Ok(Some(WorkWorkspace {
+            kind,
+            path,
+            base_ref: value(args, "--workspace-base"),
+            auto_cleanup: !has_flag(args, "--workspace-no-cleanup"),
+        }));
+    }
+    Ok(None)
+}
+
+/// Create the workspace declared by a Work (or ensure it exists if
+/// it's a plain directory). For worktrees, calls `git worktree add`.
+/// Returns the resolved path.
+fn ensure_workspace(
+    workspace: &WorkWorkspace,
+    project_root: &std::path::Path,
+) -> CliResult<std::path::PathBuf> {
+    let path = if workspace.path.starts_with('/') {
+        std::path::PathBuf::from(&workspace.path)
+    } else {
+        project_root.join(&workspace.path)
+    };
+    match workspace.kind {
+        WorkWorkspaceKind::Worktree => {
+            if path.exists() {
+                return Ok(path); // already exists
+            }
+            let base = workspace.base_ref.as_deref().unwrap_or("origin/master");
+            let output = std::process::Command::new("git")
+                .args(["worktree", "add", &workspace.path, base])
+                .current_dir(project_root)
+                .output()
+                .map_err(|e| CliError::Usage(format!("git worktree add failed: {e}")))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(CliError::Usage(format!(
+                    "git worktree add failed: {stderr}"
+                )));
+            }
+            Ok(path)
+        }
+        WorkWorkspaceKind::Dir => {
+            std::fs::create_dir_all(&path)
+                .map_err(|e| CliError::Usage(format!("mkdir failed: {e}")))?;
+            Ok(path)
+        }
+        WorkWorkspaceKind::Inherit => Ok(project_root.to_path_buf()),
+    }
+}
+
+/// Remove the workspace created for a Work (if auto_cleanup is
+/// enabled). For worktrees, calls `git worktree remove --force`.
+fn cleanup_workspace(
+    workspace: &WorkWorkspace,
+    project_root: &std::path::Path,
+) -> CliResult<()> {
+    if !workspace.auto_cleanup {
+        return Ok(());
+    }
+    let path: std::path::PathBuf = if workspace.path.starts_with('/') {
+        workspace.path.clone().into()
+    } else {
+        project_root.join(&workspace.path)
+    };
+    match workspace.kind {
+        WorkWorkspaceKind::Worktree => {
+            if !path.exists() {
+                return Ok(());
+            }
+            std::process::Command::new("git")
+                .args(["worktree", "remove", "--force"])
+                .arg(&path)
+                .current_dir(project_root)
+                .output()
+                .map_err(|e| CliError::Usage(format!("git worktree remove failed: {e}")))?;
+            Ok(())
+        }
+        WorkWorkspaceKind::Dir => {
+            if path.exists() {
+                std::fs::remove_dir_all(&path)
+                    .map_err(|e| CliError::Usage(format!("rmdir failed: {e}")))?;
+            }
+            Ok(())
+        }
+        WorkWorkspaceKind::Inherit => Ok(()),
+    }
 }
 
 fn required_work_version(args: &[String]) -> CliResult<u64> {
@@ -13525,7 +13593,7 @@ fn github_poll_host_context(run_id: &str, work_id: &str) -> WorkCommandContext {
 fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery|poll-github-ci|check-gates",
+        "team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery|poll-github-ci|check-gates|workspace",
     )?;
     match args[0].as_str() {
         "list" => {
@@ -13723,6 +13791,8 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             }
             // Parse `--gate plugin[:key=val[,key=val...]]` flags.
             let gates = parse_gate_specs(args)?;
+            // Parse `--workspace-*` / `--worktree` flags.
+            let workspace = parse_workspace(args)?;
             // Append declared gates to context so the worker sees them.
             let context_markdown = {
                 let mut ctx = value(args, "--context").unwrap_or_default();
@@ -13770,6 +13840,7 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 check_refs,
                 github_links,
                 gates,
+                workspace,
                 version: 0,
                 created_at: String::new(),
                 updated_at: String::new(),
@@ -14025,7 +14096,50 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                     "one or more gates did not pass (see results above)".to_string(),
                 ));
             }
-            Ok(())
+        }
+        "workspace" => {
+            require_subcommand(args, "team-run work workspace ensure|cleanup")?;
+            match args[1].as_str() {
+                "ensure" => {
+                    let work_id = required(args, "--work-id")?;
+                    let work = store
+                        .latest_works()?
+                        .into_iter()
+                        .find(|w| w.id == work_id)
+                        .ok_or_else(|| CliError::Usage(format!("Work not found: {work_id}")))?;
+                    let ws = work.workspace.as_ref().ok_or_else(|| {
+                        CliError::Usage(format!("Work {work_id} has no workspace declaration"))
+                    })?;
+                    let project_root = std::env::current_dir()
+                        .map_err(|e| CliError::Usage(format!("cannot determine cwd: {e}")))?;
+                    let path = ensure_workspace(ws, &project_root)?;
+                    print_json(&serde_json::json!({
+                        "work_id": work_id,
+                        "workspace": ws,
+                        "resolved_path": path,
+                    }))
+                }
+                "cleanup" => {
+                    let work_id = required(args, "--work-id")?;
+                    let work = store
+                        .latest_works()?
+                        .into_iter()
+                        .find(|w| w.id == work_id)
+                        .ok_or_else(|| CliError::Usage(format!("Work not found: {work_id}")))?;
+                    let ws = work.workspace.as_ref().ok_or_else(|| {
+                        CliError::Usage(format!("Work {work_id} has no workspace declaration"))
+                    })?;
+                    let project_root = std::env::current_dir()
+                        .map_err(|e| CliError::Usage(format!("cannot determine cwd: {e}")))?;
+                    cleanup_workspace(ws, &project_root)?;
+                    print_json(&serde_json::json!({
+                        "work_id": work_id,
+                        "workspace": ws,
+                        "status": "cleaned_up",
+                    }))
+                }
+                other => Err(CliError::Usage(format!("unknown workspace command: {other}"))),
+            }
         }
         "request-changes" => {
             let reason = required(args, "--reason")?;
@@ -14159,7 +14273,7 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
 }
 
 fn selected_company_store_for_work_cutover(args: &[String]) -> CliResult<HarnessStore> {
-    let home = company_store::firm_home().map_err(company_store_err)?;
+    let home = company_store::harness_home().map_err(company_store_err)?;
     let company_id = value(args, "--company")
         .or_else(|| {
             env::var("HARNESS_COMPANY")
@@ -14186,7 +14300,7 @@ fn team_run_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run create|list|status|board-summary|work|recover|host-inbox|host-inbox-verify|bind-host|host-heartbeat|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|wait|complete|cancel",
+        "team-run create|list|status|board-summary|work|recover|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|wait|complete|cancel",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
@@ -14623,23 +14737,8 @@ fn team_run_command(
             let mut next = current.clone();
             next.host_surface = canonical_surface(&surface).to_string();
             next.host_thread_id = Some(thread_id);
-            next.host_lease_last_seen = Some(now_string());
             next.updated_at = now_string();
             store_conflict_as_usage(store.compare_and_append_team_run(&current, &next))?;
-            // Validate the binding against existing runtime sessions
-            if let Err(e) = host_inbox_for_native_thread(
-                store,
-                &next.host_surface,
-                next.host_thread_id.as_deref().unwrap_or(""),
-                false,
-            ) {
-                eprintln!(
-                    "[WARNING] Host binding may be invalid — no matching runtime session found for {}:{}: {}",
-                    next.host_surface,
-                    next.host_thread_id.as_deref().unwrap_or("?"),
-                    e
-                );
-            }
             append_team_run_event(
                 store,
                 &id,
@@ -14664,121 +14763,6 @@ fn team_run_command(
                     next.host_surface,
                     next.host_thread_id.as_deref().unwrap_or("?")
                 );
-            }
-        }
-        "host-heartbeat" => {
-            let id = required(args, "--id")?;
-            let current = latest_team_run(store, &id)?;
-            if current.host_thread_id.is_none() {
-                return Err(CliError::Usage(format!(
-                    "Team run {id} has no host binding — cannot heartbeat an unbound run"
-                )));
-            }
-            let prev_lease = current.host_lease_last_seen.clone();
-            let now = now_string();
-            let mut next = current.clone();
-            next.host_lease_last_seen = Some(now.clone());
-            next.updated_at = now.clone();
-            store_conflict_as_usage(store.compare_and_append_team_run(&current, &next))?;
-
-            // Detect stale binding (>5 min)
-            let stale = prev_lease.as_deref().is_some_and(|prev| {
-                prev.split_once("unix-ms:")
-                    .and_then(|(_, ms)| ms.parse::<u64>().ok())
-                    .is_some_and(|prev_ms| {
-                        now.split_once("unix-ms:")
-                            .and_then(|(_, now_ms)| now_ms.parse::<u64>().ok())
-                            .is_some_and(|now_ms| now_ms.saturating_sub(prev_ms) > 300_000)
-                    })
-            });
-            if stale {
-                // Generate a HostBindingStale attention
-                let works = store.latest_works()?;
-                let fallback_work_id = works
-                    .iter()
-                    .find(|w| w.team_run_id == id)
-                    .map(|w| w.id.clone())
-                    .unwrap_or_else(|| format!("host-inbox-{id}"));
-                let attention = HostAttention {
-                    id: format!("host-attention-stale-{id}"),
-                    team_run_id: id.clone(),
-                    kind: HostAttentionKind::HostBindingStale,
-                    work_id: fallback_work_id,
-                    work_version: 0,
-                    member_run_id: None,
-                    status: HostAttentionStatus::Actionable,
-                    attempt: 0,
-                    claim_id: None,
-                    claimed_host_surface: None,
-                    claimed_host_thread_id: None,
-                    provider_receipt_id: None,
-                    last_failure_reason: None,
-                    source_event_ref: format!("host-heartbeat-{id}"),
-                    created_at: now_string(),
-                    updated_at: now_string(),
-                };
-                let _ = store.ensure_host_attention(&attention);
-                eprintln!("[WARNING] Host binding for {id} is stale (>5 min no heartbeat)");
-            }
-            if json {
-                let updated = latest_team_run(store, &id)?;
-                print_json(&updated)?;
-            } else {
-                println!("{id}\theartbeat ok");
-            }
-        }
-        "host-inbox-verify" => {
-            let id = required(args, "--id")?;
-            let run = latest_team_run(store, &id)?;
-            let bound = run.host_thread_id.is_some();
-            let lease_alive = run.host_lease_last_seen.as_deref().is_some_and(|lease| {
-                lease.split_once("unix-ms:")
-                    .and_then(|(_, ms)| ms.parse::<u64>().ok())
-                    .is_some_and(|lease_ms| {
-                        now_string()
-                            .split_once("unix-ms:")
-                            .and_then(|(_, now_ms)| now_ms.parse::<u64>().ok())
-                            .is_some_and(|now_ms| now_ms.saturating_sub(lease_ms) <= 300_000)
-                    })
-            });
-            let unacked = if bound {
-                let messages = latest_team_messages_in_append_order(store)?;
-                messages
-                    .iter()
-                    .filter(|m| m.team_run_id == id && has_actionable_delivered_manual_ack(m))
-                    .count()
-            } else {
-                0
-            };
-
-            if json {
-                print_json(&serde_json::json!({
-                    "team_run_id": id,
-                    "bound": bound,
-                    "host_surface": run.host_surface,
-                    "host_thread_id": run.host_thread_id,
-                    "lease_alive": lease_alive,
-                    "host_lease_last_seen": run.host_lease_last_seen,
-                    "unacked_messages": unacked,
-                }))?;
-            } else {
-                if !bound {
-                    println!(
-                        "{}\tUNBOUND\t(surface={})\thost not bound — member messages will queue without delivery",
-                        id, run.host_surface,
-                    );
-                } else {
-                    let status = if lease_alive { "OK" } else { "STALE" };
-                    println!(
-                        "{}\t{}\t{}:{}\tunacked={}\tlease={}",
-                        id,
-                        status,
-                        run.host_surface,
-                        run.host_thread_id.as_deref().unwrap_or("?"),
-                        unacked,
-                        run.host_lease_last_seen.as_deref().unwrap_or("never"),
-                    );
-                }
             }
         }
         "inbox" => {
@@ -15087,7 +15071,6 @@ fn team_run_command(
                         let mut next = run.clone();
                         next.host_surface = canonical_surface(surface).to_string();
                         next.host_thread_id = Some(thread_id.clone());
-                        next.host_lease_last_seen = Some(now_string());
                         next.updated_at = now_string();
                         if store.compare_and_append_team_run(&run, &next).is_ok() {
                             eprintln!("[star-harness] Auto-bound host to {surface}:{thread_id}");
@@ -15982,7 +15965,7 @@ fn require_current_supervisor_lease(
                 "team run {team_run_id} has no durable Supervisor lease"
             ))
         })?;
-    if lease.status != firm_core::TeamSupervisorLeaseStatus::Active
+    if lease.status != harness_core::TeamSupervisorLeaseStatus::Active
         || lease.supervisor_id != supervisor_id
         || lease.generation != generation
         || lease.expires_unix_ms <= now
@@ -16349,7 +16332,7 @@ impl TeamRunLedger {
                 "durable lease row is missing",
             ));
         };
-        if lease.status != firm_core::TeamSupervisorLeaseStatus::Active
+        if lease.status != harness_core::TeamSupervisorLeaseStatus::Active
             || lease.supervisor_id != self.supervisor_id
             || lease.generation != self.supervisor_generation
             || lease.expires_unix_ms <= now
@@ -17361,9 +17344,9 @@ fn build_board_wake_view(
         .iter()
         .filter(|work| {
             work.team_run_id == ledger.run_id
-                && work.status == firm_core::WorkStatus::Open
+                && work.status == harness_core::WorkStatus::Open
                 && work.owner_member_id.is_none()
-                && work.claim_mode == firm_core::WorkClaimMode::TeamClaim
+                && work.claim_mode == harness_core::WorkClaimMode::TeamClaim
                 && work.prerequisites_satisfied(all_works.iter())
                 && (work.eligible_member_ids.is_empty()
                     || work
@@ -17530,14 +17513,12 @@ pub(crate) fn prepare_team_run_start_body(
             continue;
         }
         let previous_profile = member.provider_profile.clone();
-        let (profile, probe_error) = refreshed_team_member_provider_profile(member, store)?;
-        let policy = store.get_provider_policy().unwrap_or_default();
+        let (profile, probe_error) = refreshed_team_member_provider_profile(member)?;
         let refusal = provider_compatibility_block_reason(
             member,
             &profile,
             "start or resume persistent Agent Team execution",
             probe_error.as_deref(),
-            policy,
         );
         member.provider_profile = Some(profile);
         member.last_event_at = Some(now_string());
@@ -17712,7 +17693,7 @@ pub(crate) fn drive_prepared_team_run(
     } = prepared;
     let project_context = match running.project_binding_id.as_deref() {
         Some(binding_id) => {
-            let pinned = project::firm_home()
+            let pinned = project::harness_home()
                 .ok()
                 .and_then(|home| project::context_for_id(&home, binding_id).ok().flatten());
             match pinned {
@@ -17959,22 +17940,29 @@ pub(crate) fn drive_prepared_team_run(
             last_host_dispatch_poll = Instant::now();
             match host_dispatcher::poll_and_dispatch(
                 &ledger.store,
-                &run_id,
+                &ledger,
                 &objective,
                 &host_dispatch_config,
             ) {
                 Ok(outcome) if !outcome.is_noop() => {
-                    eprintln!(
-                        "[supervisor] host dispatcher: inspected={}, handled={}, escalated={}, failed={}",
-                        outcome.inspected,
-                        outcome.handled.len(),
-                        outcome.escalated.len(),
-                        outcome.failed.len(),
-                    );
+                    ledger.fold_event(
+                        TeamRunEventSourceKind::Host,
+                        None,
+                        "team_run",
+                        &run_id,
+                        "host_dispatcher",
+                        &format!(
+                            "host dispatcher poll: inspected={}, handled={}, escalated={}, failed={}",
+                            outcome.inspected,
+                            outcome.handled.len(),
+                            outcome.escalated.len(),
+                            outcome.failed.len(),
+                        ),
+                    )?;
                 }
                 Ok(_) => {}
                 Err(error) => {
-                    eprintln!("[supervisor] host dispatcher error: {error}");
+                    eprintln!("[supervisor] host dispatcher poll skipped: {error}");
                 }
             }
         }
@@ -19225,9 +19213,6 @@ fn run_claude_team_member(
                 claimed_unix_ms: None,
                 claim_expires_unix_ms: None,
                 provider_receipt_id: Some("harness-control-plane".to_string()),
-                failure_reason: None,
-                delivered_at: None,
-                acked_at: None,
                 updated_at: now_string(),
             }],
             created_at: now_string(),
@@ -20363,9 +20348,6 @@ fn record_round_handoff(
             claimed_unix_ms: None,
             claim_expires_unix_ms: None,
             provider_receipt_id: Some("harness-control-plane".to_string()),
-            failure_reason: None,
-            delivered_at: None,
-            acked_at: None,
             updated_at: now_string(),
         }],
         created_at: now_string(),
@@ -22041,7 +22023,6 @@ pub(crate) fn acknowledge_team_message(
             .find(|delivery| delivery.member_id == member_id)
             .expect("queued external delivery checked above");
         delivery.status = TeamDeliveryStatus::Acknowledged;
-        delivery.acked_at = Some(now_string());
         delivery.updated_at = now_string();
         store_conflict_as_usage(store.append_team_message(&updated))?;
         updated
@@ -23174,7 +23155,7 @@ fn dashboard_command(
     match args[0].as_str() {
         "doctor" => dashboard_doctor_command(store, &args[1..])?,
         "snapshot" => {
-            let company_store = if let Ok(home) = company_store::firm_home() {
+            let company_store = if let Ok(home) = company_store::harness_home() {
                 match company_store::active_company_id(&home).map_err(company_store_err)? {
                     Some(id) => {
                         let context = company_store::context_for_id(&home, &id)
@@ -23880,7 +23861,7 @@ fn sse_post_snapshot_test_pause() -> Option<std::time::Duration> {
 struct ServeProjects {
     /// `~/.harness` — `None` only when serve was started with a raw
     /// `--store`/`HARNESS_ROOT` override (no registry to consult).
-    firm_home: Option<PathBuf>,
+    harness_home: Option<PathBuf>,
     /// The id of the project `serve` started for (the active/`_global` project, or a
     /// synthetic id in raw-override mode). Used as the default when no `?project`.
     default_id: String,
@@ -23902,8 +23883,8 @@ impl ServeProjects {
         // global path (not a raw `--store`/`HARNESS_ROOT` override).
         let registry_backed =
             resolved.context.is_some() || resolved.execution_space_context.is_some();
-        let firm_home = registry_backed
-            .then(project::firm_home)
+        let harness_home = registry_backed
+            .then(project::harness_home)
             .and_then(Result::ok);
         let default_id = resolved
             .context
@@ -23911,7 +23892,7 @@ impl ServeProjects {
             .map(|context| context.id.clone())
             .unwrap_or_else(|| "_store".to_string());
         Self {
-            firm_home,
+            harness_home,
             default_id: resolved
                 .execution_space_context
                 .as_ref()
@@ -23933,7 +23914,7 @@ impl ServeProjects {
         if id == self.default_id {
             return Ok((self.default_id.clone(), self.default_store.clone()));
         }
-        if let Some(home) = &self.firm_home {
+        if let Some(home) = &self.harness_home {
             if let Some(space) =
                 execution_space::context_for_id(home, id).map_err(execution_space_err)?
             {
@@ -23967,7 +23948,7 @@ impl ServeProjects {
                 return default.clone();
             }
         }
-        if let (Some(home), Some(id)) = (&self.firm_home, project_binding_id) {
+        if let (Some(home), Some(id)) = (&self.harness_home, project_binding_id) {
             if let Ok(Some(context)) = project::context_for_id(home, id) {
                 return context;
             }
@@ -23978,7 +23959,7 @@ impl ServeProjects {
                 .and_then(|space| space.default_project_binding_id)
             {
                 if let Some(context) = self
-                    .firm_home
+                    .harness_home
                     .as_ref()
                     .and_then(|home| project::context_for_id(home, &binding_id).ok().flatten())
                 {
@@ -23999,7 +23980,7 @@ impl ServeProjects {
     }
 
     fn current_space_id(&self) -> String {
-        if let Some(home) = &self.firm_home {
+        if let Some(home) = &self.harness_home {
             if let Ok(Some(id)) = execution_space::active_space_id(home) {
                 return id;
             }
@@ -24008,7 +23989,7 @@ impl ServeProjects {
     }
 
     fn current_project_binding_id(&self) -> String {
-        if let Some(home) = &self.firm_home {
+        if let Some(home) = &self.harness_home {
             if let Ok(Some(id)) = project::active_project_id(home) {
                 return id;
             }
@@ -24022,7 +24003,7 @@ impl ServeProjects {
     /// Enumerate known projects for `GET /v1/projects`. In raw-override mode there is
     /// no registry, so only the served store is reported (as the synthetic default).
     fn list_project_bindings(&self) -> Vec<ProjectContext> {
-        match &self.firm_home {
+        match &self.harness_home {
             Some(home) => {
                 let mut contexts = project::list_projects(home).unwrap_or_default();
                 if let Some(default) = &self.default_context {
@@ -24043,7 +24024,7 @@ impl ServeProjects {
     }
 
     fn list_spaces(&self) -> Vec<ExecutionSpace> {
-        match &self.firm_home {
+        match &self.harness_home {
             Some(home) => {
                 let mut spaces = execution_space::list_spaces(home).unwrap_or_default();
                 if let Some(default) = &self.default_space {
@@ -24065,7 +24046,7 @@ impl ServeProjects {
         {
             return self.default_space.clone();
         }
-        self.firm_home
+        self.harness_home
             .as_ref()
             .and_then(|home| execution_space::context_for_id(home, id).ok().flatten())
     }
@@ -24099,7 +24080,7 @@ impl ServeProjects {
         for company in self.list_companies() {
             map.insert(company.id, company.store_root);
         }
-        if self.firm_home.is_some() {
+        if self.harness_home.is_some() {
             for project in self.list_project_bindings() {
                 map.entry(format!("project-compat:{}", project.id))
                     .or_insert(project.store_root);
@@ -24109,12 +24090,12 @@ impl ServeProjects {
     }
 
     fn current_company_id(&self) -> Option<String> {
-        let home = self.firm_home.as_ref()?;
+        let home = self.harness_home.as_ref()?;
         company_store::active_company_id(home).ok().flatten()
     }
 
     fn list_companies(&self) -> Vec<company_store::CompanyContext> {
-        match &self.firm_home {
+        match &self.harness_home {
             Some(home) => company_store::list_companies(home).unwrap_or_default(),
             None => Vec::new(),
         }
@@ -24125,7 +24106,7 @@ impl ServeProjects {
         company: Option<&str>,
         project_binding_id: Option<&str>,
     ) -> CliResult<Option<(String, HarnessStore)>> {
-        let Some(home) = &self.firm_home else {
+        let Some(home) = &self.harness_home else {
             if company.is_some() {
                 return Err(CliError::Usage(
                     "serve is running with a raw --store/HARNESS_ROOT override; Company Store selection is unavailable"
@@ -25241,7 +25222,7 @@ fn handle_http_connection(
     // Raw --store compatibility mode has no registered project_root. Do not
     // mislabel its centralized store_root as an execution workspace.
     let project_context = projects
-        .firm_home
+        .harness_home
         .as_ref()
         .map(|_| projects.context_for(project_param.as_deref(), Some(&project_id), store));
     match handle_http_action(store, project_context.as_ref(), &path_only, &body_json) {
@@ -25270,7 +25251,7 @@ fn retired_http_path(path: &str) -> bool {
 
 /// Apply a `POST /v1/projects/switch {project: <id>}` request: switch the active
 /// project atomically and return the new `(id, store)`. In raw-override mode (no
-/// `firm_home`) there is no registry to switch, so it is rejected.
+/// `harness_home`) there is no registry to switch, so it is rejected.
 fn handle_project_switch(
     projects: &ServeProjects,
     body: &serde_json::Value,
@@ -25279,7 +25260,7 @@ fn handle_project_switch(
         .or_else(|| json_string(body, "id"))
         .or_else(|| json_string(body, "project_id"))
         .ok_or_else(|| CliError::Usage("missing `project` id to switch to".to_string()))?;
-    let home = projects.firm_home.as_ref().ok_or_else(|| {
+    let home = projects.harness_home.as_ref().ok_or_else(|| {
         CliError::Usage(
             "serve is running with a raw --store/HARNESS_ROOT override; project switch is unavailable"
                 .to_string(),
@@ -25297,7 +25278,7 @@ fn handle_space_switch(
         .or_else(|| json_string(body, "id"))
         .or_else(|| json_string(body, "space_id"))
         .ok_or_else(|| CliError::Usage("missing `space` id to switch to".to_string()))?;
-    let home = projects.firm_home.as_ref().ok_or_else(|| {
+    let home = projects.harness_home.as_ref().ok_or_else(|| {
         CliError::Usage(
             "serve is running with a raw --store/HARNESS_ROOT override; Execution Space switch is unavailable"
                 .to_string(),
@@ -25319,7 +25300,7 @@ fn handle_company_switch(
         .or_else(|| json_string(body, "id"))
         .or_else(|| json_string(body, "company_id"))
         .ok_or_else(|| CliError::Usage("missing `company` id to switch to".to_string()))?;
-    let home = projects.firm_home.as_ref().ok_or_else(|| {
+    let home = projects.harness_home.as_ref().ok_or_else(|| {
         CliError::Usage(
             "serve is running with a raw --store/HARNESS_ROOT override; Company Store switch is unavailable"
                 .to_string(),
@@ -25334,7 +25315,7 @@ fn handle_company_switch(
 /// project-derived store remains visible only as an explicitly labelled
 /// compatibility locator; it is not the binding's owned state.
 fn project_context_json(ctx: &ProjectContext, current: &str) -> serde_json::Value {
-    let binding = project::firm_home()
+    let binding = project::harness_home()
         .ok()
         .and_then(|home| project::binding_for_root(&ctx.project_root, &home).ok());
     serde_json::json!({
@@ -26086,7 +26067,7 @@ pub(crate) fn reopen_team_member_value(
         // installed upgrade cannot hide behind a formerly Current snapshot.
         let probe_error = if member.native_session.is_some() {
             let previous_profile = member.provider_profile.clone();
-            let (profile, probe_error) = refreshed_team_member_provider_profile(&member, store)?;
+            let (profile, probe_error) = refreshed_team_member_provider_profile(&member)?;
             member.provider_profile = Some(profile);
             member.last_event_at = Some(now_string());
             if member.provider_profile != previous_profile {
@@ -26114,7 +26095,6 @@ pub(crate) fn reopen_team_member_value(
                 profile,
                 "reopen or resume its provider-native session",
                 probe_error.as_deref(),
-                store.get_provider_policy().unwrap_or_default(),
             ) {
                 return Err(CliError::Usage(reason));
             }
@@ -26129,8 +26109,8 @@ pub(crate) fn reopen_team_member_value(
             if !native_session.supports_resume
                 || matches!(
                     native_session.availability,
-                    firm_core::NativeSessionAvailability::Missing
-                        | firm_core::NativeSessionAvailability::Incompatible
+                    harness_core::NativeSessionAvailability::Missing
+                        | harness_core::NativeSessionAvailability::Incompatible
                 )
             {
                 return Err(CliError::Usage(format!(
@@ -26833,14 +26813,12 @@ fn require_reviewed_member_before_work_rebind(
         return Ok(());
     }
     let previous_profile = member.provider_profile.clone();
-    let (profile, probe_error) = refreshed_team_member_provider_profile(&member, store)?;
-    let policy = store.get_provider_policy().unwrap_or_default();
+    let (profile, probe_error) = refreshed_team_member_provider_profile(&member)?;
     let refusal = provider_compatibility_block_reason(
         &member,
         &profile,
         "receive rebound durable Work",
         probe_error.as_deref(),
-        policy,
     );
     member.provider_profile = Some(profile);
     member.last_event_at = Some(now_string());
@@ -26894,6 +26872,7 @@ fn create_team_work_value(
         check_refs: Vec::new(),
         github_links: Vec::new(),
         gates: Vec::new(),
+        workspace: None,
         version: 0,
         created_at: String::new(),
         updated_at: String::new(),
@@ -27658,7 +27637,7 @@ fn workflow_child_store_root(session_dir: &Path) -> PathBuf {
     session_dir.join("nested-harness-store")
 }
 
-fn workflow_child_firm_home(session_dir: &Path) -> PathBuf {
+fn workflow_child_harness_home(session_dir: &Path) -> PathBuf {
     session_dir.join("nested-harness-home")
 }
 
@@ -27679,7 +27658,7 @@ fn apply_workflow_child_store_guard(
         HARNESS_WORKFLOW_CHILD_STORE_ROOT_ENV,
         workflow_child_store_root(session_dir),
     )
-    .env("HARNESS_HOME", workflow_child_firm_home(session_dir))
+    .env("HARNESS_HOME", workflow_child_harness_home(session_dir))
     .env("HARNESS_WORKFLOW_STORE_GUARD", "isolated")
     .env_remove("HARNESS_PROJECT");
 }
@@ -28098,7 +28077,7 @@ fn workflow_project_context(store: &HarnessStore) -> ProjectContext {
     let store_root = store.root().to_path_buf();
     if let Ok(Some(space)) = execution_space::read_metadata(&store_root) {
         if let Some(binding_id) = space.default_project_binding_id.as_deref() {
-            if let Ok(home) = project::firm_home() {
+            if let Ok(home) = project::harness_home() {
                 if let Ok(Some(context)) = project::context_for_id(&home, binding_id) {
                     return context;
                 }
@@ -28118,7 +28097,7 @@ fn workflow_project_context(store: &HarnessStore) -> ProjectContext {
     let project_root = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let is_git_repo = is_git_repo(&project_root);
     ProjectContext {
-        id: firm_core::GLOBAL_PROJECT_ID.to_string(),
+        id: harness_core::GLOBAL_PROJECT_ID.to_string(),
         project_root,
         store_root,
         kind: ProjectKind::Repo,
@@ -28144,7 +28123,7 @@ fn workflow_project_context_for_run(
                 )));
             }
         }
-        let home = project::firm_home().map_err(project_err)?;
+        let home = project::harness_home().map_err(project_err)?;
         if let Some(context) = project::context_for_id(&home, &binding_id).map_err(project_err)? {
             return Ok(context);
         }
@@ -31592,7 +31571,7 @@ fn workflow_run_script_value(
         let driver = move |step: &workflow::AgentStepSpec| {
             workflow_real_agent_step(store, &run_id, &options, step)
         };
-        firm_workflow::starlark_front::run_starlark_with_budget(
+        harness_workflow::starlark_front::run_starlark_with_budget(
             &script,
             &name,
             parsed_args.as_ref(),
@@ -33451,20 +33430,20 @@ fn pid_exists_libc(pid: u32) -> bool {
 }
 
 /// Is the supervisor lease live — status Active, not expired, and owner PID exists.
-fn is_supervisor_current(lease: &firm_core::TeamSupervisorLease) -> bool {
+fn is_supervisor_current(lease: &harness_core::TeamSupervisorLease) -> bool {
     // PID liveness is deliberately excluded here: this function gates
     // control-plane decisions (close, reopen, recover-candidate) which
     // must stay on lease expiry+status semantics.  PID-alive check lives
     // in diagnostics (supervisor_lease_live_diagnosis, status output) and
     // in the status warning condition separately.
-    lease.status == firm_core::TeamSupervisorLeaseStatus::Active
+    lease.status == harness_core::TeamSupervisorLeaseStatus::Active
         && lease.expires_unix_ms > current_unix_ms_u64()
 }
 
 /// Returns (is_live, human-readable diagnosis). The diagnosis lists which of the
 /// three liveness checks failed, or "live" when all pass.
-fn supervisor_lease_live_diagnosis(lease: &firm_core::TeamSupervisorLease) -> (bool, String) {
-    let status_active = lease.status == firm_core::TeamSupervisorLeaseStatus::Active;
+fn supervisor_lease_live_diagnosis(lease: &harness_core::TeamSupervisorLease) -> (bool, String) {
+    let status_active = lease.status == harness_core::TeamSupervisorLeaseStatus::Active;
     let not_expired = lease.expires_unix_ms > current_unix_ms_u64();
     let pid_alive = pid_exists_libc(lease.owner_process_id);
     let live = status_active && not_expired && pid_alive;
@@ -36240,121 +36219,6 @@ fn stop_pid(pid: u32) -> CliResult<()> {
     }
 }
 
-// ── provider ─────────────────────────────────────────────────────────
-
-fn provider_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "provider admit")?;
-    match args[0].as_str() {
-        "admit" => provider_admit_command(store, args.get(1..).unwrap_or(&[])),
-        other => Err(CliError::Usage(format!(
-            "unknown provider subcommand: {other}; usage: firm provider admit --version <v> | firm provider admit --list"
-        ))),
-    }
-}
-
-fn provider_admit_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let list = args.iter().any(|a| a == "--list");
-    let version = value(args, "--version");
-    let provider = value(args, "--provider");
-    if list {
-        let admitted = store.list_admitted_versions().map_err(CliError::Store)?;
-        if admitted.is_empty() {
-            println!("No admitted provider versions.");
-        } else {
-            println!("Admitted provider versions:");
-            for (prov, versions) in &admitted {
-                let mut sorted: Vec<&String> = versions.iter().collect();
-                sorted.sort();
-                println!(
-                    "  {prov}: {}",
-                    sorted
-                        .into_iter()
-                        .map(String::as_str)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-            }
-        }
-        return Ok(());
-    }
-    let version = match version {
-        Some(v) => v,
-        None => {
-            return Err(CliError::Usage(
-                "usage: firm provider admit --version <v> | firm provider admit --list".to_string(),
-            ))
-        }
-    };
-    let providers: Vec<&str> = match provider.as_deref() {
-        Some(p) => vec![p],
-        None => vec!["kimi", "codex", "claude", "pi"],
-    };
-    for p in &providers {
-        store
-            .admit_provider_version(p, &version)
-            .map_err(CliError::Store)?;
-    }
-    if providers.len() == 1 {
-        println!("Admitted version {version} for provider {}.", providers[0]);
-    } else {
-        println!("Admitted version {version} for all providers.");
-    }
-    Ok(())
-}
-
-// ── config ───────────────────────────────────────────────────────────
-
-fn config_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "config set")?;
-    match args[0].as_str() {
-        "set" => config_set_command(store, args.get(1..).unwrap_or(&[])),
-        other => Err(CliError::Usage(format!(
-            "unknown config subcommand: {other}; usage: firm config set <key> <value>"
-        ))),
-    }
-}
-
-fn config_set_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    if args.is_empty() {
-        return Err(CliError::Usage(
-            "usage: firm config set provider.policy strict|advisory".to_string(),
-        ));
-    }
-    let key = &args[0];
-    let val = args.get(1).map(String::as_str);
-    match (key.as_str(), val) {
-        ("provider.policy", Some("strict")) => {
-            store
-                .set_provider_policy(ProviderPolicy::Strict)
-                .map_err(CliError::Store)?;
-            println!("provider.policy = strict");
-        }
-        ("provider.policy", Some("advisory")) => {
-            store
-                .set_provider_policy(ProviderPolicy::Advisory)
-                .map_err(CliError::Store)?;
-            println!("provider.policy = advisory");
-        }
-        ("provider.policy", Some(other)) => {
-            return Err(CliError::Usage(format!(
-                "invalid provider.policy value: {other}; must be strict or advisory"
-            )))
-        }
-        ("provider.policy", None) => {
-            let policy = store.get_provider_policy().map_err(CliError::Store)?;
-            let label = match policy {
-                ProviderPolicy::Strict => "strict",
-                ProviderPolicy::Advisory => "advisory",
-            };
-            println!("provider.policy = {label}");
-        }
-        (key, _) => {
-            return Err(CliError::Usage(format!("unknown config key: {key}")))
-        }
-    }
-    Ok(())
-}
-
 fn require_subcommand(args: &[String], usage: &str) -> CliResult<()> {
     if args.is_empty() {
         Err(CliError::Usage(format!("usage: harness {usage}")))
@@ -36554,8 +36418,6 @@ team-run send       --id <id> --from <actor> --to <csv> --kind message|handoff|c
                     --body <text> [--response-required|--informational]
                     [--work-id <id>] [--correlation-id <id>] [--json]
 team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]
-team-run host-inbox-verify --id <id> [--json]
-team-run host-heartbeat   --id <id> [--json]
 team-run ack        --id <id> (--message-id <csv>|--all-delivered)
                     [--member-id <id>] [--json]
 team-run events     --id <id> [--after-seq <n>] [--json]
@@ -36571,6 +36433,8 @@ const CHEATSHEET_WORK: &str = r#"work create          --team-run-id <id> --title
                     [--prerequisite-work-id <id>] [--idempotency-key <key>]
                     [--github-issue owner/repo#N]
                     [--gate plugin[:key=val[,key=val...]]]
+                    [--worktree <path> [--workspace-base <ref>] [--workspace-no-cleanup]]
+                    [--workspace-kind worktree|dir|inherit --workspace-path <path>]
 work list            --team-run-id <id> [--brief] [--since <cursor>]
                     [--status <status>] [--member-run-id <id>]
 work show            --work-id <id>
@@ -36607,8 +36471,6 @@ team-run wait --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
 team-run send --id <id> --from <actor> --to <csv>
   --kind message|handoff|control --body <text> [--work-id <id>] [--json]
 team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]
-team-run host-inbox-verify --id <id> [--json]
-team-run host-heartbeat --id <id> [--json]
 team-run ack --id <id> (--message-id <csv>|--all-delivered) [--json]
 team-run events --id <id> [--json]
 team-run board-summary --id <id>
@@ -36619,6 +36481,7 @@ work create --team-run-id <id> --title <text> --completion-criteria <text>
   [--claim-mode team_claim --eligible-member-id <id>] [--idempotency-key <key>]
   [--github-issue owner/repo#N]
   [--gate plugin[:key=val[,key=val...]]]
+  [--worktree <path> [--workspace-base <ref>]]
 work list --team-run-id <id> [--brief] [--since <cursor>]
 work show --work-id <id>
 work assign --work-id <id> --expected-version <n> --member-run-id <id> [--idempotency-key <key>]
@@ -36657,7 +36520,7 @@ fn print_help() {
   mission log append --mission-id <id> --kind judgment|replan|recovery|closeout_evidence --body <md>
   mission log show --mission-id <id> [--tail <n>]
   wave list|show|history (historical reads only; create|update|advance|gate retired by ADR 0051 -- use `mission log append`)
-  team-run create|list|status|recover|host-inbox|host-inbox-verify|bind-host|host-heartbeat|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|complete|cancel
+  team-run create|list|status|recover|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|complete|cancel
   team-run board-summary --id <team-run-id>
       <=500-char plain-text board digest: counts by status, assigned/unassigned,
       ready, and one idle|working|awaiting-review line per active member.
@@ -36717,7 +36580,7 @@ alias. Mission create-team defaults the Lead to the current Host Agent (`host`).
 #[cfg(test)]
 mod workflow_runtime_tests {
     use super::*;
-    use firm_core::{LaunchMcpServer, WorkflowStepStatus};
+    use harness_core::{LaunchMcpServer, WorkflowStepStatus};
 
     fn temp_store(tag: &str) -> HarnessStore {
         let root = std::env::temp_dir().join(format!("harness-wf-test-{}", generated_id(tag)));
@@ -39969,7 +39832,7 @@ new file mode 100644
         assert_eq!(
             envs.get("HARNESS_HOME").cloned().flatten(),
             Some(
-                workflow_child_firm_home(&session_dir)
+                workflow_child_harness_home(&session_dir)
                     .to_string_lossy()
                     .to_string()
             )
@@ -40038,7 +39901,7 @@ new file mode 100644
             max_budget_usd: None,
             progress: false,
             project: ProjectContext {
-                id: firm_core::GLOBAL_PROJECT_ID.into(),
+                id: harness_core::GLOBAL_PROJECT_ID.into(),
                 project_root: project_root.clone(),
                 store_root: store.root().to_path_buf(),
                 kind: ProjectKind::Global,
@@ -40054,7 +39917,7 @@ new file mode 100644
             "names the cause: {msg}"
         );
         assert!(
-            msg.contains(firm_core::GLOBAL_PROJECT_ID),
+            msg.contains(harness_core::GLOBAL_PROJECT_ID),
             "names the offending project id: {msg}"
         );
         assert!(
@@ -40081,7 +39944,7 @@ new file mode 100644
             max_budget_usd: None,
             progress: false,
             project: ProjectContext {
-                id: firm_core::GLOBAL_PROJECT_ID.into(),
+                id: harness_core::GLOBAL_PROJECT_ID.into(),
                 project_root: project_root.clone(),
                 store_root: store.root().to_path_buf(),
                 kind: ProjectKind::Global,
@@ -41590,7 +41453,7 @@ package:com.tencent.mm
         // routing to claude (provider path is correct). The test is about
         // routing, not binary availability in the test environment.
         let project = ProjectContext {
-            id: firm_core::GLOBAL_PROJECT_ID.into(),
+            id: harness_core::GLOBAL_PROJECT_ID.into(),
             project_root: root.clone(),
             store_root: store.root().to_path_buf(),
             kind: ProjectKind::Repo,
@@ -42452,15 +42315,15 @@ package:com.tencent.mm
         );
         assert_eq!(
             run.provider_controls.model.status,
-            firm_core::ProviderControlStatus::Requested
+            harness_core::ProviderControlStatus::Requested
         );
         assert_eq!(
             run.provider_controls.reasoning_effort.status,
-            firm_core::ProviderControlStatus::Requested
+            harness_core::ProviderControlStatus::Requested
         );
         assert_eq!(
             run.provider_controls.service_tier.status,
-            firm_core::ProviderControlStatus::Requested
+            harness_core::ProviderControlStatus::Requested
         );
     }
 
@@ -43435,7 +43298,7 @@ package:com.tencent.mm
 
     #[test]
     fn canonical_surface_equivalence() {
-        use firm_store::canonical_surface;
+        use harness_store::canonical_surface;
 
         // kimi family
         assert_eq!(canonical_surface("kimi"), "kimi");
@@ -43508,6 +43371,7 @@ package:com.tencent.mm
                     check_refs: Vec::new(),
                     github_links: Vec::new(),
                     gates: Vec::new(),
+                    workspace: None,
                     version: 0,
                     created_at: String::new(),
                     updated_at: String::new(),
@@ -44133,7 +43997,7 @@ package:com.tencent.mm
             merged.detail
         );
         assert!(
-            !firm_core::provider_capacity_start_decision(Some(&merged), 1_500, 1_000)
+            !harness_core::provider_capacity_start_decision(Some(&merged), 1_500, 1_000)
                 .is_blocked(),
             "a missing proxy must never gate a start"
         );
@@ -44148,7 +44012,7 @@ package:com.tencent.mm
         assert_eq!(merged.account.source, "oauth_credentials_file");
         assert!(!merged.runtime_context.is_empty());
         assert!(
-            firm_core::provider_capacity_start_decision(Some(&merged), 1_500, 1_000)
+            harness_core::provider_capacity_start_decision(Some(&merged), 1_500, 1_000)
                 .is_blocked()
         );
     }
@@ -44195,7 +44059,7 @@ package:com.tencent.mm
         // Still blocks, and still as exhausted: a missing proxy does not
         // excuse a spent quota the way it excuses a credential rejection.
         assert_eq!(merged.state, ProviderCapacityState::Exhausted);
-        let decision = firm_core::provider_capacity_start_decision(Some(&merged), 1_500, 1_000);
+        let decision = harness_core::provider_capacity_start_decision(Some(&merged), 1_500, 1_000);
         assert!(decision.is_blocked());
         assert!(
             decision.reason().contains("exhausted"),
@@ -44416,7 +44280,7 @@ package:com.tencent.mm
         // Defaults are on and five minutes; this test asserts the parse rules,
         // not the ambient process env.
         assert_eq!(
-            firm_core::PROVIDER_CAPACITY_DEFAULT_TTL_MS,
+            harness_core::PROVIDER_CAPACITY_DEFAULT_TTL_MS,
             5 * 60 * 1000
         );
         assert_eq!(
@@ -45293,10 +45157,10 @@ package:com.tencent.mm
 
     #[test]
     fn cheatsheet_length_budgets() {
-        // `all` <= 2200 chars; each scoped page <= 1200 chars.
+        // `all` <= 2000 chars; each scoped page <= 1200 chars.
         assert!(
-            CHEATSHEET_ALL.len() <= 2200,
-            "CHEATSHEET_ALL length {} exceeds 2200",
+            CHEATSHEET_ALL.len() <= 2000,
+            "CHEATSHEET_ALL length {} exceeds 2000",
             CHEATSHEET_ALL.len()
         );
         assert!(
@@ -45327,178 +45191,6 @@ package:com.tencent.mm
         let error = cheatsheet_command(&["bogus".to_string()])
             .expect_err("cheatsheet bogus should be rejected");
         assert!(matches!(error, CliError::Usage(_)));
-    }
-
-    #[test]
-    fn host_heartbeat_updates_lease() {
-        let (store, root) = temp_store("heartbeat-lease");
-        let created = create_two_member_team_run(&store);
-        let run = latest_team_run(&store, &created.team_run.id).unwrap();
-        let mut bound = run.clone();
-        bound.host_thread_id = Some("thread-1".to_string());
-        bound.host_surface = "cli".to_string();
-        bound.updated_at = now_string();
-        store_conflict_as_usage(store.compare_and_append_team_run(&run, &bound)).unwrap();
-        let current = latest_team_run(&store, &created.team_run.id).unwrap();
-        let mut next = current.clone();
-        let now = now_string();
-        next.host_lease_last_seen = Some(now.clone());
-        next.updated_at = now;
-        store_conflict_as_usage(store.compare_and_append_team_run(&current, &next)).unwrap();
-        let updated = latest_team_run(&store, &created.team_run.id).unwrap();
-        assert!(updated.host_lease_last_seen.is_some(), "lease should be set");
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn host_heartbeat_detects_stale() {
-        let (store, root) = temp_store("heartbeat-stale");
-        let created = create_two_member_team_run(&store);
-        let run = latest_team_run(&store, &created.team_run.id).unwrap();
-        let mut bound = run.clone();
-        bound.host_thread_id = Some("thread-1".to_string());
-        bound.host_surface = "cli".to_string();
-        bound.updated_at = now_string();
-        store_conflict_as_usage(store.compare_and_append_team_run(&run, &bound)).unwrap();
-        let old_lease = format!("unix-ms:{}", current_unix_ms() - 600_000);
-        let current = latest_team_run(&store, &created.team_run.id).unwrap();
-        let mut with_old_lease = current.clone();
-        with_old_lease.host_lease_last_seen = Some(old_lease);
-        with_old_lease.updated_at = now_string();
-        store_conflict_as_usage(store.compare_and_append_team_run(&current, &with_old_lease)).unwrap();
-        let current2 = latest_team_run(&store, &created.team_run.id).unwrap();
-        let now = now_string();
-        let prev_lease = current2.host_lease_last_seen.clone();
-        let stale = prev_lease.as_deref().is_some_and(|prev| {
-            prev.split_once("unix-ms:")
-                .and_then(|(_, ms)| ms.parse::<u64>().ok())
-                .is_some_and(|prev_ms| {
-                    now.split_once("unix-ms:")
-                        .and_then(|(_, now_ms)| now_ms.parse::<u64>().ok())
-                        .is_some_and(|now_ms| now_ms.saturating_sub(prev_ms) > 300_000)
-                })
-        });
-        assert!(stale, "10-min-old lease should be detected as stale");
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn host_inbox_verify_reports_unbound() {
-        let (store, root) = temp_store("verify-unbound");
-        let created = create_two_member_team_run(&store);
-        let run = latest_team_run(&store, &created.team_run.id).unwrap();
-        let bound = run.host_thread_id.is_some() && run.host_lease_last_seen.is_some();
-        assert!(!bound, "fresh run with no host_thread_id should be unbound");
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn host_inbox_verify_reports_unacked() {
-        let (store, root) = temp_store("verify-unacked");
-        let created = create_two_member_team_run(&store);
-        let member = &created.member_runs[0];
-        // Bind host
-        let run = latest_team_run(&store, &created.team_run.id).unwrap();
-        let mut bound = run.clone();
-        bound.host_thread_id = Some("thread-1".to_string());
-        bound.host_surface = "cli".to_string();
-        bound.updated_at = now_string();
-        store_conflict_as_usage(store.compare_and_append_team_run(&run, &bound)).unwrap();
-        // Send a member→host message (creates ManualAck/Delivered delivery)
-        let _msg = send_team_message(
-            &store,
-            &created.team_run.id,
-            &member.id,
-            vec!["host".to_string()],
-            TeamMessageKind::Handoff,
-            "Work done",
-            None,
-            None,
-            None,
-            None,
-        ).expect("member to host");
-        let messages = latest_team_messages_in_append_order(&store).unwrap();
-        let unacked = messages
-            .iter()
-            .filter(|m| m.team_run_id == created.team_run.id && has_actionable_delivered_manual_ack(m))
-            .count();
-        assert!(unacked > 0, "should have unacked messages");
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn bind_host_sets_lease() {
-        let (store, root) = temp_store("bind-lease");
-        let created = create_two_member_team_run(&store);
-        let run = latest_team_run(&store, &created.team_run.id).unwrap();
-        let mut next = run.clone();
-        next.host_surface = "codex-app".into();
-        next.host_thread_id = Some("thread-lease".into());
-        next.host_lease_last_seen = Some(now_string());
-        next.updated_at = now_string();
-        store.compare_and_append_team_run(&run, &next).expect("CAS bind");
-        let bound = latest_team_run(&store, &created.team_run.id).unwrap();
-        assert!(bound.host_lease_last_seen.is_some(), "lease should be set on bind");
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn message_delivery_timestamps() {
-        let (store, root) = temp_store("delivery-ts");
-        let created = create_two_member_team_run(&store);
-        let member = &created.member_runs[0];
-        // Send a member→host handoff (creates Delivered delivery)
-        let msg = send_team_message(
-            &store,
-            &created.team_run.id,
-            &member.id,
-            vec!["host".to_string()],
-            TeamMessageKind::Handoff,
-            "Work done",
-            None,
-            None,
-            None,
-            None,
-        ).expect("member to host");
-        let delivery = &msg.deliveries[0];
-        assert_eq!(delivery.status, TeamDeliveryStatus::Delivered);
-        assert!(delivery.delivered_at.is_some(), "delivered_at should be set");
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn message_dedup_prevents_duplicate() {
-        let (store, root) = temp_store("dedup-msg");
-        let created = create_two_member_team_run(&store);
-        let member = &created.member_runs[0];
-        // This test verifies the dedup logic doesn't crash on legitimate different messages
-        let msg1 = send_team_message(
-            &store,
-            &created.team_run.id,
-            "host",
-            vec![member.id.clone()],
-            TeamMessageKind::Message,
-            "First message",
-            None,
-            None,
-            None,
-            None,
-        ).expect("first message");
-        // Different body, same correlation → should NOT be rejected
-        let msg2 = send_team_message(
-            &store,
-            &created.team_run.id,
-            "host",
-            vec![member.id.clone()],
-            TeamMessageKind::Message,
-            "Second message with different body",
-            Some(msg1.correlation_id.clone()),
-            Some(msg1.id.clone()),
-            None,
-            None,
-        ).expect("second message with different body");
-        assert_ne!(msg1.id, msg2.id);
-        let _ = std::fs::remove_dir_all(root);
     }
 }
 
@@ -45650,7 +45342,6 @@ mod sse_tests {
             project_binding_id: Some(context.id.clone()),
             host_surface: "test".into(),
             host_thread_id: None,
-            host_lease_last_seen: None,
             host_actor: None,
             host_control_mode: Default::default(),
             objective: "test cwd precedence".into(),
@@ -45813,7 +45504,7 @@ mod sse_tests {
             is_git_repo: true,
         };
         let projects = ServeProjects {
-            firm_home: Some(std::env::temp_dir().join(generated_id("unrelated-registry"))),
+            harness_home: Some(std::env::temp_dir().join(generated_id("unrelated-registry"))),
             default_id: expected.id.clone(),
             default_store: store.clone(),
             default_space: None,
@@ -45853,7 +45544,7 @@ mod sse_tests {
             // Single-project serve mode (no registry): default project routes to the
             // served store, watcher multiplexes over just that one.
             let projects = ServeProjects {
-                firm_home: None,
+                harness_home: None,
                 default_id: "_test".to_string(),
                 default_store: serve_store.clone(),
                 default_space: None,
@@ -46153,11 +45844,11 @@ mod tests_team_run_recover {
     // ── supervisor lease liveness helpers ─────────────────────────
 
     fn make_lease(
-        status: firm_core::TeamSupervisorLeaseStatus,
+        status: harness_core::TeamSupervisorLeaseStatus,
         expires_ms: u64,
         pid: u32,
-    ) -> firm_core::TeamSupervisorLease {
-        firm_core::TeamSupervisorLease {
+    ) -> harness_core::TeamSupervisorLease {
+        harness_core::TeamSupervisorLease {
             team_run_id: "tr-test".into(),
             supervisor_id: "sv-test".into(),
             generation: 1,
@@ -46175,7 +45866,7 @@ mod tests_team_run_recover {
     fn diagnosis_live_lease() {
         let now = current_unix_ms_u64();
         let lease = make_lease(
-            firm_core::TeamSupervisorLeaseStatus::Active,
+            harness_core::TeamSupervisorLeaseStatus::Active,
             now + 60_000,
             std::process::id(),
         );
@@ -46188,7 +45879,7 @@ mod tests_team_run_recover {
     fn diagnosis_expired_lease() {
         let now = current_unix_ms_u64();
         let lease = make_lease(
-            firm_core::TeamSupervisorLeaseStatus::Active,
+            harness_core::TeamSupervisorLeaseStatus::Active,
             now.saturating_sub(1), // expired
             std::process::id(),
         );
@@ -46204,7 +45895,7 @@ mod tests_team_run_recover {
     fn diagnosis_released_status() {
         let now = current_unix_ms_u64();
         let lease = make_lease(
-            firm_core::TeamSupervisorLeaseStatus::Released,
+            harness_core::TeamSupervisorLeaseStatus::Released,
             now + 60_000,
             std::process::id(),
         );
@@ -46221,7 +45912,7 @@ mod tests_team_run_recover {
         let now = current_unix_ms_u64();
         // PID 0 is treated as dead by pid_exists_libc
         let lease = make_lease(
-            firm_core::TeamSupervisorLeaseStatus::Active,
+            harness_core::TeamSupervisorLeaseStatus::Active,
             now + 60_000,
             0,
         );
@@ -46237,7 +45928,7 @@ mod tests_team_run_recover {
     fn diagnosis_multiple_failures() {
         let now = current_unix_ms_u64();
         let lease = make_lease(
-            firm_core::TeamSupervisorLeaseStatus::Released,
+            harness_core::TeamSupervisorLeaseStatus::Released,
             now.saturating_sub(1), // expired
             0,                     // dead PID
         );
@@ -46259,7 +45950,7 @@ mod tests_team_run_recover {
     fn is_supervisor_current_live_process() {
         let now = current_unix_ms_u64();
         let lease = make_lease(
-            firm_core::TeamSupervisorLeaseStatus::Active,
+            harness_core::TeamSupervisorLeaseStatus::Active,
             now + 60_000,
             std::process::id(),
         );
@@ -46270,7 +45961,7 @@ mod tests_team_run_recover {
     fn is_supervisor_current_expired() {
         let now = current_unix_ms_u64();
         let lease = make_lease(
-            firm_core::TeamSupervisorLeaseStatus::Active,
+            harness_core::TeamSupervisorLeaseStatus::Active,
             now.saturating_sub(1),
             std::process::id(),
         );
@@ -46281,7 +45972,7 @@ mod tests_team_run_recover {
     fn is_supervisor_current_released() {
         let now = current_unix_ms_u64();
         let lease = make_lease(
-            firm_core::TeamSupervisorLeaseStatus::Released,
+            harness_core::TeamSupervisorLeaseStatus::Released,
             now + 60_000,
             std::process::id(),
         );

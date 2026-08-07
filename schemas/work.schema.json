@@ -36,6 +36,18 @@
       "description": "Declared verification gates this Work must pass before acceptance. Empty vec preserves manual-accept semantics.",
       "items": { "$ref": "#/$defs/gate_spec" }
     },
+    "workspace": {
+      "type": ["object", "null"],
+      "description": "Where this Work executes. Null → Member inherits project root.",
+      "additionalProperties": false,
+      "required": ["kind", "path"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["worktree", "dir", "inherit"] },
+        "path": { "type": "string", "minLength": 1 },
+        "base_ref": { "type": ["string", "null"] },
+        "auto_cleanup": { "type": "boolean" }
+      }
+    },
     "version": { "type": "integer", "minimum": 1 },
     "created_at": { "type": "string", "minLength": 1 },
     "updated_at": { "type": "string", "minLength": 1 }
