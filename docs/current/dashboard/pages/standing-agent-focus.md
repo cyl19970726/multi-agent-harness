@@ -27,7 +27,7 @@ another assignment ledger or writes execution lifecycle back to Organization.
 
 The first edge is authored only by `harness company org link-execution` /
 `unlink-execution`, which validate the AgentMember against an explicitly named
-Execution Space. See `docs/company-os/organization-and-actors.md` for the write
+Execution Space. See `docs/current/company-os/organization-and-actors.md` for the write
 contract and the cross-store boundary.
 
 ### `standing_assignment_conflicts`
@@ -138,7 +138,7 @@ Projection rules:
 
 Use the shared `FocusShell`: continuous activity/conversation in the center,
 sticky composer, and a composed Context Rail. The active execution-workbench
-visual contract is `docs/design/execution-workbench-v3/visual-contract.json`;
+visual contract is `docs/archive/design/execution-workbench-v3/visual-contract.json`;
 the retired `workbench-layout-v2` concept package is no longer an active
 design source.
 

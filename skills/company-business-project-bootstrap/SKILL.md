@@ -44,14 +44,14 @@ UI to operate the project.
 
 Read these before changing durable records or writing a project plan:
 
-- `docs/company-os/README.md`
-- `docs/company-os/document-system.md`
-- `docs/company-os/work-items-and-approvals.md`
-- `docs/company-os/organization-and-actors.md`
-- `docs/company-os/financial-relations.md`
-- `docs/company-os/module-design.md`
-- `docs/company-os/skill-contracts.md`
-- `docs/company-os/implementation-truth-matrix.md`
+- `docs/current/company-os/README.md`
+- `docs/current/company-os/document-system.md`
+- `docs/current/company-os/work-items-and-approvals.md`
+- `docs/current/company-os/organization-and-actors.md`
+- `docs/current/company-os/financial-relations.md`
+- `docs/current/company-os/module-design.md`
+- `docs/current/company-os/skill-contracts.md`
+- `docs/current/company-os/implementation-truth-matrix.md`
 
 For page architecture and Docs Store authoring, also use:
 
@@ -61,13 +61,13 @@ For page architecture and Docs Store authoring, also use:
 
 If the project has software source truth in GitHub or another repo, also read:
 
-- `docs/company-os/external-project-product-sources.md`
+- `docs/current/company-os/external-project-product-sources.md`
 - `$connect-github-company-os` for Issue/PR/check/source correlation.
 
 If building custom pages, also read:
 
-- `docs/company-os/agent-programmable-pages.md`
-- `docs/company-os/frontend-information-architecture.md`
+- `docs/current/company-os/agent-programmable-pages.md`
+- `docs/current/company-os/frontend-information-architecture.md`
 
 Repository docs, schemas, Store/API code, and acceptance checks outrank this
 skill when there is a conflict.

@@ -18,8 +18,8 @@ humans, durable AgentMembers arranged in recursive AgentTeams, external
 collaborators, and services. Documents create or relate Work and Approvals;
 accountable actors execute them; results, evidence, metrics, and financial
 effects return to the originating records. See
-[docs/prd.md](docs/prd.md) and
-[docs/company-os/README.md](docs/company-os/README.md).
+[docs/current/product/prd.md](docs/current/product/prd.md) and
+[docs/current/company-os/README.md](docs/current/company-os/README.md).
 
 Mission/Wave, Agent Team, Dynamic Workflow, Host execution, providers, plugins,
 and MCP are the shared execution foundation. Their native relations are:
@@ -76,7 +76,7 @@ doc carries the contract behind each rule.
    `execution_root` > binding `project_root` — never an Execution Space,
    Company Store, or compatibility store root. Select space and project
    explicitly; never silently migrate or dual-write
-   ([docs/multi-project.md](docs/multi-project.md), ADR 0033, ADR 0042).
+   ([docs/current/operations/multi-project.md](docs/current/operations/multi-project.md), ADR 0033, ADR 0042).
 5. **Provider upgrade gates.** Provider capability claims are execution-mode
    and version specific. Run `harness member providers --fail-on-review` after
    provider upgrades; an unreviewed version is `review_required`, not silently
@@ -148,41 +148,41 @@ doc carries the contract behind each rule.
   explicit outcome summary. Full sequence and command reference:
   [docs/agent-operating-rules.md](docs/agent-operating-rules.md).
 - Harness dogfood runs follow
-  [docs/product/agent-team-dogfood-loop.md](docs/product/agent-team-dogfood-loop.md):
+  [docs/current/product/agent-team-dogfood-loop.md](docs/current/product/agent-team-dogfood-loop.md):
   classify defects, repair on a clean lane, rerun the original scenario, then
   expand the pressure matrix. Never weaken a scenario or edit store evidence to
   make a run appear green.
 - Scenario execution rosters and research budgets (for example the current
   dogfood roster) are scenario policy, not repository-wide invariants: they
-  live in [docs/operations.md](docs/operations.md) and the owning scenario
+  live in [docs/current/operations/operations.md](docs/current/operations/operations.md) and the owning scenario
   skill ([skills/dogfood-company-os/SKILL.md](skills/dogfood-company-os/SKILL.md))
   and must not be broadened into root instructions.
 - Prefer the progression `doc -> skill -> schema -> CLI/API -> dashboard ->
   plugin`. The Agent Dashboard is the operator view for harness state; product
   dashboards for adapted projects remain separate.
-- Local gates and commands: [docs/operations.md](docs/operations.md).
+- Local gates and commands: [docs/current/operations/operations.md](docs/current/operations/operations.md).
   `acceptance:mission-wave` proves the deterministic Mission/Wave, Agent Team,
   MCP, Kimi ACP adapter, and Dashboard contracts; a real-provider claim still
   requires a separately recorded native live run.
 
 ## Routing
 
-- Product requirements: [docs/prd.md](docs/prd.md); Company OS product entry:
-  [docs/company-os/README.md](docs/company-os/README.md); architecture:
-  [docs/architecture-map.md](docs/architecture-map.md); concept model:
+- Product requirements: [docs/current/product/prd.md](docs/current/product/prd.md); Company OS product entry:
+  [docs/current/company-os/README.md](docs/current/company-os/README.md); architecture:
+  [docs/current/architecture/architecture-map.md](docs/current/architecture/architecture-map.md); concept model:
   [docs/concept-model.md](docs/concept-model.md)
 - Detailed operating rules and the relocation map for this slimming:
   [docs/agent-operating-rules.md](docs/agent-operating-rules.md)
 - Execution Spaces and Project Bindings:
-  [docs/multi-project.md](docs/multi-project.md)
+  [docs/current/operations/multi-project.md](docs/current/operations/multi-project.md)
 - Member continuation and execution drivers:
   [docs/member-continuation-model.md](docs/member-continuation-model.md)
 - Provider runtime substrate: [docs/agent-runtime.md](docs/agent-runtime.md);
   integration model:
   [docs/agent-integration-model.md](docs/agent-integration-model.md)
-- Operations gates and commands: [docs/operations.md](docs/operations.md)
+- Operations gates and commands: [docs/current/operations/operations.md](docs/current/operations/operations.md)
 - Dogfood method:
-  [docs/product/agent-team-dogfood-loop.md](docs/product/agent-team-dogfood-loop.md)
+  [docs/current/product/agent-team-dogfood-loop.md](docs/current/product/agent-team-dogfood-loop.md)
 - Documentation governance:
   [docs/documentation-governance.md](docs/documentation-governance.md)
 - ADRs: [docs/decisions/README.md](docs/decisions/README.md) — especially 0026

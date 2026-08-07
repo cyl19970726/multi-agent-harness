@@ -34,12 +34,12 @@ provider sessions, prompts, or runtimes.
 
 Before proposing or executing a durable Organization change, read:
 
-- `docs/company-os/organization-and-actors.md`
-- `docs/company-os/governance-agent-workspaces.md`
-- `docs/company-os/collaboration-and-agent-work.md`
-- `docs/company-os/implementation-truth-matrix.md`
-- `docs/company-os/skill-contracts.md`
-- `docs/company-os/governance.md`
+- `docs/current/company-os/organization-and-actors.md`
+- `docs/current/company-os/governance-agent-workspaces.md`
+- `docs/current/company-os/collaboration-and-agent-work.md`
+- `docs/current/company-os/implementation-truth-matrix.md`
+- `docs/current/company-os/skill-contracts.md`
+- `docs/current/company-os/governance.md`
 
 If repository files, schemas, API code, or acceptance checks conflict with this
 skill, the canonical implementation contract wins.

@@ -124,7 +124,7 @@ sizes; layout rhythm, continuous flow, semantic icons, pressure placement, and
 responsive behavior are acceptance criteria.
 
 The active contract is
-[`docs/design/execution-workbench-v3/visual-contract.json`](../design/execution-workbench-v3/visual-contract.json).
+[`docs/archive/design/execution-workbench-v3/visual-contract.json`](../design/execution-workbench-v3/visual-contract.json).
 
 ## Validation
 

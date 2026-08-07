@@ -15,7 +15,7 @@ baseline worktree:
 
 evaluator agent:
   receives the skill, raw repo state, user goal, and final acceptance standard
-  performs or designs the docs/architecture reorg in that worktree
+  performs or designs the docs/current/architecture/architecture reorg in that worktree
   reports changed files, decisions, diagrams, checks, and remaining gaps
 
 lead review:

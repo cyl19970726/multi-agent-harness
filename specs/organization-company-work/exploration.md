@@ -6,7 +6,7 @@ produced_by: member-run-1786038758973-p66721-0 (x-explorer2)
 references:
   - specs/organization-company-work/design.md (org-designer, merged PR #379)
   - docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md
-  - docs/company-os/nested-agent-team-organization.md
+  - docs/current/company-os/nested-agent-team-organization.md
 ```
 
 ## 1. 范围

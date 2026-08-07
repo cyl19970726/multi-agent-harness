@@ -53,7 +53,7 @@ Store identity introduced by ADR 0042.
 ### Docs
 
 `harness company docs ...` is the most complete Company OS CLI surface. Per
-the ADR 0054 retirement plan (`docs/company-os/ai-first-docs-spec.md` §13),
+the ADR 0054 retirement plan (`docs/current/company-os/ai-first-docs-spec.md` §13),
 the Block-era document/template/block command tree was deleted at retirement
 stage R3; the AI-first Docs v2 page surface is current for page/document work.
 

@@ -206,5 +206,5 @@ and primary frontend are an additive migration in progress. Documentation must
 label planned fields and projections honestly until schemas, store, APIs,
 fixtures, and acceptance checks exist.
 
-See [Company OS docs](company-os/README.md) and
+See [Company OS docs](current/company-os/README.md) and
 [ADR 0027](decisions/0027-company-os-primary-model.md).

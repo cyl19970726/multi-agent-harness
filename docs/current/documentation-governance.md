@@ -18,12 +18,12 @@ not seven independent sources of product truth.
 
 | Module | Location | Owns | Default context? |
 | --- | --- | --- | --- |
-| Product | `docs/prd.md`, `docs/company-os/` | product mission, system ownership, object meaning, governance and UX contracts | yes, through a small context pack |
-| Architecture | `docs/architecture*.md`, `docs/concept-model.md`, `docs/data-model.md`, `docs/decisions/` | implemented boundaries, durable decisions, source-of-truth and migration rules | selected files only |
+| Product | `docs/current/product/prd.md`, `docs/current/company-os/` | product mission, system ownership, object meaning, governance and UX contracts | yes, through a small context pack |
+| Architecture | `docs/current/architecture/architecture*.md`, `docs/concept-model.md`, `docs/data-model.md`, `docs/decisions/` | implemented boundaries, durable decisions, source-of-truth and migration rules | selected files only |
 | Execution | `docs/dashboard/`, `docs/integration/`, runtime/workflow docs | Mission/Wave, executors, providers, operator surfaces and runbooks | only for execution work |
-| Design evidence | `docs/design/<workstream>/` | versioned Expected, Actual, prompts, specs, overlays, comparisons and reviews | only for the selected workstream |
-| Operations | `docs/getting-started.md`, `docs/operations.md`, `docs/schemas.md`, `docs/governance-engine.md` | commands, release and governance gates | only for implementation/operations |
-| Research | `docs/research/` | unresolved evidence, comparisons and bounded proposals attached to an active decision or WorkItem | never default context |
+| Design evidence | `docs/archive/design/<workstream>/` | versioned Expected, Actual, prompts, specs, overlays, comparisons and reviews | only for the selected workstream |
+| Operations | `docs/current/operations/getting-started.md`, `docs/current/operations/operations.md`, `docs/current/architecture/schemas.md`, `docs/governance-engine.md` | commands, release and governance gates | only for implementation/operations |
+| Research | `docs/archive/research/` | unresolved evidence, comparisons and bounded proposals attached to an active decision or WorkItem | never default context |
 | Historical evidence | verified external archives and Git history | provenance needed to interpret still-existing records or decisions | never default context |
 
 Within Company OS, product contracts divide by truth-owning system:
@@ -65,23 +65,23 @@ answer the current decision.
 
 ### Company OS product pack
 
-1. `docs/company-os/product-system-map.md`
+1. `docs/current/company-os/product-system-map.md`
 2. the one system contract being changed;
-3. `docs/company-os/four-system-collaboration.md` only for a cross-system change;
+3. `docs/current/company-os/four-system-collaboration.md` only for a cross-system change;
 4. the relevant ADR or schema;
 5. the selected visual workstream index when UI is in scope.
 
 ### Execution foundation pack
 
 1. `AGENTS.md`
-2. `docs/architecture-map.md`
+2. `docs/current/architecture/architecture-map.md`
 3. ADR 0026 and the selected executor contract;
 4. the specific page, provider or runtime reference being changed.
 
 ### Module-design pack
 
 1. source Document or request;
-2. `docs/company-os/module-design.md`;
+2. `docs/current/company-os/module-design.md`;
 3. the four-system ownership map;
 4. relevant Organization, Work, Finance and Approval policy;
 5. the domain example or adapter, if one exists.
