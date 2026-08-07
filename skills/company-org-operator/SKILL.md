@@ -315,7 +315,6 @@ kernel. Company OS organization records are a separate durable surface.
 A Standing Agent may link to an AgentMember via `--execution-agent-member-ref`,
 but the two surfaces are independently authored.
 
-Full design: `specs/nested-agent-team-organization/cutover-cli-design.md`.
 
 ## Governance model
 

@@ -1,5 +1,7 @@
+status: superseded by docs/mental/agent-firm-mental-model.md
 # ADR 0052: Nested Agent Teams Are The Agent Organization
 
+status: superseded — replaced by docs/mental/agent-firm-mental-model.md (flat topology, no nesting)
 ```text
 status: accepted target contract; implementation pending
 date: 2026-08-04
