@@ -18,7 +18,8 @@ use firm_core::{
     AgentMemberStatus, AgentMessageRoute, AgentProviderConfig, AgentRuntime, AgentRuntimeHealth,
     AgentRuntimeStatus, AgentTeam, AgentTeamRun, AgentTeamStatus, DelegationRun,
     DurableAgentMember, DurableAgentMemberStatus, Evidence, ExecutionSpace, GitHubLink,
-    GitHubLinkKind, HostAttention, HostAttentionStatus, HostControlMode, LaunchMcp,
+    GitHubLinkKind, HostAttention, HostAttentionStatus, HostControlMode, HostDispatchConfig,
+    LaunchMcp,
     LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus, MemberCoordinationStatus,
     MemberExecutionDriver, MemberRun, MemberRunStatus, MemberWorkspaceSnapshot, Message,
     MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Mission,
@@ -64,6 +65,7 @@ mod sse;
 #[cfg(unix)]
 mod supervisor_daemon;
 mod supervisor_wake;
+mod host_dispatcher;
 mod workflow;
 
 #[derive(Debug, Error)]
@@ -17176,6 +17178,11 @@ pub(crate) fn drive_prepared_team_run(
     let mut outcomes = Vec::new();
     let turn_leases = Arc::new(ActiveTurnLeasePool::new(max_concurrency));
     let mut lease_lost = false;
+    // Host dispatcher polling (issue #387 P0-2): throttle headless host rounds
+    // to the configured poll interval.
+    let host_dispatch_config = HostDispatchConfig::default();
+    let mut last_host_dispatch_poll = Instant::now()
+        - Duration::from_secs(host_dispatch_config.poll_interval_secs);
     loop {
         if !lease_lost {
             if let Err(error) = ledger.require_supervisor_lease() {
@@ -17336,6 +17343,41 @@ pub(crate) fn drive_prepared_team_run(
         // runtime has ended explicitly (or a test-only idle bound retires it).
         if handles.is_empty() {
             break;
+        }
+        // Host attention dispatch poll (issue #387 P0-2): throttled, best-effort,
+        // never fatal to the supervisor loop.
+        if !lease_lost
+            && last_host_dispatch_poll.elapsed()
+                >= Duration::from_secs(host_dispatch_config.poll_interval_secs)
+        {
+            last_host_dispatch_poll = Instant::now();
+            match host_dispatcher::poll_and_dispatch(
+                &ledger.store,
+                &ledger,
+                &objective,
+                &host_dispatch_config,
+            ) {
+                Ok(outcome) if !outcome.is_noop() => {
+                    ledger.fold_event(
+                        TeamRunEventSourceKind::Host,
+                        None,
+                        "team_run",
+                        &run_id,
+                        "host_dispatcher",
+                        &format!(
+                            "host dispatcher poll: inspected={}, handled={}, escalated={}, failed={}",
+                            outcome.inspected,
+                            outcome.handled.len(),
+                            outcome.escalated.len(),
+                            outcome.failed.len(),
+                        ),
+                    )?;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    eprintln!("[supervisor] host dispatcher poll skipped: {error}");
+                }
+            }
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -25870,6 +25912,12 @@ fn ack_host_attention_value(
             }
         }
         HostAttentionStatus::Actionable => {}
+        HostAttentionStatus::EscalationRequired => {
+            // Already escalated — no further console ack needed.
+            return Err(CliError::Usage(format!(
+                "HostAttention {attention_id} has been escalated and requires human review"
+            )));
+        }
     }
 
     let claim_id = format!("console-{attention_id}");
