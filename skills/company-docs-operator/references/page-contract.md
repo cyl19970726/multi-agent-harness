@@ -12,7 +12,7 @@ Views, BusinessModules, WorkItems, Actors, Approvals, and FinancialRecords.
 For example:
 
 ```text
-repo docs/design/.../wanchengwanling-docs-ia-v1.md
+repo docs/archive/design/.../wanchengwanling-docs-ia-v1.md
   -> design contract for future agents and developers
 
 Store Document + page_contract TypedRecord + Relations + Views

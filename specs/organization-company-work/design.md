@@ -5,8 +5,8 @@ status: proposed
 owner_role: product-architecture
 target_spec: specs/organization-company-work/design.md
 references:
-  - docs/company-os/organization-and-actors.md
-  - docs/company-os/nested-agent-team-organization.md
+  - docs/current/company-os/organization-and-actors.md
+  - docs/current/company-os/nested-agent-team-organization.md
   - docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md
   - specs/nested-agent-team-organization/requirements.md
   - specs/nested-agent-team-organization/design.md
@@ -53,7 +53,7 @@ Company
   AgentTeam.  Views aggregate across teams without dual-writing responsibility.
 
 The canonical recursive topology is defined by ADR 0052 and
-`docs/company-os/nested-agent-team-organization.md`.  This design adds the
+`docs/current/company-os/nested-agent-team-organization.md`.  This design adds the
 Company-level projection, cross-machine awareness, and the unified Work kernel's
 global views.
 

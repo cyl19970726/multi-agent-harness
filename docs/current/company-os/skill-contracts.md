@@ -142,7 +142,7 @@ and governed maintenance for `typed-record append|update|validate`,
 
 Supersession note (ADR 0054): page/document creation and content authoring
 belong to the AI-first Docs v2 surface (`page create|read|write|append|search`
-over whole-page revisions; see `docs/company-os/ai-first-docs-spec.md`). The
+over whole-page revisions; see `docs/current/company-os/ai-first-docs-spec.md`). The
 Block-era `document create|rename|move|archive`, `template create|status`, and
 `block *` commands were deleted at retirement stage R3 (spec §13), together
 with the `document.append`/`block.append` API actions; legacy documents remain

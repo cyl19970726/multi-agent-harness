@@ -34,16 +34,16 @@ provider sessions, prompts, or runtimes.
 
 Before proposing or executing a durable Finance change, read:
 
-- `docs/company-os/financial-relations.md`
-- `docs/company-os/work-items-and-approvals.md`
-- `docs/company-os/implementation-truth-matrix.md`
-- `docs/company-os/skill-contracts.md`
-- `docs/company-os/governance.md`
+- `docs/current/company-os/financial-relations.md`
+- `docs/current/company-os/work-items-and-approvals.md`
+- `docs/current/company-os/implementation-truth-matrix.md`
+- `docs/current/company-os/skill-contracts.md`
+- `docs/current/company-os/governance.md`
 
 When the monetary effect starts from a business document or module, also read:
 
-- `docs/company-os/document-system.md`
-- `docs/company-os/module-design.md`
+- `docs/current/company-os/document-system.md`
+- `docs/current/company-os/module-design.md`
 
 If repository files, schemas, API code, or acceptance checks conflict with this
 skill, the canonical implementation contract wins.

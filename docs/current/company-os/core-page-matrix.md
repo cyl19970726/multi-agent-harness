@@ -7,9 +7,9 @@ canonical_for: Company OS core page coverage and visual-contract scope
 ```
 
 The current visual source of truth is
-[`docs/design/company-os-v2/visual-contract.json`](../design/company-os-v2/visual-contract.json),
+[`docs/archive/design/company-os-v2/visual-contract.json`](../design/company-os-v2/visual-contract.json),
 with the Live PRD journey under
-[`docs/design/company-os-v3/live-prd-v1/`](../design/company-os-v3/live-prd-v1/).
+[`docs/archive/design/company-os-v3/live-prd-v1/`](../design/company-os-v3/live-prd-v1/).
 The retained `company-os-v1/actual` screenshots are legacy baselines only; they
 are not active design intent. This document explains page responsibility
 without maintaining a second progress count.

@@ -18,9 +18,9 @@ Read:
 - the approved ModuleDesign and approval reference;
 - the Store `page_contract` record for the page, including primary question,
   required sections, standard fallback, and intended front-end shape;
-- `docs/company-os/agent-programmable-pages.md`;
-- `docs/company-os/frontend-information-architecture.md`;
-- `docs/company-os/skill-contracts.md`;
+- `docs/current/company-os/agent-programmable-pages.md`;
+- `docs/current/company-os/frontend-information-architecture.md`;
+- `docs/current/company-os/skill-contracts.md`;
 - `docs/decisions/0029-agent-programmable-document-runtime.md`;
 - [the package contract](references/custom-page-contract.md).
 

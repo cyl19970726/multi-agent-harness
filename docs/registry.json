@@ -11,24 +11,24 @@
         "Company OS product boundary and execution-foundation boundary"
       ],
       "dependsOn": [
-        "docs/documentation-governance.md",
-        "docs/prd.md",
-        "docs/company-os/README.md",
-        "docs/company-os/vision.md",
-        "docs/mvp.md",
-        "docs/design-basis.md",
-        "docs/concept-model.md",
-        "docs/architecture.md",
-        "docs/data-model.md",
-        "docs/agent-runtime.md",
-        "docs/dashboard.md",
-        "docs/workflow-git-pr.md",
-        "docs/integration/README.md",
-        "docs/integration/codex.md",
-        "docs/integration/codex-message-delivery.md",
-        "docs/integration/claude.md",
-        "docs/operations.md",
-        "docs/schemas.md",
+        "docs/current/documentation-governance.md",
+        "docs/current/product/prd.md",
+        "docs/current/company-os/README.md",
+        "docs/archive/company-os/vision.md",
+        "docs/current/product/mvp.md",
+        "docs/current/architecture/design-basis.md",
+        "docs/current/architecture/concept-model.md",
+        "docs/current/architecture/architecture.md",
+        "docs/current/architecture/data-model.md",
+        "docs/current/architecture/agent-runtime.md",
+        "docs/current/operations/dashboard.md",
+        "docs/current/operations/workflow-git-pr.md",
+        "docs/current/integration/README.md",
+        "docs/current/integration/codex.md",
+        "docs/current/integration/codex-message-delivery.md",
+        "docs/current/integration/claude.md",
+        "docs/current/operations/operations.md",
+        "docs/current/architecture/schemas.md",
         "docs/decisions/README.md"
       ],
       "machineConsumers": [
@@ -61,12 +61,12 @@
         "executor-specific staged acceptance"
       ],
       "dependsOn": [
-        "docs/prd.md",
-        "docs/company-os/README.md",
-        "docs/company-os/execution-foundation.md",
-        "docs/architecture-map.md",
-        "docs/architecture.md",
-        "docs/concept-model.md",
+        "docs/current/product/prd.md",
+        "docs/current/company-os/README.md",
+        "docs/current/company-os/execution-foundation.md",
+        "docs/current/architecture/architecture-map.md",
+        "docs/current/architecture/architecture.md",
+        "docs/current/architecture/concept-model.md",
         "docs/decisions/0026-mission-wave-architecture.md",
         "docs/decisions/0027-company-os-primary-model.md",
         "docs/decisions/0032-provider-native-session-is-execution-truth.md"
@@ -94,7 +94,7 @@
       ]
     },
     {
-      "path": "docs/agent-operating-rules.md",
+      "path": "docs/current/product/agent-operating-rules.md",
       "ownerRole": "lead-operations",
       "status": "stable",
       "lifecycle": "stable",
@@ -104,21 +104,21 @@
       ],
       "dependsOn": [
         "AGENTS.md",
-        "docs/prd.md",
-        "docs/company-os/README.md",
-        "docs/concept-model.md",
-        "docs/operations.md",
-        "docs/multi-project.md",
-        "docs/member-continuation-model.md",
-        "docs/product/agent-team-dogfood-loop.md",
-        "docs/integration/native-session-storage.md",
+        "docs/current/product/prd.md",
+        "docs/current/company-os/README.md",
+        "docs/current/architecture/concept-model.md",
+        "docs/current/operations/operations.md",
+        "docs/current/operations/multi-project.md",
+        "docs/current/architecture/member-continuation-model.md",
+        "docs/current/product/agent-team-dogfood-loop.md",
+        "docs/current/integration/native-session-storage.md",
         "docs/decisions/0027-company-os-primary-model.md",
         "docs/decisions/0028-retire-goal-phase-task-graph.md",
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
         "docs/decisions/0033-agent-team-workspace-contract.md",
         "docs/decisions/0041-provider-neutral-member-continuation.md",
         "docs/decisions/0042-company-store-execution-space-project-binding.md",
-        "docs/product/agent-team-works.md",
+        "docs/current/product/agent-team-works.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
         "skills/dogfood-company-os/SKILL.md"
       ],
@@ -155,21 +155,21 @@
         "docs split rule"
       ],
       "dependsOn": [
-        "docs/prd.md",
-        "docs/mvp.md",
-        "docs/design-basis.md",
-        "docs/concept-model.md",
-        "docs/architecture.md",
-        "docs/data-model.md",
-        "docs/agent-runtime.md",
-        "docs/dashboard.md",
-        "docs/workflow-git-pr.md",
-        "docs/integration/README.md",
-        "docs/integration/codex.md",
-        "docs/integration/codex-message-delivery.md",
-        "docs/integration/claude.md",
-        "docs/operations.md",
-        "docs/schemas.md",
+        "docs/current/product/prd.md",
+        "docs/current/product/mvp.md",
+        "docs/current/architecture/design-basis.md",
+        "docs/current/architecture/concept-model.md",
+        "docs/current/architecture/architecture.md",
+        "docs/current/architecture/data-model.md",
+        "docs/current/architecture/agent-runtime.md",
+        "docs/current/operations/dashboard.md",
+        "docs/current/operations/workflow-git-pr.md",
+        "docs/current/integration/README.md",
+        "docs/current/integration/codex.md",
+        "docs/current/integration/codex-message-delivery.md",
+        "docs/current/integration/claude.md",
+        "docs/current/operations/operations.md",
+        "docs/current/architecture/schemas.md",
         "docs/decisions/README.md"
       ],
       "machineConsumers": [
@@ -191,7 +191,7 @@
       ]
     },
     {
-      "path": "docs/documentation-governance.md",
+      "path": "docs/current/documentation-governance.md",
       "ownerRole": "docs-governance",
       "status": "stable",
       "lifecycle": "stable",
@@ -201,9 +201,9 @@
         "default context packs and archive policy"
       ],
       "dependsOn": [
-        "docs/company-os/product-system-map.md",
-        "docs/company-os/module-design.md",
-        "docs/governance-engine.md",
+        "docs/current/company-os/product-system-map.md",
+        "docs/current/company-os/module-design.md",
+        "docs/current/operations/governance-engine.md",
         "docs/registry.json"
       ],
       "machineConsumers": [
@@ -220,7 +220,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/prd.md",
+      "path": "docs/current/product/prd.md",
       "ownerRole": "product",
       "status": "stable",
       "lifecycle": "stable",
@@ -230,21 +230,21 @@
         "execution-foundation requirements and near-term scenarios"
       ],
       "dependsOn": [
-        "docs/architecture-map.md",
-        "docs/company-os/README.md",
-        "docs/company-os/vision.md",
-        "docs/company-os/execution-foundation.md",
+        "docs/current/architecture/architecture-map.md",
+        "docs/current/company-os/README.md",
+        "docs/archive/company-os/vision.md",
+        "docs/current/company-os/execution-foundation.md",
         "docs/decisions/0027-company-os-primary-model.md",
         "docs/decisions/0026-mission-wave-architecture.md",
-        "docs/mvp.md",
-        "docs/design-basis.md",
-        "docs/concept-model.md",
-        "docs/data-model.md",
-        "docs/agent-runtime.md",
-        "docs/dashboard.md",
-        "docs/workflow-git-pr.md",
-        "docs/integration/README.md",
-        "docs/integration/claude.md",
+        "docs/current/product/mvp.md",
+        "docs/current/architecture/design-basis.md",
+        "docs/current/architecture/concept-model.md",
+        "docs/current/architecture/data-model.md",
+        "docs/current/architecture/agent-runtime.md",
+        "docs/current/operations/dashboard.md",
+        "docs/current/operations/workflow-git-pr.md",
+        "docs/current/integration/README.md",
+        "docs/current/integration/claude.md",
         "docs/decisions/README.md"
       ],
       "machineConsumers": [
@@ -274,7 +274,7 @@
       ]
     },
     {
-      "path": "docs/mvp.md",
+      "path": "docs/current/product/mvp.md",
       "ownerRole": "product",
       "status": "stable",
       "lifecycle": "volatile",
@@ -284,19 +284,19 @@
         "retired coordination exclusion acceptance"
       ],
       "dependsOn": [
-        "docs/prd.md",
-        "docs/architecture-map.md",
+        "docs/current/product/prd.md",
+        "docs/current/architecture/architecture-map.md",
         "docs/decisions/0026-mission-wave-architecture.md",
-        "docs/design-basis.md",
-        "docs/concept-model.md",
-        "docs/architecture.md",
-        "docs/data-model.md",
-        "docs/agent-runtime.md",
-        "docs/dashboard.md",
-        "docs/workflow-git-pr.md",
-        "docs/integration/codex.md",
-        "docs/integration/codex-message-delivery.md",
-        "docs/operations.md",
+        "docs/current/architecture/design-basis.md",
+        "docs/current/architecture/concept-model.md",
+        "docs/current/architecture/architecture.md",
+        "docs/current/architecture/data-model.md",
+        "docs/current/architecture/agent-runtime.md",
+        "docs/current/operations/dashboard.md",
+        "docs/current/operations/workflow-git-pr.md",
+        "docs/current/integration/codex.md",
+        "docs/current/integration/codex-message-delivery.md",
+        "docs/current/operations/operations.md",
         "examples/adapters/earning-engine/README.md"
       ],
       "machineConsumers": [
@@ -323,7 +323,7 @@
       ]
     },
     {
-      "path": "docs/design-basis.md",
+      "path": "docs/current/architecture/design-basis.md",
       "ownerRole": "architecture",
       "status": "stable",
       "lifecycle": "stable",
@@ -333,10 +333,10 @@
         "surface responsibility"
       ],
       "dependsOn": [
-        "docs/prd.md",
-        "docs/architecture.md",
-        "docs/operations.md",
-        "docs/schemas.md"
+        "docs/current/product/prd.md",
+        "docs/current/architecture/architecture.md",
+        "docs/current/operations/operations.md",
+        "docs/current/architecture/schemas.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -352,7 +352,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/concept-model.md",
+      "path": "docs/current/architecture/concept-model.md",
       "ownerRole": "product-architecture",
       "status": "stable",
       "lifecycle": "volatile",
@@ -365,13 +365,13 @@
         "anti-drift invariants"
       ],
       "dependsOn": [
-        "docs/prd.md",
-        "docs/design-basis.md",
-        "docs/architecture.md",
-        "docs/architecture-map.md",
-        "docs/schemas.md",
+        "docs/current/product/prd.md",
+        "docs/current/architecture/design-basis.md",
+        "docs/current/architecture/architecture.md",
+        "docs/current/architecture/architecture-map.md",
+        "docs/current/architecture/schemas.md",
         "docs/decisions/0026-mission-wave-architecture.md",
-        "docs/product/agent-team-works.md",
+        "docs/current/product/agent-team-works.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
       ],
       "machineConsumers": [
@@ -394,7 +394,7 @@
       ]
     },
     {
-      "path": "docs/architecture.md",
+      "path": "docs/current/architecture/architecture.md",
       "ownerRole": "architecture",
       "status": "stable",
       "lifecycle": "stable",
@@ -404,20 +404,20 @@
         "retired coordination boundary"
       ],
       "dependsOn": [
-        "docs/design-basis.md",
-        "docs/concept-model.md",
-        "docs/architecture-map.md",
-        "docs/data-model.md",
-        "docs/agent-runtime.md",
-        "docs/dashboard.md",
-        "docs/workflow-git-pr.md",
-        "docs/schemas.md",
-        "docs/integration/README.md",
-        "docs/integration/claude.md",
-        "docs/integration/codex.md",
-        "docs/integration/codex-message-delivery.md",
+        "docs/current/architecture/design-basis.md",
+        "docs/current/architecture/concept-model.md",
+        "docs/current/architecture/architecture-map.md",
+        "docs/current/architecture/data-model.md",
+        "docs/current/architecture/agent-runtime.md",
+        "docs/current/operations/dashboard.md",
+        "docs/current/operations/workflow-git-pr.md",
+        "docs/current/architecture/schemas.md",
+        "docs/current/integration/README.md",
+        "docs/current/integration/claude.md",
+        "docs/current/integration/codex.md",
+        "docs/current/integration/codex-message-delivery.md",
         "docs/decisions/0026-mission-wave-architecture.md",
-        "docs/product/agent-team-works.md",
+        "docs/current/product/agent-team-works.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
       ],
       "machineConsumers": [
@@ -440,7 +440,7 @@
       ]
     },
     {
-      "path": "docs/architecture-map.md",
+      "path": "docs/current/architecture/architecture-map.md",
       "ownerRole": "architecture",
       "status": "stable",
       "lifecycle": "stable",
@@ -452,12 +452,12 @@
         "compatibility migration map"
       ],
       "dependsOn": [
-        "docs/architecture.md",
-        "docs/company-os/README.md",
-        "docs/company-os/concept-model.md",
-        "docs/company-os/execution-foundation.md",
+        "docs/current/architecture/architecture.md",
+        "docs/current/company-os/README.md",
+        "docs/archive/company-os/concept-model.md",
+        "docs/current/company-os/execution-foundation.md",
         "docs/decisions/0027-company-os-primary-model.md",
-        "docs/concept-model.md",
+        "docs/current/architecture/concept-model.md",
         "docs/decisions/0025-agent-team-run-control-plane.md",
         "docs/decisions/0026-mission-wave-architecture.md"
       ],
@@ -488,7 +488,7 @@
       ]
     },
     {
-      "path": "docs/data-model.md",
+      "path": "docs/current/architecture/data-model.md",
       "ownerRole": "schema",
       "status": "stable",
       "lifecycle": "volatile",
@@ -502,13 +502,13 @@
         "retired-field removal boundary"
       ],
       "dependsOn": [
-        "docs/prd.md",
-        "docs/concept-model.md",
-        "docs/architecture.md",
-        "docs/schemas.md",
-        "docs/company-os/governance.md",
+        "docs/current/product/prd.md",
+        "docs/current/architecture/concept-model.md",
+        "docs/current/architecture/architecture.md",
+        "docs/current/architecture/schemas.md",
+        "docs/current/company-os/governance.md",
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
-        "docs/product/agent-team-works.md",
+        "docs/current/product/agent-team-works.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
       ],
       "machineConsumers": [
@@ -526,7 +526,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/agent-runtime.md",
+      "path": "docs/current/architecture/agent-runtime.md",
       "ownerRole": "provider-integration",
       "status": "stable",
       "lifecycle": "volatile",
@@ -538,17 +538,17 @@
         "continuation controller interface"
       ],
       "dependsOn": [
-        "docs/prd.md",
-        "docs/concept-model.md",
-        "docs/data-model.md",
-        "docs/integration/README.md",
-        "docs/member-continuation-model.md",
-        "docs/integration/claude.md",
-        "docs/schemas.md",
-        "docs/integration/kimi.md",
-        "docs/product/agent-team-works.md",
+        "docs/current/product/prd.md",
+        "docs/current/architecture/concept-model.md",
+        "docs/current/architecture/data-model.md",
+        "docs/current/integration/README.md",
+        "docs/current/architecture/member-continuation-model.md",
+        "docs/current/integration/claude.md",
+        "docs/current/architecture/schemas.md",
+        "docs/current/integration/kimi.md",
+        "docs/current/product/agent-team-works.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
-        "crates/harness-cli/src/sse.rs"
+        "crates/firm-cli/src/sse.rs"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -570,7 +570,7 @@
       ]
     },
     {
-      "path": "docs/dashboard.md",
+      "path": "docs/current/operations/dashboard.md",
       "ownerRole": "product-design",
       "status": "stable",
       "lifecycle": "volatile",
@@ -581,16 +581,16 @@
         "retired-surface exclusion boundary"
       ],
       "dependsOn": [
-        "docs/architecture-map.md",
+        "docs/current/architecture/architecture-map.md",
         "docs/decisions/0026-mission-wave-architecture.md",
-        "docs/prd.md",
-        "docs/concept-model.md",
-        "docs/data-model.md",
-        "docs/agent-runtime.md",
-        "docs/dashboard/frontend-design.md",
-        "docs/dashboard/frontend-architecture.md",
-        "docs/dashboard/runbook.md",
-        "docs/dashboard/pages/README.md",
+        "docs/current/product/prd.md",
+        "docs/current/architecture/concept-model.md",
+        "docs/current/architecture/data-model.md",
+        "docs/current/architecture/agent-runtime.md",
+        "docs/current/dashboard/frontend-design.md",
+        "docs/current/dashboard/frontend-architecture.md",
+        "docs/current/dashboard/runbook.md",
+        "docs/current/dashboard/pages/README.md",
         "apps/agent-dashboard/src/app/selection.ts"
       ],
       "machineConsumers": [
@@ -617,7 +617,7 @@
       ]
     },
     {
-      "path": "docs/dashboard/frontend-design.md",
+      "path": "docs/current/dashboard/frontend-design.md",
       "ownerRole": "product-design",
       "status": "stable",
       "lifecycle": "volatile",
@@ -629,13 +629,13 @@
         "Workbench implementation-readiness summary"
       ],
       "dependsOn": [
-        "docs/architecture-map.md",
+        "docs/current/architecture/architecture-map.md",
         "docs/decisions/0026-mission-wave-architecture.md",
-        "docs/prd.md",
-        "docs/concept-model.md",
-        "docs/dashboard.md",
-        "docs/dashboard/pages/README.md",
-        "docs/dashboard/frontend-architecture.md"
+        "docs/current/product/prd.md",
+        "docs/current/architecture/concept-model.md",
+        "docs/current/operations/dashboard.md",
+        "docs/current/dashboard/pages/README.md",
+        "docs/current/dashboard/frontend-architecture.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -656,7 +656,7 @@
       ]
     },
     {
-      "path": "docs/dashboard/frontend-architecture.md",
+      "path": "docs/current/dashboard/frontend-architecture.md",
       "ownerRole": "frontend-architecture",
       "status": "stable",
       "lifecycle": "volatile",
@@ -667,9 +667,9 @@
         "Workbench primitive and visual implementation policy"
       ],
       "dependsOn": [
-        "docs/dashboard.md",
-        "docs/dashboard/frontend-design.md",
-        "docs/dashboard/pages/README.md",
+        "docs/current/operations/dashboard.md",
+        "docs/current/dashboard/frontend-design.md",
+        "docs/current/dashboard/pages/README.md",
         "docs/decisions/0014-react-vite-agent-dashboard.md",
         "apps/agent-dashboard/vite.config.ts",
         "apps/agent-dashboard/src/types.ts",
@@ -708,7 +708,7 @@
       ]
     },
     {
-      "path": "docs/dashboard/runbook.md",
+      "path": "docs/current/dashboard/runbook.md",
       "ownerRole": "operations",
       "status": "stable",
       "lifecycle": "volatile",
@@ -719,9 +719,9 @@
         "frontend build commands"
       ],
       "dependsOn": [
-        "docs/dashboard.md",
-        "docs/dashboard/frontend-design.md",
-        "docs/dashboard/frontend-architecture.md",
+        "docs/current/operations/dashboard.md",
+        "docs/current/dashboard/frontend-design.md",
+        "docs/current/dashboard/frontend-architecture.md",
         "apps/agent-dashboard/vite.config.ts",
         "package.json",
         "apps/agent-dashboard/src/api.ts",
@@ -755,7 +755,7 @@
       ]
     },
     {
-      "path": "docs/workflow-git-pr.md",
+      "path": "docs/current/operations/workflow-git-pr.md",
       "ownerRole": "lead-operations",
       "status": "stable",
       "lifecycle": "volatile",
@@ -766,12 +766,12 @@
         "Host-plan coordination for concurrent changes"
       ],
       "dependsOn": [
-        "docs/concept-model.md",
-        "docs/data-model.md",
-        "docs/architecture.md",
+        "docs/current/architecture/concept-model.md",
+        "docs/current/architecture/data-model.md",
+        "docs/current/architecture/architecture.md",
         "docs/decisions/README.md",
-        "docs/company-os/execution-foundation.md",
-        "docs/workflow-runtime.md"
+        "docs/current/company-os/execution-foundation.md",
+        "docs/current/operations/workflow-runtime.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -793,7 +793,7 @@
       ]
     },
     {
-      "path": "docs/integration/README.md",
+      "path": "docs/current/integration/README.md",
       "ownerRole": "provider-integration",
       "status": "stable",
       "lifecycle": "volatile",
@@ -803,12 +803,12 @@
         "provider-neutral boundary"
       ],
       "dependsOn": [
-        "docs/agent-runtime.md",
-        "docs/architecture.md",
-        "docs/integration/codex.md",
-        "docs/integration/codex-message-delivery.md",
-        "docs/integration/kimi.md",
-        "docs/integration/claude.md",
+        "docs/current/architecture/agent-runtime.md",
+        "docs/current/architecture/architecture.md",
+        "docs/current/integration/codex.md",
+        "docs/current/integration/codex-message-delivery.md",
+        "docs/current/integration/kimi.md",
+        "docs/current/integration/claude.md",
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
         "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md"
       ],
@@ -832,7 +832,7 @@
       ]
     },
     {
-      "path": "docs/integration/codex.md",
+      "path": "docs/current/integration/codex.md",
       "ownerRole": "provider-integration",
       "status": "stable",
       "lifecycle": "volatile",
@@ -843,12 +843,12 @@
         "Codex lifecycle, hooks, skills, and plugins"
       ],
       "dependsOn": [
-        "docs/agent-runtime.md",
-        "docs/integration/README.md",
-        "docs/architecture.md",
-        "docs/integration/codex-message-delivery.md",
-        "docs/mvp.md",
-        "docs/schemas.md",
+        "docs/current/architecture/agent-runtime.md",
+        "docs/current/integration/README.md",
+        "docs/current/architecture/architecture.md",
+        "docs/current/integration/codex-message-delivery.md",
+        "docs/current/product/mvp.md",
+        "docs/current/architecture/schemas.md",
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
         "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md"
       ],
@@ -876,7 +876,7 @@
       ]
     },
     {
-      "path": "docs/integration/codex-message-delivery.md",
+      "path": "docs/current/integration/codex-message-delivery.md",
       "ownerRole": "provider-integration",
       "status": "stable",
       "lifecycle": "volatile",
@@ -887,11 +887,11 @@
         "Codex CLI and Dashboard delivery proof"
       ],
       "dependsOn": [
-        "docs/agent-runtime.md",
-        "docs/integration/codex.md",
-        "crates/harness-cli/src/main.rs",
+        "docs/current/architecture/agent-runtime.md",
+        "docs/current/integration/codex.md",
+        "crates/firm-cli/src/main.rs",
         "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
-        "docs/product/agent-team-works.md",
+        "docs/current/product/agent-team-works.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
       ],
       "machineConsumers": [
@@ -919,7 +919,7 @@
       ]
     },
     {
-      "path": "docs/integration/claude.md",
+      "path": "docs/current/integration/claude.md",
       "ownerRole": "provider-integration",
       "status": "stable",
       "lifecycle": "volatile",
@@ -930,13 +930,13 @@
         "Claude lifecycle and native subagent boundary"
       ],
       "dependsOn": [
-        "docs/agent-runtime.md",
-        "docs/integration/README.md",
-        "docs/architecture.md",
-        "docs/mvp.md",
-        "docs/schemas.md",
+        "docs/current/architecture/agent-runtime.md",
+        "docs/current/integration/README.md",
+        "docs/current/architecture/architecture.md",
+        "docs/current/product/mvp.md",
+        "docs/current/architecture/schemas.md",
         "apps/claude-member-runner/bin/claude-member-runner.mjs",
-        "crates/harness-cli/src/resident.rs",
+        "crates/firm-cli/src/resident.rs",
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md"
       ],
       "machineConsumers": [
@@ -964,7 +964,7 @@
       ]
     },
     {
-      "path": "docs/operations.md",
+      "path": "docs/current/operations/operations.md",
       "ownerRole": "operations",
       "status": "stable",
       "lifecycle": "volatile",
@@ -976,7 +976,7 @@
       "dependsOn": [
         "package.json",
         ".github/workflows/ci.yml",
-        "docs/schemas.md"
+        "docs/current/architecture/schemas.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -993,7 +993,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/schemas.md",
+      "path": "docs/current/architecture/schemas.md",
       "ownerRole": "schema",
       "status": "stable",
       "lifecycle": "stable",
@@ -1004,7 +1004,7 @@
       ],
       "dependsOn": [
         "schemas/README.md",
-        "crates/harness-core/src/lib.rs",
+        "crates/firm-core/src/lib.rs",
         "docs/decisions/0032-provider-native-session-is-execution-truth.md"
       ],
       "machineConsumers": [
@@ -1036,14 +1036,14 @@
         "durable tradeoffs"
       ],
       "dependsOn": [
-        "docs/design-basis.md",
-        "docs/architecture.md",
-        "docs/agent-runtime.md",
-        "docs/dashboard.md",
-        "docs/workflow-git-pr.md",
-        "docs/integration/codex.md",
-        "docs/integration/codex-message-delivery.md",
-        "docs/integration/claude.md"
+        "docs/current/architecture/design-basis.md",
+        "docs/current/architecture/architecture.md",
+        "docs/current/architecture/agent-runtime.md",
+        "docs/current/operations/dashboard.md",
+        "docs/current/operations/workflow-git-pr.md",
+        "docs/current/integration/codex.md",
+        "docs/current/integration/codex-message-delivery.md",
+        "docs/current/integration/claude.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1059,7 +1059,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/dashboard/pages/README.md",
+      "path": "docs/current/dashboard/pages/README.md",
       "ownerRole": "product-design",
       "status": "planned",
       "lifecycle": "volatile",
@@ -1068,9 +1068,9 @@
         "Agent Workbench page spec and layout contract template"
       ],
       "dependsOn": [
-        "docs/architecture-map.md",
+        "docs/current/architecture/architecture-map.md",
         "docs/decisions/0026-mission-wave-architecture.md",
-        "docs/dashboard/frontend-design.md"
+        "docs/current/dashboard/frontend-design.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1091,7 +1091,7 @@
       ]
     },
     {
-      "path": "docs/dashboard/pages/debug.md",
+      "path": "docs/current/dashboard/pages/debug.md",
       "ownerRole": "product-design",
       "status": "planned",
       "lifecycle": "volatile",
@@ -1101,10 +1101,10 @@
         "page-local layout contract"
       ],
       "dependsOn": [
-        "docs/prd.md",
-        "docs/concept-model.md",
-        "docs/dashboard.md",
-        "docs/dashboard/frontend-design.md"
+        "docs/current/product/prd.md",
+        "docs/current/architecture/concept-model.md",
+        "docs/current/operations/dashboard.md",
+        "docs/current/dashboard/frontend-design.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1133,7 +1133,7 @@
       ],
       "dependsOn": [
         "docs/decisions/0014-react-vite-agent-dashboard.md",
-        "docs/dashboard/frontend-architecture.md"
+        "docs/current/dashboard/frontend-architecture.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1154,7 +1154,7 @@
       ]
     },
     {
-      "path": "docs/member-runtime-observability.md",
+      "path": "docs/current/operations/member-runtime-observability.md",
       "ownerRole": "provider-integration",
       "status": "stable",
       "lifecycle": "volatile",
@@ -1165,19 +1165,19 @@
         "runtime health signal model"
       ],
       "dependsOn": [
-        "docs/agent-runtime.md",
-        "docs/concept-model.md",
-        "docs/data-model.md",
+        "docs/current/architecture/agent-runtime.md",
+        "docs/current/architecture/concept-model.md",
+        "docs/current/architecture/data-model.md",
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
         "docs/decisions/0033-agent-team-workspace-contract.md",
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
-        "docs/integration/codex.md",
-        "docs/integration/claude.md",
+        "docs/current/integration/codex.md",
+        "docs/current/integration/claude.md",
         "docs/decisions/0011-provider-neutral-runtime.md",
-        "crates/harness-cli/src/sse.rs",
-        "crates/harness-cli/src/main.rs",
+        "crates/firm-cli/src/sse.rs",
+        "crates/firm-cli/src/main.rs",
         "apps/agent-dashboard/src/api.ts",
-        "docs/integration/kimi.md",
+        "docs/current/integration/kimi.md",
         "apps/agent-dashboard/src/app/useEventStream.ts",
         "apps/agent-dashboard/src/app/App.tsx"
       ],
@@ -1221,7 +1221,7 @@
       ]
     },
     {
-      "path": "docs/agent-integration-model.md",
+      "path": "docs/current/architecture/agent-integration-model.md",
       "ownerRole": "provider-integration",
       "status": "stable",
       "lifecycle": "volatile",
@@ -1234,17 +1234,17 @@
         "new-provider integration checklist"
       ],
       "dependsOn": [
-        "docs/agent-runtime.md",
-        "docs/member-continuation-model.md",
-        "docs/integration/README.md",
-        "docs/integration/codex.md",
-        "docs/integration/claude.md",
+        "docs/current/architecture/agent-runtime.md",
+        "docs/current/architecture/member-continuation-model.md",
+        "docs/current/integration/README.md",
+        "docs/current/integration/codex.md",
+        "docs/current/integration/claude.md",
         "docs/decisions/0011-provider-neutral-runtime.md",
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
         "examples/adapters/earning-engine/adapter.json",
-        "crates/harness-core/src/lib.rs",
+        "crates/firm-core/src/lib.rs",
         "schemas/agent-member.schema.json",
-        "docs/integration/kimi.md"
+        "docs/current/integration/kimi.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1286,10 +1286,10 @@
       "dependsOn": [
         "docs/decisions/0008-persistent-codex-agent-runtime.md",
         "docs/decisions/0011-provider-neutral-runtime.md",
-        "docs/agent-integration-model.md",
-        "docs/agent-runtime.md",
-        "docs/integration/codex.md",
-        "docs/integration/claude.md"
+        "docs/current/architecture/agent-integration-model.md",
+        "docs/current/architecture/agent-runtime.md",
+        "docs/current/integration/codex.md",
+        "docs/current/integration/claude.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1328,11 +1328,11 @@
         "non-durable thinking policy for Agent Team history"
       ],
       "dependsOn": [
-        "docs/concept-model.md",
-        "docs/agent-runtime.md",
-        "docs/architecture-map.md",
-        "docs/integration/kimi.md",
-        "docs/dashboard/pages/team-run-war-room.md",
+        "docs/current/architecture/concept-model.md",
+        "docs/current/architecture/agent-runtime.md",
+        "docs/current/architecture/architecture-map.md",
+        "docs/current/integration/kimi.md",
+        "docs/current/dashboard/pages/team-run-war-room.md",
         "docs/decisions/0011-provider-neutral-runtime.md",
         "docs/decisions/0018-exec-stream-primary-substrate.md",
         "docs/decisions/0022-dynamic-workflow-runtime-json-ir.md",
@@ -1381,9 +1381,9 @@
         "non-destructive Goal/historical phase compatibility migration"
       ],
       "dependsOn": [
-        "docs/architecture.md",
-        "docs/architecture-map.md",
-        "docs/concept-model.md",
+        "docs/current/architecture/architecture.md",
+        "docs/current/architecture/architecture-map.md",
+        "docs/current/architecture/concept-model.md",
         "docs/decisions/0025-agent-team-run-control-plane.md"
       ],
       "machineConsumers": [
@@ -1405,7 +1405,7 @@
       ]
     },
     {
-      "path": "docs/getting-started.md",
+      "path": "docs/current/operations/getting-started.md",
       "ownerRole": "product",
       "status": "stable",
       "lifecycle": "volatile",
@@ -1418,7 +1418,7 @@
       "dependsOn": [
         "README.md",
         "skills/star-workflow/SKILL.md",
-        "docs/multi-project.md"
+        "docs/current/operations/multi-project.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1434,7 +1434,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/multi-project.md",
+      "path": "docs/current/operations/multi-project.md",
       "ownerRole": "operations",
       "status": "stable",
       "lifecycle": "volatile",
@@ -1449,8 +1449,8 @@
         "README.md",
         "docs/decisions/0033-agent-team-workspace-contract.md",
         "docs/decisions/0042-company-store-execution-space-project-binding.md",
-        "crates/harness-core/src/lib.rs",
-        "crates/harness-cli/src/main.rs"
+        "crates/firm-core/src/lib.rs",
+        "crates/firm-cli/src/main.rs"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1476,7 +1476,7 @@
       ]
     },
     {
-      "path": "docs/resident-claude.md",
+      "path": "docs/current/operations/resident-claude.md",
       "ownerRole": "provider-integration",
       "status": "planned",
       "lifecycle": "volatile",
@@ -1490,7 +1490,7 @@
         "docs/decisions/0021-resident-daemon.md",
         "docs/decisions/0020-codex-persistent-service-exploration.md",
         "docs/decisions/0018-exec-stream-primary-substrate.md",
-        "crates/harness-cli/src/main.rs"
+        "crates/firm-cli/src/main.rs"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1523,7 +1523,7 @@
       ]
     },
     {
-      "path": "docs/workflow-runtime.md",
+      "path": "docs/current/operations/workflow-runtime.md",
       "ownerRole": "architect",
       "status": "stable",
       "lifecycle": "stable",
@@ -1534,9 +1534,9 @@
         "starlark host API"
       ],
       "dependsOn": [
-        "crates/harness-workflow/src/lib.rs",
-        "crates/harness-workflow/src/starlark_front.rs",
-        "crates/harness-core/src/lib.rs",
+        "crates/firm-workflow/src/lib.rs",
+        "crates/firm-workflow/src/starlark_front.rs",
+        "crates/firm-core/src/lib.rs",
         "skills/star-workflow/SKILL.md"
       ],
       "machineConsumers": [
@@ -1558,7 +1558,7 @@
       ]
     },
     {
-      "path": "docs/integration/kimi.md",
+      "path": "docs/current/integration/kimi.md",
       "ownerRole": "provider-integration",
       "status": "stable",
       "lifecycle": "volatile",
@@ -1568,11 +1568,11 @@
         "Kimi native record and permission limitations"
       ],
       "dependsOn": [
-        "crates/harness-cli/src/main.rs",
-        "crates/harness-core/src/lib.rs",
-        "docs/agent-runtime.md",
-        "docs/integration/README.md",
-        "docs/integration/kimi-agent-team.md"
+        "crates/firm-cli/src/main.rs",
+        "crates/firm-core/src/lib.rs",
+        "docs/current/architecture/agent-runtime.md",
+        "docs/current/integration/README.md",
+        "docs/current/integration/kimi-agent-team.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1595,7 +1595,7 @@
       ]
     },
     {
-      "path": "docs/integration/kimi-agent-team.md",
+      "path": "docs/current/integration/kimi-agent-team.md",
       "ownerRole": "provider-integration",
       "status": "stable",
       "lifecycle": "volatile",
@@ -1606,14 +1606,14 @@
         "Kimi Agent Team restart and native-session resume"
       ],
       "dependsOn": [
-        "docs/agent-runtime.md",
-        "docs/integration/README.md",
-        "docs/integration/kimi.md",
-        "docs/member-continuation-model.md",
+        "docs/current/architecture/agent-runtime.md",
+        "docs/current/integration/README.md",
+        "docs/current/integration/kimi.md",
+        "docs/current/architecture/member-continuation-model.md",
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
         "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
-        "crates/harness-cli/src/kimi_acp.rs",
-        "crates/harness-cli/src/main.rs"
+        "crates/firm-cli/src/kimi_acp.rs",
+        "crates/firm-cli/src/main.rs"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1640,7 +1640,7 @@
       ]
     },
     {
-      "path": "docs/integration/pi.md",
+      "path": "docs/current/integration/pi.md",
       "ownerRole": "provider-integration",
       "status": "stable",
       "lifecycle": "volatile",
@@ -1651,15 +1651,15 @@
         "Pi provider capability and control boundaries"
       ],
       "dependsOn": [
-        "docs/agent-runtime.md",
-        "docs/integration/README.md",
-        "docs/integration/native-session-storage.md",
-        "docs/member-continuation-model.md",
+        "docs/current/architecture/agent-runtime.md",
+        "docs/current/integration/README.md",
+        "docs/current/integration/native-session-storage.md",
+        "docs/current/architecture/member-continuation-model.md",
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
         "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
-        "crates/harness-cli/src/pi_rpc.rs",
-        "crates/harness-cli/src/main.rs"
+        "crates/firm-cli/src/pi_rpc.rs",
+        "crates/firm-cli/src/main.rs"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1692,7 +1692,7 @@
       ]
     },
     {
-      "path": "docs/integration/provider-capacity.md",
+      "path": "docs/current/integration/provider-capacity.md",
       "ownerRole": "provider-integration",
       "status": "stable",
       "lifecycle": "volatile",
@@ -1703,12 +1703,12 @@
         "capacity start guard and provider_unavailable"
       ],
       "dependsOn": [
-        "docs/agent-runtime.md",
-        "docs/integration/README.md",
-        "docs/integration/codex.md",
-        "docs/integration/claude.md",
-        "docs/integration/kimi.md",
-        "docs/dashboard/pages/member-run-focus.md",
+        "docs/current/architecture/agent-runtime.md",
+        "docs/current/integration/README.md",
+        "docs/current/integration/codex.md",
+        "docs/current/integration/claude.md",
+        "docs/current/integration/kimi.md",
+        "docs/current/dashboard/pages/member-run-focus.md",
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md"
       ],
       "machineConsumers": [
@@ -1740,7 +1740,7 @@
       ]
     },
     {
-      "path": "docs/governance-engine.md",
+      "path": "docs/current/operations/governance-engine.md",
       "ownerRole": "architect",
       "status": "stable",
       "lifecycle": "volatile",
@@ -1750,7 +1750,7 @@
         "byte-parity with the legacy check-doc-*.mjs / check-skills.mjs gates and the self-host regression test"
       ],
       "dependsOn": [
-        "docs/agent-integration-model.md",
+        "docs/current/architecture/agent-integration-model.md",
         "skills/bootstrap-project-workflow/references/governance.md"
       ],
       "machineConsumers": [
@@ -1774,7 +1774,7 @@
       ]
     },
     {
-      "path": "docs/design/agent-team-mission-wave-layout.md",
+      "path": "docs/archive/design/agent-team-mission-wave-layout.md",
       "ownerRole": "product-design",
       "status": "stable",
       "lifecycle": "volatile",
@@ -1784,11 +1784,11 @@
         "transient live-only thinking policy"
       ],
       "dependsOn": [
-        "docs/dashboard/pages/mission-wave-canvas.md",
-        "docs/dashboard/pages/team-run-war-room.md",
+        "docs/current/dashboard/pages/mission-wave-canvas.md",
+        "docs/current/dashboard/pages/team-run-war-room.md",
         "docs/decisions/0025-agent-team-run-control-plane.md",
         "docs/decisions/0026-mission-wave-architecture.md",
-        "docs/product/agent-team-works.md",
+        "docs/current/product/agent-team-works.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
       ],
       "machineConsumers": [
@@ -1814,7 +1814,7 @@
       ]
     },
     {
-      "path": "docs/company-os/README.md",
+      "path": "docs/current/company-os/README.md",
       "ownerRole": "product",
       "status": "stable",
       "lifecycle": "volatile",
@@ -1823,9 +1823,9 @@
         "Company OS canonical product entry and document map"
       ],
       "dependsOn": [
-        "docs/company-os/implementation-truth-matrix.md",
-        "docs/company-os/vision.md",
-        "docs/company-os/concept-model.md",
+        "docs/archive/company-os/implementation-truth-matrix.md",
+        "docs/archive/company-os/vision.md",
+        "docs/archive/company-os/concept-model.md",
         "docs/decisions/0027-company-os-primary-model.md",
         "docs/decisions/0029-agent-programmable-document-runtime.md"
       ],
@@ -1852,7 +1852,7 @@
       ]
     },
     {
-      "path": "docs/company-os/implementation-truth-matrix.md",
+      "path": "docs/archive/company-os/implementation-truth-matrix.md",
       "ownerRole": "lead-product-governance",
       "status": "stable",
       "lifecycle": "volatile",
@@ -1862,17 +1862,17 @@
         "native trademark closure gap"
       ],
       "dependsOn": [
-        "docs/company-os/document-system.md",
-        "docs/company-os/organization-and-actors.md",
-        "docs/company-os/work-items-and-approvals.md",
-        "docs/company-os/financial-relations.md",
-        "docs/company-os/company-constitution.md",
-        "docs/company-os/scoped-authority-broker.md",
-        "crates/harness-core/src/company_os.rs",
-        "crates/harness-store/src/company_os.rs",
-        "crates/harness-cli/src/company_os_api.rs",
+        "docs/current/company-os/document-system.md",
+        "docs/current/company-os/organization-and-actors.md",
+        "docs/current/company-os/work-items-and-approvals.md",
+        "docs/archive/company-os/financial-relations.md",
+        "docs/archive/company-os/company-constitution.md",
+        "docs/archive/company-os/scoped-authority-broker.md",
+        "crates/firm-core/src/company_os.rs",
+        "crates/firm-store/src/company_os.rs",
+        "crates/firm-cli/src/company_os_api.rs",
         "apps/agent-dashboard/src/company-os/CompanyOsRouter.tsx",
-        "crates/harness-cli/tests/company_os_api.rs"
+        "crates/firm-cli/tests/company_os_api.rs"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1912,12 +1912,12 @@
         },
         {
           "kind": "runtime_evidence",
-          "ref": "docs/design/company-os-v3/trademark-native-closure-v1/visual-contract.json"
+          "ref": "docs/archive/design/company-os-v3/trademark-native-closure-v1/visual-contract.json"
         }
       ]
     },
     {
-      "path": "docs/company-os/product-system-map.md",
+      "path": "docs/current/company-os/product-system-map.md",
       "ownerRole": "product-architecture",
       "status": "stable",
       "lifecycle": "volatile",
@@ -1927,11 +1927,11 @@
         "Company OS default reading order and superseded boundaries"
       ],
       "dependsOn": [
-        "docs/company-os/vision.md",
-        "docs/company-os/four-system-collaboration.md",
-        "docs/company-os/organization-and-actors.md",
-        "docs/company-os/work-operating-system.md",
-        "docs/company-os/execution-foundation.md"
+        "docs/archive/company-os/vision.md",
+        "docs/archive/company-os/four-system-collaboration.md",
+        "docs/current/company-os/organization-and-actors.md",
+        "docs/current/company-os/work-operating-system.md",
+        "docs/current/company-os/execution-foundation.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -1947,7 +1947,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/company-os/vision.md",
+      "path": "docs/archive/company-os/vision.md",
       "ownerRole": "product",
       "status": "stable",
       "lifecycle": "volatile",
@@ -1957,8 +1957,8 @@
         "Docs and Organization dual cores"
       ],
       "dependsOn": [
-        "docs/company-os/concept-model.md",
-        "docs/company-os/execution-foundation.md",
+        "docs/archive/company-os/concept-model.md",
+        "docs/current/company-os/execution-foundation.md",
         "docs/decisions/0027-company-os-primary-model.md"
       ],
       "machineConsumers": [
@@ -1980,7 +1980,7 @@
       ]
     },
     {
-      "path": "docs/company-os/concept-model.md",
+      "path": "docs/archive/company-os/concept-model.md",
       "ownerRole": "product-architecture",
       "status": "stable",
       "lifecycle": "volatile",
@@ -1990,11 +1990,11 @@
         "Document, WorkItem, Approval, and execution-reference semantics"
       ],
       "dependsOn": [
-        "docs/company-os/vision.md",
-        "docs/company-os/document-system.md",
-        "docs/company-os/organization-and-actors.md",
-        "docs/company-os/work-items-and-approvals.md",
-        "docs/company-os/execution-foundation.md"
+        "docs/archive/company-os/vision.md",
+        "docs/current/company-os/document-system.md",
+        "docs/current/company-os/organization-and-actors.md",
+        "docs/current/company-os/work-items-and-approvals.md",
+        "docs/current/company-os/execution-foundation.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2010,7 +2010,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/company-os/document-system.md",
+      "path": "docs/current/company-os/document-system.md",
       "ownerRole": "product-architecture",
       "status": "stable",
       "lifecycle": "volatile",
@@ -2019,9 +2019,9 @@
         "typed records, relations, views, and document spaces"
       ],
       "dependsOn": [
-        "docs/company-os/concept-model.md",
-        "docs/company-os/module-design.md",
-        "docs/company-os/governance.md"
+        "docs/archive/company-os/concept-model.md",
+        "docs/current/company-os/module-design.md",
+        "docs/current/company-os/governance.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2037,7 +2037,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/company-os/docs-operating-surface-matrix.md",
+      "path": "docs/archive/company-os/docs-operating-surface-matrix.md",
       "ownerRole": "docs-governance",
       "status": "stable",
       "lifecycle": "volatile",
@@ -2046,9 +2046,9 @@
         "Docs UI, CLI, skill, visual evidence, and remaining gap matrix"
       ],
       "dependsOn": [
-        "docs/company-os/document-system.md",
-        "docs/company-os/skill-contracts.md",
-        "docs/company-os/implementation-truth-matrix.md",
+        "docs/current/company-os/document-system.md",
+        "docs/current/company-os/skill-contracts.md",
+        "docs/archive/company-os/implementation-truth-matrix.md",
         "docs/decisions/0035-company-os-sql-read-model.md",
         "skills/company-docs-operator/SKILL.md"
       ],
@@ -2089,7 +2089,7 @@
       ]
     },
     {
-      "path": "docs/company-os/organization-and-actors.md",
+      "path": "docs/current/company-os/organization-and-actors.md",
       "ownerRole": "product-architecture",
       "status": "stable",
       "lifecycle": "volatile",
@@ -2098,10 +2098,10 @@
         "OrgUnit and ActorRef lifecycles"
       ],
       "dependsOn": [
-        "docs/company-os/concept-model.md",
-        "docs/company-os/work-items-and-approvals.md",
-        "docs/company-os/governance.md",
-        "docs/company-os/execution-foundation.md"
+        "docs/archive/company-os/concept-model.md",
+        "docs/current/company-os/work-items-and-approvals.md",
+        "docs/current/company-os/governance.md",
+        "docs/current/company-os/execution-foundation.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2117,7 +2117,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/company-os/work-items-and-approvals.md",
+      "path": "docs/current/company-os/work-items-and-approvals.md",
       "ownerRole": "product-architecture",
       "status": "stable",
       "lifecycle": "volatile",
@@ -2126,11 +2126,11 @@
         "responsibility, execution references, review, and approvals"
       ],
       "dependsOn": [
-        "docs/company-os/concept-model.md",
-        "docs/company-os/organization-and-actors.md",
-        "docs/company-os/document-system.md",
-        "docs/company-os/execution-foundation.md",
-        "docs/company-os/governance.md"
+        "docs/archive/company-os/concept-model.md",
+        "docs/current/company-os/organization-and-actors.md",
+        "docs/current/company-os/document-system.md",
+        "docs/current/company-os/execution-foundation.md",
+        "docs/current/company-os/governance.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2146,7 +2146,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/company-os/financial-relations.md",
+      "path": "docs/archive/company-os/financial-relations.md",
       "ownerRole": "product-architecture",
       "status": "stable",
       "lifecycle": "volatile",
@@ -2155,10 +2155,10 @@
         "finance-to-module, WorkItem, Approval, and evidence linkage"
       ],
       "dependsOn": [
-        "docs/company-os/concept-model.md",
-        "docs/company-os/work-items-and-approvals.md",
-        "docs/company-os/governance.md",
-        "docs/company-os/examples/trademark-registration.md"
+        "docs/archive/company-os/concept-model.md",
+        "docs/current/company-os/work-items-and-approvals.md",
+        "docs/current/company-os/governance.md",
+        "docs/archive/company-os/examples/trademark-registration.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2174,7 +2174,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/company-os/module-design.md",
+      "path": "docs/current/company-os/module-design.md",
       "ownerRole": "product-architecture",
       "status": "stable",
       "lifecycle": "volatile",
@@ -2183,11 +2183,11 @@
         "new-domain relation and migration requirements"
       ],
       "dependsOn": [
-        "docs/company-os/document-system.md",
-        "docs/company-os/organization-and-actors.md",
-        "docs/company-os/work-items-and-approvals.md",
-        "docs/company-os/financial-relations.md",
-        "docs/company-os/governance.md"
+        "docs/current/company-os/document-system.md",
+        "docs/current/company-os/organization-and-actors.md",
+        "docs/current/company-os/work-items-and-approvals.md",
+        "docs/archive/company-os/financial-relations.md",
+        "docs/current/company-os/governance.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2203,7 +2203,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/company-os/governance.md",
+      "path": "docs/current/company-os/governance.md",
       "ownerRole": "governance",
       "status": "stable",
       "lifecycle": "volatile",
@@ -2212,11 +2212,11 @@
         "module evolution, authority, policies, and approval boundaries"
       ],
       "dependsOn": [
-        "docs/company-os/concept-model.md",
-        "docs/company-os/organization-and-actors.md",
-        "docs/company-os/module-design.md",
-        "docs/company-os/work-items-and-approvals.md",
-        "docs/company-os/company-constitution.md"
+        "docs/archive/company-os/concept-model.md",
+        "docs/current/company-os/organization-and-actors.md",
+        "docs/current/company-os/module-design.md",
+        "docs/current/company-os/work-items-and-approvals.md",
+        "docs/archive/company-os/company-constitution.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2232,7 +2232,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/company-os/four-system-collaboration.md",
+      "path": "docs/archive/company-os/four-system-collaboration.md",
       "ownerRole": "product-architecture",
       "status": "stable",
       "lifecycle": "volatile",
@@ -2241,10 +2241,10 @@
         "governance-led organization and cross-system operating loop"
       ],
       "dependsOn": [
-        "docs/company-os/organization-and-actors.md",
-        "docs/company-os/work-items-and-approvals.md",
-        "docs/company-os/financial-relations.md",
-        "docs/company-os/governance.md"
+        "docs/current/company-os/organization-and-actors.md",
+        "docs/current/company-os/work-items-and-approvals.md",
+        "docs/archive/company-os/financial-relations.md",
+        "docs/current/company-os/governance.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2260,7 +2260,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/company-os/governance-agent-workspaces.md",
+      "path": "docs/archive/company-os/governance-agent-workspaces.md",
       "ownerRole": "product-architecture",
       "status": "stable",
       "lifecycle": "volatile",
@@ -2269,9 +2269,9 @@
         "prompt, tools, Skills, permissions, and deferred workspace boundary"
       ],
       "dependsOn": [
-        "docs/company-os/organization-and-actors.md",
-        "docs/company-os/governance.md",
-        "docs/company-os/skill-contracts.md"
+        "docs/current/company-os/organization-and-actors.md",
+        "docs/current/company-os/governance.md",
+        "docs/current/company-os/skill-contracts.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2300,7 +2300,7 @@
       ]
     },
     {
-      "path": "docs/company-os/work-operating-system.md",
+      "path": "docs/current/company-os/work-operating-system.md",
       "ownerRole": "product",
       "status": "stable",
       "lifecycle": "volatile",
@@ -2309,9 +2309,9 @@
         "Work views, filters, responsibility, and Milestone boundary"
       ],
       "dependsOn": [
-        "docs/company-os/work-items-and-approvals.md",
-        "docs/company-os/four-system-collaboration.md",
-        "docs/company-os/frontend-information-architecture.md"
+        "docs/current/company-os/work-items-and-approvals.md",
+        "docs/archive/company-os/four-system-collaboration.md",
+        "docs/archive/company-os/frontend-information-architecture.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2327,7 +2327,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/company-os/execution-foundation.md",
+      "path": "docs/current/company-os/execution-foundation.md",
       "ownerRole": "architecture",
       "status": "stable",
       "lifecycle": "volatile",
@@ -2340,8 +2340,8 @@
         "docs/decisions/0026-mission-wave-architecture.md",
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
         "docs/decisions/0042-company-store-execution-space-project-binding.md",
-        "docs/company-os/concept-model.md",
-        "docs/company-os/work-items-and-approvals.md"
+        "docs/archive/company-os/concept-model.md",
+        "docs/current/company-os/work-items-and-approvals.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2371,7 +2371,7 @@
       ]
     },
     {
-      "path": "docs/company-os/frontend-information-architecture.md",
+      "path": "docs/archive/company-os/frontend-information-architecture.md",
       "ownerRole": "product-design",
       "status": "stable",
       "lifecycle": "volatile",
@@ -2380,8 +2380,8 @@
         "Home, Docs, Agents, and Operations information architecture"
       ],
       "dependsOn": [
-        "docs/company-os/README.md",
-        "docs/company-os/core-page-matrix.md"
+        "docs/current/company-os/README.md",
+        "docs/current/company-os/core-page-matrix.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2397,33 +2397,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/company-os/core-page-matrix.md",
-      "ownerRole": "product-design",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "Company OS core page coverage",
-        "expected-design and implementation matrix"
-      ],
-      "dependsOn": [
-        "docs/company-os/frontend-information-architecture.md",
-        "docs/company-os/concept-model.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-20",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
-      ],
-      "reorgTrigger": "Required core pages, truth constraints, expected-design coverage, or implementation state changes.",
-      "authorityClass": "design_intent",
-      "implementationState": "design_only",
-      "truthRefs": []
-    },
-    {
-      "path": "docs/company-os/agent-programmable-pages.md",
+      "path": "docs/archive/company-os/agent-programmable-pages.md",
       "ownerRole": "product-platform",
       "status": "stable",
       "lifecycle": "volatile",
@@ -2432,10 +2406,10 @@
         "CustomView authority and governed-action boundaries"
       ],
       "dependsOn": [
-        "docs/company-os/document-system.md",
-        "docs/company-os/module-design.md",
-        "docs/company-os/governance.md",
-        "docs/company-os/skill-contracts.md",
+        "docs/current/company-os/document-system.md",
+        "docs/current/company-os/module-design.md",
+        "docs/current/company-os/governance.md",
+        "docs/current/company-os/skill-contracts.md",
         "docs/decisions/0029-agent-programmable-document-runtime.md"
       ],
       "machineConsumers": [
@@ -2457,43 +2431,6 @@
       ]
     },
     {
-      "path": "docs/company-os/skill-contracts.md",
-      "ownerRole": "product-platform",
-      "status": "stable",
-      "lifecycle": "volatile",
-      "canonicalFor": [
-        "future Company OS module and custom-page skill contracts",
-        "skill non-authority boundaries"
-      ],
-      "dependsOn": [
-        "docs/company-os/module-design.md",
-        "docs/company-os/agent-programmable-pages.md",
-        "docs/company-os/governance.md",
-        "docs/decisions/0029-agent-programmable-document-runtime.md"
-      ],
-      "machineConsumers": [
-        "check-doc-links",
-        "check-doc-governance"
-      ],
-      "reviewAfter": "2026-08-20",
-      "lastVerifiedWith": [
-        "npx pnpm@9.15.4 check"
-      ],
-      "reorgTrigger": "Optional skill inputs, outputs, policy boundaries, or future custom-page capabilities change.",
-      "authorityClass": "canonical_contract",
-      "implementationState": "partial",
-      "truthRefs": [
-        {
-          "kind": "decision",
-          "ref": "docs/decisions/0029-agent-programmable-document-runtime.md"
-        },
-        {
-          "kind": "test",
-          "ref": "scripts/check-company-os-docs-cli-smoke.mjs"
-        }
-      ]
-    },
-    {
       "path": "skills/company-docs-operator/SKILL.md",
       "ownerRole": "docs-governance",
       "status": "stable",
@@ -2503,10 +2440,10 @@
         "governed Docs CLI operation procedure and truth boundaries"
       ],
       "dependsOn": [
-        "docs/company-os/document-system.md",
-        "docs/company-os/skill-contracts.md",
-        "docs/company-os/docs-operating-surface-matrix.md",
-        "docs/company-os/governance.md"
+        "docs/current/company-os/document-system.md",
+        "docs/current/company-os/skill-contracts.md",
+        "docs/archive/company-os/docs-operating-surface-matrix.md",
+        "docs/current/company-os/governance.md"
       ],
       "machineConsumers": [
         "check-doc-governance",
@@ -2541,12 +2478,12 @@
         "BusinessModule design proposal procedure"
       ],
       "dependsOn": [
-        "docs/company-os/module-design.md",
-        "docs/company-os/document-system.md",
-        "docs/company-os/organization-and-actors.md",
-        "docs/company-os/work-items-and-approvals.md",
-        "docs/company-os/financial-relations.md",
-        "docs/company-os/governance.md"
+        "docs/current/company-os/module-design.md",
+        "docs/current/company-os/document-system.md",
+        "docs/current/company-os/organization-and-actors.md",
+        "docs/current/company-os/work-items-and-approvals.md",
+        "docs/archive/company-os/financial-relations.md",
+        "docs/current/company-os/governance.md"
       ],
       "machineConsumers": [
         "check-doc-governance"
@@ -2575,9 +2512,9 @@
         "screenshot-first custom page package procedure"
       ],
       "dependsOn": [
-        "docs/company-os/agent-programmable-pages.md",
-        "docs/company-os/frontend-information-architecture.md",
-        "docs/company-os/skill-contracts.md",
+        "docs/archive/company-os/agent-programmable-pages.md",
+        "docs/archive/company-os/frontend-information-architecture.md",
+        "docs/current/company-os/skill-contracts.md",
         "docs/decisions/0029-agent-programmable-document-runtime.md"
       ],
       "machineConsumers": [
@@ -2598,7 +2535,7 @@
       ]
     },
     {
-      "path": "docs/company-os/examples/trademark-registration.md",
+      "path": "docs/archive/company-os/examples/trademark-registration.md",
       "ownerRole": "product",
       "status": "stable",
       "lifecycle": "volatile",
@@ -2607,10 +2544,10 @@
         "document, work, finance, approval, and governance linkage example"
       ],
       "dependsOn": [
-        "docs/company-os/module-design.md",
-        "docs/company-os/financial-relations.md",
-        "docs/company-os/work-items-and-approvals.md",
-        "docs/company-os/governance.md"
+        "docs/current/company-os/module-design.md",
+        "docs/archive/company-os/financial-relations.md",
+        "docs/current/company-os/work-items-and-approvals.md",
+        "docs/current/company-os/governance.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2626,7 +2563,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/company-os/external-project-product-sources.md",
+      "path": "docs/archive/company-os/external-project-product-sources.md",
       "ownerRole": "product-architecture",
       "status": "stable",
       "lifecycle": "volatile",
@@ -2635,10 +2572,10 @@
         "GitHub PRD snapshot and webhook boundary"
       ],
       "dependsOn": [
-        "docs/company-os/document-system.md",
-        "docs/company-os/work-items-and-approvals.md",
-        "docs/company-os/skill-contracts.md",
-        "docs/company-os/examples/wanchengwanling-operations.md"
+        "docs/current/company-os/document-system.md",
+        "docs/current/company-os/work-items-and-approvals.md",
+        "docs/current/company-os/skill-contracts.md",
+        "docs/archive/company-os/examples/wanchengwanling-operations.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2659,7 +2596,7 @@
       ]
     },
     {
-      "path": "docs/company-os/external-gateway-and-plugins.md",
+      "path": "docs/archive/company-os/external-gateway-and-plugins.md",
       "ownerRole": "product-architecture",
       "status": "stable",
       "lifecycle": "volatile",
@@ -2668,11 +2605,11 @@
         "WeCom merchant-message gateway contract for Wanchengwanling dogfood"
       ],
       "dependsOn": [
-        "docs/company-os/document-system.md",
-        "docs/company-os/work-items-and-approvals.md",
-        "docs/company-os/organization-and-actors.md",
-        "docs/company-os/external-project-product-sources.md",
-        "docs/company-os/examples/wanchengwanling-operations.md"
+        "docs/current/company-os/document-system.md",
+        "docs/current/company-os/work-items-and-approvals.md",
+        "docs/current/company-os/organization-and-actors.md",
+        "docs/archive/company-os/external-project-product-sources.md",
+        "docs/archive/company-os/examples/wanchengwanling-operations.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2693,7 +2630,7 @@
       ]
     },
     {
-      "path": "docs/company-os/examples/wanchengwanling-operations.md",
+      "path": "docs/archive/company-os/examples/wanchengwanling-operations.md",
       "ownerRole": "business-operations",
       "status": "stable",
       "lifecycle": "volatile",
@@ -2702,10 +2639,10 @@
         "AR tourism merchant, reward, content, creator, finance, and launch module example"
       ],
       "dependsOn": [
-        "docs/company-os/external-project-product-sources.md",
-        "docs/company-os/external-gateway-and-plugins.md",
-        "docs/company-os/examples/wanchengwanling-completion-roadmap.md",
-        "docs/company-os/examples/wanchengwanling-company-store-migration.md"
+        "docs/archive/company-os/external-project-product-sources.md",
+        "docs/archive/company-os/external-gateway-and-plugins.md",
+        "docs/archive/company-os/examples/wanchengwanling-completion-roadmap.md",
+        "docs/archive/company-os/examples/wanchengwanling-company-store-migration.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2726,7 +2663,7 @@
       ]
     },
     {
-      "path": "docs/company-os/examples/wanchengwanling-company-store-migration.md",
+      "path": "docs/archive/company-os/examples/wanchengwanling-company-store-migration.md",
       "ownerRole": "business-operations",
       "status": "stable",
       "lifecycle": "volatile",
@@ -2736,9 +2673,9 @@
       ],
       "dependsOn": [
         "docs/decisions/0042-company-store-execution-space-project-binding.md",
-        "docs/company-os/examples/wanchengwanling-operations.md",
-        "crates/harness-cli/src/company_store.rs",
-        "crates/harness-cli/tests/company_store_cli.rs"
+        "docs/archive/company-os/examples/wanchengwanling-operations.md",
+        "crates/firm-cli/src/company_store.rs",
+        "crates/firm-cli/tests/company_store_cli.rs"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2765,7 +2702,7 @@
       ]
     },
     {
-      "path": "docs/company-os/examples/wanchengwanling-completion-roadmap.md",
+      "path": "docs/archive/company-os/examples/wanchengwanling-completion-roadmap.md",
       "ownerRole": "business-operations",
       "status": "stable",
       "lifecycle": "volatile",
@@ -2774,9 +2711,9 @@
         "Company OS operating-surface, custom-page, GitHub sync, SQL read/search, launch data, and replication backlog"
       ],
       "dependsOn": [
-        "docs/company-os/examples/wanchengwanling-operations.md",
-        "docs/company-os/agent-programmable-pages.md",
-        "docs/company-os/skill-contracts.md",
+        "docs/archive/company-os/examples/wanchengwanling-operations.md",
+        "docs/archive/company-os/agent-programmable-pages.md",
+        "docs/current/company-os/skill-contracts.md",
         "scripts/seed-company-os-wanchengwanling-roadmap-v1.mjs"
       ],
       "machineConsumers": [
@@ -2807,9 +2744,9 @@
         "Docs and mixed Organization supersession of future-layer framing"
       ],
       "dependsOn": [
-        "docs/company-os/vision.md",
-        "docs/company-os/concept-model.md",
-        "docs/company-os/execution-foundation.md",
+        "docs/archive/company-os/vision.md",
+        "docs/archive/company-os/concept-model.md",
+        "docs/current/company-os/execution-foundation.md",
         "docs/decisions/0026-mission-wave-architecture.md"
       ],
       "machineConsumers": [
@@ -2831,7 +2768,7 @@
       ]
     },
     {
-      "path": "docs/dashboard/pages/member-run-focus.md",
+      "path": "docs/current/dashboard/pages/member-run-focus.md",
       "ownerRole": "product-design",
       "status": "planned",
       "lifecycle": "volatile",
@@ -2840,11 +2777,11 @@
         "run-scoped My Works, native activity projection, and evidence UI contract"
       ],
       "dependsOn": [
-        "docs/company-os/execution-foundation.md",
+        "docs/current/company-os/execution-foundation.md",
         "docs/decisions/0025-agent-team-run-control-plane.md",
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
         "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
-        "docs/product/agent-team-works.md",
+        "docs/current/product/agent-team-works.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
       ],
       "machineConsumers": [
@@ -2866,7 +2803,7 @@
       ]
     },
     {
-      "path": "docs/dashboard/pages/mission-wave-canvas.md",
+      "path": "docs/current/dashboard/pages/mission-wave-canvas.md",
       "ownerRole": "product-design",
       "status": "stable",
       "lifecycle": "volatile",
@@ -2875,11 +2812,11 @@
         "ordered Wave and gate UI contract"
       ],
       "dependsOn": [
-        "docs/company-os/execution-foundation.md",
+        "docs/current/company-os/execution-foundation.md",
         "docs/decisions/0026-mission-wave-architecture.md",
-        "docs/product/agent-team-works.md",
+        "docs/current/product/agent-team-works.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
-        "docs/design/execution-workbench-v4/README.md"
+        "docs/archive/design/execution-workbench-v4/README.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2900,7 +2837,7 @@
       ]
     },
     {
-      "path": "docs/dashboard/pages/team-run-war-room.md",
+      "path": "docs/current/dashboard/pages/team-run-war-room.md",
       "ownerRole": "product-design",
       "status": "stable",
       "lifecycle": "volatile",
@@ -2909,13 +2846,13 @@
         "run-scoped Works Kanban, collaboration, native activity, and delivery-proof UI contract"
       ],
       "dependsOn": [
-        "docs/company-os/execution-foundation.md",
+        "docs/current/company-os/execution-foundation.md",
         "docs/decisions/0025-agent-team-run-control-plane.md",
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
         "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
-        "docs/product/agent-team-works.md",
+        "docs/current/product/agent-team-works.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
-        "docs/design/execution-workbench-v3/README.md"
+        "docs/archive/design/execution-workbench-v3/README.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2936,7 +2873,7 @@
       ]
     },
     {
-      "path": "docs/dashboard/pages/standing-agent-focus.md",
+      "path": "docs/current/dashboard/pages/standing-agent-focus.md",
       "ownerRole": "product-design",
       "status": "planned",
       "lifecycle": "volatile",
@@ -2945,9 +2882,9 @@
         "durable AgentMember availability, assignments, and activity UI contract"
       ],
       "dependsOn": [
-        "docs/company-os/organization-and-actors.md",
-        "docs/company-os/work-items-and-approvals.md",
-        "docs/company-os/execution-foundation.md"
+        "docs/current/company-os/organization-and-actors.md",
+        "docs/current/company-os/work-items-and-approvals.md",
+        "docs/current/company-os/execution-foundation.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -2993,7 +2930,7 @@
       ]
     },
     {
-      "path": "docs/design/execution-workbench-v3/README.md",
+      "path": "docs/archive/design/execution-workbench-v3/README.md",
       "ownerRole": "product-design",
       "status": "stable",
       "lifecycle": "volatile",
@@ -3002,9 +2939,9 @@
         "Mission Canvas and Agent Team War Room expected-versus-actual evidence"
       ],
       "dependsOn": [
-        "docs/dashboard/pages/mission-wave-canvas.md",
-        "docs/dashboard/pages/team-run-war-room.md",
-        "docs/design/execution-workbench-v3/visual-contract.json"
+        "docs/current/dashboard/pages/mission-wave-canvas.md",
+        "docs/current/dashboard/pages/team-run-war-room.md",
+        "docs/archive/design/execution-workbench-v3/visual-contract.json"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -3021,7 +2958,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/design/execution-workbench-v3/visual-contract.json",
+      "path": "docs/archive/design/execution-workbench-v3/visual-contract.json",
       "ownerRole": "frontend-quality",
       "status": "stable",
       "lifecycle": "volatile",
@@ -3029,8 +2966,8 @@
         "machine-readable Execution Workbench V3 screenshot contract"
       ],
       "dependsOn": [
-        "docs/dashboard/pages/mission-wave-canvas.md",
-        "docs/dashboard/pages/team-run-war-room.md"
+        "docs/current/dashboard/pages/mission-wave-canvas.md",
+        "docs/current/dashboard/pages/team-run-war-room.md"
       ],
       "machineConsumers": [
         "check-doc-governance",
@@ -3046,7 +2983,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/design/execution-workbench-v4/README.md",
+      "path": "docs/archive/design/execution-workbench-v4/README.md",
       "ownerRole": "product-design",
       "status": "stable",
       "lifecycle": "volatile",
@@ -3055,8 +2992,8 @@
         "current Team War Room Works visual evidence entrypoint"
       ],
       "dependsOn": [
-        "docs/dashboard/pages/team-run-war-room.md",
-        "docs/design/execution-workbench-v4/team-war-room-works-closure-v1/visual-contract.json"
+        "docs/current/dashboard/pages/team-run-war-room.md",
+        "docs/archive/design/execution-workbench-v4/team-war-room-works-closure-v1/visual-contract.json"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -3073,7 +3010,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/design/execution-workbench-v4/team-war-room-works-closure-v1/visual-contract.json",
+      "path": "docs/archive/design/execution-workbench-v4/team-war-room-works-closure-v1/visual-contract.json",
       "ownerRole": "frontend-quality",
       "status": "stable",
       "lifecycle": "volatile",
@@ -3081,8 +3018,8 @@
         "machine-readable Team War Room Works desktop, tablet, and mobile visual contract"
       ],
       "dependsOn": [
-        "docs/design/execution-workbench-v4/README.md",
-        "docs/dashboard/pages/team-run-war-room.md"
+        "docs/archive/design/execution-workbench-v4/README.md",
+        "docs/current/dashboard/pages/team-run-war-room.md"
       ],
       "machineConsumers": [
         "check-doc-governance",
@@ -3107,10 +3044,10 @@
         "Document, View, and Custom Page authority boundary"
       ],
       "dependsOn": [
-        "docs/company-os/agent-programmable-pages.md",
-        "docs/company-os/skill-contracts.md",
-        "docs/company-os/document-system.md",
-        "docs/company-os/governance.md"
+        "docs/archive/company-os/agent-programmable-pages.md",
+        "docs/current/company-os/skill-contracts.md",
+        "docs/current/company-os/document-system.md",
+        "docs/current/company-os/governance.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -3135,9 +3072,9 @@
         "canonical Store versus derived read/query/index layer boundary"
       ],
       "dependsOn": [
-        "docs/company-os/document-system.md",
-        "docs/company-os/docs-operating-surface-matrix.md",
-        "docs/company-os/implementation-truth-matrix.md",
+        "docs/current/company-os/document-system.md",
+        "docs/archive/company-os/docs-operating-surface-matrix.md",
+        "docs/archive/company-os/implementation-truth-matrix.md",
         "docs/decisions/0004-file-store-before-database.md",
         "docs/decisions/0010-harness-store-is-canonical.md",
         "docs/decisions/0027-company-os-primary-model.md"
@@ -3172,9 +3109,9 @@
         "code-declared custom business page contract"
       ],
       "dependsOn": [
-        "docs/company-os/document-system.md",
-        "docs/company-os/docs-operating-surface-matrix.md",
-        "docs/company-os/implementation-truth-matrix.md",
+        "docs/current/company-os/document-system.md",
+        "docs/archive/company-os/docs-operating-surface-matrix.md",
+        "docs/archive/company-os/implementation-truth-matrix.md",
         "docs/decisions/0027-company-os-primary-model.md",
         "docs/decisions/0029-agent-programmable-document-runtime.md",
         "docs/decisions/0035-company-os-sql-read-model.md"
@@ -3200,7 +3137,7 @@
       ]
     },
     {
-      "path": "docs/design/company-os-v1/fixture-contract.md",
+      "path": "docs/archive/design/company-os-v1/fixture-contract.md",
       "ownerRole": "product-design",
       "status": "archival",
       "lifecycle": "archival",
@@ -3208,9 +3145,9 @@
         "legacy Company OS v1 fixture rules retained only for deterministic baseline compatibility"
       ],
       "dependsOn": [
-        "docs/design/company-os-v1/fixtures/company-os-trademark-v1.json",
-        "docs/company-os/examples/trademark-registration.md",
-        "docs/company-os/core-page-matrix.md"
+        "docs/archive/design/company-os-v1/fixtures/company-os-trademark-v1.json",
+        "docs/archive/company-os/examples/trademark-registration.md",
+        "docs/current/company-os/core-page-matrix.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -3232,7 +3169,7 @@
       ]
     },
     {
-      "path": "docs/design/company-os-v1/implementation-acceptance.md",
+      "path": "docs/archive/design/company-os-v1/implementation-acceptance.md",
       "ownerRole": "frontend-quality",
       "status": "archival",
       "lifecycle": "archival",
@@ -3240,8 +3177,8 @@
         "legacy Company OS v1 actual screenshot acceptance evidence retained as baseline context"
       ],
       "dependsOn": [
-        "docs/design/company-os-v1/fixture-contract.md",
-        "docs/design/company-os-v1/fixtures/company-os-trademark-v1.json"
+        "docs/archive/design/company-os-v1/fixture-contract.md",
+        "docs/archive/design/company-os-v1/fixtures/company-os-trademark-v1.json"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -3263,7 +3200,7 @@
       ]
     },
     {
-      "path": "docs/design/company-os-v2/visual-index.md",
+      "path": "docs/archive/design/company-os-v2/visual-index.md",
       "ownerRole": "product-design",
       "status": "stable",
       "lifecycle": "volatile",
@@ -3272,9 +3209,9 @@
         "Expected Actual historical and deferred visual classifications"
       ],
       "dependsOn": [
-        "docs/company-os/product-system-map.md",
-        "docs/design/company-os-v2/work-operating-system-v1/manifest.json",
-        "docs/design/company-os-v2/company-os-four-systems-v1/manifest.json"
+        "docs/current/company-os/product-system-map.md",
+        "docs/archive/design/company-os-v2/work-operating-system-v1/manifest.json",
+        "docs/archive/design/company-os-v2/company-os-four-systems-v1/manifest.json"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -3290,7 +3227,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/integration/native-session-storage.md",
+      "path": "docs/current/integration/native-session-storage.md",
       "ownerRole": "provider-integration",
       "status": "stable",
       "lifecycle": "volatile",
@@ -3304,12 +3241,12 @@
       "dependsOn": [
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
         "docs/decisions/0033-agent-team-workspace-contract.md",
-        "docs/agent-integration-model.md",
-        "docs/integration/codex.md",
-        "docs/integration/kimi.md",
-        "docs/integration/claude.md",
-        "docs/dashboard/pages/member-run-focus.md",
-        "docs/dashboard/pages/team-run-war-room.md"
+        "docs/current/architecture/agent-integration-model.md",
+        "docs/current/integration/codex.md",
+        "docs/current/integration/kimi.md",
+        "docs/current/integration/claude.md",
+        "docs/current/dashboard/pages/member-run-focus.md",
+        "docs/current/dashboard/pages/team-run-war-room.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -3337,7 +3274,7 @@
         },
         {
           "kind": "runtime_evidence",
-          "ref": "docs/integration/live-agent-team-acceptance-2026-07-21.md"
+          "ref": "docs/current/integration/live-agent-team-acceptance-2026-07-21.md"
         }
       ]
     },
@@ -3353,9 +3290,9 @@
       ],
       "dependsOn": [
         "docs/decisions/0025-agent-team-run-control-plane.md",
-        "docs/agent-integration-model.md",
-        "docs/integration/kimi.md",
-        "docs/dashboard/pages/team-run-war-room.md"
+        "docs/current/architecture/agent-integration-model.md",
+        "docs/current/integration/kimi.md",
+        "docs/current/dashboard/pages/team-run-war-room.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -3392,9 +3329,9 @@
       ],
       "dependsOn": [
         "docs/decisions/0030-provider-interaction-contract.md",
-        "docs/agent-integration-model.md",
-        "docs/integration/codex.md",
-        "docs/integration/kimi.md"
+        "docs/current/architecture/agent-integration-model.md",
+        "docs/current/integration/codex.md",
+        "docs/current/integration/kimi.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -3435,9 +3372,9 @@
         "docs/decisions/0025-agent-team-run-control-plane.md",
         "docs/decisions/0030-provider-interaction-contract.md",
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
-        "docs/data-model.md",
-        "docs/company-os/execution-foundation.md",
-        "docs/agent-integration-model.md"
+        "docs/current/architecture/data-model.md",
+        "docs/current/company-os/execution-foundation.md",
+        "docs/current/architecture/agent-integration-model.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -3465,7 +3402,7 @@
         },
         {
           "kind": "runtime_evidence",
-          "ref": "docs/integration/live-agent-team-acceptance-2026-07-21.md"
+          "ref": "docs/current/integration/live-agent-team-acceptance-2026-07-21.md"
         }
       ]
     },
@@ -3482,8 +3419,8 @@
       "dependsOn": [
         "docs/decisions/0025-agent-team-run-control-plane.md",
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
-        "docs/multi-project.md",
-        "docs/member-runtime-observability.md"
+        "docs/current/operations/multi-project.md",
+        "docs/current/operations/member-runtime-observability.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -3517,7 +3454,7 @@
       ]
     },
     {
-      "path": "docs/integration/live-agent-team-acceptance-2026-07-21.md",
+      "path": "docs/current/integration/live-agent-team-acceptance-2026-07-21.md",
       "ownerRole": "execution-foundation",
       "status": "stable",
       "lifecycle": "stable",
@@ -3527,10 +3464,10 @@
         "2026-07-30 consecutive persistent Codex, Claude, and Kimi release acceptance"
       ],
       "dependsOn": [
-        "docs/company-os/execution-foundation.md",
-        "docs/integration/codex.md",
-        "docs/integration/kimi.md",
-        "docs/product/agent-team-dogfood-loop.md",
+        "docs/current/company-os/execution-foundation.md",
+        "docs/current/integration/codex.md",
+        "docs/current/integration/kimi.md",
+        "docs/current/product/agent-team-dogfood-loop.md",
         "docs/decisions/0025-agent-team-run-control-plane.md",
         "docs/decisions/0026-mission-wave-architecture.md"
       ],
@@ -3552,7 +3489,7 @@
       "truthRefs": [
         {
           "kind": "runtime_evidence",
-          "ref": "docs/integration/live-agent-team-acceptance-2026-07-21.md"
+          "ref": "docs/current/integration/live-agent-team-acceptance-2026-07-21.md"
         },
         {
           "kind": "test",
@@ -3561,7 +3498,7 @@
       ]
     },
     {
-      "path": "docs/design/company-os-v1/fixtures/company-os-trademark-v1.json",
+      "path": "docs/archive/design/company-os-v1/fixtures/company-os-trademark-v1.json",
       "ownerRole": "product-architecture",
       "status": "archival",
       "lifecycle": "archival",
@@ -3569,8 +3506,8 @@
         "legacy deterministic Company OS trademark fixture used by current Store-live seeding and browser checks"
       ],
       "dependsOn": [
-        "docs/company-os/examples/trademark-registration.md",
-        "docs/design/company-os-v1/fixture-contract.md"
+        "docs/archive/company-os/examples/trademark-registration.md",
+        "docs/archive/design/company-os-v1/fixture-contract.md"
       ],
       "machineConsumers": [
         "check-doc-governance",
@@ -3592,7 +3529,7 @@
       ]
     },
     {
-      "path": "docs/company-os/collaboration-and-agent-work.md",
+      "path": "docs/archive/company-os/collaboration-and-agent-work.md",
       "ownerRole": "product",
       "status": "stable",
       "lifecycle": "volatile",
@@ -3601,9 +3538,9 @@
         "Standing Agent and execution-member collaboration boundary"
       ],
       "dependsOn": [
-        "docs/company-os/organization-and-actors.md",
-        "docs/company-os/work-operating-system.md",
-        "docs/company-os/execution-foundation.md"
+        "docs/current/company-os/organization-and-actors.md",
+        "docs/current/company-os/work-operating-system.md",
+        "docs/current/company-os/execution-foundation.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -3619,7 +3556,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/company-os/browser-action-transport.md",
+      "path": "docs/archive/company-os/browser-action-transport.md",
       "ownerRole": "company-os-runtime",
       "status": "stable",
       "lifecycle": "volatile",
@@ -3627,8 +3564,8 @@
         "implemented Company OS browser Action transport and session capability boundary"
       ],
       "dependsOn": [
-        "docs/company-os/agent-programmable-pages.md",
-        "docs/company-os/work-items-and-approvals.md",
+        "docs/archive/company-os/agent-programmable-pages.md",
+        "docs/current/company-os/work-items-and-approvals.md",
         "apps/agent-dashboard/src/company-os/operations/approvalAction.ts"
       ],
       "machineConsumers": [
@@ -3655,7 +3592,7 @@
       ]
     },
     {
-      "path": "docs/company-os/work-item-lifecycle-actions.md",
+      "path": "docs/archive/company-os/work-item-lifecycle-actions.md",
       "ownerRole": "work-governance",
       "status": "stable",
       "lifecycle": "volatile",
@@ -3663,9 +3600,9 @@
         "implemented WorkItem transition Action and lifecycle authority boundary"
       ],
       "dependsOn": [
-        "docs/company-os/work-operating-system.md",
-        "docs/company-os/work-items-and-approvals.md",
-        "docs/company-os/browser-action-transport.md"
+        "docs/current/company-os/work-operating-system.md",
+        "docs/current/company-os/work-items-and-approvals.md",
+        "docs/archive/company-os/browser-action-transport.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -3687,7 +3624,7 @@
       ]
     },
     {
-      "path": "docs/integration/host-agent-mcp.md",
+      "path": "docs/current/integration/host-agent-mcp.md",
       "ownerRole": "provider-integration",
       "status": "stable",
       "lifecycle": "volatile",
@@ -3695,9 +3632,9 @@
         "Host Agent MCP integration and executable provider boundary"
       ],
       "dependsOn": [
-        "docs/company-os/execution-foundation.md",
-        "docs/integration/README.md",
-        "crates/harness-cli/src/mcp.rs"
+        "docs/current/company-os/execution-foundation.md",
+        "docs/current/integration/README.md",
+        "crates/firm-cli/src/mcp.rs"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -3731,8 +3668,8 @@
       "dependsOn": [
         "docs/decisions/0025-agent-team-run-control-plane.md",
         "docs/decisions/0026-mission-wave-architecture.md",
-        "docs/product/mission-wave-host-plan.md",
-        "docs/architecture.md"
+        "docs/current/product/mission-wave-host-plan.md",
+        "docs/current/architecture/architecture.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -3765,7 +3702,7 @@
       ]
     },
     {
-      "path": "docs/product/mission-wave-host-plan.md",
+      "path": "docs/current/product/mission-wave-host-plan.md",
       "ownerRole": "product",
       "status": "stable",
       "lifecycle": "volatile",
@@ -3777,8 +3714,8 @@
         "docs/decisions/0034-host-plan-waves-and-mission-teams.md",
         "docs/decisions/0037-agent-member-autonomy-and-collaboration.md",
         "docs/decisions/0051-single-intent-spine.md",
-        "docs/dashboard/pages/mission-wave-canvas.md",
-        "docs/dashboard/pages/team-run-war-room.md"
+        "docs/current/dashboard/pages/mission-wave-canvas.md",
+        "docs/current/dashboard/pages/team-run-war-room.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -3817,8 +3754,8 @@
       "dependsOn": [
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
         "docs/decisions/0034-host-plan-waves-and-mission-teams.md",
-        "docs/agent-runtime.md",
-        "docs/product/mission-wave-host-plan.md"
+        "docs/current/architecture/agent-runtime.md",
+        "docs/current/product/mission-wave-host-plan.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -3863,7 +3800,7 @@
       "dependsOn": [
         "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
         "docs/decisions/0041-provider-neutral-member-continuation.md",
-        "docs/member-continuation-model.md"
+        "docs/current/architecture/member-continuation-model.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -3898,7 +3835,7 @@
       "dependsOn": [
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
         "docs/decisions/0037-agent-member-autonomy-and-collaboration.md",
-        "docs/agent-runtime.md"
+        "docs/current/architecture/agent-runtime.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -3929,7 +3866,7 @@
       ]
     },
     {
-      "path": "docs/member-continuation-model.md",
+      "path": "docs/current/architecture/member-continuation-model.md",
       "ownerRole": "provider-integration",
       "status": "stable",
       "lifecycle": "volatile",
@@ -3940,8 +3877,8 @@
         "native continuation capability and projection vocabulary"
       ],
       "dependsOn": [
-        "docs/agent-runtime.md",
-        "docs/agent-integration-model.md",
+        "docs/current/architecture/agent-runtime.md",
+        "docs/current/architecture/agent-integration-model.md",
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
         "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
         "docs/decisions/0041-provider-neutral-member-continuation.md"
@@ -3977,7 +3914,7 @@
         "decision that native continuation is optional and provider-specific"
       ],
       "dependsOn": [
-        "docs/member-continuation-model.md",
+        "docs/current/architecture/member-continuation-model.md",
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
         "docs/decisions/0037-agent-member-autonomy-and-collaboration.md",
@@ -4010,9 +3947,9 @@
       ],
       "dependsOn": [
         "docs/decisions/0033-agent-team-workspace-contract.md",
-        "docs/multi-project.md",
-        "docs/company-os/README.md",
-        "docs/company-os/execution-foundation.md"
+        "docs/current/operations/multi-project.md",
+        "docs/current/company-os/README.md",
+        "docs/current/company-os/execution-foundation.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -4048,7 +3985,7 @@
       ]
     },
     {
-      "path": "docs/research/README.md",
+      "path": "docs/archive/research/README.md",
       "ownerRole": "docs-governance",
       "status": "stable",
       "lifecycle": "stable",
@@ -4056,9 +3993,9 @@
         "repository navigation and lifecycle entry for unresolved research"
       ],
       "dependsOn": [
-        "docs/documentation-governance.md",
-        "docs/research/ai-first-multi-device-docs-infrastructure.md",
-        "docs/research/agent-team-shared-task-list.md"
+        "docs/current/documentation-governance.md",
+        "docs/archive/research/ai-first-multi-device-docs-infrastructure.md",
+        "docs/archive/research/agent-team-shared-task-list.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -4074,12 +4011,12 @@
       "truthRefs": [
         {
           "kind": "decision",
-          "ref": "docs/documentation-governance.md"
+          "ref": "docs/current/documentation-governance.md"
         }
       ]
     },
     {
-      "path": "docs/research/ai-first-multi-device-docs-infrastructure.md",
+      "path": "docs/archive/research/ai-first-multi-device-docs-infrastructure.md",
       "ownerRole": "docs-governance",
       "status": "planned",
       "lifecycle": "volatile",
@@ -4087,16 +4024,14 @@
         "bounded research proposal for Agent-first multi-device Docs service, revision, remote access, and infrastructure boundaries"
       ],
       "dependsOn": [
-        "docs/company-os/document-system.md",
-        "docs/company-os/docs-operating-surface-matrix.md",
-        "docs/company-os/organization-and-actors.md",
-        "docs/company-os/nested-agent-team-organization.md",
-        "docs/product/agent-team-works.md",
+        "docs/current/company-os/document-system.md",
+        "docs/archive/company-os/docs-operating-surface-matrix.md",
+        "docs/current/company-os/organization-and-actors.md",
+        "docs/current/product/agent-team-works.md",
         "docs/decisions/0029-agent-programmable-document-runtime.md",
         "docs/decisions/0035-company-os-sql-read-model.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
-        "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md",
-        "specs/nested-agent-team-organization/design.md"
+        "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -4126,7 +4061,7 @@
       ]
     },
     {
-      "path": "docs/research/agent-team-shared-task-list.md",
+      "path": "docs/archive/research/agent-team-shared-task-list.md",
       "ownerRole": "execution-foundation",
       "status": "planned",
       "lifecycle": "volatile",
@@ -4134,10 +4069,10 @@
         "publishable failure analysis for Agent Team shared Works and multi-level Organization delegation"
       ],
       "dependsOn": [
-        "docs/research/agent-team-shared-task-list-evidence.md",
-        "docs/product/agent-team-works.md",
+        "docs/archive/research/agent-team-shared-task-list-evidence.md",
+        "docs/current/product/agent-team-works.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
-        "docs/product/agent-team-foundation-closure-plan.md",
+        "docs/current/product/agent-team-foundation-closure-plan.md",
         "docs/decisions/0037-agent-member-autonomy-and-collaboration.md",
         "docs/decisions/0044-durable-team-supervision-and-typed-mail.md"
       ],
@@ -4161,7 +4096,7 @@
       ]
     },
     {
-      "path": "docs/research/agent-team-shared-task-list-evidence.md",
+      "path": "docs/archive/research/agent-team-shared-task-list-evidence.md",
       "ownerRole": "execution-foundation",
       "status": "planned",
       "lifecycle": "volatile",
@@ -4169,8 +4104,8 @@
         "forensic reconstruction of the message-only Agent Team scheduling failure"
       ],
       "dependsOn": [
-        "docs/research/agent-team-shared-task-list.md",
-        "docs/product/agent-team-dogfood-loop.md"
+        "docs/archive/research/agent-team-shared-task-list.md",
+        "docs/current/product/agent-team-dogfood-loop.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -4191,7 +4126,7 @@
       ]
     },
     {
-      "path": "docs/product/agent-team-works.md",
+      "path": "docs/current/product/agent-team-works.md",
       "ownerRole": "execution-foundation",
       "status": "planned",
       "lifecycle": "stable",
@@ -4202,10 +4137,10 @@
       ],
       "dependsOn": [
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
-        "docs/research/agent-team-shared-task-list.md",
+        "docs/archive/research/agent-team-shared-task-list.md",
         "docs/decisions/0044-durable-team-supervision-and-typed-mail.md",
         "docs/decisions/0049-member-coordination-and-runtime-lifecycle.md",
-        "docs/product/mission-wave-host-plan.md"
+        "docs/current/product/mission-wave-host-plan.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -4233,7 +4168,7 @@
       ]
     },
     {
-      "path": "docs/design/agent-team-works-implementation-plan.md",
+      "path": "docs/archive/design/agent-team-works-implementation-plan.md",
       "ownerRole": "execution-foundation",
       "status": "planned",
       "lifecycle": "volatile",
@@ -4242,11 +4177,11 @@
         "Agent Team Works frontend and self-dogfood acceptance matrix"
       ],
       "dependsOn": [
-        "docs/product/agent-team-works.md",
+        "docs/current/product/agent-team-works.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
-        "docs/dashboard/pages/team-run-war-room.md",
-        "docs/dashboard/pages/member-run-focus.md",
-        "docs/dashboard/pages/mission-wave-canvas.md"
+        "docs/current/dashboard/pages/team-run-war-room.md",
+        "docs/current/dashboard/pages/member-run-focus.md",
+        "docs/current/dashboard/pages/mission-wave-canvas.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -4279,7 +4214,7 @@
         "Work creation authority and Mission non-replacement decision"
       ],
       "dependsOn": [
-        "docs/research/agent-team-shared-task-list.md",
+        "docs/archive/research/agent-team-shared-task-list.md",
         "docs/decisions/0028-retire-goal-phase-task-graph.md",
         "docs/decisions/0034-host-plan-waves-and-mission-teams.md",
         "docs/decisions/0037-agent-member-autonomy-and-collaboration.md",
@@ -4307,7 +4242,7 @@
       ]
     },
     {
-      "path": "docs/product/agent-team-foundation-closure-plan.md",
+      "path": "docs/current/product/agent-team-foundation-closure-plan.md",
       "ownerRole": "execution-foundation",
       "status": "planned",
       "lifecycle": "volatile",
@@ -4318,10 +4253,10 @@
       "dependsOn": [
         "docs/decisions/0044-durable-team-supervision-and-typed-mail.md",
         "docs/decisions/0041-provider-neutral-member-continuation.md",
-        "docs/member-continuation-model.md",
-        "docs/agent-runtime.md",
-        "docs/research/agent-team-shared-task-list.md",
-        "docs/product/agent-team-works.md",
+        "docs/current/architecture/member-continuation-model.md",
+        "docs/current/architecture/agent-runtime.md",
+        "docs/archive/research/agent-team-shared-task-list.md",
+        "docs/current/product/agent-team-works.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
       ],
       "machineConsumers": [
@@ -4344,7 +4279,7 @@
       ]
     },
     {
-      "path": "docs/product/agent-team-dogfood-loop.md",
+      "path": "docs/current/product/agent-team-dogfood-loop.md",
       "ownerRole": "execution-foundation",
       "status": "stable",
       "lifecycle": "stable",
@@ -4354,7 +4289,7 @@
         "Organization execution-foundation dogfood boundary"
       ],
       "dependsOn": [
-        "docs/product/mission-wave-host-plan.md",
+        "docs/current/product/mission-wave-host-plan.md",
         "docs/decisions/0031-interactive-provider-modes-and-version-drift.md",
         "docs/decisions/0032-provider-native-session-is-execution-truth.md",
         "docs/decisions/0037-agent-member-autonomy-and-collaboration.md",
@@ -4403,7 +4338,7 @@
         "docs/decisions/0039-ordinary-member-planning-and-durable-mailbox-delivery.md",
         "docs/decisions/0040-native-host-inbox-delivery.md",
         "docs/decisions/0041-provider-neutral-member-continuation.md",
-        "docs/product/agent-team-foundation-closure-plan.md"
+        "docs/current/product/agent-team-foundation-closure-plan.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -4432,7 +4367,7 @@
       "dependsOn": [
         "docs/decisions/0027-company-os-primary-model.md",
         "docs/decisions/0034-host-plan-waves-and-mission-teams.md",
-        "docs/company-os/organization-and-actors.md",
+        "docs/current/company-os/organization-and-actors.md",
         "schemas/company-os/actors.schema.json",
         "schemas/member-run.schema.json"
       ],
@@ -4470,7 +4405,7 @@
       ]
     },
     {
-      "path": "docs/company-os/agentos-self-hosting-loop.md",
+      "path": "docs/archive/company-os/agentos-self-hosting-loop.md",
       "ownerRole": "agentos-lead",
       "status": "stable",
       "lifecycle": "volatile",
@@ -4480,9 +4415,9 @@
         "coequal Docs, Work, and Organization iteration"
       ],
       "dependsOn": [
-        "docs/company-os/README.md",
-        "docs/company-os/organization-and-actors.md",
-        "docs/company-os/collaboration-and-agent-work.md",
+        "docs/current/company-os/README.md",
+        "docs/current/company-os/organization-and-actors.md",
+        "docs/archive/company-os/collaboration-and-agent-work.md",
         "docs/decisions/0042-company-store-execution-space-project-binding.md",
         "docs/decisions/0045-company-owned-standing-agent-execution-relation.md",
         "docs/decisions/0046-supervised-agentos-self-hosting-loop.md"
@@ -4501,7 +4436,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/company-os/agentos-wave6-work-queue.md",
+      "path": "docs/archive/company-os/agentos-wave6-work-queue.md",
       "ownerRole": "agentos-work-governance",
       "status": "planned",
       "lifecycle": "volatile",
@@ -4510,9 +4445,9 @@
         "prioritized execution queue with owner roles, dependencies, and worktree collision boundaries"
       ],
       "dependsOn": [
-        "docs/company-os/agentos-self-hosting-loop.md",
-        "docs/company-os/work-items-and-approvals.md",
-        "docs/operations.md",
+        "docs/archive/company-os/agentos-self-hosting-loop.md",
+        "docs/current/company-os/work-items-and-approvals.md",
+        "docs/current/operations/operations.md",
         "skills/dogfood-company-os/SKILL.md"
       ],
       "machineConsumers": [
@@ -4557,7 +4492,7 @@
         "docs/decisions/0027-company-os-primary-model.md",
         "docs/decisions/0042-company-store-execution-space-project-binding.md",
         "docs/decisions/0045-company-owned-standing-agent-execution-relation.md",
-        "docs/company-os/agentos-self-hosting-loop.md"
+        "docs/archive/company-os/agentos-self-hosting-loop.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -4586,7 +4521,7 @@
       ]
     },
     {
-      "path": "docs/company-os/scoped-authority-broker.md",
+      "path": "docs/archive/company-os/scoped-authority-broker.md",
       "ownerRole": "company-authority-architecture",
       "status": "stable",
       "lifecycle": "volatile",
@@ -4595,9 +4530,9 @@
         "ScopedPermissionGrant and CapabilityLeaseReceipt target contracts"
       ],
       "dependsOn": [
-        "docs/company-os/README.md",
-        "docs/company-os/organization-and-actors.md",
-        "docs/company-os/work-items-and-approvals.md",
+        "docs/current/company-os/README.md",
+        "docs/current/company-os/organization-and-actors.md",
+        "docs/current/company-os/work-items-and-approvals.md",
         "docs/decisions/0044-durable-team-supervision-and-typed-mail.md",
         "docs/decisions/0045-company-owned-standing-agent-execution-relation.md",
         "docs/decisions/0046-supervised-agentos-self-hosting-loop.md",
@@ -4628,7 +4563,7 @@
         "docs/decisions/0044-durable-team-supervision-and-typed-mail.md",
         "docs/decisions/0045-company-owned-standing-agent-execution-relation.md",
         "docs/decisions/0046-supervised-agentos-self-hosting-loop.md",
-        "docs/company-os/scoped-authority-broker.md"
+        "docs/archive/company-os/scoped-authority-broker.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -4644,7 +4579,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/company-os/company-constitution.md",
+      "path": "docs/archive/company-os/company-constitution.md",
       "ownerRole": "company-authority-architecture",
       "status": "stable",
       "lifecycle": "volatile",
@@ -4653,11 +4588,11 @@
         "Company authority exception routing and Store-truth Organization and Work operator requirements"
       ],
       "dependsOn": [
-        "docs/company-os/README.md",
-        "docs/company-os/organization-and-actors.md",
-        "docs/company-os/work-items-and-approvals.md",
-        "docs/company-os/external-project-product-sources.md",
-        "docs/company-os/scoped-authority-broker.md",
+        "docs/current/company-os/README.md",
+        "docs/current/company-os/organization-and-actors.md",
+        "docs/current/company-os/work-items-and-approvals.md",
+        "docs/archive/company-os/external-project-product-sources.md",
+        "docs/archive/company-os/scoped-authority-broker.md",
         "docs/decisions/0046-supervised-agentos-self-hosting-loop.md",
         "docs/decisions/0047-scoped-company-authority-broker.md",
         "docs/decisions/0048-human-rooted-company-constitution.md"
@@ -4686,7 +4621,7 @@
       "dependsOn": [
         "docs/decisions/0046-supervised-agentos-self-hosting-loop.md",
         "docs/decisions/0047-scoped-company-authority-broker.md",
-        "docs/company-os/company-constitution.md"
+        "docs/archive/company-os/company-constitution.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -4743,7 +4678,7 @@
       ]
     },
     {
-      "path": "docs/design/company-os-v5/agentos-self-hosting-loop-v1/README.md",
+      "path": "docs/archive/design/company-os-v5/agentos-self-hosting-loop-v1/README.md",
       "ownerRole": "product-design",
       "status": "planned",
       "lifecycle": "volatile",
@@ -4751,9 +4686,9 @@
         "AgentOS self-hosting P0 visual and interaction acceptance entry"
       ],
       "dependsOn": [
-        "docs/company-os/agentos-self-hosting-loop.md",
-        "docs/design/company-os-v5/agentos-self-hosting-loop-v1/page-matrix.md",
-        "docs/design/company-os-v5/agentos-self-hosting-loop-v1/interaction-contract.md"
+        "docs/archive/company-os/agentos-self-hosting-loop.md",
+        "docs/archive/design/company-os-v5/agentos-self-hosting-loop-v1/page-matrix.md",
+        "docs/archive/design/company-os-v5/agentos-self-hosting-loop-v1/interaction-contract.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -4769,7 +4704,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/design/company-os-v5/agentos-self-hosting-loop-v1/page-matrix.md",
+      "path": "docs/archive/design/company-os-v5/agentos-self-hosting-loop-v1/page-matrix.md",
       "ownerRole": "product-design",
       "status": "planned",
       "lifecycle": "volatile",
@@ -4777,7 +4712,7 @@
         "AgentOS self-hosting P0 page and evidence matrix"
       ],
       "dependsOn": [
-        "docs/design/company-os-v5/agentos-self-hosting-loop-v1/README.md"
+        "docs/archive/design/company-os-v5/agentos-self-hosting-loop-v1/README.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -4793,7 +4728,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/design/company-os-v5/agentos-self-hosting-loop-v1/interaction-contract.md",
+      "path": "docs/archive/design/company-os-v5/agentos-self-hosting-loop-v1/interaction-contract.md",
       "ownerRole": "product-design",
       "status": "planned",
       "lifecycle": "volatile",
@@ -4801,8 +4736,8 @@
         "AgentOS self-hosting navigation, action honesty, delivery, and motion contract"
       ],
       "dependsOn": [
-        "docs/company-os/agentos-self-hosting-loop.md",
-        "docs/design/company-os-v5/agentos-self-hosting-loop-v1/README.md"
+        "docs/archive/company-os/agentos-self-hosting-loop.md",
+        "docs/archive/design/company-os-v5/agentos-self-hosting-loop-v1/README.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -4818,7 +4753,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/cli-map.md",
+      "path": "docs/current/architecture/cli-map.md",
       "ownerRole": "lead-operations",
       "status": "stable",
       "lifecycle": "stable",
@@ -4827,11 +4762,11 @@
         "Company OS CLI coverage and missing dedicated command groups"
       ],
       "dependsOn": [
-        "crates/harness-cli/src/main.rs",
-        "crates/harness-cli/src/company_os_api.rs",
-        "docs/company-os/skill-contracts.md",
-        "docs/company-os/docs-operating-surface-matrix.md",
-        "docs/company-os/implementation-truth-matrix.md"
+        "crates/firm-cli/src/main.rs",
+        "crates/firm-cli/src/company_os_api.rs",
+        "docs/current/company-os/skill-contracts.md",
+        "docs/archive/company-os/docs-operating-surface-matrix.md",
+        "docs/archive/company-os/implementation-truth-matrix.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -4891,7 +4826,6 @@
         "recursive AgentTeam topology and unified Work target decision"
       ],
       "dependsOn": [
-        "docs/company-os/nested-agent-team-organization.md",
         "docs/decisions/0027-company-os-primary-model.md",
         "docs/decisions/0045-company-owned-standing-agent-execution-relation.md",
         "docs/decisions/0046-supervised-agentos-self-hosting-loop.md",
@@ -4919,7 +4853,6 @@
         "nested Agent Team Organization product requirements and acceptance"
       ],
       "dependsOn": [
-        "docs/company-os/nested-agent-team-organization.md",
         "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md"
       ],
       "machineConsumers": [
@@ -4949,7 +4882,6 @@
         "nested Agent Team Organization technical design and migration boundary"
       ],
       "dependsOn": [
-        "specs/nested-agent-team-organization/requirements.md",
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
         "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md"
       ],
@@ -4974,10 +4906,7 @@
       "canonicalFor": [
         "nested Agent Team Organization implementation and dogfood task sequence"
       ],
-      "dependsOn": [
-        "specs/nested-agent-team-organization/requirements.md",
-        "specs/nested-agent-team-organization/design.md"
-      ],
+      "dependsOn": [],
       "machineConsumers": [
         "check-doc-links",
         "check-doc-governance"
@@ -4992,7 +4921,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/design/company-os-v6/recursive-org-docs-works-v1/README.md",
+      "path": "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/README.md",
       "ownerRole": "product-design",
       "status": "planned",
       "lifecycle": "volatile",
@@ -5000,11 +4929,10 @@
         "recursive Organization, global Works, Member Focus, Team War Room, and Docs-to-Work handoff visual and interaction acceptance entry"
       ],
       "dependsOn": [
-        "docs/company-os/frontend-information-architecture.md",
-        "docs/company-os/nested-agent-team-organization.md",
-        "docs/design/company-os-v6/recursive-org-docs-works-v1/data-provenance.md",
-        "docs/design/company-os-v6/recursive-org-docs-works-v1/interaction-contract.md",
-        "docs/design/company-os-v6/recursive-org-docs-works-v1/page-matrix.md"
+        "docs/archive/company-os/frontend-information-architecture.md",
+        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/data-provenance.md",
+        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/interaction-contract.md",
+        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/page-matrix.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -5020,7 +4948,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/design/company-os-v6/recursive-org-docs-works-v1/data-provenance.md",
+      "path": "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/data-provenance.md",
       "ownerRole": "product-design",
       "status": "planned",
       "lifecycle": "volatile",
@@ -5028,10 +4956,9 @@
         "field-level data provenance and IMPLEMENTED/TARGET/RESEARCH classes for the five recursive-org UI surfaces"
       ],
       "dependsOn": [
-        "docs/design/company-os-v6/recursive-org-docs-works-v1/README.md",
-        "specs/nested-agent-team-organization/design.md",
-        "docs/company-os/implementation-truth-matrix.md",
-        "docs/product/agent-team-works.md"
+        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/README.md",
+        "docs/archive/company-os/implementation-truth-matrix.md",
+        "docs/current/product/agent-team-works.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -5047,7 +4974,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/design/company-os-v6/recursive-org-docs-works-v1/interaction-contract.md",
+      "path": "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/interaction-contract.md",
       "ownerRole": "product-design",
       "status": "planned",
       "lifecycle": "volatile",
@@ -5055,9 +4982,9 @@
         "navigation, click, scroll, filter, loading, empty, and error rules for the five recursive-org UI surfaces"
       ],
       "dependsOn": [
-        "docs/design/company-os-v6/recursive-org-docs-works-v1/README.md",
-        "docs/design/company-os-v6/recursive-org-docs-works-v1/data-provenance.md",
-        "docs/company-os/frontend-information-architecture.md"
+        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/README.md",
+        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/data-provenance.md",
+        "docs/archive/company-os/frontend-information-architecture.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -5073,7 +5000,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/design/company-os-v6/recursive-org-docs-works-v1/wireframes.md",
+      "path": "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/wireframes.md",
       "ownerRole": "product-design",
       "status": "planned",
       "lifecycle": "volatile",
@@ -5081,8 +5008,8 @@
         "Wave 0 Expected text wireframes for the five recursive-org UI surfaces at desktop, tablet, 390, and 320"
       ],
       "dependsOn": [
-        "docs/design/company-os-v6/recursive-org-docs-works-v1/README.md",
-        "docs/design/company-os-v6/recursive-org-docs-works-v1/interaction-contract.md"
+        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/README.md",
+        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/interaction-contract.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -5098,7 +5025,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/design/company-os-v6/recursive-org-docs-works-v1/page-matrix.md",
+      "path": "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/page-matrix.md",
       "ownerRole": "product-design",
       "status": "planned",
       "lifecycle": "volatile",
@@ -5106,8 +5033,8 @@
         "per-state, per-viewport acceptance rows for the five recursive-org UI surfaces"
       ],
       "dependsOn": [
-        "docs/design/company-os-v6/recursive-org-docs-works-v1/README.md",
-        "docs/design/company-os-v6/recursive-org-docs-works-v1/wireframes.md"
+        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/README.md",
+        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/wireframes.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -5123,7 +5050,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/design/company-os-v6/recursive-org-docs-works-v1/expected-vs-actual.md",
+      "path": "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/expected-vs-actual.md",
       "ownerRole": "product-design",
       "status": "planned",
       "lifecycle": "volatile",
@@ -5131,8 +5058,8 @@
         "expected-vs-actual gap map and production-component seam freeze for the five recursive-org UI surfaces"
       ],
       "dependsOn": [
-        "docs/design/company-os-v6/recursive-org-docs-works-v1/README.md",
-        "docs/design/company-os-v6/recursive-org-docs-works-v1/data-provenance.md"
+        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/README.md",
+        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/data-provenance.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -5148,7 +5075,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/design/company-os-v6/recursive-org-docs-works-v1/visual-contract.json",
+      "path": "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/visual-contract.json",
       "ownerRole": "product-design",
       "status": "planned",
       "lifecycle": "volatile",
@@ -5156,8 +5083,8 @@
         "machine-readable visual acceptance case list for the recursive-org-docs-works-v1 slice"
       ],
       "dependsOn": [
-        "docs/design/company-os-v6/recursive-org-docs-works-v1/page-matrix.md",
-        "docs/design/company-os-v6/recursive-org-docs-works-v1/wireframes.md"
+        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/page-matrix.md",
+        "docs/archive/design/company-os-v6/recursive-org-docs-works-v1/wireframes.md"
       ],
       "machineConsumers": [
         "check-doc-governance",
@@ -5181,7 +5108,7 @@
         "Star Harness plugin entry point and scope"
       ],
       "dependsOn": [
-        "docs/company-os/external-gateway-and-plugins.md"
+        "docs/archive/company-os/external-gateway-and-plugins.md"
       ],
       "machineConsumers": [
         "check-doc-links",
@@ -5415,8 +5342,7 @@
         "Agent Team operational model — stores, events, states, wake/delivery, message push"
       ],
       "dependsOn": [
-        "plugins/star-harness/skills/shared-references/SKILL.md",
-        "docs/product/agent-team-mental-model.md"
+        "plugins/star-harness/skills/shared-references/SKILL.md"
       ],
       "machineConsumers": [
         "check-doc-governance",
@@ -5433,7 +5359,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/company-os/ai-first-docs-spec.md",
+      "path": "docs/archive/company-os/ai-first-docs-spec.md",
       "ownerRole": "product",
       "status": "planned",
       "lifecycle": "volatile",
@@ -5441,8 +5367,8 @@
         "AI-first Docs target model definition (design intent pending Phase 0 acceptance)"
       ],
       "dependsOn": [
-        "docs/research/ai-first-multi-device-docs-infrastructure.md",
-        "docs/company-os/document-system.md",
+        "docs/archive/research/ai-first-multi-device-docs-infrastructure.md",
+        "docs/current/company-os/document-system.md",
         "docs/decisions/0035-company-os-sql-read-model.md",
         "docs/decisions/0036-agent-operated-docs-and-code-declared-pages.md",
         "docs/decisions/0054-ai-first-docs-page-model-and-storage.md"
@@ -5476,7 +5402,7 @@
         "Docs canonical JSONL store with derived SQLite read layer and content-addressed blobs decision"
       ],
       "dependsOn": [
-        "docs/company-os/ai-first-docs-spec.md",
+        "docs/archive/company-os/ai-first-docs-spec.md",
         "docs/decisions/0027-company-os-primary-model.md",
         "docs/decisions/0035-company-os-sql-read-model.md",
         "docs/decisions/0036-agent-operated-docs-and-code-declared-pages.md"
@@ -5495,7 +5421,7 @@
       "truthRefs": []
     },
     {
-      "path": "docs/company-os/ai-first-docs-phase0-acceptance.md",
+      "path": "docs/archive/company-os/ai-first-docs-phase0-acceptance.md",
       "ownerRole": "product-architecture",
       "status": "stable",
       "lifecycle": "volatile",
@@ -5503,7 +5429,7 @@
         "AI-first Docs Phase 0 acceptance criteria, commands, and process"
       ],
       "dependsOn": [
-        "docs/company-os/ai-first-docs-spec.md",
+        "docs/archive/company-os/ai-first-docs-spec.md",
         "docs/decisions/0054-ai-first-docs-page-model-and-storage.md",
         "scripts/check-company-os-docs-v2-smoke.mjs",
         "scripts/check-company-os-docs-v2-api.mjs",
@@ -5541,7 +5467,7 @@
       ]
     },
     {
-      "path": "docs/company-os/ai-first-docs-phase0-real-use-evidence.md",
+      "path": "docs/archive/company-os/ai-first-docs-phase0-real-use-evidence.md",
       "ownerRole": "product",
       "status": "stable",
       "lifecycle": "stable",
@@ -5549,8 +5475,8 @@
         "AI-first Docs Phase 0 real-use acceptance record and friction list"
       ],
       "dependsOn": [
-        "docs/company-os/ai-first-docs-phase0-acceptance.md",
-        "docs/company-os/ai-first-docs-spec.md",
+        "docs/archive/company-os/ai-first-docs-phase0-acceptance.md",
+        "docs/archive/company-os/ai-first-docs-spec.md",
         "docs/decisions/0054-ai-first-docs-page-model-and-storage.md"
       ],
       "machineConsumers": [
@@ -5573,6 +5499,54 @@
           "ref": ".real-use/session.log"
         }
       ]
+    },
+    {
+      "path": "docs/current/company-os/core-page-matrix.md",
+      "ownerRole": "product",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": [
+        "company-os-core-page-matrix"
+      ],
+      "dependsOn": [
+        "docs/mental/agent-firm-mental-model.md"
+      ],
+      "machineConsumers": [
+        "harness-cli",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-11-07",
+      "lastVerifiedWith": [
+        "harness-cli@0.4.4"
+      ],
+      "reorgTrigger": "product",
+      "authorityClass": "canonical_contract",
+      "implementationState": "partial",
+      "truthRefs": []
+    },
+    {
+      "path": "docs/current/company-os/skill-contracts.md",
+      "ownerRole": "product",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": [
+        "company-os-skill-contracts"
+      ],
+      "dependsOn": [
+        "docs/mental/agent-firm-mental-model.md"
+      ],
+      "machineConsumers": [
+        "harness-cli",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-11-07",
+      "lastVerifiedWith": [
+        "harness-cli@0.4.4"
+      ],
+      "reorgTrigger": "product",
+      "authorityClass": "canonical_contract",
+      "implementationState": "partial",
+      "truthRefs": []
     }
   ]
 }

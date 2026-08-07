@@ -1,7 +1,7 @@
 # Architecture Map
 
 This is the canonical product-level architecture map. Detailed object contracts
-live under [company-os](company-os/README.md). Implemented execution details
+live under [company-os](current/company-os/README.md). Implemented execution details
 remain documented by the Mission/Wave, Workflow, Agent Team, runtime, and
 provider specifications.
 

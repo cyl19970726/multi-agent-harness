@@ -8,7 +8,7 @@ superseded_note: >
   The page/document storage and write layer described here (open Block kind
   set, document/block command sprawl, no revisions) is superseded by the
   AI-first Docs v2 target for everything implemented under ADR 0054:
-  see docs/company-os/ai-first-docs-spec.md and
+  see docs/current/company-os/ai-first-docs-spec.md and
   docs/decisions/0054-ai-first-docs-page-model-and-storage.md. At retirement
   stage R3 the Block-era document/template/block CLI command tree and the
   document.append/block.append API actions were deleted; page-layer contracts

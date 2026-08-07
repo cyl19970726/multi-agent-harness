@@ -19,7 +19,7 @@ system for company memory and operating structure, and a mixed Organization of
 humans, Standing Agents, external collaborators, and services. Documents create
 WorkItems and Approvals; accountable actors execute them; results, evidence,
 metrics, and financial effects return to the originating records
-([prd.md](prd.md), [company-os/README.md](company-os/README.md)).
+([prd.md](prd.md), [company-os/README.md](current/company-os/README.md)).
 
 Mission/Wave, Agent Team, Dynamic Workflow, Host execution, providers, plugins,
 and MCP are the shared execution foundation. `Mission` is durable intent and
@@ -62,7 +62,7 @@ responsibility kernel. Current StandingAgent, Company WorkItem, OrgUnit, and
 explicit execution-ref rows remain compatibility implementation truth until an
 explicit verified cutover. Do not claim target objects or fields exist until
 schemas, stores, APIs, and acceptance checks prove them. See
-[company-os/README.md](company-os/README.md) and
+[company-os/README.md](current/company-os/README.md) and
 [ADR 0052](decisions/0052-nested-agent-teams-are-the-agent-organization.md).
 
 The first Company OS acceptance scenario is a governed Trademark Management
@@ -379,7 +379,7 @@ companion.
 
 | Former AGENTS.md content | Now lives in | Notes |
 | --- | --- | --- |
-| Product We Are Building — two primary systems | Root §Product Identity | Canonical: [prd.md](prd.md), [company-os/README.md](company-os/README.md) |
+| Product We Are Building — two primary systems | Root §Product Identity | Canonical: [prd.md](prd.md), [company-os/README.md](current/company-os/README.md) |
 | Product We Are Building — Mission/Wave relations diagram and semantics | Root §Product Identity; here §Product Context | Full prose kept here |
 | Product We Are Building — Work responsibility, Work-linked conversation, thinking-as-transient contract | Here §Product Context | Thinking stays non-persisted; live display channel still pending |
 | Product We Are Building — shared substrate, capability claims, interactive controls | Root invariant 5 (gate); here §Product Context | Substrate contract: [agent-runtime.md](agent-runtime.md) |
