@@ -13,7 +13,7 @@ not re-litigated.
 This decision covers **Codex** persistence only. The companion code change in
 this work package implements a resident process for **Claude** (`claude
 --input-format stream-json`, opt-in behind `HARNESS_CLAUDE_RESIDENT`, see
-[../resident-claude.md](../resident-claude.md)). **Codex is unchanged**: it stays
+../resident-claude.md). **Codex is unchanged**: it stays
 on the `codex exec --json` + `codex exec resume <id>` respawn model. A persistent
 Codex service remains a follow-up spike, not part of this PR.
 
@@ -187,5 +187,5 @@ path) is validated by the `resident` module tests:
 cargo test -p harness-cli resident
 ```
 
-See [../resident-claude.md](../resident-claude.md) for the resident principle and
+See ../resident-claude.md for the resident principle and
 the `HARNESS_CLAUDE_RESIDENT` flag.

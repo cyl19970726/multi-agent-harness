@@ -88,37 +88,34 @@ Run a Dynamic Workflow:
   --timeout-ms 300000 --max-budget-usd 2.00
 ```
 
-One service can manage many projects. See [multi-project](docs/multi-project.md)
-and [getting started](docs/getting-started.md).
+One service can manage many projects. See [multi-project](docs/current/operations/multi-project.md)
+and [getting started](docs/current/operations/getting-started.md).
 
 ## Start here
 
-- [Company OS documentation](docs/company-os/README.md)
-- [Vision](docs/company-os/vision.md)
-- [Concept model](docs/company-os/concept-model.md)
-- [Document system](docs/company-os/document-system.md)
-- [Organization and actors](docs/company-os/organization-and-actors.md)
-- [WorkItems and approvals](docs/company-os/work-items-and-approvals.md)
-- [Module design](docs/company-os/module-design.md)
-- [Financial relations](docs/company-os/financial-relations.md)
-- [Governance](docs/company-os/governance.md)
-- [Execution foundation](docs/company-os/execution-foundation.md)
-- [Mission/Wave Host-plan product contract](docs/product/mission-wave-host-plan.md)
-- [Agent Team control foundation](docs/product/agent-team-foundation-closure-plan.md)
+- [Company OS documentation](docs/current/company-os/README.md)
+- [Document system](docs/current/company-os/document-system.md)
+- [Organization and actors](docs/current/company-os/organization-and-actors.md)
+- [WorkItems and approvals](docs/current/company-os/work-items-and-approvals.md)
+- [Module design](docs/current/company-os/module-design.md)
+- [Governance](docs/current/company-os/governance.md)
+- [Execution foundation](docs/current/company-os/execution-foundation.md)
+- [Mission/Wave Host-plan product contract](docs/current/product/mission-wave-host-plan.md)
+- [Agent Team control foundation](docs/current/product/agent-team-foundation-closure-plan.md)
 - [Durable Team supervision and typed mail](docs/decisions/0044-durable-team-supervision-and-typed-mail.md)
 - [Host-plan Wave and Mission Team decision](docs/decisions/0034-host-plan-waves-and-mission-teams.md)
-- [Product requirements](docs/prd.md)
-- [Architecture map](docs/architecture-map.md)
-- [Provider integrations](docs/integration/README.md)
-- [Operations](docs/operations.md)
+- [Product requirements](docs/current/product/prd.md)
+- [Architecture map](docs/current/architecture/architecture-map.md)
+- [Provider integrations](docs/current/integration/README.md)
+- [Operations](docs/current/operations/operations.md)
 - [Architecture decisions](docs/decisions/README.md)
 
 ## Repository layout
 
 | Path | Purpose |
 | --- | --- |
-| `docs/company-os/` | Canonical Company OS product and architecture contracts. |
-| `docs/design/` | Visual contracts, layout specifications, and execution UI designs. |
+| `docs/current/company-os/` | Canonical Company OS product and architecture contracts. |
+| `docs/archive/design/` | Visual contracts, layout specifications, and execution UI designs. |
 | `schemas/` | Stable wire schemas for implemented objects. |
 | `crates/` | Rust store, core, CLI, execution, and provider infrastructure. |
 | `apps/agent-dashboard/` | React/Vite Company OS and execution workbench frontend. |

@@ -53,6 +53,8 @@ Work context structure (written by Lead):
 ┌─ What ──────────┐  ← The problem, in one sentence
 ├─ Mental Model ──┤  ← States, invariants, data flow. Study this.
 ├─ Boundary ──────┤  ← Paths to touch / NEVER touch. Respect this.
+├─ Gates ─────────┤  ← Verification gates that must pass. Deliver what
+│                    each gate needs (PR merge, artifacts, checks).
 ├─ Evidence ──────┤  ← What counts as done. Deliver this.
 └─────────────────┘
 
@@ -252,8 +254,10 @@ Work; never keep executing a Work already in `review`, `blocked`, `done`, or
   are work-in-progress, not a submission. Only a merged PR with passing CI
   proves delivery for code and doc changes.
 - **Submissions MUST carry artifact_refs and check_refs.** Every `work submit`
-  that produces code or doc changes must include `--artifact-ref <PR-URL>` and
-  `--check-ref "<CI-run-URL>"`. These are not optional decoration — they are
+  must include `--artifact-ref` and `--check-ref` when the Work's declared
+  gates (`artifact-exists`, `check-pass`) or completion criteria require them.
+  Use `--github-pr owner/repo#N` to attach a PR link (required by `github-pr` gate).
+  These are not optional decoration — they are
   the verifiable evidence the Host inspects during review.
 - **Non-trivial work defaults to plan-first.** Before implementing a multi-file
   change or a design decision, present your plan as an ordinary Markdown
@@ -314,8 +318,10 @@ Host review requires them; they are not universal submission fields:
   --idempotency-key <stable-command-key>
 ```
 
-When required, add one or more `--artifact-ref <artifact-or-path>` and
-`--check-ref "<command and actual result>"` arguments to that command.
+When required, add one or more `--artifact-ref <artifact-or-path>`,
+`--check-ref "<command and actual result>"`, and/or `--github-pr owner/repo#N`
+(to attach a GitHub PR link required by the `github-pr` gate) arguments to that
+command.
 
 Submission moves Work to `review`; it does not imply Host acceptance. Send an optional linked Message only when review needs explanation. Remain available for `request-changes`; update the same Work and resubmit. Only Host acceptance moves Work to `done` — see shared hard invariants §5.
 

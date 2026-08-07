@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-05
 **Status:** accepted
-**Spec:** [docs/company-os/ai-first-docs-spec.md](../company-os/ai-first-docs-spec.md)
+**Spec:** docs/current/company-os/ai-first-docs-spec.md
 
 ## Decision
 
@@ -42,7 +42,7 @@ Adopt the AI-first Docs target defined in the spec:
 
 ## Context
 
-The research proposal `docs/research/ai-first-multi-device-docs-infrastructure.md`
+The research proposal `docs/archive/research/ai-first-multi-device-docs-infrastructure.md`
 established the direction (self-built semantic Docs core, remote Agent-first
 service, revision boundary before multi-writer). The 2026-08-05 product
 conversation fixed three additional constraints: keep block capability, keep

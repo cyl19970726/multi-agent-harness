@@ -13,12 +13,12 @@ This skill is a procedural capability, not product authority.
 
 Read these repository documents before proposing a design:
 
-- `docs/company-os/document-system.md`
-- `docs/company-os/module-design.md`
-- `docs/company-os/organization-and-actors.md`
-- `docs/company-os/work-items-and-approvals.md`
-- `docs/company-os/financial-relations.md`
-- `docs/company-os/governance.md`
+- `docs/current/company-os/document-system.md`
+- `docs/current/company-os/module-design.md`
+- `docs/current/company-os/organization-and-actors.md`
+- `docs/current/company-os/work-items-and-approvals.md`
+- `docs/current/company-os/financial-relations.md`
+- `docs/current/company-os/governance.md`
 
 Read [the output contract](references/module-design-contract.md) before writing
 the deliverable. When the module includes important human-facing pages, also

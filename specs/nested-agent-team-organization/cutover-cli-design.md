@@ -6,8 +6,8 @@ owner_role: product-architecture
 parent: specs/nested-agent-team-organization/design.md
 dependencies:
   - docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md
-  - docs/company-os/nested-agent-team-organization.md
-  - docs/company-os/work-operating-system.md (Lane A mapping: 10-state Company WorkItem ↔ 6-state Team Work kernel)
+  - docs/current/company-os/nested-agent-team-organization.md
+  - docs/current/company-os/work-operating-system.md (Lane A mapping: 10-state Company WorkItem ↔ 6-state Team Work kernel)
 ```
 
 ## Overview
@@ -22,7 +22,7 @@ breakdown. No Rust implementation is produced in this wave — only the design
 document.
 
 The CLI surface, as stated in the product document
-`docs/company-os/nested-agent-team-organization.md` L46-48, spans four
+`docs/current/company-os/nested-agent-team-organization.md` L46-48, spans four
 top-level commands with four `member` subcommands:
 
 ```
@@ -376,7 +376,7 @@ read-only history.
 ## Lane A Mapping Reference
 
 The 10-state Company WorkItem ↔ 6-state Team Work kernel mapping from
-PR #326 (`docs/company-os/work-operating-system.md`) is the prerequisite
+PR #326 (`docs/current/company-os/work-operating-system.md`) is the prerequisite
 for this design. It defines:
 
 - **Company WorkItem states** (10): `Draft`, `Open`, `InProgress`, `Blocked`,
@@ -547,9 +547,9 @@ in the current scope.
 ## References
 
 - [ADR 0052](../decisions/0052-nested-agent-teams-are-the-agent-organization.md)
-- [Nested Agent Team Organization (product doc)](../../docs/company-os/nested-agent-team-organization.md)
+- [Nested Agent Team Organization (product doc)](../../docs/current/company-os/nested-agent-team-organization.md)
 - [Nested Agent Team Organization (technical design)](./design.md)
-- [Work Operating System (Lane A mapping)](../../docs/company-os/work-operating-system.md)
+- [Work Operating System (Lane A mapping)](../../docs/current/company-os/work-operating-system.md)
 - [Implementation CLI reference](../../crates/harness-cli/src/main.rs) — `org_command()` at L9050, `durable_member_status()` at L8984
 - [Store reference](../../crates/harness-store/src/lib.rs) — `work_cutover_report()` at L4163, durable member ops
 - [Core types](../../crates/harness-core/src/lib.rs) — `DurableAgentMember` at L488, `WorkCutoverReport` at L3463

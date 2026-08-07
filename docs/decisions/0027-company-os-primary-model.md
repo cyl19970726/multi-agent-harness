@@ -70,7 +70,7 @@ compatibility policy and retires that older model after verified export.
 ## Validation
 
 The first acceptance case is the governed Trademark Management module described
-in `docs/company-os/examples/trademark-registration.md`. Its application,
+in `docs/current/company-os/examples/trademark-registration.md`. Its application,
 WorkItem, participants, human approval, ¥3,000 financial commitment, evidence,
 and source/result documents must remain linked across Docs, Work, Finance,
 Agents, and Governance views.

@@ -1,0 +1,260 @@
+# Company OS Execution Foundation
+
+## Position
+
+The Company OS is organized around Documents and a mixed human/Agent
+organization. Its execution foundation is the existing provider-neutral
+Harness runtime:
+
+```text
+Document / TypedRecord
+  -> WorkItem
+  -> choose execution method when work is ready
+  -> outcome, artifacts, evidence, metrics, and record/document updates
+```
+
+The execution foundation is essential infrastructure, but it is not the
+product homepage, company hierarchy, primary documentation tree, or financial
+system. A Mission, Wave, AgentTeamRun, WorkflowRun, native session reference, or runtime
+does not own a company business domain merely because it executed some work for
+it.
+
+ADR 0042 formalizes the identity boundary:
+
+```text
+Company Store       Execution Space       Project Binding
+     \                    |                    /
+      \------ explicit, optional relations ---/
+```
+
+Company WorkItems may reference execution. Execution must not require a
+Company. Project/repository selection is a runtime binding, not Company truth.
+Company Store, Execution Space, and Project Binding registries and selectors
+are implemented independently. Project-derived execution/Company stores remain
+an explicitly labelled compatibility path until their data is migrated and
+retired through governed operations.
+
+## Execution objects retained from the Harness
+
+### Mission and Wave
+
+A Mission captures durable execution intent and may relate to multiple
+independent Agent Teams. Its ordered Waves are lightweight, versioned Markdown
+records of the Host's plan and judgment. A Wave is not a task graph, executor
+container, synchronization barrier, or provider-session boundary.
+
+In the Company OS, a WorkItem may initiate or reference a Mission/Wave when its
+business outcome needs staged execution. The WorkItem remains the document- and
+responsibility-facing record; Mission/Wave remains the execution-facing record.
+Outside Company OS, the same Mission/Wave objects remain usable in a standalone
+Execution Space with `company_id = null`.
+
+### AgentTeamRun and MemberRun
+
+An `AgentTeamRun` is a standalone or Mission-scoped use of an independent
+AgentTeam. It may remain active across multiple Waves. A `MemberRun` is one
+participant instance inside that run; its provider-native session may continue
+while the Host advances the plan. The Agent Team Works contract proves lane
+responsibility:
+
+```text
+Work assignment/claim -> WorkOperation(WorkEvent + resulting Work + deliveries)
+  -> WorkDelivery
+  -> MemberRun + provider-native session
+  -> Work block / submission / review / acceptance
+  -> linked TeamMessage / PendingInteraction when needed
+  -> explicit outcome and artifact/check references
+```
+
+Neither object is an OrgUnit, a standing organization member, or a business
+WorkItem. A durable AgentMember can only appear in a standing Agent projection
+when an explicit stable link exists (for example,
+`MemberRun.agent_member_id`). A temporary MemberRun remains temporary even if
+its displayed name, provider, model, role, or timestamps resemble a standing
+Agent.
+
+The implemented Agent Team path preserves this link when a TeamRun is created
+from an independent AgentTeam definition: the definition's member identifier is
+copied into `MemberRun.agent_member_id`. The Organization projection includes
+participation only when a Company OS `StandingAgent.execution_agent_member_ref`
+names that AgentMember. Equal ids do not bind. This is an explicit cross-layer
+join, not lifecycle collapse: the StandingAgent owns organization identity and authority, the
+AgentMember definition owns reusable execution configuration, and MemberRun
+owns participation in one TeamRun.
+
+An AgentTeamRun may execute against one Project Binding, while another TeamRun
+inside the same Mission uses a different Project Binding. The Mission/Wave
+history belongs to the Execution Space. `AgentTeamRun.project_binding_id` pins
+provider execution context so a later selector change cannot retarget existing
+members.
+
+The Host owns member lifecycle explicitly. Starting a Team member creates or
+resumes its persistent provider runtime; ordinary turn completion does not
+destroy that member. The Host may message, inspect, interrupt one current turn,
+resume from the native session, or Close the member runtime. TeamRun or Wave
+completion never substitutes for Close.
+
+Physical live-control handles are process-local, while the durable Team
+Supervisor lease is cross-process authority. Dashboard/MCP controls must route
+through the lease's loopback locator to the service holding the current
+generation. That owner fences the operation immediately before using its
+physical handle; another process cannot attach or claim messages from the same
+TeamRun. Before a Supervisor claims queued mail it verifies that the selected
+provider transport is live. Delivery then records an atomic claim, a native
+provider receipt, and recipient ACK separately. Transport failure before claim
+leaves mail queued and reconnects the recorded native session first.
+
+Team mail uses typed Host, Member, stable Agent, Operator, and Service actor
+references. External Agent-addressed mail reaches a participating Member only
+through an explicit idempotent `AgentMessageRoute`. This lets Organization and
+Agent Team share Inbox UI without inferring that StandingAgent, AgentMember,
+and MemberRun are one lifecycle. Unbound Dashboard/MCP/API clients cannot
+impersonate a Member.
+
+Explicit Close is durably latched before process-local teardown. A racing lease
+or control receiver cannot silently revive the member; idle, Work submission, Wave
+advance, TeamRun completion, and Mission closeout are all non-terminal.
+
+Status-only
+cancellation deliberately refuses `running -> cancelled`, because changing a
+row cannot stop provider work. If the foreground Host disappears *after the
+operator has independently confirmed that every provider process stopped*, the
+CLI recovery path is explicit and audited:
+
+```bash
+firm team-run cancel --id <run> --confirm-provider-stopped \
+  --reason <why-the-host-disappeared> --cancelled-by <actor>
+```
+
+Recovery marks unfinished members `stopped`, records cancelled `interrupted`
+actions, and preserves the run. The Host records the recovery and retry
+decision in the current or next Wave.
+The flag is an operator attestation, not a claim of cooperative interruption.
+The first real Codex/Kimi evidence for this path and its successful retry is
+recorded in
+[the live Agent Team acceptance](../integration/live-agent-team-acceptance-2026-07-21.md).
+
+### Dynamic Workflow
+
+Dynamic Workflow remains the engine for one-shot structured work. A
+`WorkflowRun` and its `WorkflowStep`s own the workflow's internal steps,
+fan-out, retries, results, and artifacts. They do not become a TeamRun and do
+not acquire organizational identity. `WorkflowRun.project_binding_id` pins the
+provider cwd, instruction/Skill boundary, and patch/artifact root independently
+from the Execution Space that owns the run rows.
+
+A WorkItem may reference the WorkflowRun that fulfilled it. An Agent-centric
+projection may cite workflow participation only when a step has an explicit
+durable Agent/session link.
+
+### Host execution
+
+Host execution means a resident Host Agent performs work directly. The Host
+may use provider-native subagents as an implementation detail. The Harness
+records observable outcomes, artifacts, and optional honest attribution; it
+must not invent lifecycle control over provider children it does not control.
+
+### Provider foundation
+
+`AgentMember`, `AgentRuntime`, native provider-session bindings, provider child
+threads, capability snapshots, permission/budget ceilings, hooks, and plugins
+remain shared infrastructure. The provider-native store is the sole truth for
+one agent's transcript, tool/command/file events, turn lifecycle, and resume
+state. Harness references that session and owns Work responsibility, organization
+responsibility, interaction routing, explicit outcomes, artifact/check refs,
+and gates. It does not keep a second provider event history. Private thinking
+remains sanitized, transient live state only: it is not stored, replayed,
+forwarded to peers, or used as evidence.
+
+Provider-native visibility is mode-specific. A Codex `app-server` thread can be
+opened in Codex Desktop when the app exposes that native thread. A Claude Agent
+SDK session is the native execution record for `claude_agent_sdk`, but it is not
+a Claude Desktop conversation and Harness must not claim that it appears
+there. The same rule applies to every provider: native session truth does not
+imply visibility in an unrelated consumer UI.
+
+## Selection from a WorkItem
+
+The product does not force every WorkItem to become a Mission/Wave. The
+accountable owner chooses proportionate execution:
+
+| Work shape | Appropriate execution |
+| --- | --- |
+| Small document update or human follow-up | direct human/Agent action recorded on the WorkItem |
+| One-shot, structured, bounded work | Dynamic Workflow |
+| Collaborative work needing shared responsibility, messages, or review | standalone or Mission-linked Agent Team |
+| Durable, staged outcome with several gates | Mission with ordered Waves |
+| Direct resident-agent operation | Host action, with observable outcome |
+
+The chosen run is recorded as `WorkItem.execution_ref`; the result must update
+the WorkItem's result document/records and attach useful evidence. This closes
+the document-to-action-to-document loop without making execution logs the
+company knowledge base.
+
+## Boundaries preserved by existing ADRs
+
+ADR 0025 and ADR 0026 are partially superseded by ADR 0034.
+
+- **ADR 0025 — Agent Team Run Control Plane:** MemberRun, TeamMessage,
+  PendingInteraction, and provider-native session boundaries remain valid.
+  Wave-scoped attempt ownership and v0 lifecycle/delivery details are
+  superseded.
+- **ADR 0026 — Mission/Wave Product Architecture:** Mission/Wave names and
+  transient-thinking policy remain valid. Wave-as-executor is superseded.
+- **ADR 0034 — Host Plan Waves And Mission-Scoped Agent Teams:** Mission links
+  reusable teams; Waves preserve Host judgment; TeamRuns and native sessions
+  may span Waves.
+- **ADR 0044 — Durable Team Supervision And Typed Mail:** latest-wins
+  Supervisor generations, typed actors, claim/provider receipt/ACK, stable
+  Agent routes, cross-process controls, reconnect, and Close define the current
+  Agent Team control substrate.
+
+The Company OS model changes their placement, not their execution semantics:
+
+```text
+Company OS business layer
+  Documents / Modules / Records / Relations / Org / WorkItems / Approvals
+    -> execution foundation selected by WorkItem
+      Mission -> ordered Host-plan Wave
+      Mission <-> Agent Team -> TeamRun -> MemberRun
+      Dynamic Workflow | Host action
+```
+
+## Retirement boundary
+
+The superseded coordination stack is not an execution option. ADR 0028 freezes,
+exports, verifies, and deletes it without coercing its historical rows into
+Mission, WorkItem, Approval, or organization membership.
+
+## Execution invariants
+
+1. A WorkItem can exist before an executor is selected; execution selection is
+   not business intake.
+2. Execution can exist without a Company Store; Company linkage is optional for
+   every Mission, Wave, TeamRun, MemberRun, WorkflowRun, and provider session.
+3. A selected executor cannot overwrite accountable ownership, approval
+   authority, or document provenance held by the WorkItem.
+4. Agent Team responsibility is proved by Work owner/version and WorkEvents;
+   TeamMessage correlation explains conversation only.
+5. A TeamRun/MemberRun never becomes a standing Agent or OrgUnit by inference.
+6. Provider-native subagents stay implementation detail unless explicitly
+   materialized through a truthful observation or promotion contract.
+7. Workflow and Host execution preserve their own semantics; shared sessions,
+   artifacts, and events do not collapse them into one universal run object.
+8. Execution outcomes are returned as explicit summaries, artifact/check
+   references, metric observations, and result-document/record updates. Native
+   transcripts remain provider-owned and referenced; thinking is never durable.
+9. Dashboard activity joins durable Harness coordination with an ephemeral,
+   rebuildable provider-native projection. That projection is not a second
+   ledger and cannot make the Host's Wave decision.
+10. Advancing a Wave never implicitly stops a TeamRun, MemberRun, Work, or
+   native session. Closing a Mission never deletes or archives a linked team.
+11. Only the current Supervisor generation may claim queued Team mail or use
+    live provider controls; it must prove transport health first.
+12. Typed message provenance cannot be replaced by display names or caller
+    claims, and provider receipt never implies semantic completion.
+13. Organization identity is joined to execution only by a stable explicit
+    identifier. Runtime status never grants business authority and organization
+    status never fabricates a running provider session.
+14. Provider cwd is selected from Project Binding roots or validated worktrees;
+     Company Store and Execution Space directories are never provider cwd.

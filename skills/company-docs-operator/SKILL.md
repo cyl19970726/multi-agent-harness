@@ -15,16 +15,16 @@ interface; UI is Human review context, not the authoritative machine interface.
 
 Before writing or proposing a durable Docs change, read:
 
-- `docs/company-os/document-system.md`
-- `docs/company-os/skill-contracts.md`
-- `docs/company-os/implementation-truth-matrix.md`
-- `docs/company-os/governance.md`
+- `docs/current/company-os/document-system.md`
+- `docs/current/company-os/skill-contracts.md`
+- `docs/current/company-os/implementation-truth-matrix.md`
+- `docs/current/company-os/governance.md`
 
 When the change touches a recurring business domain or custom page, also read:
 
-- `docs/company-os/module-design.md`
-- `docs/company-os/agent-programmable-pages.md`
-- `docs/company-os/frontend-information-architecture.md`
+- `docs/current/company-os/module-design.md`
+- `docs/current/company-os/agent-programmable-pages.md`
+- `docs/current/company-os/frontend-information-architecture.md`
 
 When observing GitHub repositories, Issues, PRs, checks, or reviews, use
 `$connect-github-company-os` for the external-system boundary. This Skill owns
@@ -247,8 +247,8 @@ harness company docs source sync \
   --repo-path <local-git-worktree> \
   --repo <owner/repo> \
   --branch <branch> \
-  --path docs/prd \
-  --path docs/architecture \
+  --path docs/current/product/prd \
+  --path docs/current/architecture/architecture \
   --dry-run
 ```
 

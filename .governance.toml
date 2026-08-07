@@ -71,19 +71,20 @@ allowed_truth_ref_kinds = [
 core_docs = [
     "README.md",
     "docs/README.md",
-    "docs/documentation-governance.md",
-    "docs/prd.md",
-    "docs/design-basis.md",
-    "docs/architecture.md",
-    "docs/operations.md",
-    "docs/schemas.md",
+    "docs/current/documentation-governance.md",
+    "docs/current/product/prd.md",
+    "docs/current/architecture/design-basis.md",
+    "docs/current/architecture/architecture.md",
+    "docs/current/operations/operations.md",
+    "docs/current/architecture/schemas.md",
     "docs/decisions/README.md",
-    "docs/company-os/product-system-map.md",
+    "docs/current/company-os/product-system-map.md",
 ]
 coverage_roots = [
-    "docs/company-os",
-    "docs/dashboard/pages",
-    "docs/integration",
+    "docs/mental",
+    "docs/current/company-os",
+    "docs/current/dashboard/pages",
+    "docs/current/integration",
     "plugins",
 ]
 coverage_exclude = [
@@ -102,7 +103,7 @@ terms = [
 # retired_vocabulary.terms: the append-only code still exists. Add them
 # when the code is fully decommissioned (see issue #323).
 allowed_paths = [
-    "docs/governance-engine.md",
+    "docs/current/operations/governance-engine.md",
 ]
 context_markers = [
     "archive",

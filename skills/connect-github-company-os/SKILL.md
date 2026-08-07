@@ -16,10 +16,10 @@ instructions.
 
 Read only the relevant canonical sources before changing durable records:
 
-- `docs/company-os/external-project-product-sources.md`
-- `docs/company-os/external-gateway-and-plugins.md`
+- `docs/current/company-os/external-project-product-sources.md`
+- `docs/current/company-os/external-gateway-and-plugins.md`
 - `docs/decisions/0042-company-store-execution-space-project-binding.md`
-- `docs/company-os/work-items-and-approvals.md`
+- `docs/current/company-os/work-items-and-approvals.md`
 
 Use `$company-docs-operator` for source records/relations and
 `$company-work-operator` for WorkItem links/lifecycle. Use

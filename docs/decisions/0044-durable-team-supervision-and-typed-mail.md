@@ -327,7 +327,7 @@ resuming Provider work.
 7. run deterministic concurrency tests and real-provider dogfood.
 
 The current execution checklist is
-[Agent Team Foundation Closure Plan](../product/agent-team-foundation-closure-plan.md).
+Agent Team Foundation Closure Plan.
 
 ## Validation
 

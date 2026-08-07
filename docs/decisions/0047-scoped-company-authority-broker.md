@@ -24,7 +24,7 @@ three decisions without becoming a provider permission framework.
 ## Decision
 
 Adopt the target contract in
-[Scoped Company Authority Broker](../company-os/scoped-authority-broker.md).
+Scoped Company Authority Broker.
 
 The durable, non-secret `ScopedPermissionGrant` belongs to the Company Store
 and grants one StandingAgent an intersection of exact Company Assignment,

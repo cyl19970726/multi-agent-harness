@@ -14,7 +14,7 @@ This ADR introduced the first real Agent Team control-plane substrate. Its old
 Wave-owned run and Assignment-message proof chains are no longer product
 contracts and are deliberately not reproduced here. Git history preserves the
 v0 proposal; the governed failure reconstruction is in
-[Agent Team Shared Task List research](../research/agent-team-shared-task-list.md).
+Agent Team Shared Task List research.
 
 Read the current contracts instead:
 
