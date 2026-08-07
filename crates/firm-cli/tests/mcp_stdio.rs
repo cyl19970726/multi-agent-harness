@@ -795,6 +795,8 @@ fn mcp_stdio_agent_team_tools() {
                 claim_expires_unix_ms: None,
                 provider_receipt_id: None,
                 failure_reason: None,
+                delivered_at: None,
+                acked_at: None,
                 updated_at: "2026-07-29T00:00:00Z".to_string(),
             }],
             created_at: "2026-07-29T00:00:00Z".to_string(),
