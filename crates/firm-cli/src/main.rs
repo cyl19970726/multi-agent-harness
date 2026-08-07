@@ -17,7 +17,8 @@ use harness_core::{
     validate_agent_team_topology, validate_host_authority_cutover, AgentEvent, AgentMember,
     AgentMemberStatus, AgentMessageRoute, AgentProviderConfig, AgentRuntime, AgentRuntimeHealth,
     AgentRuntimeStatus, AgentTeam, AgentTeamRun, AgentTeamStatus, DelegationRun,
-    DurableAgentMember, DurableAgentMemberStatus, Evidence, ExecutionSpace, GitHubLink,
+    DurableAgentMember, DurableAgentMemberStatus, Evidence, ExecutionSpace, GateEngine, GateResult,
+    GateSpec, GateVerdict, GitHubLink,
     GitHubLinkKind, HostAttention, HostAttentionStatus, HostControlMode, HostDispatchConfig,
     LaunchMcp,
     LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus, MemberCoordinationStatus,
@@ -10867,6 +10868,7 @@ fn create_team_run(
                     artifact_refs: Vec::new(),
                     check_refs: Vec::new(),
                     github_links: Vec::new(),
+                    gates: Vec::new(),
                     version: 0,
                     created_at: String::new(),
                     updated_at: String::new(),
@@ -11001,6 +11003,7 @@ fn add_team_run_member(
                         artifact_refs: Vec::new(),
                         check_refs: Vec::new(),
                         github_links: Vec::new(),
+                        gates: Vec::new(),
                         version: 0,
                         created_at: String::new(),
                         updated_at: String::new(),
@@ -12744,6 +12747,69 @@ fn work_priority_rank(priority: WorkPriority) -> u8 {
     }
 }
 
+/// Parse `--gate plugin[:key=val[,key=val...]]` flags into [`GateSpec`]s.
+///
+/// Format (repeatable):
+///   --gate github-pr
+///   --gate github-pr:require_merged=true,require_ci_pass=true
+///   --gate code-review:reviewer=critic-1,focus_paths=src/auth/**
+fn parse_gate_specs(args: &[String]) -> CliResult<Vec<GateSpec>> {
+    let mut specs = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--gate" {
+            if i + 1 >= args.len() {
+                return Err(CliError::Usage(
+                    "--gate requires a value (e.g. --gate github-pr or --gate github-pr:key=val,...)"
+                        .to_string(),
+                ));
+            }
+            let raw = &args[i + 1];
+            let (plugin, config_str) = match raw.split_once(':') {
+                Some((p, c)) => (p.to_string(), c),
+                None => (raw.clone(), ""),
+            };
+            if plugin.is_empty() {
+                return Err(CliError::Usage("--gate plugin name must not be empty".to_string()));
+            }
+            let config = if config_str.is_empty() {
+                serde_json::Value::Object(serde_json::Map::new())
+            } else {
+                let mut map = serde_json::Map::new();
+                for pair in config_str.split(',') {
+                    let (k, v) = pair.split_once('=').ok_or_else(|| {
+                        CliError::Usage(format!(
+                            "invalid --gate config pair `{pair}`; expected key=value"
+                        ))
+                    })?;
+                    if k.is_empty() {
+                        return Err(CliError::Usage(
+                            "--gate config key must not be empty".to_string(),
+                        ));
+                    }
+                    // Try to parse as bool, then integer, fall back to string.
+                    let val = if v == "true" {
+                        serde_json::Value::Bool(true)
+                    } else if v == "false" {
+                        serde_json::Value::Bool(false)
+                    } else if let Ok(n) = v.parse::<i64>() {
+                        serde_json::Value::Number(n.into())
+                    } else {
+                        serde_json::Value::String(v.to_string())
+                    };
+                    map.insert(k.to_string(), val);
+                }
+                serde_json::Value::Object(map)
+            };
+            specs.push(GateSpec { plugin, config });
+            i += 2; // skip value
+        } else {
+            i += 1;
+        }
+    }
+    Ok(specs)
+}
+
 fn parse_work_status(value: &str) -> CliResult<WorkStatus> {
     serde_json::from_value(serde_json::Value::String(value.to_string())).map_err(|_| {
         CliError::Usage(format!(
@@ -13228,6 +13294,9 @@ pub(crate) struct GithubPollSummary {
     /// Work(s) whose linked PR merged but whose CI was `failure`; left for the
     /// Host to decide instead of auto-submitting a red submission.
     pub blocked_on_failure: Vec<String>,
+    /// Work(s) whose declared gates all pass after this poll (meaning they are
+    /// ready for `work accept`).
+    pub gate_ready: Vec<String>,
     pub gh_unavailable: bool,
 }
 
@@ -13236,6 +13305,7 @@ impl GithubPollSummary {
         self.links_refreshed == 0
             && self.auto_submitted.is_empty()
             && self.blocked_on_failure.is_empty()
+            && self.gate_ready.is_empty()
     }
 }
 
@@ -13343,6 +13413,20 @@ pub(crate) fn poll_team_run_github_linkages(
                 })?;
         }
     }
+    // After refreshing links, re-evaluate gates on every non-terminal
+    // Work in the run that has declared gates. Flag works where all gates
+    // pass so the Host knows they're ready for accept.
+    let refreshed_works = store.latest_works()?;
+    let reviews = store.reviews().unwrap_or_default();
+    for work in refreshed_works {
+        if work.team_run_id != run_id || work.is_terminal() || work.gates.is_empty() {
+            continue;
+        }
+        let results = GateEngine::evaluate_work_gates_with_reviews(&work, &reviews);
+        if results.iter().all(|r| r.verdict.is_pass()) {
+            summary.gate_ready.push(work.id.clone());
+        }
+    }
     Ok(summary)
 }
 
@@ -13383,7 +13467,7 @@ fn github_poll_host_context(run_id: &str, work_id: &str) -> WorkCommandContext {
 fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery|poll-github-ci",
+        "team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery|poll-github-ci|check-gates",
     )?;
     match args[0].as_str() {
         "list" => {
@@ -13579,6 +13663,28 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 }
                 github_links.push(link);
             }
+            // Parse `--gate plugin[:key=val[,key=val...]]` flags.
+            let gates = parse_gate_specs(args)?;
+            // Append declared gates to context so the worker sees them.
+            let context_markdown = {
+                let mut ctx = value(args, "--context").unwrap_or_default();
+                if !gates.is_empty() {
+                    if !ctx.is_empty() {
+                        ctx.push_str("\n\n");
+                    }
+                    ctx.push_str("## Verification Gates\n\n");
+                    ctx.push_str("This work must pass the following gates before acceptance:\n\n");
+                    for gate in &gates {
+                        let config_str = if gate.config.as_object().map_or(true, |m| m.is_empty()) {
+                            String::new()
+                        } else {
+                            format!(" ({})", gate.config)
+                        };
+                        ctx.push_str(&format!("- **{}**{}\n", gate.plugin, config_str));
+                    }
+                }
+                ctx
+            };
             let work = Work {
                 id: value(args, "--work-id").unwrap_or_else(|| generated_id("work")),
                 team_run_id,
@@ -13587,7 +13693,7 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 parent_work_id: value(args, "--parent-work-id"),
                 source_work_item_ref: value(args, "--source-work-item-ref"),
                 title: required(args, "--title")?,
-                context_markdown: value(args, "--context").unwrap_or_default(),
+                context_markdown,
                 completion_criteria_markdown: required(args, "--completion-criteria")?,
                 status: WorkStatus::Open,
                 owner_member_id: None,
@@ -13605,6 +13711,7 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 artifact_refs,
                 check_refs,
                 github_links,
+                gates,
                 version: 0,
                 created_at: String::new(),
                 updated_at: String::new(),
@@ -13835,8 +13942,31 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 "links_refreshed": summary.links_refreshed,
                 "auto_submitted": summary.auto_submitted,
                 "blocked_on_failure": summary.blocked_on_failure,
+                "gate_ready": summary.gate_ready,
                 "gh_unavailable": summary.gh_unavailable,
             }))
+        }
+        "check-gates" => {
+            let work_id = required(args, "--work-id")?;
+            let work = store
+                .latest_works()?
+                .into_iter()
+                .find(|w| w.id == work_id)
+                .ok_or_else(|| CliError::Usage(format!("Work not found: {work_id}")))?;
+            let reviews = store.reviews().unwrap_or_default();
+            let results = GateEngine::evaluate_work_gates_with_reviews(&work, &reviews);
+            let all_pass = results.iter().all(|r| r.verdict.is_pass());
+            print_json(&serde_json::json!({
+                "work_id": work_id,
+                "gate_count": results.len(),
+                "all_pass": all_pass,
+                "results": results,
+            }))?;
+            if !all_pass {
+                return Err(CliError::Usage(
+                    "one or more gates did not pass (see results above)".to_string(),
+                ));
+            }
         }
         "request-changes" => {
             let reason = required(args, "--reason")?;
@@ -13857,9 +13987,45 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             print_json(&work)
         }
         "accept" => {
+            let work_id = required(args, "--work-id")?;
+            let expected_version = required_work_version(args)?;
+            // Evaluate declared gates before accepting (unless --skip-gates).
+            if !has_flag(args, "--skip-gates") {
+                let work = store
+                    .latest_works()?
+                    .into_iter()
+                    .find(|w| w.id == work_id)
+                    .ok_or_else(|| CliError::Usage(format!("Work not found: {work_id}")))?;
+                if !work.gates.is_empty() {
+                    let reviews = store.reviews().unwrap_or_default();
+                    let results = GateEngine::evaluate_work_gates_with_reviews(&work, &reviews);
+                    let failed: Vec<_> = results
+                        .iter()
+                        .filter(|r| !r.verdict.is_pass())
+                        .collect();
+                    if !failed.is_empty() {
+                        let details: Vec<_> = failed
+                            .iter()
+                            .map(|r| {
+                                let reason = match &r.verdict {
+                                    GateVerdict::Fail { reason } => format!("FAIL: {reason}"),
+                                    GateVerdict::Blocked { reason } => format!("BLOCKED: {reason}"),
+                                    _ => unreachable!(),
+                                };
+                                format!("  [{}] {}", r.gate.plugin, reason)
+                            })
+                            .collect();
+                        return Err(CliError::Usage(format!(
+                            "cannot accept work {work_id}: {} gate(s) not passing:\n{}\nUse --skip-gates to bypass (requires explicit waiver).",
+                            failed.len(),
+                            details.join("\n"),
+                        )));
+                    }
+                }
+            }
             let work = store.accept_work(
-                &required(args, "--work-id")?,
-                required_work_version(args)?,
+                &work_id,
+                expected_version,
                 host_work_context(args),
             )?;
             append_work_event(
@@ -26532,6 +26698,7 @@ fn create_team_work_value(
         artifact_refs: Vec::new(),
         check_refs: Vec::new(),
         github_links: Vec::new(),
+        gates: Vec::new(),
         version: 0,
         created_at: String::new(),
         updated_at: String::new(),
@@ -36091,16 +36258,18 @@ const CHEATSHEET_WORK: &str = r#"work create          --team-run-id <id> --title
                     [--priority low|normal|high|urgent] [--context <md>]
                     [--prerequisite-work-id <id>] [--idempotency-key <key>]
                     [--github-issue owner/repo#N]
+                    [--gate plugin[:key=val[,key=val...]]]
 work list            --team-run-id <id> [--brief] [--since <cursor>]
                     [--status <status>] [--member-run-id <id>]
 work show            --work-id <id>
 work assign          --work-id <id> --expected-version <n>
                     --member-run-id <id> [--idempotency-key <key>]
 work accept          --work-id <id> --expected-version <n>
-                    [--idempotency-key <key>]
+                    [--skip-gates] [--idempotency-key <key>]
 work request-changes --work-id <id> --expected-version <n>
                     --reason <text> [--idempotency-key <key>]
 work poll-github-ci  --team-run-id <id>   # refresh CI snapshots + PR-merge auto-submit
+work check-gates     --work-id <id>       # evaluate declared gates
 "#;
 
 const CHEATSHEET_MISSION: &str = r#"mission create        --title <text> --objective <text> [--id <id>]
@@ -36135,14 +36304,16 @@ work create --team-run-id <id> --title <text> --completion-criteria <text>
   [--owner-member-run-id <id> --claim-mode host_assign]
   [--claim-mode team_claim --eligible-member-id <id>] [--idempotency-key <key>]
   [--github-issue owner/repo#N]
+  [--gate plugin[:key=val[,key=val...]]]
 work list --team-run-id <id> [--brief] [--since <cursor>]
 work show --work-id <id>
 work assign --work-id <id> --expected-version <n> --member-run-id <id> [--idempotency-key <key>]
 work submit --team-run-id <id> --member-run-id <id> --work-id <id>
   --expected-version <n> --result <text> [--github-pr owner/repo#N]
-work accept --work-id <id> --expected-version <n> [--idempotency-key <key>]
+work accept --work-id <id> --expected-version <n> [--skip-gates] [--idempotency-key <key>]
 work request-changes --work-id <id> --expected-version <n> --reason <text> [--idempotency-key <key>]
 work poll-github-ci --team-run-id <id>
+work check-gates --work-id <id>
 
 mission create --title <text> --objective <text> [--id <id>]
   [--context <text>] [--json]
@@ -43022,6 +43193,7 @@ package:com.tencent.mm
                     artifact_refs: Vec::new(),
                     check_refs: Vec::new(),
                     github_links: Vec::new(),
+                    gates: Vec::new(),
                     version: 0,
                     created_at: String::new(),
                     updated_at: String::new(),

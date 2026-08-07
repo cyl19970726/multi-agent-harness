@@ -2403,7 +2403,7 @@ impl HarnessStore {
             return Err(StoreError::Conflict("RESULT_REQUIRED".to_string()));
         }
         if !github_links.iter().any(|link| {
-            link.kind == harness_core::GitHubLinkKind::PullRequest
+            link.kind == firm_core::GitHubLinkKind::PullRequest
                 && link.status.as_deref() == Some("MERGED")
         }) {
             return Err(StoreError::Conflict(
@@ -6558,6 +6558,7 @@ mod tests {
                     artifact_refs: Vec::new(),
                     check_refs: Vec::new(),
                     github_links: Vec::new(),
+                    gates: Vec::new(),
                     version: 0,
                     created_at: String::new(),
                     updated_at: String::new(),
@@ -8246,6 +8247,7 @@ mod tests {
             artifact_refs: Vec::new(),
             check_refs: Vec::new(),
             github_links: Vec::new(),
+            gates: Vec::new(),
             version: 0,
             created_at: String::new(),
             updated_at: String::new(),
@@ -11015,9 +11017,9 @@ mod tests {
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
-    fn test_github_link(status: &str, ci_status: Option<&str>) -> harness_core::GitHubLink {
-        harness_core::GitHubLink {
-            kind: harness_core::GitHubLinkKind::PullRequest,
+    fn test_github_link(status: &str, ci_status: Option<&str>) -> firm_core::GitHubLink {
+        firm_core::GitHubLink {
+            kind: firm_core::GitHubLinkKind::PullRequest,
             owner: "cyl19970726".into(),
             repo: "multi-agent-harness".into(),
             number: 365,

@@ -3324,6 +3324,370 @@ pub struct GitHubLink {
     pub ci_url: Option<String>,
 }
 
+/// A declared verification gate for a [`Work`]. Each gate is an independent
+/// check that must pass before the Work can be accepted. Gates are composable:
+/// a Work with zero gates preserves today's manual-accept behaviour; a Work
+/// with several gates must satisfy all of them.
+///
+/// The `plugin` field names a registered gate implementation. The `config`
+/// payload is plugin-specific (e.g. `{"require_merged": true}` for github-pr).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateSpec {
+    /// Gate plugin identifier: "github-pr" | "code-review" | "check-pass"
+    /// | "artifact-exists" | "owned-path-check" | "goal-design"
+    pub plugin: String,
+    /// Plugin-specific configuration (free JSON).
+    #[serde(default)]
+    pub config: serde_json::Value,
+}
+
+/// Result of evaluating a single [`GateSpec`] against a Work and its
+/// delivery/evidence context.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GateVerdict {
+    /// The gate is satisfied.
+    Pass,
+    /// The gate is not satisfied (the Work must be revised).
+    Fail { reason: String },
+    /// A prerequisite is not yet met (e.g. PR not opened); the Work is stuck,
+    /// not failed.
+    Blocked { reason: String },
+}
+
+impl GateVerdict {
+    pub fn is_pass(&self) -> bool {
+        matches!(self, GateVerdict::Pass)
+    }
+}
+
+/// The result of evaluating one [`GateSpec`] against a Work.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateResult {
+    pub gate: GateSpec,
+    pub verdict: GateVerdict,
+}
+
+/// A pluggable registry of gate evaluation functions. Built-in gates are
+/// pre-registered via [`GateRegistry::default`]; external code can register
+/// custom gates with [`GateRegistry::register`].
+///
+/// Each registered function receives the full context available to the
+/// engine: the gate spec, the work, and any reviews.
+pub struct GateRegistry {
+    gates: std::collections::HashMap<String, Box<dyn Fn(&GateSpec, &Work, &[Review]) -> GateVerdict>>,
+}
+
+impl GateRegistry {
+    /// Create an empty registry (useful for testing or embedders that want
+    /// full control over registration). Prefer [`GateRegistry::default`] for
+    /// the standard built-in set.
+    pub fn new() -> Self {
+        Self {
+            gates: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Register a custom gate plugin. If a gate with the same name already
+    /// exists it is replaced.
+    pub fn register<F>(&mut self, plugin: &str, gate: F)
+    where
+        F: Fn(&GateSpec, &Work, &[Review]) -> GateVerdict + 'static,
+    {
+        self.gates.insert(plugin.to_string(), Box::new(gate));
+    }
+
+    /// Evaluate a single gate spec, dispatching to the registered function.
+    /// Returns `Fail` with a descriptive message when the plugin is unknown.
+    pub fn evaluate(
+        &self,
+        gate: &GateSpec,
+        work: &Work,
+        reviews: &[Review],
+    ) -> GateVerdict {
+        match self.gates.get(gate.plugin.as_str()) {
+            Some(f) => f(gate, work, reviews),
+            None => GateVerdict::Fail {
+                reason: format!("unknown gate plugin: {}", gate.plugin),
+            },
+        }
+    }
+}
+
+impl Default for GateRegistry {
+    fn default() -> Self {
+        let mut registry = Self::new();
+        registry.register("github-pr", |gate, work, _reviews| {
+            GateEngine::evaluate_github_pr(gate, work)
+        });
+        registry.register("code-review", |gate, work, reviews| {
+            GateEngine::evaluate_code_review(gate, work, reviews)
+        });
+        registry.register("artifact-exists", |gate, work, _reviews| {
+            GateEngine::evaluate_artifact_exists(gate, work)
+        });
+        registry.register("check-pass", |gate, work, _reviews| {
+            GateEngine::evaluate_check_pass(gate, work)
+        });
+        registry
+    }
+}
+
+/// Stateless engine that evaluates a Work's declared [`GateSpec`]s. Uses
+/// a [`GateRegistry`] for dispatch; the default registry includes all
+/// built-in gates. Embedders that register custom gates should create a
+/// custom registry and pass it to the engine methods that accept one.
+///
+/// The engine remains stateless — all gate evaluation functions are pure
+/// (they only read the Work, GateSpec, and optionally Review records).
+pub struct GateEngine;
+
+impl GateEngine {
+    /// Evaluate every gate declared on `work` using the default built-in
+    /// gate set.
+    pub fn evaluate_work_gates(work: &Work) -> Vec<GateResult> {
+        Self::evaluate_work_gates_with_reviews(work, &[])
+    }
+
+    /// Evaluate every gate with access to [`Review`] records.
+    pub fn evaluate_work_gates_with_reviews(work: &Work, reviews: &[Review]) -> Vec<GateResult> {
+        Self::evaluate_work_gates_with_registry(work, reviews, &GateRegistry::default())
+    }
+
+    /// Evaluate every gate using a custom registry. External code that
+    /// registered additional gates should use this entry point.
+    pub fn evaluate_work_gates_with_registry(
+        work: &Work,
+        reviews: &[Review],
+        registry: &GateRegistry,
+    ) -> Vec<GateResult> {
+        work.gates
+            .iter()
+            .map(|gate| GateResult {
+                verdict: registry.evaluate(gate, work, reviews),
+                gate: gate.clone(),
+            })
+            .collect()
+    }
+
+    // Evaluate a single gate (convenience).
+    pub fn evaluate_gate(gate: &GateSpec, work: &Work) -> GateVerdict {
+        GateRegistry::default().evaluate(gate, work, &[])
+    }
+
+    // ── Built-in gate implementations (pub so registry can reference) ─
+
+    fn evaluate_github_pr(gate: &GateSpec, work: &Work) -> GateVerdict {
+        let require_merged = gate
+            .config
+            .get("require_merged")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let require_ci_pass = gate
+            .config
+            .get("require_ci_pass")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let pr_link = work
+            .github_links
+            .iter()
+            .find(|link| link.kind == GitHubLinkKind::PullRequest);
+
+        let Some(pr_link) = pr_link else {
+            return GateVerdict::Blocked {
+                reason: "no GitHub pull request linked to this work".to_string(),
+            };
+        };
+
+        if require_merged {
+            match pr_link.status.as_deref() {
+                Some("MERGED") => {} // ok
+                None => {
+                    return GateVerdict::Blocked {
+                        reason: format!(
+                            "PR {}/{}#{} has unknown merge status (run `work poll-github-ci` to refresh)",
+                            pr_link.owner, pr_link.repo, pr_link.number
+                        ),
+                    };
+                }
+                Some(other) => {
+                    return GateVerdict::Blocked {
+                        reason: format!(
+                            "PR {}/{}#{} is not merged (status: {other})",
+                            pr_link.owner, pr_link.repo, pr_link.number
+                        ),
+                    };
+                }
+            }
+        }
+
+        if require_ci_pass {
+            match pr_link.ci_status.as_deref() {
+                Some("success") => {} // ok
+                Some("failure") => {
+                    return GateVerdict::Fail {
+                        reason: format!(
+                            "PR {}/{}#{} CI checks failed",
+                            pr_link.owner, pr_link.repo, pr_link.number
+                        ),
+                    };
+                }
+                Some("pending") | None => {
+                    return GateVerdict::Blocked {
+                        reason: format!(
+                            "PR {}/{}#{} CI checks not yet complete (run `work poll-github-ci` to refresh)",
+                            pr_link.owner, pr_link.repo, pr_link.number
+                        ),
+                    };
+                }
+                _ => {
+                    return GateVerdict::Blocked {
+                        reason: format!(
+                            "PR {}/{}#{} CI status unknown: {:?}",
+                            pr_link.owner, pr_link.repo, pr_link.number, pr_link.ci_status
+                        ),
+                    };
+                }
+            }
+        }
+
+        GateVerdict::Pass
+    }
+
+    // ── code-review gate ────────────────────────────────────────────
+
+    fn evaluate_code_review(
+        gate: &GateSpec,
+        work: &Work,
+        reviews: &[Review],
+    ) -> GateVerdict {
+        // Match reviews by task_id (legacy field name; for Work this is the work id).
+        let matching: Vec<&Review> = reviews
+            .iter()
+            .filter(|r| r.task_id.as_deref() == Some(work.id.as_str()))
+            .collect();
+
+        if matching.is_empty() {
+            return GateVerdict::Blocked {
+                reason: "code review not yet completed (no Review record found)".to_string(),
+            };
+        }
+
+        // Use the latest matching review (most recently created).
+        let review = matching
+            .iter()
+            .max_by_key(|r| &r.created_at)
+            .expect("non-empty");
+
+        match &review.verdict {
+            ReviewVerdict::Pass => GateVerdict::Pass,
+            ReviewVerdict::Fail => GateVerdict::Fail {
+                reason: format!(
+                    "code review failed by {}: {}",
+                    review.reviewer_agent_id, review.summary
+                ),
+            },
+            ReviewVerdict::NeedsChanges => GateVerdict::Fail {
+                reason: format!(
+                    "code review requested changes (reviewer: {}): {}",
+                    review.reviewer_agent_id, review.summary
+                ),
+            },
+            ReviewVerdict::Blocked => GateVerdict::Blocked {
+                reason: format!(
+                    "code review blocked by {}: {}",
+                    review.reviewer_agent_id, review.summary
+                ),
+            },
+            ReviewVerdict::Other(label) => GateVerdict::Fail {
+                reason: format!(
+                    "code review returned verdict '{label}' by {}: {}",
+                    review.reviewer_agent_id, review.summary
+                ),
+            },
+        }
+    }
+
+    // ── artifact-exists gate ────────────────────────────────────────
+
+    fn evaluate_artifact_exists(gate: &GateSpec, work: &Work) -> GateVerdict {
+        // If config specifies required paths, check that all of them are
+        // present in work.artifact_refs.
+        if let Some(paths) = gate.config.get("paths").and_then(|v| v.as_array()) {
+            if paths.is_empty() {
+                return GateVerdict::Fail {
+                    reason: "artifact-exists gate configured with empty paths list".to_string(),
+                };
+            }
+            let mut missing: Vec<String> = Vec::new();
+            for path in paths {
+                let path_str = path.as_str().unwrap_or("");
+                if path_str.is_empty() {
+                    continue;
+                }
+                if !work.artifact_refs.iter().any(|r| r.contains(path_str)) {
+                    missing.push(path_str.to_string());
+                }
+            }
+            if !missing.is_empty() {
+                return GateVerdict::Fail {
+                    reason: format!(
+                        "required artifacts not found: {}",
+                        missing.join(", ")
+                    ),
+                };
+            }
+            return GateVerdict::Pass;
+        }
+
+        // No specific paths — check that artifact_refs is non-empty.
+        if work.artifact_refs.is_empty() {
+            return GateVerdict::Blocked {
+                reason: "no artifacts declared (work.artifact_refs is empty)".to_string(),
+            };
+        }
+        GateVerdict::Pass
+    }
+
+    // ── check-pass gate ─────────────────────────────────────────────
+
+    fn evaluate_check_pass(gate: &GateSpec, work: &Work) -> GateVerdict {
+        // If config specifies expected check names, verify they're present.
+        if let Some(names) = gate.config.get("checks").and_then(|v| v.as_array()) {
+            if names.is_empty() {
+                return GateVerdict::Fail {
+                    reason: "check-pass gate configured with empty checks list".to_string(),
+                };
+            }
+            let mut missing: Vec<String> = Vec::new();
+            for name in names {
+                let name_str = name.as_str().unwrap_or("");
+                if name_str.is_empty() {
+                    continue;
+                }
+                if !work.check_refs.iter().any(|r| r.contains(name_str)) {
+                    missing.push(name_str.to_string());
+                }
+            }
+            if !missing.is_empty() {
+                return GateVerdict::Fail {
+                    reason: format!("required checks not found: {}", missing.join(", ")),
+                };
+            }
+            return GateVerdict::Pass;
+        }
+
+        // No specific checks — just require check_refs to be non-empty.
+        if work.check_refs.is_empty() {
+            return GateVerdict::Blocked {
+                reason: "no checks declared (work.check_refs is empty)".to_string(),
+            };
+        }
+        GateVerdict::Pass
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Work {
     pub id: String,
@@ -3375,6 +3739,10 @@ pub struct Work {
     /// keeps pre-linkage works.jsonl records readable.
     #[serde(default)]
     pub github_links: Vec<GitHubLink>,
+    /// Declared verification gates this Work must pass before acceptance.
+    /// Empty vec → manual-accept semantics preserved (back-compat).
+    #[serde(default)]
+    pub gates: Vec<GateSpec>,
     pub version: u64,
     pub created_at: String,
     pub updated_at: String,
@@ -5476,6 +5844,7 @@ mod tests {
                 artifact_refs: Vec::new(),
                 check_refs: Vec::new(),
                 github_links: Vec::new(),
+                gates: Vec::new(),
                 version: 1,
                 created_at: "unix-ms:1".into(),
                 updated_at: "unix-ms:1".into(),
@@ -5943,6 +6312,352 @@ mod tests {
             team_subtree_ids(&cycle, "b"),
             vec!["b".to_string(), "a".to_string()]
         );
+    }
+
+    // ── GateEngine tests ──────────────────────────────────────────
+
+    fn make_work(gates: Vec<GateSpec>, github_links: Vec<GitHubLink>) -> Work {
+        Work {
+            id: "work-1".into(),
+            team_run_id: "run-1".into(),
+            team_id: None,
+            created_by_member_id: None,
+            parent_work_id: None,
+            source_work_item_ref: None,
+            title: "test work".into(),
+            context_markdown: String::new(),
+            completion_criteria_markdown: "done".into(),
+            status: WorkStatus::Review,
+            owner_member_id: None,
+            active_member_run_id: None,
+            claim_mode: WorkClaimMode::HostAssign,
+            eligible_member_ids: Vec::new(),
+            prerequisite_work_ids: Vec::new(),
+            priority: WorkPriority::Normal,
+            created_by_actor: TeamActorRef {
+                kind: TeamActorKind::Host,
+                id: "host".into(),
+                display_name: None,
+                authn_source: None,
+            },
+            result_summary: Some("done".into()),
+            blocker_reason: None,
+            artifact_refs: Vec::new(),
+            check_refs: Vec::new(),
+            github_links,
+            gates,
+            version: 1,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:2".into(),
+        }
+    }
+
+    fn make_pr_link(status: Option<&str>, ci_status: Option<&str>) -> GitHubLink {
+        GitHubLink {
+            kind: GitHubLinkKind::PullRequest,
+            owner: "owner".into(),
+            repo: "repo".into(),
+            number: 42,
+            url: "https://github.com/owner/repo/pull/42".into(),
+            status: status.map(|s| s.to_string()),
+            ci_status: ci_status.map(|s| s.to_string()),
+            ci_url: None,
+        }
+    }
+
+    #[test]
+    fn empty_gates_all_pass() {
+        let work = make_work(vec![], vec![]);
+        let results = GateEngine::evaluate_work_gates(&work);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn github_pr_gate_pass_when_merged_and_ci_ok() {
+        let work = make_work(
+            vec![GateSpec {
+                plugin: "github-pr".into(),
+                config: serde_json::json!({"require_merged": true, "require_ci_pass": true}),
+            }],
+            vec![make_pr_link(Some("MERGED"), Some("success"))],
+        );
+        let results = GateEngine::evaluate_work_gates(&work);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].verdict.is_pass());
+    }
+
+    #[test]
+    fn github_pr_gate_blocked_when_no_pr() {
+        let work = make_work(
+            vec![GateSpec {
+                plugin: "github-pr".into(),
+                config: serde_json::json!({}),
+            }],
+            vec![],
+        );
+        let results = GateEngine::evaluate_work_gates(&work);
+        assert!(matches!(results[0].verdict, GateVerdict::Blocked { .. }));
+    }
+
+    #[test]
+    fn github_pr_gate_blocked_when_not_merged() {
+        let work = make_work(
+            vec![GateSpec {
+                plugin: "github-pr".into(),
+                config: serde_json::json!({"require_merged": true}),
+            }],
+            vec![make_pr_link(Some("OPEN"), None)],
+        );
+        let results = GateEngine::evaluate_work_gates(&work);
+        assert!(matches!(results[0].verdict, GateVerdict::Blocked { .. }));
+    }
+
+    #[test]
+    fn github_pr_gate_fail_when_ci_failed() {
+        let work = make_work(
+            vec![GateSpec {
+                plugin: "github-pr".into(),
+                config: serde_json::json!({"require_ci_pass": true}),
+            }],
+            vec![make_pr_link(Some("MERGED"), Some("failure"))],
+        );
+        let results = GateEngine::evaluate_work_gates(&work);
+        assert!(matches!(results[0].verdict, GateVerdict::Fail { .. }));
+    }
+
+    #[test]
+    fn github_pr_gate_pass_without_ci_when_not_required() {
+        let work = make_work(
+            vec![GateSpec {
+                plugin: "github-pr".into(),
+                config: serde_json::json!({"require_merged": true}),
+            }],
+            vec![make_pr_link(Some("MERGED"), None)],
+        );
+        let results = GateEngine::evaluate_work_gates(&work);
+        assert!(results[0].verdict.is_pass());
+    }
+
+    #[test]
+    fn unknown_gate_plugin_fails() {
+        let work = make_work(
+            vec![GateSpec {
+                plugin: "nonexistent".into(),
+                config: serde_json::json!({}),
+            }],
+            vec![],
+        );
+        let results = GateEngine::evaluate_work_gates(&work);
+        assert!(matches!(results[0].verdict, GateVerdict::Fail { .. }));
+    }
+
+    #[test]
+    fn multiple_gates_report_all_results() {
+        let work = make_work(
+            vec![
+                GateSpec {
+                    plugin: "github-pr".into(),
+                    config: serde_json::json!({"require_merged": true}),
+                },
+                GateSpec {
+                    plugin: "github-pr".into(),
+                    config: serde_json::json!({"require_ci_pass": true}),
+                },
+            ],
+            vec![make_pr_link(Some("MERGED"), Some("success"))],
+        );
+        let results = GateEngine::evaluate_work_gates(&work);
+        assert_eq!(results.len(), 2);
+        assert!(results[0].verdict.is_pass());
+        assert!(results[1].verdict.is_pass());
+    }
+
+    // ── code-review gate tests ─────────────────────────────────────
+
+    fn make_review(work_id: &str, verdict: ReviewVerdict, reviewer: &str) -> Review {
+        Review {
+            id: format!("review-{work_id}"),
+            task_id: Some(work_id.to_string()),
+            goal_id: None,
+            reviewer_agent_id: reviewer.to_string(),
+            review_kind: "code".to_string(),
+            verdict,
+            summary: "looks good".to_string(),
+            blockers: vec![],
+            residual_risk: None,
+            missing_validation: vec![],
+            evidence_ids: vec![],
+            created_at: "unix-ms:10".to_string(),
+        }
+    }
+
+    #[test]
+    fn code_review_gate_blocked_when_no_review() {
+        let work = make_work(
+            vec![GateSpec {
+                plugin: "code-review".into(),
+                config: serde_json::json!({}),
+            }],
+            vec![],
+        );
+        let results = GateEngine::evaluate_work_gates_with_reviews(&work, &[]);
+        assert!(matches!(results[0].verdict, GateVerdict::Blocked { .. }));
+    }
+
+    #[test]
+    fn code_review_gate_pass_when_review_pass() {
+        let work = make_work(
+            vec![GateSpec {
+                plugin: "code-review".into(),
+                config: serde_json::json!({}),
+            }],
+            vec![],
+        );
+        let reviews = vec![make_review("work-1", ReviewVerdict::Pass, "critic-1")];
+        let results = GateEngine::evaluate_work_gates_with_reviews(&work, &reviews);
+        assert!(results[0].verdict.is_pass());
+    }
+
+    #[test]
+    fn code_review_gate_fail_when_review_fail() {
+        let work = make_work(
+            vec![GateSpec {
+                plugin: "code-review".into(),
+                config: serde_json::json!({}),
+            }],
+            vec![],
+        );
+        let reviews = vec![make_review("work-1", ReviewVerdict::Fail, "critic-1")];
+        let results = GateEngine::evaluate_work_gates_with_reviews(&work, &reviews);
+        assert!(matches!(results[0].verdict, GateVerdict::Fail { .. }));
+    }
+
+    #[test]
+    fn code_review_gate_fail_when_needs_changes() {
+        let work = make_work(
+            vec![GateSpec {
+                plugin: "code-review".into(),
+                config: serde_json::json!({}),
+            }],
+            vec![],
+        );
+        let reviews = vec![make_review("work-1", ReviewVerdict::NeedsChanges, "critic-1")];
+        let results = GateEngine::evaluate_work_gates_with_reviews(&work, &reviews);
+        assert!(matches!(results[0].verdict, GateVerdict::Fail { .. }));
+    }
+
+    // ── artifact-exists gate tests ──────────────────────────────────
+
+    #[test]
+    fn artifact_exists_pass_when_artifacts_present() {
+        let work = make_work(
+            vec![GateSpec {
+                plugin: "artifact-exists".into(),
+                config: serde_json::json!({}),
+            }],
+            vec![],
+        );
+        // work has no artifacts by default — test with artifacts added
+        let mut work_with_artifact = work.clone();
+        work_with_artifact.artifact_refs = vec!["docs/report.md".into()];
+        let results = GateEngine::evaluate_work_gates(&work_with_artifact);
+        assert!(results[0].verdict.is_pass());
+    }
+
+    #[test]
+    fn artifact_exists_blocked_when_no_artifacts() {
+        let work = make_work(
+            vec![GateSpec {
+                plugin: "artifact-exists".into(),
+                config: serde_json::json!({}),
+            }],
+            vec![],
+        );
+        let results = GateEngine::evaluate_work_gates(&work);
+        assert!(matches!(results[0].verdict, GateVerdict::Blocked { .. }));
+    }
+
+    #[test]
+    fn artifact_exists_fail_when_specified_paths_missing() {
+        let work = make_work(
+            vec![GateSpec {
+                plugin: "artifact-exists".into(),
+                config: serde_json::json!({"paths": ["required/doc.md"]}),
+            }],
+            vec![],
+        );
+        let results = GateEngine::evaluate_work_gates(&work);
+        assert!(matches!(results[0].verdict, GateVerdict::Fail { .. }));
+    }
+
+    #[test]
+    fn artifact_exists_pass_when_specified_paths_found() {
+        let mut work = make_work(
+            vec![GateSpec {
+                plugin: "artifact-exists".into(),
+                config: serde_json::json!({"paths": ["required/doc.md"]}),
+            }],
+            vec![],
+        );
+        work.artifact_refs = vec!["required/doc.md".into()];
+        let results = GateEngine::evaluate_work_gates(&work);
+        assert!(results[0].verdict.is_pass());
+    }
+
+    // ── check-pass gate tests ───────────────────────────────────────
+
+    #[test]
+    fn check_pass_pass_when_checks_present() {
+        let mut work = make_work(
+            vec![GateSpec {
+                plugin: "check-pass".into(),
+                config: serde_json::json!({}),
+            }],
+            vec![],
+        );
+        work.check_refs = vec!["ci/build".into()];
+        let results = GateEngine::evaluate_work_gates(&work);
+        assert!(results[0].verdict.is_pass());
+    }
+
+    #[test]
+    fn check_pass_blocked_when_no_checks() {
+        let work = make_work(
+            vec![GateSpec {
+                plugin: "check-pass".into(),
+                config: serde_json::json!({}),
+            }],
+            vec![],
+        );
+        let results = GateEngine::evaluate_work_gates(&work);
+        assert!(matches!(results[0].verdict, GateVerdict::Blocked { .. }));
+    }
+
+    #[test]
+    fn check_pass_fail_when_specified_checks_missing() {
+        let work = make_work(
+            vec![GateSpec {
+                plugin: "check-pass".into(),
+                config: serde_json::json!({"checks": ["cargo test", "cargo clippy"]}),
+            }],
+            vec![],
+        );
+        let results = GateEngine::evaluate_work_gates(&work);
+        assert!(matches!(results[0].verdict, GateVerdict::Fail { .. }));
+    }
+
+    #[test]
+    fn check_pass_pass_when_specified_checks_found() {
+        let mut work = make_work(
+            vec![GateSpec {
+                plugin: "check-pass".into(),
+                config: serde_json::json!({"checks": ["cargo test"]}),
+            }],
+            vec![],
+        );
+        work.check_refs = vec!["cargo test".into(), "cargo clippy".into()];
+        let results = GateEngine::evaluate_work_gates(&work);
+        assert!(results[0].verdict.is_pass());
     }
 }
 
