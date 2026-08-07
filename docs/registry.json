@@ -3960,6 +3960,35 @@
           "ref": "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
         }
       ]
+    },
+    {
+      "path": "docs/current/product/work-gate-contracts.md",
+      "ownerRole": "product",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": [
+        "work-gate-contracts"
+      ],
+      "dependsOn": [
+        "docs/mental/agent-firm-mental-model.md"
+      ],
+      "machineConsumers": [
+        "harness-cli",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-11-08",
+      "lastVerifiedWith": [
+        "harness-cli@0.4.4"
+      ],
+      "reorgTrigger": "product",
+      "authorityClass": "canonical_contract",
+      "implementationState": "implemented",
+      "truthRefs": [
+        {
+          "kind": "api",
+          "ref": "crates/firm-cli/src/main.rs"
+        }
+      ]
     }
   ]
 }
