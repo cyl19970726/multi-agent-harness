@@ -9771,11 +9771,8 @@ fn refreshed_team_member_provider_profile(
     // Base the refresh on the CURRENT adapter registry, not the stored
     // profile. The stored profile's reviewed_provider_versions is frozen at
     // member-creation time, so a registry update could never unblock an
-    // existing durable MemberRun — contradicting the remediation contract in
-    // PROVIDER_COMPATIBILITY_BLOCKED itself ("add the exact version to the
-    // adapter's reviewed_provider_versions before retrying the same durable
-    // MemberRun and Work"). The gate persists the refreshed profile back, so
-    // existing members self-heal on the next boundary.
+    // existing durable MemberRun. The gate persists the refreshed profile
+    // back, so existing members can self-heal on the next boundary.
     let stored_mode = member
         .provider_profile
         .as_ref()
@@ -9800,6 +9797,81 @@ fn apply_refreshed_provider_profile(
     member.provider_profile = Some(profile);
     member.last_event_at = Some(now_string());
     true
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderCompatibilityBlockProvenance {
+    schema: String,
+    member_run_id: String,
+    provider: String,
+    execution_mode: String,
+    provider_version: String,
+    adapter_contract_version: String,
+    boundary: String,
+    compatibility_status: String,
+    source: String,
+    probe_error: Option<String>,
+    no_provider_side_effects: bool,
+    remediation: String,
+}
+
+const PROVIDER_COMPATIBILITY_BLOCK_PREFIX: &str = "PROVIDER_COMPATIBILITY_BLOCKED: ";
+const PROVIDER_COMPATIBILITY_BLOCK_SCHEMA: &str = "provider_compatibility_block/v1";
+
+impl ProviderCompatibilityBlockProvenance {
+    fn for_refusal(
+        member: &MemberRun,
+        profile: &ProviderIntegrationProfile,
+        resolution: &ProviderCompatibilityResolution,
+        boundary: &str,
+    ) -> Self {
+        Self {
+            schema: PROVIDER_COMPATIBILITY_BLOCK_SCHEMA.to_string(),
+            member_run_id: member.id.clone(),
+            provider: profile.provider.clone(),
+            execution_mode: profile.execution_mode.clone(),
+            provider_version: profile
+                .provider_version
+                .clone()
+                .unwrap_or_else(|| "unavailable".to_string()),
+            adapter_contract_version: profile
+                .adapter_contract_version
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
+            boundary: boundary.to_string(),
+            compatibility_status: serde_snake_label(&resolution.status),
+            source: resolution.source.to_string(),
+            probe_error: resolution.probe_error.clone(),
+            no_provider_side_effects: true,
+            remediation: "complete source review or record an exact operational admission with `harness provider admit`; admissions do not change source-review status".to_string(),
+        }
+    }
+
+    fn exact_tuple_matches(
+        &self,
+        member: &MemberRun,
+        profile: &ProviderIntegrationProfile,
+    ) -> bool {
+        self.member_run_id == member.id
+            && self.provider == profile.provider
+            && self.execution_mode == profile.execution_mode
+            && self.provider_version == profile.provider_version.as_deref().unwrap_or("unavailable")
+            && self.adapter_contract_version
+                == profile
+                    .adapter_contract_version
+                    .as_deref()
+                    .unwrap_or("unknown")
+            && self.no_provider_side_effects
+    }
+}
+
+fn parse_provider_compatibility_block_reason(
+    reason: &str,
+) -> Option<ProviderCompatibilityBlockProvenance> {
+    let encoded = reason.strip_prefix(PROVIDER_COMPATIBILITY_BLOCK_PREFIX)?;
+    let provenance: ProviderCompatibilityBlockProvenance = serde_json::from_str(encoded).ok()?;
+    (provenance.schema == PROVIDER_COMPATIBILITY_BLOCK_SCHEMA).then_some(provenance)
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -9902,23 +9974,57 @@ fn provider_compatibility_block_reason(
     if member.is_external_interactive() || resolution.allowed {
         return None;
     }
-    let version = profile.provider_version.as_deref().unwrap_or("unavailable");
-    let status = serde_snake_label(&resolution.status);
-    let probe = resolution
-        .probe_error
-        .as_deref()
-        .map(|error| format!(" Version probe failed: {error}."))
-        .unwrap_or_default();
+    let provenance =
+        ProviderCompatibilityBlockProvenance::for_refusal(member, profile, resolution, boundary);
     Some(format!(
-        "PROVIDER_COMPATIBILITY_BLOCKED: member run {} cannot {boundary}; provider {} version {} in {} is {} (source={}). No provider process, native session start/resume, delivery claim, or Work rebound was performed.{} Complete source review or record an exact operational admission with `harness provider admit`; admissions never change adapter source-review status.",
-        member.id,
-        profile.provider,
-        version,
-        profile.execution_mode,
-        status,
-        resolution.source,
-        probe,
+        "{PROVIDER_COMPATIBILITY_BLOCK_PREFIX}{}",
+        serde_json::to_string(&provenance).expect("compatibility provenance serializes")
     ))
+}
+
+fn compatibility_recovery_status(
+    store: &HarnessStore,
+    member: &MemberRun,
+) -> CliResult<MemberRunStatus> {
+    if member.native_session.is_some() {
+        return Ok(MemberRunStatus::Disconnected);
+    }
+    let has_assigned_work = store.latest_works()?.into_iter().any(|work| {
+        !work.is_terminal()
+            && (work.active_member_run_id.as_deref() == Some(member.id.as_str())
+                || member.agent_member_id.is_some()
+                    && work.owner_member_id.as_deref() == member.agent_member_id.as_deref())
+    });
+    Ok(
+        if member.workspace_snapshot.is_some() || has_assigned_work {
+            MemberRunStatus::Queued
+        } else {
+            MemberRunStatus::Idle
+        },
+    )
+}
+
+fn compatibility_block_matches_current_tuple(
+    actions: &[MemberAction],
+    member: &MemberRun,
+    profile: &ProviderIntegrationProfile,
+) -> bool {
+    if member.status != MemberRunStatus::Blocked {
+        return false;
+    }
+    let Some(latest) = actions
+        .iter()
+        .filter(|action| {
+            action.team_run_id == member.team_run_id && action.member_run_id == member.id
+        })
+        .max_by_key(|action| action.seq)
+    else {
+        return false;
+    };
+    latest.action_type == "provider_compatibility_blocked"
+        && latest.status == MemberActionStatus::Failed
+        && parse_provider_compatibility_block_reason(&latest.summary)
+            .is_some_and(|provenance| provenance.exact_tuple_matches(member, profile))
 }
 
 /// Last pre-dispatch compatibility fence. It runs before provider capacity,
@@ -9938,7 +10044,19 @@ fn provider_compatibility_start_gate(
         resolve_provider_compatibility(&ledger.store, &profile, probe_error.as_deref())?;
     let reason = provider_compatibility_block_reason(member, &profile, &resolution, boundary);
     if reason.is_none() {
-        if apply_refreshed_provider_profile(member, profile) {
+        let compatibility_owned_block = member.status == MemberRunStatus::Blocked
+            && compatibility_block_matches_current_tuple(
+                &ledger.store.member_actions()?,
+                member,
+                &profile,
+            );
+        let profile_changed = apply_refreshed_provider_profile(member, profile);
+        if compatibility_owned_block {
+            member.status = compatibility_recovery_status(&ledger.store, member)?;
+            member.finished_at = None;
+            member.last_event_at = Some(now_string());
+        }
+        if profile_changed || compatibility_owned_block {
             ledger.save_member_run(&expected, member)?;
         }
         return Ok(None);
@@ -43281,6 +43399,7 @@ agent("a NEW second leaf that changes the ordinal alignment")
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
 
     #[test]
     fn heartbeat_failure_marker_is_published_after_local_lease_loss_latch() {
@@ -45032,6 +45151,187 @@ package:com.tencent.mm
                 .allowed
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn compatibility_block_action(
+        member: &MemberRun,
+        profile: &ProviderIntegrationProfile,
+        seq: u64,
+    ) -> MemberAction {
+        let resolution = ProviderCompatibilityResolution {
+            allowed: false,
+            needs_review: true,
+            status: ProviderCompatibilityStatus::ReviewRequired,
+            source: "adapter_compatibility",
+            policy: None,
+            admission: None,
+            probe_error: None,
+            warning: None,
+        };
+        MemberAction {
+            id: format!("compatibility-block-{seq}"),
+            seq,
+            team_run_id: member.team_run_id.clone(),
+            member_run_id: member.id.clone(),
+            task_id: None,
+            provider_call_id: None,
+            action_type: "provider_compatibility_blocked".into(),
+            status: MemberActionStatus::Failed,
+            provider_status: None,
+            semantic_status: None,
+            title: "provider compatibility gate blocked persistent execution".into(),
+            summary: provider_compatibility_block_reason(
+                member,
+                profile,
+                &resolution,
+                "start persistent execution",
+            )
+            .expect("review-required profile blocks"),
+            evidence_refs: Vec::new(),
+            started_at: "unix-ms:1".into(),
+            completed_at: Some("unix-ms:1".into()),
+        }
+    }
+
+    #[test]
+    fn compatibility_block_provenance_is_exact_and_foreign_blocks_never_recover() {
+        let (store, root) = temp_store("compatibility-block-provenance");
+        let created = create_two_member_team_run(&store);
+        let mut member = created.member_runs[0].clone();
+        member.status = MemberRunStatus::Blocked;
+        let mut profile = team_member_provider_profile_for_mode("codex", Some("codex_app_server"));
+        apply_provider_version(&mut profile, Some("9.9.9".into()));
+        let exact = compatibility_block_action(&member, &profile, 1);
+        assert!(compatibility_block_matches_current_tuple(
+            std::slice::from_ref(&exact),
+            &member,
+            &profile
+        ));
+        assert_eq!(
+            compatibility_recovery_status(&store, &member).expect("unbound recovery status"),
+            MemberRunStatus::Idle
+        );
+        let mut native = member.clone();
+        native.native_session = Some(capacity_test_session());
+        assert_eq!(
+            compatibility_recovery_status(&store, &native).expect("native recovery status"),
+            MemberRunStatus::Disconnected
+        );
+
+        let mut wrong_tuple = profile.clone();
+        wrong_tuple.provider_version = Some("9.9.10".into());
+        assert!(!compatibility_block_matches_current_tuple(
+            std::slice::from_ref(&exact),
+            &member,
+            &wrong_tuple
+        ));
+
+        for (action_type, summary) in [
+            ("operator_blocked", exact.summary.clone()),
+            ("provider_capacity_blocked", exact.summary.clone()),
+            ("provider_compatibility_blocked", "not parseable".into()),
+        ] {
+            let mut foreign = exact.clone();
+            foreign.seq = 2;
+            foreign.action_type = action_type.into();
+            foreign.summary = summary;
+            assert!(!compatibility_block_matches_current_tuple(
+                &[exact.clone(), foreign],
+                &member,
+                &profile
+            ));
+        }
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn admitted_compatibility_block_recovers_into_start_machine_once() {
+        let (store, root) = temp_store("compatibility-block-start-recovery");
+        let created = create_two_member_team_run(&store);
+        let initial = created.member_runs[0].clone();
+        let mut blocked = initial.clone();
+        blocked.status = MemberRunStatus::Blocked;
+        blocked.workspace_snapshot = Some(test_workspace_snapshot(&root));
+        let mut profile = team_member_provider_profile_for_mode("codex", Some("codex_app_server"));
+        apply_provider_version(&mut profile, Some("9.9.9".into()));
+        blocked.provider_profile = Some(profile.clone());
+        store
+            .compare_and_append_member_run(&initial, &blocked)
+            .expect("seed compatibility-owned Blocked member");
+        let action = compatibility_block_action(&blocked, &profile, 1);
+        store
+            .append_member_action(&action)
+            .expect("record exact compatibility provenance");
+
+        let lease = store
+            .acquire_team_supervisor_lease(
+                &created.team_run.id,
+                "compatibility-recovery-supervisor",
+                std::process::id(),
+                "test://compatibility-recovery",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire supervisor lease");
+        let ledger = TeamRunLedger::new(
+            &store,
+            &created.team_run.id,
+            &lease.supervisor_id,
+            lease.generation,
+            Arc::new(AtomicBool::new(true)),
+        );
+        let callbacks = AtomicUsize::new(0);
+        assert!(matches!(
+            claim_member_provider_start_with_hook(&ledger, &blocked, |_, _| {
+                callbacks.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .expect("blocked member is fenced before provider start"),
+            MemberProviderStartClaim::Superseded(_)
+        ));
+        assert_eq!(callbacks.load(Ordering::SeqCst), 0);
+
+        assert!(compatibility_block_matches_current_tuple(
+            &store.member_actions().expect("actions"),
+            &blocked,
+            &profile
+        ));
+        let mut recovered = blocked.clone();
+        recovered.status = compatibility_recovery_status(&store, &recovered).expect("status");
+        recovered.finished_at = None;
+        recovered.last_event_at = Some("unix-ms:2".into());
+        assert_eq!(recovered.status, MemberRunStatus::Queued);
+        store
+            .compare_and_append_member_run(&blocked, &recovered)
+            .expect("CAS recover compatibility-owned block");
+        assert!(
+            !compatibility_block_matches_current_tuple(
+                &store.member_actions().expect("actions after recovery"),
+                &recovered,
+                &profile
+            ),
+            "recovery is idempotent because only Blocked rows are eligible"
+        );
+
+        let first = claim_member_provider_start_with_hook(&ledger, &recovered, |_, _| {
+            callbacks.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .expect("admitted member starts");
+        let MemberProviderStartClaim::Claimed(starting) = first else {
+            panic!("recovered member must enter Starting");
+        };
+        assert_eq!(callbacks.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            claim_member_provider_start_with_hook(&ledger, &starting, |_, _| {
+                callbacks.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .expect("duplicate start is superseded"),
+            MemberProviderStartClaim::Superseded(_)
+        ));
+        assert_eq!(callbacks.load(Ordering::SeqCst), 1);
+        std::fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]
