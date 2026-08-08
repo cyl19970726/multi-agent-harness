@@ -46,6 +46,70 @@ pub const PROVIDER_COMPATIBILITY_ADMISSIONS_LEDGER: &str =
     "provider_compatibility_admissions.jsonl";
 const TRUSTED_HOST_REVIEWER_ID: &str = "host";
 
+fn validate_provider_compatibility_admission_ledger(
+    rows: &[ProviderCompatibilityAdmission],
+) -> StoreResult<()> {
+    type ScopedKey = (String, String, String, String, String, String);
+    let mut ids = std::collections::BTreeSet::new();
+    let mut active: std::collections::BTreeMap<ScopedKey, &ProviderCompatibilityAdmission> =
+        std::collections::BTreeMap::new();
+
+    for row in rows {
+        if !ids.insert(row.id.clone()) {
+            return Err(StoreError::Conflict(format!(
+                "provider compatibility ledger contains duplicate admission id {}",
+                row.id
+            )));
+        }
+        let key = (
+            row.project_id.clone(),
+            row.store_id.clone(),
+            row.provider.clone(),
+            row.execution_mode.clone(),
+            row.provider_version.clone(),
+            row.adapter_contract_version.clone(),
+        );
+        match row.lifecycle {
+            ProviderCompatibilityAdmissionLifecycle::Active => {
+                if let Some(current) = active.get(&key) {
+                    return Err(StoreError::Conflict(format!(
+                        "provider compatibility ledger forks active tuple at {} and {}",
+                        current.id, row.id
+                    )));
+                }
+                active.insert(key, row);
+            }
+            ProviderCompatibilityAdmissionLifecycle::Revoked
+            | ProviderCompatibilityAdmissionLifecycle::Superseded => {
+                let predecessor_id = row
+                    .predecessor_admission_id
+                    .as_deref()
+                    .expect("validated terminal admission has predecessor");
+                let predecessor = active.get(&key).ok_or_else(|| {
+                    StoreError::Conflict(format!(
+                        "provider compatibility terminal {} has no current active predecessor",
+                        row.id
+                    ))
+                })?;
+                if predecessor.id != predecessor_id {
+                    return Err(StoreError::Conflict(format!(
+                        "provider compatibility terminal {} names non-current predecessor {}; expected {}",
+                        row.id, predecessor_id, predecessor.id
+                    )));
+                }
+                if predecessor.policy != row.policy {
+                    return Err(StoreError::Conflict(format!(
+                        "provider compatibility terminal {} changes predecessor policy",
+                        row.id
+                    )));
+                }
+                active.remove(&key);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Normalize surface identifiers into their canonical form.
 /// All surface comparisons and storage MUST route through this.
 /// Aliases: kimi|kimi-cli|kimi-code → kimi; codex|codex-app|codex-app-server → codex;
@@ -207,11 +271,34 @@ pub enum HostAttentionClaimResult {
 #[derive(Debug, Clone)]
 pub struct HarnessStore {
     root: PathBuf,
+    provider_compatibility_scope: Option<(String, String)>,
 }
 
 impl HarnessStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            provider_compatibility_scope: None,
+        }
+    }
+
+    /// Bind compatibility admissions to the Project Binding and execution
+    /// store selected by the caller. The scope is deliberately explicit and
+    /// is never inferred from a path hash: moving/migrating a store must not
+    /// silently transfer operational authority.
+    pub fn with_provider_compatibility_scope(
+        mut self,
+        project_id: impl Into<String>,
+        store_id: impl Into<String>,
+    ) -> Self {
+        self.provider_compatibility_scope = Some((project_id.into(), store_id.into()));
+        self
+    }
+
+    pub fn provider_compatibility_scope(&self) -> Option<(&str, &str)> {
+        self.provider_compatibility_scope
+            .as_ref()
+            .map(|(project_id, store_id)| (project_id.as_str(), store_id.as_str()))
     }
 
     pub fn root(&self) -> &Path {
@@ -661,6 +748,15 @@ impl HarnessStore {
         let _lock = self.acquire_write_lock()?;
         let rows = self.provider_compatibility_admissions()?;
 
+        if let Some((project_id, store_id)) = self.provider_compatibility_scope() {
+            if value.project_id != project_id || value.store_id != store_id {
+                return Err(StoreError::Conflict(format!(
+                    "provider compatibility admission scope mismatch: current project/store is {project_id}/{store_id}, record is {}/{}",
+                    value.project_id, value.store_id
+                )));
+            }
+        }
+
         if let Some(existing) = rows.iter().find(|row| row.id == value.id) {
             if existing == value {
                 return Ok(());
@@ -671,10 +767,11 @@ impl HarnessStore {
             )));
         }
 
-        let current = rows
-            .iter()
-            .rev()
-            .find(|row| row.exact_key() == value.exact_key());
+        let current = rows.iter().rev().find(|row| {
+            row.project_id == value.project_id
+                && row.store_id == value.store_id
+                && row.exact_key() == value.exact_key()
+        });
         match value.lifecycle {
             ProviderCompatibilityAdmissionLifecycle::Active => {
                 if let Some(active) = current.filter(|row| row.is_active()) {
@@ -6200,6 +6297,7 @@ impl HarnessStore {
             row.validate()
                 .map_err(|error| StoreError::Conflict(error.to_string()))?;
         }
+        validate_provider_compatibility_admission_ledger(&rows)?;
         Ok(rows)
     }
 
@@ -6211,6 +6309,8 @@ impl HarnessStore {
         for row in self.provider_compatibility_admissions()? {
             latest.insert(
                 (
+                    row.project_id.clone(),
+                    row.store_id.clone(),
                     row.provider.clone(),
                     row.execution_mode.clone(),
                     row.provider_version.clone(),
@@ -6226,6 +6326,8 @@ impl HarnessStore {
     /// other execution modes, and other contract versions never authorize it.
     pub fn effective_provider_compatibility_admission(
         &self,
+        project_id: &str,
+        store_id: &str,
         provider: &str,
         execution_mode: &str,
         provider_version: &str,
@@ -6236,13 +6338,15 @@ impl HarnessStore {
             .into_iter()
             .rev()
             .find(|row| {
-                row.exact_key()
-                    == (
-                        provider,
-                        execution_mode,
-                        provider_version,
-                        adapter_contract_version,
-                    )
+                row.project_id == project_id
+                    && row.store_id == store_id
+                    && row.exact_key()
+                        == (
+                            provider,
+                            execution_mode,
+                            provider_version,
+                            adapter_contract_version,
+                        )
             })
             .filter(ProviderCompatibilityAdmission::is_active))
     }
@@ -7567,6 +7671,8 @@ mod tests {
         assert_eq!(
             store
                 .effective_provider_compatibility_admission(
+                    "project-1",
+                    "store-1",
                     "claude",
                     "sdk",
                     "2.1.220",
@@ -7576,7 +7682,14 @@ mod tests {
             Some(strict)
         );
         assert!(store
-            .effective_provider_compatibility_admission("claude", "sdk", "2.1.220", "contract-v2")
+            .effective_provider_compatibility_admission(
+                "project-1",
+                "store-1",
+                "claude",
+                "sdk",
+                "2.1.220",
+                "contract-v2"
+            )
             .expect("contract isolation")
             .is_none());
         assert_eq!(
@@ -7647,6 +7760,8 @@ mod tests {
             assert_eq!(store.provider_compatibility_admissions().unwrap().len(), 2);
             assert!(store
                 .effective_provider_compatibility_admission(
+                    "project-1",
+                    "store-1",
                     "claude",
                     "sdk",
                     "2.1.220",
@@ -7710,8 +7825,102 @@ mod tests {
             Err(StoreError::Json(_))
         ));
         assert!(first
-            .effective_provider_compatibility_admission("claude", "sdk", "2.1.220", "contract-v1")
+            .effective_provider_compatibility_admission(
+                "project-1",
+                "store-1",
+                "claude",
+                "sdk",
+                "2.1.220",
+                "contract-v1"
+            )
             .is_err());
+    }
+
+    #[test]
+    fn provider_compatibility_scope_is_exact_on_the_same_physical_store() {
+        let root = provider_admission_test_root("scope");
+        let writer =
+            HarnessStore::new(&root).with_provider_compatibility_scope("project-1", "store-1");
+        let admission = provider_compatibility_admission("scoped", "sdk", "contract-v1");
+        writer.admit_provider_compatibility(&admission).unwrap();
+
+        let other_project =
+            HarnessStore::new(&root).with_provider_compatibility_scope("project-2", "store-1");
+        assert!(other_project
+            .effective_provider_compatibility_admission(
+                "project-2",
+                "store-1",
+                "claude",
+                "sdk",
+                "2.1.220",
+                "contract-v1",
+            )
+            .unwrap()
+            .is_none());
+        let migrated_store =
+            HarnessStore::new(&root).with_provider_compatibility_scope("project-1", "store-2");
+        assert!(migrated_store
+            .effective_provider_compatibility_admission(
+                "project-1",
+                "store-2",
+                "claude",
+                "sdk",
+                "2.1.220",
+                "contract-v1",
+            )
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn provider_compatibility_ledger_semantic_corruption_fails_closed() {
+        let root = provider_admission_test_root("semantic-corruption");
+        let store = HarnessStore::new(&root);
+        store.init().unwrap();
+        let active = provider_compatibility_admission("active", "sdk", "contract-v1");
+        let mut terminal = active.clone();
+        terminal.id = "terminal".to_string();
+        terminal.lifecycle = ProviderCompatibilityAdmissionLifecycle::Revoked;
+        terminal.predecessor_admission_id = Some(active.id.clone());
+        terminal.reason = Some("operator revoke".to_string());
+
+        let cases = [
+            vec![active.clone(), active.clone()],
+            {
+                let mut unknown = terminal.clone();
+                unknown.predecessor_admission_id = Some("unknown".to_string());
+                vec![active.clone(), unknown]
+            },
+            {
+                let mut drift = terminal.clone();
+                drift.policy = firm_core::ProviderCompatibilityAdmissionPolicy::Advisory;
+                vec![active.clone(), drift]
+            },
+            {
+                let mut drift = terminal.clone();
+                drift.store_id = "store-2".to_string();
+                vec![active.clone(), drift]
+            },
+            vec![active.clone(), terminal.clone(), {
+                let mut fork = terminal.clone();
+                fork.id = "fork".to_string();
+                fork
+            }],
+        ];
+
+        for rows in cases {
+            let text = rows
+                .iter()
+                .map(|row| serde_json::to_string(row).unwrap())
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n";
+            std::fs::write(root.join(PROVIDER_COMPATIBILITY_ADMISSIONS_LEDGER), text).unwrap();
+            assert!(matches!(
+                store.provider_compatibility_admissions(),
+                Err(StoreError::Conflict(_))
+            ));
+        }
     }
 
     #[test]

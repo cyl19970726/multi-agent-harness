@@ -94,15 +94,22 @@ Dashboard exposes the same source-review compatibility state on MemberRun.
 Provider execution is fail-closed at every start, resume, reopen, recovery,
 rebind, preflight, and provider-list boundary. An installed version that is
 `review_required` can run only when the selected project/execution store has an
-active operational admission for the exact four-part key:
+active operational admission for the exact scoped key:
 
 ```text
-(provider, execution_mode, provider_version, adapter_contract_version)
+(project_id, store_id,
+ provider, execution_mode, provider_version, adapter_contract_version)
 ```
 
-The admission is append-only and records project/store scope, actor, evidence,
-time, and `strict | advisory` policy. Both policies are exact-key decisions;
-`advisory` may bridge only `review_required`. It cannot excuse an unavailable
+The admission is append-only and records canonical Project Binding / Execution
+Space identity, actor, evidence, time, and `strict | advisory` policy. Scope is
+never derived from a path hash. Moving or migrating ledger bytes does not move
+authority: the destination scope needs its own admission. Both policies are
+exact-key decisions and may bridge only `review_required`. `strict` records
+explicit operational authorization and clears the operational review flag.
+`advisory` permits execution but preserves `needs_review=true`, emits its policy
+and admission source, and continues to fail `member providers --fail-on-review`.
+Neither policy can excuse an unavailable
 or failed version probe, a known incompatible version, an unknown adapter
 contract, or a different mode/version/contract. Source-reviewed versions and
 operational admissions remain separate fields and outputs: admission never
@@ -125,10 +132,14 @@ registered mode and adapter contract before appending. It does not install,
 build, upgrade, downgrade, or edit provider/adapter source. The default policy
 is `strict`.
 
-Revocation and supersession append terminal rows that name the active
-predecessor and a reason. Latest-row-wins evaluation means a revoked or
-superseded key no longer authorizes execution; historical evidence remains
-readable. Execution-space migration copies and verifies the admission ledger.
+Revocation and supersession append terminal rows that name the one current
+active predecessor and a reason. Replay validates the full causal ledger and
+fails closed on duplicate ids, unknown/non-current predecessors, policy/scope
+drift, forks, or invalid ordering. An idempotent command replay does not append
+a duplicate row. A revoked or superseded key no longer authorizes execution;
+historical evidence remains readable. Execution-space migration copies and
+verifies the admission ledger bytes, but stale source scope grants no authority
+in the destination.
 
 ### Agent-managed update cadence
 
