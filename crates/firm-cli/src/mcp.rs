@@ -20,21 +20,23 @@ use std::{
 };
 
 use harness_core::{
-    MemberRunStatus, PendingInteractionStatus, TeamActorKind, TeamActorRef, TeamRunEvent,
-    TeamRunStatus, TeamSupervisorLeaseStatus, WaveStatus,
+    validate_gate_specs, BuiltinGateConfig, CodeReviewStrategy, GateSpec, MemberRunStatus,
+    PendingInteractionStatus, TeamActorKind, TeamActorRef, TeamRunEvent, TeamRunStatus,
+    TeamSupervisorLeaseStatus, WaveStatus, Work, WorkCausationRef, WorkClaimMode,
+    WorkCommandContext, WorkPriority, WorkStatus,
 };
-use harness_store::HarnessStore;
+use harness_store::{HarnessStore, WorkReviewPayload};
 use serde_json::{json, Value};
 
 use crate::{
-    acknowledge_team_message, add_team_run_member, close_mission, close_team_member_value,
-    create_mission, create_team_run, create_team_work_value, current_unix_ms_u64,
-    deactivate_team_run_member, drive_prepared_team_run, format_work_brief_line,
+    acknowledge_team_message, add_team_run_member, append_work_event, close_mission,
+    close_team_member_value, create_mission, create_team_run, current_unix_ms_u64,
+    deactivate_team_run_member, drive_prepared_team_run, format_work_brief_line, generated_id,
     has_actionable_delivered_manual_ack, host_inbox_for_native_thread, interrupt_team_member_value,
     latest_member_runs_in_append_order, latest_pending_interactions_in_append_order,
     latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
-    mutate_team_work_value, parse_team_actor_kind, parse_team_message_kind,
-    parse_team_message_response_intent, prepare_team_run_start,
+    mutate_team_work_value, now_string, parse_team_actor_kind, parse_team_message_kind,
+    parse_team_message_response_intent, parse_work_review_verdict, prepare_team_run_start,
     reconcile_team_message_delivery_value, reconcile_team_work_delivery_value,
     rename_team_run_member, reopen_team_member_value, reopened_member_requires_supervisor_start,
     resolve_pending_interaction_value, retired_wave_write_error, revise_mission_context,
@@ -186,6 +188,7 @@ fn call_tool(
         "team_run_work_list" => tool_team_run_work_list(store, &arguments),
         "team_run_work_show" => tool_team_run_work_show(store, &arguments),
         "team_run_work_create" => tool_team_run_work_create(store, &arguments),
+        "team_run_work_review" => tool_team_run_work_review(store, &arguments),
         "team_run_work_assign" => tool_team_run_work_mutate(store, &arguments, "assign"),
         "team_run_work_rebind" => tool_team_run_work_mutate(store, &arguments, "rebind"),
         "team_run_work_block" => tool_team_run_work_mutate(store, &arguments, "block"),
@@ -194,7 +197,7 @@ fn call_tool(
         "team_run_work_request_changes" => {
             tool_team_run_work_mutate(store, &arguments, "request-changes")
         }
-        "team_run_work_accept" => tool_team_run_work_mutate(store, &arguments, "accept"),
+        "team_run_work_accept" => tool_team_run_work_accept(store, &arguments),
         "team_run_work_cancel" => tool_team_run_work_mutate(store, &arguments, "cancel"),
         "team_run_work_reconcile_delivery" => {
             tool_team_run_work_reconcile_delivery(store, &arguments)
@@ -324,8 +327,315 @@ fn tool_team_run_work_show(store: &HarnessStore, arguments: &Value) -> Result<Va
 }
 
 fn tool_team_run_work_create(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
-    create_team_work_value(store, required_str(arguments, "team_run_id")?, arguments)
+    const ALLOWED: &[&str] = &[
+        "team_run_id",
+        "id",
+        "title",
+        "context_markdown",
+        "completion_criteria_markdown",
+        "owner_member_run_id",
+        "claim_mode",
+        "eligible_member_ids",
+        "parent_work_id",
+        "source_work_item_ref",
+        "prerequisite_work_ids",
+        "priority",
+        "caused_by_message_id",
+        "idempotency_key",
+        "gates",
+    ];
+    reject_unknown_arguments(arguments, "team_run_work_create", ALLOWED)?;
+    let team_run_id = required_non_empty_str(arguments, "team_run_id")?;
+    let owner_member_run_id = optional_non_empty_str(arguments, "owner_member_run_id")?;
+    let claim_mode = match optional_non_empty_str(arguments, "claim_mode")?.as_deref() {
+        None if owner_member_run_id.is_some() => WorkClaimMode::HostAssign,
+        None => WorkClaimMode::TeamClaim,
+        Some("host_assign") => WorkClaimMode::HostAssign,
+        Some("team_claim") => WorkClaimMode::TeamClaim,
+        Some(value) => return Err(format!("invalid claim_mode `{value}`")),
+    };
+    let priority = match optional_non_empty_str(arguments, "priority")?.as_deref() {
+        None | Some("normal") => WorkPriority::Normal,
+        Some("low") => WorkPriority::Low,
+        Some("high") => WorkPriority::High,
+        Some("urgent") => WorkPriority::Urgent,
+        Some(value) => return Err(format!("invalid priority `{value}`")),
+    };
+    let gates = match arguments.get("gates") {
+        None => Vec::new(),
+        Some(value) => serde_json::from_value::<Vec<GateSpec>>(value.clone())
+            .map_err(|error| format!("invalid Work gates JSON array: {error}"))?,
+    };
+    validate_gate_specs(&gates).map_err(|reason| format!("invalid Work gates: {reason}"))?;
+    optional_non_empty_str(arguments, "caused_by_message_id")?;
+    optional_non_empty_str(arguments, "idempotency_key")?;
+    let context = local_mcp_host_work_context(arguments);
+    let work = Work {
+        id: optional_non_empty_str(arguments, "id")?.unwrap_or_else(|| generated_id("work")),
+        team_run_id: team_run_id.to_string(),
+        team_id: None,
+        created_by_member_id: None,
+        parent_work_id: optional_non_empty_str(arguments, "parent_work_id")?,
+        source_work_item_ref: optional_non_empty_str(arguments, "source_work_item_ref")?,
+        title: required_non_empty_str(arguments, "title")?.to_string(),
+        context_markdown: optional_str(arguments, "context_markdown")?.unwrap_or_default(),
+        completion_criteria_markdown: required_non_empty_str(
+            arguments,
+            "completion_criteria_markdown",
+        )?
+        .to_string(),
+        status: WorkStatus::Open,
+        owner_member_id: None,
+        active_member_run_id: owner_member_run_id,
+        claim_mode,
+        eligible_member_ids: optional_string_array(arguments, "eligible_member_ids")?,
+        prerequisite_work_ids: optional_string_array(arguments, "prerequisite_work_ids")?,
+        priority,
+        created_by_actor: context.performed_by_actor.clone(),
+        result_summary: None,
+        blocker_reason: None,
+        artifact_refs: Vec::new(),
+        check_refs: Vec::new(),
+        github_links: Vec::new(),
+        gates,
+        workspace: None,
+        version: 0,
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+    store
+        .insert_work(work, context)
+        .map(|work| json!(work))
         .map_err(|error| error.to_string())
+}
+
+/// Record a Work-bound Review through the local MCP Host boundary. Unlike the
+/// retired HTTP route, this is a typed tool: caller-controlled identity and
+/// authority fields are not part of its schema and unknown arguments fail.
+fn tool_team_run_work_review(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    const ALLOWED: &[&str] = &[
+        "team_run_id",
+        "work_id",
+        "expected_version",
+        "review_id",
+        "verdict",
+        "summary",
+        "blockers",
+        "residual_risk",
+        "missing_validation",
+        "evidence_ids",
+    ];
+    let object = arguments
+        .as_object()
+        .ok_or_else(|| "team_run_work_review arguments must be an object".to_string())?;
+    if let Some(key) = object.keys().find(|key| !ALLOWED.contains(&key.as_str())) {
+        return Err(format!(
+            "unknown argument `{key}` for team_run_work_review; reviewer and actor authority are fixed by the local MCP boundary"
+        ));
+    }
+
+    let team_run_id = required_non_empty_str(arguments, "team_run_id")?;
+    let work_id = required_non_empty_str(arguments, "work_id")?;
+    let expected_version = arguments
+        .get("expected_version")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "argument `expected_version` must be a non-negative integer".to_string())?;
+    if expected_version == 0 {
+        return Err("argument `expected_version` must be at least 1".to_string());
+    }
+    let review_id = required_non_empty_str(arguments, "review_id")?;
+    let summary = required_non_empty_str(arguments, "summary")?;
+    let verdict = parse_work_review_verdict(required_non_empty_str(arguments, "verdict")?)
+        .map_err(|error| error.to_string())?;
+    let blockers = optional_string_array(arguments, "blockers")?;
+    let residual_risk = optional_non_empty_str(arguments, "residual_risk")?;
+    let missing_validation = optional_string_array(arguments, "missing_validation")?;
+    let evidence_ids = optional_string_array(arguments, "evidence_ids")?;
+
+    let work = store
+        .latest_works()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|work| work.id == work_id)
+        .ok_or_else(|| format!("Work not found: {work_id}"))?;
+    if work.team_run_id != team_run_id {
+        return Err(format!(
+            "Work {work_id} does not belong to TeamRun {team_run_id}"
+        ));
+    }
+    let configs = work
+        .gates
+        .iter()
+        .filter(|gate| gate.plugin == "code-review")
+        .map(|gate| gate.parse_builtin_config())
+        .collect::<Result<Vec<_>, _>>()?;
+    if configs.len() != 1 {
+        return Err(format!(
+            "WORK_CODE_REVIEW_GATE_REQUIRED: expected exactly one code-review gate, found {}",
+            configs.len()
+        ));
+    }
+    let BuiltinGateConfig::CodeReview(config) = &configs[0] else {
+        unreachable!("code-review plugin parsed as another built-in")
+    };
+    if config.strategy != CodeReviewStrategy::Host {
+        return Err(format!(
+            "MCP_WORK_REVIEW_REQUIRES_HOST_STRATEGY: Work {work_id} uses {:?} review",
+            config.strategy
+        ));
+    }
+
+    let payload = WorkReviewPayload {
+        id: review_id.to_string(),
+        verdict,
+        summary: summary.to_string(),
+        blockers,
+        residual_risk,
+        missing_validation,
+        evidence_ids,
+    };
+    let mut context = local_mcp_host_work_context(arguments);
+    context.idempotency_key = format!("mcp-work-review:{review_id}");
+    let result = store.record_work_review(work_id, expected_version, payload.clone(), context);
+    let review = match result {
+        Ok(review) => review,
+        Err(error) => matching_mcp_review_retry(store, work_id, expected_version, &payload)?
+            .ok_or_else(|| error.to_string())?,
+    };
+    Ok(json!(review))
+}
+
+fn reject_unknown_arguments(arguments: &Value, tool: &str, allowed: &[&str]) -> Result<(), String> {
+    let object = arguments
+        .as_object()
+        .ok_or_else(|| format!("{tool} arguments must be an object"))?;
+    if let Some(key) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
+        return Err(format!(
+            "unknown argument `{key}` for {tool}; actor identity is fixed by the local MCP boundary"
+        ));
+    }
+    Ok(())
+}
+
+fn optional_non_empty_str(arguments: &Value, key: &str) -> Result<Option<String>, String> {
+    let value = optional_str(arguments, key)?;
+    if value
+        .as_deref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        Err(format!("argument `{key}` must not be empty"))
+    } else {
+        Ok(value)
+    }
+}
+
+fn local_mcp_host_work_context(arguments: &Value) -> WorkCommandContext {
+    WorkCommandContext {
+        event_id: generated_id("work-event"),
+        performed_by_actor: TeamActorRef {
+            kind: TeamActorKind::Service,
+            id: "service:mcp".to_string(),
+            display_name: Some("Harness MCP".to_string()),
+            authn_source: Some("local_mcp_stdio".to_string()),
+        },
+        authority_actor: Some(TeamActorRef {
+            kind: TeamActorKind::Host,
+            id: "host".to_string(),
+            display_name: None,
+            authn_source: Some("local_mcp_host_authority".to_string()),
+        }),
+        causation_ref: arguments
+            .get("caused_by_message_id")
+            .and_then(Value::as_str)
+            .map(|id| WorkCausationRef {
+                kind: "team_message".to_string(),
+                id: id.to_string(),
+            }),
+        idempotency_key: arguments
+            .get("idempotency_key")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| generated_id("work-command")),
+        created_at: now_string(),
+        duplicate_ok: false,
+    }
+}
+
+fn matching_mcp_review_retry(
+    store: &HarnessStore,
+    work_id: &str,
+    expected_version: u64,
+    payload: &WorkReviewPayload,
+) -> Result<Option<harness_core::Review>, String> {
+    let existing = store
+        .reviews()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|review| review.id == payload.id);
+    let Some(review) = existing else {
+        return Ok(None);
+    };
+    let expected_command_key = format!("mcp-work-review:{}", payload.id);
+    let same = review.task_id.as_deref() == Some(work_id)
+        && review.reviewed_work_id.as_deref() == Some(work_id)
+        && review.reviewed_work_version == Some(expected_version)
+        && review.review_strategy == Some(CodeReviewStrategy::Host)
+        && review.reviewer_agent_id == "host"
+        && review.verdict == payload.verdict
+        && review.summary == payload.summary
+        && review.blockers == payload.blockers
+        && review.residual_risk == payload.residual_risk
+        && review.missing_validation == payload.missing_validation
+        && review.evidence_ids == payload.evidence_ids
+        && review.command_idempotency_key.as_deref() == Some(expected_command_key.as_str())
+        && review.performed_by_actor.as_ref().is_some_and(|actor| {
+            actor.kind == TeamActorKind::Service
+                && actor.id == "service:mcp"
+                && actor.authn_source.as_deref() == Some("local_mcp_stdio")
+        })
+        && review
+            .authority_actor
+            .as_ref()
+            .is_some_and(|actor| actor.kind == TeamActorKind::Host && actor.id == "host");
+    if same {
+        Ok(Some(review))
+    } else {
+        Err(format!(
+            "IDEMPOTENCY_CONFLICT: review_id {} already exists with a different payload or binding",
+            payload.id
+        ))
+    }
+}
+
+fn required_non_empty_str<'a>(arguments: &'a Value, key: &str) -> Result<&'a str, String> {
+    let value = required_str(arguments, key)?;
+    if value.trim().is_empty() {
+        Err(format!("argument `{key}` must not be empty"))
+    } else {
+        Ok(value)
+    }
+}
+
+fn optional_string_array(arguments: &Value, key: &str) -> Result<Vec<String>, String> {
+    let Some(value) = arguments.get(key) else {
+        return Ok(Vec::new());
+    };
+    let values = value
+        .as_array()
+        .ok_or_else(|| format!("argument `{key}` must be an array of non-empty strings"))?;
+    values
+        .iter()
+        .map(|value| {
+            let text = value
+                .as_str()
+                .ok_or_else(|| format!("argument `{key}` must contain only strings"))?;
+            if text.trim().is_empty() {
+                Err(format!("argument `{key}` must not contain empty strings"))
+            } else {
+                Ok(text.to_string())
+            }
+        })
+        .collect()
 }
 
 fn tool_team_run_work_mutate(
@@ -341,6 +651,56 @@ fn tool_team_run_work_mutate(
         arguments,
     )
     .map_err(|error| error.to_string())
+}
+
+fn tool_team_run_work_accept(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    const ALLOWED: &[&str] = &[
+        "team_run_id",
+        "work_id",
+        "expected_version",
+        "caused_by_message_id",
+        "idempotency_key",
+    ];
+    reject_unknown_arguments(arguments, "team_run_work_accept", ALLOWED)?;
+    let team_run_id = required_non_empty_str(arguments, "team_run_id")?;
+    let work_id = required_non_empty_str(arguments, "work_id")?;
+    let expected_version = arguments
+        .get("expected_version")
+        .and_then(Value::as_u64)
+        .filter(|version| *version > 0)
+        .ok_or_else(|| {
+            "argument `expected_version` must be an integer of at least 1".to_string()
+        })?;
+    optional_non_empty_str(arguments, "caused_by_message_id")?;
+    optional_non_empty_str(arguments, "idempotency_key")?;
+    let current = store
+        .latest_works()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|work| work.id == work_id && work.team_run_id == team_run_id)
+        .ok_or_else(|| format!("Work not found: {work_id}"))?;
+    let is_new_transition =
+        current.version == expected_version && current.status == WorkStatus::Review;
+    let work = store
+        .accept_work(
+            work_id,
+            expected_version,
+            local_mcp_host_work_context(arguments),
+        )
+        .map_err(|error| error.to_string())?;
+    if is_new_transition {
+        let title = work.title.clone();
+        append_work_event(
+            store,
+            &work,
+            harness_core::TeamRunEventSourceKind::Host,
+            None,
+            "accepted",
+            &format!("Work accepted: {title}"),
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(json!(work))
 }
 
 fn tool_team_run_work_reconcile_delivery(
@@ -1282,7 +1642,7 @@ fn tool_definitions() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "team_run_id": {"type": "string"},
+                    "team_run_id": {"type": "string", "minLength": 1},
                     "brief": {"type": "boolean", "default": false, "description": "Return works_brief (one compact text line per Work) instead of works (full Work JSON)."},
                     "since": {"type": "integer", "minimum": 0, "description": "WorkOperation-order cursor. Only Works that changed after this point are returned; response adds since/next_since."}
                 },
@@ -1299,22 +1659,58 @@ fn tool_definitions() -> Value {
             "description": "Create durable team responsibility. Host may assign it immediately, expose it for self-claim, or leave it unassigned.",
             "inputSchema": {
                 "type": "object",
+                "additionalProperties": false,
                 "properties": {
-                    "team_run_id": {"type": "string"},
+                    "team_run_id": {"type": "string", "minLength": 1},
+                    "id": {"type": "string", "minLength": 1, "description": "Optional caller-stable Work id."},
                     "title": {"type": "string", "minLength": 1},
                     "context_markdown": {"type": "string"},
                     "completion_criteria_markdown": {"type": "string", "minLength": 1},
-                    "owner_member_run_id": {"type": "string", "description": "Optional concrete MemberRun to receive the first WorkDelivery; stable AgentMember ownership is derived by the store."},
+                    "owner_member_run_id": {"type": "string", "minLength": 1, "description": "Optional concrete MemberRun to receive the first WorkDelivery; stable AgentMember ownership is derived by the store."},
                     "claim_mode": {"type": "string", "enum": ["host_assign", "team_claim"]},
-                    "eligible_member_ids": {"type": "array", "items": {"type": "string"}},
-                    "parent_work_id": {"type": "string"},
-                    "source_work_item_ref": {"type": "string"},
-                    "prerequisite_work_ids": {"type": "array", "items": {"type": "string"}},
+                    "eligible_member_ids": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                    "parent_work_id": {"type": "string", "minLength": 1},
+                    "source_work_item_ref": {"type": "string", "minLength": 1},
+                    "prerequisite_work_ids": {"type": "array", "items": {"type": "string", "minLength": 1}},
                     "priority": {"type": "string", "enum": ["low", "normal", "high", "urgent"]},
-                    "caused_by_message_id": {"type": "string"},
-                    "idempotency_key": {"type": "string"}
+                    "caused_by_message_id": {"type": "string", "minLength": 1},
+                    "idempotency_key": {"type": "string", "minLength": 1},
+                    "gates": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                                "plugin": {"type": "string", "minLength": 1, "description": "Built-ins are github-pr, code-review, artifact-exists, and check-pass; unknown plugins persist but fail closed until registered."},
+                                "config": {"type": "object", "description": "Typed plugin configuration. Built-in fields are validated strictly by Harness."}
+                            },
+                            "required": ["plugin"]
+                        },
+                        "description": "Verification gates evaluated by the Store before acceptance."
+                    }
                 },
                 "required": ["team_run_id", "title", "completion_criteria_markdown"]
+            }
+        },
+        {
+            "name": "team_run_work_review",
+            "description": "Record a Review for submitted Work through the trusted local MCP Host boundary. The Work must declare code-review strategy=host. Reviewer authority is always Host/host and performer attribution is always service:mcp; neither can be supplied by the caller.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "team_run_id": {"type": "string", "minLength": 1},
+                    "work_id": {"type": "string", "minLength": 1},
+                    "expected_version": {"type": "integer", "minimum": 1},
+                    "review_id": {"type": "string", "minLength": 1, "description": "Caller-stable idempotency identity. Retrying the same payload returns the existing Review; reuse with different payload fails."},
+                    "verdict": {"type": "string", "enum": ["pass", "fail", "blocked", "needs_changes"]},
+                    "summary": {"type": "string", "minLength": 1},
+                    "blockers": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                    "residual_risk": {"type": "string", "minLength": 1},
+                    "missing_validation": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                    "evidence_ids": {"type": "array", "items": {"type": "string", "minLength": 1}}
+                },
+                "required": ["team_run_id", "work_id", "expected_version", "review_id", "verdict", "summary"]
             }
         },
         {
@@ -1350,7 +1746,7 @@ fn tool_definitions() -> Value {
         {
             "name": "team_run_work_accept",
             "description": "Host explicitly accepts submitted Work. Provider completion alone never performs this transition.",
-            "inputSchema": {"type": "object", "properties": {"team_run_id": {"type": "string"}, "work_id": {"type": "string"}, "expected_version": {"type": "integer", "minimum": 0}, "summary": {"type": "string"}, "caused_by_message_id": {"type": "string"}, "idempotency_key": {"type": "string"}}, "required": ["team_run_id", "work_id", "expected_version"]}
+            "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"team_run_id": {"type": "string", "minLength": 1}, "work_id": {"type": "string", "minLength": 1}, "expected_version": {"type": "integer", "minimum": 1}, "caused_by_message_id": {"type": "string", "minLength": 1}, "idempotency_key": {"type": "string", "minLength": 1}}, "required": ["team_run_id", "work_id", "expected_version"]}
         },
         {
             "name": "team_run_work_cancel",
@@ -1573,7 +1969,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_resolve_interaction",
-            "description": "Resolve one provider-originated pending interaction using its exact provider option id. Lead-routed interactions require resolved_by=host|lead; human-routed interactions require operator|human; policy-routed interactions require policy. Kimi ACP can resume the same provider request after resolution.",
+            "description": "Resolve a provider-originated interaction by legacy PendingInteraction id or provider_interaction_request TeamMessage id. New responses are strict correlated TeamMessages, atomically ACK the request, and enter the provider only through an Inject delivery. Questions/reviews require host|lead, unknown requests operator|human, and tool/reject-only requests policy.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

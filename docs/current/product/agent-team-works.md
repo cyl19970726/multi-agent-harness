@@ -232,6 +232,28 @@ open|in_progress|blocked|review -> cancelled
 review -> in_progress  # changes requested
 ```
 
+### Four orthogonal lifecycle layers (#418)
+
+Work keeps only the six responsibility states above. Runtime health
+(`starting/idle/running/waiting/disconnected/recovering/closed/retired`),
+delivery and candidate verification, and domain-specific workflows are three
+separate layers; none may add `orphaned`, `failed`, or release states to the
+generic Work enum.
+
+Closing a Member runtime therefore does not mutate Work into a seventh state.
+Today, release is an explicit, auditable operation for an eligible owned `open`
+Work; it clears ownership and records a `Released` WorkEvent without adding a
+`Released` Work status. A **Released / needs reassignment** operator queue is a
+future derived-view design over runtime state, ownership, and non-terminal
+Works; it is not a currently implemented Dashboard/read-model claim.
+
+Evidence is proportional to the Work's declared risk. A **Verification
+Profile** is a future design concept for selecting relevant clean-build,
+replay, daemon-safety, docs, or domain checks; it is not a current Work schema
+field or CLI surface. Current acceptance uses completion criteria and declared
+gates: a Work with no gates retains manual Host-accept semantics, while every
+declared gate must pass.
+
 Meanings:
 
 | Status | Meaning |

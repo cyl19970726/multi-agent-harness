@@ -8,9 +8,11 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use harness_core::{
-    MemberCoordinationStatus, MemberRunStatus, TeamActorKind, TeamActorRef, TeamDeliveryPolicy,
-    TeamDeliveryStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind, TeamRecipientKind,
-    TeamRecipientRef, WorkDeliveryStatus,
+    MemberCoordinationStatus, MemberRunStatus, NativeSessionAvailability, NativeSessionRef,
+    ProviderInteractionMessageOption, ProviderInteractionRequestBody, ProviderInteractionType,
+    TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessage,
+    TeamMessageDelivery, TeamMessageKind, TeamMessageResponseIntent, TeamRecipientKind,
+    TeamRecipientRef, WorkCommandContext, WorkDeliveryStatus,
 };
 use harness_store::{HarnessStore, WorkDeliveryClaimResult};
 
@@ -105,6 +107,423 @@ impl Drop for McpClient {
     }
 }
 
+#[test]
+fn mcp_stdio_host_only_typed_work_review_boundary() {
+    let home = TempHome::new("mcp-host-work-review");
+    let project_id = init_project(&home, "mcp-host-work-review-proj");
+    let mut mcp = McpClient::spawn(&home, &project_id, &[]);
+    let response = mcp.request(
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "mcp-review-test", "version": "0"}
+        }),
+    );
+    assert!(response["result"]["capabilities"]["tools"].is_object());
+    mcp.notify("notifications/initialized");
+
+    let listed = mcp.request("tools/list", serde_json::json!({}));
+    let review_tool = listed["result"]["tools"]
+        .as_array()
+        .expect("tools list")
+        .iter()
+        .find(|tool| tool["name"] == "team_run_work_review")
+        .expect("typed Work review tool");
+    let schema = &review_tool["inputSchema"];
+    assert_eq!(schema["additionalProperties"].as_bool(), Some(false));
+    for forbidden in [
+        "reviewer_agent_id",
+        "review_strategy",
+        "actor_id",
+        "performed_by_actor",
+        "authority_actor",
+    ] {
+        assert!(
+            schema["properties"].get(forbidden).is_none(),
+            "MCP review schema exposes spoofable field {forbidden}: {schema}"
+        );
+    }
+    assert_eq!(schema["properties"]["expected_version"]["minimum"], 1);
+    assert!(schema["required"]
+        .as_array()
+        .expect("review required fields")
+        .iter()
+        .any(|field| field == "review_id"));
+    assert!(schema["properties"].get("residual_risk").is_some());
+    let create_tool = listed["result"]["tools"]
+        .as_array()
+        .expect("tools list")
+        .iter()
+        .find(|tool| tool["name"] == "team_run_work_create")
+        .expect("typed Work create tool");
+    assert_eq!(
+        create_tool["inputSchema"]["additionalProperties"].as_bool(),
+        Some(false)
+    );
+    assert!(create_tool["inputSchema"]["properties"]
+        .get("gates")
+        .is_some());
+    let accept_tool = listed["result"]["tools"]
+        .as_array()
+        .expect("tools list")
+        .iter()
+        .find(|tool| tool["name"] == "team_run_work_accept")
+        .expect("typed Work accept tool");
+    assert_eq!(
+        accept_tool["inputSchema"]["additionalProperties"].as_bool(),
+        Some(false)
+    );
+    assert!(accept_tool["inputSchema"]["properties"]
+        .get("summary")
+        .is_none());
+
+    let created = call_payload(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_create",
+            "arguments": {
+                "objective": "Exercise typed host-only MCP review",
+                "members": [{
+                    "name": "owner",
+                    "role": "implementer",
+                    "provider": "manual",
+                    "execution_mode": "external_interactive"
+                }]
+            }
+        }),
+    ));
+    let team_run_id = created["team_run_id"]
+        .as_str()
+        .expect("TeamRun id")
+        .to_string();
+    let member_run_id = created["member_run_ids"][0]
+        .as_str()
+        .expect("MemberRun id")
+        .to_string();
+    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
+    let mut sequence = 0u64;
+
+    let create_spoof = call_error_text(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_work_create",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "title": "Spoofed creator",
+                "completion_criteria_markdown": "must never be persisted",
+                "actor_id": "operator:spoof"
+            }
+        }),
+    ));
+    assert!(
+        create_spoof.contains("unknown argument `actor_id`"),
+        "{create_spoof}"
+    );
+    let invalid_gate = call_error_text(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_work_create",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "title": "Invalid typed gate",
+                "completion_criteria_markdown": "must never be persisted",
+                "gates": [{"plugin": "code-review", "config": {"strategy": "host", "unexpected": true}}]
+            }
+        }),
+    ));
+    assert!(invalid_gate.contains("unknown field"), "{invalid_gate}");
+
+    let mut seed_work = |mcp: &mut McpClient, strategy: &str, suffix: &str, submit: bool| {
+        sequence += 1;
+        let config = if strategy == "peer" {
+            serde_json::json!({"strategy": strategy, "reviewer": "not-the-owner"})
+        } else {
+            serde_json::json!({"strategy": strategy})
+        };
+        let value = call_payload(&mcp.request(
+            "tools/call",
+            serde_json::json!({
+                "name": "team_run_work_create",
+                "arguments": {
+                    "team_run_id": team_run_id,
+                    "id": format!("mcp-review-{suffix}"),
+                    "title": format!("Review candidate {suffix}"),
+                    "completion_criteria_markdown": "Exercise review boundary",
+                    "owner_member_run_id": member_run_id,
+                    "claim_mode": "host_assign",
+                    "gates": [{"plugin": "code-review", "config": config}]
+                }
+            }),
+        ));
+        let work: harness_core::Work = serde_json::from_value(value).expect("decode created Work");
+        if !submit {
+            return work;
+        }
+        let context = |label: &str| WorkCommandContext {
+            event_id: format!("event-{suffix}-{label}-{sequence}"),
+            performed_by_actor: TeamActorRef {
+                kind: TeamActorKind::MemberRun,
+                id: member_run_id.clone(),
+                display_name: None,
+                authn_source: Some("mcp-review-test".to_string()),
+            },
+            authority_actor: None,
+            causation_ref: None,
+            idempotency_key: format!("command-{suffix}-{label}-{sequence}"),
+            created_at: format!("unix-ms:{}", 100 + sequence),
+            duplicate_ok: false,
+        };
+        let claimed = store
+            .start_work(&work.id, work.version, &member_run_id, context("start"))
+            .expect("start review candidate");
+        store
+            .submit_work(
+                &claimed.id,
+                claimed.version,
+                &member_run_id,
+                "candidate ready for review",
+                Vec::new(),
+                Vec::new(),
+                context("submit"),
+            )
+            .expect("submit review candidate")
+    };
+
+    let peer = seed_work(&mut mcp, "peer", "peer", true);
+    let peer_error = call_error_text(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_work_review",
+            "arguments": {"team_run_id": team_run_id, "work_id": peer.id, "expected_version": peer.version, "review_id": "review-peer", "verdict": "pass", "summary": "must reject peer"}
+        }),
+    ));
+    assert!(
+        peer_error.contains("REQUIRES_HOST_STRATEGY"),
+        "{peer_error}"
+    );
+
+    let self_review = seed_work(&mut mcp, "self", "self", true);
+    let self_error = call_error_text(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_work_review",
+            "arguments": {"team_run_id": team_run_id, "work_id": self_review.id, "expected_version": self_review.version, "review_id": "review-self", "verdict": "pass", "summary": "must reject self review"}
+        }),
+    ));
+    assert!(
+        self_error.contains("REQUIRES_HOST_STRATEGY"),
+        "{self_error}"
+    );
+
+    let wrong_state = seed_work(&mut mcp, "host", "wrong-state", false);
+    let state_error = call_error_text(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_work_review",
+            "arguments": {"team_run_id": team_run_id, "work_id": wrong_state.id, "expected_version": wrong_state.version, "review_id": "review-wrong-state", "verdict": "pass", "summary": "not submitted"}
+        }),
+    ));
+    assert!(state_error.contains("not awaiting review"), "{state_error}");
+
+    let host = seed_work(&mut mcp, "host", "host", true);
+    assert_eq!(host.created_by_actor.id, "service:mcp");
+    assert_eq!(
+        host.created_by_actor.authn_source.as_deref(),
+        Some("local_mcp_stdio")
+    );
+    let version_error = call_error_text(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_work_review",
+            "arguments": {"team_run_id": team_run_id, "work_id": host.id, "expected_version": host.version + 1, "review_id": "review-wrong-version", "verdict": "pass", "summary": "wrong version"}
+        }),
+    ));
+    assert!(
+        version_error.contains("VERSION_CONFLICT"),
+        "{version_error}"
+    );
+
+    let reviews_before_spoof = store.reviews().expect("reviews before spoof");
+    let spoof_error = call_error_text(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_work_review",
+            "arguments": {"team_run_id": team_run_id, "work_id": host.id, "expected_version": host.version, "review_id": "review-spoof", "verdict": "pass", "summary": "spoof", "authority_actor": {"kind": "member_run", "id": member_run_id}}
+        }),
+    ));
+    assert!(
+        spoof_error.contains("unknown argument `authority_actor`"),
+        "{spoof_error}"
+    );
+    assert_eq!(
+        store.reviews().expect("reviews after spoof"),
+        reviews_before_spoof
+    );
+    let actor_spoof_error = call_error_text(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_work_review",
+            "arguments": {"team_run_id": team_run_id, "work_id": host.id, "expected_version": host.version, "review_id": "review-actor-spoof", "verdict": "pass", "summary": "spoof", "actor_id": "operator:spoof"}
+        }),
+    ));
+    assert!(
+        actor_spoof_error.contains("unknown argument `actor_id`"),
+        "{actor_spoof_error}"
+    );
+
+    let review = call_payload(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_work_review",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "work_id": host.id,
+                "expected_version": host.version,
+                "review_id": "review-host-stable",
+                "verdict": "pass",
+                "summary": "host-approved through local MCP",
+                "blockers": [],
+                "residual_risk": "manual acceptance remains explicit",
+                "missing_validation": [],
+                "evidence_ids": ["evidence:mcp-review"]
+            }
+        }),
+    ));
+    assert_eq!(review["reviewer_agent_id"].as_str(), Some("host"));
+    assert_eq!(review["review_strategy"].as_str(), Some("host"));
+    assert_eq!(
+        review["performed_by_actor"]["kind"].as_str(),
+        Some("service")
+    );
+    assert_eq!(
+        review["performed_by_actor"]["id"].as_str(),
+        Some("service:mcp")
+    );
+    assert_eq!(review["authority_actor"]["kind"].as_str(), Some("host"));
+    assert_eq!(review["authority_actor"]["id"].as_str(), Some("host"));
+    assert_eq!(
+        review["command_idempotency_key"].as_str(),
+        Some("mcp-work-review:review-host-stable")
+    );
+    assert_eq!(
+        review["residual_risk"].as_str(),
+        Some("manual acceptance remains explicit")
+    );
+
+    let review_count = store.reviews().expect("reviews after first call").len();
+    let retry = call_payload(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_work_review",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "work_id": host.id,
+                "expected_version": host.version,
+                "review_id": "review-host-stable",
+                "verdict": "pass",
+                "summary": "host-approved through local MCP",
+                "blockers": [],
+                "residual_risk": "manual acceptance remains explicit",
+                "missing_validation": [],
+                "evidence_ids": ["evidence:mcp-review"]
+            }
+        }),
+    ));
+    assert_eq!(retry, review);
+    assert_eq!(
+        store.reviews().expect("reviews after retry").len(),
+        review_count
+    );
+
+    let conflict = call_error_text(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_work_review",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "work_id": host.id,
+                "expected_version": host.version,
+                "review_id": "review-host-stable",
+                "verdict": "fail",
+                "summary": "different payload"
+            }
+        }),
+    ));
+    assert!(conflict.contains("IDEMPOTENCY_CONFLICT"), "{conflict}");
+
+    let accept_spoof = call_error_text(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_work_accept",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "work_id": host.id,
+                "expected_version": host.version,
+                "actor_id": "operator:spoof"
+            }
+        }),
+    ));
+    assert!(
+        accept_spoof.contains("unknown argument `actor_id`"),
+        "{accept_spoof}"
+    );
+
+    let accepted = call_payload(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_work_accept",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "work_id": host.id,
+                "expected_version": host.version,
+                "idempotency_key": "accept-host-reviewed"
+            }
+        }),
+    ));
+    assert_eq!(accepted["status"].as_str(), Some("done"));
+    let accepted_operation = store
+        .work_operations()
+        .expect("Work operations")
+        .into_iter()
+        .find(|operation| operation.event.idempotency_key == "accept-host-reviewed")
+        .expect("MCP accept operation");
+    assert_eq!(
+        accepted_operation.event.performed_by_actor.id,
+        "service:mcp"
+    );
+    assert_eq!(
+        accepted_operation
+            .event
+            .performed_by_actor
+            .authn_source
+            .as_deref(),
+        Some("local_mcp_stdio")
+    );
+    let accepted_retry = call_payload(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_work_accept",
+            "arguments": {
+                "team_run_id": team_run_id,
+                "work_id": host.id,
+                "expected_version": host.version,
+                "idempotency_key": "accept-host-reviewed"
+            }
+        }),
+    ));
+    assert_eq!(accepted_retry, accepted);
+    assert_eq!(
+        store
+            .work_operations()
+            .expect("Work operations after accept retry")
+            .into_iter()
+            .filter(|operation| operation.event.idempotency_key == "accept-host-reviewed")
+            .count(),
+        1
+    );
+}
+
 /// Assert a `tools/call` response is not an error and parse the JSON payload
 /// out of its text content block.
 fn call_payload(response: &serde_json::Value) -> serde_json::Value {
@@ -134,6 +553,150 @@ fn call_error_text(response: &serde_json::Value) -> String {
         .as_str()
         .expect("text content block")
         .to_string()
+}
+
+#[test]
+fn mcp_resolves_provider_request_messages_and_keeps_legacy_ledger_empty() {
+    let home = TempHome::new("mcp-provider-interaction-message");
+    let project_id = init_project(&home, "mcp-provider-interaction");
+    let project_root = home.base().join("mcp-provider-interaction");
+    let created = run_firm(
+        &home,
+        &project_root,
+        &[
+            "team-run",
+            "create",
+            "--objective",
+            "Exercise MCP provider response bridge",
+            "--member",
+            "worker:implementer:codex#Wait for MCP answer",
+        ],
+    );
+    assert!(
+        created.status.success(),
+        "create TeamRun: {}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let run_id = String::from_utf8_lossy(&created.stdout).trim().to_string();
+    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
+    let initial = store
+        .member_runs()
+        .expect("member runs")
+        .into_iter()
+        .rev()
+        .find(|member| member.team_run_id == run_id)
+        .expect("created member");
+    let mut member = initial.clone();
+    member.status = MemberRunStatus::Running;
+    member.native_session = Some(NativeSessionRef {
+        provider: member.provider.clone(),
+        execution_mode: "codex_app_server".into(),
+        native_session_id: "mcp-native-session".into(),
+        native_locator_kind: "codex_thread".into(),
+        provider_version: None,
+        adapter_contract_version: "test".into(),
+        availability: NativeSessionAvailability::Available,
+        supports_resume: true,
+        last_verified_at: None,
+        parent_native_session_id: None,
+    });
+    store
+        .compare_and_append_member_run(&initial, &member)
+        .expect("seed native member");
+    let request_body = ProviderInteractionRequestBody {
+        interaction_type: ProviderInteractionType::Question,
+        prompt: "Choose one".into(),
+        options: vec![ProviderInteractionMessageOption {
+            id: "choice-a".into(),
+            label: "Choice A".into(),
+            intent: Some("answer".into()),
+        }],
+        provider: member.provider.clone(),
+        provider_request_id: "mcp-reverse-1".into(),
+        method: "item/tool/requestUserInput".into(),
+        session: "mcp-native-session".into(),
+        member: member.id.clone(),
+        generation: member.runtime_generation,
+    };
+    let created_at = "unix-ms:mcp-provider-request".to_string();
+    let request = TeamMessage {
+        id: "tmsg-mcp-provider-request".into(),
+        team_run_id: run_id.clone(),
+        work_id: None,
+        origin_wave_id: None,
+        sender: Some(TeamActorRef {
+            kind: TeamActorKind::MemberRun,
+            id: member.id.clone(),
+            display_name: None,
+            authn_source: Some("provider_reverse_request_test".into()),
+        }),
+        from_member_id: member.id.clone(),
+        recipients: vec![TeamRecipientRef {
+            kind: TeamRecipientKind::Host,
+            id: "host".into(),
+        }],
+        to_member_ids: vec!["host".into()],
+        kind: TeamMessageKind::ProviderInteractionRequest,
+        body: request_body.to_canonical_json().expect("canonical request"),
+        correlation_id: request_body.correlation_id(),
+        causation_id: None,
+        response_intent: Some(TeamMessageResponseIntent::ResponseRequired),
+        evidence_refs: Vec::new(),
+        deliveries: vec![TeamMessageDelivery {
+            member_id: "host".into(),
+            policy: TeamDeliveryPolicy::ManualAck,
+            status: TeamDeliveryStatus::Delivered,
+            attempt: 1,
+            claim_id: None,
+            claimed_by_supervisor_id: None,
+            claimed_generation: None,
+            claimed_unix_ms: None,
+            claim_expires_unix_ms: None,
+            provider_receipt_id: Some("mcp-reverse-request-receipt".into()),
+            failure_reason: None,
+            updated_at: created_at.clone(),
+        }],
+        created_at,
+    };
+    store
+        .append_team_message_checked(&request)
+        .expect("append provider request");
+
+    let mut mcp = McpClient::spawn(&home, &project_id, &[]);
+    let _ = mcp.request(
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "provider-bridge-test", "version": "0"}
+        }),
+    );
+    let response = mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "team_run_resolve_interaction",
+            "arguments": {
+                "team_run_id": run_id,
+                "interaction_id": request.id,
+                "option_id": "choice-a",
+                "resolved_by": "host"
+            }
+        }),
+    );
+    let payload = call_payload(&response);
+    assert_eq!(
+        payload["kind"].as_str(),
+        Some("provider_interaction_response")
+    );
+    assert!(store
+        .pending_interactions()
+        .expect("legacy pending interactions")
+        .is_empty());
+    let messages = store.team_messages().expect("team messages");
+    assert!(messages.iter().any(|message| {
+        message.kind == TeamMessageKind::ProviderInteractionResponse
+            && message.causation_id.as_deref() == Some("tmsg-mcp-provider-request")
+    }));
 }
 
 /// Seed one historical Wave row directly, bypassing the retired `wave_create`
@@ -256,6 +819,7 @@ fn mcp_stdio_agent_team_tools() {
             "team_run_work_list",
             "team_run_work_show",
             "team_run_work_create",
+            "team_run_work_review",
             "team_run_work_assign",
             "team_run_work_rebind",
             "team_run_work_block",
@@ -1538,20 +2102,18 @@ fn mcp_stdio_work_rebind_and_successor_delivery_reconcile() {
     replacement.started_at = "unix-ms:mcp-replacement".to_string();
     replacement.last_event_at = None;
     replacement.finished_at = None;
-    store
-        .append_member_run(&replacement)
-        .expect("append replacement MemberRun");
-    let mut run = store
+    let run = store
         .team_runs()
         .expect("team runs")
         .into_iter()
         .rev()
         .find(|run| run.id == team_run_id)
         .expect("TeamRun");
-    run.member_run_ids.push(replacement.id.clone());
+    let mut next_run = run.clone();
+    next_run.member_run_ids.push(replacement.id.clone());
     store
-        .append_team_run(&run)
-        .expect("append replacement to run");
+        .admit_member_run(&run, &next_run, &replacement)
+        .expect("atomically admit replacement MemberRun");
 
     let response = mcp.request(
         "tools/call",

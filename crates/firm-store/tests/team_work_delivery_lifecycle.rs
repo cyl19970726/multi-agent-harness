@@ -206,13 +206,21 @@ fn set_member_state(
     status: MemberRunStatus,
     generation: u64,
 ) {
-    let mut next = member.clone();
+    let current = harness
+        .store
+        .member_runs()
+        .expect("read MemberRun history")
+        .into_iter()
+        .rev()
+        .find(|candidate| candidate.id == member.id)
+        .expect("current MemberRun");
+    let mut next = current.clone();
     next.coordination_status = coordination;
     next.status = status;
     next.runtime_generation = generation;
     harness
         .store
-        .append_member_run(&next)
+        .compare_and_append_member_run(&current, &next)
         .expect("append member state");
 }
 

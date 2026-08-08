@@ -6,19 +6,21 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use firm_core::{
-    validate_agent_team_topology, validate_work_cutover_with_fences, AgentEvent, AgentMember,
-    AgentMemberStatus, AgentMessageRoute, AgentRuntime, AgentTeam, AgentTeamRun, Decision,
-    DelegationRun, DurableAgentMember, Evidence, Gap, GitHubLink, HostAttention,
-    HostAttentionInbox, HostAttentionKind, HostAttentionStatus, MemberAction, MemberRun, Message,
-    MessageDelivery, MessageDeliveryStatus, MessageTerminalSource, Mission, MissionLogEntry,
-    MissionStatus, PendingInteraction, Proposal, ProviderChildThread, ProviderExecutionStatus,
-    Review, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus,
-    TeamMessage, TeamMessageKind, TeamRunEvent, TeamRunStatus, TeamSupervisorLease,
-    TeamSupervisorLeaseStatus, Validate, Vision, Wave, WaveExecutorKind, WaveGateStatus,
-    WaveStatus, Work, WorkClaimMode, WorkCommandContext, WorkCutoverFence, WorkCutoverReport,
-    WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate, WorkEvent, WorkEventKind, WorkItem,
-    WorkItemStatus, WorkOperation, WorkStatus, WorkflowArtifactManifest, WorkflowPatch,
-    WorkflowRun, WorkflowStep,
+    provider_interaction_response_id, validate_agent_team_topology,
+    validate_work_cutover_with_fences, AgentEvent, AgentMember, AgentMemberStatus,
+    AgentMessageRoute, AgentRuntime, AgentTeam, AgentTeamRun, BuiltinGateConfig,
+    CodeReviewStrategy, Decision, DelegationRun, DurableAgentMember, Evidence, Gap, GateEngine,
+    GateVerdict, GitHubLink, HostAttention, HostAttentionInbox, HostAttentionKind,
+    HostAttentionStatus, MemberAction, MemberRun, Message, MessageDelivery, MessageDeliveryStatus,
+    MessageTerminalSource, Mission, MissionLogEntry, MissionStatus, PendingInteraction, Proposal,
+    ProviderChildThread, ProviderExecutionStatus, ProviderInteractionRequestBody,
+    ProviderInteractionResponseBody, Review, ReviewVerdict, TeamActorKind, TeamDeliveryPolicy,
+    TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage,
+    TeamMessageKind, TeamRunEvent, TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus,
+    Validate, Vision, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, Work, WorkClaimMode,
+    WorkCommandContext, WorkCutoverFence, WorkCutoverReport, WorkDelivery, WorkDeliveryStatus,
+    WorkDeliveryUpdate, WorkEvent, WorkEventKind, WorkItem, WorkItemStatus, WorkOperation,
+    WorkStatus, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -38,6 +40,7 @@ const LOCK_NB: i32 = 4;
 const LOCK_UN: i32 = 8;
 const COMPANY_WORK_ITEMS_LEDGER: &str = "company_os_work_items.jsonl";
 const WORK_CUTOVER_FENCES_LEDGER: &str = "company_os_work_cutover_fences.jsonl";
+const TRUSTED_HOST_REVIEWER_ID: &str = "host";
 
 /// Normalize surface identifiers into their canonical form.
 /// All surface comparisons and storage MUST route through this.
@@ -71,6 +74,37 @@ pub enum StoreError {
 pub type StoreResult<T> = Result<T, StoreError>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkReviewPayload {
+    pub id: String,
+    pub verdict: ReviewVerdict,
+    pub summary: String,
+    pub blockers: Vec<String>,
+    pub residual_risk: Option<String>,
+    pub missing_validation: Vec<String>,
+    pub evidence_ids: Vec<String>,
+}
+
+fn same_work_review_command(
+    existing: &Review,
+    work_id: &str,
+    expected_version: u64,
+    payload: &WorkReviewPayload,
+    context: &WorkCommandContext,
+) -> bool {
+    existing.id == payload.id
+        && existing.reviewed_work_id.as_deref() == Some(work_id)
+        && existing.reviewed_work_version == Some(expected_version)
+        && existing.verdict == payload.verdict
+        && existing.summary == payload.summary
+        && existing.blockers == payload.blockers
+        && existing.residual_risk == payload.residual_risk
+        && existing.missing_validation == payload.missing_validation
+        && existing.evidence_ids == payload.evidence_ids
+        && existing.performed_by_actor.as_ref() == Some(&context.performed_by_actor)
+        && existing.authority_actor == context.authority_actor
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageDeliveryClaimResult {
     Claimed(Box<Message>),
     NotQueued,
@@ -81,6 +115,77 @@ pub enum MessageDeliveryClaimResult {
 pub enum TeamMessageDeliveryClaimResult {
     Claimed(Box<TeamMessage>),
     NotQueued,
+}
+
+fn reject_raw_provider_interaction_append(value: &TeamMessage) -> StoreResult<()> {
+    if matches!(
+        value.kind,
+        TeamMessageKind::ProviderInteractionRequest | TeamMessageKind::ProviderInteractionResponse
+    ) {
+        return Err(StoreError::Conflict(
+            "PROVIDER_INTERACTION_RAW_APPEND_FORBIDDEN: use append_team_message_checked for requests or record_provider_interaction_response for responses"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn same_provider_interaction_response(existing: &TeamMessage, retry: &TeamMessage) -> bool {
+    existing.team_run_id == retry.team_run_id
+        && existing.work_id == retry.work_id
+        && existing.origin_wave_id == retry.origin_wave_id
+        && existing.sender == retry.sender
+        && existing.from_member_id == retry.from_member_id
+        && existing.recipients == retry.recipients
+        && existing.to_member_ids == retry.to_member_ids
+        && existing.kind == retry.kind
+        && existing.body == retry.body
+        && existing.correlation_id == retry.correlation_id
+        && existing.causation_id == retry.causation_id
+        && existing.response_intent == retry.response_intent
+        && existing.evidence_refs == retry.evidence_refs
+        && existing.deliveries.len() == retry.deliveries.len()
+        && existing
+            .deliveries
+            .iter()
+            .zip(&retry.deliveries)
+            .all(|(existing, retry)| {
+                existing.member_id == retry.member_id && existing.policy == retry.policy
+            })
+}
+
+/// Returns true when the request row changed and must be appended.
+fn acknowledge_provider_interaction_request(
+    request: &mut TeamMessage,
+    acknowledged_at: &str,
+) -> StoreResult<bool> {
+    let host_deliveries = request
+        .deliveries
+        .iter_mut()
+        .filter(|delivery| delivery.member_id == "host")
+        .collect::<Vec<_>>();
+    if host_deliveries.len() != 1 {
+        return Err(StoreError::Conflict(
+            "provider interaction request requires exactly one Host delivery".to_string(),
+        ));
+    }
+    let delivery = host_deliveries.into_iter().next().expect("one delivery");
+    if delivery.policy != TeamDeliveryPolicy::ManualAck {
+        return Err(StoreError::Conflict(
+            "provider interaction request Host delivery must use manual_ack".to_string(),
+        ));
+    }
+    match delivery.status {
+        TeamDeliveryStatus::Acknowledged => Ok(false),
+        TeamDeliveryStatus::Delivered => {
+            delivery.status = TeamDeliveryStatus::Acknowledged;
+            delivery.updated_at = acknowledged_at.to_string();
+            Ok(true)
+        }
+        status => Err(StoreError::Conflict(format!(
+            "provider interaction request Host delivery cannot be acknowledged from {status:?}"
+        ))),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +219,20 @@ impl HarnessStore {
         fs::create_dir_all(self.root.join("prompts"))?;
         fs::create_dir_all(self.root.join("runtimes"))?;
         Ok(())
+    }
+
+    /// Hold the store's ordinary writer lock for the complete lifetime of a
+    /// migration snapshot.
+    ///
+    /// The guard intentionally exposes no store operations. Callers must not
+    /// invoke a write method on this same `HarnessStore` while it is alive:
+    /// those methods acquire `.store.lock` themselves and would be a
+    /// re-entrant lock attempt. Direct, read-only filesystem snapshots are the
+    /// intended use while the guard is held.
+    pub fn acquire_exclusive_migration_guard(&self) -> StoreResult<StoreExclusiveMigrationGuard> {
+        Ok(StoreExclusiveMigrationGuard {
+            _write_lock: self.acquire_write_lock()?,
+        })
     }
 
     pub fn append_mission(&self, value: &Mission) -> StoreResult<()> {
@@ -623,6 +742,7 @@ impl HarnessStore {
     ) -> StoreResult<AgentMessageRoute> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
+        reject_raw_provider_interaction_append(team_message)?;
 
         if let Some(existing) = latest_by_id(
             self.read_jsonl::<AgentMessageRoute>("agent_message_routes.jsonl")?,
@@ -707,7 +827,172 @@ impl HarnessStore {
     }
 
     pub fn append_review(&self, value: &Review) -> StoreResult<()> {
-        self.append_jsonl("reviews.jsonl", value)
+        value
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        if value.reviewed_work_id.is_some()
+            || value.reviewed_work_version.is_some()
+            || value.review_strategy.is_some()
+        {
+            return Err(StoreError::Conflict(
+                "BOUND_REVIEW_REQUIRES_WORK_CONTEXT: use record_work_review".to_string(),
+            ));
+        }
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        if self
+            .read_jsonl::<Review>("reviews.jsonl")?
+            .iter()
+            .any(|review| review.id == value.id)
+        {
+            return Err(StoreError::Conflict(format!(
+                "review already exists: {}",
+                value.id
+            )));
+        }
+        self.append_jsonl_unlocked("reviews.jsonl", value)
+    }
+
+    /// Record a Review bound to the exact current Work candidate. Identity and
+    /// binding fields are derived from trusted Store context rather than caller
+    /// supplied payload.
+    pub fn record_work_review(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        payload: WorkReviewPayload,
+        context: WorkCommandContext,
+    ) -> StoreResult<Review> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.ensure_work_store_compatible_unlocked()?;
+        require_non_empty_store(&payload.id, "review id")?;
+        require_non_empty_store(&payload.summary, "review summary")?;
+        require_non_empty_store(&context.idempotency_key, "review idempotency key")?;
+        if matches!(payload.verdict, ReviewVerdict::Other(_)) {
+            return Err(StoreError::Conflict(
+                "WORK_REVIEW_VERDICT_INVALID: expected pass, fail, blocked, or needs_changes"
+                    .to_string(),
+            ));
+        }
+        let reviews = self.read_jsonl::<Review>("reviews.jsonl")?;
+        if let Some(existing) = reviews.iter().find(|review| {
+            review.command_idempotency_key.as_deref() == Some(&context.idempotency_key)
+        }) {
+            if same_work_review_command(existing, work_id, expected_version, &payload, &context) {
+                return Ok(existing.clone());
+            }
+            return Err(StoreError::Conflict(format!(
+                "IDEMPOTENCY_CONFLICT: review key {} already belongs to a different Work Review command",
+                context.idempotency_key
+            )));
+        }
+        if reviews.iter().any(|review| review.id == payload.id) {
+            return Err(StoreError::Conflict(format!(
+                "review already exists: {}",
+                payload.id
+            )));
+        }
+
+        let work = self.current_work_unlocked(work_id, expected_version)?;
+        if work.status != WorkStatus::Review {
+            return Err(StoreError::Conflict(format!(
+                "work {work_id} is not awaiting review"
+            )));
+        }
+        let configs = work
+            .gates
+            .iter()
+            .filter(|gate| gate.plugin == "code-review")
+            .map(|gate| gate.parse_builtin_config())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|reason| StoreError::Conflict(format!("INVALID_WORK_GATE: {reason}")))?;
+        if configs.len() != 1 {
+            return Err(StoreError::Conflict(format!(
+                "WORK_CODE_REVIEW_GATE_REQUIRED: expected exactly one code-review gate, found {}",
+                configs.len()
+            )));
+        }
+        let BuiltinGateConfig::CodeReview(config) = &configs[0] else {
+            unreachable!("code-review plugin parsed as another built-in")
+        };
+
+        let reviewer_agent_id = match config.strategy {
+            CodeReviewStrategy::Peer => {
+                let member_run_id = &context.performed_by_actor.id;
+                require_member_actor(&context.performed_by_actor, member_run_id)?;
+                let (team_run, member) =
+                    self.require_team_member_run_unlocked(member_run_id, &work.team_run_id)?;
+                if !member_is_active_reviewer_runtime(&member) {
+                    return Err(StoreError::Conflict(
+                        "only an active MemberRun may record a peer Work review".to_string(),
+                    ));
+                }
+                let reviewer =
+                    self.require_unambiguous_stable_member_identity_unlocked(&team_run, &member)?;
+                if config.reviewer.as_deref() != Some(reviewer.as_str()) {
+                    return Err(StoreError::Conflict(format!(
+                        "WORK_REVIEWER_MISMATCH: expected peer reviewer {}, got {reviewer}",
+                        config.reviewer.as_deref().unwrap_or_default()
+                    )));
+                }
+                if work.owner_member_id.as_deref() == Some(reviewer.as_str()) {
+                    return Err(StoreError::Conflict(
+                        "WORK_PEER_REVIEW_REQUIRES_DISTINCT_REVIEWER".to_string(),
+                    ));
+                }
+                reviewer
+            }
+            CodeReviewStrategy::SelfReview => {
+                let member_run_id = &context.performed_by_actor.id;
+                require_member_actor(&context.performed_by_actor, member_run_id)?;
+                let (team_run, member) =
+                    self.require_team_member_run_unlocked(member_run_id, &work.team_run_id)?;
+                if !member_is_active_reviewer_runtime(&member) {
+                    return Err(StoreError::Conflict(
+                        "only an active MemberRun may record a self Work review".to_string(),
+                    ));
+                }
+                let reviewer =
+                    self.require_unambiguous_stable_member_identity_unlocked(&team_run, &member)?;
+                if work.owner_member_id.as_deref() != Some(reviewer.as_str()) {
+                    return Err(StoreError::Conflict(
+                        "WORK_SELF_REVIEW_REQUIRES_OWNER".to_string(),
+                    ));
+                }
+                reviewer
+            }
+            CodeReviewStrategy::Host => {
+                require_host_actor(&context.performed_by_actor)?;
+                trusted_host_review_authority(&context)?.id.clone()
+            }
+        };
+
+        let review = Review {
+            id: payload.id,
+            task_id: Some(work.id.clone()),
+            goal_id: None,
+            reviewer_agent_id,
+            review_kind: "code".to_string(),
+            verdict: payload.verdict,
+            summary: payload.summary,
+            blockers: payload.blockers,
+            residual_risk: payload.residual_risk,
+            missing_validation: payload.missing_validation,
+            evidence_ids: payload.evidence_ids,
+            created_at: context.created_at,
+            reviewed_work_id: Some(work.id),
+            reviewed_work_version: Some(work.version),
+            review_strategy: Some(config.strategy),
+            performed_by_actor: Some(context.performed_by_actor),
+            authority_actor: context.authority_actor,
+            command_idempotency_key: Some(context.idempotency_key),
+        };
+        review
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        self.append_jsonl_unlocked("reviews.jsonl", &review)?;
+        Ok(review)
     }
 
     pub fn append_gap(&self, value: &Gap) -> StoreResult<()> {
@@ -742,7 +1027,23 @@ impl HarnessStore {
     }
 
     pub fn append_team_run(&self, value: &AgentTeamRun) -> StoreResult<()> {
-        self.append_jsonl("team_runs.jsonl", value)
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        if let Some(current) =
+            latest_by_id(self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?, |run| {
+                run.id.clone()
+            })
+            .remove(&value.id)
+        {
+            if current == *value {
+                return Ok(());
+            }
+            return Err(StoreError::Conflict(format!(
+                "TEAM_RUN_REVISION_REQUIRES_CAS: raw TeamRun revision {} cannot change identity, Host binding, scope, lifecycle, or membership",
+                value.id
+            )));
+        }
+        self.append_jsonl_unlocked("team_runs.jsonl", value)
     }
 
     /// Compare-and-append one TeamRun revision.
@@ -769,6 +1070,12 @@ impl HarnessStore {
                 expected.id
             )));
         }
+        if next.member_run_ids != current.member_run_ids {
+            return Err(StoreError::Conflict(
+                "TEAM_MEMBERSHIP_REQUIRES_ADMISSION: Host binding revision cannot change member_run_ids"
+                    .to_string(),
+            ));
+        }
         if next.id != current.id
             || next.created_at != current.created_at
             || next.mission_id != current.mission_id
@@ -785,6 +1092,51 @@ impl HarnessStore {
         {
             return Err(StoreError::Conflict(
                 "Host binding revision must preserve TeamRun identity, scope, members, lifecycle, and objective"
+                    .to_string(),
+            ));
+        }
+        self.append_jsonl_unlocked("team_runs.jsonl", next)
+    }
+
+    /// One-way compatibility promotion from an ad-hoc TeamRun to a durable
+    /// AgentTeam identity. No other scope, Host, lifecycle, or membership field
+    /// may change.
+    pub fn compare_and_link_team_run_agent_team(
+        &self,
+        expected: &AgentTeamRun,
+        next: &AgentTeamRun,
+    ) -> StoreResult<()> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let current = latest_by_id(self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?, |run| {
+            run.id.clone()
+        })
+        .remove(&expected.id)
+        .ok_or_else(|| StoreError::Conflict(format!("team run not found: {}", expected.id)))?;
+        if current != *expected {
+            return Err(StoreError::Conflict(format!(
+                "team run {} changed concurrently; retry durable-team linking",
+                expected.id
+            )));
+        }
+        let Some(team_id) = next.agent_team_id.as_deref() else {
+            return Err(StoreError::Conflict(
+                "TEAM_SCOPE_LINK_INVALID: next AgentTeam id is required".to_string(),
+            ));
+        };
+        require_non_empty_store(team_id, "AgentTeam id")?;
+        if current.agent_team_id.is_some() {
+            return Err(StoreError::Conflict(format!(
+                "TEAM_SCOPE_LINK_INVALID: TeamRun {} is already linked",
+                current.id
+            )));
+        }
+        let mut allowed = current.clone();
+        allowed.agent_team_id = next.agent_team_id.clone();
+        allowed.updated_at = next.updated_at.clone();
+        if *next != allowed {
+            return Err(StoreError::Conflict(
+                "TEAM_SCOPE_LINK_INVALID: durable-team linking may only set agent_team_id and updated_at"
                     .to_string(),
             ));
         }
@@ -1274,7 +1626,139 @@ impl HarnessStore {
     }
 
     pub fn append_member_run(&self, value: &MemberRun) -> StoreResult<()> {
-        self.append_jsonl("member_runs.jsonl", value)
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let rows = self.read_jsonl::<MemberRun>("member_runs.jsonl")?;
+        let current = latest_by_id(rows, |row| row.id.clone()).remove(&value.id);
+        if let Some(current) = current {
+            if current == *value {
+                return Ok(());
+            }
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_REVISION_REQUIRES_CAS: MemberRun {} already exists; use compare_and_append_member_run",
+                value.id
+            )));
+        } else {
+            // Initial team creation predeclares every runtime id in the first
+            // TeamRun row. Materializing one of those rows cannot extend or
+            // rewrite membership, and raw later TeamRun revisions are barred
+            // from changing the list.
+            let first_run = self
+                .read_jsonl::<AgentTeamRun>("team_runs.jsonl")?
+                .into_iter()
+                .find(|run| run.id == value.team_run_id)
+                .ok_or_else(|| {
+                    StoreError::Conflict(format!("team run not found: {}", value.team_run_id))
+                })?;
+            if !first_run.member_run_ids.iter().any(|id| id == &value.id) {
+                return Err(StoreError::Conflict(format!(
+                    "MEMBER_ADMISSION_REQUIRED: MemberRun {} was not declared by initial TeamRun {}",
+                    value.id, value.team_run_id
+                )));
+            }
+            let latest_run = self.require_team_run_unlocked(&value.team_run_id)?;
+            self.ensure_unique_member_identity_unlocked(&latest_run, value)?;
+        }
+        self.append_jsonl_unlocked("member_runs.jsonl", value)
+    }
+
+    /// Compare-and-append one existing MemberRun revision. Raw append cannot
+    /// mutate lifecycle authority; all legitimate close/reopen/runtime updates
+    /// must prove the exact revision they observed.
+    pub fn compare_and_append_member_run(
+        &self,
+        expected: &MemberRun,
+        next: &MemberRun,
+    ) -> StoreResult<()> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let current = latest_by_id(self.read_jsonl::<MemberRun>("member_runs.jsonl")?, |row| {
+            row.id.clone()
+        })
+        .remove(&expected.id)
+        .ok_or_else(|| StoreError::Conflict(format!("member run not found: {}", expected.id)))?;
+        if current != *expected {
+            return Err(StoreError::Conflict(format!(
+                "MemberRun {} changed concurrently; retry the operation",
+                expected.id
+            )));
+        }
+        ensure_member_provenance_unchanged(&current, next)?;
+        ensure_member_lifecycle_revision(&current, next)?;
+        self.append_jsonl_unlocked("member_runs.jsonl", next)
+    }
+
+    /// Materialize one MemberRun already declared by the immutable first
+    /// TeamRun row. This is the compatibility path for initial team creation;
+    /// later membership changes must use [`Self::admit_member_run`].
+    pub fn materialize_initial_member_run(&self, value: &MemberRun) -> StoreResult<()> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        if self
+            .read_jsonl::<MemberRun>("member_runs.jsonl")?
+            .iter()
+            .any(|row| row.id == value.id)
+        {
+            return Err(StoreError::Conflict(format!(
+                "member run already exists: {}",
+                value.id
+            )));
+        }
+        let first_run = self
+            .read_jsonl::<AgentTeamRun>("team_runs.jsonl")?
+            .into_iter()
+            .find(|run| run.id == value.team_run_id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!("team run not found: {}", value.team_run_id))
+            })?;
+        if !first_run.member_run_ids.iter().any(|id| id == &value.id) {
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_ADMISSION_REQUIRED: MemberRun {} was not declared by initial TeamRun {}",
+                value.id, value.team_run_id
+            )));
+        }
+        let latest_run = self.require_team_run_unlocked(&value.team_run_id)?;
+        self.ensure_unique_member_identity_unlocked(&latest_run, value)?;
+        self.append_jsonl_unlocked("member_runs.jsonl", value)
+    }
+
+    /// Atomically admit exactly one new MemberRun and publish the matching
+    /// TeamRun membership revision. This Store API is an in-process authority
+    /// boundary; callers at HTTP/MCP/provider transports must authenticate
+    /// before invoking it.
+    pub fn admit_member_run(
+        &self,
+        expected: &AgentTeamRun,
+        next: &AgentTeamRun,
+        member: &MemberRun,
+    ) -> StoreResult<()> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let current = latest_by_id(self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?, |run| {
+            run.id.clone()
+        })
+        .remove(&expected.id)
+        .ok_or_else(|| StoreError::Conflict(format!("team run not found: {}", expected.id)))?;
+        if current != *expected {
+            return Err(StoreError::Conflict(format!(
+                "team run {} changed concurrently; retry member admission",
+                expected.id
+            )));
+        }
+        ensure_team_run_admission_revision(&current, next, member)?;
+        if self
+            .read_jsonl::<MemberRun>("member_runs.jsonl")?
+            .iter()
+            .any(|row| row.id == member.id)
+        {
+            return Err(StoreError::Conflict(format!(
+                "member run already exists: {}",
+                member.id
+            )));
+        }
+        self.ensure_member_admission_identity_unlocked(&current, member)?;
+        self.append_jsonl_unlocked("team_runs.jsonl", next)?;
+        self.append_jsonl_unlocked("member_runs.jsonl", member)
     }
 
     /// Insert a Work and its authoritative creation event/outbox as one
@@ -1292,6 +1776,8 @@ impl HarnessStore {
         )? {
             return Ok(existing.work);
         }
+        work.validate_gates()
+            .map_err(|reason| StoreError::Conflict(format!("INVALID_WORK_GATES: {reason}")))?;
         self.ensure_work_event_id_available_unlocked(&context.event_id)?;
         let team_run = self.require_team_run_unlocked(&work.team_run_id)?;
         if matches!(
@@ -2333,14 +2819,21 @@ impl HarnessStore {
                 work.result_summary = Some(result_summary.to_string());
                 work.artifact_refs = artifact_refs;
                 work.check_refs = check_refs;
-                // Merge rather than replace: a Work created with
-                // `--github-issue` keeps that link when a `--github-pr` is
-                // attached at submit time.
+                // Issue links describe durable provenance. Pull-request links
+                // describe this submission candidate and are replaced, so a
+                // prior merged PR cannot satisfy a resubmitted candidate.
+                let mut candidate_links = work
+                    .github_links
+                    .iter()
+                    .filter(|link| link.kind == firm_core::GitHubLinkKind::Issue)
+                    .cloned()
+                    .collect::<Vec<_>>();
                 for link in github_links {
-                    if !work.github_links.contains(&link) {
-                        work.github_links.push(link);
+                    if !candidate_links.contains(&link) {
+                        candidate_links.push(link);
                     }
                 }
+                work.github_links = candidate_links;
                 work.blocker_reason = None;
             },
         )
@@ -2421,17 +2914,17 @@ impl HarnessStore {
             serde_json::json!({ "reason": "github_pr_merge_observed" }),
             |work| {
                 work.result_summary = Some(result_summary.to_string());
-                // The fresh observed snapshot replaces the stored one; any
-                // issue links attached at create time are carried forward.
-                let mut merged = Vec::new();
+                // The fresh observed PR snapshot replaces the prior candidate;
+                // durable issue provenance is carried forward.
+                let mut merged = work
+                    .github_links
+                    .iter()
+                    .filter(|link| link.kind == firm_core::GitHubLinkKind::Issue)
+                    .cloned()
+                    .collect::<Vec<_>>();
                 for link in github_links {
                     if !merged.contains(&link) {
                         merged.push(link);
-                    }
-                }
-                for link in &work.github_links {
-                    if !merged.contains(link) {
-                        merged.push(link.clone());
                     }
                 }
                 work.github_links = merged;
@@ -2478,6 +2971,7 @@ impl HarnessStore {
                 "work {work_id} must await Host acceptance"
             )));
         }
+        self.require_work_gates_pass_unlocked(&current)?;
         let mut next = current.clone();
         next.status = WorkStatus::Done;
         next.version += 1;
@@ -2492,6 +2986,34 @@ impl HarnessStore {
             context,
             payload,
         )
+    }
+
+    fn require_work_gates_pass_unlocked(&self, work: &Work) -> StoreResult<()> {
+        if work.gates.is_empty() {
+            return Ok(());
+        }
+        let reviews = self.read_jsonl::<Review>("reviews.jsonl")?;
+        let failed = GateEngine::evaluate_work_gates_with_reviews(work, &reviews)
+            .into_iter()
+            .filter(|result| !result.verdict.is_pass())
+            .map(|result| {
+                let reason = match result.verdict {
+                    GateVerdict::Fail { reason } => format!("FAIL: {reason}"),
+                    GateVerdict::Blocked { reason } => format!("BLOCKED: {reason}"),
+                    GateVerdict::Pass => unreachable!("passing gates were filtered out"),
+                };
+                format!("[{}] {reason}", result.gate.plugin)
+            })
+            .collect::<Vec<_>>();
+        if failed.is_empty() {
+            return Ok(());
+        }
+        Err(StoreError::Conflict(format!(
+            "WORK_GATES_NOT_PASSING: cannot accept work {}: {} gate(s) not passing: {}",
+            work.id,
+            failed.len(),
+            failed.join("; ")
+        )))
     }
 
     pub fn request_work_changes(
@@ -3164,6 +3686,122 @@ impl HarnessStore {
         Ok(member)
     }
 
+    /// Resolve a runtime only when the latest TeamRun explicitly names it as a
+    /// member. A same-team MemberRun row is not membership authority: the
+    /// append-only ledger can contain stale or forged rows that were never
+    /// admitted to the TeamRun.
+    fn require_team_member_run_unlocked(
+        &self,
+        member_run_id: &str,
+        team_run_id: &str,
+    ) -> StoreResult<(AgentTeamRun, MemberRun)> {
+        let team_run = self.require_team_run_unlocked(team_run_id)?;
+        if !team_run
+            .member_run_ids
+            .iter()
+            .any(|candidate| candidate == member_run_id)
+        {
+            return Err(StoreError::Conflict(format!(
+                "WORK_REVIEWER_NOT_TEAM_MEMBER: MemberRun {member_run_id} is not registered in latest TeamRun {team_run_id}"
+            )));
+        }
+        let member = self.require_member_run_unlocked(member_run_id, team_run_id)?;
+        Ok((team_run, member))
+    }
+
+    fn ensure_unique_member_identity_unlocked(
+        &self,
+        team_run: &AgentTeamRun,
+        proposed: &MemberRun,
+    ) -> StoreResult<()> {
+        let identity = stable_member_identity(proposed);
+        let members = latest_by_id(self.read_jsonl::<MemberRun>("member_runs.jsonl")?, |row| {
+            row.id.clone()
+        });
+        if let Some(existing) = team_run
+            .member_run_ids
+            .iter()
+            .filter_map(|id| members.get(id))
+            .find(|member| stable_member_identity(member) == identity)
+        {
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_IDENTITY_CONFLICT: stable identity {identity} is already admitted as MemberRun {}",
+                existing.id
+            )));
+        }
+        Ok(())
+    }
+
+    fn ensure_member_admission_identity_unlocked(
+        &self,
+        team_run: &AgentTeamRun,
+        proposed: &MemberRun,
+    ) -> StoreResult<()> {
+        let identity = stable_member_identity(proposed);
+        let members = latest_by_id(self.read_jsonl::<MemberRun>("member_runs.jsonl")?, |row| {
+            row.id.clone()
+        });
+        let candidates = team_run
+            .member_run_ids
+            .iter()
+            .filter_map(|id| members.get(id))
+            .filter(|member| stable_member_identity(member) == identity)
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return Ok(());
+        }
+        let max_generation = candidates
+            .iter()
+            .map(|member| member.runtime_generation)
+            .max()
+            .unwrap_or(0);
+        if candidates
+            .iter()
+            .any(|member| member_is_active_reviewer_runtime(member))
+            || proposed.runtime_generation <= max_generation
+            || candidates.iter().any(|member| {
+                member.provider != proposed.provider
+                    || member.role != proposed.role
+                    || member.agent_member_id != proposed.agent_member_id
+            })
+        {
+            return Err(StoreError::Conflict(format!(
+                "MEMBER_IDENTITY_CONFLICT: stable identity {identity} is already admitted and is not a closed lower-generation runtime"
+            )));
+        }
+        Ok(())
+    }
+
+    /// A stable reviewer identity is trustworthy only when it resolves to one
+    /// exact runtime in the latest TeamRun membership. Reject duplicate stable
+    /// identities instead of choosing whichever MemberRun happened to be
+    /// loaded first.
+    fn require_unambiguous_stable_member_identity_unlocked(
+        &self,
+        team_run: &AgentTeamRun,
+        member: &MemberRun,
+    ) -> StoreResult<String> {
+        let identity = stable_member_identity(member);
+        let members = latest_by_id(self.read_jsonl::<MemberRun>("member_runs.jsonl")?, |row| {
+            row.id.clone()
+        });
+        let candidates = team_run
+            .member_run_ids
+            .iter()
+            .filter_map(|member_run_id| members.get(member_run_id))
+            .filter(|candidate| member_is_active_reviewer_runtime(candidate))
+            .filter(|candidate| stable_member_identity(candidate) == identity)
+            .map(|candidate| candidate.id.as_str())
+            .collect::<Vec<_>>();
+        if candidates.len() != 1 || candidates[0] != member.id {
+            return Err(StoreError::Conflict(format!(
+                "WORK_REVIEWER_IDENTITY_AMBIGUOUS: stable identity {identity} resolves to TeamRun members [{}]",
+                candidates.join(", ")
+            )));
+        }
+        Ok(identity)
+    }
+
     fn validate_work_relations_unlocked(&self, work: &Work) -> StoreResult<()> {
         let works = self.latest_works_unlocked()?;
         for prerequisite_id in &work.prerequisite_work_ids {
@@ -3502,6 +4140,7 @@ impl HarnessStore {
     }
 
     pub fn append_team_message(&self, value: &TeamMessage) -> StoreResult<()> {
+        reject_raw_provider_interaction_append(value)?;
         self.append_jsonl("team_messages.jsonl", value)
     }
 
@@ -3509,6 +4148,15 @@ impl HarnessStore {
     pub fn append_team_message_checked(&self, value: &TeamMessage) -> StoreResult<()> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
+        value
+            .validate_provider_interaction_contract()
+            .map_err(StoreError::Conflict)?;
+        if value.kind == TeamMessageKind::ProviderInteractionResponse {
+            return Err(StoreError::Conflict(
+                "PROVIDER_INTERACTION_RESPONSE_REQUIRES_ATOMIC_RECORD: use record_provider_interaction_response"
+                    .to_string(),
+            ));
+        }
         let messages = latest_by_id(
             self.read_jsonl::<TeamMessage>("team_messages.jsonl")?,
             |message| message.id.clone(),
@@ -3518,6 +4166,51 @@ impl HarnessStore {
                 "team message already exists: {}",
                 value.id
             )));
+        }
+        if value.kind == TeamMessageKind::ProviderInteractionRequest {
+            let body = ProviderInteractionRequestBody::parse_canonical_json(&value.body)
+                .map_err(StoreError::Conflict)?;
+            let member = self.require_member_run_unlocked(&body.member, &value.team_run_id)?;
+            if !member.coordination_is_active() || member.runtime_generation != body.generation {
+                return Err(StoreError::Conflict(format!(
+                    "provider interaction request generation {} is not active on MemberRun {} generation {}",
+                    body.generation, body.member, member.runtime_generation,
+                )));
+            }
+            let native_session = member.native_session.as_ref().ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "provider interaction request MemberRun {} has no native session",
+                    body.member
+                ))
+            })?;
+            if member.provider != body.provider
+                || native_session.provider != body.provider
+                || native_session.native_session_id != body.session
+            {
+                return Err(StoreError::Conflict(format!(
+                    "provider interaction request does not match MemberRun {} provider/native session",
+                    body.member
+                )));
+            }
+            let host_deliveries = value
+                .deliveries
+                .iter()
+                .filter(|delivery| delivery.member_id == "host")
+                .collect::<Vec<_>>();
+            if host_deliveries.len() != 1 {
+                return Err(StoreError::Conflict(
+                    "provider interaction request requires exactly one Host delivery".to_string(),
+                ));
+            }
+            let host_delivery = host_deliveries[0];
+            if host_delivery.policy != TeamDeliveryPolicy::ManualAck
+                || host_delivery.status != TeamDeliveryStatus::Delivered
+            {
+                return Err(StoreError::Conflict(
+                    "new provider interaction request Host delivery must be delivered manual_ack"
+                        .to_string(),
+                ));
+            }
         }
         if let Some(work_id) = value.work_id.as_deref() {
             let work = self
@@ -3604,6 +4297,233 @@ impl HarnessStore {
             )));
         }
         self.append_jsonl_unlocked("team_messages.jsonl", value)
+    }
+
+    /// Record one provider-interaction response and consume/acknowledge its
+    /// request under the Store write lock. Causation is the idempotency key:
+    /// an exact semantic retry returns the existing response, while a second
+    /// answer or changed actor/routing conflicts.
+    ///
+    /// The response row is appended before the request ACK. If a process dies
+    /// between those two JSONL writes, an exact retry observes the response and
+    /// completes the ACK; it can never append a second semantic answer.
+    pub fn record_provider_interaction_response(
+        &self,
+        response: &TeamMessage,
+        acknowledged_at: &str,
+    ) -> StoreResult<TeamMessage> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        response
+            .validate_provider_interaction_contract()
+            .map_err(StoreError::Conflict)?;
+        if response.kind != TeamMessageKind::ProviderInteractionResponse {
+            return Err(StoreError::Conflict(
+                "provider interaction atomic response boundary requires provider_interaction_response"
+                    .to_string(),
+            ));
+        }
+        let response_body = ProviderInteractionResponseBody::parse_canonical_json(&response.body)
+            .map_err(StoreError::Conflict)?;
+        let request_id = response.causation_id.as_deref().ok_or_else(|| {
+            StoreError::Conflict(
+                "provider interaction response requires request causation_id".to_string(),
+            )
+        })?;
+        let messages = latest_by_id(
+            self.read_jsonl::<TeamMessage>("team_messages.jsonl")?,
+            |message| message.id.clone(),
+        );
+        let mut request = messages.get(request_id).cloned().ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "provider interaction request not found: {request_id}"
+            ))
+        })?;
+        let stable_response_id =
+            provider_interaction_response_id(request_id).map_err(StoreError::Conflict)?;
+        if response.id != stable_response_id {
+            return Err(StoreError::Conflict(format!(
+                "provider interaction response id must be stable `{stable_response_id}`, got `{}`",
+                response.id
+            )));
+        }
+        if request.kind != TeamMessageKind::ProviderInteractionRequest {
+            return Err(StoreError::Conflict(format!(
+                "provider interaction response causation {request_id} is not a request"
+            )));
+        }
+        request
+            .validate_provider_interaction_contract()
+            .map_err(StoreError::Conflict)?;
+        let request_body = ProviderInteractionRequestBody::parse_canonical_json(&request.body)
+            .map_err(StoreError::Conflict)?;
+        self.validate_provider_interaction_response_pair(
+            &request,
+            &request_body,
+            response,
+            &response_body,
+        )?;
+        let request_ack_changed =
+            acknowledge_provider_interaction_request(&mut request, acknowledged_at)?;
+
+        let prior_response = messages
+            .values()
+            .find(|message| {
+                message.kind == TeamMessageKind::ProviderInteractionResponse
+                    && message.causation_id.as_deref() == Some(request_id)
+            })
+            .cloned();
+        if let Some(existing) = prior_response {
+            if !same_provider_interaction_response(&existing, response) {
+                return Err(StoreError::Conflict(format!(
+                    "PROVIDER_INTERACTION_RESPONSE_CONFLICT: request {request_id} already has a different response"
+                )));
+            }
+            if request_ack_changed {
+                self.append_jsonl_unlocked("team_messages.jsonl", &request)?;
+            }
+            return Ok(existing);
+        }
+        self.validate_provider_interaction_live_member(&request, &request_body)?;
+        if messages.contains_key(&response.id) {
+            return Err(StoreError::Conflict(format!(
+                "team message already exists: {}",
+                response.id
+            )));
+        }
+
+        // Response-first makes a torn two-row append recoverable by the exact
+        // retry path above. The global lock makes concurrent responders choose
+        // one winner.
+        self.append_jsonl_unlocked("team_messages.jsonl", response)?;
+        if request_ack_changed {
+            self.append_jsonl_unlocked("team_messages.jsonl", &request)?;
+        }
+        Ok(response.clone())
+    }
+
+    fn validate_provider_interaction_response_pair(
+        &self,
+        request: &TeamMessage,
+        request_body: &ProviderInteractionRequestBody,
+        response: &TeamMessage,
+        response_body: &ProviderInteractionResponseBody,
+    ) -> StoreResult<()> {
+        if response.team_run_id != request.team_run_id
+            || response.correlation_id != request.correlation_id
+        {
+            return Err(StoreError::Conflict(
+                "provider interaction response must preserve request TeamRun and correlation_id"
+                    .to_string(),
+            ));
+        }
+        if response_body.interaction_type != request_body.interaction_type
+            || response_body.session != request_body.session
+            || response_body.member != request_body.member
+            || response_body.generation != request_body.generation
+        {
+            return Err(StoreError::Conflict(
+                "provider interaction response type/session/member/generation does not match request"
+                    .to_string(),
+            ));
+        }
+        if let Some(choice) = response_body.choice.as_deref() {
+            if !request_body
+                .options
+                .iter()
+                .any(|option| option.id == choice)
+            {
+                return Err(StoreError::Conflict(format!(
+                    "provider interaction response choice `{choice}` is not a request option"
+                )));
+            }
+        }
+        if response_body.text.is_some() && canonical_surface(&request_body.provider) != "codex" {
+            return Err(StoreError::Conflict(
+                "free-text provider interaction responses are supported only for Codex requests"
+                    .to_string(),
+            ));
+        }
+        let target_deliveries = response
+            .deliveries
+            .iter()
+            .filter(|delivery| delivery.member_id == request_body.member)
+            .collect::<Vec<_>>();
+        if !response
+            .to_member_ids
+            .iter()
+            .any(|member| member == &request_body.member)
+            || target_deliveries.len() != 1
+        {
+            return Err(StoreError::Conflict(format!(
+                "provider interaction response requires exactly one delivery to MemberRun {}",
+                request_body.member
+            )));
+        }
+        let target_delivery = target_deliveries[0];
+        if target_delivery.policy != TeamDeliveryPolicy::Inject
+            || target_delivery.status != TeamDeliveryStatus::Queued
+            || target_delivery.attempt != 0
+            || target_delivery.claim_id.is_some()
+            || target_delivery.provider_receipt_id.is_some()
+        {
+            return Err(StoreError::Conflict(
+                "new provider interaction response delivery must be unclaimed Inject+Queued"
+                    .to_string(),
+            ));
+        }
+        let run = self.require_team_run_unlocked(&request.team_run_id)?;
+        let coordination_sender =
+            response
+                .sender
+                .as_ref()
+                .is_some_and(|sender| match sender.kind {
+                    TeamActorKind::Host => {
+                        response.from_member_id == "host"
+                            && (sender.id == "host"
+                                || run
+                                    .host_actor
+                                    .as_ref()
+                                    .is_some_and(|actor| actor.id == sender.id))
+                    }
+                    TeamActorKind::Operator => {
+                        response.from_member_id == format!("operator:{}", sender.id)
+                    }
+                    TeamActorKind::Service => {
+                        response.from_member_id == format!("service:{}", sender.id)
+                    }
+                    TeamActorKind::MemberRun | TeamActorKind::AgentMember => false,
+                });
+        if !coordination_sender {
+            return Err(StoreError::Conflict(
+                "provider interaction response requires Host, Operator, or Service authorship"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_provider_interaction_live_member(
+        &self,
+        request: &TeamMessage,
+        request_body: &ProviderInteractionRequestBody,
+    ) -> StoreResult<()> {
+        let member =
+            self.require_member_run_unlocked(&request_body.member, &request.team_run_id)?;
+        let same_live_generation = member.coordination_is_active()
+            && member.runtime_generation == request_body.generation
+            && member.provider == request_body.provider
+            && member.native_session.as_ref().is_some_and(|native| {
+                native.provider == request_body.provider
+                    && native.native_session_id == request_body.session
+            });
+        if !same_live_generation {
+            return Err(StoreError::Conflict(format!(
+                "provider interaction request is stale for MemberRun {} generation/session",
+                request_body.member
+            )));
+        }
+        Ok(())
     }
 
     /// Acquire the one durable Supervisor lease for a TeamRun. An active,
@@ -3855,6 +4775,23 @@ impl HarnessStore {
             Some(message) if message.team_run_id == team_run_id => message,
             _ => return Ok(TeamMessageDeliveryClaimResult::NotQueued),
         };
+        if message.kind == TeamMessageKind::ProviderInteractionResponse {
+            let body = ProviderInteractionResponseBody::parse_canonical_json(&message.body)
+                .map_err(StoreError::Conflict)?;
+            let member = self.require_member_run_unlocked(&body.member, team_run_id)?;
+            let same_live_generation = member.coordination_is_active()
+                && member.runtime_generation == body.generation
+                && member
+                    .native_session
+                    .as_ref()
+                    .is_some_and(|native| native.native_session_id == body.session);
+            if !same_live_generation {
+                return Err(StoreError::Conflict(format!(
+                    "provider interaction response is stale for MemberRun {} generation/session",
+                    body.member
+                )));
+            }
+        }
         let Some(delivery) = message
             .deliveries
             .iter_mut()
@@ -3891,6 +4828,11 @@ impl HarnessStore {
         now_unix_ms: u64,
         updated_at: &str,
     ) -> StoreResult<TeamMessage> {
+        if provider_receipt_id.trim().is_empty() {
+            return Err(StoreError::Conflict(
+                "provider receipt id is required to complete a TeamMessage delivery".to_string(),
+            ));
+        }
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let lease = latest_by_id(
@@ -3936,7 +4878,12 @@ impl HarnessStore {
         if delivery.status == TeamDeliveryStatus::Delivered
             && delivery.claim_id.as_deref() == Some(claim_id)
         {
-            return Ok(message);
+            if delivery.provider_receipt_id.as_deref() == Some(provider_receipt_id) {
+                return Ok(message);
+            }
+            return Err(StoreError::Conflict(format!(
+                "delivery claim {claim_id} for message {message_id} was already completed with a different provider receipt"
+            )));
         }
         if delivery.status != TeamDeliveryStatus::Claimed
             || delivery.claim_id.as_deref() != Some(claim_id)
@@ -4191,7 +5138,90 @@ impl HarnessStore {
     }
 
     pub fn append_member_action(&self, value: &MemberAction) -> StoreResult<()> {
+        if value.action_type == "provider_control" {
+            return Err(StoreError::Conflict(
+                "PROVIDER_CONTROL_RAW_APPEND_FORBIDDEN: use append_member_action_if_member_run_current"
+                    .to_string(),
+            ));
+        }
         self.append_jsonl("member_actions.jsonl", value)
+    }
+
+    /// Append a provider/control receipt only while the exact MemberRun
+    /// generation and native-session snapshot observed by the caller remains
+    /// current. The full-row equality check intentionally binds generation and
+    /// session without copying those runtime fields into `MemberAction`.
+    ///
+    /// Returns true only for the call that appended. Exact action-id retries,
+    /// and the bounded provider-control receipt key
+    /// `(member_run_id, action_type, title)`, converge to false under the same
+    /// global lock. Lifecycle CAS and receipt append therefore cannot cross a
+    /// check/append gap.
+    pub fn append_member_action_if_member_run_current(
+        &self,
+        expected_member: &MemberRun,
+        action: &MemberAction,
+    ) -> StoreResult<bool> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let current = latest_by_id(
+            self.read_jsonl::<MemberRun>("member_runs.jsonl")?,
+            |member| member.id.clone(),
+        )
+        .remove(&expected_member.id)
+        .ok_or_else(|| {
+            StoreError::Conflict(format!("MemberRun not found: {}", expected_member.id))
+        })?;
+        if &current != expected_member {
+            return Err(StoreError::Conflict(format!(
+                "MemberRun {} changed concurrently; provider receipt was not appended",
+                expected_member.id
+            )));
+        }
+        if !member_is_active_reviewer_runtime(&current) || current.native_session.is_none() {
+            return Err(StoreError::Conflict(format!(
+                "MemberRun {} is not active in a native session; provider receipt was not appended",
+                current.id
+            )));
+        }
+        let run = self.require_team_run_unlocked(&current.team_run_id)?;
+        if !run
+            .member_run_ids
+            .iter()
+            .any(|member| member == &current.id)
+        {
+            return Err(StoreError::Conflict(format!(
+                "MemberRun {} is not admitted to TeamRun {}",
+                current.id, current.team_run_id
+            )));
+        }
+        if action.team_run_id != current.team_run_id || action.member_run_id != current.id {
+            return Err(StoreError::Conflict(format!(
+                "MemberAction {} is not bound to MemberRun {} in TeamRun {}",
+                action.id, current.id, current.team_run_id
+            )));
+        }
+        let actions = self.read_jsonl::<MemberAction>("member_actions.jsonl")?;
+        if let Some(existing) = actions.iter().find(|existing| existing.id == action.id) {
+            if existing == action {
+                return Ok(false);
+            }
+            return Err(StoreError::Conflict(format!(
+                "MemberAction id already exists with different semantics: {}",
+                action.id
+            )));
+        }
+        if action.action_type == "provider_control"
+            && actions.iter().any(|existing| {
+                existing.member_run_id == action.member_run_id
+                    && existing.action_type == action.action_type
+                    && existing.title == action.title
+            })
+        {
+            return Ok(false);
+        }
+        self.append_jsonl_unlocked("member_actions.jsonl", action)?;
+        Ok(true)
     }
 
     pub fn append_pending_interaction(&self, value: &PendingInteraction) -> StoreResult<()> {
@@ -4248,6 +5278,22 @@ impl HarnessStore {
                 "team run {} changed concurrently or is no longer startable",
                 expected.id
             )));
+        }
+        if next.member_run_ids != current.member_run_ids {
+            return Err(StoreError::Conflict(
+                "TEAM_MEMBERSHIP_REQUIRES_ADMISSION: lifecycle revision cannot change member_run_ids; use admit_member_run"
+                    .to_string(),
+            ));
+        }
+        let mut allowed_lifecycle = current.clone();
+        allowed_lifecycle.status = next.status;
+        allowed_lifecycle.updated_at = next.updated_at.clone();
+        allowed_lifecycle.completed_at = next.completed_at.clone();
+        if *next != allowed_lifecycle {
+            return Err(StoreError::Conflict(
+                "TEAM_RUN_LIFECYCLE_SCOPE_IMMUTABLE: lifecycle CAS may only change status, updated_at, and completed_at"
+                    .to_string(),
+            ));
         }
         if next.status == TeamRunStatus::Completed {
             let unfinished = self
@@ -5477,6 +6523,100 @@ fn stable_member_identity(member: &MemberRun) -> String {
         .unwrap_or_else(|| member.id.clone())
 }
 
+fn member_is_active_reviewer_runtime(member: &MemberRun) -> bool {
+    member.coordination_is_active()
+        && !matches!(
+            member.status,
+            firm_core::MemberRunStatus::Completed
+                | firm_core::MemberRunStatus::Failed
+                | firm_core::MemberRunStatus::Stopped
+        )
+}
+
+fn ensure_member_provenance_unchanged(current: &MemberRun, next: &MemberRun) -> StoreResult<()> {
+    if next.id != current.id
+        || next.team_run_id != current.team_run_id
+        || next.slot_id != current.slot_id
+        || next.agent_member_id != current.agent_member_id
+        || next.role != current.role
+        || next.provider != current.provider
+    {
+        return Err(StoreError::Conflict(format!(
+            "MEMBER_PROVENANCE_IMMUTABLE: MemberRun {} cannot change its team, stable identity, role, or provider",
+            current.id
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_member_lifecycle_revision(current: &MemberRun, next: &MemberRun) -> StoreResult<()> {
+    if next.runtime_generation < current.runtime_generation
+        || next.runtime_generation > current.runtime_generation.saturating_add(1)
+    {
+        return Err(StoreError::Conflict(format!(
+            "MEMBER_GENERATION_INVALID: MemberRun {} generation must remain {} or advance exactly once",
+            current.id, current.runtime_generation
+        )));
+    }
+    if current.coordination_is_retired() && !next.coordination_is_retired() {
+        return Err(StoreError::Conflict(format!(
+            "MEMBER_RETIRED: MemberRun {} cannot leave retired coordination",
+            current.id
+        )));
+    }
+    let reactivates_coordination =
+        !current.coordination_is_active() && next.coordination_is_active();
+    let restarts_terminal_runtime = !member_is_active_reviewer_runtime(current)
+        && next.coordination_is_active()
+        && member_is_active_reviewer_runtime(next);
+    if (reactivates_coordination || restarts_terminal_runtime)
+        && next.runtime_generation != current.runtime_generation.saturating_add(1)
+    {
+        return Err(StoreError::Conflict(format!(
+            "MEMBER_REOPEN_REQUIRES_NEW_GENERATION: MemberRun {} must advance runtime_generation when reactivated",
+            current.id
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_team_run_admission_revision(
+    current: &AgentTeamRun,
+    next: &AgentTeamRun,
+    member: &MemberRun,
+) -> StoreResult<()> {
+    if member.team_run_id != current.id {
+        return Err(StoreError::Conflict(format!(
+            "TEAM_SCOPE_MISMATCH: MemberRun {} belongs to {}, not {}",
+            member.id, member.team_run_id, current.id
+        )));
+    }
+    let mut expected_ids = current.member_run_ids.clone();
+    if expected_ids.iter().any(|id| id == &member.id) {
+        return Err(StoreError::Conflict(format!(
+            "member run already admitted: {}",
+            member.id
+        )));
+    }
+    expected_ids.push(member.id.clone());
+    if next.member_run_ids != expected_ids {
+        return Err(StoreError::Conflict(
+            "MEMBER_ADMISSION_INVALID: TeamRun revision must append exactly the admitted MemberRun id"
+                .to_string(),
+        ));
+    }
+    let mut expected_next = current.clone();
+    expected_next.member_run_ids = expected_ids;
+    expected_next.updated_at = next.updated_at.clone();
+    if *next != expected_next {
+        return Err(StoreError::Conflict(
+            "MEMBER_ADMISSION_INVALID: admission may only append one member id and update TeamRun.updated_at"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn durable_team_id(run: &AgentTeamRun) -> Option<&str> {
     run.agent_team_id
         .as_deref()
@@ -5555,6 +6695,24 @@ fn require_host_actor(actor: &firm_core::TeamActorRef) -> StoreResult<()> {
     }
 }
 
+fn trusted_host_review_authority(
+    context: &WorkCommandContext,
+) -> StoreResult<&firm_core::TeamActorRef> {
+    let authority = context.authority_actor.as_ref().ok_or_else(|| {
+        StoreError::Conflict(
+            "WORK_HOST_REVIEW_AUTHORITY_REQUIRED: fixed Host authority is required".to_string(),
+        )
+    })?;
+    if authority.kind != firm_core::TeamActorKind::Host || authority.id != TRUSTED_HOST_REVIEWER_ID
+    {
+        return Err(StoreError::Conflict(format!(
+            "WORK_HOST_REVIEW_AUTHORITY_MISMATCH: expected Host authority {}, got {:?}/{}",
+            TRUSTED_HOST_REVIEWER_ID, authority.kind, authority.id
+        )));
+    }
+    Ok(authority)
+}
+
 fn require_member_actor(actor: &firm_core::TeamActorRef, member_run_id: &str) -> StoreResult<()> {
     if actor.kind == firm_core::TeamActorKind::MemberRun && actor.id == member_run_id {
         Ok(())
@@ -5601,6 +6759,15 @@ impl Drop for StoreWriteLock {
     }
 }
 
+/// Scoped exclusive source-store guard used by migration code.
+///
+/// This is public so migration surfaces outside `firm-store` can serialize
+/// their snapshot with every normal [`HarnessStore`] writer while keeping the
+/// underlying lock implementation private.
+pub struct StoreExclusiveMigrationGuard {
+    _write_lock: StoreWriteLock,
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -5608,15 +6775,74 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use firm_core::{
-        DelegationMode, DelegationStatus, HostAttentionKind, MemberActionStatus, MemberRunStatus,
-        MemberWorkspaceSnapshot, MessageKind, Mission, MissionLogEntry, MissionLogEntryKind,
-        MissionStatus, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy,
-        TeamDeliveryStatus, TeamMessageDelivery, TeamMessageKind, TeamMessageResponseIntent,
-        TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus,
-        WorkPriority,
+        DelegationMode, DelegationStatus, GateEngine, GateSpec, GateVerdict, HostAttentionKind,
+        MemberActionStatus, MemberRunStatus, MemberWorkspaceSnapshot, MessageKind, Mission,
+        MissionLogEntry, MissionLogEntryKind, MissionStatus, NativeSessionAvailability,
+        NativeSessionRef, ProviderInteractionMessageOption, ProviderInteractionRequestBody,
+        ProviderInteractionResponseBody, ProviderInteractionType, SenderKind, TeamActorKind,
+        TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessageDelivery, TeamMessageKind,
+        TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEventSourceKind,
+        TeamRunStatus, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, WorkPriority,
     };
 
     use super::*;
+
+    #[test]
+    fn exclusive_migration_guard_blocks_normal_store_writers_until_drop() {
+        let root = std::env::temp_dir().join(format!(
+            "firm-store-migration-guard-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_millis()
+        ));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init store");
+        let guard = store
+            .acquire_exclusive_migration_guard()
+            .expect("migration guard");
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let writer_store = store.clone();
+        let writer = std::thread::spawn(move || {
+            started_tx.send(()).expect("signal writer start");
+            let result = writer_store.append_mission(&Mission {
+                id: "mission-after-migration".into(),
+                title: "Blocked writer".into(),
+                objective: "Prove the migration guard shares the writer lock".into(),
+                context: String::new(),
+                desired_outcome: None,
+                status: MissionStatus::Planned,
+                wave_ids: Vec::new(),
+                agent_team_ids: Vec::new(),
+                outcome_summary: None,
+                completed_by: None,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+                completed_at: None,
+            });
+            done_tx.send(result).expect("signal writer completion");
+        });
+
+        started_rx.recv().expect("writer started");
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "normal writer must remain blocked while migration guard is alive"
+        );
+        assert!(
+            !root.join("missions.jsonl").exists(),
+            "blocked writer must not mutate the ledger"
+        );
+
+        drop(guard);
+        done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("writer unblocked after guard drop")
+            .expect("writer append succeeds");
+        writer.join().expect("writer thread");
+        assert_eq!(store.missions().expect("missions").len(), 1);
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
 
     #[test]
     fn mission_and_wave_ledgers_keep_history_and_project_latest_rows() {
@@ -7136,6 +8362,30 @@ mod tests {
         };
 
         store
+            .append_team_run(&AgentTeamRun {
+                id: "tr-1".into(),
+                definition_id: None,
+                agent_team_id: None,
+                previous_run_id: None,
+                mission_id: None,
+                wave_id: None,
+                project_binding_id: None,
+                host_surface: "test".into(),
+                host_thread_id: None,
+                host_actor: None,
+                host_control_mode: Default::default(),
+                objective: "member JSONL test".into(),
+                execution_root: None,
+                status: TeamRunStatus::Planning,
+                member_run_ids: vec![member_run.id.clone(), "mr-sparse".into()],
+                budget_limit_usd: None,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+                completed_at: None,
+            })
+            .expect("declare initial TeamRun membership");
+
+        store
             .append_member_run(&member_run)
             .expect("append member run");
         append_sparse_row(
@@ -7175,7 +8425,10 @@ mod tests {
             origin_wave_id: Some("wave-2".into()),
             sender: None,
             from_member_id: "host".into(),
-            recipients: Vec::new(),
+            recipients: vec![TeamRecipientRef {
+                kind: TeamRecipientKind::Host,
+                id: "host".into(),
+            }],
             to_member_ids: vec!["mr-1".into()],
             kind: TeamMessageKind::Message,
             body: "Please review task-1".into(),
@@ -7220,6 +8473,719 @@ mod tests {
         assert!(sparse.evidence_refs.is_empty());
         assert!(sparse.deliveries.is_empty());
 
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    fn seed_provider_interaction_bridge(
+        store: &HarnessStore,
+        run_id: &str,
+    ) -> (ProviderInteractionRequestBody, TeamMessage) {
+        let member_id = format!("member-{run_id}");
+        let session_id = format!("session-{run_id}");
+        store
+            .append_team_run(&AgentTeamRun {
+                id: run_id.to_string(),
+                definition_id: None,
+                agent_team_id: None,
+                previous_run_id: None,
+                mission_id: None,
+                wave_id: None,
+                project_binding_id: None,
+                host_surface: "codex-app".into(),
+                host_thread_id: Some("host-thread".into()),
+                host_actor: None,
+                host_control_mode: Default::default(),
+                objective: "provider interaction bridge".into(),
+                execution_root: None,
+                status: TeamRunStatus::Running,
+                member_run_ids: vec![member_id.clone()],
+                budget_limit_usd: None,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+                completed_at: None,
+            })
+            .expect("seed TeamRun");
+        store
+            .append_member_run(&MemberRun {
+                id: member_id.clone(),
+                team_run_id: run_id.to_string(),
+                slot_id: None,
+                agent_member_id: None,
+                name: "provider member".into(),
+                role: "worker".into(),
+                provider: "codex".into(),
+                model: None,
+                provider_controls: Default::default(),
+                provider_profile: None,
+                provider_capacity: None,
+                coordination_status: Default::default(),
+                runtime_generation: 2,
+                status: MemberRunStatus::Waiting,
+                native_session: Some(NativeSessionRef {
+                    provider: "codex".into(),
+                    execution_mode: "codex_app_server".into(),
+                    native_session_id: session_id.clone(),
+                    native_locator_kind: "thread".into(),
+                    provider_version: None,
+                    adapter_contract_version: "test".into(),
+                    availability: NativeSessionAvailability::Available,
+                    supports_resume: true,
+                    last_verified_at: None,
+                    parent_native_session_id: None,
+                }),
+                worktree_ref: None,
+                workspace_snapshot: None,
+                owned_paths: Vec::new(),
+                zero_output_streak: 0,
+                last_consumed_work_version: None,
+                started_at: "unix-ms:1".into(),
+                last_event_at: Some("unix-ms:2".into()),
+                finished_at: None,
+            })
+            .expect("seed MemberRun");
+        let body = ProviderInteractionRequestBody {
+            interaction_type: ProviderInteractionType::Question,
+            prompt: "Select a safe action".into(),
+            options: vec![
+                ProviderInteractionMessageOption {
+                    id: "continue".into(),
+                    label: "Continue".into(),
+                    intent: Some("approve".into()),
+                },
+                ProviderInteractionMessageOption {
+                    id: "stop".into(),
+                    label: "Stop".into(),
+                    intent: Some("deny".into()),
+                },
+            ],
+            provider: "codex".into(),
+            provider_request_id: format!("provider-request-{run_id}"),
+            method: "item/tool/requestUserInput".into(),
+            session: session_id,
+            member: member_id.clone(),
+            generation: 2,
+        };
+        let request = TeamMessage {
+            id: format!("request-{run_id}"),
+            team_run_id: run_id.to_string(),
+            work_id: None,
+            origin_wave_id: None,
+            sender: Some(TeamActorRef {
+                kind: TeamActorKind::MemberRun,
+                id: member_id.clone(),
+                display_name: None,
+                authn_source: Some("provider_reverse_rpc".into()),
+            }),
+            from_member_id: member_id,
+            recipients: vec![TeamRecipientRef {
+                kind: TeamRecipientKind::Host,
+                id: "host".into(),
+            }],
+            to_member_ids: vec!["host".into()],
+            kind: TeamMessageKind::ProviderInteractionRequest,
+            body: body.to_canonical_json().expect("request body"),
+            correlation_id: body.correlation_id(),
+            causation_id: None,
+            response_intent: Some(TeamMessageResponseIntent::ResponseRequired),
+            evidence_refs: Vec::new(),
+            deliveries: vec![TeamMessageDelivery {
+                member_id: "host".into(),
+                policy: TeamDeliveryPolicy::ManualAck,
+                status: TeamDeliveryStatus::Delivered,
+                attempt: 1,
+                claim_id: None,
+                claimed_by_supervisor_id: None,
+                claimed_generation: None,
+                claimed_unix_ms: None,
+                claim_expires_unix_ms: None,
+                provider_receipt_id: Some("host-surface-receipt".into()),
+                failure_reason: None,
+                updated_at: "unix-ms:2".into(),
+            }],
+            created_at: "unix-ms:2".into(),
+        };
+        store
+            .append_team_message_checked(&request)
+            .expect("append request");
+        (body, request)
+    }
+
+    fn provider_interaction_response(
+        request_body: &ProviderInteractionRequestBody,
+        request: &TeamMessage,
+        choice: &str,
+    ) -> TeamMessage {
+        let body = ProviderInteractionResponseBody {
+            interaction_type: request_body.interaction_type,
+            choice: Some(choice.to_string()),
+            text: None,
+            session: request_body.session.clone(),
+            member: request_body.member.clone(),
+            generation: request_body.generation,
+        };
+        TeamMessage {
+            id: provider_interaction_response_id(&request.id).expect("stable response id"),
+            team_run_id: request.team_run_id.clone(),
+            work_id: None,
+            origin_wave_id: None,
+            sender: Some(TeamActorRef {
+                kind: TeamActorKind::Host,
+                id: "host".into(),
+                display_name: None,
+                authn_source: Some("test_host".into()),
+            }),
+            from_member_id: "host".into(),
+            recipients: vec![TeamRecipientRef {
+                kind: TeamRecipientKind::MemberRun,
+                id: request_body.member.clone(),
+            }],
+            to_member_ids: vec![request_body.member.clone()],
+            kind: TeamMessageKind::ProviderInteractionResponse,
+            body: body.to_canonical_json().expect("response body"),
+            correlation_id: request.correlation_id.clone(),
+            causation_id: Some(request.id.clone()),
+            response_intent: Some(TeamMessageResponseIntent::Informational),
+            evidence_refs: Vec::new(),
+            deliveries: vec![TeamMessageDelivery {
+                member_id: request_body.member.clone(),
+                policy: TeamDeliveryPolicy::Inject,
+                status: TeamDeliveryStatus::Queued,
+                attempt: 0,
+                claim_id: None,
+                claimed_by_supervisor_id: None,
+                claimed_generation: None,
+                claimed_unix_ms: None,
+                claim_expires_unix_ms: None,
+                provider_receipt_id: None,
+                failure_reason: None,
+                updated_at: "unix-ms:3".into(),
+            }],
+            created_at: "unix-ms:3".into(),
+        }
+    }
+
+    #[test]
+    fn provider_interaction_response_atomically_acks_and_is_strictly_idempotent() {
+        let root = team_test_root("provider-interaction-idempotent");
+        let store = HarnessStore::new(&root);
+        let (request_body, request) =
+            seed_provider_interaction_bridge(&store, "run-interaction-idempotent");
+        let response = provider_interaction_response(&request_body, &request, "continue");
+        let first = store
+            .record_provider_interaction_response(&response, "unix-ms:4")
+            .expect("record response");
+        assert_eq!(first, response);
+
+        let exact_retry = response.clone();
+        let retried = store
+            .record_provider_interaction_response(&exact_retry, "unix-ms:9")
+            .expect("same stable id and semantic reply returns existing");
+        assert_eq!(retried.id, response.id);
+
+        let messages = latest_by_id(store.team_messages().expect("messages"), |message| {
+            message.id.clone()
+        });
+        let request_after = messages.get(&request.id).expect("request remains");
+        assert_eq!(
+            request_after.deliveries[0].status,
+            TeamDeliveryStatus::Acknowledged
+        );
+        let response_after = messages.get(&response.id).expect("response remains");
+        assert_eq!(
+            response_after.deliveries[0].status,
+            TeamDeliveryStatus::Queued,
+            "Host answer is not provider delivery truth"
+        );
+        assert_eq!(
+            messages
+                .values()
+                .filter(|message| message.kind == TeamMessageKind::ProviderInteractionResponse)
+                .count(),
+            1
+        );
+
+        store
+            .acquire_team_supervisor_lease(
+                &request.team_run_id,
+                "supervisor-interaction",
+                42,
+                "test",
+                100,
+                1_000,
+            )
+            .expect("lease response delivery");
+        let claimed = store
+            .claim_team_message_delivery(
+                &request.team_run_id,
+                &response.id,
+                &request_body.member,
+                "supervisor-interaction",
+                1,
+                "claim-interaction-response",
+                101,
+                1_000,
+                "unix-ms:5",
+            )
+            .expect("claim response");
+        assert!(matches!(
+            claimed,
+            TeamMessageDeliveryClaimResult::Claimed(_)
+        ));
+        store
+            .complete_team_message_delivery_claim(
+                &request.team_run_id,
+                &response.id,
+                &request_body.member,
+                "supervisor-interaction",
+                1,
+                "claim-interaction-response",
+                "native-response-receipt",
+                102,
+                "unix-ms:6",
+            )
+            .expect("provider accepted response");
+        let retry_after_delivery = store
+            .record_provider_interaction_response(&response, "unix-ms:7")
+            .expect("semantic retry survives mutable delivery projection");
+        assert_eq!(
+            retry_after_delivery.deliveries[0].status,
+            TeamDeliveryStatus::Delivered
+        );
+        assert_eq!(
+            retry_after_delivery.deliveries[0]
+                .provider_receipt_id
+                .as_deref(),
+            Some("native-response-receipt")
+        );
+        let current_member = latest_by_id(store.member_runs().expect("members"), |member| {
+            member.id.clone()
+        })
+        .remove(&request_body.member)
+        .expect("current member");
+        let mut closed_member = current_member.clone();
+        closed_member.coordination_status = firm_core::MemberCoordinationStatus::Closed;
+        closed_member.status = MemberRunStatus::Stopped;
+        closed_member.finished_at = Some("unix-ms:8".into());
+        store
+            .compare_and_append_member_run(&current_member, &closed_member)
+            .expect("close member");
+        let retry_after_close = store
+            .record_provider_interaction_response(&response, "unix-ms:9")
+            .expect("exact retry remains valid after member close");
+        assert_eq!(retry_after_close.id, response.id);
+
+        let conflict = provider_interaction_response(&request_body, &request, "stop");
+        assert!(store
+            .record_provider_interaction_response(&conflict, "unix-ms:10")
+            .expect_err("different answer conflicts")
+            .to_string()
+            .contains("RESPONSE_CONFLICT"));
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn provider_interaction_response_rejects_unknown_choice_and_predelivery() {
+        let root = team_test_root("provider-interaction-invalid-response");
+        let store = HarnessStore::new(&root);
+        let (request_body, request) =
+            seed_provider_interaction_bridge(&store, "run-interaction-invalid");
+        let mut unstable_id = provider_interaction_response(&request_body, &request, "continue");
+        unstable_id.id = "caller-selected-response-id".into();
+        assert!(store
+            .record_provider_interaction_response(&unstable_id, "unix-ms:4")
+            .expect_err("response id is request-derived")
+            .to_string()
+            .contains("must be stable"));
+        let unknown = provider_interaction_response(&request_body, &request, "invented");
+        assert!(store
+            .record_provider_interaction_response(&unknown, "unix-ms:4")
+            .expect_err("unknown choice")
+            .to_string()
+            .contains("not a request option"));
+
+        let mut predelivered = provider_interaction_response(&request_body, &request, "continue");
+        predelivered.deliveries[0].status = TeamDeliveryStatus::Delivered;
+        predelivered.deliveries[0].provider_receipt_id = Some("forged".into());
+        assert!(store
+            .record_provider_interaction_response(&predelivered, "unix-ms:4")
+            .expect_err("cannot claim provider receipt early")
+            .to_string()
+            .contains("Inject+Queued"));
+        let mut extra_route = provider_interaction_response(&request_body, &request, "continue");
+        extra_route.to_member_ids.push("other-member".into());
+        extra_route.deliveries.push(TeamMessageDelivery {
+            member_id: "other-member".into(),
+            policy: TeamDeliveryPolicy::Inject,
+            status: TeamDeliveryStatus::Queued,
+            attempt: 0,
+            claim_id: None,
+            claimed_by_supervisor_id: None,
+            claimed_generation: None,
+            claimed_unix_ms: None,
+            claim_expires_unix_ms: None,
+            provider_receipt_id: None,
+            failure_reason: None,
+            updated_at: "unix-ms:4".into(),
+        });
+        assert!(store
+            .record_provider_interaction_response(&extra_route, "unix-ms:4")
+            .expect_err("response cannot fan out")
+            .to_string()
+            .contains("route only"));
+
+        let mut unacknowledgeable = request.clone();
+        unacknowledgeable.deliveries[0].status = TeamDeliveryStatus::Failed;
+        {
+            let _lock = store.acquire_write_lock().expect("fault injection lock");
+            store
+                .append_jsonl_unlocked("team_messages.jsonl", &unacknowledgeable)
+                .expect("simulate failed Host delivery through private ledger primitive");
+        }
+        let valid = provider_interaction_response(&request_body, &request, "continue");
+        assert!(store
+            .record_provider_interaction_response(&valid, "unix-ms:4")
+            .expect_err("ACK failure must preflight before response append")
+            .to_string()
+            .contains("cannot be acknowledged"));
+        assert_eq!(
+            store
+                .team_messages()
+                .expect("messages")
+                .iter()
+                .filter(|message| message.kind == TeamMessageKind::ProviderInteractionResponse)
+                .count(),
+            0,
+            "failed ACK must not leave a partial response row"
+        );
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn raw_provider_interaction_appends_are_forbidden_but_trusted_seams_work() {
+        let root = team_test_root("provider-interaction-raw-append");
+        let store = HarnessStore::new(&root);
+        let (request_body, request) =
+            seed_provider_interaction_bridge(&store, "run-interaction-raw-append");
+
+        let mut raw_request = request.clone();
+        raw_request.id = "raw-provider-request".into();
+        raw_request.body = r#"{"type":"question","unknown":true}"#.into();
+        assert!(store
+            .append_team_message(&raw_request)
+            .expect_err("raw provider request must be forbidden")
+            .to_string()
+            .contains("RAW_APPEND_FORBIDDEN"));
+
+        let queued_response = provider_interaction_response(&request_body, &request, "continue");
+        assert!(store
+            .append_team_message(&queued_response)
+            .expect_err("even valid queued response requires atomic record seam")
+            .to_string()
+            .contains("RAW_APPEND_FORBIDDEN"));
+
+        let mut delivered_response = queued_response.clone();
+        delivered_response.deliveries[0].status = TeamDeliveryStatus::Delivered;
+        delivered_response.deliveries[0].provider_receipt_id = Some("forged-receipt".into());
+        assert!(store
+            .append_team_message(&delivered_response)
+            .expect_err("raw Delivered response must be forbidden")
+            .to_string()
+            .contains("RAW_APPEND_FORBIDDEN"));
+
+        let recorded = store
+            .record_provider_interaction_response(&queued_response, "unix-ms:4")
+            .expect("trusted response seam remains legal");
+        assert_eq!(recorded.id, queued_response.id);
+        assert_eq!(recorded.deliveries[0].status, TeamDeliveryStatus::Queued);
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn concurrent_provider_interaction_answers_have_one_winner() {
+        let root = team_test_root("provider-interaction-race");
+        let store = Arc::new(HarnessStore::new(&root));
+        let (request_body, request) =
+            seed_provider_interaction_bridge(&store, "run-interaction-race");
+        let barrier = Arc::new(Barrier::new(3));
+        let mut joins = Vec::new();
+        for choice in ["continue", "stop"] {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            let response = provider_interaction_response(&request_body, &request, choice);
+            joins.push(std::thread::spawn(move || {
+                barrier.wait();
+                store.record_provider_interaction_response(&response, "unix-ms:4")
+            }));
+        }
+        barrier.wait();
+        let results = joins
+            .into_iter()
+            .map(|join| join.join().expect("responder"))
+            .collect::<Vec<_>>();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+        assert_eq!(
+            store
+                .team_messages()
+                .expect("messages")
+                .iter()
+                .filter(|message| message.kind == TeamMessageKind::ProviderInteractionResponse)
+                .count(),
+            1
+        );
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn provider_interaction_response_claim_fences_a_closed_generation() {
+        let root = team_test_root("provider-interaction-stale-claim");
+        let store = HarnessStore::new(&root);
+        let (request_body, request) =
+            seed_provider_interaction_bridge(&store, "run-interaction-stale-claim");
+        let response = provider_interaction_response(&request_body, &request, "continue");
+        store
+            .record_provider_interaction_response(&response, "unix-ms:4")
+            .expect("record queued response");
+
+        let current = latest_by_id(store.member_runs().expect("members"), |member| {
+            member.id.clone()
+        })
+        .remove(&request_body.member)
+        .expect("member");
+        let mut closed = current.clone();
+        closed.coordination_status = firm_core::MemberCoordinationStatus::Closed;
+        closed.status = MemberRunStatus::Stopped;
+        closed.finished_at = Some("unix-ms:5".into());
+        store
+            .compare_and_append_member_run(&current, &closed)
+            .expect("close member");
+        store
+            .acquire_team_supervisor_lease(
+                &request.team_run_id,
+                "supervisor-stale-claim",
+                43,
+                "test",
+                100,
+                1_000,
+            )
+            .expect("lease");
+        assert!(store
+            .claim_team_message_delivery(
+                &request.team_run_id,
+                &response.id,
+                &request_body.member,
+                "supervisor-stale-claim",
+                1,
+                "stale-claim",
+                101,
+                1_000,
+                "unix-ms:6",
+            )
+            .expect_err("closed generation cannot receive provider response")
+            .to_string()
+            .contains("stale"));
+        assert_eq!(
+            store
+                .record_provider_interaction_response(&response, "unix-ms:7")
+                .expect("exact command retry still converges")
+                .id,
+            response.id
+        );
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    fn provider_control_action(run_id: &str, member_id: &str) -> MemberAction {
+        MemberAction {
+            id: format!("provider-control-{run_id}"),
+            seq: 1,
+            team_run_id: run_id.to_string(),
+            member_run_id: member_id.to_string(),
+            task_id: None,
+            provider_call_id: Some("permission-request-1".into()),
+            action_type: "provider_control".into(),
+            status: MemberActionStatus::Succeeded,
+            provider_status: Some("acknowledged".into()),
+            semantic_status: Some("safe_auto_allow".into()),
+            title: "Kimi full-access tool permission acknowledged".into(),
+            summary: "bounded safe auto-allow receipt".into(),
+            evidence_refs: Vec::new(),
+            started_at: "unix-ms:3".into(),
+            completed_at: Some("unix-ms:3".into()),
+        }
+    }
+
+    #[test]
+    fn concurrent_current_member_receipts_append_exactly_once() {
+        let root = team_test_root("member-action-current-race");
+        let store = Arc::new(HarnessStore::new(&root));
+        let (_, request) = seed_provider_interaction_bridge(&store, "run-action-race");
+        let expected = latest_by_id(store.member_runs().expect("members"), |member| {
+            member.id.clone()
+        })
+        .remove(&request.from_member_id)
+        .expect("member");
+        let action = provider_control_action(&request.team_run_id, &expected.id);
+        let barrier = Arc::new(Barrier::new(3));
+        let handles = (0..2)
+            .map(|index| {
+                let store = Arc::clone(&store);
+                let barrier = Arc::clone(&barrier);
+                let expected = expected.clone();
+                let mut action = action.clone();
+                action.id = format!("{}-{index}", action.id);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store.append_member_action_if_member_run_current(&expected, &action)
+                })
+            })
+            .collect::<Vec<_>>();
+        barrier.wait();
+        let results = handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .expect("receipt thread")
+                    .expect("receipt call")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(results.iter().filter(|appended| **appended).count(), 1);
+        assert_eq!(store.member_actions().expect("actions").len(), 1);
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn member_close_or_session_cas_wins_before_receipt_with_zero_action() {
+        for mutation in ["close", "session"] {
+            let root = team_test_root(&format!("member-action-current-{mutation}"));
+            let store = HarnessStore::new(&root);
+            let (_, request) =
+                seed_provider_interaction_bridge(&store, &format!("run-action-{mutation}"));
+            let expected = latest_by_id(store.member_runs().expect("members"), |member| {
+                member.id.clone()
+            })
+            .remove(&request.from_member_id)
+            .expect("member");
+            let action = provider_control_action(&request.team_run_id, &expected.id);
+            assert!(store
+                .append_member_action(&action)
+                .expect_err("raw provider control is forbidden before lifecycle change")
+                .to_string()
+                .contains("PROVIDER_CONTROL_RAW_APPEND_FORBIDDEN"));
+            assert!(store.member_actions().expect("actions").is_empty());
+            let mut next = expected.clone();
+            if mutation == "close" {
+                next.coordination_status = firm_core::MemberCoordinationStatus::Closed;
+                next.status = MemberRunStatus::Stopped;
+                next.finished_at = Some("unix-ms:4".into());
+            } else {
+                next.native_session
+                    .as_mut()
+                    .expect("native session")
+                    .native_session_id = "replacement-session".into();
+            }
+            store
+                .compare_and_append_member_run(&expected, &next)
+                .expect("lifecycle/session CAS wins first");
+            let mut raw_after = action.clone();
+            raw_after.id.push_str("-after");
+            assert!(store
+                .append_member_action(&raw_after)
+                .expect_err("raw provider control is forbidden after lifecycle change")
+                .to_string()
+                .contains("PROVIDER_CONTROL_RAW_APPEND_FORBIDDEN"));
+            assert!(store
+                .append_member_action_if_member_run_current(&expected, &action)
+                .expect_err("stale expected member must fail")
+                .to_string()
+                .contains("changed concurrently"));
+            assert!(store.member_actions().expect("actions").is_empty());
+            std::fs::remove_dir_all(root).expect("remove temp store");
+        }
+    }
+
+    #[test]
+    fn agent_inbox_router_cannot_bypass_provider_raw_guard() {
+        let root = team_test_root("provider-interaction-route-guard");
+        let store = HarnessStore::new(&root);
+        let source = Message {
+            id: "agent-message-provider-bypass".into(),
+            task_id: None,
+            from_agent_id: "agent-sender".into(),
+            to_agent_id: Some("agent-target".into()),
+            channel: None,
+            kind: MessageKind::Message,
+            delivery_status: MessageDeliveryStatus::Queued,
+            content: "attempt provider bypass".into(),
+            evidence_ids: Vec::new(),
+            created_at: "unix-ms:1".into(),
+            delivery: None,
+            sender_kind: SenderKind::Agent,
+        };
+        store.append_message(&source).expect("source message");
+        let route = AgentMessageRoute {
+            id: "route-provider-bypass".into(),
+            agent_message_id: source.id.clone(),
+            agent_member_id: "agent-target".into(),
+            team_run_id: "run-provider-bypass".into(),
+            member_run_id: "member-provider-bypass".into(),
+            team_message_id: "team-message-provider-bypass".into(),
+            routed_at: "unix-ms:2".into(),
+        };
+        let candidate = TeamMessage {
+            id: route.team_message_id.clone(),
+            team_run_id: route.team_run_id.clone(),
+            work_id: None,
+            origin_wave_id: None,
+            sender: None,
+            from_member_id: "host".into(),
+            recipients: Vec::new(),
+            to_member_ids: vec![route.member_run_id.clone()],
+            kind: TeamMessageKind::ProviderInteractionResponse,
+            body: "malformed".into(),
+            correlation_id: "forged".into(),
+            causation_id: Some("forged-request".into()),
+            response_intent: None,
+            evidence_refs: Vec::new(),
+            deliveries: vec![TeamMessageDelivery {
+                member_id: route.member_run_id.clone(),
+                policy: TeamDeliveryPolicy::Inject,
+                status: TeamDeliveryStatus::Delivered,
+                attempt: 1,
+                claim_id: None,
+                claimed_by_supervisor_id: None,
+                claimed_generation: None,
+                claimed_unix_ms: None,
+                claim_expires_unix_ms: None,
+                provider_receipt_id: Some("forged-receipt".into()),
+                failure_reason: None,
+                updated_at: "unix-ms:2".into(),
+            }],
+            created_at: "unix-ms:2".into(),
+        };
+        for kind in [
+            TeamMessageKind::ProviderInteractionRequest,
+            TeamMessageKind::ProviderInteractionResponse,
+        ] {
+            let mut candidate = candidate.clone();
+            candidate.kind = kind;
+            assert!(store
+                .route_agent_message_to_team(&route, &candidate)
+                .expect_err("Agent Inbox router must reject provider kind")
+                .to_string()
+                .contains("RAW_APPEND_FORBIDDEN"));
+        }
+        assert!(store.team_messages().expect("team messages").is_empty());
+        assert!(store.agent_message_routes().expect("routes").is_empty());
+        assert_eq!(
+            latest_by_id(store.messages().expect("source messages"), |message| {
+                message.id.clone()
+            })
+            .remove(&source.id)
+            .expect("source remains")
+            .delivery_status,
+            MessageDeliveryStatus::Queued
+        );
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
@@ -7728,6 +9694,35 @@ mod tests {
             delivered.deliveries[0].provider_receipt_id.as_deref(),
             Some("native-turn-1")
         );
+        store
+            .complete_team_message_delivery_claim(
+                &run.id,
+                &message.id,
+                "mr-claim",
+                "supervisor-b",
+                2,
+                &claim_id,
+                "native-turn-1",
+                1_104,
+                "unix-ms:4",
+            )
+            .expect("exact completion receipt is idempotent");
+        let different_receipt = store
+            .complete_team_message_delivery_claim(
+                &run.id,
+                &message.id,
+                "mr-claim",
+                "supervisor-b",
+                2,
+                &claim_id,
+                "native-turn-different",
+                1_104,
+                "unix-ms:4",
+            )
+            .expect_err("completed claim cannot change provider receipt");
+        assert!(different_receipt
+            .to_string()
+            .contains("different provider receipt"));
         let acknowledged = store
             .acknowledge_team_message_delivery(&run.id, &message.id, "mr-claim", "unix-ms:5")
             .expect("acknowledge delivered message");
@@ -8220,6 +10215,60 @@ mod tests {
         }
     }
 
+    fn trusted_host_review_context(
+        performed_by_kind: firm_core::TeamActorKind,
+        performed_by_id: &str,
+        at: &str,
+    ) -> WorkCommandContext {
+        WorkCommandContext {
+            event_id: "unused-review-event".into(),
+            performed_by_actor: firm_core::TeamActorRef {
+                kind: performed_by_kind,
+                id: performed_by_id.into(),
+                display_name: None,
+                authn_source: Some("authenticated-review-writer:test".into()),
+            },
+            authority_actor: Some(firm_core::TeamActorRef {
+                kind: firm_core::TeamActorKind::Host,
+                id: TRUSTED_HOST_REVIEWER_ID.into(),
+                display_name: Some("Harness Host".into()),
+                authn_source: Some("fixed-host-authority:test".into()),
+            }),
+            causation_ref: None,
+            idempotency_key: "unused-review-key".into(),
+            created_at: at.into(),
+            duplicate_ok: false,
+        }
+    }
+
+    fn work_review_payload(id: &str, verdict: ReviewVerdict) -> WorkReviewPayload {
+        WorkReviewPayload {
+            id: id.into(),
+            verdict,
+            summary: "reviewed exact candidate".into(),
+            blockers: Vec::new(),
+            residual_risk: None,
+            missing_validation: Vec::new(),
+            evidence_ids: Vec::new(),
+        }
+    }
+
+    fn admit_replacement_for_test(store: &HarnessStore, member: &MemberRun) {
+        let current = store
+            .team_runs()
+            .expect("TeamRun history")
+            .into_iter()
+            .rev()
+            .find(|run| run.id == member.team_run_id)
+            .expect("replacement TeamRun");
+        let mut next = current.clone();
+        next.member_run_ids.push(member.id.clone());
+        next.updated_at = member.started_at.clone();
+        store
+            .admit_member_run(&current, &next, member)
+            .expect("atomically admit replacement runtime");
+    }
+
     fn unassigned_test_work(run_id: &str, id: &str) -> Work {
         Work {
             id: id.into(),
@@ -8307,7 +10356,7 @@ mod tests {
         linked_run.agent_team_id = Some(format!("agent-team-{name}"));
         linked_run.updated_at = "unix-ms:2".into();
         store
-            .append_team_run(&linked_run)
+            .compare_and_link_team_run_agent_team(&run, &linked_run)
             .expect("link durable AgentTeam");
         let mut work = unassigned_test_work(&run.id, &format!("work-{name}"));
         work.source_work_item_ref = Some(source.id.clone());
@@ -8330,6 +10379,64 @@ mod tests {
         completed.updated_at = at.into();
         completed.completed_at = Some(at.into());
         completed
+    }
+
+    #[test]
+    fn legacy_raw_work_operation_replays_through_store_projections() {
+        let root = team_test_root("legacy-raw-work-operation");
+        let store = HarnessStore::new(&root);
+        store.init().expect("initialize legacy replay store");
+        let raw_operation = serde_json::json!({
+            "event": {
+                "id": "work-event-legacy-raw-1",
+                "team_run_id": "team-run-legacy-raw-1",
+                "work_id": "work-legacy-raw-1",
+                "sequence": 1,
+                "kind": "created",
+                "expected_version": 0,
+                "resulting_version": 1,
+                "performed_by_actor": { "kind": "host", "id": "host" },
+                "idempotency_key": "create-work-legacy-raw-1",
+                "created_at": "unix-ms:1"
+            },
+            "work": {
+                "id": "work-legacy-raw-1",
+                "team_run_id": "team-run-legacy-raw-1",
+                "title": "Replay a historical WorkOperation",
+                "context_markdown": "Raw JSONL compatibility row",
+                "completion_criteria_markdown": "Both Store projections remain readable",
+                "status": "open",
+                "claim_mode": "team_claim",
+                "priority": "normal",
+                "created_by_actor": { "kind": "host", "id": "host" },
+                "version": 1,
+                "created_at": "unix-ms:1",
+                "updated_at": "unix-ms:1"
+            }
+        });
+        std::fs::write(
+            root.join("work_operations.jsonl"),
+            format!("{raw_operation}\n"),
+        )
+        .expect("write historical WorkOperation bytes");
+
+        let operations = store.work_operations().expect("replay WorkOperations");
+        assert_eq!(operations.len(), 1);
+        assert!(operations[0].deliveries.is_empty());
+        assert!(operations[0].delivery_updates.is_empty());
+        assert!(operations[0].event.authority_actor.is_none());
+        assert!(operations[0].event.causation_ref.is_none());
+        assert_eq!(operations[0].event.payload, serde_json::Value::Null);
+
+        let works = store
+            .latest_works()
+            .expect("rebuild latest Work projection");
+        assert_eq!(works.len(), 1);
+        assert_eq!(works[0], operations[0].work);
+        assert!(works[0].team_id.is_none());
+        assert!(works[0].gates.is_empty());
+        assert!(works[0].workspace.is_none());
+        std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
     #[test]
@@ -8497,6 +10604,1201 @@ mod tests {
                 .is_empty(),
             "a member self-claim is already runtime possession and must not create a loopback WorkDelivery"
         );
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn zero_gate_work_can_submit_and_accept_without_artifact_or_check_refs() {
+        let (root, store, run, member, _) = work_test_fixture("proportional-no-gates");
+        let work = store
+            .insert_work(
+                unassigned_test_work(&run.id, "work-proportional-no-gates"),
+                host_work_context("we-pg-1", "create-pg-1", "unix-ms:2"),
+            )
+            .expect("create zero-gate Work");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &member.id,
+                member_work_context(&member.id, "we-pg-2", "claim-pg-1", "unix-ms:3"),
+            )
+            .expect("claim zero-gate Work");
+        let submitted = store
+            .submit_work(
+                &claimed.id,
+                claimed.version,
+                &member.id,
+                "Result needs no declared artifact or check evidence",
+                Vec::new(),
+                Vec::new(),
+                member_work_context(&member.id, "we-pg-3", "submit-pg-1", "unix-ms:4"),
+            )
+            .expect("submit zero-gate Work");
+
+        assert_eq!(submitted.status, WorkStatus::Review);
+        assert!(submitted.artifact_refs.is_empty());
+        assert!(submitted.check_refs.is_empty());
+        assert!(GateEngine::evaluate_work_gates(&submitted).is_empty());
+
+        let accepted = store
+            .accept_work(
+                &submitted.id,
+                submitted.version,
+                host_work_context("we-pg-4", "accept-pg-1", "unix-ms:5"),
+            )
+            .expect("manual Host acceptance remains valid when no gates were declared");
+        assert_eq!(accepted.status, WorkStatus::Done);
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn work_insert_rejects_invalid_built_in_gate_config() {
+        let (root, store, run, _, _) = work_test_fixture("invalid-gate-config");
+        let mut work = unassigned_test_work(&run.id, "work-invalid-gate");
+        work.gates = vec![GateSpec {
+            plugin: "github-pr".into(),
+            config: serde_json::json!({"require_merged": "yes"}),
+        }];
+        let error = store
+            .insert_work(
+                work,
+                host_work_context("we-invalid-gate", "create-invalid-gate", "unix-ms:2"),
+            )
+            .expect_err("Store write boundary must reject invalid built-in config");
+        assert!(error.to_string().contains("INVALID_WORK_GATE"));
+        assert!(store.latest_works().expect("works").is_empty());
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn custom_gate_persists_but_default_store_acceptance_fails_closed() {
+        let (root, store, run, member, _) = work_test_fixture("custom-gate-persistence");
+        let mut candidate = unassigned_test_work(&run.id, "work-custom-gate");
+        candidate.gates = vec![GateSpec {
+            plugin: "owned-path-check".into(),
+            config: serde_json::json!({"paths": ["crates/firm-core"]}),
+        }];
+        let work = store
+            .insert_work(
+                candidate,
+                host_work_context("we-custom-1", "create-custom", "unix-ms:2"),
+            )
+            .expect("custom Gate declaration remains persistable");
+        assert_eq!(work.gates[0].plugin, "owned-path-check");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &member.id,
+                member_work_context(&member.id, "we-custom-2", "claim-custom", "unix-ms:3"),
+            )
+            .expect("claim custom-gated Work");
+        let submitted = store
+            .submit_work(
+                &claimed.id,
+                claimed.version,
+                &member.id,
+                "candidate ready for custom verification",
+                Vec::new(),
+                Vec::new(),
+                member_work_context(&member.id, "we-custom-3", "submit-custom", "unix-ms:4"),
+            )
+            .expect("submit custom-gated Work");
+        let error = store
+            .accept_work(
+                &submitted.id,
+                submitted.version,
+                host_work_context("we-custom-4", "accept-custom", "unix-ms:5"),
+            )
+            .expect_err("default Store has no trusted custom registry and must fail closed");
+        assert!(error.to_string().contains("unknown gate plugin"));
+        assert_eq!(
+            store
+                .latest_works()
+                .expect("works")
+                .into_iter()
+                .find(|work| work.id == submitted.id)
+                .expect("custom Work")
+                .status,
+            WorkStatus::Review
+        );
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn work_insert_rejects_duplicate_and_multiple_code_review_gates() {
+        let (root, store, run, _, _) = work_test_fixture("ambiguous-gate-list");
+        let duplicate = GateSpec {
+            plugin: "github-pr".into(),
+            config: serde_json::json!({}),
+        };
+        let mut duplicate_work = unassigned_test_work(&run.id, "work-duplicate-gate");
+        duplicate_work.gates = vec![duplicate.clone(), duplicate];
+        let duplicate_error = store
+            .insert_work(
+                duplicate_work,
+                host_work_context("we-dup-gate", "create-dup-gate", "unix-ms:2"),
+            )
+            .expect_err("exact duplicate Gates are ambiguous");
+        assert!(duplicate_error.to_string().contains("exact duplicate gate"));
+
+        let mut multi_review = unassigned_test_work(&run.id, "work-multi-review-gate");
+        multi_review.gates = vec![
+            GateSpec {
+                plugin: "code-review".into(),
+                config: serde_json::json!({"strategy": "host"}),
+            },
+            GateSpec {
+                plugin: "code-review".into(),
+                config: serde_json::json!({"strategy": "self"}),
+            },
+        ];
+        let multi_error = store
+            .insert_work(
+                multi_review,
+                host_work_context("we-multi-review", "create-multi-review", "unix-ms:3"),
+            )
+            .expect_err("one Work cannot declare multiple code-review Gates");
+        assert!(multi_error
+            .to_string()
+            .contains("more than one code-review"));
+        assert!(store.latest_works().expect("works").is_empty());
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn generic_review_append_rejects_bound_work_review() {
+        let root = team_test_root("bound-review-append");
+        let store = HarnessStore::new(&root);
+        store.init().expect("init store");
+        let review = Review {
+            id: "review-bound".into(),
+            task_id: Some("work-1".into()),
+            goal_id: None,
+            reviewer_agent_id: "critic".into(),
+            review_kind: "code".into(),
+            verdict: ReviewVerdict::Pass,
+            summary: "forged binding".into(),
+            blockers: Vec::new(),
+            residual_risk: None,
+            missing_validation: Vec::new(),
+            evidence_ids: Vec::new(),
+            created_at: "unix-ms:1".into(),
+            reviewed_work_id: Some("work-1".into()),
+            reviewed_work_version: Some(3),
+            review_strategy: Some(CodeReviewStrategy::Host),
+            performed_by_actor: None,
+            authority_actor: None,
+            command_idempotency_key: None,
+        };
+        let error = store
+            .append_review(&review)
+            .expect_err("bound Review must use trusted Work context");
+        assert!(error
+            .to_string()
+            .contains("BOUND_REVIEW_REQUIRES_WORK_CONTEXT"));
+        assert!(store.reviews().expect("reviews").is_empty());
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn generic_review_append_rejects_duplicate_id_from_append_only_history() {
+        let root = team_test_root("duplicate-review-id");
+        let store = HarnessStore::new(&root);
+        store.init().expect("init store");
+        let review = Review {
+            id: "review-history-1".into(),
+            task_id: None,
+            goal_id: None,
+            reviewer_agent_id: "critic-a".into(),
+            review_kind: "design".into(),
+            verdict: ReviewVerdict::Pass,
+            summary: "original immutable review".into(),
+            blockers: Vec::new(),
+            residual_risk: None,
+            missing_validation: Vec::new(),
+            evidence_ids: Vec::new(),
+            created_at: "unix-ms:1".into(),
+            reviewed_work_id: None,
+            reviewed_work_version: None,
+            review_strategy: None,
+            performed_by_actor: None,
+            authority_actor: None,
+            command_idempotency_key: None,
+        };
+        store
+            .append_review(&review)
+            .expect("append original Review");
+        let mut trailing = review.clone();
+        trailing.id = "review-history-2".into();
+        trailing.summary = "later unrelated review".into();
+        store
+            .append_review(&trailing)
+            .expect("append later Review with a different id");
+
+        let mut duplicate = review.clone();
+        duplicate.summary = "attempted replacement".into();
+        let error = store
+            .append_review(&duplicate)
+            .expect_err("historical Review ids are immutable and cannot be reused");
+        assert!(error.to_string().contains("review already exists"));
+        let reviews = store.reviews().expect("read Review history");
+        assert_eq!(
+            reviews.len(),
+            2,
+            "duplicate rejection must not append a row"
+        );
+        assert_eq!(reviews[0], review, "original Review must remain unchanged");
+        assert_eq!(reviews[1], trailing);
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn concurrent_generic_review_append_allows_one_duplicate_id_winner() {
+        let root = team_test_root("concurrent-duplicate-review-id");
+        let store = Arc::new(HarnessStore::new(&root));
+        store.init().expect("init store");
+        let barrier = Arc::new(Barrier::new(2));
+        let handles = ["critic-a", "critic-b"].map(|reviewer| {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let review = Review {
+                    id: "review-concurrent-duplicate".into(),
+                    task_id: None,
+                    goal_id: None,
+                    reviewer_agent_id: reviewer.into(),
+                    review_kind: "design".into(),
+                    verdict: ReviewVerdict::Pass,
+                    summary: format!("candidate from {reviewer}"),
+                    blockers: Vec::new(),
+                    residual_risk: None,
+                    missing_validation: Vec::new(),
+                    evidence_ids: Vec::new(),
+                    created_at: "unix-ms:1".into(),
+                    reviewed_work_id: None,
+                    reviewed_work_version: None,
+                    review_strategy: None,
+                    performed_by_actor: None,
+                    authority_actor: None,
+                    command_idempotency_key: None,
+                };
+                barrier.wait();
+                store.append_review(&review)
+            })
+        });
+        let results = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("review append thread"))
+            .collect::<Vec<_>>();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+        assert!(results
+            .iter()
+            .filter_map(|result| result.as_ref().err())
+            .all(|error| error.to_string().contains("review already exists")));
+        let reviews = store.reviews().expect("read Review history");
+        assert_eq!(
+            reviews.len(),
+            1,
+            "the duplicate id must append exactly once"
+        );
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn work_review_rejects_forged_member_run_outside_latest_team_membership() {
+        let (root, store, run, owner, peer) = work_test_fixture("forged-review-member");
+        let mut gated = unassigned_test_work(&run.id, "work-forged-review-member");
+        gated.gates = vec![GateSpec {
+            plugin: "code-review".into(),
+            config: serde_json::json!({"strategy": "peer", "reviewer": "agent-forged"}),
+        }];
+        let work = store
+            .insert_work(
+                gated,
+                host_work_context("we-forged-1", "create-forged", "unix-ms:2"),
+            )
+            .expect("create peer-reviewed Work");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &owner.id,
+                member_work_context(&owner.id, "we-forged-2", "claim-forged", "unix-ms:3"),
+            )
+            .expect("owner claims Work");
+        let submitted = store
+            .submit_work(
+                &claimed.id,
+                claimed.version,
+                &owner.id,
+                "candidate",
+                Vec::new(),
+                Vec::new(),
+                member_work_context(&owner.id, "we-forged-3", "submit-forged", "unix-ms:4"),
+            )
+            .expect("submit candidate");
+        let mut forged = peer.clone();
+        forged.id = "mr-forged-review-member".into();
+        forged.agent_member_id = Some("agent-forged".into());
+        let member_error = store
+            .append_member_run(&forged)
+            .expect_err("raw MemberRun append cannot create an undeclared reviewer");
+        assert!(member_error
+            .to_string()
+            .contains("MEMBER_ADMISSION_REQUIRED"));
+        let mut reactivated = peer.clone();
+        reactivated.status = MemberRunStatus::Running;
+        reactivated.runtime_generation += 1;
+        let revision_error = store
+            .append_member_run(&reactivated)
+            .expect_err("raw MemberRun revision cannot acquire reviewer runtime authority");
+        assert!(revision_error
+            .to_string()
+            .contains("MEMBER_REVISION_REQUIRES_CAS"));
+        let mut forged_run = run.clone();
+        forged_run.member_run_ids.push(forged.id.clone());
+        let run_error = store
+            .append_team_run(&forged_run)
+            .expect_err("raw TeamRun revision cannot extend membership");
+        assert!(run_error
+            .to_string()
+            .contains("TEAM_RUN_REVISION_REQUIRES_CAS"));
+        let cas_error = store
+            .compare_and_append_team_run_with_wave_status(
+                &run,
+                &forged_run,
+                WaveStatus::Running,
+                "unix-ms:5",
+            )
+            .expect_err("legacy lifecycle CAS cannot extend membership");
+        assert!(cas_error
+            .to_string()
+            .contains("TEAM_MEMBERSHIP_REQUIRES_ADMISSION"));
+
+        let before_reviews = store.reviews().expect("reviews before rejection");
+        let before_work = store
+            .latest_works()
+            .expect("works before rejection")
+            .into_iter()
+            .find(|work| work.id == submitted.id)
+            .expect("submitted Work");
+        let error = store
+            .record_work_review(
+                &submitted.id,
+                submitted.version,
+                work_review_payload("review-forged-member", ReviewVerdict::Pass),
+                member_work_context(&forged.id, "unused", "unused", "unix-ms:5"),
+            )
+            .expect_err("an arbitrary same-team MemberRun row is not TeamRun membership");
+        assert!(error.to_string().contains("WORK_REVIEWER_NOT_TEAM_MEMBER"));
+        assert_eq!(
+            store.reviews().expect("reviews after rejection"),
+            before_reviews
+        );
+        assert_eq!(
+            store
+                .latest_works()
+                .expect("works after rejection")
+                .into_iter()
+                .find(|work| work.id == submitted.id)
+                .expect("submitted Work after rejection"),
+            before_work,
+            "review rejection must not mutate Work"
+        );
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn member_admission_rejects_ambiguous_stable_identity_and_preserves_peer_review() {
+        let (root, store, run, owner, peer) = work_test_fixture("ambiguous-reviewer");
+        let mut gated = unassigned_test_work(&run.id, "work-ambiguous-reviewer");
+        gated.gates = vec![GateSpec {
+            plugin: "code-review".into(),
+            config: serde_json::json!({"strategy": "peer", "reviewer": "agent-b"}),
+        }];
+        let work = store
+            .insert_work(
+                gated,
+                host_work_context("we-ambiguous-1", "create-ambiguous", "unix-ms:2"),
+            )
+            .expect("create peer-reviewed Work");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &owner.id,
+                member_work_context(&owner.id, "we-ambiguous-2", "claim-ambiguous", "unix-ms:3"),
+            )
+            .expect("owner claims Work");
+        let submitted = store
+            .submit_work(
+                &claimed.id,
+                claimed.version,
+                &owner.id,
+                "candidate",
+                Vec::new(),
+                Vec::new(),
+                member_work_context(&owner.id, "we-ambiguous-3", "submit-ambiguous", "unix-ms:4"),
+            )
+            .expect("submit candidate");
+
+        let mut duplicate_identity = peer.clone();
+        duplicate_identity.id = "mr-ambiguous-reviewer-duplicate".into();
+        let mut ambiguous_run = run.clone();
+        ambiguous_run
+            .member_run_ids
+            .push(duplicate_identity.id.clone());
+        ambiguous_run.updated_at = "unix-ms:5".into();
+        let error = store
+            .admit_member_run(&run, &ambiguous_run, &duplicate_identity)
+            .expect_err("atomic admission rejects a duplicate stable identity");
+        assert!(error.to_string().contains("MEMBER_IDENTITY_CONFLICT"));
+
+        let review = store
+            .record_work_review(
+                &submitted.id,
+                submitted.version,
+                work_review_payload("review-legitimate-peer", ReviewVerdict::Pass),
+                member_work_context(&peer.id, "unused", "unused", "unix-ms:6"),
+            )
+            .expect("legitimately admitted peer remains trusted");
+        assert_eq!(review.reviewer_agent_id, "agent-b");
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn concurrent_member_admission_has_one_cas_winner_without_partial_membership() {
+        let (root, store, run, _owner, peer) = work_test_fixture("member-admission-race");
+        let store = Arc::new(store);
+        let barrier = Arc::new(Barrier::new(2));
+        let handles = ["c", "d"].map(|suffix| {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            let run = run.clone();
+            let mut member = peer.clone();
+            member.id = format!("mr-member-admission-race-{suffix}");
+            member.slot_id = Some(format!("slot-{suffix}"));
+            member.agent_member_id = Some(format!("agent-{suffix}"));
+            member.name = format!("Member {suffix}");
+            let mut next = run.clone();
+            next.member_run_ids.push(member.id.clone());
+            next.updated_at = format!("unix-ms:{suffix}");
+            std::thread::spawn(move || {
+                barrier.wait();
+                let result = store.admit_member_run(&run, &next, &member);
+                (member.id, result)
+            })
+        });
+        let results = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("admission thread"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            results.iter().filter(|(_, result)| result.is_ok()).count(),
+            1
+        );
+        assert_eq!(
+            results.iter().filter(|(_, result)| result.is_err()).count(),
+            1
+        );
+        let latest = store
+            .team_runs()
+            .expect("TeamRun history")
+            .into_iter()
+            .rev()
+            .find(|candidate| candidate.id == run.id)
+            .expect("latest TeamRun");
+        let admitted = results
+            .iter()
+            .filter(|(_, result)| result.is_ok())
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>();
+        assert_eq!(admitted.len(), 1);
+        assert!(latest.member_run_ids.contains(admitted[0]));
+        let member_ids = store
+            .member_runs()
+            .expect("MemberRun history")
+            .into_iter()
+            .map(|member| member.id)
+            .collect::<BTreeSet<_>>();
+        for (id, result) in &results {
+            assert_eq!(member_ids.contains(id), result.is_ok());
+        }
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn terminal_old_generation_does_not_make_replacement_reviewer_ambiguous() {
+        let (root, store, run, owner, peer) = work_test_fixture("replacement-reviewer");
+        let mut failed_peer = peer.clone();
+        failed_peer.status = MemberRunStatus::Failed;
+        failed_peer.finished_at = Some("unix-ms:2".into());
+        store
+            .compare_and_append_member_run(&peer, &failed_peer)
+            .expect("record terminal old reviewer generation");
+        let mut replacement = peer.clone();
+        replacement.id = "mr-replacement-reviewer-b-v2".into();
+        replacement.runtime_generation += 1;
+        replacement.status = MemberRunStatus::Idle;
+        replacement.started_at = "unix-ms:3".into();
+        let mut next_run = run.clone();
+        next_run.member_run_ids.push(replacement.id.clone());
+        next_run.updated_at = "unix-ms:3".into();
+        store
+            .admit_member_run(&run, &next_run, &replacement)
+            .expect("admit higher-generation reviewer");
+
+        let mut gated = unassigned_test_work(&run.id, "work-replacement-reviewer");
+        gated.gates = vec![GateSpec {
+            plugin: "code-review".into(),
+            config: serde_json::json!({"strategy": "peer", "reviewer": "agent-b"}),
+        }];
+        let work = store
+            .insert_work(
+                gated,
+                host_work_context("we-replacement-1", "create-replacement", "unix-ms:4"),
+            )
+            .expect("create Work");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &owner.id,
+                member_work_context(
+                    &owner.id,
+                    "we-replacement-2",
+                    "claim-replacement",
+                    "unix-ms:5",
+                ),
+            )
+            .expect("claim Work");
+        let submitted = store
+            .submit_work(
+                &claimed.id,
+                claimed.version,
+                &owner.id,
+                "candidate",
+                Vec::new(),
+                Vec::new(),
+                member_work_context(
+                    &owner.id,
+                    "we-replacement-3",
+                    "submit-replacement",
+                    "unix-ms:6",
+                ),
+            )
+            .expect("submit Work");
+        let review = store
+            .record_work_review(
+                &submitted.id,
+                submitted.version,
+                work_review_payload("review-replacement", ReviewVerdict::Pass),
+                member_work_context(
+                    &replacement.id,
+                    "review-replacement-event",
+                    "review-replacement-command",
+                    "unix-ms:7",
+                ),
+            )
+            .expect("terminal old generation must not make replacement ambiguous");
+        assert_eq!(review.reviewer_agent_id, "agent-b");
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn delayed_initial_materialization_checks_latest_admitted_identities() {
+        let (root, store, run, _owner, peer) = work_test_fixture("delayed-materialization");
+        let delayed_id = "mr-delayed-materialization-declared".to_string();
+        // Model a first-row declaration whose process has not materialized yet.
+        // The fixture's first row is rewritten only in this isolated store to
+        // include that declaration before any later admission.
+        let source = root.join("team_runs.jsonl");
+        let mut first = run.clone();
+        first.member_run_ids.push(delayed_id.clone());
+        std::fs::write(
+            &source,
+            format!(
+                "{}\n",
+                serde_json::to_string(&first).expect("serialize TeamRun")
+            ),
+        )
+        .expect("seed delayed initial declaration");
+        let revised = first.clone();
+
+        let mut admitted = peer.clone();
+        admitted.id = "mr-delayed-materialization-admitted".into();
+        admitted.runtime_generation += 1;
+        admitted.started_at = "unix-ms:2".into();
+        // The previous generation is terminal, so admitting a replacement of
+        // the same stable identity is legitimate.
+        let mut terminal_peer = peer.clone();
+        terminal_peer.status = MemberRunStatus::Failed;
+        store
+            .compare_and_append_member_run(&peer, &terminal_peer)
+            .expect("terminal previous generation");
+        let mut next = revised.clone();
+        next.member_run_ids.push(admitted.id.clone());
+        next.updated_at = "unix-ms:2".into();
+        store
+            .admit_member_run(&revised, &next, &admitted)
+            .expect("admit replacement before delayed materialization");
+
+        let mut delayed = admitted.clone();
+        delayed.id = delayed_id;
+        delayed.runtime_generation = 1;
+        let error = store
+            .append_member_run(&delayed)
+            .expect_err("delayed initial row cannot duplicate latest admitted identity");
+        assert!(error.to_string().contains("MEMBER_IDENTITY_CONFLICT"));
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn peer_review_is_identity_bound_and_resubmission_invalidates_review_and_pr() {
+        let (root, store, run, owner, peer) = work_test_fixture("peer-review-binding");
+        let mut gated = unassigned_test_work(&run.id, "work-peer-review");
+        gated.gates = vec![GateSpec {
+            plugin: "code-review".into(),
+            config: serde_json::json!({"strategy": "peer", "reviewer": "agent-b"}),
+        }];
+        let work = store
+            .insert_work(
+                gated,
+                host_work_context("we-peer-1", "create-peer", "unix-ms:2"),
+            )
+            .expect("create peer-reviewed Work");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &owner.id,
+                member_work_context(&owner.id, "we-peer-2", "claim-peer", "unix-ms:3"),
+            )
+            .expect("owner claims Work");
+        let submitted = store
+            .submit_work_with_links(
+                &claimed.id,
+                claimed.version,
+                &owner.id,
+                "first candidate",
+                Vec::new(),
+                Vec::new(),
+                vec![test_github_link("MERGED", Some("success"))],
+                member_work_context(&owner.id, "we-peer-3", "submit-peer", "unix-ms:4"),
+            )
+            .expect("submit first candidate");
+
+        let wrong = store
+            .record_work_review(
+                &submitted.id,
+                submitted.version,
+                work_review_payload("review-wrong-peer", ReviewVerdict::Pass),
+                member_work_context(&owner.id, "unused", "unused", "unix-ms:5"),
+            )
+            .expect_err("owner cannot impersonate configured peer");
+        assert!(wrong.to_string().contains("WORK_REVIEWER_MISMATCH"));
+
+        let first_review = store
+            .record_work_review(
+                &submitted.id,
+                submitted.version,
+                work_review_payload("review-peer-v3", ReviewVerdict::Pass),
+                member_work_context(&peer.id, "unused", "unused", "unix-ms:6"),
+            )
+            .expect("configured peer reviews exact candidate");
+        assert_eq!(first_review.reviewed_work_version, Some(submitted.version));
+
+        let revision = store
+            .request_work_changes(
+                &submitted.id,
+                submitted.version,
+                "candidate changed",
+                host_work_context("we-peer-4", "changes-peer", "unix-ms:7"),
+            )
+            .expect("request changes");
+        let resubmitted = store
+            .submit_work(
+                &revision.id,
+                revision.version,
+                &owner.id,
+                "second candidate without a PR",
+                Vec::new(),
+                Vec::new(),
+                member_work_context(&owner.id, "we-peer-5", "resubmit-peer", "unix-ms:8"),
+            )
+            .expect("resubmit candidate");
+        assert!(resubmitted
+            .github_links
+            .iter()
+            .all(|link| link.kind != firm_core::GitHubLinkKind::PullRequest));
+
+        let stale_review = store
+            .accept_work(
+                &resubmitted.id,
+                resubmitted.version,
+                host_work_context("we-peer-6", "accept-stale-peer", "unix-ms:9"),
+            )
+            .expect_err("old candidate Review must not satisfy resubmission");
+        assert!(stale_review.to_string().contains("WORK_GATES_NOT_PASSING"));
+
+        store
+            .record_work_review(
+                &resubmitted.id,
+                resubmitted.version,
+                work_review_payload("review-peer-v5", ReviewVerdict::Pass),
+                member_work_context(
+                    &peer.id,
+                    "unused-v5",
+                    "review-peer-v5-command",
+                    "unix-ms:10",
+                ),
+            )
+            .expect("peer reviews resubmitted candidate");
+        let accepted = store
+            .accept_work(
+                &resubmitted.id,
+                resubmitted.version,
+                host_work_context("we-peer-7", "accept-peer", "unix-ms:11"),
+            )
+            .expect("current exact peer Review satisfies Store gate");
+        assert_eq!(accepted.status, WorkStatus::Done);
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn self_review_requires_the_bound_owner_member() {
+        let (root, store, run, owner, other) = work_test_fixture("self-review-binding");
+        let mut gated = unassigned_test_work(&run.id, "work-self-review");
+        gated.gates = vec![GateSpec {
+            plugin: "code-review".into(),
+            config: serde_json::json!({"strategy": "self"}),
+        }];
+        let work = store
+            .insert_work(
+                gated,
+                host_work_context("we-self-1", "create-self", "unix-ms:2"),
+            )
+            .expect("create self-reviewed Work");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &owner.id,
+                member_work_context(&owner.id, "we-self-2", "claim-self", "unix-ms:3"),
+            )
+            .expect("owner claims Work");
+        let submitted = store
+            .submit_work(
+                &claimed.id,
+                claimed.version,
+                &owner.id,
+                "self-review candidate",
+                Vec::new(),
+                Vec::new(),
+                member_work_context(&owner.id, "we-self-3", "submit-self", "unix-ms:4"),
+            )
+            .expect("submit candidate");
+        let error = store
+            .record_work_review(
+                &submitted.id,
+                submitted.version,
+                work_review_payload("review-self-wrong", ReviewVerdict::Pass),
+                member_work_context(&other.id, "unused", "unused", "unix-ms:5"),
+            )
+            .expect_err("non-owner cannot self-review");
+        assert!(error
+            .to_string()
+            .contains("WORK_SELF_REVIEW_REQUIRES_OWNER"));
+        store
+            .record_work_review(
+                &submitted.id,
+                submitted.version,
+                work_review_payload("review-self-owner", ReviewVerdict::Pass),
+                member_work_context(&owner.id, "unused", "unused", "unix-ms:6"),
+            )
+            .expect("owner records self Review");
+        assert_eq!(
+            store
+                .accept_work(
+                    &submitted.id,
+                    submitted.version,
+                    host_work_context("we-self-4", "accept-self", "unix-ms:7"),
+                )
+                .expect("accept self-reviewed Work")
+                .status,
+            WorkStatus::Done
+        );
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn work_review_idempotency_is_exact_and_concurrency_safe() {
+        let (root, store, run, owner, peer) = work_test_fixture("review-idempotency");
+        let mut gated = unassigned_test_work(&run.id, "work-review-idempotency");
+        gated.gates = vec![GateSpec {
+            plugin: "code-review".into(),
+            config: serde_json::json!({"strategy": "peer", "reviewer": "agent-b"}),
+        }];
+        let work = store
+            .insert_work(
+                gated,
+                host_work_context("we-review-idem-1", "create-review-idem", "unix-ms:2"),
+            )
+            .expect("create reviewed Work");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &owner.id,
+                member_work_context(
+                    &owner.id,
+                    "we-review-idem-2",
+                    "claim-review-idem",
+                    "unix-ms:3",
+                ),
+            )
+            .expect("claim Work");
+        let submitted = store
+            .submit_work(
+                &claimed.id,
+                claimed.version,
+                &owner.id,
+                "candidate",
+                Vec::new(),
+                Vec::new(),
+                member_work_context(
+                    &owner.id,
+                    "we-review-idem-3",
+                    "submit-review-idem",
+                    "unix-ms:4",
+                ),
+            )
+            .expect("submit Work");
+        let store = Arc::new(store);
+        let payload = work_review_payload("review-idempotent", ReviewVerdict::Pass);
+        let context = member_work_context(
+            &peer.id,
+            "review-event-first",
+            "review-command-stable",
+            "unix-ms:5",
+        );
+        let barrier = Arc::new(Barrier::new(2));
+        let handles = (0..2)
+            .map(|attempt| {
+                let store = Arc::clone(&store);
+                let barrier = Arc::clone(&barrier);
+                let payload = payload.clone();
+                let mut context = context.clone();
+                context.event_id = format!("review-event-{attempt}");
+                context.created_at = format!("unix-ms:{}", 5 + attempt);
+                let work_id = submitted.id.clone();
+                let version = submitted.version;
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store.record_work_review(&work_id, version, payload, context)
+                })
+            })
+            .collect::<Vec<_>>();
+        let results = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("review thread").expect("exact retry"))
+            .collect::<Vec<_>>();
+        assert_eq!(results[0], results[1]);
+        assert_eq!(store.reviews().expect("Reviews").len(), 1);
+        assert_eq!(
+            results[0].command_idempotency_key.as_deref(),
+            Some("review-command-stable")
+        );
+
+        let mut conflicting_payload = payload.clone();
+        conflicting_payload.verdict = ReviewVerdict::Fail;
+        let conflict = store
+            .record_work_review(
+                &submitted.id,
+                submitted.version,
+                conflicting_payload,
+                context.clone(),
+            )
+            .expect_err("same key cannot change verdict");
+        assert!(conflict.to_string().contains("IDEMPOTENCY_CONFLICT"));
+        let mut reused_id_context = context;
+        reused_id_context.idempotency_key = "different-review-command".into();
+        let reused_id = store
+            .record_work_review(&submitted.id, submitted.version, payload, reused_id_context)
+            .expect_err("different key cannot reuse a global Review id");
+        assert!(reused_id.to_string().contains("review already exists"));
+        assert_eq!(store.reviews().expect("Review history").len(), 1);
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn host_review_requires_fixed_authority_and_keeps_writer_out_of_reviewer_identity() {
+        let (root, store, run, owner, _) = work_test_fixture("host-review-binding");
+        let mut gated = unassigned_test_work(&run.id, "work-host-review");
+        gated.gates = vec![GateSpec {
+            plugin: "code-review".into(),
+            config: serde_json::json!({"strategy": "host"}),
+        }];
+        let work = store
+            .insert_work(
+                gated,
+                host_work_context("we-host-1", "create-host", "unix-ms:2"),
+            )
+            .expect("create host-reviewed Work");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &owner.id,
+                member_work_context(&owner.id, "we-host-2", "claim-host", "unix-ms:3"),
+            )
+            .expect("owner claims Work");
+        let submitted = store
+            .submit_work(
+                &claimed.id,
+                claimed.version,
+                &owner.id,
+                "host-review candidate",
+                Vec::new(),
+                Vec::new(),
+                member_work_context(&owner.id, "we-host-3", "submit-host", "unix-ms:4"),
+            )
+            .expect("submit candidate");
+        let error = store
+            .record_work_review(
+                &submitted.id,
+                submitted.version,
+                work_review_payload("review-host-member", ReviewVerdict::Pass),
+                member_work_context(&owner.id, "unused", "unused", "unix-ms:5"),
+            )
+            .expect_err("ordinary Member cannot write host Review");
+        assert!(error.to_string().contains("Host authority is required"));
+
+        let missing_authority = store
+            .record_work_review(
+                &submitted.id,
+                submitted.version,
+                work_review_payload("review-host-no-authority", ReviewVerdict::Pass),
+                host_work_context("unused", "unused", "unix-ms:6"),
+            )
+            .expect_err("performed-by Host is not itself trusted review authority");
+        assert!(missing_authority
+            .to_string()
+            .contains("WORK_HOST_REVIEW_AUTHORITY_REQUIRED"));
+
+        let mut wrong_authority_kind = trusted_host_review_context(
+            firm_core::TeamActorKind::Operator,
+            "operator:alice",
+            "unix-ms:7",
+        );
+        wrong_authority_kind.authority_actor = Some(firm_core::TeamActorRef {
+            kind: firm_core::TeamActorKind::Operator,
+            id: TRUSTED_HOST_REVIEWER_ID.into(),
+            display_name: None,
+            authn_source: Some("untrusted-operator:test".into()),
+        });
+        let wrong_kind = store
+            .record_work_review(
+                &submitted.id,
+                submitted.version,
+                work_review_payload("review-host-wrong-authority-kind", ReviewVerdict::Pass),
+                wrong_authority_kind,
+            )
+            .expect_err("Operator authority cannot impersonate fixed Host reviewer");
+        assert!(wrong_kind
+            .to_string()
+            .contains("WORK_HOST_REVIEW_AUTHORITY_MISMATCH"));
+
+        let mut wrong_authority_id = trusted_host_review_context(
+            firm_core::TeamActorKind::Operator,
+            "operator:alice",
+            "unix-ms:8",
+        );
+        wrong_authority_id
+            .authority_actor
+            .as_mut()
+            .expect("authority")
+            .id = "host:caller-supplied".into();
+        let wrong_id = store
+            .record_work_review(
+                &submitted.id,
+                submitted.version,
+                work_review_payload("review-host-wrong-authority-id", ReviewVerdict::Pass),
+                wrong_authority_id,
+            )
+            .expect_err("caller-supplied Host id cannot become reviewer identity");
+        assert!(wrong_id
+            .to_string()
+            .contains("WORK_HOST_REVIEW_AUTHORITY_MISMATCH"));
+
+        let performed_by_id = "operator:alice";
+        let trusted_context = trusted_host_review_context(
+            firm_core::TeamActorKind::Operator,
+            performed_by_id,
+            "unix-ms:9",
+        );
+        assert_eq!(trusted_context.performed_by_actor.id, performed_by_id);
+        assert_eq!(
+            trusted_context
+                .authority_actor
+                .as_ref()
+                .expect("fixed Host authority")
+                .id,
+            TRUSTED_HOST_REVIEWER_ID
+        );
+        let review = store
+            .record_work_review(
+                &submitted.id,
+                submitted.version,
+                work_review_payload("review-host", ReviewVerdict::Pass),
+                trusted_context,
+            )
+            .expect("authenticated operator acts under fixed Host review authority");
+        assert_eq!(review.reviewer_agent_id, TRUSTED_HOST_REVIEWER_ID);
+        assert_ne!(review.reviewer_agent_id, performed_by_id);
+        let performed_by = review
+            .performed_by_actor
+            .as_ref()
+            .expect("trusted writer persists actual performer attribution");
+        assert_eq!(performed_by.kind, firm_core::TeamActorKind::Operator);
+        assert_eq!(performed_by.id, performed_by_id);
+        let authority = review
+            .authority_actor
+            .as_ref()
+            .expect("trusted writer persists fixed Host authority");
+        assert_eq!(authority.kind, firm_core::TeamActorKind::Host);
+        assert_eq!(authority.id, TRUSTED_HOST_REVIEWER_ID);
+        let persisted = store
+            .reviews()
+            .expect("read persisted Review audit attribution")
+            .into_iter()
+            .find(|candidate| candidate.id == review.id)
+            .expect("persisted trusted Review");
+        assert_eq!(persisted.performed_by_actor, review.performed_by_actor);
+        assert_eq!(persisted.authority_actor, review.authority_actor);
+        assert_eq!(
+            store
+                .accept_work(
+                    &submitted.id,
+                    submitted.version,
+                    host_work_context("we-host-4", "accept-host", "unix-ms:10"),
+                )
+                .expect("accept host-reviewed Work")
+                .status,
+            WorkStatus::Done
+        );
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn declared_artifact_and_check_gates_block_missing_refs_after_submit() {
+        let (root, store, run, member, _) = work_test_fixture("proportional-declared-gates");
+        let mut gated = unassigned_test_work(&run.id, "work-proportional-declared-gates");
+        gated.gates = vec![
+            GateSpec {
+                plugin: "artifact-exists".into(),
+                config: serde_json::json!({}),
+            },
+            GateSpec {
+                plugin: "check-pass".into(),
+                config: serde_json::json!({}),
+            },
+        ];
+        let work = store
+            .insert_work(
+                gated,
+                host_work_context("we-pdg-1", "create-pdg-1", "unix-ms:2"),
+            )
+            .expect("create gated Work");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &member.id,
+                member_work_context(&member.id, "we-pdg-2", "claim-pdg-1", "unix-ms:3"),
+            )
+            .expect("claim gated Work");
+        let submitted = store
+            .submit_work(
+                &claimed.id,
+                claimed.version,
+                &member.id,
+                "Submitted without the evidence required by declared gates",
+                Vec::new(),
+                Vec::new(),
+                member_work_context(&member.id, "we-pdg-3", "submit-pdg-1", "unix-ms:4"),
+            )
+            .expect("submission records the candidate before gate evaluation");
+
+        let results = GateEngine::evaluate_work_gates(&submitted);
+        assert_eq!(submitted.status, WorkStatus::Review);
+        assert_eq!(results.len(), 2);
+        assert!(results
+            .iter()
+            .all(|result| matches!(result.verdict, GateVerdict::Blocked { .. })));
+        assert!(
+            !results.iter().all(|result| result.verdict.is_pass()),
+            "declared evidence gates must prevent the acceptance seam from proceeding"
+        );
+
+        let rejected = store
+            .accept_work(
+                &submitted.id,
+                submitted.version,
+                host_work_context("we-pdg-4", "accept-pdg-missing", "unix-ms:5"),
+            )
+            .expect_err("the Store acceptance seam must enforce declared gates");
+        assert!(rejected.to_string().contains("WORK_GATES_NOT_PASSING"));
+        let still_review = store
+            .latest_works()
+            .expect("latest Works after rejected acceptance")
+            .into_iter()
+            .find(|work| work.id == submitted.id)
+            .expect("submitted Work remains present");
+        assert_eq!(still_review.status, WorkStatus::Review);
+        assert_eq!(still_review.version, submitted.version);
+        assert!(
+            store
+                .work_events()
+                .expect("events after rejected acceptance")
+                .iter()
+                .all(|event| event.kind != WorkEventKind::Accepted),
+            "a rejected gate must not append an Accepted event"
+        );
+
+        let revision = store
+            .request_work_changes(
+                &still_review.id,
+                still_review.version,
+                "attach the declared evidence",
+                host_work_context("we-pdg-5", "revise-pdg", "unix-ms:6"),
+            )
+            .expect("request evidence revision");
+        let resubmitted = store
+            .submit_work(
+                &revision.id,
+                revision.version,
+                &member.id,
+                "Resubmitted with the declared evidence",
+                vec!["artifact://declared-output".into()],
+                vec!["check://declared-check".into()],
+                member_work_context(&member.id, "we-pdg-6", "resubmit-pdg", "unix-ms:7"),
+            )
+            .expect("resubmit with evidence");
+        assert!(GateEngine::evaluate_work_gates(&resubmitted)
+            .iter()
+            .all(|result| result.verdict.is_pass()));
+        let accepted = store
+            .accept_work(
+                &resubmitted.id,
+                resubmitted.version,
+                host_work_context("we-pdg-7", "accept-pdg-pass", "unix-ms:8"),
+            )
+            .expect("the same Store seam accepts after every declared gate passes");
+        assert_eq!(accepted.status, WorkStatus::Done);
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
@@ -8746,7 +12048,7 @@ mod tests {
         failed_previous.status = MemberRunStatus::Failed;
         failed_previous.finished_at = Some("unix-ms:5".into());
         store
-            .append_member_run(&failed_previous)
+            .compare_and_append_member_run(&member, &failed_previous)
             .expect("record runtime failure");
         let mut replacement = member.clone();
         replacement.id = "member-history-generation-2".into();
@@ -8754,9 +12056,7 @@ mod tests {
         replacement.status = MemberRunStatus::Idle;
         replacement.started_at = "unix-ms:6".into();
         replacement.finished_at = None;
-        store
-            .append_member_run(&replacement)
-            .expect("append replacement runtime");
+        admit_replacement_for_test(&store, &replacement);
 
         let rebound = store
             .rebind_work(
@@ -9342,7 +12642,7 @@ mod tests {
         failed_previous.status = MemberRunStatus::Failed;
         failed_previous.finished_at = Some("unix-ms:6".into());
         store
-            .append_member_run(&failed_previous)
+            .compare_and_append_member_run(&member, &failed_previous)
             .expect("record previous runtime failure");
 
         let mut replacement = member.clone();
@@ -9351,9 +12651,7 @@ mod tests {
         replacement.status = MemberRunStatus::Idle;
         replacement.started_at = "unix-ms:7".into();
         replacement.finished_at = None;
-        store
-            .append_member_run(&replacement)
-            .expect("append replacement runtime");
+        admit_replacement_for_test(&store, &replacement);
         let owner_mismatch = store
             .rebind_work(
                 &started.id,
@@ -9428,7 +12726,7 @@ mod tests {
         linked_run.agent_team_id = Some("agent-team-same-id-rebind".into());
         linked_run.updated_at = "unix-ms:2".into();
         store
-            .append_team_run(&linked_run)
+            .compare_and_link_team_run_agent_team(&run, &linked_run)
             .expect("link durable AgentTeam");
         let mut assigned = unassigned_test_work(&run.id, "work-same-id-rebind");
         assigned.claim_mode = WorkClaimMode::HostAssign;
@@ -9450,7 +12748,7 @@ mod tests {
         failed.status = MemberRunStatus::Failed;
         failed.finished_at = Some("unix-ms:4".into());
         store
-            .append_member_run(&failed)
+            .compare_and_append_member_run(&member, &failed)
             .expect("record failed generation");
         let mut replacement = member.clone();
         replacement.runtime_generation += 1;
@@ -9458,7 +12756,7 @@ mod tests {
         replacement.started_at = "unix-ms:5".into();
         replacement.finished_at = None;
         store
-            .append_member_run(&replacement)
+            .compare_and_append_member_run(&failed, &replacement)
             .expect("append same-id replacement generation");
 
         let rebound = store
@@ -9519,7 +12817,7 @@ mod tests {
         linked_run.agent_team_id = Some("agent-team-sparse-rebound".into());
         linked_run.updated_at = "unix-ms:2".into();
         store
-            .append_team_run(&linked_run)
+            .compare_and_link_team_run_agent_team(&run, &linked_run)
             .expect("link durable AgentTeam");
 
         let mut assigned = unassigned_test_work(&run.id, "work-sparse-rebound");
@@ -9547,9 +12845,13 @@ mod tests {
         replacement.id = "member-sparse-rebound-generation-2".into();
         replacement.runtime_generation += 1;
         replacement.started_at = "unix-ms:4".into();
+        let mut failed_previous = member.clone();
+        failed_previous.status = MemberRunStatus::Failed;
+        failed_previous.finished_at = Some("unix-ms:4".into());
         store
-            .append_member_run(&replacement)
-            .expect("append replacement runtime");
+            .compare_and_append_member_run(&member, &failed_previous)
+            .expect("close previous runtime before replacement");
+        admit_replacement_for_test(&store, &replacement);
 
         let rebound_context = host_work_context(
             "event-sparse-mixed-writer-rebound",
@@ -9681,7 +12983,7 @@ mod tests {
         failed_member.status = MemberRunStatus::Failed;
         failed_member.finished_at = Some("unix-ms:5".into());
         store
-            .append_member_run(&failed_member)
+            .compare_and_append_member_run(&member, &failed_member)
             .expect("record failed member");
         let mut assigned_to_failed = unassigned_test_work(&run.id, "work-failed-member");
         assigned_to_failed.claim_mode = WorkClaimMode::HostAssign;
@@ -9694,10 +12996,10 @@ mod tests {
             .expect_err("failed member cannot receive owned Work");
         assert!(failed.to_string().contains("MEMBER_UNAVAILABLE"));
 
-        let mut stopped_member = failed_member;
+        let mut stopped_member = failed_member.clone();
         stopped_member.status = MemberRunStatus::Stopped;
         store
-            .append_member_run(&stopped_member)
+            .compare_and_append_member_run(&failed_member, &stopped_member)
             .expect("record stopped member");
         let stopped_work = store
             .insert_work(
@@ -9715,11 +13017,11 @@ mod tests {
             .expect_err("stopped member cannot be assigned");
         assert!(stopped.to_string().contains("MEMBER_UNAVAILABLE"));
 
-        let mut closed_member = stopped_member;
+        let mut closed_member = stopped_member.clone();
         closed_member.status = MemberRunStatus::Idle;
         closed_member.coordination_status = firm_core::MemberCoordinationStatus::Closed;
         store
-            .append_member_run(&closed_member)
+            .compare_and_append_member_run(&stopped_member, &closed_member)
             .expect("record closed coordination");
         let unassigned = store
             .insert_work(
@@ -9771,7 +13073,7 @@ mod tests {
         closed_member.coordination_status = firm_core::MemberCoordinationStatus::Closed;
         closed_member.status = MemberRunStatus::Stopped;
         store
-            .append_member_run(&closed_member)
+            .compare_and_append_member_run(&member, &closed_member)
             .expect("record closed coordination");
 
         let blocked = store
@@ -9819,7 +13121,7 @@ mod tests {
         reopened_member.status = MemberRunStatus::Idle;
         reopened_member.runtime_generation += 1;
         store
-            .append_member_run(&reopened_member)
+            .compare_and_append_member_run(&closed_member, &reopened_member)
             .expect("record reopened member");
         let submitted = store
             .submit_work(
@@ -10434,7 +13736,7 @@ mod tests {
         linked_run.agent_team_id = Some("agent-team-persistent".into());
         linked_run.updated_at = "unix-ms:2".into();
         store
-            .append_team_run(&linked_run)
+            .compare_and_link_team_run_agent_team(&run, &linked_run)
             .expect("link durable team before compatibility Work creation");
 
         let mut initial = unassigned_test_work(&run.id, "persistent-work");
@@ -10484,7 +13786,7 @@ mod tests {
         closed_member.status = firm_core::MemberRunStatus::Stopped;
         closed_member.finished_at = Some("unix-ms:5".into());
         store
-            .append_member_run(&closed_member)
+            .compare_and_append_member_run(&member_a, &closed_member)
             .expect("close old runtime");
         let old_run_attention = HostAttention {
             id: "host-attention-old-runtime-stopped".into(),

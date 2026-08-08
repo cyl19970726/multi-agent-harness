@@ -4065,17 +4065,19 @@ fn reviewed_recovery_redelivers_same_stable_member_without_duplicate_work_or_ses
     // Give this deterministic fixture the same durable Team provenance that a
     // Mission-linked production TeamRun carries, then let the member create
     // its own Work so both provenance fields are non-null before recovery.
-    let mut linked_run = store
+    let unlinked_run = store
         .team_runs()
         .expect("TeamRun rows")
         .into_iter()
         .rev()
         .find(|run| run.id == run_id)
         .expect("TeamRun");
+    let mut linked_run = unlinked_run.clone();
     linked_run.agent_team_id = Some("agent-team-stable-recovery".to_string());
-    linked_run.definition_id = linked_run.agent_team_id.clone();
     linked_run.updated_at = "unix-ms:stable-recovery-team-link".to_string();
-    store.append_team_run(&linked_run).expect("link AgentTeam");
+    store
+        .compare_and_link_team_run_agent_team(&unlinked_run, &linked_run)
+        .expect("link AgentTeam");
 
     let work = member_team_run_json(
         &home,
@@ -4114,20 +4116,21 @@ fn reviewed_recovery_redelivers_same_stable_member_without_duplicate_work_or_ses
         .expect("durable Work creator")
         .to_string();
 
-    let mut stopped_member = store
+    let active_member = store
         .member_runs()
         .expect("MemberRun rows")
         .into_iter()
         .rev()
         .find(|member| member.id == member_id)
         .expect("MemberRun");
+    let mut stopped_member = active_member.clone();
     let original_generation = stopped_member.runtime_generation;
     stopped_member.status = harness_core::MemberRunStatus::Stopped;
     stopped_member.coordination_status = harness_core::MemberCoordinationStatus::Closed;
     stopped_member.finished_at = Some("unix-ms:stable-recovery-stop".to_string());
     stopped_member.last_event_at = stopped_member.finished_at.clone();
     store
-        .append_member_run(&stopped_member)
+        .compare_and_append_member_run(&active_member, &stopped_member)
         .expect("record stopped generation");
 
     let recover = |idempotent_retry: bool| {
@@ -4796,31 +4799,34 @@ fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
     let mut interaction_id = None;
     for _ in 0..100 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
-        interaction_id = snapshot["pending_interactions"]
+        interaction_id = snapshot["team_messages"]
             .as_array()
             .into_iter()
             .flatten()
-            .find(|interaction| {
-                interaction["member_run_id"].as_str() == Some(member_id.as_str())
-                    && interaction["status"].as_str() == Some("pending")
+            .find(|message| {
+                message["from_member_id"].as_str() == Some(member_id.as_str())
+                    && message["kind"].as_str() == Some("provider_interaction_request")
             })
-            .and_then(|interaction| interaction["id"].as_str().map(str::to_string));
+            .and_then(|message| message["id"].as_str().map(str::to_string));
         if interaction_id.is_some() {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    let interaction_id = interaction_id.expect("Codex PendingInteraction");
+    let interaction_id = interaction_id.expect("Codex provider interaction request message");
     let (status, resolved) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/interactions/{interaction_id}/resolve"),
         &serde_json::json!({"option_id": "implementation::0", "resolved_by": "host"}),
     );
     assert_eq!(status, 200, "body: {resolved}");
-    assert_eq!(resolved["result"]["status"].as_str(), Some("answered"));
-    let mut idle = false;
+    assert_eq!(
+        resolved["result"]["kind"].as_str(),
+        Some("provider_interaction_response")
+    );
+    let mut idle_with_delivered_response = false;
     for _ in 0..100 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
-        idle = snapshot["member_runs"]
+        let idle = snapshot["member_runs"]
             .as_array()
             .into_iter()
             .flatten()
@@ -4828,14 +4834,134 @@ fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
                 member["id"].as_str() == Some(member_id.as_str())
                     && member["status"].as_str() == Some("idle")
             });
-        if idle {
+        let request_acknowledged = snapshot["team_messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|message| message["id"].as_str() == Some(interaction_id.as_str()))
+            .and_then(|message| message["deliveries"].as_array())
+            .into_iter()
+            .flatten()
+            .any(|delivery| {
+                delivery["member_id"].as_str() == Some("host")
+                    && delivery["status"].as_str() == Some("acknowledged")
+            });
+        let response_delivered = snapshot["team_messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|message| {
+                message["kind"].as_str() == Some("provider_interaction_response")
+                    && message["causation_id"].as_str() == Some(interaction_id.as_str())
+            })
+            .flat_map(|message| message["deliveries"].as_array().into_iter().flatten())
+            .any(|delivery| {
+                delivery["member_id"].as_str() == Some(member_id.as_str())
+                    && delivery["status"].as_str() == Some("delivered")
+                    && delivery["provider_receipt_id"].as_str().is_some()
+            });
+        idle_with_delivered_response = idle && request_acknowledged && response_delivered;
+        if idle_with_delivered_response {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(
-        idle,
-        "Codex did not resume after Lead answer and return idle"
+        idle_with_delivered_response,
+        "Codex did not consume the Inject response and return idle"
+    );
+    let (_, snapshot) = serve.get_json("/v1/snapshot");
+    assert!(snapshot["pending_interactions"]
+        .as_array()
+        .is_some_and(Vec::is_empty));
+}
+
+#[test]
+fn codex_app_server_multi_question_fails_closed_without_interaction_rows() {
+    let home = TempHome::new("team-run-codex-multi-question");
+    let _project_id = init_project(&home, "alpha");
+    let fake_bin =
+        fake_provider::install_codex_team_shim(&home.base().join("fakebin-codex-multi-question"));
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[("PATH", path.as_str()), ("FAKE_CODEX_ASK", "multiple")],
+    );
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Reject unsupported Codex multi-question input",
+            "members": [{"name": "codex-multi-question", "role": "implementer", "provider": "codex", "execution_mode": "codex_app_server", "initial_work": "Emit two provider questions"}]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, _) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202);
+
+    let mut terminal = false;
+    for _ in 0..150 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        terminal = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|member| member["id"].as_str() == Some(member_id.as_str()))
+            .is_some_and(|member| {
+                matches!(
+                    member["status"].as_str(),
+                    Some("idle" | "failed" | "stopped" | "completed")
+                )
+            });
+        if terminal {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        terminal,
+        "unsupported multi-question request did not quiesce"
+    );
+    let (_, snapshot) = serve.get_json("/v1/snapshot");
+    assert!(
+        snapshot["team_messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .all(|message| {
+                message["kind"].as_str() != Some("provider_interaction_request")
+                    || message["from_member_id"].as_str() != Some(member_id.as_str())
+            }),
+        "unsupported multi-question request became a TeamMessage"
+    );
+    assert!(snapshot["pending_interactions"]
+        .as_array()
+        .is_some_and(Vec::is_empty));
+    assert!(
+        snapshot["member_actions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .all(|action| {
+                action["member_run_id"].as_str() != Some(member_id.as_str())
+                    || action["action_type"].as_str() != Some("provider_control")
+            }),
+        "unsupported multi-question request wrote a provider-control receipt"
     );
 }
 
@@ -4875,10 +5001,10 @@ fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
         &serde_json::json!({}),
     );
     assert_eq!(status, 202);
-    let mut waiting = false;
+    let mut waiting_request_id = None;
     for _ in 0..100 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
-        waiting = snapshot["member_runs"]
+        let waiting = snapshot["member_runs"]
             .as_array()
             .into_iter()
             .flatten()
@@ -4886,15 +5012,25 @@ fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
                 member["id"].as_str() == Some(member_id.as_str())
                     && member["status"].as_str() == Some("waiting")
             });
-        if waiting {
+        waiting_request_id = snapshot["team_messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|message| {
+                message["kind"].as_str() == Some("provider_interaction_request")
+                    && message["from_member_id"].as_str() == Some(member_id.as_str())
+            })
+            .and_then(|message| message["id"].as_str().map(str::to_string));
+        if waiting && waiting_request_id.is_some() {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(
-        waiting,
-        "Kimi never entered provider-interaction waiting state"
+        waiting_request_id.is_some(),
+        "Kimi never emitted a provider-interaction request message"
     );
+    let waiting_request_id = waiting_request_id.expect("waiting request id");
     let (status, interrupted) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/members/{member_id}/interrupt"),
         &serde_json::json!({"reason": "cancel while waiting", "requested_by": "operator"}),
@@ -4911,13 +5047,17 @@ fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
                 member["id"].as_str() == Some(member_id.as_str())
                     && member["status"].as_str() == Some("idle")
             });
-        let cancelled = snapshot["pending_interactions"]
+        let cancelled = snapshot["team_messages"]
             .as_array()
             .into_iter()
             .flatten()
-            .any(|interaction| {
-                interaction["member_run_id"].as_str() == Some(member_id.as_str())
-                    && interaction["status"].as_str() == Some("cancelled")
+            .find(|message| message["id"].as_str() == Some(waiting_request_id.as_str()))
+            .and_then(|message| message["deliveries"].as_array())
+            .into_iter()
+            .flatten()
+            .any(|delivery| {
+                delivery["member_id"].as_str() == Some("host")
+                    && delivery["status"].as_str() == Some("acknowledged")
             });
         idle_with_cancelled_interaction = idle && cancelled;
         if idle_with_cancelled_interaction {
@@ -4929,6 +5069,131 @@ fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
         idle_with_cancelled_interaction,
         "interrupt did not cancel the waiting interaction and return the Member to idle"
     );
+    let (_, snapshot) = serve.get_json("/v1/snapshot");
+    assert!(snapshot["pending_interactions"]
+        .as_array()
+        .is_some_and(Vec::is_empty));
+}
+
+#[test]
+fn close_cancels_kimi_provider_request_without_resuming_member() {
+    let home = TempHome::new("team-run-kimi-waiting-close");
+    let _project_id = init_project(&home, "alpha");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_kimi = fake_bin.join("kimi").display().to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_VERSION", "0.31.0"),
+            ("FAKE_KIMI_ASK", "1"),
+        ],
+    );
+    let (_, created) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "objective": "Close a member blocked on provider input",
+            "members": [{"name": "kimi-close-waiting", "role": "observer", "provider": "kimi", "model": "k2.5", "initial_work": "Wait for provider input, then close"}]
+        }),
+    );
+    let run_id = created["result"]["team_run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let member_id = created["result"]["member_runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, _) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202);
+
+    let mut request_id = None;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        request_id = snapshot["team_messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|message| {
+                message["kind"].as_str() == Some("provider_interaction_request")
+                    && message["from_member_id"].as_str() == Some(member_id.as_str())
+            })
+            .and_then(|message| message["id"].as_str().map(str::to_string));
+        let waiting = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("waiting")
+            });
+        if waiting && request_id.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let request_id = request_id.expect("Kimi provider request before close");
+
+    let (status, closed) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
+        &serde_json::json!({"reason": "close while waiting", "requested_by": "operator"}),
+    );
+    assert_eq!(status, 200, "body: {closed}");
+
+    let mut terminal_acknowledged = false;
+    for _ in 0..150 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        let terminal = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|member| member["id"].as_str() == Some(member_id.as_str()))
+            .is_some_and(|member| {
+                member["coordination_status"].as_str() == Some("closed")
+                    && member["status"].as_str() == Some("stopped")
+            });
+        let acknowledged = snapshot["team_messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|message| message["id"].as_str() == Some(request_id.as_str()))
+            .and_then(|message| message["deliveries"].as_array())
+            .into_iter()
+            .flatten()
+            .any(|delivery| {
+                delivery["member_id"].as_str() == Some("host")
+                    && delivery["status"].as_str() == Some("acknowledged")
+            });
+        terminal_acknowledged = terminal && acknowledged;
+        if terminal_acknowledged {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        terminal_acknowledged,
+        "close did not wake the reverse request and terminate the member"
+    );
+    // Let a delayed provider callback run if one still exists; it must not
+    // write Running/Idle over the terminal close.
+    std::thread::sleep(Duration::from_millis(100));
+    let (_, snapshot) = serve.get_json("/v1/snapshot");
+    let latest = snapshot["member_runs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|member| member["id"].as_str() == Some(member_id.as_str()))
+        .expect("closed member remains visible");
+    assert_eq!(latest["coordination_status"].as_str(), Some("closed"));
+    assert_eq!(latest["status"].as_str(), Some("stopped"));
+    assert!(snapshot["pending_interactions"]
+        .as_array()
+        .is_some_and(Vec::is_empty));
 }
 
 #[test]
@@ -5753,11 +6018,12 @@ fn kimi_provider_error_round_records_failure_without_fabricated_handoff_and_reco
     );
 }
 
-/// A prompt the provider rejects BEFORE any session/update was never accepted.
-/// Publishing a provider receipt for it would complete the Work delivery and
-/// burn the work before the provider accepted responsibility.
+/// A prompt the provider rejects before any prompt-scoped update was never
+/// accepted. A late session-level command-catalog notification must still be
+/// processed, but publishing a receipt for it would burn the Work before the
+/// provider accepted responsibility.
 #[test]
-fn kimi_prompt_rejected_before_any_update_never_burns_the_work() {
+fn kimi_prompt_rejected_before_any_prompt_update_never_burns_the_work() {
     let home = TempHome::new("team-run-kimi-reject-before-update");
     let _project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
@@ -5775,6 +6041,7 @@ fn kimi_prompt_rejected_before_any_update_never_burns_the_work() {
                 "FAKE_KIMI_REJECT_BEFORE_UPDATE_MARKER",
                 reject_once_value.as_str(),
             ),
+            ("FAKE_KIMI_LATE_AVAILABLE_BEFORE_REJECT", "1"),
             ("FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS", "30000"),
         ],
     );
@@ -5851,10 +6118,15 @@ fn kimi_prompt_rejected_before_any_update_never_burns_the_work() {
         .find(|delivery| delivery["work_id"].as_str() == Some(work_id.as_str()))
         .cloned()
         .expect("Work delivery");
-    assert_ne!(
+    assert_eq!(
         work_delivery["status"].as_str(),
-        Some("provider_received"),
-        "a rejected prompt must not complete the Work delivery: {work_delivery}"
+        Some("claimed"),
+        "a rejected prompt must leave the Work delivery claimed and replayable: {work_delivery}"
+    );
+    assert_eq!(
+        work_delivery["attempt"].as_u64(),
+        Some(1),
+        "a rejected prompt must not advance the delivery attempt: {work_delivery}"
     );
     assert!(
         work_delivery["provider_receipt_id"].is_null(),
@@ -5867,11 +6139,12 @@ fn kimi_prompt_rejected_before_any_update_never_burns_the_work() {
             .flatten()
             .any(|event| {
                 event["entity_id"].as_str() == Some(work_id.as_str())
-                    && event["summary"]
-                        .as_str()
-                        .is_some_and(|summary| summary.contains("accepted by provider"))
+                    && event["summary"].as_str().is_some_and(|summary| {
+                        summary.contains("accepted by provider")
+                            || summary.contains("provider_received")
+                    })
             }),
-        "a rejected prompt must not journal `Work accepted by provider`: {}",
+        "a rejected prompt must not journal accepted/provider_received: {}",
         snapshot["team_run_events"]
     );
 }
@@ -6360,20 +6633,21 @@ fn kimi_model_switch_uses_only_the_new_models_advertised_effort_controls() {
     // returns no refreshed thinking options, so every old-model projection
     // field must be cleared rather than surviving by omission.
     let store = HarnessStore::new(home.spaces_dir().join(&project_id));
-    let mut stale_member = store
+    let initial_member = store
         .member_runs()
         .expect("member rows")
         .into_iter()
         .rev()
         .find(|member| member.id == member_id)
         .expect("created member row");
+    let mut stale_member = initial_member.clone();
     stale_member.provider_controls.reasoning_effort.effective = Some("max".to_string());
     stale_member.provider_controls.reasoning_effort.status =
         harness_core::ProviderControlStatus::Effective;
     stale_member.provider_controls.reasoning_effort.note =
         Some("acknowledged by the previous K3 model".to_string());
     store
-        .append_member_run(&stale_member)
+        .compare_and_append_member_run(&initial_member, &stale_member)
         .expect("seed stale old-model control projection");
 
     let (status, started) = serve.post_json(

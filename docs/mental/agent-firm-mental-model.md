@@ -46,7 +46,7 @@ Execution answers "what work is being done right now."
 Work creation answers five questions: WHERE, WHAT, HOW, WHO.
 
 - **WHERE** — `workspace`: Where the member works. Three kinds: `worktree` (isolated git checkout, for code), `dir` (plain directory, for exploration), `inherit` (project root, for read-only). Harness creates before member start, cleans up on completion. CLI: `--worktree <path>`.
-- **HOW** — `gates`: Declarative verification gates that must pass before acceptance. Four built-in: `github-pr` (PR merged, CI pass), `code-review` (Review verdict), `artifact-exists` (output files present), `check-pass` (checks run). GateRegistry allows custom gates. Empty gates = manual accept (back-compat). CLI: `--gate <plugin>[:key=val,...]`, `work check-gates`, `work accept` (auto-checks gates).
+- **HOW** — `gates`: Declarative verification gates that must pass before acceptance. Plugin names are non-empty and configs are JSON objects; old wire rows that omit config normalize to `{}`. Four typed built-ins are trusted by default: `github-pr`, `code-review`, `artifact-exists`, and `check-pass`. Custom declarations may persist, but default evaluation and Store acceptance fail unknown plugins closed; only an embedder with an explicit custom registry can evaluate one. Exact duplicate GateSpecs and more than one `code-review` Gate are rejected. `code-review.strategy` is required and limited to `peer | self | host`; omitting the whole Gate is the only no-review form. Candidate-bound Reviews persist caller-supplied performer attribution separately from authority; Store actor contexts are trusted inputs, not authentication, and Host reviews always use fixed `Host/host` authority. Artifact/check Gates match exact current-candidate refs only: they do not inspect files, prove truth, or rerun checks. Legacy unbound Reviews remain readable but cannot satisfy a Gate. `space migrate-from-project` validates and downgrades untrusted source Review bindings under the source Store writer lock, requires a new target id, and publishes a verified same-parent staging directory with one rename. Registration is a later recoverable step: failure retains the verified target with manifest status `pending` and `harness space switch <id>` recovery instructions. This is not a crash-atomic target-plus-registry transaction and assumes a trusted local filesystem; path/type/symlink checks are best effort. Empty Gates preserve manual Host accept compatibility. Store-managed `accept_work` enforces declared Gates and exposes no waiver flag. CLI: `--gate <plugin>[:key=val,...]`, `work check-gates`, `work accept`.
 - **WHO** — `owner_member_id`, `assignee`.
 
 **Views**: All Execution visible on one page. Filters by Agent Team, status, date range. Tags on Work entries. Per-team views unchanged.
@@ -82,7 +82,7 @@ Agent Teams on different machines. Future requirement — design task, not imple
 | Component | Status | Notes |
 |---|---|---|
 | Agent Team execution | ✅ Live | Full lifecycle |
-| Work — gates | ✅ Live | PR #401 — GateSpec, GateEngine, 4 built-in gates, GateRegistry |
+| Work — gates | ✅ Live | Open persistence/closed default registry, four built-ins, authority-bound Review, Store acceptance invariant |
 | Work — workspace | ✅ Live | PR #406 — WorkWorkspace, ensure/cleanup, --worktree CLI |
 | Organization — Agent Teams | ✅ PR #385 | machine_id + labels |
 | Organization — Standing Agents | ❌ Not started | Design only |

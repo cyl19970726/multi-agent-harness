@@ -24,15 +24,11 @@ Member         = autonomous worker, one turn = one round, idles after each
 Host (Lead)    = decision-maker: review, accept, assign, close, re-plan
 ```
 
-**Work states**: `open → assigned → in_progress → review → done` (Host accepts) or `→ cancelled`
+**Work states**: `open → in_progress → review → done` (Host accepts) or `→ cancelled`; assignment/ownership is metadata, not a status
 **Message states**: `queued → claimed → delivered` (daemon handles)
 **Member states**: `queued → running → idle` (normal breathing) or `→ stopped` (Host closes)
 **Host receives**: hook auto-injects host-inbox at turn start — no polling needed
 **Member receives**: daemon injects messages + work into CONTRACT prompt each round
-
-The full canonical reference is at
-(synced from the repository main branch during plugin install).
-```
 
 These hard invariants apply to every Host and Member. The full shared text lives in [`skills/shared-references/SKILL.md`](../shared-references/SKILL.md); when a rule appears in both skills, the shared copy is authoritative. The rules below are the Host-Lead-specific application.
 
@@ -101,8 +97,10 @@ Select exactly one top-level execution driver per MemberRun — see shared hard 
    explanation, and peer discussion. Link relevant messages with `--work-id`.
    If conversation creates a durable obligation, explicitly create/update
    Work; never infer one from prose.
-7. **Integrate.** Inspect the submitted result, the artifact/check references
-   required by its completion criteria, and the resolvable native session.
+7. **Integrate.** Inspect the submitted result, the exact durable artifact/check
+   references required by the current Work candidate, and the resolvable native
+   session. Artifact/check gates only match those references; they do not read
+   artifacts, rerun checks, or establish that a referenced claim is true.
    Request changes or accept through Work operations. Do not wait for unrelated
    active Works.
 8. **Re-plan.** At material decision points — a new Work tranche, a
@@ -166,16 +164,16 @@ adds no new commands, only a discipline for the ones already listed.
   │    (see Work.workspace — already     │
   │     created by `work workspace       │
   │     ensure`)                          │
-  │ 2. Commit ALL changes before submit │
-  │ 3. Push branch to origin            │
-  │ 4. Create PR with Summary/Changes   │
-  │ 5. Wait for review → merge          │
+  │ 2. Follow the declared delivery     │
+  │    criteria and gates               │
+  │ 3. Submit exact durable refs        │
+  │ 4. Wait for Host review             │
   ├─ Gates ────────────────────────────┤
   │ Verification gates that must pass   │
   │ before Host acceptance (see below)  │
   │ github-pr / code-review / etc.      │
   ├─ Evidence ──────────────────────────┤
-  │ What counts as done (merged PR etc) │
+  │ What counts as done                 │
   │ Required artifact_refs / check_refs  │
   └─────────────────────────────────────┘
   ```
@@ -186,10 +184,9 @@ adds no new commands, only a discipline for the ones already listed.
 
   **Standard delivery requirements** (include in every code-changing work):
   - Workspace: declared via `--worktree` (harness creates and cleans up)
-  - Commit: ALL changes must be committed before `work submit`
-  - Push: Branch must be pushed to origin
-  - PR: Create PR with Summary/Changes/Verification sections
-  - Review: Wait for Host review → merge after approval
+  - Candidate identity: the exact submitted Work id and version
+  - Evidence: attach the exact durable refs named by declared gates and criteria
+  - Review: wait for Host review and explicit acceptance
   - No half-finished work: if blocked, report why, don't leave uncommitted changes
 
 ## Workspace Management
@@ -200,12 +197,23 @@ the first member starts and cleans it up on completion (when
 
 ```bash
 # Code work: isolated worktree (most common)
-firm work create --title "implement login" \
+harness team-run work create --title "implement login" \
+  --team-run-id <team-run-id> \
+  --context "Implement login only under the member's declared owned paths." \
+  --completion-criteria "Login tests pass and the merged PR contains only the declared paths." \
+  --owner-member-run-id <implementer-member-run-id> \
+  --claim-mode host_assign \
   --worktree ../repo-feat-login \
-  --gate github-pr:require_merged=true
+  --gate github-pr:require_merged=true \
+  --gate code-review:strategy=peer,reviewer=<critic-member-run-id>
 
 # Exploration work: plain directory, keep after done
-firm work create --title "research async runtime" \
+harness team-run work create --title "research async runtime" \
+  --team-run-id <team-run-id> \
+  --context "Compare the supported async runtimes and record source links." \
+  --completion-criteria "The comparison names tradeoffs, a recommendation, and its sources." \
+  --claim-mode team_claim \
+  --eligible-member-id <researcher-member-run-id> \
   --workspace-kind dir --workspace-path ../research-runtime \
   --workspace-no-cleanup
 
@@ -219,6 +227,13 @@ Workspace is declared at Work creation time and available on
 `MemberRun.worktree_ref` and injects the path as cwd via
 `LaunchSpec.workspace`.
 
+`--owner-member-run-id` is the Work assignee for `host_assign`. Owned paths are
+a MemberRun boundary, configured when forming the TeamRun (for example with
+`team-run create --member name:role:provider@path` or
+`--member-owned-path name:path`); `team-run work create` has no
+`--owned-path` flag. For code work, keep the Work workspace inside that member
+boundary and name the reviewer in the `code-review` gate.
+
 ## Create And Allocate Works
 
 List and inspect the board before allocating new work:
@@ -228,7 +243,7 @@ harness team-run work list --team-run-id <team-run-id>
 harness team-run work show --work-id <work-id>
 ```
 
-Create an assigned Work:
+Create a Work with host-assigned ownership:
 
 ```bash
 harness team-run work create \
@@ -241,10 +256,20 @@ harness team-run work create \
   --idempotency-key <stable-command-key>
 ```
 
-Declare verification gates with `--gate` (repeatable). The Host's
-`work accept` checks declared gates; `--skip-gates` bypasses for
-explicit waiver. Gates are automatically injected into the Work
-context so the Member sees what must pass before acceptance.
+Declare verification gates with `--gate` (repeatable). Declared gates are an
+invariant of the Store-managed `accept_work` operation: that typed operation
+evaluates them and exposes no waiver flag. Gates are automatically injected
+into the Work context so the Member sees what must pass before acceptance.
+
+Gate declarations are an open persistence contract with a closed default trust
+set. Every plugin name must be non-empty and every config must be a JSON object;
+old wire rows that omit config normalize to `{}`. Exact duplicate GateSpecs and
+more than one `code-review` gate are rejected. The four built-ins have typed
+configs, and `code-review` always requires `strategy=peer|self|host`. A custom
+GateSpec may be persisted, but the default registry and default Store acceptance
+fail it as unknown. Only an embedder that explicitly supplies a custom registry
+can evaluate its custom plugin; do not mistake persistence for trusted
+registration.
 
 ```bash
 # Code work requiring PR merge + CI pass
@@ -252,9 +277,11 @@ harness team-run work create \
   --team-run-id <team-run-id> \
   --title "implement login" \
   --context "..." --completion-criteria "..." \
+  --owner-member-run-id <implementer-member-run-id> \
+  --claim-mode host_assign \
   --worktree ../repo-feat-login \
   --gate github-pr:require_merged=true,require_ci_pass=true \
-  --gate code-review:strategy=peer,reviewer=critic-1 \
+  --gate code-review:strategy=peer,reviewer=<critic-member-run-id> \
   --gate check-pass \
   --gate artifact-exists:paths=src/auth/mod.rs
 
@@ -284,7 +311,7 @@ harness team-run work create \
 ```
 
 Empty `eligible_member_ids` means every active Member may claim. Use
-`--prerequisite-work-id` only for minimal readiness; do not encode branches,
+`--prerequisite-work-id` only for minimal readiness; do not encode conditional paths,
 loops, conditions, retries, or a general Task Graph.
 
 An idle eligible Member may be woken from the shared board without creating a
@@ -348,16 +375,82 @@ otherwise send a queued Message for the next safe boundary.
 ## Review Work Explicitly
 
 **Review discipline.** Before issuing `request-changes`, verify the claimed
-gap against the current master branch code — not against memory, not against
-the review expectation alone. A Member's rebuttal backed by master-branch
-evidence is legitimate and must be checked; do not dismiss it without
-re-verifying.
+gap against the current target code — not against memory or review expectation
+alone. A Member's rebuttal backed by current-code evidence is legitimate and
+must be checked; do not dismiss it without re-verifying.
 
 Provider completion and conversational updates never submit or accept Work.
 When a Member moves Work to `review`, inspect the required result summary plus
-the artifact/check refs, changed files, tests, and native session that its
-completion criteria and risk require. Empty artifact/check arrays are valid
-when the criteria need no such reference.
+the exact durable artifact/check refs carried by that current candidate,
+changed files, tests, and native session that its completion criteria and risk
+require. `artifact-exists` and `check-pass` only compare configured names with
+the candidate's `artifact_refs` and `check_refs`; they do not inspect files,
+verify truth, or rerun commands. Empty arrays are valid only when no declared
+gate or completion criterion requires such a reference.
+
+A legacy unbound `Review` may remain visible for history, but it cannot satisfy
+a `code-review` gate. Gate matching requires a trusted code Review bound to the
+exact Work id, current Work version, declared strategy, and required reviewer
+identity. The only strategies are `peer`, `self`, and `host`; when no code
+review is required, omit the `code-review` gate rather than declaring `none`.
+
+Trusted Work Review writes preserve audit identity separately from authority:
+`performed_by_actor` records the actor attribution supplied through the trusted
+caller context, and `authority_actor` records the authority exercised when
+distinct. These Store contexts are trusted caller inputs, not an authentication
+mechanism. Peer/self reviews are written by
+the bound MemberRun. Host reviews always use the fixed `Host/host` authority and
+persist `reviewer_agent_id=host`; CLI `--actor` and HTTP `actor_id` change only
+performer attribution and cannot impersonate Host authority or reviewer
+identity.
+
+Every bound Review names a positive Work version (`reviewed_work_version > 0`).
+The Review ledger is append-only and every `Review.id` is globally unique across
+its complete history; generic and Work-bound writers both reject id reuse.
+
+Treat project-derived Review ledgers as untrusted during Execution Space
+migration. Before creating the target,
+`space migrate-from-project` preflights the complete source: every source row
+must deserialize as `Review` and pass validation, then every row with binding
+fields is stripped and must deserialize and validate again. A missing or
+unknown field, invalid null, partial binding, or any other invalid row fails the
+whole migration closed without partial target writes. Only after that preflight
+does migration preserve stripped rows as readable historical unbound evidence;
+they cannot pass the gate. The migration manifest records their count as
+`downgraded_bound_reviews`. Inspect that count rather than trusting
+source-ledger binding claims.
+
+Migration is new-target only. Any existing target path is rejected, regardless
+of type, and the operator must choose a new `--id`; migration never replaces an
+existing target. `--force` is retired and fails before source, target, or
+registry mutation.
+
+The migration holds the source `HarnessStore` exclusive migration guard, which
+uses the same `.store.lock` as ordinary Store writers, from the first source
+preflight read through staging, verification, and publish. Ordinary cooperating
+Store writers therefore block until the consistent snapshot has been published.
+Do not call a source Store writer while the guard is held because that would
+attempt to re-enter the same lock.
+
+It builds and verifies a staging directory beside the absent target, rechecks
+that absence under the execution-space publish lock, and publishes with one
+same-parent rename. The manifest is published with
+`registration.status=pending` and a
+`registration.recovery_command` of `harness space switch <id>`. Successful
+registration and activation best-effort change the status to `complete`. If
+that later step fails, the fully verified target remains in place with `pending` status; follow
+the public switch command to recover registration and activation. Do not expect
+activation rollback, and do not describe target publication plus registry/
+`ACTIVE_SPACE` updates as one crash-atomic transaction.
+
+A successful initial registration or recovery switch best-effort reconciles the
+matching manifest from `pending` to `complete`. A manifest read, parse, or
+write-back failure emits a warning but does not undo or report failure for a
+registry/`ACTIVE_SPACE` update that already succeeded.
+
+This contract assumes a trusted local filesystem and cooperating writers that
+honor Store/registry locks. Path, type, and symlink checks are best effort; they
+do not claim protection against malicious out-of-band root or path replacement.
 
 **Gate-aware review.** If the Work has declared gates, run `work check-gates`
 to see which gates pass and which are blocked:
@@ -378,7 +471,7 @@ harness team-run work request-changes \
   --reason "<specific required change>" \
   --idempotency-key <stable-command-key>
 
-# Gates are evaluated before acceptance; use --skip-gates for explicit waiver
+# The Store evaluates every declared gate before acceptance.
 harness team-run work accept \
   --work-id <work-id> --expected-version <latest-version> \
   --idempotency-key <stable-command-key>

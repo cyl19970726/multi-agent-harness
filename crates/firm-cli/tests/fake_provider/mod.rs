@@ -130,7 +130,9 @@ while IFS= read -r line; do
       ;;
     *'"method":"session/new"'*)
       printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"%s","configOptions":[{"type":"select","id":"model","currentValue":"k2.5","options":[{"value":"k2.5","name":"K2.5"},{"value":"qwen/qwen3.8-max","name":"Qwen 3.8 Max"}]},{"type":"select","id":"thinking","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"}]}]}}\n' "$id" "$session_id"
-      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"available_commands_update","availableCommands":[]}}}\n' "$session_id"
+      if [ "${FAKE_KIMI_LATE_AVAILABLE_BEFORE_REJECT:-0}" != "1" ]; then
+        printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"available_commands_update","availableCommands":[]}}}\n' "$session_id"
+      fi
       ;;
     *'"method":"session/load"'*)
       session_id=$(printf '%s' "$line" | sed -n 's/.*"sessionId":"\([^"]*\)".*/\1/p')
@@ -207,9 +209,14 @@ while IFS= read -r line; do
         continue
       fi
       if [ -n "${FAKE_KIMI_REJECT_BEFORE_UPDATE_MARKER:-}" ] && [ ! -e "${FAKE_KIMI_REJECT_BEFORE_UPDATE_MARKER}" ]; then
-        # Immediate non-retryable rejection with NO preceding session/update:
-        # the provider never accepted the prompt, so Harness must not publish
-        # a provider receipt for it and must leave the delivery replayable.
+        # A late session-scoped update can race out after session creation but
+        # is not evidence that this prompt was accepted. The opt-in branch
+        # makes that wire order deterministic for the receipt regression.
+        if [ "${FAKE_KIMI_LATE_AVAILABLE_BEFORE_REJECT:-0}" = "1" ]; then
+          printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"available_commands_update","availableCommands":[]}}}\n' "$session_id"
+        fi
+        # Immediate non-retryable rejection with no prompt-scoped update: the
+        # provider never accepted the prompt, so Harness must leave replayable.
         : > "${FAKE_KIMI_REJECT_BEFORE_UPDATE_MARKER}"
         printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"provider API 429: rate limited before the turn started"}}\n' "$id"
         continue
@@ -486,10 +493,21 @@ if [ "$1" = "app-server" ]; then
           printf '{"method":"item/agentMessage/delta","params":{"threadId":"%s","turnId":"%s","itemId":"message-app-1","delta":"## RESULT\\ndone\\n## SUMMARY\\nexecuted approved plan\\n"}}\n' "$thread_id" "$turn_id"
           printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"completed","items":[{"id":"message-app-1","type":"agentMessage","text":"## RESULT\\ndone\\n## SUMMARY\\nexecuted approved plan\\n"}]}}}\n' "$thread_id" "$turn_id"
           if [ "${FAKE_CODEX_EXIT_AFTER_FIRST_TURN:-0}" = "1" ] && [ "$turn_seq" = "1" ]; then
+            if [ -n "${FAKE_CODEX_EXIT_SPAWN_COUNT:-}" ] && [ -n "${FAKE_CODEX_EXIT_ONCE_MARKER:-}" ]; then
+              exit_count=0
+              if [ -f "${FAKE_CODEX_EXIT_ONCE_MARKER}" ]; then
+                exit_count=$(cat "${FAKE_CODEX_EXIT_ONCE_MARKER}")
+              fi
+              if [ "$exit_count" -lt "${FAKE_CODEX_EXIT_SPAWN_COUNT}" ]; then
+                exit_count=$((exit_count + 1))
+                printf '%s\n' "$exit_count" > "${FAKE_CODEX_EXIT_ONCE_MARKER}"
+                exit 0
+              fi
+            fi
             # FAKE_CODEX_EXIT_ONCE_MARKER (optional): only the first spawned
             # process exits, so a test can model a single transport loss and
             # then let the resumed process keep running turns.
-            if [ -z "${FAKE_CODEX_EXIT_ONCE_MARKER:-}" ] || [ ! -f "${FAKE_CODEX_EXIT_ONCE_MARKER}" ]; then
+            if [ -z "${FAKE_CODEX_EXIT_SPAWN_COUNT:-}" ] && { [ -z "${FAKE_CODEX_EXIT_ONCE_MARKER:-}" ] || [ ! -f "${FAKE_CODEX_EXIT_ONCE_MARKER}" ]; }; then
               if [ -n "${FAKE_CODEX_EXIT_ONCE_MARKER:-}" ]; then
                 : > "${FAKE_CODEX_EXIT_ONCE_MARKER}"
               fi
@@ -498,6 +516,8 @@ if [ "$1" = "app-server" ]; then
           fi
         elif [ "${FAKE_CODEX_INTERRUPT_WITHOUT_REQUEST:-0}" = "1" ]; then
           printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"interrupted","items":[]}}}\n' "$thread_id" "$turn_id"
+        elif [ "${FAKE_CODEX_ASK:-0}" = "multiple" ]; then
+          printf '{"id":700,"method":"item/tool/requestUserInput","params":{"threadId":"%s","turnId":"%s","itemId":"ask-app-1","questions":[{"id":"implementation","header":"Contract","question":"Which implementation should be used?","options":[]},{"id":"verification","header":"Verification","question":"Which verification should be run?","options":[]}]}}\n' "$thread_id" "$turn_id"
         elif [ "${FAKE_CODEX_ASK:-0}" = "1" ]; then
           printf '{"id":700,"method":"item/tool/requestUserInput","params":{"threadId":"%s","turnId":"%s","itemId":"ask-app-1","questions":[{"id":"implementation","header":"Contract","question":"Which implementation should be used?","options":[{"label":"Use native contract","description":"Use the provider-native path."},{"label":"Stop","description":"Do not continue."}]}]}}\n' "$thread_id" "$turn_id"
         fi

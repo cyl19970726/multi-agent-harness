@@ -180,9 +180,15 @@ fn explicit_migration_copies_only_execution_truth_and_keeps_source() {
         migrated["migration"]["source_retained"].as_bool(),
         Some(true)
     );
-    assert!(migrated["migration"]["rollback"]
-        .as_str()
-        .is_some_and(|command| command.starts_with("harness space switch ")));
+    assert!(migrated["migration"].get("rollback").is_none());
+    assert_eq!(
+        migrated["migration"]["registration"]["status"].as_str(),
+        Some("complete")
+    );
+    assert_eq!(
+        migrated["migration"]["registration"]["recovery_command"].as_str(),
+        Some("harness space switch migrated-space")
+    );
     assert!(target.join("execution_space_migration.json").is_file());
 }
 

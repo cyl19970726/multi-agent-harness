@@ -1,0 +1,11 @@
+{
+  "id": "review-whitespace-summary",
+  "reviewer_agent_id": "critic-1",
+  "review_kind": "code",
+  "verdict": "pass",
+  "summary": "   ",
+  "blockers": [],
+  "missing_validation": [],
+  "evidence_ids": [],
+  "created_at": "unix-ms:1"
+}

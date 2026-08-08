@@ -1011,20 +1011,34 @@ fn kimi_question_waits_for_lead_resolution_and_resumes_same_turn() {
     let interaction_path = home
         .spaces_dir()
         .join(&project_id)
-        .join("pending_interactions.jsonl");
+        .join("team_messages.jsonl");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while !interaction_path.exists() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     assert!(
         interaction_path.exists(),
-        "Kimi request must create a pending interaction"
+        "Kimi request must create a provider interaction TeamMessage"
     );
-    let interactions = store_rows(&home, &project_id, "pending_interactions.jsonl");
-    let pending = interactions.first().expect("pending interaction");
-    assert_eq!(pending["kind"].as_str(), Some("question"));
-    assert_eq!(pending["route"].as_str(), Some("lead"));
-    assert_eq!(pending["status"].as_str(), Some("pending"));
+    let messages = store_rows(&home, &project_id, "team_messages.jsonl");
+    let pending = messages
+        .iter()
+        .find(|message| message["kind"].as_str() == Some("provider_interaction_request"))
+        .expect("provider interaction request");
+    let request_body: serde_json::Value =
+        serde_json::from_str(pending["body"].as_str().expect("canonical request body"))
+            .expect("request body JSON");
+    assert_eq!(request_body["type"].as_str(), Some("question"));
+    assert_eq!(pending["from_member_id"], request_body["member"]);
+    assert_eq!(pending["to_member_ids"][0].as_str(), Some("host"));
+    assert_eq!(
+        pending["deliveries"][0]["policy"].as_str(),
+        Some("manual_ack")
+    );
+    assert_eq!(
+        pending["deliveries"][0]["status"].as_str(),
+        Some("delivered")
+    );
     let interaction_id = pending["id"].as_str().expect("interaction id");
 
     let unauthorized = run_with_fake_kimi(
@@ -1051,7 +1065,7 @@ fn kimi_question_waits_for_lead_resolution_and_resumes_same_turn() {
         "operator must not impersonate Lead"
     );
     assert!(
-        String::from_utf8_lossy(&unauthorized.stderr).contains("requires lead authority"),
+        String::from_utf8_lossy(&unauthorized.stderr).contains("does not authorize"),
         "unauthorized error: {}",
         String::from_utf8_lossy(&unauthorized.stderr)
     );
@@ -1087,20 +1101,50 @@ fn kimi_question_waits_for_lead_resolution_and_resumes_same_turn() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let interactions = store_rows(&home, &project_id, "pending_interactions.jsonl");
-    assert_eq!(interactions[0]["status"].as_str(), Some("answered"));
+    let messages = store_rows(&home, &project_id, "team_messages.jsonl");
+    let request = messages
+        .iter()
+        .find(|message| message["id"].as_str() == Some(interaction_id))
+        .expect("latest request");
     assert_eq!(
-        interactions[0]["response_option_id"].as_str(),
-        Some("q0_opt_0")
+        request["deliveries"][0]["status"].as_str(),
+        Some("acknowledged")
+    );
+    let response = messages
+        .iter()
+        .find(|message| {
+            message["kind"].as_str() == Some("provider_interaction_response")
+                && message["causation_id"].as_str() == Some(interaction_id)
+        })
+        .expect("provider response");
+    let response_body: serde_json::Value =
+        serde_json::from_str(response["body"].as_str().expect("canonical response body"))
+            .expect("response body JSON");
+    assert_eq!(response_body["choice"].as_str(), Some("q0_opt_0"));
+    assert_eq!(response["deliveries"][0]["policy"].as_str(), Some("inject"));
+    assert_eq!(
+        response["deliveries"][0]["status"].as_str(),
+        Some("delivered")
+    );
+    assert!(response["deliveries"][0]["provider_receipt_id"].is_string());
+    assert!(
+        !home
+            .spaces_dir()
+            .join(&project_id)
+            .join("pending_interactions.jsonl")
+            .exists(),
+        "new provider bridge must not append PendingInteraction rows"
     );
     let actions = store_rows(&home, &project_id, "member_actions.jsonl");
     assert!(
         actions.iter().any(|action| {
             action["action_type"].as_str() == Some("interaction_resolved")
-                && action["summary"].as_str().is_some_and(|value| value.contains("answered"))
+                && action["summary"]
+                    .as_str()
+                    .is_some_and(|value| value.contains("response received"))
                 && action["provider_call_id"].is_null()
         }),
-        "PendingInteraction is authoritative; MemberAction records only the coordination resolution: {actions:?}"
+        "TeamMessage response is authoritative; MemberAction records only the coordination projection: {actions:?}"
     );
 }
 
@@ -1195,8 +1239,7 @@ fn kimi_full_access_tool_permissions_acknowledge_without_pending_interactions() 
 fn assert_kimi_permission_request_fails_closed(
     test_name: &str,
     ask_mode: &str,
-    expected_kind: &str,
-    expected_route: &str,
+    expected_type: Option<&str>,
     resolved_by: &str,
     option_id: Option<&str>,
 ) {
@@ -1248,26 +1291,56 @@ fn assert_kimi_permission_request_fails_closed(
         .spawn()
         .expect("spawn team run");
 
+    let Some(expected_type) = expected_type else {
+        let output = child.wait_with_output().expect("wait unknown request");
+        assert!(
+            output.status.success(),
+            "unknown optionless request must fail closed in-process: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(optional_store_rows(&home, &project_id, "pending_interactions.jsonl").is_empty());
+        assert!(
+            optional_store_rows(&home, &project_id, "team_messages.jsonl")
+                .iter()
+                .all(|message| {
+                    message["kind"].as_str() != Some("provider_interaction_request")
+                })
+        );
+        return;
+    };
+
     let interaction_path = home
         .spaces_dir()
         .join(&project_id)
-        .join("pending_interactions.jsonl");
+        .join("team_messages.jsonl");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while !interaction_path.exists() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     assert!(
         interaction_path.exists(),
-        "unsafe request must remain visibly pending"
+        "unsafe request must remain visible as a provider request message"
     );
-    let pending = store_rows(&home, &project_id, "pending_interactions.jsonl")
+    let pending = store_rows(&home, &project_id, "team_messages.jsonl")
         .into_iter()
-        .next()
-        .expect("pending interaction");
-    assert_eq!(pending["kind"].as_str(), Some(expected_kind));
-    assert_eq!(pending["route"].as_str(), Some(expected_route));
-    assert_eq!(pending["status"].as_str(), Some("pending"));
-    let interaction_id = pending["id"].as_str().expect("interaction id");
+        .find(|message| message["kind"].as_str() == Some("provider_interaction_request"))
+        .expect("provider interaction request");
+    let request_body: serde_json::Value = serde_json::from_str(
+        pending["body"]
+            .as_str()
+            .expect("canonical provider request"),
+    )
+    .expect("provider request JSON");
+    assert_eq!(request_body["type"].as_str(), Some(expected_type));
+    assert_eq!(
+        pending["deliveries"][0]["policy"].as_str(),
+        Some("manual_ack")
+    );
+    assert_eq!(
+        pending["deliveries"][0]["status"].as_str(),
+        Some("delivered")
+    );
+    let interaction_id = pending["id"].as_str().expect("interaction id").to_string();
     let waiting_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         let members = store_rows(&home, &project_id, "member_runs.jsonl");
@@ -1276,7 +1349,7 @@ fn assert_kimi_permission_request_fails_closed(
         }
         assert!(
             std::time::Instant::now() < waiting_deadline,
-            "PendingInteraction must project MemberRun waiting; latest={members:?}"
+            "provider request TeamMessage must project MemberRun waiting; latest={members:?}"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
@@ -1289,7 +1362,7 @@ fn assert_kimi_permission_request_fails_closed(
         "--id",
         &run_id,
         "--interaction-id",
-        interaction_id,
+        &interaction_id,
         "--resolved-by",
         resolved_by,
     ];
@@ -1310,8 +1383,28 @@ fn assert_kimi_permission_request_fails_closed(
         "start failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let resolved = store_rows(&home, &project_id, "pending_interactions.jsonl");
-    assert_ne!(resolved[0]["status"].as_str(), Some("pending"));
+    let messages = store_rows(&home, &project_id, "team_messages.jsonl");
+    let request = messages
+        .iter()
+        .find(|message| message["id"].as_str() == Some(interaction_id.as_str()))
+        .expect("latest provider request");
+    assert_eq!(
+        request["deliveries"][0]["status"].as_str(),
+        Some("acknowledged")
+    );
+    let response = messages
+        .iter()
+        .find(|message| {
+            message["kind"].as_str() == Some("provider_interaction_response")
+                && message["causation_id"].as_str() == Some(interaction_id.as_str())
+        })
+        .expect("provider response");
+    assert_eq!(response["deliveries"][0]["policy"].as_str(), Some("inject"));
+    assert_eq!(
+        response["deliveries"][0]["status"].as_str(),
+        Some("delivered")
+    );
+    assert!(optional_store_rows(&home, &project_id, "pending_interactions.jsonl").is_empty());
     let actions = store_rows(&home, &project_id, "member_actions.jsonl");
     assert!(actions
         .iter()
@@ -1323,8 +1416,7 @@ fn kimi_reject_only_tool_permission_fails_closed_to_policy() {
     assert_kimi_permission_request_fails_closed(
         "team-run-kimi-reject-only-permission",
         "approval_reject_only",
-        "tool_approval",
-        "policy",
+        Some("reject_only"),
         "policy",
         Some("tool_reject_once"),
     );
@@ -1335,8 +1427,7 @@ fn kimi_unknown_permission_request_fails_closed_to_human() {
     assert_kimi_permission_request_fails_closed(
         "team-run-kimi-unknown-permission",
         "unknown",
-        "unknown",
-        "human",
+        None,
         "human",
         None,
     );
