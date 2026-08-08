@@ -1,0 +1,14 @@
+{
+  "id": "work-event-release-1",
+  "team_run_id": "team-run-1",
+  "work_id": "work-1",
+  "sequence": 2,
+  "kind": "released",
+  "expected_version": 1,
+  "resulting_version": 2,
+  "performed_by_actor": { "kind": "host", "id": "host" },
+  "causation_ref": { "kind": "member_close", "id": "member-run-1" },
+  "idempotency_key": "release-work-1-after-member-close",
+  "payload": { "reason": "member runtime closed; Work requires reassignment" },
+  "created_at": "unix-ms:2"
+}

@@ -5608,12 +5608,12 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use firm_core::{
-        DelegationMode, DelegationStatus, HostAttentionKind, MemberActionStatus, MemberRunStatus,
-        MemberWorkspaceSnapshot, MessageKind, Mission, MissionLogEntry, MissionLogEntryKind,
-        MissionStatus, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy,
-        TeamDeliveryStatus, TeamMessageDelivery, TeamMessageKind, TeamMessageResponseIntent,
-        TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus,
-        WorkPriority,
+        DelegationMode, DelegationStatus, GateEngine, GateSpec, GateVerdict, HostAttentionKind,
+        MemberActionStatus, MemberRunStatus, MemberWorkspaceSnapshot, MessageKind, Mission,
+        MissionLogEntry, MissionLogEntryKind, MissionStatus, SenderKind, TeamActorKind,
+        TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessageDelivery, TeamMessageKind,
+        TeamMessageResponseIntent, TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind,
+        WaveGateStatus, WaveStatus, WorkPriority,
     };
 
     use super::*;
@@ -8496,6 +8496,104 @@ mod tests {
                 .expect("deliveries")
                 .is_empty(),
             "a member self-claim is already runtime possession and must not create a loopback WorkDelivery"
+        );
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn zero_gate_work_can_submit_and_accept_without_artifact_or_check_refs() {
+        let (root, store, run, member, _) = work_test_fixture("proportional-no-gates");
+        let work = store
+            .insert_work(
+                unassigned_test_work(&run.id, "work-proportional-no-gates"),
+                host_work_context("we-pg-1", "create-pg-1", "unix-ms:2"),
+            )
+            .expect("create zero-gate Work");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &member.id,
+                member_work_context(&member.id, "we-pg-2", "claim-pg-1", "unix-ms:3"),
+            )
+            .expect("claim zero-gate Work");
+        let submitted = store
+            .submit_work(
+                &claimed.id,
+                claimed.version,
+                &member.id,
+                "Result needs no declared artifact or check evidence",
+                Vec::new(),
+                Vec::new(),
+                member_work_context(&member.id, "we-pg-3", "submit-pg-1", "unix-ms:4"),
+            )
+            .expect("submit zero-gate Work");
+
+        assert_eq!(submitted.status, WorkStatus::Review);
+        assert!(submitted.artifact_refs.is_empty());
+        assert!(submitted.check_refs.is_empty());
+        assert!(GateEngine::evaluate_work_gates(&submitted).is_empty());
+
+        let accepted = store
+            .accept_work(
+                &submitted.id,
+                submitted.version,
+                host_work_context("we-pg-4", "accept-pg-1", "unix-ms:5"),
+            )
+            .expect("manual Host acceptance remains valid when no gates were declared");
+        assert_eq!(accepted.status, WorkStatus::Done);
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn declared_artifact_and_check_gates_block_missing_refs_after_submit() {
+        let (root, store, run, member, _) = work_test_fixture("proportional-declared-gates");
+        let mut gated = unassigned_test_work(&run.id, "work-proportional-declared-gates");
+        gated.gates = vec![
+            GateSpec {
+                plugin: "artifact-exists".into(),
+                config: serde_json::json!({}),
+            },
+            GateSpec {
+                plugin: "check-pass".into(),
+                config: serde_json::json!({}),
+            },
+        ];
+        let work = store
+            .insert_work(
+                gated,
+                host_work_context("we-pdg-1", "create-pdg-1", "unix-ms:2"),
+            )
+            .expect("create gated Work");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &member.id,
+                member_work_context(&member.id, "we-pdg-2", "claim-pdg-1", "unix-ms:3"),
+            )
+            .expect("claim gated Work");
+        let submitted = store
+            .submit_work(
+                &claimed.id,
+                claimed.version,
+                &member.id,
+                "Submitted without the evidence required by declared gates",
+                Vec::new(),
+                Vec::new(),
+                member_work_context(&member.id, "we-pdg-3", "submit-pdg-1", "unix-ms:4"),
+            )
+            .expect("submission records the candidate before gate evaluation");
+
+        let results = GateEngine::evaluate_work_gates(&submitted);
+        assert_eq!(submitted.status, WorkStatus::Review);
+        assert_eq!(results.len(), 2);
+        assert!(results
+            .iter()
+            .all(|result| matches!(result.verdict, GateVerdict::Blocked { .. })));
+        assert!(
+            !results.iter().all(|result| result.verdict.is_pass()),
+            "declared evidence gates must prevent the acceptance seam from proceeding"
         );
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
