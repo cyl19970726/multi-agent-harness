@@ -48,6 +48,8 @@ fn run_member_json(
 fn spawn_fake_kimi_serve(home: &TempHome) -> ServeHandle {
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
     let fake_kimi = fake_bin.join("kimi").display().to_string();
+    // Leave enough time after observing `idle` for a separate CLI process to
+    // start the Work on slower CI hosts before the test-only idle retirement.
     ServeHandle::spawn_with_env(
         home,
         home.base(),
@@ -55,6 +57,7 @@ fn spawn_fake_kimi_serve(home: &TempHome) -> ServeHandle {
         &[
             ("KIMI_CODE_BIN", fake_kimi.as_str()),
             ("FAKE_KIMI_RESULT", "done"),
+            ("FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS", "30000"),
         ],
     )
 }

@@ -264,6 +264,10 @@ try {
   await freshness(page, "live");
   check(errors.length === 0, `initial App mount has no browser errors (${errors[0] ?? "none"})`);
   check(state.reads.some((read) => read.space === "space-a" && read.company === "company-a"), "initial authoritative read carries Execution Space and Company");
+  await waitFor(
+    () => Promise.resolve([...state.streams].some((stream) => stream.space === "space-a" && stream.company === "company-a")),
+    "initial Space and Company stream connected",
+  );
 
   // External append: the chip remains Stale until the authoritative response,
   // and the response—not the invalidation payload—introduces the new row.
