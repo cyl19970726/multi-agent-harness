@@ -90,9 +90,45 @@ does not silently become compatible or incompatible. Review must regenerate
 provider schemas/capability snapshots and run mode-specific deterministic and
 live acceptance before adding the new version to the reviewed set.
 
-Dashboard exposes the same compatibility state on MemberRun. A later strict
-production policy may block `review_required`; default development mode warns
-so provider releases do not unexpectedly make local development unusable.
+Dashboard exposes the same source-review compatibility state on MemberRun.
+Provider execution is fail-closed at every start, resume, reopen, recovery,
+rebind, preflight, and provider-list boundary. An installed version that is
+`review_required` can run only when the selected project/execution store has an
+active operational admission for the exact four-part key:
+
+```text
+(provider, execution_mode, provider_version, adapter_contract_version)
+```
+
+The admission is append-only and records project/store scope, actor, evidence,
+time, and `strict | advisory` policy. Both policies are exact-key decisions;
+`advisory` may bridge only `review_required`. It cannot excuse an unavailable
+or failed version probe, a known incompatible version, an unknown adapter
+contract, or a different mode/version/contract. Source-reviewed versions and
+operational admissions remain separate fields and outputs: admission never
+adds a version to `reviewed_provider_versions` and never claims source review.
+
+Operators create an admission with:
+
+```text
+harness provider admit \
+  --provider <name> \
+  --execution-mode <mode> \
+  --provider-version <installed-version> \
+  --adapter-contract-version <contract> \
+  --evidence <ref> \
+  [--policy strict|advisory] [--actor <id>] [--json]
+```
+
+The command independently probes the installed version and verifies the
+registered mode and adapter contract before appending. It does not install,
+build, upgrade, downgrade, or edit provider/adapter source. The default policy
+is `strict`.
+
+Revocation and supersession append terminal rows that name the active
+predecessor and a reason. Latest-row-wins evaluation means a revoked or
+superseded key no longer authorizes execution; historical evidence remains
+readable. Execution-space migration copies and verifies the admission ledger.
 
 ### Agent-managed update cadence
 
@@ -104,6 +140,8 @@ Provider discovery and provider installation are separate operations:
 - Discovery never installs, upgrades, downgrades, or changes the reviewed
   version set. It only reports `current | review_required | incompatible |
   unavailable`.
+- Compatibility admission is also not installation: it records an operator
+  decision in the selected store and has no provider source/build side effect.
 - When several releases appear during one day, propose one selected candidate
   per provider rather than chasing every intermediate release.
 - Provider maintenance is Agent-managed and does not require per-version Human
@@ -141,12 +179,18 @@ prompts or treating an unreviewed binary as compatible.
 - Provider protocol vocabulary alone never proves Harness lifecycle control.
 - Version review also covers native-store discovery/read/resume compatibility;
   a stream parser passing is not enough.
+- Operational admission is a scoped exception, not a shortcut for promoting a
+  provider version into source-reviewed compatibility.
 
 ## Acceptance
 
 - installed Codex and Kimi versions probe as `current` when they match reviewed
   versions;
 - a fake/new version produces `review_required` and `--fail-on-review` fails;
+- an exact active admission can authorize only that `review_required` tuple;
+  version, execution-mode, adapter-contract, and store mismatches still block;
+- an advisory admission never authorizes unavailable, incompatible, unknown,
+  or probe-failed compatibility;
 - MemberRun snapshots and Dashboard expose compatibility state;
 - deterministic acceptance proves Codex `turn/steer`/`turn/interrupt`,
   streamed activity, and each Kimi operation that the exact reviewed version

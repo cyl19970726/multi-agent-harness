@@ -14,14 +14,15 @@ use firm_core::{
     HostAttentionStatus, HostBindingLease, HostBindingLeaseOwnerKind, HostBindingLeaseStatus,
     MemberAction, MemberRun, Message, MessageDelivery, MessageDeliveryStatus,
     MessageTerminalSource, Mission, MissionLogEntry, MissionStatus, PendingInteraction, Proposal,
-    ProviderChildThread, ProviderExecutionStatus, ProviderInteractionRequestBody,
-    ProviderInteractionResponseBody, Review, ReviewVerdict, TeamActorKind, TeamDeliveryPolicy,
-    TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage,
-    TeamMessageKind, TeamRunEvent, TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus,
-    Validate, Vision, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, Work, WorkClaimMode,
-    WorkCommandContext, WorkCutoverFence, WorkCutoverReport, WorkDelivery, WorkDeliveryStatus,
-    WorkDeliveryUpdate, WorkEvent, WorkEventKind, WorkItem, WorkItemStatus, WorkOperation,
-    WorkStatus, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
+    ProviderChildThread, ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
+    ProviderExecutionStatus, ProviderInteractionRequestBody, ProviderInteractionResponseBody,
+    Review, ReviewVerdict, TeamActorKind, TeamDeliveryPolicy, TeamDeliveryStatus,
+    TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage, TeamMessageKind, TeamRunEvent,
+    TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus, Validate, Vision, Wave,
+    WaveExecutorKind, WaveGateStatus, WaveStatus, Work, WorkClaimMode, WorkCommandContext,
+    WorkCutoverFence, WorkCutoverReport, WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate,
+    WorkEvent, WorkEventKind, WorkItem, WorkItemStatus, WorkOperation, WorkStatus,
+    WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -41,6 +42,8 @@ const LOCK_NB: i32 = 4;
 const LOCK_UN: i32 = 8;
 const COMPANY_WORK_ITEMS_LEDGER: &str = "company_os_work_items.jsonl";
 const WORK_CUTOVER_FENCES_LEDGER: &str = "company_os_work_cutover_fences.jsonl";
+pub const PROVIDER_COMPATIBILITY_ADMISSIONS_LEDGER: &str =
+    "provider_compatibility_admissions.jsonl";
 const TRUSTED_HOST_REVIEWER_ID: &str = "host";
 
 /// Normalize surface identifiers into their canonical form.
@@ -574,6 +577,143 @@ impl HarnessStore {
             )));
         }
         self.append_jsonl_unlocked("durable_agent_members.jsonl", value)
+    }
+
+    /// Append a new active operational admission for one exact provider tuple.
+    ///
+    /// Admission ids are stable command ids: replaying an identical record is
+    /// idempotent, while reusing an id for different content is a conflict.
+    /// Only one row for an exact tuple may be active at a time.
+    pub fn append_provider_compatibility_admission(
+        &self,
+        value: &ProviderCompatibilityAdmission,
+    ) -> StoreResult<()> {
+        self.admit_provider_compatibility_admission(value)
+    }
+
+    pub fn admit_provider_compatibility_admission(
+        &self,
+        value: &ProviderCompatibilityAdmission,
+    ) -> StoreResult<()> {
+        if value.lifecycle != ProviderCompatibilityAdmissionLifecycle::Active {
+            return Err(StoreError::Conflict(
+                "provider compatibility admission must have active lifecycle".to_string(),
+            ));
+        }
+        self.append_provider_compatibility_admission_checked(value)
+    }
+
+    /// Compatibility alias for callers that name the operation, rather than
+    /// the ledger record.
+    pub fn admit_provider_compatibility(
+        &self,
+        value: &ProviderCompatibilityAdmission,
+    ) -> StoreResult<()> {
+        self.admit_provider_compatibility_admission(value)
+    }
+
+    pub fn revoke_provider_compatibility_admission(
+        &self,
+        value: &ProviderCompatibilityAdmission,
+    ) -> StoreResult<()> {
+        if value.lifecycle != ProviderCompatibilityAdmissionLifecycle::Revoked {
+            return Err(StoreError::Conflict(
+                "provider compatibility revocation must have revoked lifecycle".to_string(),
+            ));
+        }
+        self.append_provider_compatibility_admission_checked(value)
+    }
+
+    pub fn revoke_provider_compatibility(
+        &self,
+        value: &ProviderCompatibilityAdmission,
+    ) -> StoreResult<()> {
+        self.revoke_provider_compatibility_admission(value)
+    }
+
+    pub fn supersede_provider_compatibility_admission(
+        &self,
+        value: &ProviderCompatibilityAdmission,
+    ) -> StoreResult<()> {
+        if value.lifecycle != ProviderCompatibilityAdmissionLifecycle::Superseded {
+            return Err(StoreError::Conflict(
+                "provider compatibility supersession must have superseded lifecycle".to_string(),
+            ));
+        }
+        self.append_provider_compatibility_admission_checked(value)
+    }
+
+    pub fn supersede_provider_compatibility(
+        &self,
+        value: &ProviderCompatibilityAdmission,
+    ) -> StoreResult<()> {
+        self.supersede_provider_compatibility_admission(value)
+    }
+
+    fn append_provider_compatibility_admission_checked(
+        &self,
+        value: &ProviderCompatibilityAdmission,
+    ) -> StoreResult<()> {
+        value
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let rows = self.provider_compatibility_admissions()?;
+
+        if let Some(existing) = rows.iter().find(|row| row.id == value.id) {
+            if existing == value {
+                return Ok(());
+            }
+            return Err(StoreError::Conflict(format!(
+                "provider compatibility admission id {} already has different content",
+                value.id
+            )));
+        }
+
+        let current = rows
+            .iter()
+            .rev()
+            .find(|row| row.exact_key() == value.exact_key());
+        match value.lifecycle {
+            ProviderCompatibilityAdmissionLifecycle::Active => {
+                if let Some(active) = current.filter(|row| row.is_active()) {
+                    return Err(StoreError::Conflict(format!(
+                        "provider compatibility tuple already has active admission {}",
+                        active.id
+                    )));
+                }
+            }
+            ProviderCompatibilityAdmissionLifecycle::Revoked
+            | ProviderCompatibilityAdmissionLifecycle::Superseded => {
+                let predecessor_id = value
+                    .predecessor_admission_id
+                    .as_deref()
+                    .expect("validated terminal admission has predecessor");
+                let predecessor = current.filter(|row| row.is_active()).ok_or_else(|| {
+                    StoreError::Conflict(
+                        "provider compatibility transition has no current active predecessor"
+                            .to_string(),
+                    )
+                })?;
+                if predecessor.id != predecessor_id {
+                    return Err(StoreError::Conflict(format!(
+                        "provider compatibility predecessor is stale: expected {}, got {}",
+                        predecessor.id, predecessor_id
+                    )));
+                }
+                if predecessor.project_id != value.project_id
+                    || predecessor.store_id != value.store_id
+                    || predecessor.policy != value.policy
+                {
+                    return Err(StoreError::Conflict(
+                        "provider compatibility transition must preserve predecessor scope and policy"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+        self.append_jsonl_unlocked(PROVIDER_COMPATIBILITY_ADMISSIONS_LEDGER, value)
     }
 
     /// Explicitly converge one row from the legacy runtime-heavy AgentMember
@@ -6049,6 +6189,64 @@ impl HarnessStore {
         self.read_jsonl("durable_agent_members.jsonl")
     }
 
+    /// Raw append-only compatibility admission rows in causal order.
+    /// Invalid JSON or semantically invalid rows fail the entire read closed.
+    pub fn provider_compatibility_admissions(
+        &self,
+    ) -> StoreResult<Vec<ProviderCompatibilityAdmission>> {
+        let rows: Vec<ProviderCompatibilityAdmission> =
+            self.read_jsonl(PROVIDER_COMPATIBILITY_ADMISSIONS_LEDGER)?;
+        for row in &rows {
+            row.validate()
+                .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        }
+        Ok(rows)
+    }
+
+    /// Latest-row-wins projection by the exact four-part compatibility key.
+    pub fn latest_provider_compatibility_admissions(
+        &self,
+    ) -> StoreResult<Vec<ProviderCompatibilityAdmission>> {
+        let mut latest = std::collections::BTreeMap::new();
+        for row in self.provider_compatibility_admissions()? {
+            latest.insert(
+                (
+                    row.provider.clone(),
+                    row.execution_mode.clone(),
+                    row.provider_version.clone(),
+                    row.adapter_contract_version.clone(),
+                ),
+                row,
+            );
+        }
+        Ok(latest.into_values().collect())
+    }
+
+    /// Return the active admission for one exact tuple. Terminal latest rows,
+    /// other execution modes, and other contract versions never authorize it.
+    pub fn effective_provider_compatibility_admission(
+        &self,
+        provider: &str,
+        execution_mode: &str,
+        provider_version: &str,
+        adapter_contract_version: &str,
+    ) -> StoreResult<Option<ProviderCompatibilityAdmission>> {
+        Ok(self
+            .provider_compatibility_admissions()?
+            .into_iter()
+            .rev()
+            .find(|row| {
+                row.exact_key()
+                    == (
+                        provider,
+                        execution_mode,
+                        provider_version,
+                        adapter_contract_version,
+                    )
+            })
+            .filter(ProviderCompatibilityAdmission::is_active))
+    }
+
     /// Latest-row-wins durable AgentMember projection, ordered by id.
     pub fn latest_durable_members(
         &self,
@@ -7320,6 +7518,201 @@ mod tests {
     };
 
     use super::*;
+
+    fn provider_compatibility_admission(
+        id: &str,
+        execution_mode: &str,
+        adapter_contract_version: &str,
+    ) -> ProviderCompatibilityAdmission {
+        ProviderCompatibilityAdmission {
+            id: id.to_string(),
+            project_id: "project-1".to_string(),
+            store_id: "store-1".to_string(),
+            provider: "claude".to_string(),
+            execution_mode: execution_mode.to_string(),
+            provider_version: "2.1.220".to_string(),
+            adapter_contract_version: adapter_contract_version.to_string(),
+            policy: firm_core::ProviderCompatibilityAdmissionPolicy::Strict,
+            actor: "operator-1".to_string(),
+            evidence_refs: vec!["evidence-1".to_string()],
+            admitted_at: "unix-ms:1".to_string(),
+            lifecycle: ProviderCompatibilityAdmissionLifecycle::Active,
+            predecessor_admission_id: None,
+            reason: None,
+        }
+    }
+
+    fn provider_admission_test_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "firm-store-provider-admission-{label}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn provider_compatibility_admission_is_exact_and_preserves_policy() {
+        let store = HarnessStore::new(provider_admission_test_root("exact"));
+        let strict = provider_compatibility_admission("strict", "sdk", "contract-v1");
+        let mut advisory =
+            provider_compatibility_admission("advisory", "interactive", "contract-v2");
+        advisory.policy = firm_core::ProviderCompatibilityAdmissionPolicy::Advisory;
+        store.admit_provider_compatibility(&strict).expect("strict");
+        store
+            .admit_provider_compatibility(&advisory)
+            .expect("advisory");
+
+        assert_eq!(
+            store
+                .effective_provider_compatibility_admission(
+                    "claude",
+                    "sdk",
+                    "2.1.220",
+                    "contract-v1"
+                )
+                .expect("lookup"),
+            Some(strict)
+        );
+        assert!(store
+            .effective_provider_compatibility_admission("claude", "sdk", "2.1.220", "contract-v2")
+            .expect("contract isolation")
+            .is_none());
+        assert_eq!(
+            store
+                .latest_provider_compatibility_admissions()
+                .unwrap()
+                .into_iter()
+                .find(|row| row.id == "advisory")
+                .expect("advisory projection")
+                .policy,
+            firm_core::ProviderCompatibilityAdmissionPolicy::Advisory
+        );
+    }
+
+    #[test]
+    fn provider_compatibility_admission_replay_is_idempotent_and_id_conflict_fails() {
+        let store = HarnessStore::new(provider_admission_test_root("replay"));
+        let admission = provider_compatibility_admission("stable", "sdk", "contract-v1");
+        store
+            .append_provider_compatibility_admission(&admission)
+            .expect("first append");
+        store
+            .append_provider_compatibility_admission(&admission)
+            .expect("identical replay");
+        assert_eq!(store.provider_compatibility_admissions().unwrap().len(), 1);
+
+        let mut conflict = admission;
+        conflict.actor = "another-operator".to_string();
+        assert!(matches!(
+            store.append_provider_compatibility_admission(&conflict),
+            Err(StoreError::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn provider_compatibility_revoke_and_supersede_fence_stale_predecessors() {
+        for lifecycle in [
+            ProviderCompatibilityAdmissionLifecycle::Revoked,
+            ProviderCompatibilityAdmissionLifecycle::Superseded,
+        ] {
+            let store = HarnessStore::new(provider_admission_test_root("transition"));
+            let active = provider_compatibility_admission("active", "sdk", "contract-v1");
+            store.admit_provider_compatibility(&active).unwrap();
+            let mut transition = active.clone();
+            transition.id = "transition".to_string();
+            transition.lifecycle = lifecycle;
+            transition.predecessor_admission_id = Some(active.id.clone());
+            transition.reason = Some("contract changed".to_string());
+            let mut wrong_predecessor = transition.clone();
+            wrong_predecessor.id = "wrong-predecessor".to_string();
+            wrong_predecessor.predecessor_admission_id = Some("another-active".to_string());
+            assert!(matches!(
+                store.append_provider_compatibility_admission_checked(&wrong_predecessor),
+                Err(StoreError::Conflict(_))
+            ));
+            match lifecycle {
+                ProviderCompatibilityAdmissionLifecycle::Revoked => store
+                    .revoke_provider_compatibility(&transition)
+                    .expect("revoke"),
+                ProviderCompatibilityAdmissionLifecycle::Superseded => store
+                    .supersede_provider_compatibility(&transition)
+                    .expect("supersede"),
+                ProviderCompatibilityAdmissionLifecycle::Active => unreachable!(),
+            }
+            store
+                .append_provider_compatibility_admission_checked(&transition)
+                .expect("terminal replay is idempotent");
+            assert_eq!(store.provider_compatibility_admissions().unwrap().len(), 2);
+            assert!(store
+                .effective_provider_compatibility_admission(
+                    "claude",
+                    "sdk",
+                    "2.1.220",
+                    "contract-v1"
+                )
+                .unwrap()
+                .is_none());
+
+            let mut stale = transition;
+            stale.id = "stale".to_string();
+            assert!(matches!(
+                store.append_provider_compatibility_admission_checked(&stale),
+                Err(StoreError::Conflict(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn concurrent_distinct_provider_compatibility_admissions_do_not_lose_rows() {
+        let store = Arc::new(HarnessStore::new(provider_admission_test_root(
+            "concurrent",
+        )));
+        let barrier = Arc::new(Barrier::new(3));
+        let mut workers = Vec::new();
+        for (id, mode) in [("one", "sdk"), ("two", "interactive")] {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            workers.push(std::thread::spawn(move || {
+                let admission = provider_compatibility_admission(id, mode, "contract-v1");
+                barrier.wait();
+                store.admit_provider_compatibility(&admission)
+            }));
+        }
+        barrier.wait();
+        for worker in workers {
+            worker.join().expect("join").expect("append");
+        }
+        assert_eq!(store.provider_compatibility_admissions().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn malformed_provider_compatibility_ledger_fails_closed_and_roots_are_isolated() {
+        let first_root = provider_admission_test_root("first-root");
+        let second_root = provider_admission_test_root("second-root");
+        let first = HarnessStore::new(&first_root);
+        let second = HarnessStore::new(second_root);
+        let admission = provider_compatibility_admission("one", "sdk", "contract-v1");
+        first.admit_provider_compatibility(&admission).unwrap();
+        assert!(second
+            .provider_compatibility_admissions()
+            .unwrap()
+            .is_empty());
+
+        std::fs::write(
+            first_root.join(PROVIDER_COMPATIBILITY_ADMISSIONS_LEDGER),
+            b"{not-json}\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            first.provider_compatibility_admissions(),
+            Err(StoreError::Json(_))
+        ));
+        assert!(first
+            .effective_provider_compatibility_admission("claude", "sdk", "2.1.220", "contract-v1")
+            .is_err());
+    }
 
     #[test]
     fn exclusive_migration_guard_blocks_normal_store_writers_until_drop() {

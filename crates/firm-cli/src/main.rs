@@ -28,7 +28,9 @@ use harness_core::{
     PendingInteractionKind, PendingInteractionRoute, PendingInteractionStatus, ProjectContext,
     ProjectKind, ProviderAccountRef, ProviderCapabilities, ProviderCapacityConfidence,
     ProviderCapacityEvidence, ProviderCapacitySnapshot, ProviderCapacityState,
-    ProviderCompatibilityStatus, ProviderControlValue, ProviderEventFidelity,
+    ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
+    ProviderCompatibilityAdmissionPolicy, ProviderCompatibilityStatus, ProviderControlValue,
+    ProviderEventFidelity,
     ProviderExecutionControls, ProviderExecutionStatus, ProviderFeatureMode,
     ProviderIntegrationProfile, ProviderInteractionMessageOption, ProviderInteractionMode,
     ProviderInteractionRequestBody, ProviderInteractionResponseBody, ProviderInteractionType,
@@ -904,6 +906,7 @@ const EXECUTION_LEDGER_NAMES: &[&str] = &[
     "workflow_steps.jsonl",
     "workflow_patches.jsonl",
     "workflow_artifact_manifests.jsonl",
+    "provider_compatibility_admissions.jsonl",
 ];
 
 fn execution_space_migrate_from_project(firm_home: &Path, args: &[String]) -> CliResult<()> {
@@ -1931,6 +1934,7 @@ fn run() -> CliResult<()> {
         "team-run" => team_run_command(&store, &resolved, &args[1..])?,
         "member-run" => member_run_command(&store, &args[1..])?,
         "member" => member_command(&store, &args[1..])?,
+        "provider" => provider_command(&store, &resolved, &args[1..])?,
         "company" => company_command(&store, &args[1..])?,
         "dashboard" => dashboard_command(&store, &resolved, &args[1..])?,
         "workflow" => workflow_command(&store, resolved.context.as_ref(), &args[1..])?,
@@ -8114,12 +8118,139 @@ fn print_governance_report(report: &harness_governance::GovernanceReport, json: 
     }
 }
 
+/// Record an operator-authorized compatibility decision for one exact adapter
+/// tuple. This command probes and writes metadata only: it never installs,
+/// builds, upgrades, or edits a provider or its adapter source.
+fn provider_command(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    args: &[String],
+) -> CliResult<()> {
+    require_subcommand(args, "provider admit")?;
+    match args[0].as_str() {
+        "admit" => provider_admit_command(store, resolved, &args[1..]),
+        other => Err(CliError::Usage(format!(
+            "unknown provider command: {other}; usage: harness provider admit --provider <name> --execution-mode <mode> --provider-version <version> --adapter-contract-version <version> --evidence <ref> [--policy strict|advisory] [--actor <id>] [--json]"
+        ))),
+    }
+}
+
+fn provider_admit_command(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    args: &[String],
+) -> CliResult<()> {
+    let provider = required(args, "--provider")?;
+    let execution_mode = required(args, "--execution-mode")?;
+    let provider_version = value(args, "--provider-version")
+        .or_else(|| value(args, "--version"))
+        .ok_or_else(|| CliError::Usage("--provider-version (or --version) is required".into()))?;
+    let adapter_contract_version = required(args, "--adapter-contract-version")?;
+    let evidence_refs = many(args, "--evidence");
+    if evidence_refs.is_empty() || evidence_refs.iter().any(|value| value.trim().is_empty()) {
+        return Err(CliError::Usage(
+            "at least one non-empty --evidence reference is required".into(),
+        ));
+    }
+    let policy = match value(args, "--policy").as_deref().unwrap_or("strict") {
+        "strict" => ProviderCompatibilityAdmissionPolicy::Strict,
+        "advisory" => ProviderCompatibilityAdmissionPolicy::Advisory,
+        other => {
+            return Err(CliError::Usage(format!(
+                "unknown provider admission policy {other}; expected strict or advisory"
+            )))
+        }
+    };
+
+    let profile = team_member_provider_profile_for_mode(&provider, Some(&execution_mode));
+    if profile.execution_mode != execution_mode {
+        return Err(CliError::Usage(format!(
+            "execution mode {execution_mode} is not registered for provider {provider}"
+        )));
+    }
+    let registered_contract = profile.adapter_contract_version.as_deref().ok_or_else(|| {
+        CliError::Usage(format!(
+            "provider {provider} mode {execution_mode} has no adapter contract to admit"
+        ))
+    })?;
+    if registered_contract != adapter_contract_version {
+        return Err(CliError::Usage(format!(
+            "adapter contract mismatch: requested {adapter_contract_version}, registered {registered_contract}"
+        )));
+    }
+    let detected = team_member_provider_version_output(&provider).map_err(|error| {
+        CliError::Usage(format!(
+            "provider version probe failed; no admission was written: {error}"
+        ))
+    })?;
+    if detected != provider_version {
+        return Err(CliError::Usage(format!(
+            "provider version mismatch: requested {provider_version}, installed {detected}; no admission was written"
+        )));
+    }
+
+    let project_id = resolved
+        .context
+        .as_ref()
+        .map(|context| context.id.clone())
+        .or_else(|| {
+            resolved
+                .execution_space_context
+                .as_ref()
+                .and_then(|space| space.default_project_binding_id.clone())
+        })
+        .unwrap_or_else(|| "unbound-project".to_string());
+    let store_id = resolved
+        .execution_space_context
+        .as_ref()
+        .map(|space| space.id.clone())
+        .unwrap_or_else(|| format!("store:{}.{}", project_id, content_hash_hex16(&resolved.root.to_string_lossy())));
+    let admission = ProviderCompatibilityAdmission {
+        id: generated_id("provider-admission"),
+        project_id,
+        store_id,
+        provider,
+        execution_mode,
+        provider_version,
+        adapter_contract_version,
+        policy,
+        actor: value(args, "--actor").unwrap_or_else(|| "operator".to_string()),
+        evidence_refs,
+        admitted_at: now_string(),
+        lifecycle: ProviderCompatibilityAdmissionLifecycle::Active,
+        predecessor_admission_id: None,
+        reason: None,
+    };
+    store.admit_provider_compatibility_admission(&admission)?;
+    if has_flag(args, "--json") {
+        print_json(&serde_json::json!({
+            "command": "harness provider admit",
+            "ok": true,
+            "source": "operational_admission",
+            "source_review_modified": false,
+            "provider_source_modified": false,
+            "admission": admission,
+        }))
+    } else {
+        println!(
+            "admitted {} {} {} {} (policy={}, record={}); adapter source review remains unchanged",
+            admission.provider,
+            admission.execution_mode,
+            admission.provider_version,
+            admission.adapter_contract_version,
+            serde_snake_label(&admission.policy),
+            admission.id,
+        );
+        Ok(())
+    }
+}
+
 fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(args, "member register|list|providers|preflight")?;
     match args[0].as_str() {
         // Runtime availability of each provider ACCOUNT, reported separately
         // from adapter compatibility. See `member providers` for the latter.
-        "preflight" => member_preflight_command(&args[1..])?,
+        "preflight" => member_preflight_command(store, &args[1..])?,
         "register" => {
             let member = build_member_from_args(args, AgentMemberStatus::Idle)?;
             store.append_member(&member)?;
@@ -8139,16 +8270,17 @@ fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                     let detected = team_member_provider_version_output(adapter.name());
                     let mut profile = team_member_provider_profile(adapter.name());
                     apply_provider_version(&mut profile, detected.as_ref().ok().cloned());
-                    needs_review |= matches!(
-                        profile.compatibility_status,
-                        ProviderCompatibilityStatus::ReviewRequired
-                            | ProviderCompatibilityStatus::Incompatible
-                            | ProviderCompatibilityStatus::Unavailable
+                    let resolution = resolve_provider_compatibility(
+                        store,
+                        &profile,
+                        detected.as_ref().err().map(String::as_str),
                     );
+                    needs_review |= resolution.as_ref().map_or(true, |value| !value.allowed);
                     serde_json::json!({
                         "provider": adapter.name(),
                         "capabilities": adapter.capabilities(),
                         "team_member_profile": profile,
+                        "operational_compatibility": resolution.ok(),
                         "version_probe_error": detected.err(),
                     })
                 })
@@ -9641,29 +9773,100 @@ fn apply_refreshed_provider_profile(
     true
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+struct ProviderCompatibilityResolution {
+    allowed: bool,
+    status: ProviderCompatibilityStatus,
+    source: &'static str,
+    policy: Option<ProviderCompatibilityAdmissionPolicy>,
+    admission: Option<ProviderCompatibilityAdmission>,
+    probe_error: Option<String>,
+}
+
+/// The single operational resolver shared by preflight, start, resume,
+/// recovery, reopen, rebind, and capability reporting. Adapter source review
+/// and operational admission remain separate facts in the returned value.
+fn resolve_provider_compatibility(
+    store: &HarnessStore,
+    profile: &ProviderIntegrationProfile,
+    probe_error: Option<&str>,
+) -> CliResult<ProviderCompatibilityResolution> {
+    if probe_error.is_some() {
+        return Ok(ProviderCompatibilityResolution {
+            allowed: false,
+            status: ProviderCompatibilityStatus::Unavailable,
+            source: "version_probe",
+            policy: None,
+            admission: None,
+            probe_error: probe_error.map(str::to_string),
+        });
+    }
+    if profile.compatibility_status == ProviderCompatibilityStatus::Current {
+        return Ok(ProviderCompatibilityResolution {
+            allowed: true,
+            status: profile.compatibility_status,
+            source: "adapter_source_review",
+            policy: None,
+            admission: None,
+            probe_error: None,
+        });
+    }
+    let admission = match (
+        profile.provider_version.as_deref(),
+        profile.adapter_contract_version.as_deref(),
+    ) {
+        (Some(provider_version), Some(adapter_contract_version)) => store
+            .effective_provider_compatibility_admission(
+                &profile.provider,
+                &profile.execution_mode,
+                provider_version,
+                adapter_contract_version,
+            )?,
+        _ => None,
+    };
+    // An operational admission may bridge only the explicitly review-required
+    // state. Neither policy can excuse an unavailable probe, a known
+    // incompatibility, or a mode with no adapter contract.
+    let allowed = profile.compatibility_status == ProviderCompatibilityStatus::ReviewRequired
+        && admission.is_some();
+    Ok(ProviderCompatibilityResolution {
+        allowed,
+        status: profile.compatibility_status,
+        source: if admission.is_some() {
+            "operational_admission"
+        } else {
+            "adapter_compatibility"
+        },
+        policy: admission.as_ref().map(|value| value.policy),
+        admission,
+        probe_error: None,
+    })
+}
+
 fn provider_compatibility_block_reason(
     member: &MemberRun,
     profile: &ProviderIntegrationProfile,
+    resolution: &ProviderCompatibilityResolution,
     boundary: &str,
-    probe_error: Option<&str>,
 ) -> Option<String> {
-    if member.is_external_interactive()
-        || profile.compatibility_status == ProviderCompatibilityStatus::Current
-    {
+    if member.is_external_interactive() || resolution.allowed {
         return None;
     }
     let version = profile.provider_version.as_deref().unwrap_or("unavailable");
-    let status = serde_snake_label(&profile.compatibility_status);
-    let probe = probe_error
+    let status = serde_snake_label(&resolution.status);
+    let probe = resolution
+        .probe_error
+        .as_deref()
         .map(|error| format!(" Version probe failed: {error}."))
         .unwrap_or_default();
     Some(format!(
-        "PROVIDER_COMPATIBILITY_BLOCKED: member run {} cannot {boundary}; provider {} version {} in {} is {}. No provider process, native session start/resume, delivery claim, or Work rebound was performed.{} Run `harness member providers --fail-on-review`, regenerate protocol schemas, run deterministic provider acceptance and a live canary, then add the exact version to the adapter's reviewed_provider_versions before retrying the same durable MemberRun and Work.",
+        "PROVIDER_COMPATIBILITY_BLOCKED: member run {} cannot {boundary}; provider {} version {} in {} is {} (source={}). No provider process, native session start/resume, delivery claim, or Work rebound was performed.{} Complete source review or record an exact operational admission with `harness provider admit`; admissions never change adapter source-review status.",
         member.id,
         profile.provider,
         version,
         profile.execution_mode,
         status,
+        resolution.source,
         probe,
     ))
 }
@@ -9681,8 +9884,9 @@ fn provider_compatibility_start_gate(
     }
     let expected = member.clone();
     let (profile, probe_error) = refreshed_team_member_provider_profile(member)?;
-    let reason =
-        provider_compatibility_block_reason(member, &profile, boundary, probe_error.as_deref());
+    let resolution =
+        resolve_provider_compatibility(&ledger.store, &profile, probe_error.as_deref())?;
+    let reason = provider_compatibility_block_reason(member, &profile, &resolution, boundary);
     if reason.is_none() {
         if apply_refreshed_provider_profile(member, profile) {
             ledger.save_member_run(&expected, member)?;
@@ -11081,6 +11285,7 @@ fn persist_capacity_block_with_hook(
 /// reviewed-current adapter with an exhausted account is a normal, expressible
 /// state and the Dashboard must be able to show both.
 fn provider_preflight_row(
+    store: &HarnessStore,
     provider: &str,
     requested_mode: Option<&str>,
     cwd: &Path,
@@ -11091,6 +11296,8 @@ fn provider_preflight_row(
     let mut profile = team_member_provider_profile_for_mode(provider, Some(&execution_mode));
     let detected = team_member_provider_version_output(provider);
     apply_provider_version(&mut profile, detected.as_ref().ok().cloned());
+    let compatibility =
+        resolve_provider_compatibility(store, &profile, detected.as_ref().err().map(String::as_str))?;
     let capacity = provider_capacity_probe(provider, &execution_mode, cwd, options);
     // Read the clock AFTER the probe: a probe that takes seconds must not make
     // its own answer look future-dated, which would report it as stale.
@@ -11109,11 +11316,12 @@ fn provider_preflight_row(
             "reviewed_provider_versions": profile.reviewed_provider_versions,
             "adapter_contract_version": profile.adapter_contract_version,
             "version_probe_error": detected.err(),
+            "operational": compatibility,
         },
     }))
 }
 
-fn member_preflight_command(args: &[String]) -> CliResult<()> {
+fn member_preflight_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     let providers = {
         let requested = many(args, "--provider");
         if requested.is_empty() {
@@ -11142,7 +11350,7 @@ fn member_preflight_command(args: &[String]) -> CliResult<()> {
     let rows = providers
         .iter()
         .map(|provider| {
-            provider_preflight_row(provider, requested_mode.as_deref(), &cwd, options, ttl_ms)
+            provider_preflight_row(store, provider, requested_mode.as_deref(), &cwd, options, ttl_ms)
         })
         .collect::<CliResult<Vec<_>>>()?;
     let blocked = rows
@@ -13041,11 +13249,12 @@ fn team_run_recover(
         }
         let expected = member.clone();
         let (profile, probe_error) = refreshed_team_member_provider_profile(member)?;
+        let resolution = resolve_provider_compatibility(store, &profile, probe_error.as_deref())?;
         let refusal = provider_compatibility_block_reason(
             member,
             &profile,
+            &resolution,
             "recover, reopen, or rebound durable Work",
-            probe_error.as_deref(),
         );
         if apply_refreshed_provider_profile(member, profile) {
             store_conflict_as_usage(store.compare_and_append_member_run(&expected, member))?;
@@ -19008,11 +19217,12 @@ pub(crate) fn prepare_team_run_start_body(
         }
         let expected = member.clone();
         let (profile, probe_error) = refreshed_team_member_provider_profile(member)?;
+        let resolution = resolve_provider_compatibility(store, &profile, probe_error.as_deref())?;
         let refusal = provider_compatibility_block_reason(
             member,
             &profile,
+            &resolution,
             "start or resume persistent Agent Team execution",
-            probe_error.as_deref(),
         );
         if apply_refreshed_provider_profile(member, profile) {
             store_conflict_as_usage(store.compare_and_append_member_run(&expected, member))?;
@@ -28319,11 +28529,13 @@ pub(crate) fn reopen_team_member_value(
                     | ProviderCompatibilityStatus::Unavailable
             )
         {
+            let resolution =
+                resolve_provider_compatibility(store, profile, probe_error.as_deref())?;
             if let Some(reason) = provider_compatibility_block_reason(
                 &member,
                 profile,
+                &resolution,
                 "reopen or resume its provider-native session",
-                probe_error.as_deref(),
             ) {
                 return Err(CliError::Usage(reason));
             }
@@ -29185,11 +29397,12 @@ fn require_reviewed_member_before_work_rebind(
     }
     let expected = member.clone();
     let (profile, probe_error) = refreshed_team_member_provider_profile(&member)?;
+    let resolution = resolve_provider_compatibility(store, &profile, probe_error.as_deref())?;
     let refusal = provider_compatibility_block_reason(
         &member,
         &profile,
+        &resolution,
         "receive rebound durable Work",
-        probe_error.as_deref(),
     );
     if apply_refreshed_provider_profile(&mut member, profile) {
         store_conflict_as_usage(store.compare_and_append_member_run(&expected, &member))?;
@@ -44652,6 +44865,90 @@ package:com.tencent.mm
             .compatibility_note
             .as_deref()
             .is_some_and(|note| note.contains("regenerate protocol schemas")));
+    }
+
+    #[test]
+    fn provider_operational_admission_is_exact_and_separate_from_source_review() {
+        let root = std::env::temp_dir().join(format!(
+            "harness-provider-admission-cli-test-{}",
+            generated_id("exact")
+        ));
+        let store = HarnessStore::new(&root);
+        let mut profile = team_member_provider_profile_for_mode("codex", Some("codex_app_server"));
+        apply_provider_version(&mut profile, Some("9.9.9".into()));
+        assert_eq!(profile.compatibility_status, ProviderCompatibilityStatus::ReviewRequired);
+        let admission = ProviderCompatibilityAdmission {
+            id: "admission-exact".into(),
+            project_id: "project-a".into(),
+            store_id: "space-a".into(),
+            provider: "codex".into(),
+            execution_mode: "codex_app_server".into(),
+            provider_version: "9.9.9".into(),
+            adapter_contract_version: "codex-app-server-v1".into(),
+            policy: ProviderCompatibilityAdmissionPolicy::Strict,
+            actor: "operator".into(),
+            evidence_refs: vec!["evidence:test".into()],
+            admitted_at: "unix-ms:1".into(),
+            lifecycle: ProviderCompatibilityAdmissionLifecycle::Active,
+            predecessor_admission_id: None,
+            reason: None,
+        };
+        store.admit_provider_compatibility_admission(&admission).unwrap();
+        let allowed = resolve_provider_compatibility(&store, &profile, None).unwrap();
+        assert!(allowed.allowed);
+        assert_eq!(allowed.source, "operational_admission");
+        assert_eq!(profile.compatibility_status, ProviderCompatibilityStatus::ReviewRequired);
+
+        profile.execution_mode = "codex_exec".into();
+        assert!(!resolve_provider_compatibility(&store, &profile, None)
+            .unwrap()
+            .allowed);
+        profile.execution_mode = "codex_app_server".into();
+        let isolated = HarnessStore::new(root.join("other-store"));
+        assert!(!resolve_provider_compatibility(&isolated, &profile, None)
+            .unwrap()
+            .allowed);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn advisory_admission_never_overrides_probe_failure_and_migrates() {
+        let root = std::env::temp_dir().join(format!(
+            "harness-provider-admission-cli-test-{}",
+            generated_id("advisory")
+        ));
+        let store = HarnessStore::new(&root);
+        let mut profile = team_member_provider_profile_for_mode("kimi", Some("kimi_acp"));
+        apply_provider_version(&mut profile, Some("99.0.0".into()));
+        let admission = ProviderCompatibilityAdmission {
+            id: "admission-advisory".into(),
+            project_id: "project-a".into(),
+            store_id: "space-a".into(),
+            provider: "kimi".into(),
+            execution_mode: "kimi_acp".into(),
+            provider_version: "99.0.0".into(),
+            adapter_contract_version: "kimi-acp-v1".into(),
+            policy: ProviderCompatibilityAdmissionPolicy::Advisory,
+            actor: "operator".into(),
+            evidence_refs: vec!["evidence:test".into()],
+            admitted_at: "unix-ms:1".into(),
+            lifecycle: ProviderCompatibilityAdmissionLifecycle::Active,
+            predecessor_admission_id: None,
+            reason: None,
+        };
+        store.admit_provider_compatibility_admission(&admission).unwrap();
+        assert!(resolve_provider_compatibility(&store, &profile, None)
+            .unwrap()
+            .allowed);
+        assert!(!resolve_provider_compatibility(&store, &profile, Some("probe failed"))
+            .unwrap()
+            .allowed);
+        profile.compatibility_status = ProviderCompatibilityStatus::Incompatible;
+        assert!(!resolve_provider_compatibility(&store, &profile, None)
+            .unwrap()
+            .allowed);
+        assert!(EXECUTION_LEDGER_NAMES.contains(&"provider_compatibility_admissions.jsonl"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

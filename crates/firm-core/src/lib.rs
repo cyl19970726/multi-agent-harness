@@ -3170,6 +3170,139 @@ pub enum ProviderCompatibilityStatus {
     Unknown,
 }
 
+/// Policy attached to one explicit provider compatibility admission.
+///
+/// An admission is operational authorization, not evidence that an adapter
+/// was source-reviewed. In particular, callers must not copy admissions into
+/// [`ProviderIntegrationProfile::reviewed_provider_versions`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCompatibilityAdmissionPolicy {
+    Strict,
+    Advisory,
+}
+
+/// Append-only lifecycle of a provider compatibility admission key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCompatibilityAdmissionLifecycle {
+    Active,
+    Revoked,
+    Superseded,
+}
+
+/// Store-scoped operational admission for one exact provider adapter tuple.
+///
+/// The compatibility key is exactly `(provider, execution_mode,
+/// provider_version, adapter_contract_version)`. `project_id` and `store_id`
+/// preserve the authority scope in exported or migrated evidence; the Store
+/// root remains the physical isolation boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderCompatibilityAdmission {
+    pub id: String,
+    pub project_id: String,
+    pub store_id: String,
+    pub provider: String,
+    pub execution_mode: String,
+    pub provider_version: String,
+    pub adapter_contract_version: String,
+    pub policy: ProviderCompatibilityAdmissionPolicy,
+    pub actor: String,
+    pub evidence_refs: Vec<String>,
+    pub admitted_at: String,
+    pub lifecycle: ProviderCompatibilityAdmissionLifecycle,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predecessor_admission_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl ProviderCompatibilityAdmission {
+    /// Returns the exact adapter tuple authorized by this admission.
+    pub fn exact_key(&self) -> (&str, &str, &str, &str) {
+        (
+            &self.provider,
+            &self.execution_mode,
+            &self.provider_version,
+            &self.adapter_contract_version,
+        )
+    }
+
+    /// Only an active lifecycle row grants operational compatibility.
+    pub fn is_active(&self) -> bool {
+        self.lifecycle == ProviderCompatibilityAdmissionLifecycle::Active
+    }
+}
+
+impl Validate for ProviderCompatibilityAdmission {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "ProviderCompatibilityAdmission.id")?;
+        require_non_empty(
+            &self.project_id,
+            "ProviderCompatibilityAdmission.project_id",
+        )?;
+        require_non_empty(&self.store_id, "ProviderCompatibilityAdmission.store_id")?;
+        require_non_empty(&self.provider, "ProviderCompatibilityAdmission.provider")?;
+        require_non_empty(
+            &self.execution_mode,
+            "ProviderCompatibilityAdmission.execution_mode",
+        )?;
+        require_non_empty(
+            &self.provider_version,
+            "ProviderCompatibilityAdmission.provider_version",
+        )?;
+        require_non_empty(
+            &self.adapter_contract_version,
+            "ProviderCompatibilityAdmission.adapter_contract_version",
+        )?;
+        require_non_empty(&self.actor, "ProviderCompatibilityAdmission.actor")?;
+        require_non_empty(
+            &self.admitted_at,
+            "ProviderCompatibilityAdmission.admitted_at",
+        )?;
+        if self.evidence_refs.is_empty() {
+            return Err(ValidationError::Invalid {
+                field: "ProviderCompatibilityAdmission.evidence_refs",
+                reason: "must contain at least one evidence reference",
+            });
+        }
+        for evidence_ref in &self.evidence_refs {
+            require_non_empty(evidence_ref, "ProviderCompatibilityAdmission.evidence_refs")?;
+        }
+        match self.lifecycle {
+            ProviderCompatibilityAdmissionLifecycle::Active => {
+                if self.predecessor_admission_id.is_some() || self.reason.is_some() {
+                    return Err(ValidationError::Invalid {
+                        field: "ProviderCompatibilityAdmission.lifecycle",
+                        reason: "active admission cannot name a predecessor or transition reason",
+                    });
+                }
+            }
+            ProviderCompatibilityAdmissionLifecycle::Revoked
+            | ProviderCompatibilityAdmissionLifecycle::Superseded => {
+                let predecessor =
+                    self.predecessor_admission_id
+                        .as_deref()
+                        .ok_or(ValidationError::Invalid {
+                            field: "ProviderCompatibilityAdmission.predecessor_admission_id",
+                            reason: "terminal transition must name its active predecessor",
+                        })?;
+                require_non_empty(
+                    predecessor,
+                    "ProviderCompatibilityAdmission.predecessor_admission_id",
+                )?;
+                let reason = self.reason.as_deref().ok_or(ValidationError::Invalid {
+                    field: "ProviderCompatibilityAdmission.reason",
+                    reason: "terminal transition must include a reason",
+                })?;
+                require_non_empty(reason, "ProviderCompatibilityAdmission.reason")?;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderInteractionMode {
@@ -6957,6 +7090,105 @@ mod tests {
             !encoded.contains("compatibility"),
             "capacity JSON must not carry adapter compatibility: {encoded}"
         );
+    }
+
+    fn provider_compatibility_admission(
+        policy: ProviderCompatibilityAdmissionPolicy,
+    ) -> ProviderCompatibilityAdmission {
+        ProviderCompatibilityAdmission {
+            id: "admission-1".to_string(),
+            project_id: "project-1".to_string(),
+            store_id: "store-1".to_string(),
+            provider: "claude".to_string(),
+            execution_mode: "claude_agent_sdk".to_string(),
+            provider_version: "2.1.220".to_string(),
+            adapter_contract_version: "claude-agent-sdk-v1".to_string(),
+            policy,
+            actor: "operator-1".to_string(),
+            evidence_refs: vec!["evidence-1".to_string()],
+            admitted_at: "unix-ms:1".to_string(),
+            lifecycle: ProviderCompatibilityAdmissionLifecycle::Active,
+            predecessor_admission_id: None,
+            reason: None,
+        }
+    }
+
+    #[test]
+    fn provider_compatibility_admission_accepts_strict_and_advisory_exact_keys() {
+        for policy in [
+            ProviderCompatibilityAdmissionPolicy::Strict,
+            ProviderCompatibilityAdmissionPolicy::Advisory,
+        ] {
+            let admission = provider_compatibility_admission(policy);
+            assert!(admission.validate().is_ok());
+            assert!(admission.is_active());
+            assert_eq!(
+                admission.exact_key(),
+                (
+                    "claude",
+                    "claude_agent_sdk",
+                    "2.1.220",
+                    "claude-agent-sdk-v1"
+                )
+            );
+
+            let encoded = serde_json::to_value(&admission).expect("serialize admission");
+            let decoded: ProviderCompatibilityAdmission =
+                serde_json::from_value(encoded).expect("deserialize admission");
+            assert_eq!(decoded, admission);
+        }
+    }
+
+    #[test]
+    fn provider_compatibility_admission_rejects_empty_evidence() {
+        let mut admission =
+            provider_compatibility_admission(ProviderCompatibilityAdmissionPolicy::Strict);
+        admission.evidence_refs.clear();
+        assert!(admission.validate().is_err());
+
+        admission.evidence_refs.push("  ".to_string());
+        assert!(admission.validate().is_err());
+    }
+
+    #[test]
+    fn provider_compatibility_admission_rejects_invalid_lifecycle_metadata() {
+        let mut active =
+            provider_compatibility_admission(ProviderCompatibilityAdmissionPolicy::Advisory);
+        active.reason = Some("not valid on an active row".to_string());
+        assert!(active.validate().is_err());
+
+        for lifecycle in [
+            ProviderCompatibilityAdmissionLifecycle::Revoked,
+            ProviderCompatibilityAdmissionLifecycle::Superseded,
+        ] {
+            let mut terminal =
+                provider_compatibility_admission(ProviderCompatibilityAdmissionPolicy::Strict);
+            terminal.lifecycle = lifecycle;
+            assert!(!terminal.is_active());
+            assert!(terminal.validate().is_err());
+
+            terminal.predecessor_admission_id = Some(" ".to_string());
+            terminal.reason = Some("provider contract changed".to_string());
+            assert!(terminal.validate().is_err());
+
+            terminal.predecessor_admission_id = Some("admission-1".to_string());
+            terminal.reason = Some(String::new());
+            assert!(terminal.validate().is_err());
+
+            terminal.reason = Some("provider contract changed".to_string());
+            assert!(terminal.validate().is_ok());
+        }
+    }
+
+    #[test]
+    fn provider_compatibility_admission_rejects_unknown_fields() {
+        let admission =
+            provider_compatibility_admission(ProviderCompatibilityAdmissionPolicy::Strict);
+        let mut value = serde_json::to_value(admission).expect("serialize admission");
+        value["source_reviewed"] = serde_json::json!(true);
+        let error = serde_json::from_value::<ProviderCompatibilityAdmission>(value)
+            .expect_err("admission wire format must reject unknown fields");
+        assert!(error.to_string().contains("unknown field"));
     }
 
     #[test]
