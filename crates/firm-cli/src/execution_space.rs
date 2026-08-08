@@ -156,10 +156,7 @@ impl ExecutionSpaceRegistry {
     }
 }
 
-pub fn context_for_id(
-    firm_home: &Path,
-    id: &str,
-) -> ExecutionSpaceResult<Option<ExecutionSpace>> {
+pub fn context_for_id(firm_home: &Path, id: &str) -> ExecutionSpaceResult<Option<ExecutionSpace>> {
     validate_space_id(id)?;
     let registry = ExecutionSpaceRegistry::load(firm_home)?;
     if let Some(entry) = registry.find(id) {

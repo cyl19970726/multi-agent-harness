@@ -19,10 +19,10 @@ not seven independent sources of product truth.
 | Module | Location | Owns | Default context? |
 | --- | --- | --- | --- |
 | Product | `docs/current/product/prd.md`, `docs/current/company-os/` | product mission, system ownership, object meaning, governance and UX contracts | yes, through a small context pack |
-| Architecture | `docs/current/architecture/architecture*.md`, `docs/concept-model.md`, `docs/data-model.md`, `docs/decisions/` | implemented boundaries, durable decisions, source-of-truth and migration rules | selected files only |
-| Execution | `docs/dashboard/`, `docs/integration/`, runtime/workflow docs | Mission/Wave, executors, providers, operator surfaces and runbooks | only for execution work |
+| Architecture | `docs/current/architecture/architecture*.md`, `docs/current/architecture/concept-model.md`, `docs/current/architecture/data-model.md`, `docs/decisions/` | implemented boundaries, durable decisions, source-of-truth and migration rules | selected files only |
+| Execution | `docs/current/dashboard/`, `docs/current/integration/`, runtime/workflow docs | Mission/Wave, executors, providers, operator surfaces and runbooks | only for execution work |
 | Design evidence | `design/<workstream>/` (git history) | versioned Expected, Actual, prompts, specs, overlays, comparisons and reviews | only for the selected workstream |
-| Operations | `docs/current/operations/getting-started.md`, `docs/current/operations/operations.md`, `docs/current/architecture/schemas.md`, `docs/governance-engine.md` | commands, release and governance gates | only for implementation/operations |
+| Operations | `docs/current/operations/getting-started.md`, `docs/current/operations/operations.md`, `docs/current/architecture/schemas.md`, `docs/current/operations/governance-engine.md` | commands, release and governance gates | only for implementation/operations |
 | Research | `research/` (git history) | unresolved evidence, comparisons and bounded proposals attached to an active decision or WorkItem | never default context |
 | Historical evidence | verified external archives and Git history | provenance needed to interpret still-existing records or decisions | never default context |
 

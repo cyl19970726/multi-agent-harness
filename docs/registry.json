@@ -562,7 +562,7 @@
       "truthRefs": [
         {
           "kind": "api",
-          "ref": "crates/harness-cli/src/sse.rs"
+          "ref": "crates/firm-cli/src/sse.rs"
         }
       ]
     },
@@ -859,7 +859,7 @@
         "https://developers.openai.com/codex/hooks",
         "https://developers.openai.com/codex/plugins",
         "https://developers.openai.com/codex/cli/features",
-        "cargo test -p harness-cli",
+        "cargo test -p firm-cli",
         "harness governance check"
       ],
       "reorgTrigger": "Codex provider surfaces, app-server protocol, hook behavior, plugin packaging, or fallback strategy changes.",
@@ -897,7 +897,7 @@
       ],
       "reviewAfter": "2026-09-03",
       "lastVerifiedWith": [
-        "cargo test -p harness-cli",
+        "cargo test -p firm-cli",
         "npx pnpm@9.15.4 check",
         "harness governance check"
       ],
@@ -907,7 +907,7 @@
       "truthRefs": [
         {
           "kind": "api",
-          "ref": "crates/harness-cli/src/main.rs"
+          "ref": "crates/firm-cli/src/main.rs"
         },
         {
           "kind": "decision",
@@ -943,7 +943,7 @@
       "reviewAfter": "2026-09-03",
       "lastVerifiedWith": [
         "https://code.claude.com/docs",
-        "cargo test -p harness-cli",
+        "cargo test -p firm-cli",
         "harness governance check"
       ],
       "reorgTrigger": "Claude Agent SDK streaming, session protocol, lifecycle controls, native subagents, or Workflow-only CLI boundary changes.",
@@ -1197,11 +1197,11 @@
         },
         {
           "kind": "api",
-          "ref": "crates/harness-cli/src/sse.rs"
+          "ref": "crates/firm-cli/src/sse.rs"
         },
         {
           "kind": "api",
-          "ref": "crates/harness-cli/src/main.rs"
+          "ref": "crates/firm-cli/src/main.rs"
         },
         {
           "kind": "ui",
@@ -1468,7 +1468,7 @@
         },
         {
           "kind": "api",
-          "ref": "crates/harness-cli/src/main.rs"
+          "ref": "crates/firm-cli/src/main.rs"
         }
       ]
     },
@@ -1515,7 +1515,7 @@
         },
         {
           "kind": "api",
-          "ref": "crates/harness-cli/src/main.rs"
+          "ref": "crates/firm-cli/src/main.rs"
         }
       ]
     },
@@ -1550,7 +1550,7 @@
       "truthRefs": [
         {
           "kind": "test",
-          "ref": "cargo test -p harness-workflow"
+          "ref": "cargo test -p firm-workflow"
         }
       ]
     },
@@ -1577,7 +1577,7 @@
       ],
       "reviewAfter": "2026-09-03",
       "lastVerifiedWith": [
-        "cargo test -p harness-cli",
+        "cargo test -p firm-cli",
         "npx pnpm@9.15.4 check",
         "harness governance check"
       ],
@@ -1587,7 +1587,7 @@
       "truthRefs": [
         {
           "kind": "api",
-          "ref": "crates/harness-cli/src/main.rs"
+          "ref": "crates/firm-cli/src/main.rs"
         }
       ]
     },
@@ -1618,7 +1618,7 @@
       ],
       "reviewAfter": "2026-09-03",
       "lastVerifiedWith": [
-        "cargo test -p harness-cli",
+        "cargo test -p firm-cli",
         "npx pnpm@9.15.4 acceptance:mission-wave",
         "harness governance check"
       ],
@@ -1628,7 +1628,7 @@
       "truthRefs": [
         {
           "kind": "api",
-          "ref": "crates/harness-cli/src/kimi_acp.rs"
+          "ref": "crates/firm-cli/src/kimi_acp.rs"
         },
         {
           "kind": "runtime_evidence",
@@ -1665,9 +1665,9 @@
       ],
       "reviewAfter": "2026-08-12",
       "lastVerifiedWith": [
-        "cargo test -p harness-cli --test pi_team_member",
-        "cargo test -p harness-cli pi_rpc::tests",
-        "cargo test -p harness-cli --test pi_canary --features pi-canary",
+        "cargo test -p firm-cli --test pi_team_member",
+        "cargo test -p firm-cli pi_rpc::tests",
+        "cargo test -p firm-cli --test pi_canary --features pi-canary",
         "harness governance check"
       ],
       "reorgTrigger": "Pi RPC protocol, delivery receipts, thinking persistence, resume, compatibility review, or control mapping changes.",
@@ -1676,15 +1676,15 @@
       "truthRefs": [
         {
           "kind": "api",
-          "ref": "crates/harness-cli/src/pi_rpc.rs"
+          "ref": "crates/firm-cli/src/pi_rpc.rs"
         },
         {
           "kind": "api",
-          "ref": "crates/harness-cli/src/main.rs"
+          "ref": "crates/firm-cli/src/main.rs"
         },
         {
           "kind": "test",
-          "ref": "crates/harness-cli/tests/pi_team_member.rs"
+          "ref": "crates/firm-cli/tests/pi_team_member.rs"
         }
       ]
     },
@@ -1724,11 +1724,11 @@
       "truthRefs": [
         {
           "kind": "schema",
-          "ref": "crates/harness-core/src/lib.rs"
+          "ref": "crates/firm-core/src/lib.rs"
         },
         {
           "kind": "test",
-          "ref": "crates/harness-cli/tests/provider_capacity_preflight.rs"
+          "ref": "crates/firm-cli/tests/provider_capacity_preflight.rs"
         },
         {
           "kind": "decision",
@@ -1766,7 +1766,49 @@
       "truthRefs": [
         {
           "kind": "test",
-          "ref": "cargo test -p harness-governance"
+          "ref": "cargo test -p firm-governance"
+        }
+      ]
+    },
+    {
+      "path": "docs/current/operations/master-recovery-design-2026-08-08.md",
+      "ownerRole": "recovery-lead",
+      "status": "stable",
+      "lifecycle": "volatile",
+      "canonicalFor": [
+        "master recovery architecture and phased acceptance for the 2026-08-08 incident",
+        "issue disposition, subagent-only recovery policy, and exact-revision release gates"
+      ],
+      "dependsOn": [
+        "AGENTS.md",
+        "docs/current/architecture/data-model.md",
+        "docs/current/operations/operations.md",
+        "docs/decisions/0032-provider-native-session-is-execution-truth.md",
+        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
+        "docs/decisions/0051-single-intent-spine.md"
+      ],
+      "machineConsumers": [
+        "check-doc-links",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-08-22",
+      "lastVerifiedWith": [
+        "cargo fmt --all -- --check",
+        "cargo check --workspace --all-targets",
+        "cargo test --workspace -- --test-threads=1",
+        "npx pnpm@9.15.4 check"
+      ],
+      "reorgTrigger": "The recovery baseline, phase ordering, issue disposition, or exact-revision acceptance contract changes.",
+      "authorityClass": "design_intent",
+      "implementationState": "design_only",
+      "truthRefs": [
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
+        },
+        {
+          "kind": "decision",
+          "ref": "docs/decisions/0051-single-intent-spine.md"
         }
       ]
     },
@@ -2058,7 +2100,7 @@
       "reviewAfter": "2026-08-23",
       "lastVerifiedWith": [
         "node scripts/check-company-os-docs-cli-smoke.mjs",
-        "cargo run -q -p harness-cli -- governance check"
+        "cargo run -q -p firm-cli -- governance check"
       ],
       "reorgTrigger": "Docs CLI commands, Docs object boundaries, or Agent-operated/Human-reviewed operating rules change.",
       "authorityClass": "implementation_reference",
@@ -2066,7 +2108,7 @@
       "truthRefs": [
         {
           "kind": "api",
-          "ref": "crates/harness-cli/src/main.rs"
+          "ref": "crates/firm-cli/src/main.rs"
         },
         {
           "kind": "test",
@@ -2095,7 +2137,7 @@
       ],
       "reviewAfter": "2026-08-23",
       "lastVerifiedWith": [
-        "cargo run -q -p harness-cli -- governance check"
+        "cargo run -q -p firm-cli -- governance check"
       ],
       "reorgTrigger": "BusinessModule design contract, module approval, relation, Work, Organization, Finance, or governance policy changes.",
       "authorityClass": "implementation_reference",
@@ -2125,7 +2167,7 @@
       ],
       "reviewAfter": "2026-08-23",
       "lastVerifiedWith": [
-        "cargo run -q -p harness-cli -- governance check"
+        "cargo run -q -p firm-cli -- governance check"
       ],
       "reorgTrigger": "CustomPageDefinition, CustomPagePackage, visual contract, page runtime, or governed page Action boundary changes.",
       "authorityClass": "implementation_reference",
@@ -2378,7 +2420,7 @@
       "reviewAfter": "2026-10-23",
       "lastVerifiedWith": [
         "node scripts/check-company-os-docs-cli-smoke.mjs",
-        "cargo run -q -p harness-cli -- governance check"
+        "cargo run -q -p firm-cli -- governance check"
       ],
       "reorgTrigger": "Company OS Store, Docs query/search/View/health/diff/export read model, SQLite/PostgreSQL adapter, or canonical write path changes.",
       "authorityClass": "canonical_contract",
@@ -2413,7 +2455,7 @@
       "reviewAfter": "2026-10-24",
       "lastVerifiedWith": [
         "node scripts/check-company-os-docs-cli-smoke.mjs",
-        "cargo run -q -p harness-cli -- governance check"
+        "cargo run -q -p firm-cli -- governance check"
       ],
       "reorgTrigger": "Docs becomes Human-editor-first, PageDefinition/PagePackage source-of-truth boundaries change, or code-declared page publish gates change.",
       "authorityClass": "canonical_contract",
@@ -2465,7 +2507,7 @@
         },
         {
           "kind": "api",
-          "ref": "crates/harness-cli/src/native_session.rs"
+          "ref": "crates/firm-cli/src/native_session.rs"
         },
         {
           "kind": "test",
@@ -2511,7 +2553,7 @@
         },
         {
           "kind": "test",
-          "ref": "crates/harness-cli/tests/team_run_api.rs"
+          "ref": "crates/firm-cli/tests/team_run_api.rs"
         }
       ]
     },
@@ -2546,11 +2588,11 @@
       "truthRefs": [
         {
           "kind": "api",
-          "ref": "crates/harness-cli/src/main.rs"
+          "ref": "crates/firm-cli/src/main.rs"
         },
         {
           "kind": "test",
-          "ref": "crates/harness-cli/tests/team_run_api.rs"
+          "ref": "crates/firm-cli/tests/team_run_api.rs"
         }
       ]
     },
@@ -2593,7 +2635,7 @@
         },
         {
           "kind": "api",
-          "ref": "crates/harness-cli/src/native_session.rs"
+          "ref": "crates/firm-cli/src/native_session.rs"
         },
         {
           "kind": "test",
@@ -2628,7 +2670,7 @@
       "reviewAfter": "2026-08-22",
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check",
-        "cargo test -p harness-cli --test team_run_api --test team_run_start --test mcp_stdio"
+        "cargo test -p firm-cli --test team_run_api --test team_run_start --test mcp_stdio"
       ],
       "reorgTrigger": "Agent Team execution-root precedence, worktree identity validation, provider cwd selection, or workspace snapshot privacy fields change.",
       "authorityClass": "canonical_contract",
@@ -2644,11 +2686,11 @@
         },
         {
           "kind": "api",
-          "ref": "crates/harness-cli/src/main.rs"
+          "ref": "crates/firm-cli/src/main.rs"
         },
         {
           "kind": "test",
-          "ref": "crates/harness-cli/tests/team_run_start.rs"
+          "ref": "crates/firm-cli/tests/team_run_start.rs"
         }
       ]
     },
@@ -2678,7 +2720,7 @@
       "reviewAfter": "2026-08-21",
       "lastVerifiedWith": [
         "harness dashboard snapshot",
-        "cargo test -p harness-cli --test team_run_api",
+        "cargo test -p firm-cli --test team_run_api",
         "harness team-run status|inbox|ack|close-member|complete",
         "harness wave advance"
       ],
@@ -2692,7 +2734,7 @@
         },
         {
           "kind": "test",
-          "ref": "crates/harness-cli/tests/team_run_api.rs"
+          "ref": "crates/firm-cli/tests/team_run_api.rs"
         }
       ]
     },
@@ -2723,7 +2765,7 @@
       "truthRefs": [
         {
           "kind": "api",
-          "ref": "crates/harness-cli/src/mcp.rs"
+          "ref": "crates/firm-cli/src/mcp.rs"
         }
       ]
     },
@@ -2751,7 +2793,7 @@
       ],
       "reviewAfter": "2026-09-30",
       "lastVerifiedWith": [
-        "cargo test -p harness-cli -- --test-threads=1",
+        "cargo test -p firm-cli -- --test-threads=1",
         "npx pnpm@9.15.4 check",
         "npx pnpm@9.15.4 acceptance:mission-wave",
         "npx pnpm@9.15.4 check:star-harness-plugin"
@@ -2770,7 +2812,7 @@
         },
         {
           "kind": "test",
-          "ref": "crates/harness-cli/tests/mission_wave_api.rs"
+          "ref": "crates/firm-cli/tests/mission_wave_api.rs"
         }
       ]
     },
@@ -2809,7 +2851,7 @@
         },
         {
           "kind": "test",
-          "ref": "crates/harness-cli/tests/mission_wave_api.rs"
+          "ref": "crates/firm-cli/tests/mission_wave_api.rs"
         }
       ]
     },
@@ -2849,15 +2891,15 @@
         },
         {
           "kind": "api",
-          "ref": "crates/harness-cli/src/main.rs"
+          "ref": "crates/firm-cli/src/main.rs"
         },
         {
           "kind": "test",
-          "ref": "crates/harness-cli/tests/team_run_api.rs"
+          "ref": "crates/firm-cli/tests/team_run_api.rs"
         },
         {
           "kind": "test",
-          "ref": "crates/harness-cli/tests/mcp_stdio.rs"
+          "ref": "crates/firm-cli/tests/mcp_stdio.rs"
         }
       ]
     },
@@ -2926,7 +2968,7 @@
       "truthRefs": [
         {
           "kind": "test",
-          "ref": "crates/harness-cli/tests/claude_agent_sdk_member.rs"
+          "ref": "crates/firm-cli/tests/claude_agent_sdk_member.rs"
         },
         {
           "kind": "test",
@@ -2934,7 +2976,7 @@
         },
         {
           "kind": "api",
-          "ref": "crates/harness-cli/src/main.rs"
+          "ref": "crates/firm-cli/src/main.rs"
         }
       ]
     },
@@ -3030,7 +3072,7 @@
       ],
       "reviewAfter": "2026-09-30",
       "lastVerifiedWith": [
-        "cargo test -p harness-cli --test execution_space_cli",
+        "cargo test -p firm-cli --test execution_space_cli",
         "pnpm test:multi-project",
         "pnpm check:dashboard",
         "harness governance check"
@@ -3045,15 +3087,15 @@
         },
         {
           "kind": "api",
-          "ref": "crates/harness-cli/src/execution_space.rs"
+          "ref": "crates/firm-cli/src/execution_space.rs"
         },
         {
           "kind": "test",
-          "ref": "crates/harness-cli/tests/execution_space_cli.rs"
+          "ref": "crates/firm-cli/tests/execution_space_cli.rs"
         },
         {
           "kind": "test",
-          "ref": "crates/harness-cli/tests/company_store_serve.rs"
+          "ref": "crates/firm-cli/tests/company_store_serve.rs"
         }
       ]
     },
@@ -3211,7 +3253,7 @@
         },
         {
           "kind": "test",
-          "ref": "crates/harness-cli/tests/team_run_start.rs"
+          "ref": "crates/firm-cli/tests/team_run_start.rs"
         }
       ]
     },
@@ -3271,8 +3313,8 @@
       ],
       "reviewAfter": "2026-10-30",
       "lastVerifiedWith": [
-        "cargo test -p harness-cli --test mission_wave_api -- --test-threads=1",
-        "cargo test -p harness-store --test company_os",
+        "cargo test -p firm-cli --test mission_wave_api -- --test-threads=1",
+        "cargo test -p firm-store --test company_os",
         "npx pnpm@9.15.4 check:docs-governance"
       ],
       "reorgTrigger": "StandingAgent, AgentMember, MemberRun, Organization projection, or lifecycle ownership semantics change.",
@@ -3285,15 +3327,15 @@
         },
         {
           "kind": "api",
-          "ref": "crates/harness-cli/src/company_os_api.rs"
+          "ref": "crates/firm-cli/src/company_os_api.rs"
         },
         {
           "kind": "test",
-          "ref": "crates/harness-cli/tests/mission_wave_api.rs"
+          "ref": "crates/firm-cli/tests/mission_wave_api.rs"
         },
         {
           "kind": "test",
-          "ref": "crates/harness-store/tests/company_os.rs"
+          "ref": "crates/firm-store/tests/company_os.rs"
         }
       ]
     },
@@ -3326,7 +3368,7 @@
       "truthRefs": [
         {
           "kind": "store",
-          "ref": "crates/harness-store/src/lib.rs"
+          "ref": "crates/firm-store/src/lib.rs"
         },
         {
           "kind": "schema",
@@ -3334,7 +3376,7 @@
         },
         {
           "kind": "test",
-          "ref": "crates/harness-cli/tests/team_run_api.rs"
+          "ref": "crates/firm-cli/tests/team_run_api.rs"
         }
       ]
     },
@@ -3408,8 +3450,8 @@
       ],
       "reviewAfter": "2026-10-31",
       "lastVerifiedWith": [
-        "cargo test -p harness-cli --test team_run_api",
-        "cargo test -p harness-cli --test mcp_stdio",
+        "cargo test -p firm-cli --test team_run_api",
+        "cargo test -p firm-cli --test mcp_stdio",
         "npx pnpm@9.15.4 check:docs-governance"
       ],
       "reorgTrigger": "Close, Reopen, Retire, runtime generation, mailbox freeze, or native-session resume semantics change.",
@@ -3422,11 +3464,11 @@
         },
         {
           "kind": "store",
-          "ref": "crates/harness-cli/src/main.rs"
+          "ref": "crates/firm-cli/src/main.rs"
         },
         {
           "kind": "test",
-          "ref": "crates/harness-cli/tests/team_run_api.rs"
+          "ref": "crates/firm-cli/tests/team_run_api.rs"
         }
       ]
     },
@@ -3450,7 +3492,7 @@
       ],
       "reviewAfter": "2026-08-27",
       "lastVerifiedWith": [
-        "target/debug/harness --help",
+        "target/debug/firm --help",
         "node scripts/check-company-os-operator-cli-smoke.mjs",
         "harness governance check"
       ],
@@ -3460,19 +3502,19 @@
       "truthRefs": [
         {
           "kind": "api",
-          "ref": "crates/harness-cli/src/main.rs"
+          "ref": "crates/firm-cli/src/main.rs"
         },
         {
           "kind": "api",
-          "ref": "crates/harness-cli/src/company_store.rs"
+          "ref": "crates/firm-cli/src/company_store.rs"
         },
         {
           "kind": "api",
-          "ref": "crates/harness-cli/src/company_os_api.rs"
+          "ref": "crates/firm-cli/src/company_os_api.rs"
         },
         {
           "kind": "store",
-          "ref": "crates/harness-store/src/company_os.rs"
+          "ref": "crates/firm-store/src/company_os.rs"
         },
         {
           "kind": "test",
@@ -3488,7 +3530,7 @@
         },
         {
           "kind": "test",
-          "ref": "crates/harness-cli/tests/company_store_cli.rs"
+          "ref": "crates/firm-cli/tests/company_store_cli.rs"
         }
       ]
     },
@@ -3846,7 +3888,7 @@
       ],
       "reviewAfter": "2026-09-07",
       "lastVerifiedWith": [
-        "cargo run -q -p harness-cli -- governance check"
+        "cargo run -q -p firm-cli -- governance check"
       ],
       "reorgTrigger": "Agent Team stores, events, states, wake/delivery, or message push model changes.",
       "authorityClass": "implementation_reference",
@@ -3874,7 +3916,7 @@
       ],
       "reviewAfter": "2026-10-05",
       "lastVerifiedWith": [
-        "cargo run -q -p harness-cli -- governance check"
+        "cargo run -q -p firm-cli -- governance check"
       ],
       "reorgTrigger": "The Docs page model, revision contract, storage boundary, or blob strategy changes.",
       "authorityClass": "canonical_contract",
@@ -3893,12 +3935,12 @@
         "docs/mental/agent-firm-mental-model.md"
       ],
       "machineConsumers": [
-        "harness-cli",
+        "firm-cli",
         "check-doc-governance"
       ],
       "reviewAfter": "2026-11-07",
       "lastVerifiedWith": [
-        "harness-cli@0.4.4"
+        "firm-cli@0.4.4"
       ],
       "reorgTrigger": "product",
       "authorityClass": "canonical_contract",
@@ -3917,12 +3959,12 @@
         "docs/mental/agent-firm-mental-model.md"
       ],
       "machineConsumers": [
-        "harness-cli",
+        "firm-cli",
         "check-doc-governance"
       ],
       "reviewAfter": "2026-11-07",
       "lastVerifiedWith": [
-        "harness-cli@0.4.4"
+        "firm-cli@0.4.4"
       ],
       "reorgTrigger": "product",
       "authorityClass": "canonical_contract",
@@ -3942,14 +3984,14 @@
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
       ],
       "machineConsumers": [
-        "harness-cli",
+        "firm-cli",
         "lead-skill",
         "member-skill",
         "check-doc-governance"
       ],
       "reviewAfter": "2026-11-08",
       "lastVerifiedWith": [
-        "harness-cli@0.4.4"
+        "firm-cli@0.4.4"
       ],
       "reorgTrigger": "product",
       "authorityClass": "canonical_contract",

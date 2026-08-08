@@ -72,7 +72,7 @@ fn serve_and_cli_converge_on_space_while_project_binding_switches() {
         "not an Execution Space store: {cli_root}"
     );
     assert!(
-        !cli_root.ends_with("repo-a/.firm") && !cli_root.ends_with("repo-b/.firm"),
+        !cli_root.ends_with("repo-a/.harness") && !cli_root.ends_with("repo-b/.harness"),
         "resolved a repo-local store: {cli_root}"
     );
 }

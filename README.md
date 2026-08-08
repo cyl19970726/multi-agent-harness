@@ -75,8 +75,8 @@ Execution tools:
 
 ```bash
 scripts/install-skill.sh --agent both --skill star-workflow
-cargo build -p harness-cli
-./target/debug/harness serve --addr 127.0.0.1:8787
+cargo build -p firm-cli
+./target/debug/firm serve --addr 127.0.0.1:8787
 pnpm install
 pnpm dashboard:dev
 ```
@@ -84,7 +84,7 @@ pnpm dashboard:dev
 Run a Dynamic Workflow:
 
 ```bash
-./target/debug/harness workflow run-script prog.star \
+./target/debug/firm workflow run-script prog.star \
   --timeout-ms 300000 --max-budget-usd 2.00
 ```
 
@@ -115,7 +115,7 @@ and [getting started](docs/current/operations/getting-started.md).
 | Path | Purpose |
 | --- | --- |
 | `docs/current/company-os/` | Canonical Company OS product and architecture contracts. |
-| `docs/archive/design/` | Visual contracts, layout specifications, and execution UI designs. |
+| `docs/current/dashboard/` | Current layout contracts, frontend design, page contracts, and runbook. |
 | `schemas/` | Stable wire schemas for implemented objects. |
 | `crates/` | Rust store, core, CLI, execution, and provider infrastructure. |
 | `apps/agent-dashboard/` | React/Vite Company OS and execution workbench frontend. |

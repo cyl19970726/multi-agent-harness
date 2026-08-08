@@ -18,7 +18,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const fixturePath = join(repoRoot, "docs/design/company-os-v1/fixtures/company-os-trademark-v1.json");
+const fixturePath = join(repoRoot, "docs/current/company-os/fixtures/company-os-trademark-v1.json");
 const defaultRunId = "company-os-v2-live-acceptance";
 const ADMIN_ID = "actor-human-brand-owner";
 const NOW = "2026-07-20T09:30:00+08:00";
@@ -730,7 +730,7 @@ async function main() {
     return;
   }
 
-  const harnessBinary = resolve(argument("--harness-binary", join(repoRoot, "target/debug/harness")));
+  const harnessBinary = resolve(argument("--harness-binary", join(repoRoot, "target/debug/firm")));
   const runId = argument("--run-id", defaultRunId);
   const captureContract = argument("--capture-contract", "v1");
   if (!new Set(["v1", "v2.2"]).has(captureContract)) throw new Error("--capture-contract must be v1 or v2.2");
@@ -778,7 +778,7 @@ async function main() {
       status: "passed",
       project_id: project.id,
       source: snapshot.source,
-      scenario_input: "docs/design/company-os-v1/fixtures/company-os-trademark-v1.json",
+      scenario_input: "docs/current/company-os/fixtures/company-os-trademark-v1.json",
       capture_contract: captureContract,
       transport: "administrative bootstrap + governed ActionCommands for trademark WorkItem, Assignment, Commitment, and Approval request",
       archived_store: "archived-harness-home",

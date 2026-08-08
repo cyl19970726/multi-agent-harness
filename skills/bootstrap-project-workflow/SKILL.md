@@ -277,7 +277,7 @@ key mechanisms
 - each key module gets one canonical home — `docs/<module>.md`, or
   `docs/<module>/` when its internals need their own readers;
 - related modules cluster under a shared parent, for example
-  `docs/integration/<provider>.md` for the provider adapters;
+  `docs/current/integration/<provider>.md` for the provider adapters;
 - a doc whose owner module is unclear is a signal that the decomposition, not
   the filing, is wrong — fix the module map first;
 - only after the module projection is settled do the maintenance splits apply
@@ -347,7 +347,7 @@ Docs should grow with project state:
 - avoid turning app, package, or implementation directories into parallel
   canonical documentation systems; local README files should be pointers or
   operational entry points, not architecture source of truth;
-- use `docs/integration/<provider>.md` for provider-specific integrations;
+- use `docs/current/integration/<provider>.md` for provider-specific integrations;
 - reorg when the tree no longer reflects system layers, relationships, or
   evidence flow;
 - archive or delete stale and decorative docs.
@@ -359,7 +359,7 @@ implementations:
 
 ```text
 docs/<runtime-or-interface>.md        # provider-neutral or platform-neutral contract
-docs/integration/<provider>.md        # provider-specific implementation
+docs/current/integration/<provider>.md        # provider-specific implementation
 examples/adapters/<project>/          # project-specific tool and evidence policy
 ```
 

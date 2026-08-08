@@ -10,17 +10,24 @@ import { defineConfig } from "vite";
  * #307's provenance surface. Best-effort: a build without git available (a
  * source tarball, a container with git stripped) still succeeds, falling
  * back to "unknown" so the footer/banner degrade instead of breaking the
- * build. Mirrors `crates/harness-cli/build.rs`'s server-side embedding.
+ * build. Mirrors `crates/firm-cli/build.rs`'s server-side embedding. Release
+ * builds from a source archive may provide the exact revision through
+ * `FIRM_BUILD_GIT_REV`.
  */
 function resolveDashboardGitRev(): string {
+  const suppliedRaw = process.env.FIRM_BUILD_GIT_REV;
+  if (suppliedRaw !== undefined) {
+    const supplied = suppliedRaw.trim();
+    return /^[0-9a-f]{40}$/i.test(supplied) ? supplied.toLowerCase() : "unknown";
+  }
   try {
-    const rev = execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+    const rev = execFileSync("git", ["rev-parse", "--verify", "HEAD^{commit}"], {
       cwd: fileURLToPath(new URL(".", import.meta.url)),
       stdio: ["ignore", "pipe", "ignore"],
     })
       .toString()
       .trim();
-    return rev || "unknown";
+    return /^[0-9a-f]{40}$/i.test(rev) ? rev.toLowerCase() : "unknown";
   } catch {
     return "unknown";
   }

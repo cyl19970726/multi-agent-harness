@@ -916,7 +916,9 @@ fn discover_sources(store_root: &Path, project_root: &Path) -> Result<Vec<Source
         root: primary.clone(),
         before: Vec::new(),
     }];
-    let local = project_root.join(".firm");
+    // Repo-local stores predate the centralized Firm home and deliberately
+    // retain the historical `.harness` compatibility name.
+    let local = project_root.join(".harness");
     if local.exists() {
         reject_symlink_or_non_directory(&local, "repo-local source store")?;
         let local = fs::canonicalize(&local)

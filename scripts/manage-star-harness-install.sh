@@ -83,6 +83,15 @@ else
 fi
 
 echo
+echo "Candidate Firm binary:"
+CANDIDATE_BIN="${REPO_ROOT}/target/debug/firm"
+if [[ -x "${CANDIDATE_BIN}" ]]; then
+  "${CANDIDATE_BIN}" --build-info
+else
+  echo "not built at ${CANDIDATE_BIN}; run cargo build -p firm-cli"
+fi
+
+echo
 echo "Current Codex Star Harness installation:"
 CODEX_PLUGINS_BEFORE="$(codex plugin list)"
 grep -E 'star-harness@(personal|multi-agent-harness)' <<<"${CODEX_PLUGINS_BEFORE}" || true
@@ -127,7 +136,7 @@ mkdir -p "${VERSION_DIR}" "$(dirname "${BIN_LINK}")" "${STATE_BASE}/installation
 INSTALLED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 STATE_FILE="${STATE_BASE}/installations/${INSTALLED_AT//:/-}-${VERSION}.json"
 APPLY_IN_PROGRESS="true"
-install -m 0755 "${REPO_ROOT}/target/debug/harness" "${VERSION_BIN}"
+install -m 0755 "${REPO_ROOT}/target/debug/firm" "${VERSION_BIN}"
 
 case "${MARKETPLACE_SNAPSHOT}" in
   "${INSTALL_BASE}/"*) ;;
@@ -142,18 +151,6 @@ install -m 0644 \
   "${REPO_ROOT}/.claude-plugin/marketplace.json" \
   "${MARKETPLACE_SNAPSHOT}/.claude-plugin/marketplace.json"
 cp -R "${REPO_ROOT}/plugins/star-harness" "${MARKETPLACE_SNAPSHOT}/plugins/"
-
-# Download canonical mental model doc from repo main branch and place it
-# in the plugin's shared-references so all users get it without cloning.
-echo "Downloading agent-team-mental-model.md from main branch..."
-MENTAL_MODEL_URL="https://raw.githubusercontent.com/cyl19970726/multi-agent-harness/master/docs/product/agent-team-mental-model.md"
-MENTAL_MODEL_DST="${REPO_ROOT}/plugins/star-harness/skills/shared-references/agent-team-mental-model.md"
-mkdir -p "$(dirname "${MENTAL_MODEL_DST}")"
-if curl -fsSL "${MENTAL_MODEL_URL}" -o "${MENTAL_MODEL_DST}" 2>/dev/null; then
-  echo "  downloaded to ${MENTAL_MODEL_DST}"
-else
-  echo "  WARNING: could not download mental model doc from GitHub; local copy may be stale" >&2
-fi
 
 case "${CLAUDE_RUNNER_INSTALL}" in
   "${VERSION_DIR}/"*) ;;
@@ -239,9 +236,9 @@ fi
 	echo "  installed ${VERSION} to ${KIMI_MANAGED_DIR}"
 	echo "  Run /reload in Kimi Code to activate the plugin."
 
-node - "${STATE_FILE}" "${VERSION}" "${REPO_ROOT}" "${VERSION_BIN}" "${PREVIOUS_BIN}" "${INSTALLED_AT}" <<'NODE'
+node - "${STATE_FILE}" "${VERSION}" "${REPO_ROOT}" "${VERSION_BIN}" "${PREVIOUS_BIN}" "${INSTALLED_AT}" "${KIMI_MANAGED_DIR}" <<'NODE'
 const fs = require("node:fs");
-const [path, version, sourceRoot, binary, previousBinary, installedAt] = process.argv.slice(2);
+const [path, version, sourceRoot, binary, previousBinary, installedAt, kimiPlugin] = process.argv.slice(2);
 fs.writeFileSync(path, `${JSON.stringify({
   schema_version: 1,
   version,
@@ -250,7 +247,7 @@ fs.writeFileSync(path, `${JSON.stringify({
   rollback_harness_binary: previousBinary || null,
   codex_plugin: "star-harness@multi-agent-harness",
   claude_plugin: "star-harness@multi-agent-harness",
-  kimi_plugin: "${KIMI_MANAGED_DIR}",
+  kimi_plugin: kimiPlugin,
   installed_at: installedAt,
 }, null, 2)}\n`);
 NODE

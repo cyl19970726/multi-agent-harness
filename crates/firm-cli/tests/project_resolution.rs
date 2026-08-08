@@ -86,16 +86,16 @@ fn serve_and_run_script_converge_via_registry() {
 #[test]
 fn active_execution_space_wins_over_legacy_cwd_store() {
     // An explicitly active Execution Space is cwd-independent. A legacy
-    // repo-local `.firm` remains available only when no native space is active.
+    // repo-local `.harness` remains available only when no native space is active.
     let home = TempHome::new("res-local-wins");
     // Activate a central project elsewhere → registry has a current_project_id.
     let other = home.base().join("other-proj");
     std::fs::create_dir_all(&other).unwrap();
     init(&home, &other);
 
-    // A legacy repo carrying its OWN repo-local `.firm`.
+    // A legacy repo carrying its OWN repo-local `.harness`.
     let repo = home.base().join("legacy-repo");
-    std::fs::create_dir_all(repo.join(".firm")).unwrap();
+    std::fs::create_dir_all(repo.join(".harness")).unwrap();
 
     let (_o, e) = resolve(&home, &repo, &[], &[]);
     assert!(
@@ -128,10 +128,34 @@ fn harness_root_env_overrides_and_warns() {
     std::fs::create_dir_all(&proj).unwrap();
     init(&home, &proj);
 
-    let (_o, e) = resolve(&home, &proj, &[], &[("FIRM_ROOT", "/tmp/hr-xyz")]);
+    let (_o, e) = resolve(&home, &proj, &[], &[("HARNESS_ROOT", "/tmp/hr-xyz")]);
     assert!(e.contains("HarnessRootEnv"), "stderr: {e}");
     assert!(root_of(&e).contains("/tmp/hr-xyz"), "stderr: {e}");
     assert!(e.contains("deprecated"), "stderr: {e}");
+}
+
+#[test]
+fn firm_root_is_canonical_and_wins_over_harness_root() {
+    let home = TempHome::new("res-firm-root");
+    let proj = home.base().join("repo");
+    std::fs::create_dir_all(&proj).unwrap();
+    init(&home, &proj);
+
+    let (_o, e) = resolve(
+        &home,
+        &proj,
+        &[],
+        &[
+            ("FIRM_ROOT", "/tmp/firm-root-canonical"),
+            ("HARNESS_ROOT", "/tmp/harness-root-alias"),
+        ],
+    );
+    assert!(e.contains("FirmRootEnv"), "stderr: {e}");
+    assert!(
+        root_of(&e).contains("/tmp/firm-root-canonical"),
+        "stderr: {e}"
+    );
+    assert!(!e.contains("HARNESS_ROOT is deprecated"), "stderr: {e}");
 }
 
 #[test]
@@ -163,17 +187,102 @@ fn project_env_selects_binding_without_switching_execution_store() {
         serde_json::from_str(&std::fs::read_to_string(home.registry_path()).unwrap()).unwrap();
     let id = registry["current_project_id"].as_str().unwrap().to_string();
 
-    let (_o, e) = resolve(&home, home.base(), &[], &[("FIRM_PROJECT", &id)]);
+    let (_o, e) = resolve(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("FIRM_PROJECT", &id),
+            ("HARNESS_PROJECT", "missing-project-alias"),
+        ],
+    );
     assert!(e.contains("SpaceCurrent"), "stderr: {e}");
     assert!(root_of(&e).contains("/execution-spaces/"), "stderr: {e}");
+    assert!(!e.contains("HARNESS_PROJECT is deprecated"), "stderr: {e}");
+
+    let (_o, alias_stderr) = resolve(&home, home.base(), &[], &[("HARNESS_PROJECT", &id)]);
+    assert!(
+        alias_stderr.contains("SpaceCurrent"),
+        "stderr: {alias_stderr}"
+    );
+    assert!(
+        alias_stderr.contains("HARNESS_PROJECT is deprecated; prefer `FIRM_PROJECT`"),
+        "stderr: {alias_stderr}"
+    );
+}
+
+#[test]
+fn firm_space_is_canonical_and_harness_space_is_a_fallback() {
+    let home = TempHome::new("res-space-env-precedence");
+    let first = home.base().join("first");
+    let second = home.base().join("second");
+    std::fs::create_dir_all(&first).unwrap();
+    std::fs::create_dir_all(&second).unwrap();
+    init(&home, &first);
+    let mut spaces_after_first: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.space_registry_path()).unwrap())
+            .unwrap();
+    let first_space = spaces_after_first["current_space_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    spaces_after_first["current_space_id"] = serde_json::Value::Null;
+    std::fs::write(
+        home.space_registry_path(),
+        serde_json::to_vec_pretty(&spaces_after_first).unwrap(),
+    )
+    .unwrap();
+    match std::fs::remove_file(home.active_space_marker_path()) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => panic!("clear active space marker: {error}"),
+    }
+    init(&home, &second);
+    let spaces_after_second: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.space_registry_path()).unwrap())
+            .unwrap();
+    let second_space = spaces_after_second["current_space_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(first_space, second_space);
+
+    let (_o, canonical_stderr) = resolve(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("FIRM_SPACE", &first_space),
+            ("HARNESS_SPACE", &second_space),
+        ],
+    );
+    assert!(
+        canonical_stderr.contains("SpaceEnv"),
+        "stderr: {canonical_stderr}"
+    );
+    assert!(
+        root_of(&canonical_stderr).ends_with(&first_space),
+        "stderr: {canonical_stderr}"
+    );
+    assert!(!canonical_stderr.contains("HARNESS_SPACE is deprecated"));
+
+    let (_o, alias_stderr) = resolve(&home, home.base(), &[], &[("HARNESS_SPACE", &first_space)]);
+    assert!(
+        root_of(&alias_stderr).ends_with(&first_space),
+        "stderr: {alias_stderr}"
+    );
+    assert!(
+        alias_stderr.contains("HARNESS_SPACE is deprecated; prefer `FIRM_SPACE`"),
+        "stderr: {alias_stderr}"
+    );
 }
 
 #[test]
 fn legacy_cwd_walk_up_is_warned_fallback() {
     let home = TempHome::new("res-walkup");
-    // No project ever activated → empty registry. A repo-local `.firm` exists.
+    // No project ever activated → empty registry. A repo-local `.harness` exists.
     let repo = home.base().join("legacy-repo");
-    let local_store = repo.join(".firm");
+    let local_store = repo.join(".harness");
     std::fs::create_dir_all(&local_store).unwrap();
     let sub = repo.join("deep").join("nested");
     std::fs::create_dir_all(&sub).unwrap();
@@ -181,14 +290,14 @@ fn legacy_cwd_walk_up_is_warned_fallback() {
     let (_o, e) = resolve(&home, &sub, &[], &[]);
     assert!(e.contains("CwdWalkUp"), "stderr: {e}");
     assert!(e.contains("deprecated"), "stderr: {e}");
-    // Resolves to the nearest ancestor `.firm`, preserving #89 back-compat.
-    assert!(root_of(&e).ends_with(".firm"), "stderr: {e}");
+    // Resolves to the nearest ancestor `.harness`, preserving #89 back-compat.
+    assert!(root_of(&e).ends_with(".harness"), "stderr: {e}");
 }
 
 #[test]
 fn global_default_when_nothing_selected() {
     let home = TempHome::new("res-global");
-    // Empty registry AND no local `.firm` up the tree → reserved _global.
+    // Empty registry AND no local `.harness` up the tree → reserved _global.
     let bare = home.base().join("bare").join("dir");
     std::fs::create_dir_all(&bare).unwrap();
 

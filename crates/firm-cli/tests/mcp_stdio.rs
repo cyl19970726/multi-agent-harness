@@ -7,12 +7,12 @@
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-use firm_core::{
+use harness_core::{
     MemberCoordinationStatus, MemberRunStatus, TeamActorKind, TeamActorRef, TeamDeliveryPolicy,
     TeamDeliveryStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind, TeamRecipientKind,
     TeamRecipientRef, WorkDeliveryStatus,
 };
-use firm_store::{HarnessStore, WorkDeliveryClaimResult};
+use harness_store::{HarnessStore, WorkDeliveryClaimResult};
 
 mod fake_provider;
 mod firm_env;
@@ -795,8 +795,6 @@ fn mcp_stdio_agent_team_tools() {
                 claim_expires_unix_ms: None,
                 provider_receipt_id: None,
                 failure_reason: None,
-                delivered_at: None,
-                acked_at: None,
                 updated_at: "2026-07-29T00:00:00Z".to_string(),
             }],
             created_at: "2026-07-29T00:00:00Z".to_string(),

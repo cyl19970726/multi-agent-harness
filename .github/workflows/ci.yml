@@ -23,6 +23,7 @@ jobs:
       - run: pnpm install --frozen-lockfile=false
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm check
+      - run: pnpm acceptance:skill-install
   rust:
     runs-on: ubuntu-latest
     steps:
@@ -37,4 +38,4 @@ jobs:
       # Doc/skill governance gate, native in the binary (replaces the retired
       # node check-doc-*/check-skills scripts). The cargo-test self-host test
       # also covers this; this is the explicit, legible CLI gate.
-      - run: cargo run -q -p harness-cli -- governance check || echo "governance check completed with warnings (pre-existing doc issues, see .governance.toml)"
+      - run: cargo run -q -p firm-cli -- governance check

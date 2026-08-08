@@ -20,7 +20,7 @@ import { createServer } from "vite";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const dashboardRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const harness = join(repoRoot, "target", "debug", "harness");
+const harness = join(repoRoot, "target", "debug", "firm");
 const serveAddr = "127.0.0.1:18915";
 const serveBase = `http://${serveAddr}`;
 const companyId = "docs-v2-browser";

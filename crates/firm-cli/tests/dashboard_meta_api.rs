@@ -8,7 +8,47 @@
 //!     log: it starts at zero and advances as Works are created.
 
 mod firm_env;
-use firm_env::{current_project_id, run_firm, ServeHandle, TempHome};
+use firm_env::{
+    clear_inherited_native_firm_env, current_project_id, run_firm, ServeHandle, TempHome,
+};
+
+#[test]
+fn build_info_is_storeless_and_reports_exact_or_unknown_revision() {
+    let home = TempHome::new("build-info-storeless");
+    let poisoned_home = home.base().join("not-a-directory");
+    std::fs::write(&poisoned_home, "must remain a file").expect("write poisoned FIRM_HOME");
+
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_firm"));
+    command
+        .arg("--build-info")
+        .current_dir(home.base())
+        .env("HOME", home.home())
+        .env("FIRM_HOME", &poisoned_home);
+    clear_inherited_native_firm_env(&mut command);
+    command.env("FIRM_HOME", &poisoned_home);
+    let output = command.output().expect("run firm --build-info");
+    assert!(
+        output.status.success(),
+        "build-info must not resolve the poisoned store: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&poisoned_home).expect("poisoned path remains readable"),
+        "must remain a file"
+    );
+
+    let info: serde_json::Value = serde_json::from_slice(&output.stdout).expect("build-info JSON");
+    let git_rev = info["git_rev"].as_str().expect("git_rev string");
+    assert!(
+        git_rev == "unknown"
+            || (git_rev.len() == 40 && git_rev.bytes().all(|byte| byte.is_ascii_hexdigit())),
+        "git_rev must be a full 40-hex SHA or unknown: {git_rev}"
+    );
+    assert_eq!(
+        info["package_version"].as_str(),
+        Some(env!("CARGO_PKG_VERSION"))
+    );
+}
 
 /// `harness init` a project rooted at `<base>/<name>` and return its derived id.
 fn init_project(home: &TempHome, name: &str) -> String {
@@ -28,13 +68,14 @@ fn meta_shape_and_provenance_fields_on_an_empty_store() {
     let (status, meta) = serve.get_json("/v1/meta");
     assert_eq!(status, 200, "body: {meta}");
 
-    // git_rev: compile-time, embedded by build.rs — either a short hex commit
-    // or the graceful "unknown" fallback; never empty, never fetched live.
+    // git_rev: compile-time, embedded by build.rs — either one exact 40-hex
+    // commit or the graceful "unknown" fallback; never fetched live.
     let git_rev = meta["git_rev"].as_str().expect("git_rev is a string");
     assert!(!git_rev.is_empty(), "git_rev must not be empty: {meta}");
     assert!(
-        git_rev == "unknown" || git_rev.chars().all(|c| c.is_ascii_hexdigit()),
-        "git_rev should be a hex short-sha or \"unknown\": {git_rev}"
+        git_rev == "unknown"
+            || (git_rev.len() == 40 && git_rev.chars().all(|c| c.is_ascii_hexdigit())),
+        "git_rev should be a full 40-hex SHA or \"unknown\": {git_rev}"
     );
 
     // built_at: either null, or the same "unix-ms:<millis>" convention every

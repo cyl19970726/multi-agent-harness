@@ -509,7 +509,7 @@ is the concrete "define X, Y, Z" deliverable.
    which native continuation operations are verified for the exact mode and
    version. Test that later provider-created cycles preserve the intended
    permission posture.
-6. **Write `docs/integration/<provider>.md`** from the provider template in
+6. **Write `docs/current/integration/<provider>.md`** from the provider template in
    [integration/README.md](../integration/README.md). Answer every section:
    capability summary, runtime model, message delivery, claim/retry, event
    sources, reducer mapping, queue constraints, context packaging, permission

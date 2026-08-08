@@ -1528,7 +1528,7 @@ fn trademark_chain_projection_actions_and_payment_boundaries() {
     let (status, snapshot) = serve.get_json(&format!("/v1/company-os/snapshot{query}"));
     assert_eq!(status, 200, "{snapshot}");
     assert_eq!(snapshot["result"]["snapshot_contract"], "company-os-v1");
-    assert_eq!(snapshot["result"]["source"]["kind"], "firm_store");
+    assert_eq!(snapshot["result"]["source"]["kind"], "harness_store");
     assert_eq!(snapshot["result"]["source"]["authoritative"], true);
     assert_eq!(snapshot["result"]["source"]["project_id"], project_id);
     assert_eq!(snapshot["result"]["source"]["schema"], "company-os/v1");
@@ -1955,10 +1955,7 @@ fn assert_isolated_company_store(home: &TempHome) {
         );
     }
     assert!(
-        !firm_home
-            .join("companies")
-            .join("agent-company")
-            .exists(),
+        !firm_home.join("companies").join("agent-company").exists(),
         "test store {firm_home:?} already carries the live agent-company ledger"
     );
 }

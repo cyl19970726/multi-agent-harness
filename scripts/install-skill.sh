@@ -156,4 +156,4 @@ done
 
 echo ""
 echo "Next: build + start the harness service, then ask your agent to author a workflow."
-echo "  cargo build -p harness-cli && ./target/debug/harness serve --addr 127.0.0.1:8787"
+echo "  cargo build -p firm-cli && ./target/debug/firm serve --addr 127.0.0.1:8787"

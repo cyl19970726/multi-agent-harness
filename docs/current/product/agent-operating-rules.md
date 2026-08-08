@@ -6,7 +6,7 @@ owner_role: lead-operations
 canonical_for: full agent operating rules relocated from root AGENTS.md, plus the relocation map
 ```
 
-Root [AGENTS.md](../../../../AGENTS.md) states product identity, hard invariants,
+Root [AGENTS.md](../../../AGENTS.md) states product identity, hard invariants,
 repository execution rules, routing links, and proportional acceptance. This
 companion carries the operating detail behind those invariants so the root file
 stays slim. Where a canonical contract doc exists, it is linked and wins any
@@ -373,7 +373,7 @@ resume-or-new-session decision to the governing record.
 ## Relocation Map
 
 How the pre-slimming root `AGENTS.md` (337 lines) maps to the current layout.
-"Root" means the current slim [AGENTS.md](../../../../AGENTS.md); "here" means this
+"Root" means the current slim [AGENTS.md](../../../AGENTS.md); "here" means this
 companion.
 
 | Former AGENTS.md content | Now lives in | Notes |

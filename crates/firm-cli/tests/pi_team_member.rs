@@ -96,6 +96,40 @@ fn store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::
         .collect()
 }
 
+fn wait_for_member_turns(
+    home: &TempHome,
+    project_id: &str,
+    member_run_id: &str,
+    expected: usize,
+) -> Vec<serde_json::Value> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let path = home
+        .spaces_dir()
+        .join(project_id)
+        .join("member_actions.jsonl");
+    loop {
+        if path.is_file() {
+            let actions = store_rows(home, project_id, "member_actions.jsonl");
+            let completed = actions
+                .iter()
+                .filter(|action| {
+                    action["member_run_id"] == member_run_id
+                        && action["action_type"] == "turn_completed"
+                })
+                .count();
+            if completed >= expected {
+                return actions;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {expected} completed Pi member turns in {}",
+            path.display()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
 #[test]
 fn pi_rpc_team_member_completes_work_then_host_follow_up_without_disconnect() {
     let home = TempHome::new("pi-team-member-round");
@@ -225,7 +259,7 @@ fn pi_rpc_team_member_completes_work_then_host_follow_up_without_disconnect() {
         "persistent Pi launch must force thinking off: {args:?}"
     );
 
-    let actions = store_rows(&home, &project_id, "member_actions.jsonl");
+    let actions = wait_for_member_turns(&home, &project_id, &member_id, 2);
     let member_actions = actions
         .iter()
         .filter(|action| action["member_run_id"] == member_id)

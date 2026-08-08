@@ -10,23 +10,23 @@ const requirements = new Map([
     ["sole source of truth", "NativeSessionRef", "Harness does not persist", "Migration outcome"],
   ],
   [
-    "docs/data-model.md",
+    "docs/current/architecture/data-model.md",
     ["provider-native store owns transcript", "ephemeral read projection"],
   ],
   [
-    "docs/company-os/execution-foundation.md",
+    "docs/current/company-os/execution-foundation.md",
     ["sole truth for", "does not keep a second provider event history"],
   ],
   [
-    "docs/integration/native-session-storage.md",
+    "docs/current/integration/native-session-storage.md",
     ["NativeSessionAdapter", "Write boundary", "Resume flow", "Provider matrix"],
   ],
   [
-    "docs/dashboard/pages/member-run-focus.md",
+    "docs/current/dashboard/pages/member-run-focus.md",
     ["NativeActivityProjection", "does not silently fall back to a mirrored history"],
   ],
   [
-    "docs/dashboard/pages/team-run-war-room.md",
+    "docs/current/dashboard/pages/team-run-war-room.md",
     ["joined read model, not a transcript database"],
   ],
 ]);
@@ -54,10 +54,10 @@ for (const retiredPath of [
 }
 
 const retiredProductionSymbols = new Map([
-  ["crates/harness-core/src/lib.rs", ["pub struct ProviderSession", "provider_session_id:", "acp_session_id:"]],
-  ["crates/harness-store/src/lib.rs", ["append_provider_session", "pub fn provider_sessions"]],
+  ["crates/firm-core/src/lib.rs", ["pub struct ProviderSession", "provider_session_id:", "acp_session_id:"]],
+  ["crates/firm-store/src/lib.rs", ["append_provider_session", "pub fn provider_sessions"]],
   ["apps/agent-dashboard/src/types.ts", ["provider_sessions:", "ProviderSession"]],
-  ["crates/harness-cli/src/sse.rs", ["provider_sessions"]],
+  ["crates/firm-cli/src/sse.rs", ["provider_sessions"]],
 ]);
 
 for (const [path, symbols] of retiredProductionSymbols) {
@@ -73,7 +73,7 @@ const registry = JSON.parse(readFileSync("docs/registry.json", "utf8"));
 const registered = new Set(registry.documents.map((document) => document.path));
 for (const path of [
   "docs/decisions/0032-provider-native-session-is-execution-truth.md",
-  "docs/integration/native-session-storage.md",
+  "docs/current/integration/native-session-storage.md",
 ]) {
   if (!registered.has(path)) failures.push(`docs/registry.json: missing ${path}`);
 }

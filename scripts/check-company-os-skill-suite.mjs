@@ -81,7 +81,7 @@ for (const skill of suiteSkills) {
   expect(acceptance.includes(skill), `acceptance-skill-install.sh missing ${skill}`);
 }
 
-const skillContracts = read("docs/company-os/skill-contracts.md");
+const skillContracts = read("docs/current/company-os/skill-contracts.md");
 expect(
   skillContracts.includes("scripts/install-skill.sh --agent both --suite company-os"),
   "skill-contracts.md missing company-os install command",
@@ -94,7 +94,7 @@ expect(
   "skill-contracts.md must record baseline Docs/Work/Org/Approval CLI implementation with Finance retirement",
 );
 
-const readme = read("docs/company-os/README.md");
+const readme = read("docs/current/company-os/README.md");
 expect(readme.includes("Skill and CLI Contracts"), "Company OS README missing skill-contracts reference");
 expect(readme.includes("--suite company-os"), "Company OS README missing suite install command");
 expect(
@@ -102,7 +102,7 @@ expect(
   "Company OS README must record baseline Company OS CLI implementation",
 );
 
-const governance = read("docs/company-os/governance-agent-workspaces.md");
+const governance = skillContracts;
 for (const skill of operatorSkills) {
   expect(governance.includes(`../../skills/${skill}/SKILL.md`), `governance-agent-workspaces.md missing ${skill}`);
 }

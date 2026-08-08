@@ -76,7 +76,7 @@ server logs:
 
 - `GET /v1/meta` returns `{ git_rev, built_at, store_root, latest_op_seq,
   server_version }`. `git_rev`/`built_at` are embedded at **compile time** by
-  `crates/firm-cli/build.rs` (a `git rev-parse --short HEAD` build-script
+  `crates/firm-cli/build.rs` (a full `git rev-parse --verify HEAD^{commit}` build-script
   call, never shelled out per-request); `latest_op_seq` is a monotonic cursor
   over the store's `work_operations.jsonl` append log.
 - The Workbench's persistent footer shows that server `git_rev` +

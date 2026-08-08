@@ -129,11 +129,17 @@ else
 fi
 
 echo "== A2: build the harness binary =="
-BIN="$REPO_ROOT/target/debug/harness"
+BIN="$REPO_ROOT/target/debug/firm"
 if [ ! -x "$BIN" ]; then
-  ( cd "$REPO_ROOT" && cargo build -q -p harness-cli ) >/dev/null 2>&1 || true
+  ( cd "$REPO_ROOT" && cargo build -q -p firm-cli ) >/dev/null 2>&1 || true
 fi
 [ -x "$BIN" ] && ok "harness binary present" || bad "harness binary missing (cargo build failed?)"
+if [ -x "$BIN" ] && "$BIN" --build-info \
+    | python3 -c 'import json,sys; r=json.load(sys.stdin)["git_rev"]; sys.exit(0 if r == "unknown" or (len(r) == 40 and all(c in "0123456789abcdefABCDEF" for c in r)) else 1)'; then
+  ok "candidate build-info is store-less and uses full-40/unknown provenance"
+else
+  bad "candidate build-info provenance is invalid"
+fi
 
 ROOT="$WORK/store"
 STAR="$WORK/acc.star"

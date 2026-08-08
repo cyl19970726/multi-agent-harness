@@ -2,7 +2,7 @@
 //! `--store-source` debug flag (goal-multi-project, dual-read-logging task).
 //!
 //! The grace-period rule: prefer central when a project is selected/active, fall
-//! back to a repo-local `.firm/` only when central is absent, IGNORE local stores
+//! back to a repo-local `.harness/` only when central is absent, IGNORE local stores
 //! marked `MIGRATED_TO_CENTRAL` (redirecting to the central store they point at), and
 //! ALWAYS log which store was chosen and why. `--store-source` makes the choice
 //! observable so nothing silently mixes central and local data.
@@ -38,9 +38,9 @@ fn store_source_line(out: &std::process::Output) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Seed a repo-local `.firm/` store with one ledger row.
+/// Seed a repo-local `.harness/` store with one ledger row.
 fn seed_local(repo: &Path) -> std::path::PathBuf {
-    let local = repo.join(".firm");
+    let local = repo.join(".harness");
     std::fs::create_dir_all(&local).unwrap();
     std::fs::write(local.join("goals.jsonl"), "{\"id\":\"g1\"}\n").unwrap();
     local
@@ -66,7 +66,7 @@ fn store_source_reports_override() {
 #[test]
 fn store_source_reports_global_default_when_nothing_selected() {
     let home = TempHome::new("ss-global");
-    // Run from a dir OUTSIDE HOME so the walk-up finds no ancestor `.firm`
+    // Run from a dir OUTSIDE HOME so the walk-up finds no ancestor `.harness`
     // (FIRM_HOME lives at <HOME>/.firm, so any cwd under HOME would walk up
     // to it). With no project selected and no local store, GlobalDefault must win.
     let out = run_with_store_source(&home, home.base(), &["board"]);
@@ -100,7 +100,7 @@ fn unmigrated_local_store_is_a_logged_compatibility_fallback() {
     let out = run_with_store_source(&home, &repo, &["board"]);
     let line = store_source_line(&out).expect("store-source line");
     assert!(line.contains("CwdWalkUp"), "local source: {line}");
-    assert!(line.contains("legacyrepo/.firm"), "local root: {line}");
+    assert!(line.contains("legacyrepo/.harness"), "local root: {line}");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("repo-local store"),
@@ -133,7 +133,7 @@ fn migrated_local_store_is_ignored_and_redirects_to_central() {
         "redirected root: {line}"
     );
     assert!(
-        !line.contains("oncemigrated/.firm"),
+        !line.contains("oncemigrated/.harness"),
         "must not resolve the migrated local store: {line}"
     );
     // No "repo-local store" compatibility warning — we did not fall back to local.

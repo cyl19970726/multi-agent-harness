@@ -6,7 +6,7 @@ status: implementation reference; ADR 0050 Work/WorkDelivery cutover in progress
 
 This implementation reference defines the provider-neutral runtime substrate
 shared by Host execution, Agent Team members, Dynamic Workflow steps and future
-Standing Agent operation. Provider-specific files under `docs/integration/`
+Standing Agent operation. Provider-specific files under `docs/current/integration/`
 explain how a concrete provider implements the substrate.
 
 The provider-neutral rule for continuous, multi-cycle Member execution lives
@@ -288,15 +288,15 @@ is not a substitute for this correlation envelope.
 Use this split:
 
 ```text
-docs/agent-integration-model.md  # how to integrate a new agent (three pillars + launch spec)
-docs/agent-runtime.md        # provider-neutral runtime substrate and interfaces
-docs/member-continuation-model.md
+docs/current/architecture/agent-integration-model.md  # how to integrate a new agent (three pillars + launch spec)
+docs/current/architecture/agent-runtime.md        # provider-neutral runtime substrate and interfaces
+docs/current/architecture/member-continuation-model.md
                              # execution-driver, completion and native continuation contract
-docs/integration/README.md   # integration rules and template
-docs/integration/codex.md    # Codex implementation
-docs/integration/claude.md   # Claude implementation
-docs/integration/kimi.md     # Kimi implementation
-docs/integration/<name>.md   # future provider implementation
+docs/current/integration/README.md   # integration rules and template
+docs/current/integration/codex.md    # Codex implementation
+docs/current/integration/claude.md   # Claude implementation
+docs/current/integration/kimi.md     # Kimi implementation
+docs/current/integration/<name>.md   # future provider implementation
 ```
 
 The [Agent Integration Model](agent-integration-model.md) is the canonical

@@ -52,7 +52,7 @@ The ENFORCER is project-specific; the contract is not. The harness enforces it
 with a project-portable native gate, `harness governance check` (the
 `harness-governance` crate), driven by a per-project `.governance.toml` and the
 registry it declares (default `docs/registry.json`); see the governance-engine
-doc (`docs/governance-engine.md`). So a Go, Python, mdBook, or no-node project
+doc (`docs/current/operations/governance-engine.md`). So a Go, Python, mdBook, or no-node project
 inherits the same contract without hosting per-repo scripts.
 
 ## Documentation Lifecycle Metadata

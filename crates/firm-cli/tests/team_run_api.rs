@@ -11,7 +11,7 @@
 
 use std::time::Duration;
 
-use firm_store::HarnessStore;
+use harness_store::HarnessStore;
 
 mod fake_provider;
 mod firm_env;
@@ -108,7 +108,7 @@ fn member_semantic_row_counts(store: &HarnessStore, member_id: &str) -> (usize, 
         .into_iter()
         .filter(|message| {
             message.from_member_id == member_id
-                && message.kind == firm_core::TeamMessageKind::Handoff
+                && message.kind == harness_core::TeamMessageKind::Handoff
         })
         .count();
     (member_rows, actions, handoffs)
@@ -2322,7 +2322,7 @@ fn stale_supervisor_quiesces_and_successor_resumes_mail_once() {
     assert!(
         matches!(
             claimed,
-            firm_store::TeamMessageDeliveryClaimResult::Claimed(_)
+            harness_store::TeamMessageDeliveryClaimResult::Claimed(_)
         ),
         "accepted boundary must be claimed exactly once"
     );
@@ -2356,7 +2356,7 @@ fn stale_supervisor_quiesces_and_successor_resumes_mail_once() {
     assert!(
         matches!(
             uncertain_claimed,
-            firm_store::TeamMessageDeliveryClaimResult::Claimed(_)
+            harness_store::TeamMessageDeliveryClaimResult::Claimed(_)
         ),
         "uncertain boundary must be claimed exactly once"
     );
@@ -2781,7 +2781,7 @@ fn heartbeat_failure_latch_rejects_close_while_durable_lease_is_current() {
         .expect("durable lease");
     assert_eq!(
         lease.status,
-        firm_core::TeamSupervisorLeaseStatus::Active,
+        harness_core::TeamSupervisorLeaseStatus::Active,
         "failure injection must leave the durable row apparently current"
     );
     assert!(
@@ -3752,7 +3752,7 @@ fn review_required_kimi_033_blocks_initial_start_and_http_work_rebind_before_acp
         .into_iter()
         .find(|delivery| delivery.work_id == work_id)
         .expect("WorkDelivery");
-    assert_eq!(delivery.status, firm_core::WorkDeliveryStatus::Queued);
+    assert_eq!(delivery.status, harness_core::WorkDeliveryStatus::Queued);
     assert_eq!(delivery.attempt, 0);
     assert!(delivery.provider_receipt_id.is_none());
     assert!(store
@@ -4122,8 +4122,8 @@ fn reviewed_recovery_redelivers_same_stable_member_without_duplicate_work_or_ses
         .find(|member| member.id == member_id)
         .expect("MemberRun");
     let original_generation = stopped_member.runtime_generation;
-    stopped_member.status = firm_core::MemberRunStatus::Stopped;
-    stopped_member.coordination_status = firm_core::MemberCoordinationStatus::Closed;
+    stopped_member.status = harness_core::MemberRunStatus::Stopped;
+    stopped_member.coordination_status = harness_core::MemberCoordinationStatus::Closed;
     stopped_member.finished_at = Some("unix-ms:stable-recovery-stop".to_string());
     stopped_member.last_event_at = stopped_member.finished_at.clone();
     store
@@ -4223,7 +4223,7 @@ fn reviewed_recovery_redelivers_same_stable_member_without_duplicate_work_or_ses
         .into_iter()
         .filter(|event| {
             event.work_id == "work-stable-recovery"
-                && event.kind == firm_core::WorkEventKind::Rebound
+                && event.kind == harness_core::WorkEventKind::Rebound
         })
         .collect::<Vec<_>>();
     assert_eq!(rebound_events.len(), 1);
@@ -4248,7 +4248,7 @@ fn reviewed_recovery_redelivers_same_stable_member_without_duplicate_work_or_ses
     assert_eq!(fresh_deliveries[0].recipient_member_run_id, member_id);
     assert_eq!(
         fresh_deliveries[0].status,
-        firm_core::WorkDeliveryStatus::Queued
+        harness_core::WorkDeliveryStatus::Queued
     );
     assert!(fresh_deliveries[0].provider_receipt_id.is_none());
 
@@ -4268,7 +4268,7 @@ fn reviewed_recovery_redelivers_same_stable_member_without_duplicate_work_or_ses
             .into_iter()
             .filter(|event| {
                 event.work_id == "work-stable-recovery"
-                    && event.kind == firm_core::WorkEventKind::Rebound
+                    && event.kind == harness_core::WorkEventKind::Rebound
             })
             .count(),
         1,
@@ -6204,7 +6204,7 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
         .into_iter()
         .find(|work| work.id == work_id)
         .expect("stored active Work");
-    assert_eq!(stored_work.status, firm_core::WorkStatus::InProgress);
+    assert_eq!(stored_work.status, harness_core::WorkStatus::InProgress);
     let stored_delivery = store
         .latest_work_deliveries()
         .expect("latest Work deliveries")
@@ -6215,7 +6215,7 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
         .expect("stored provider-received delivery");
     assert_eq!(
         stored_delivery.status,
-        firm_core::WorkDeliveryStatus::ProviderReceived
+        harness_core::WorkDeliveryStatus::ProviderReceived
     );
     assert_eq!(stored_delivery.attempt, 1);
     assert!(stored_delivery.provider_receipt_id.is_some());
@@ -6369,7 +6369,7 @@ fn kimi_model_switch_uses_only_the_new_models_advertised_effort_controls() {
         .expect("created member row");
     stale_member.provider_controls.reasoning_effort.effective = Some("max".to_string());
     stale_member.provider_controls.reasoning_effort.status =
-        firm_core::ProviderControlStatus::Effective;
+        harness_core::ProviderControlStatus::Effective;
     stale_member.provider_controls.reasoning_effort.note =
         Some("acknowledged by the previous K3 model".to_string());
     store
@@ -6838,16 +6838,16 @@ fn external_interactive_member_joins_and_exchanges_mail() {
         .rev()
         .find(|member| member.id == helper_id)
         .expect("helper member row");
-    assert_eq!(helper.status, firm_core::MemberRunStatus::Stopped);
+    assert_eq!(helper.status, harness_core::MemberRunStatus::Stopped);
     assert_eq!(
         helper.coordination_status,
-        firm_core::MemberCoordinationStatus::Closed
+        harness_core::MemberCoordinationStatus::Closed
     );
     assert!(
         store
             .latest_team_member_close_request(&helper_id)
             .expect("close request")
-            .is_some_and(|close| close.status == firm_core::TeamMemberCloseStatus::Applied),
+            .is_some_and(|close| close.status == harness_core::TeamMemberCloseStatus::Applied),
         "close request must be applied without a supervisor"
     );
 

@@ -17,12 +17,12 @@ import { fileURLToPath } from "node:url";
 const repoRoot = join(fileURLToPath(import.meta.url), "..", "..");
 const read = (rel) => readFile(join(repoRoot, rel), "utf8");
 
-const mainSource = await read("crates/harness-cli/src/main.rs");
-const docsV2Source = await read("crates/harness-cli/src/docs_v2_page.rs");
-const apiSource = await read("crates/harness-cli/src/company_os_api.rs");
+const mainSource = await read("crates/firm-cli/src/main.rs");
+const docsV2Source = await read("crates/firm-cli/src/docs_v2_page.rs");
+const apiSource = await read("crates/firm-cli/src/company_os_api.rs");
 const skillSource = await read("skills/company-docs-operator/SKILL.md");
-const cliMap = await read("docs/cli-map.md");
-const spec = await read("docs/company-os/ai-first-docs-spec.md");
+const cliMap = await read("docs/current/architecture/cli-map.md");
+const spec = await read("docs/current/company-os/document-system.md");
 
 let passed = 0;
 let failed = 0;
@@ -109,7 +109,7 @@ check(!/\bdocument (rename|move|archive)\b/.test(skillSource), "operator skill n
 // --- Docs coherence -----------------------------------------------------------
 check(!cliMap.includes("Blocks (Block-era)"), "cli-map no longer lists the Block-era block rows");
 check(cliMap.includes("page rename") && cliMap.includes("page move") && cliMap.includes("page archive"), "cli-map lists the v2 metadata commands");
-check(spec.includes("R3 (done)"), "spec §13 marks R3 done");
+check(spec.includes("retirement stage R3"), "current Docs contract records R3 retirement");
 
 console.log(
   failed === 0

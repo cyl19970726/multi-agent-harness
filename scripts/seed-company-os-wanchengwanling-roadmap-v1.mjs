@@ -568,7 +568,7 @@ const replicationWorkItems = [
 ];
 
 async function main() {
-  execFileSync("cargo", ["build", "-p", "harness-cli"], { cwd: repoRoot, stdio: "inherit" });
+  execFileSync("cargo", ["build", "-p", "firm-cli"], { cwd: repoRoot, stdio: "inherit" });
 
   const root = await mkdtemp(join(tmpdir(), "company-os-wcw-roadmap-v1-"));
   const explicitStoreRoot = argument("--store", "");

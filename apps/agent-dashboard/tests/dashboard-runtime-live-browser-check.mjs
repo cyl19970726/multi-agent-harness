@@ -18,7 +18,7 @@ import { createServer as createViteServer } from "vite";
 
 const dashboardRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(dashboardRoot, "../..");
-const harness = join(repoRoot, "target", "debug", "harness");
+const harness = join(repoRoot, "target", "debug", "firm");
 const evidenceRoot = join(repoRoot, ".visual-evidence", "dashboard-runtime-live-e2e-v1");
 const token = `dashboard-runtime-live-${process.pid}`;
 const now = "2026-08-05T12:00:00+08:00";
@@ -136,7 +136,7 @@ async function navigate(page, label) {
   await page.locator("aside").getByRole("button", { name: label, exact: true }).click();
 }
 
-const build = spawnSync("cargo", ["build", "-q", "-p", "harness-cli"], {
+const build = spawnSync("cargo", ["build", "-q", "-p", "firm-cli"], {
   cwd: repoRoot,
   stdio: "inherit",
 });
@@ -149,9 +149,16 @@ await mkdir(harnessHome, { recursive: true });
 await mkdir(projectRoot, { recursive: true });
 const env = {
   ...process.env,
+  FIRM_HOME: harnessHome,
+  FIRM_COMPANY_OS_TOKEN: token,
   HARNESS_HOME: harnessHome,
   HARNESS_COMPANY_OS_TOKEN: token,
 };
+delete env.FIRM_ROOT;
+delete env.FIRM_PROJECT;
+delete env.FIRM_PROJECT_ID;
+delete env.FIRM_SPACE;
+delete env.FIRM_COMPANY;
 delete env.HARNESS_ROOT;
 delete env.HARNESS_PROJECT;
 delete env.HARNESS_PROJECT_ID;

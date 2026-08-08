@@ -2,8 +2,8 @@
 //! (goal-multi-project, init-routing task).
 //!
 //! `init` must register the selected/cwd project centrally (registry + metadata)
-//! instead of blindly creating `./.firm`, must NOT silently adopt an ancestor's
-//! local `.firm`, and must preserve the `--store`/`FIRM_ROOT` override for
+//! instead of blindly creating `./.harness`, must NOT silently adopt an ancestor's
+//! local `.harness`, and must preserve the raw `--store` override for
 //! back-compat. Runs against an isolated HOME.
 
 use std::path::Path;
@@ -49,19 +49,19 @@ fn init_registers_central_project_not_local_dot_harness() {
         "metadata.json missing"
     );
 
-    // It did NOT create a local `./.firm` as the canonical store.
+    // It did NOT create a local `./.harness` as the canonical store.
     assert!(
-        !proj.join(".firm").exists(),
-        "init must not materialize a local ./.firm canonical store"
+        !proj.join(".harness").exists(),
+        "init must not materialize a local ./.harness canonical store"
     );
 }
 
 #[test]
 fn init_does_not_adopt_ancestor_local_dot_harness() {
     let home = TempHome::new("init-no-adopt");
-    // An ancestor already has a local `.firm` (a legacy repo).
+    // An ancestor already has a local `.harness` (a legacy repo).
     let ancestor = home.base().join("legacy");
-    std::fs::create_dir_all(ancestor.join(".firm")).unwrap();
+    std::fs::create_dir_all(ancestor.join(".harness")).unwrap();
     let child = ancestor.join("child");
     std::fs::create_dir_all(&child).unwrap();
 
@@ -69,7 +69,7 @@ fn init_does_not_adopt_ancestor_local_dot_harness() {
     assert!(out.status.success(), "init failed: {:?}", out);
 
     // The new project's id is derived from the CHILD path, not the ancestor's,
-    // and its store is central — the ancestor `.firm` is not adopted.
+    // and its store is central — the ancestor `.harness` is not adopted.
     let registry: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(home.registry_path()).unwrap()).unwrap();
     let entry = registry["projects"]
@@ -90,8 +90,8 @@ fn init_does_not_adopt_ancestor_local_dot_harness() {
         "store_root is not central: {store_root}"
     );
     assert!(
-        !store_root.ends_with("legacy/.firm"),
-        "init adopted ancestor local .firm: {store_root}"
+        !store_root.ends_with("legacy/.harness"),
+        "init adopted ancestor local .harness: {store_root}"
     );
 }
 

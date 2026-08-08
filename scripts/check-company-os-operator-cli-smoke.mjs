@@ -8,7 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const harness = join(repoRoot, "target", "debug", "harness");
+const harness = join(repoRoot, "target", "debug", "firm");
 const token = "company-os-operator-cli-smoke-token";
 const NOW = "2026-07-27T09:00:00+08:00";
 
@@ -78,7 +78,7 @@ function admin(record) {
 }
 
 async function main() {
-  execFileSync("cargo", ["build", "-q", "-p", "harness-cli"], { cwd: repoRoot, stdio: "inherit" });
+  execFileSync("cargo", ["build", "-q", "-p", "firm-cli"], { cwd: repoRoot, stdio: "inherit" });
   const root = await mkdtemp(join(tmpdir(), "company-os-operator-cli-smoke-"));
   const env = { ...process.env, HARNESS_ROOT: join(root, "store"), HARNESS_COMPANY_OS_TOKEN: token };
 

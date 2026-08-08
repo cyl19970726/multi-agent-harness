@@ -52,6 +52,7 @@ Your Work comes with a mini mental model. Parse it in one pass:
 Work context structure (written by Lead):
 ┌─ What ──────────┐  ← The problem, in one sentence
 ├─ Mental Model ──┤  ← States, invariants, data flow. Study this.
+├─ Workspace ─────┤  ← Your cwd is already set up. Work here.
 ├─ Boundary ──────┤  ← Paths to touch / NEVER touch. Respect this.
 ├─ Gates ─────────┤  ← Verification gates that must pass. Deliver what
 │                    each gate needs (PR merge, artifacts, checks).
@@ -394,5 +395,5 @@ historical read-only commands. Use lowercase `wave` as a batch noun; never use
 capitalized `Wave` as an object name in new work.
 
 When developing Star Harness itself and the product contract is in question,
-read canonical repository files `docs/product/agent-team-works.md` and
+read canonical repository files `docs/current/product/agent-team-works.md` and
 `docs/decisions/0050-agent-team-work-board-and-message-boundary.md`.

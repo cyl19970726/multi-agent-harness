@@ -51,7 +51,7 @@ async function loadFixtureAdapter() {
 }
 
 async function main() {
-  const fixture = JSON.parse(await readFile(join(repositoryRoot, "docs", "design", "company-os-v1", "fixtures", "company-os-trademark-v1.json"), "utf8"));
+  const fixture = JSON.parse(await readFile(join(repositoryRoot, "docs", "current", "company-os", "fixtures", "company-os-trademark-v1.json"), "utf8"));
   const [index, workspace, structured, home, relation, health, healthAction, documentAction, adapter, types, router, shell] = await Promise.all([
     source("index.ts"), source("DocsWorkspace.tsx"),
     source("StructuredDocumentView.tsx"), source("CompanyHome.tsx"), source("RelationChips.tsx"),

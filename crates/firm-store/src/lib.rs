@@ -7,20 +7,18 @@ use std::time::{Duration, Instant};
 
 use firm_core::{
     validate_agent_team_topology, validate_work_cutover_with_fences, AgentEvent, AgentMember,
-    AgentMemberStatus, AgentMessageRoute, AgentRuntime, AgentTeam, AgentTeamRun, CancellationInitiator,
-    Decision,
+    AgentMemberStatus, AgentMessageRoute, AgentRuntime, AgentTeam, AgentTeamRun, Decision,
     DelegationRun, DurableAgentMember, Evidence, Gap, GitHubLink, HostAttention,
     HostAttentionInbox, HostAttentionKind, HostAttentionStatus, MemberAction, MemberRun, Message,
     MessageDelivery, MessageDeliveryStatus, MessageTerminalSource, Mission, MissionLogEntry,
     MissionStatus, PendingInteraction, Proposal, ProviderChildThread, ProviderExecutionStatus,
-    ReassignQueueEntry, ReassignQueueStatus, Review, TeamDeliveryPolicy, TeamDeliveryStatus,
-    TeamMemberCloseRequest, TeamMemberCloseStatus,
+    Review, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus,
     TeamMessage, TeamMessageKind, TeamRunEvent, TeamRunStatus, TeamSupervisorLease,
     TeamSupervisorLeaseStatus, Validate, Vision, Wave, WaveExecutorKind, WaveGateStatus,
-    WaveStatus, Work, WorkAcceptanceEvidence, WorkClaimMode, WorkCommandContext, WorkCutoverFence,
-    WorkCutoverReport, WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate, WorkEvent,
-    WorkEventKind, WorkItem, WorkItemStatus, WorkOperation, WorkStatus, WorkflowArtifactManifest,
-    WorkflowPatch, WorkflowRun, WorkflowStep,
+    WaveStatus, Work, WorkClaimMode, WorkCommandContext, WorkCutoverFence, WorkCutoverReport,
+    WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate, WorkEvent, WorkEventKind, WorkItem,
+    WorkItemStatus, WorkOperation, WorkStatus, WorkflowArtifactManifest, WorkflowPatch,
+    WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -40,7 +38,6 @@ const LOCK_NB: i32 = 4;
 const LOCK_UN: i32 = 8;
 const COMPANY_WORK_ITEMS_LEDGER: &str = "company_os_work_items.jsonl";
 const WORK_CUTOVER_FENCES_LEDGER: &str = "company_os_work_cutover_fences.jsonl";
-const REASSIGN_QUEUE_LEDGER: &str = "team_reassign_queue.jsonl";
 
 /// Normalize surface identifiers into their canonical form.
 /// All surface comparisons and storage MUST route through this.
@@ -2447,10 +2444,9 @@ impl HarnessStore {
         &self,
         work_id: &str,
         expected_version: u64,
-        evidence: Option<WorkAcceptanceEvidence>,
         context: WorkCommandContext,
     ) -> StoreResult<Work> {
-        self.accept_work_with_summary(work_id, expected_version, None, evidence, context)
+        self.accept_work_with_summary(work_id, expected_version, None, context)
     }
 
     pub fn accept_work_with_summary(
@@ -2458,19 +2454,12 @@ impl HarnessStore {
         work_id: &str,
         expected_version: u64,
         summary: Option<&str>,
-        evidence: Option<WorkAcceptanceEvidence>,
         context: WorkCommandContext,
     ) -> StoreResult<Work> {
         if summary.is_some_and(|value| value.trim().is_empty()) {
             return Err(StoreError::Conflict(
                 "acceptance summary must not be empty when provided".to_string(),
             ));
-        }
-        // Validate evidence if provided (issue #387 P1-2).
-        if let Some(ref evidence) = evidence {
-            if let Err(reason) = evidence.validate() {
-                return Err(StoreError::Conflict(reason));
-            }
         }
         self.init()?;
         let _lock = self.acquire_write_lock()?;
@@ -2493,21 +2482,9 @@ impl HarnessStore {
         next.status = WorkStatus::Done;
         next.version += 1;
         next.updated_at = context.created_at.clone();
-        next.acceptance_evidence = evidence.clone();
-        let mut payload_map = serde_json::Map::new();
-        if let Some(summary) = summary {
-            payload_map.insert("summary".to_string(), serde_json::Value::String(summary.to_string()));
-        }
-        if let Some(ref evidence) = evidence {
-            if let Ok(evidence_value) = serde_json::to_value(evidence) {
-                payload_map.insert("acceptance_evidence".to_string(), evidence_value);
-            }
-        }
-        let payload = if payload_map.is_empty() {
-            serde_json::Value::Null
-        } else {
-            serde_json::Value::Object(payload_map)
-        };
+        let payload = summary
+            .map(|summary| serde_json::json!({ "summary": summary }))
+            .unwrap_or(serde_json::Value::Null);
         self.append_work_transition_with_payload_unlocked(
             current,
             next,
@@ -2566,18 +2543,6 @@ impl HarnessStore {
         reason: &str,
         context: WorkCommandContext,
     ) -> StoreResult<Work> {
-        self.cancel_work_with_initiator(work_id, expected_version, reason, None, context)
-    }
-
-    /// Cancel a Work with an explicit cancellation initiator (#387 P1-1).
-    pub fn cancel_work_with_initiator(
-        &self,
-        work_id: &str,
-        expected_version: u64,
-        reason: &str,
-        initiator: Option<CancellationInitiator>,
-        context: WorkCommandContext,
-    ) -> StoreResult<Work> {
         if reason.trim().is_empty() {
             return Err(StoreError::Conflict(
                 "cancellation reason is required".to_string(),
@@ -2604,55 +2569,9 @@ impl HarnessStore {
         let mut next = current.clone();
         next.status = WorkStatus::Cancelled;
         next.blocker_reason = Some(reason.to_string());
-        next.cancellation_initiator = initiator;
         next.version += 1;
         next.updated_at = context.created_at.clone();
         self.append_work_transition_unlocked(current, next, WorkEventKind::Cancelled, context)
-    }
-
-    /// Transition a Work from InProgress to Orphaned when its owning MemberRun
-    /// is closed.  Orphaned works remain non-terminal: the Host must explicitly
-    /// reassign or cancel them (#387 P1-1).
-    pub fn orphan_work(
-        &self,
-        work_id: &str,
-        expected_version: u64,
-        member_run_id: &str,
-        reason: &str,
-        context: WorkCommandContext,
-    ) -> StoreResult<Work> {
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
-        if let Some(existing) = self.idempotent_work_operation_unlocked(
-            &context.idempotency_key,
-            work_id,
-            WorkEventKind::Orphaned,
-        )? {
-            return Ok(existing.work);
-        }
-        require_host_actor(&context.performed_by_actor)?;
-        let current = self.current_work_unlocked(work_id, expected_version)?;
-        if current.status != WorkStatus::InProgress {
-            return Err(StoreError::Conflict(format!(
-                "work {work_id} is not in progress (current: {:?})",
-                current.status
-            )));
-        }
-        if current.active_member_run_id.as_deref() != Some(member_run_id) {
-            return Err(StoreError::Conflict(format!(
-                "work {work_id} is not owned by member {member_run_id}"
-            )));
-        }
-        self.ensure_deliveries_reassignable_unlocked(&current)?;
-        let mut next = current.clone();
-        next.status = WorkStatus::Orphaned;
-        next.active_member_run_id = None;
-        next.blocker_reason = Some(reason.to_string());
-        next.cancellation_initiator = Some(CancellationInitiator::MemberClosed);
-        next.version += 1;
-        next.updated_at = context.created_at.clone();
-        self.append_work_transition_unlocked(current, next, WorkEventKind::Orphaned, context)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3101,7 +3020,6 @@ impl HarnessStore {
             WorkEventKind::Accepted => HostAttentionKind::WorkAccepted,
             WorkEventKind::ChangesRequested => HostAttentionKind::WorkChangesRequested,
             WorkEventKind::Cancelled => HostAttentionKind::WorkCancelled,
-            WorkEventKind::Orphaned => HostAttentionKind::WorkReassignPending,
             _ => return None,
         };
         Some(HostAttention {
@@ -3163,66 +3081,6 @@ impl HarnessStore {
             reconciled.push(attention);
         }
         Ok(reconciled)
-    }
-
-    /// Detect Works that have exceeded their `review_timeout_hours` in Review
-    /// status and generate idempotent `WorkReviewTimedOut` HostAttention rows.
-    ///
-    /// Returns the newly created (or already-existing) HostAttention entries.
-    /// Safe to call repeatedly: already-generated rows are detected via
-    /// [`same_host_attention_fact`] and returned without duplication.
-    /// (issue #387 P1-2)
-    pub fn detect_review_timeouts(&self, now: &str) -> StoreResult<Vec<HostAttention>> {
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        let works = self.latest_works_unlocked()?;
-        let mut generated = Vec::new();
-        for work in works.values() {
-            if work.status != WorkStatus::Review {
-                continue;
-            }
-            let timeout_hours = match work.review_timeout_hours {
-                Some(h) if h > 0 => h,
-                _ => continue,
-            };
-            // Parse updated_at as an ISO-8601 timestamp and compute elapsed hours.
-            let updated = match crate::parse_iso8601_to_unix_ms(&work.updated_at) {
-                Some(ts) => ts,
-                None => continue,
-            };
-            let now_ms = match crate::parse_iso8601_to_unix_ms(now) {
-                Some(ts) => ts,
-                None => continue,
-            };
-            let elapsed_hours = now_ms.saturating_sub(updated) as f64 / (1000.0 * 3600.0);
-            if elapsed_hours < timeout_hours as f64 {
-                continue;
-            }
-            let attention = HostAttention {
-                id: format!(
-                    "host-attention-review-timeout-{}-v{}",
-                    work.id, work.version
-                ),
-                team_run_id: work.team_run_id.clone(),
-                kind: HostAttentionKind::WorkReviewTimedOut,
-                work_id: work.id.clone(),
-                work_version: work.version,
-                source_event_ref: format!("review-timeout-{}-v{}", work.id, work.version),
-                member_run_id: work.active_member_run_id.clone(),
-                status: HostAttentionStatus::Actionable,
-                attempt: 0,
-                claim_id: None,
-                claimed_host_surface: None,
-                claimed_host_thread_id: None,
-                provider_receipt_id: None,
-                last_failure_reason: None,
-                created_at: now.to_string(),
-                updated_at: now.to_string(),
-            };
-            let row = self.ensure_host_attention_unlocked(&attention)?;
-            generated.push(row);
-        }
-        Ok(generated)
     }
 
     fn host_attention_inbox_for_team_run_unreconciled(
@@ -5292,39 +5150,6 @@ impl HarnessStore {
         Ok(delivery)
     }
 
-    /// Append a new entry to the reassign queue when a Work is orphaned
-    /// (owning MemberRun closed while work was in progress).  #387 P1-1.
-    pub fn append_reassign_queue_entry(&self, value: &ReassignQueueEntry) -> StoreResult<()> {
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        if self
-            .reassign_queue_entries()?
-            .iter()
-            .any(|entry| entry.id == value.id)
-        {
-            return Err(StoreError::Conflict(format!(
-                "reassign queue entry {} already exists",
-                value.id
-            )));
-        }
-        self.append_jsonl_unlocked(REASSIGN_QUEUE_LEDGER, value)
-    }
-
-    /// Raw reassign queue entries in append order.
-    pub fn reassign_queue_entries(&self) -> StoreResult<Vec<ReassignQueueEntry>> {
-        self.read_jsonl(REASSIGN_QUEUE_LEDGER)
-    }
-
-    /// Reassign queue entries with Pending status, latest-wins per id.
-    pub fn latest_reassign_pending(&self) -> StoreResult<Vec<ReassignQueueEntry>> {
-        Ok(latest_by_id(self.reassign_queue_entries()?, |entry| {
-            entry.id.clone()
-        })
-        .into_values()
-        .filter(|entry| entry.status == ReassignQueueStatus::Pending)
-        .collect())
-    }
-
     pub fn team_supervisor_leases(&self) -> StoreResult<Vec<TeamSupervisorLease>> {
         self.read_jsonl("team_supervisor_leases.jsonl")
     }
@@ -5730,10 +5555,7 @@ fn require_host_actor(actor: &firm_core::TeamActorRef) -> StoreResult<()> {
     }
 }
 
-fn require_member_actor(
-    actor: &firm_core::TeamActorRef,
-    member_run_id: &str,
-) -> StoreResult<()> {
+fn require_member_actor(actor: &firm_core::TeamActorRef, member_run_id: &str) -> StoreResult<()> {
     if actor.kind == firm_core::TeamActorKind::MemberRun && actor.id == member_run_id {
         Ok(())
     } else {
@@ -8652,7 +8474,6 @@ mod tests {
                 &work.id,
                 3,
                 Some("Host accepted the checked implementation"),
-                None,
                 host_work_context("we-4", "accept-1", "unix-ms:5"),
             )
             .expect("Host accepts Work");
@@ -9376,7 +9197,6 @@ mod tests {
             .accept_work(
                 &submitted.id,
                 submitted.version,
-                None,
                 host_work_context("we-ready-5", "ready-accept-prereq", "unix-ms:7"),
             )
             .expect("accept prerequisite");
@@ -10316,7 +10136,6 @@ mod tests {
             .accept_work(
                 &first.id,
                 first.version,
-                None,
                 host_work_context("accept", "accept-key", "unix-ms:6"),
             )
             .expect("accept first Work");
@@ -11426,7 +11245,6 @@ mod tests {
                 &submitted.id,
                 submitted.version,
                 Some("Host accepted"),
-                None,
                 host_work_context("we-accept-4", "accept-accept-ha", "unix-ms:5"),
             )
             .expect("accept Work");
