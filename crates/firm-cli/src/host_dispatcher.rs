@@ -7,7 +7,8 @@
 //! an execution consumer.
 
 use harness_core::{
-    HostAttention, HostBindingLease, HostBindingLeaseOwnerKind, HostDispatchConfig,
+    HostAttention, HostAttentionKind, HostBindingLease, HostBindingLeaseOwnerKind,
+    HostDispatchConfig, TeamRunEventSourceKind,
 };
 use harness_store::{HarnessStore, StoreError};
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
@@ -45,21 +46,13 @@ pub enum ScheduleDecision {
 #[derive(Debug)]
 pub struct DispatchOutcome {
     pub inspected: usize,
+    #[allow(dead_code)]
     pub handled: Vec<String>,
+    #[allow(dead_code)]
     pub escalated: Vec<String>,
     pub failed: Vec<String>,
     pub ready: Vec<String>,
     pub stale: Vec<String>,
-}
-
-impl DispatchOutcome {
-    pub fn is_noop(&self) -> bool {
-        self.ready.is_empty()
-            && self.stale.is_empty()
-            && self.handled.is_empty()
-            && self.escalated.is_empty()
-            && self.failed.is_empty()
-    }
 }
 
 /// Foreground-supervisor compatibility seam. The supervisor does not own a
@@ -91,7 +84,34 @@ pub fn poll_and_dispatch(
             stale_attention_ids,
             ..
         } => {
-            outcome.inspected = attention_ids.len() + stale_attention_ids.len();
+            outcome.inspected = attention_ids.len();
+            let current = store
+                .host_attentions()?
+                .into_iter()
+                .map(|attention| (attention.id.clone(), attention))
+                .collect::<std::collections::HashMap<_, _>>();
+            for attention_id in &attention_ids {
+                let attention = current.get(attention_id).ok_or_else(|| {
+                    StoreError::Conflict(format!(
+                        "eligible HostAttention disappeared: {attention_id}"
+                    ))
+                })?;
+                ledger.fold_event_once(
+                    &format!(
+                        "host-dispatch-ready:{}:{}:{:?}:{}",
+                        ledger.run_id, attention.id, attention.status, attention.attempt
+                    ),
+                    TeamRunEventSourceKind::Host,
+                    None,
+                    "host_attention",
+                    &attention.id,
+                    "dispatch_ready",
+                    &format!(
+                        "HostAttention {} is dispatch-ready in status {:?}, attempt {}",
+                        attention.id, attention.status, attention.attempt
+                    ),
+                )?;
+            }
             outcome.ready = attention_ids;
             outcome.stale = stale_attention_ids;
         }
@@ -142,22 +162,25 @@ pub fn schedule_team_run(
         });
     }
 
-    let stale_attention_ids = store
-        .reconcile_host_binding_stale_attentions(now_unix_ms, observed_at)?
-        .into_iter()
-        .filter(|attention| attention.team_run_id == team_run_id)
-        .map(|attention| attention.id)
-        .collect::<Vec<_>>();
+    store.reconcile_host_binding_stale_attentions(now_unix_ms, observed_at)?;
     let cutoff =
         now_unix_ms.saturating_sub(config.attention_age_threshold_secs.saturating_mul(1_000));
-    let attention_ids = store
+    let eligible = store
         .actionable_attentions_older_than(cutoff)?
         .into_iter()
         .filter(|attention| attention.team_run_id == team_run_id)
+        .collect::<Vec<_>>();
+    let stale_attention_ids = eligible
+        .iter()
+        .filter(|attention| attention.kind == HostAttentionKind::HostBindingStale)
+        .map(|attention| attention.id.clone())
+        .collect::<Vec<_>>();
+    let attention_ids = eligible
+        .into_iter()
         .map(|attention| attention.id)
         .collect::<Vec<_>>();
 
-    if attention_ids.is_empty() && stale_attention_ids.is_empty() {
+    if attention_ids.is_empty() {
         Ok(ScheduleDecision::Retry {
             team_run_id: team_run_id.to_string(),
             reason: "no aged actionable Host attention".to_string(),
@@ -395,15 +418,24 @@ mod tests {
     }
 
     #[test]
-    fn expired_or_unleased_binding_is_dispatch_ready_without_claiming() {
+    fn new_stale_waits_for_cutoff_then_dispatches_once() {
         let (store, root, run) = fixture();
-        let config = HostDispatchConfig {
-            attention_age_threshold_secs: 0,
-            ..HostDispatchConfig::default()
+        let config = HostDispatchConfig::default();
+        let first = schedule_team_run(&store, &run.id, &config, 100, "unix-ms:100")
+            .expect("first schedule");
+        assert!(matches!(first, ScheduleDecision::Retry { .. }));
+        let decision = schedule_team_run(&store, &run.id, &config, 300_101, "unix-ms:300101")
+            .expect("aged schedule");
+        let ScheduleDecision::DispatchReady {
+            attention_ids,
+            stale_attention_ids,
+            ..
+        } = decision
+        else {
+            panic!("aged attention must be ready")
         };
-        let decision =
-            schedule_team_run(&store, &run.id, &config, 100, "unix-ms:100").expect("schedule");
-        assert!(matches!(decision, ScheduleDecision::DispatchReady { .. }));
+        assert_eq!(attention_ids.len(), 1);
+        assert_eq!(stale_attention_ids, attention_ids);
         let current = store
             .host_attentions()
             .expect("attentions")
@@ -419,11 +451,17 @@ mod tests {
     fn foreground_poll_reports_ready_without_stranding_attention() {
         let (store, root, run) = fixture();
         let ledger = std::sync::Arc::new(crate::TeamRunLedger::without_supervisor(&store, &run.id));
+        store
+            .reconcile_host_binding_stale_attentions(50, "unix-ms:50")
+            .expect("seed stale attention");
         let config = HostDispatchConfig {
             attention_age_threshold_secs: 0,
             ..HostDispatchConfig::default()
         };
         let outcome = poll_and_dispatch(&store, &ledger, "test", &config).expect("poll");
+        let repeated = poll_and_dispatch(&store, &ledger, "test", &config).expect("repeat poll");
+        assert_eq!(outcome.inspected, 1, "stale subset is not double counted");
+        assert_eq!(repeated.inspected, 1);
         assert!(!outcome.stale.is_empty());
         assert!(outcome.handled.is_empty());
         assert!(outcome.escalated.is_empty());
@@ -435,6 +473,54 @@ mod tests {
             .expect("stale attention");
         assert_eq!(row.status, HostAttentionStatus::Actionable);
         assert!(row.claim_id.is_none());
+        let events = store.team_run_events().expect("events");
+        assert_eq!(events.len(), 1, "repeat poll reuses the durable event");
+        assert_eq!(events[0].entity_id, row.id);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn stable_no_binding_and_dispatcher_conflict_do_not_emit_events() {
+        let (store, root, run) = fixture();
+        let ledger = std::sync::Arc::new(crate::TeamRunLedger::without_supervisor(&store, &run.id));
+        let mut unbound = run.clone();
+        unbound.host_thread_id = None;
+        unbound.updated_at = "unix-ms:2".into();
+        store
+            .compare_and_append_team_run(&run, &unbound)
+            .expect("unbind run");
+        for _ in 0..2 {
+            let outcome =
+                poll_and_dispatch(&store, &ledger, "test", &HostDispatchConfig::default())
+                    .expect("no binding is a stable observation");
+            assert_eq!(outcome.inspected, 0);
+        }
+        assert!(store.team_run_events().unwrap().is_empty());
+        let mut rebound = unbound.clone();
+        rebound.host_thread_id = Some("thread-1".into());
+        rebound.updated_at = "unix-ms:3".into();
+        store
+            .compare_and_append_team_run(&unbound, &rebound)
+            .expect("rebind run");
+        store
+            .acquire_host_binding_lease(
+                &run.id,
+                "codex",
+                "thread-1",
+                HostBindingLeaseOwnerKind::Dispatcher,
+                "dispatcher",
+                "lease-current",
+                100,
+                100,
+            )
+            .expect("dispatcher lease");
+        for _ in 0..2 {
+            let outcome =
+                poll_and_dispatch(&store, &ledger, "test", &HostDispatchConfig::default())
+                    .expect("conflict is a stable observation");
+            assert_eq!(outcome.inspected, 0);
+        }
+        assert!(store.team_run_events().unwrap().is_empty());
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 

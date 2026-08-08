@@ -17603,6 +17603,37 @@ impl TeamRunLedger {
         )
     }
 
+    /// Fold a causal transition once; retries return the first durable event.
+    #[allow(clippy::too_many_arguments)]
+    fn fold_event_once(
+        &self,
+        stable_key: &str,
+        source_kind: TeamRunEventSourceKind,
+        member_run_id: Option<String>,
+        entity_type: &str,
+        entity_id: &str,
+        operation: &str,
+        summary: &str,
+    ) -> CliResult<TeamRunEvent> {
+        let _guard = self.write_lock();
+        Ok(self.store.ensure_team_run_event_next(
+            stable_key,
+            TeamRunEvent {
+                id: String::new(),
+                seq: 0,
+                team_run_id: self.run_id.clone(),
+                source_kind,
+                member_run_id,
+                delegation_run_id: None,
+                entity_type: entity_type.to_string(),
+                entity_id: entity_id.to_string(),
+                operation: operation.to_string(),
+                summary: summary.to_string(),
+                occurred_at: now_string(),
+            },
+        )?)
+    }
+
     /// Append one MemberAction (seq = max existing action seq for the run + 1,
     /// assigned under the lock).
     fn append_action(
@@ -19597,24 +19628,6 @@ pub(crate) fn drive_prepared_team_run(
                 &objective,
                 &host_dispatch_config,
             ) {
-                Ok(outcome) if !outcome.is_noop() => {
-                    ledger.fold_event(
-                        TeamRunEventSourceKind::Host,
-                        None,
-                        "team_run",
-                        &run_id,
-                        "host_dispatcher",
-                        &format!(
-                            "host scheduler poll: inspected={}, ready={}, stale={}, handled={}, escalated={}, failed={}; no Host wake or attention claim was attempted",
-                            outcome.inspected,
-                            outcome.ready.len(),
-                            outcome.stale.len(),
-                            outcome.handled.len(),
-                            outcome.escalated.len(),
-                            outcome.failed.len(),
-                        ),
-                    )?;
-                }
                 Ok(_) => {}
                 Err(error) => {
                     eprintln!("[supervisor] host dispatcher poll skipped: {error}");

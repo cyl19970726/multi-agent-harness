@@ -5324,6 +5324,51 @@ impl Validate for HostAttention {
         if let Some(reason) = &self.last_failure_reason {
             require_non_empty(reason, "HostAttention.last_failure_reason")?;
         }
+        let claim_binding = (
+            self.claim_id.is_some(),
+            self.claimed_host_surface.is_some(),
+            self.claimed_host_thread_id.is_some(),
+        );
+        let lease_fence = (
+            self.claimed_host_lease_id.is_some(),
+            self.claimed_host_lease_generation.is_some(),
+            self.claimed_host_lease_owner_id.is_some(),
+        );
+        if !matches!(lease_fence, (false, false, false) | (true, true, true)) {
+            return Err(ValidationError::Invalid {
+                field: "HostAttention.claimed_host_lease",
+                reason: "lease_id, generation, and owner_id must be all present or all absent",
+            });
+        }
+        match self.status {
+            HostAttentionStatus::Actionable | HostAttentionStatus::EscalationRequired => {
+                if claim_binding != (false, false, false)
+                    || lease_fence != (false, false, false)
+                    || self.provider_receipt_id.is_some()
+                {
+                    return Err(ValidationError::Invalid {
+                        field: "HostAttention.status",
+                        reason: "actionable and escalated rows must be unclaimed and have no binding, lease, or provider receipt",
+                    });
+                }
+            }
+            HostAttentionStatus::Claimed => {
+                if claim_binding != (true, true, true) || self.provider_receipt_id.is_some() {
+                    return Err(ValidationError::Invalid {
+                        field: "HostAttention.status",
+                        reason: "claimed rows require claim_id, Host surface, and Host thread, and cannot have a provider receipt",
+                    });
+                }
+            }
+            HostAttentionStatus::Delivered | HostAttentionStatus::Acknowledged => {
+                if claim_binding != (true, true, true) || self.provider_receipt_id.is_none() {
+                    return Err(ValidationError::Invalid {
+                        field: "HostAttention.status",
+                        reason: "delivered and acknowledged rows require claim_id, Host surface, Host thread, and provider receipt",
+                    });
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -7292,14 +7337,34 @@ mod tests {
         assert!(attention.validate().is_ok());
         assert!(attention.needs_host_action());
 
+        attention.claim_id = Some("claim-1".into());
+        attention.claimed_host_surface = Some("codex".into());
+        attention.claimed_host_thread_id = Some("thread-1".into());
+        attention.status = HostAttentionStatus::Claimed;
+        assert!(attention.validate().is_ok(), "interactive claim is valid");
+
         attention.status = HostAttentionStatus::Delivered;
         attention.provider_receipt_id = Some("provider-receipt-1".into());
+        assert!(
+            attention.validate().is_ok(),
+            "interactive delivery is valid"
+        );
         assert!(
             attention.needs_host_action(),
             "delivery is transport receipt, not Host intake or Work acceptance"
         );
         attention.status = HostAttentionStatus::Acknowledged;
+        assert!(attention.validate().is_ok());
         assert!(!attention.needs_host_action());
+
+        attention.claimed_host_lease_id = Some("lease-1".into());
+        assert!(
+            attention.validate().is_err(),
+            "partial lease fence is invalid"
+        );
+        attention.claimed_host_lease_generation = Some(1);
+        attention.claimed_host_lease_owner_id = Some("dispatcher-1".into());
+        assert!(attention.validate().is_ok(), "dispatcher delivery is valid");
 
         let json = serde_json::to_value(&attention).expect("serialize Host attention");
         assert_eq!(json["kind"], "work_review_requested");

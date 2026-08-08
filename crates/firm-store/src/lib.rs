@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use firm_core::{
-    provider_interaction_response_id, validate_agent_team_topology,
+    content_hash_hex16, provider_interaction_response_id, validate_agent_team_topology,
     validate_work_cutover_with_fences, AgentEvent, AgentMember, AgentMemberStatus,
     AgentMessageRoute, AgentRuntime, AgentTeam, AgentTeamRun, BuiltinGateConfig,
     CodeReviewStrategy, Decision, DelegationRun, DurableAgentMember, Evidence, Gap, GateEngine,
@@ -3868,6 +3868,12 @@ impl HarnessStore {
         let mut projected = self.latest_host_attentions_unlocked()?;
         let mut stale = Vec::new();
         for run in runs.into_values() {
+            if matches!(
+                run.status,
+                TeamRunStatus::Completed | TeamRunStatus::Failed | TeamRunStatus::Cancelled
+            ) {
+                continue;
+            }
             let Some(thread_id) = run.host_thread_id.as_deref() else {
                 continue;
             };
@@ -5736,6 +5742,37 @@ impl HarnessStore {
         Ok(value)
     }
 
+    /// Idempotently append one semantic TeamRun event under the store lock.
+    pub fn ensure_team_run_event_next(
+        &self,
+        stable_key: &str,
+        mut value: TeamRunEvent,
+    ) -> StoreResult<TeamRunEvent> {
+        require_non_empty_store(stable_key, "TeamRun event stable key")?;
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        value.id = format!("trev-stable-{}", content_hash_hex16(stable_key));
+        let events = self.read_jsonl::<TeamRunEvent>("team_run_events.jsonl")?;
+        if let Some(existing) = events.iter().find(|event| event.id == value.id) {
+            if same_team_run_event_semantics(existing, &value) {
+                return Ok(existing.clone());
+            }
+            return Err(StoreError::Conflict(format!(
+                "TeamRunEvent id {} already names different causal semantics",
+                value.id
+            )));
+        }
+        value.seq = events
+            .iter()
+            .filter(|event| event.team_run_id == value.team_run_id)
+            .map(|event| event.seq)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        self.append_jsonl_unlocked("team_run_events.jsonl", &value)?;
+        Ok(value)
+    }
+
     /// Compare-and-append a TeamRun lifecycle row and synchronize its linked
     /// Wave status under the same lock. This prevents two start/transition
     /// processes from resurrecting or overwriting one attempt. A completion
@@ -7147,6 +7184,17 @@ pub fn parse_iso8601_to_unix_ms(ts: &str) -> Option<u64> {
         .and_then(|value| value.parse::<u64>().ok())
 }
 
+fn same_team_run_event_semantics(left: &TeamRunEvent, right: &TeamRunEvent) -> bool {
+    left.team_run_id == right.team_run_id
+        && left.source_kind == right.source_kind
+        && left.member_run_id == right.member_run_id
+        && left.delegation_run_id == right.delegation_run_id
+        && left.entity_type == right.entity_type
+        && left.entity_id == right.entity_id
+        && left.operation == right.operation
+        && left.summary == right.summary
+}
+
 fn apply_work_delivery_update(delivery: &mut WorkDelivery, update: WorkDeliveryUpdate) {
     delivery.status = update.status;
     delivery.attempt = update.attempt;
@@ -8442,6 +8490,42 @@ mod tests {
         assert_ne!(expired[0].id, first[0].id);
         assert_eq!(lease.generation, 1);
         std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn terminal_team_runs_do_not_materialize_host_binding_stale_attention() {
+        for status in [
+            TeamRunStatus::Completed,
+            TeamRunStatus::Failed,
+            TeamRunStatus::Cancelled,
+        ] {
+            let root = team_test_root(&format!("terminal-stale-{status:?}"));
+            let store = HarnessStore::new(&root);
+            let (run, _, _) = seed_host_attention_fixture(
+                &store,
+                &format!("terminal-stale-{status:?}"),
+                Some("thread-a"),
+            );
+            let mut terminal = run;
+            terminal.status = status;
+            terminal.completed_at = Some("unix-ms:2".into());
+            terminal.updated_at = "unix-ms:2".into();
+            append_sparse_row(
+                &root,
+                "team_runs.jsonl",
+                &serde_json::to_string(&terminal).expect("serialize terminal run"),
+            );
+            assert!(store
+                .reconcile_host_binding_stale_attentions(100, "unix-ms:100")
+                .expect("reconcile")
+                .is_empty());
+            assert!(!store
+                .host_attentions()
+                .unwrap()
+                .iter()
+                .any(|attention| attention.kind == HostAttentionKind::HostBindingStale));
+            std::fs::remove_dir_all(root).expect("remove temp store");
+        }
     }
 
     #[test]
@@ -10851,6 +10935,43 @@ mod tests {
         assert!(sparse.member_run_id.is_none());
         assert!(sparse.delegation_run_id.is_none());
 
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn ensure_team_run_event_is_idempotent_and_rejects_semantic_mismatch() {
+        let root = team_test_root("ensure-team-run-event");
+        let store = HarnessStore::new(&root);
+        let event = TeamRunEvent {
+            id: "caller-id-is-ignored".into(),
+            seq: 0,
+            team_run_id: "tr-1".into(),
+            source_kind: TeamRunEventSourceKind::Host,
+            member_run_id: None,
+            delegation_run_id: None,
+            entity_type: "host_attention".into(),
+            entity_id: "attention-1".into(),
+            operation: "dispatch_ready".into(),
+            summary: "attention-1 actionable attempt 0".into(),
+            occurred_at: "unix-ms:1".into(),
+        };
+        let first = store
+            .ensure_team_run_event_next("tr-1:attention-1:actionable:0", event.clone())
+            .expect("first event");
+        let mut retry = event.clone();
+        retry.occurred_at = "unix-ms:2".into();
+        let second = store
+            .ensure_team_run_event_next("tr-1:attention-1:actionable:0", retry)
+            .expect("same causal transition");
+        assert_eq!(first, second);
+        assert_eq!(store.team_run_events().unwrap().len(), 1);
+
+        let mut mismatch = event;
+        mismatch.summary = "different causal meaning".into();
+        assert!(matches!(
+            store.ensure_team_run_event_next("tr-1:attention-1:actionable:0", mismatch),
+            Err(StoreError::Conflict(_))
+        ));
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
