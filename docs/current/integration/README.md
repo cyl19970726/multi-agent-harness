@@ -30,23 +30,23 @@ Goal/GoalPhase planning stack.
 ## Integration Boundary
 
 ```text
-docs/agent-runtime.md        # provider-neutral A-ROM and interfaces
-docs/integration/README.md   # provider documentation rules
-docs/integration/host-agent-mcp.md
+docs/current/architecture/agent-runtime.md        # provider-neutral A-ROM and interfaces
+docs/current/integration/README.md   # provider documentation rules
+docs/current/integration/host-agent-mcp.md
                                  # Host MCP control contract and Codex setup
-docs/integration/native-session-storage.md
+docs/current/integration/native-session-storage.md
                                  # provider-native storage/read/resume contract
-docs/integration/provider-capacity.md
+docs/current/integration/provider-capacity.md
                                  # capacity/auth preflight contract and truth matrix
-docs/integration/codex.md    # Codex implementation
-docs/integration/codex-message-delivery.md
+docs/current/integration/codex.md    # Codex implementation
+docs/current/integration/codex-message-delivery.md
                                  # Codex mailbox and turn delivery detail
-docs/integration/claude.md       # Claude Code integration
-docs/integration/kimi.md     # Kimi (Moonshot) integration
-docs/integration/kimi-agent-team.md
+docs/current/integration/claude.md       # Claude Code integration
+docs/current/integration/kimi.md     # Kimi (Moonshot) integration
+docs/current/integration/kimi-agent-team.md
                                  # Kimi ACP persistent Team runtime and delivery
-docs/integration/pi.md       # Pi RPC persistent Team runtime and delivery
-docs/integration/<name>.md   # future provider implementation
+docs/current/integration/pi.md       # Pi RPC persistent Team runtime and delivery
+docs/current/integration/<name>.md   # future provider implementation
 ```
 
 Provider docs answer how a concrete provider implements:

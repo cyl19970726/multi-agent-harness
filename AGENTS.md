@@ -6,7 +6,7 @@ be reconstructable from the native runtime records of the executor used.
 
 This root file states product identity, hard invariants, repository execution
 rules, routing links, and proportional acceptance. The full operating detail
-lives in [docs/agent-operating-rules.md](docs/agent-operating-rules.md);
+lives in [docs/current/product/agent-operating-rules.md](docs/current/product/agent-operating-rules.md);
 canonical contracts live in the docs linked under [Routing](#routing). Where
 this file and a canonical doc conflict, the canonical doc wins — fix this file.
 
@@ -51,7 +51,7 @@ doc carries the contract behind each rule.
    itself proof of semantic success, answer, or approval.
    Resume must use the provider-native session id and verified provider
    operation, never a replay assembled from Harness events (ADR 0032,
-   [docs/integration/native-session-storage.md](docs/integration/native-session-storage.md)).
+   [docs/current/integration/native-session-storage.md](docs/current/integration/native-session-storage.md)).
 2. **Harness owns only coordination records.** For Agent Team execution:
    `AgentTeam`, Mission relation, `AgentTeamRun`, `MemberRun` plus its
    native-session binding, `TeamMessage`, `PendingInteraction`, explicit
@@ -108,7 +108,7 @@ doc carries the contract behind each rule.
    `provider_driven`. Never activate a provider-native goal and also issue an
    ordinary Harness start for the same work. Provider satisfaction never
    implies Host acceptance
-   ([docs/member-continuation-model.md](docs/member-continuation-model.md),
+   ([docs/current/architecture/member-continuation-model.md](docs/current/architecture/member-continuation-model.md),
    ADR 0041).
 9. **No Plan Gate.** When the Host wants a plan first, it asks through an
    ordinary correlated Markdown message; the member replies, and the Host
@@ -146,7 +146,7 @@ doc carries the contract behind each rule.
   deliveries, results, checks, blockers, reviews, and control acknowledgements durable;
   advance each Wave from an explicit Host outcome; close the Mission with an
   explicit outcome summary. Full sequence and command reference:
-  [docs/agent-operating-rules.md](docs/agent-operating-rules.md).
+  [docs/current/product/agent-operating-rules.md](docs/current/product/agent-operating-rules.md).
 - Harness dogfood runs follow
   [docs/current/product/agent-team-dogfood-loop.md](docs/current/product/agent-team-dogfood-loop.md):
   classify defects, repair on a clean lane, rerun the original scenario, then
@@ -170,21 +170,21 @@ doc carries the contract behind each rule.
 - Product requirements: [docs/current/product/prd.md](docs/current/product/prd.md); Company OS product entry:
   [docs/current/company-os/README.md](docs/current/company-os/README.md); architecture:
   [docs/current/architecture/architecture-map.md](docs/current/architecture/architecture-map.md); concept model:
-  [docs/concept-model.md](docs/concept-model.md)
+  [docs/current/architecture/concept-model.md](docs/current/architecture/concept-model.md)
 - Detailed operating rules and the relocation map for this slimming:
-  [docs/agent-operating-rules.md](docs/agent-operating-rules.md)
+  [docs/current/product/agent-operating-rules.md](docs/current/product/agent-operating-rules.md)
 - Execution Spaces and Project Bindings:
   [docs/current/operations/multi-project.md](docs/current/operations/multi-project.md)
 - Member continuation and execution drivers:
-  [docs/member-continuation-model.md](docs/member-continuation-model.md)
-- Provider runtime substrate: [docs/agent-runtime.md](docs/agent-runtime.md);
+  [docs/current/architecture/member-continuation-model.md](docs/current/architecture/member-continuation-model.md)
+- Provider runtime substrate: [docs/current/architecture/agent-runtime.md](docs/current/architecture/agent-runtime.md);
   integration model:
-  [docs/agent-integration-model.md](docs/agent-integration-model.md)
+  [docs/current/architecture/agent-integration-model.md](docs/current/architecture/agent-integration-model.md)
 - Operations gates and commands: [docs/current/operations/operations.md](docs/current/operations/operations.md)
 - Dogfood method:
   [docs/current/product/agent-team-dogfood-loop.md](docs/current/product/agent-team-dogfood-loop.md)
 - Documentation governance:
-  [docs/documentation-governance.md](docs/documentation-governance.md)
+  [docs/current/documentation-governance.md](docs/current/documentation-governance.md)
 - ADRs: [docs/decisions/README.md](docs/decisions/README.md) — especially 0026
   (Mission/Wave), 0027 (Company OS primary model), 0028 (retired coordination
   stack), 0032 (provider-native session truth), 0033 (member workspace), 0041
@@ -254,7 +254,7 @@ native goal and also issue an ordinary Harness start for the same work. A
 provider-driven member may complete many native cycles without creating a new
 MemberRun, but provider satisfaction never implies Host acceptance. Providers
 without a reviewed native continuation capability remain first-class
-host-driven members. See `docs/member-continuation-model.md` and ADR 0041.
+host-driven members. See `docs/current/architecture/member-continuation-model.md` and ADR 0041.
 
 Provider-native or chat-side subagents are implementation details of the Host
 or member that invoked them. Optional hooks may record honest attribution, but

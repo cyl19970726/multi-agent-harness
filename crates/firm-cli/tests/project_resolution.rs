@@ -86,16 +86,16 @@ fn serve_and_run_script_converge_via_registry() {
 #[test]
 fn active_execution_space_wins_over_legacy_cwd_store() {
     // An explicitly active Execution Space is cwd-independent. A legacy
-    // repo-local `.firm` remains available only when no native space is active.
+    // repo-local `.harness` remains available only when no native space is active.
     let home = TempHome::new("res-local-wins");
     // Activate a central project elsewhere → registry has a current_project_id.
     let other = home.base().join("other-proj");
     std::fs::create_dir_all(&other).unwrap();
     init(&home, &other);
 
-    // A legacy repo carrying its OWN repo-local `.firm`.
+    // A legacy repo carrying its OWN repo-local `.harness`.
     let repo = home.base().join("legacy-repo");
-    std::fs::create_dir_all(repo.join(".firm")).unwrap();
+    std::fs::create_dir_all(repo.join(".harness")).unwrap();
 
     let (_o, e) = resolve(&home, &repo, &[], &[]);
     assert!(
@@ -128,7 +128,7 @@ fn harness_root_env_overrides_and_warns() {
     std::fs::create_dir_all(&proj).unwrap();
     init(&home, &proj);
 
-    let (_o, e) = resolve(&home, &proj, &[], &[("FIRM_ROOT", "/tmp/hr-xyz")]);
+    let (_o, e) = resolve(&home, &proj, &[], &[("HARNESS_ROOT", "/tmp/hr-xyz")]);
     assert!(e.contains("HarnessRootEnv"), "stderr: {e}");
     assert!(root_of(&e).contains("/tmp/hr-xyz"), "stderr: {e}");
     assert!(e.contains("deprecated"), "stderr: {e}");
@@ -171,9 +171,9 @@ fn project_env_selects_binding_without_switching_execution_store() {
 #[test]
 fn legacy_cwd_walk_up_is_warned_fallback() {
     let home = TempHome::new("res-walkup");
-    // No project ever activated → empty registry. A repo-local `.firm` exists.
+    // No project ever activated → empty registry. A repo-local `.harness` exists.
     let repo = home.base().join("legacy-repo");
-    let local_store = repo.join(".firm");
+    let local_store = repo.join(".harness");
     std::fs::create_dir_all(&local_store).unwrap();
     let sub = repo.join("deep").join("nested");
     std::fs::create_dir_all(&sub).unwrap();
@@ -181,14 +181,14 @@ fn legacy_cwd_walk_up_is_warned_fallback() {
     let (_o, e) = resolve(&home, &sub, &[], &[]);
     assert!(e.contains("CwdWalkUp"), "stderr: {e}");
     assert!(e.contains("deprecated"), "stderr: {e}");
-    // Resolves to the nearest ancestor `.firm`, preserving #89 back-compat.
-    assert!(root_of(&e).ends_with(".firm"), "stderr: {e}");
+    // Resolves to the nearest ancestor `.harness`, preserving #89 back-compat.
+    assert!(root_of(&e).ends_with(".harness"), "stderr: {e}");
 }
 
 #[test]
 fn global_default_when_nothing_selected() {
     let home = TempHome::new("res-global");
-    // Empty registry AND no local `.firm` up the tree → reserved _global.
+    // Empty registry AND no local `.harness` up the tree → reserved _global.
     let bare = home.base().join("bare").join("dir");
     std::fs::create_dir_all(&bare).unwrap();
 

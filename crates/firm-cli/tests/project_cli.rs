@@ -160,7 +160,7 @@ fn remove_unknown_id_is_an_error() {
 #[test]
 fn current_is_null_before_any_selection() {
     let home = TempHome::new("proj-current-null");
-    // A fresh HOME with no registry and no cwd .firm → no project selected.
+    // A fresh HOME with no registry and no cwd .harness → no project selected.
     assert_eq!(current_id(&home, home.base()), None);
 }
 

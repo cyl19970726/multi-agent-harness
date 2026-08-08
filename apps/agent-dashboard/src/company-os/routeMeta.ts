@@ -4,7 +4,7 @@
  * CompanyOsRouter page tree is lazy-loaded. Keep this module cheap: anything
  * page-sized belongs behind the lazy boundary.
  */
-import canonicalFixture from "../../../../docs/design/company-os-v1/fixtures/company-os-trademark-v1.json";
+import canonicalFixture from "../../../../docs/current/company-os/fixtures/company-os-trademark-v1.json";
 
 import type { SurfaceId } from "@/app/selection";
 import type { WorkbenchModel } from "@/model/readModel";

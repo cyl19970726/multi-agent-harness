@@ -14,7 +14,7 @@ truthRefs:
   - kind: decision
     ref: docs/decisions/0050-agent-team-work-board-and-message-boundary.md
 dependsOn:
-  - docs/concept-model.md
+  - docs/current/architecture/concept-model.md
   - docs/architecture.md
   - docs/design/task-gate-contracts.md
 machineConsumers: []
@@ -202,4 +202,4 @@ firm work create --title "audit repo" \
 
 - Update `orchestrate-mission-waves` skill with workspace usage
 - Update `collaborate-as-agent-team-member` skill
-- Update `docs/concept-model.md`
+- Update `docs/current/architecture/concept-model.md`

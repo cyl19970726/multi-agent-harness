@@ -472,14 +472,14 @@ pub fn read_metadata(store_root: &Path) -> ProjectResult<Option<ProjectMetadata>
     }
 }
 
-/// Filename of the marker dropped in an OLD repo-local `.firm/` store once it
+/// Filename of the marker dropped in an OLD repo-local `.harness/` store once it
 /// has been migrated to the centralized store. Its content is the absolute central
 /// `store_root` path. Resolution ignores any local store carrying this marker
 /// (goal-multi-project P7 / dual-read-logging), so a migrated repo never serves
 /// stale rows.
 pub const MIGRATED_MARKER_FILE: &str = "MIGRATED_TO_CENTRAL";
 
-/// Write the `MIGRATED_TO_CENTRAL` marker into an old local `.firm/` store,
+/// Write the `MIGRATED_TO_CENTRAL` marker into an old local `.harness/` store,
 /// recording the absolute central store root it was migrated into.
 pub fn write_migrated_marker(local_store: &Path, central_store: &Path) -> ProjectResult<()> {
     std::fs::create_dir_all(local_store)?;

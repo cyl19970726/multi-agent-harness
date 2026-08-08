@@ -17,29 +17,26 @@ use harness_core::{
     validate_agent_team_topology, validate_host_authority_cutover, AgentEvent, AgentMember,
     AgentMemberStatus, AgentMessageRoute, AgentProviderConfig, AgentRuntime, AgentRuntimeHealth,
     AgentRuntimeStatus, AgentTeam, AgentTeamRun, AgentTeamStatus, DelegationRun,
-    DurableAgentMember, DurableAgentMemberStatus, Evidence, ExecutionSpace, GateEngine, GateResult,
-    GateSpec, GateVerdict, GitHubLink,
-    GitHubLinkKind, HostAttention, HostAttentionStatus, HostControlMode, HostDispatchConfig,
-    LaunchMcp,
-    LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus, MemberCoordinationStatus,
-    MemberExecutionDriver, MemberRun, MemberRunStatus, MemberWorkspaceSnapshot, Message,
-    MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Mission,
-    MissionLogEntry, MissionLogEntryKind, MissionStatus, NativeSessionAvailability,
-    NativeSessionRef, OrdinaryMessageBoundary, PendingInteraction, PendingInteractionKind,
-    PendingInteractionOption, PendingInteractionRoute, PendingInteractionStatus, ProjectContext,
-    ProjectKind, ProviderAccountRef, ProviderCapabilities, ProviderCapacityConfidence,
-    ProviderCapacityEvidence, ProviderCapacitySnapshot, ProviderCapacityState,
-    ProviderCompatibilityStatus, ProviderControlValue, ProviderEventFidelity,
-    ProviderExecutionControls, ProviderExecutionStatus, ProviderFeatureMode,
-    ProviderIntegrationProfile, ProviderInteractionMode, ProviderRuntimeContextFact, SenderKind,
-    TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
-    TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind,
-    TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
-    TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Wave, WaveExecutorKind, WaveStatus,
-    Work, WorkAcceptanceEvidence, WorkCausationRef, WorkClaimMode, WorkCommandContext,
-    WorkDelivery, WorkDeliveryStatus,
-    WorkPriority, WorkStatus, WorkWorkspace, WorkWorkspaceKind, WorkflowArtifactFile,
-    WorkflowArtifactManifest,
+    DurableAgentMember, DurableAgentMemberStatus, Evidence, ExecutionSpace, GateEngine, GateSpec,
+    GateVerdict, GitHubLink, GitHubLinkKind, HostAttention, HostAttentionStatus, HostControlMode,
+    HostDispatchConfig, LaunchMcp, LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus,
+    MemberCoordinationStatus, MemberExecutionDriver, MemberRun, MemberRunStatus,
+    MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus, MessageKind,
+    MessageTerminalSource, Mission, MissionLogEntry, MissionLogEntryKind, MissionStatus,
+    NativeSessionAvailability, NativeSessionRef, OrdinaryMessageBoundary, PendingInteraction,
+    PendingInteractionKind, PendingInteractionOption, PendingInteractionRoute,
+    PendingInteractionStatus, ProjectContext, ProjectKind, ProviderAccountRef,
+    ProviderCapabilities, ProviderCapacityConfidence, ProviderCapacityEvidence,
+    ProviderCapacitySnapshot, ProviderCapacityState, ProviderCompatibilityStatus,
+    ProviderControlValue, ProviderEventFidelity, ProviderExecutionControls,
+    ProviderExecutionStatus, ProviderFeatureMode, ProviderIntegrationProfile,
+    ProviderInteractionMode, ProviderRuntimeContextFact, SenderKind, TeamActorKind, TeamActorRef,
+    TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus,
+    TeamMessage, TeamMessageDelivery, TeamMessageKind, TeamMessageResponseIntent,
+    TeamRecipientKind, TeamRecipientRef, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus,
+    TeamSupervisorLease, Wave, WaveExecutorKind, WaveStatus, Work, WorkCausationRef, WorkClaimMode,
+    WorkCommandContext, WorkDelivery, WorkDeliveryStatus, WorkPriority, WorkStatus, WorkWorkspace,
+    WorkWorkspaceKind, WorkflowArtifactFile, WorkflowArtifactManifest,
     WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
     WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
     EXECUTION_MODE_EXTERNAL_INTERACTIVE,
@@ -55,6 +52,7 @@ mod company_os_api;
 mod company_store;
 mod docs_v2_page;
 mod execution_space;
+mod host_dispatcher;
 mod kimi_acp;
 mod legacy_export;
 mod mcp;
@@ -68,8 +66,6 @@ mod sse;
 #[cfg(unix)]
 mod supervisor_daemon;
 mod supervisor_wake;
-mod host_dispatcher;
-mod member_probe;
 mod workflow;
 
 #[derive(Debug, Error)]
@@ -269,9 +265,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
                 execution_space_context: None,
             });
         }
-        if let Some(id) =
-            company_store::active_company_id(&firm_home).map_err(company_store_err)?
-        {
+        if let Some(id) = company_store::active_company_id(&firm_home).map_err(company_store_err)? {
             let ctx = company_store::context_for_id(&firm_home, &id)
                 .map_err(company_store_err)?
                 .ok_or_else(|| CliError::Usage(format!("active company is unknown: {id}")))?;
@@ -794,8 +788,7 @@ fn execution_space_command(args: &[String]) -> CliResult<()> {
             let current = execution_space::active_space_id(&firm_home)
                 .map_err(execution_space_err)?
                 .unwrap_or_default();
-            let spaces =
-                execution_space::list_spaces(&firm_home).map_err(execution_space_err)?;
+            let spaces = execution_space::list_spaces(&firm_home).map_err(execution_space_err)?;
             print_json(
                 &spaces
                     .iter()
@@ -1402,6 +1395,14 @@ fn directory_trees_equal(left: &Path, right: &Path) -> CliResult<bool> {
 
 fn run() -> CliResult<()> {
     let mut args: Vec<String> = env::args().skip(1).collect();
+    // Build identity is store-less and deterministic: it is safe to use as an
+    // exact-revision preflight before selecting or opening any project store.
+    if args.as_slice() == ["--build-info"] {
+        return print_json(&serde_json::json!({
+            "git_rev": build_git_rev(),
+            "package_version": env!("CARGO_PKG_VERSION"),
+        }));
+    }
     // Optional debug flag: print which store was chosen and why (P7 "no silent
     // fallback"). Stripped before resolution so subcommands never see it.
     let store_source_debug = take_flag(&mut args, "--store-source");
@@ -1814,12 +1815,11 @@ fn company_store_migrate_from_project_command(args: &[String]) -> CliResult<()> 
     let force = has_flag(args, "--force");
     let verify_only = has_flag(args, "--verify-only");
     let firm_home = company_store::firm_home().map_err(company_store_err)?;
-    let source_project =
-        resolve_project_selector(&firm_home, &from_project).ok_or_else(|| {
-            CliError::Usage(format!(
-                "unknown source project: {from_project}; pass a registered project id or path"
-            ))
-        })?;
+    let source_project = resolve_project_selector(&firm_home, &from_project).ok_or_else(|| {
+        CliError::Usage(format!(
+            "unknown source project: {from_project}; pass a registered project id or path"
+        ))
+    })?;
     let ctx = if verify_only {
         company_store::context_for_id(&firm_home, &id)
             .map_err(company_store_err)?
@@ -6606,7 +6606,9 @@ fn dispatch_company_action_value(
     store: &HarnessStore,
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
-    let token = env::var("HARNESS_COMPANY_OS_TOKEN").ok();
+    let token = env::var("FIRM_COMPANY_OS_TOKEN")
+        .or_else(|_| env::var("HARNESS_COMPANY_OS_TOKEN"))
+        .ok();
     let response = company_os_api::handle_post(
         store,
         "/v1/company-os/actions/dispatch",
@@ -6857,7 +6859,9 @@ fn dispatch_company_docs_action_value(
     store: &HarnessStore,
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
-    let token = env::var("HARNESS_COMPANY_OS_TOKEN").ok();
+    let token = env::var("FIRM_COMPANY_OS_TOKEN")
+        .or_else(|_| env::var("HARNESS_COMPANY_OS_TOKEN"))
+        .ok();
     let response = company_os_api::handle_post(
         store,
         "/v1/company-os/actions/dispatch",
@@ -6908,7 +6912,9 @@ fn dispatch_company_admin_append_value(
             "record": record
         })
     };
-    let token = env::var("HARNESS_COMPANY_OS_TOKEN").ok();
+    let token = env::var("FIRM_COMPANY_OS_TOKEN")
+        .or_else(|_| env::var("HARNESS_COMPANY_OS_TOKEN"))
+        .ok();
     let response =
         company_os_api::handle_post(store, path, &body, token.as_deref()).ok_or_else(|| {
             CliError::Usage(format!(
@@ -9974,19 +9980,22 @@ fn capacity_state_from_provider_terminal(
 
 /// Staleness bound for a start-time capacity decision, overridable for tests.
 fn capacity_ttl_ms() -> u64 {
-    std::env::var("HARNESS_CAPACITY_TTL_MS")
+    std::env::var("FIRM_CAPACITY_TTL_MS")
+        .or_else(|_| std::env::var("HARNESS_CAPACITY_TTL_MS"))
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(harness_core::PROVIDER_CAPACITY_DEFAULT_TTL_MS)
 }
 
-/// The start guard is on by default. `HARNESS_CAPACITY_PREFLIGHT=off` disables
+/// The start guard is on by default. `FIRM_CAPACITY_PREFLIGHT=off` disables
 /// only the probe; the honest-unknown semantics are unchanged, because a
 /// disabled probe simply produces no snapshot and no snapshot never blocks.
+/// `HARNESS_CAPACITY_PREFLIGHT` remains a compatibility alias.
 fn capacity_preflight_enabled() -> bool {
     !matches!(
-        std::env::var("HARNESS_CAPACITY_PREFLIGHT")
+        std::env::var("FIRM_CAPACITY_PREFLIGHT")
+            .or_else(|_| std::env::var("HARNESS_CAPACITY_PREFLIGHT"))
             .unwrap_or_default()
             .trim()
             .to_ascii_lowercase()
@@ -12775,7 +12784,9 @@ fn parse_gate_specs(args: &[String]) -> CliResult<Vec<GateSpec>> {
                 None => (raw.clone(), ""),
             };
             if plugin.is_empty() {
-                return Err(CliError::Usage("--gate plugin name must not be empty".to_string()));
+                return Err(CliError::Usage(
+                    "--gate plugin name must not be empty".to_string(),
+                ));
             }
             let config = if config_str.is_empty() {
                 serde_json::Value::Object(serde_json::Map::new())
@@ -12853,12 +12864,11 @@ fn parse_workspace(args: &[String]) -> CliResult<Option<WorkWorkspace>> {
                 auto_cleanup: false,
             }));
         }
-        let path = required(args, "--workspace-path")
-            .map_err(|_| {
-                CliError::Usage(
-                    "--workspace-path is required for worktree/dir workspace kinds".to_string(),
-                )
-            })?;
+        let path = required(args, "--workspace-path").map_err(|_| {
+            CliError::Usage(
+                "--workspace-path is required for worktree/dir workspace kinds".to_string(),
+            )
+        })?;
         return Ok(Some(WorkWorkspace {
             kind,
             path,
@@ -12911,10 +12921,7 @@ fn ensure_workspace(
 
 /// Remove the workspace created for a Work (if auto_cleanup is
 /// enabled). For worktrees, calls `git worktree remove --force`.
-fn cleanup_workspace(
-    workspace: &WorkWorkspace,
-    project_root: &std::path::Path,
-) -> CliResult<()> {
+fn cleanup_workspace(workspace: &WorkWorkspace, project_root: &std::path::Path) -> CliResult<()> {
     if !workspace.auto_cleanup {
         return Ok(());
     }
@@ -12988,18 +12995,22 @@ fn member_work_context(
     team_run_id: &str,
     member_run_id: &str,
 ) -> CliResult<WorkCommandContext> {
-    let bound_member = env::var("HARNESS_MEMBER_RUN_ID").map_err(|_| {
-        CliError::Usage(
-            "member Work commands require the bound HARNESS_MEMBER_RUN_ID runtime environment"
-                .to_string(),
-        )
-    })?;
+    let bound_member = env::var("FIRM_MEMBER_RUN_ID")
+        .or_else(|_| env::var("HARNESS_MEMBER_RUN_ID"))
+        .map_err(|_| {
+            CliError::Usage(
+                "member Work commands require the bound FIRM_MEMBER_RUN_ID runtime environment"
+                    .to_string(),
+            )
+        })?;
     if bound_member != member_run_id {
         return Err(CliError::Usage(format!(
             "bound MemberRun is {bound_member}, not {member_run_id}"
         )));
     }
-    if let Ok(bound_team) = env::var("HARNESS_TEAM_RUN_ID") {
+    if let Ok(bound_team) =
+        env::var("FIRM_TEAM_RUN_ID").or_else(|_| env::var("HARNESS_TEAM_RUN_ID"))
+    {
         if bound_team != team_run_id {
             return Err(CliError::Usage(format!(
                 "bound TeamRun is {bound_team}, not {team_run_id}"
@@ -13596,7 +13607,7 @@ fn github_poll_host_context(run_id: &str, work_id: &str) -> WorkCommandContext {
 fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery|poll-github-ci|check-gates|workspace|evidence-show",
+        "team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery|poll-github-ci|check-gates|workspace",
     )?;
     match args[0].as_str() {
         "list" => {
@@ -13806,7 +13817,7 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                     ctx.push_str("## Verification Gates\n\n");
                     ctx.push_str("This work must pass the following gates before acceptance:\n\n");
                     for gate in &gates {
-                        let config_str = if gate.config.as_object().map_or(true, |m| m.is_empty()) {
+                        let config_str = if gate.config.as_object().is_none_or(|m| m.is_empty()) {
                             String::new()
                         } else {
                             format!(" ({})", gate.config)
@@ -14200,47 +14211,9 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                     }
                 }
             }
-            // Evidence gate (issue #387 P1-2): Host must provide delivery
-            // evidence or explicitly bypass with a reason.
-            let bypass_evidence = has_flag(args, "--bypass-evidence");
-            let bypass_reason = if bypass_evidence {
-                Some(required(args, "--reason")?)
-            } else {
-                None
-            };
-            let evidence_flag = has_flag(args, "--evidence");
-            let pr_url = value(args, "--pr-url");
-            let verification_output = value(args, "--verification-output");
-            let screenshot_path = value(args, "--screenshot-path");
-            let evidence = if bypass_evidence {
-                Some(WorkAcceptanceEvidence {
-                    pr_url: None,
-                    verification_output: None,
-                    screenshot_path: None,
-                    bypass_reason,
-                })
-            } else if evidence_flag || pr_url.is_some() || verification_output.is_some() || screenshot_path.is_some() {
-                let evidence = WorkAcceptanceEvidence {
-                    pr_url,
-                    verification_output,
-                    screenshot_path,
-                    bypass_reason: None,
-                };
-                if let Err(reason) = evidence.validate() {
-                    return Err(CliError::Usage(reason));
-                }
-                Some(evidence)
-            } else {
-                return Err(CliError::Usage(
-                    "evidence required: use --evidence with --pr-url, --verification-output, or \
-                     --screenshot-path; or --bypass-evidence --reason <reason> for non-code \
-                     deliverables".to_string(),
-                ));
-            };
             let work = store.accept_work(
                 &work_id,
                 expected_version,
-                evidence,
                 host_work_context(args),
             )?;
             append_work_event(
@@ -14308,25 +14281,8 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             current_unix_ms_u64(),
             &now_string(),
         )?),
-        "evidence-show" => {
-            let work_id = required(args, "--work-id")?;
-            let works = store.latest_works()?;
-            let work = works
-                .iter()
-                .find(|w| w.id == work_id)
-                .ok_or_else(|| CliError::Usage(format!("Work not found: {work_id}")))?;
-            match &work.acceptance_evidence {
-                Some(evidence) => print_json(evidence),
-                None => print_json(&serde_json::json!({
-                    "work_id": work_id,
-                    "status": work.status,
-                    "acceptance_evidence": null,
-                    "hint": "This work has not been accepted or was accepted before the evidence gate was enforced."
-                })),
-            }
-        }
         other => Err(CliError::Usage(format!(
-            "unknown team-run work command: {other}; usage: team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery|evidence-show"
+            "unknown team-run work command: {other}; usage: team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery"
         ))),
     }
 }
@@ -14359,7 +14315,7 @@ fn team_run_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run create|list|status|board-summary|work|recover|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|wait|complete|cancel|probe",
+        "team-run create|list|status|board-summary|work|recover|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|wait|complete|cancel",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
@@ -14561,58 +14517,6 @@ fn team_run_command(
                 print_json(&interaction)?;
             } else {
                 println!("{}", interaction["id"].as_str().unwrap_or(&interaction_id));
-            }
-        }
-        "probe" => {
-            let member_run_id = required(args, "--member-run-id")?;
-            let tail_lines: usize = value(args, "--tail-lines")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(200);
-            let stale_secs: u64 = value(args, "--stale-secs")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(600);
-            let run_id = required(args, "--id")?;
-            let run = latest_team_run(store, &run_id)?;
-            let member = store
-                .member_runs()
-                .map_err(|e| CliError::Usage(format!("store error: {e}")))?
-                .into_iter()
-                .find(|m| m.id == member_run_id)
-                .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
-            if member.team_run_id != run.id {
-                return Err(CliError::Usage(format!(
-                    "member run {member_run_id} does not belong to team run {}",
-                    run.id
-                )));
-            }
-            let session = member.native_session.as_ref().ok_or_else(|| {
-                CliError::Usage(format!(
-                    "member run {member_run_id} has no native session"
-                ))
-            })?;
-            let result = member_probe::probe_member(
-                session,
-                &member_run_id,
-                tail_lines,
-                std::time::Duration::from_secs(stale_secs),
-            )?;
-            if json {
-                print_json(&serde_json::json!({
-                    "member_run_id": result.member_run_id,
-                    "classification": serde_json::to_value(&result.classification).unwrap_or_default(),
-                    "lines_parsed": result.lines_parsed,
-                    "wire_path": result.wire_path,
-                }))?;
-            } else {
-                println!("member-run: {}", result.member_run_id);
-                println!(
-                    "  classification: {}",
-                    serde_json::to_string(&result.classification).unwrap_or_default()
-                );
-                println!("  lines parsed: {}", result.lines_parsed);
-                if let Some(ref path) = result.wire_path {
-                    println!("  wire path: {}", path.display());
-                }
             }
         }
         "list" => {
@@ -15668,7 +15572,8 @@ impl Drop for ActiveTurnLease {
 /// Test-only escape hatch for foreground integration tests. Production
 /// supervisors have no implicit idle retirement.
 fn member_supervisor_test_idle_grace() -> Option<Duration> {
-    std::env::var("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS")
+    std::env::var("FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS")
+        .or_else(|_| std::env::var("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS"))
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())
         .map(Duration::from_millis)
@@ -15949,7 +15854,8 @@ fn current_unix_ms_u64() -> u64 {
 }
 
 fn team_supervisor_lease_ttl_ms() -> u64 {
-    std::env::var("HARNESS_TEAM_SUPERVISOR_LEASE_MS")
+    std::env::var("FIRM_TEAM_SUPERVISOR_LEASE_MS")
+        .or_else(|_| std::env::var("HARNESS_TEAM_SUPERVISOR_LEASE_MS"))
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())
         .filter(|ttl| *ttl > 0)
@@ -15979,7 +15885,8 @@ fn latch_supervisor_lease_lost(
 }
 
 fn supervisor_test_heartbeat_failure() -> Option<String> {
-    let ready = std::env::var_os("HARNESS_TEST_SUPERVISOR_HEARTBEAT_FAIL_READY")?;
+    let ready = std::env::var_os("FIRM_TEST_SUPERVISOR_HEARTBEAT_FAIL_READY")
+        .or_else(|| std::env::var_os("HARNESS_TEST_SUPERVISOR_HEARTBEAT_FAIL_READY"))?;
     let ready = PathBuf::from(ready);
     match fs::write(&ready, b"heartbeat renewal failure injected") {
         Ok(()) => Some("test-injected heartbeat renewal/store failure".to_string()),
@@ -17726,7 +17633,9 @@ pub(crate) fn team_run_start(
         // When the test-idle env var is set, fall back to the old in-process
         // supervisor path so integration tests that expect blocking completion
         // continue to work without spawning a real daemon child.
-        let test_idle_ms = std::env::var("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS").ok();
+        let test_idle_ms = std::env::var("FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS")
+            .or_else(|_| std::env::var("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS"))
+            .ok();
         if test_idle_ms.is_some() {
             let prepared = prepare_team_run_start(store, run_id, max_concurrency)?;
             return drive_prepared_team_run(
@@ -17840,12 +17749,8 @@ pub(crate) fn drive_prepared_team_run(
     // Host dispatcher polling (issue #387 P0-2): throttle headless host rounds
     // to the configured poll interval.
     let host_dispatch_config = HostDispatchConfig::default();
-    let mut last_host_dispatch_poll = Instant::now()
-        - Duration::from_secs(host_dispatch_config.poll_interval_secs);
-    // Probe tracker for member progress classification (issue #387 P1-4).
-    let probe_tracker = host_dispatcher::ProbeTracker::new(
-        Duration::from_secs(host_dispatch_config.poll_interval_secs),
-    );
+    let mut last_host_dispatch_poll =
+        Instant::now() - Duration::from_secs(host_dispatch_config.poll_interval_secs);
     loop {
         if !lease_lost {
             if let Err(error) = ledger.require_supervisor_lease() {
@@ -18053,27 +17958,11 @@ pub(crate) fn drive_prepared_team_run(
                 >= Duration::from_secs(host_dispatch_config.poll_interval_secs)
         {
             last_host_dispatch_poll = Instant::now();
-            let active_members: Vec<MemberRun> = handles
-                .iter()
-                .map(|(_, (member, _))| member.clone())
-                .chain(
-                    latest_member_runs_in_append_order(&ledger.store)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter(|m| {
-                            m.team_run_id == run_id
-                                && m.coordination_is_active()
-                                && !handles.contains_key(&m.id)
-                        }),
-                )
-                .collect();
             match host_dispatcher::poll_and_dispatch(
                 &ledger.store,
                 &ledger,
                 &objective,
                 &host_dispatch_config,
-                &probe_tracker,
-                &active_members,
             ) {
                 Ok(outcome) if !outcome.is_noop() => {
                     ledger.fold_event(
@@ -18083,12 +17972,11 @@ pub(crate) fn drive_prepared_team_run(
                         &run_id,
                         "host_dispatcher",
                         &format!(
-                            "host dispatcher poll: inspected={}, handled={}, escalated={}, failed={}, probes={}",
+                            "host dispatcher poll: inspected={}, handled={}, escalated={}, failed={}",
                             outcome.inspected,
                             outcome.handled.len(),
                             outcome.escalated.len(),
                             outcome.failed.len(),
-                            outcome.probes.len(),
                         ),
                     )?;
                 }
@@ -18908,16 +18796,21 @@ fn project_codex_team_event_live(
 
 fn supervisor_test_terminal_receive_barrier(provider: &str) -> CliResult<()> {
     let provider = provider.to_ascii_uppercase();
-    let ready_key = format!("HARNESS_TEST_{provider}_TERMINAL_RECEIVED_READY");
-    let release_key = format!("HARNESS_TEST_{provider}_TERMINAL_RECEIVED_RELEASE");
-    let Some(ready) = std::env::var_os(&ready_key) else {
+    let ready_key = format!("FIRM_TEST_{provider}_TERMINAL_RECEIVED_READY");
+    let legacy_ready_key = format!("HARNESS_TEST_{provider}_TERMINAL_RECEIVED_READY");
+    let release_key = format!("FIRM_TEST_{provider}_TERMINAL_RECEIVED_RELEASE");
+    let legacy_release_key = format!("HARNESS_TEST_{provider}_TERMINAL_RECEIVED_RELEASE");
+    let Some(ready) = std::env::var_os(&ready_key).or_else(|| std::env::var_os(&legacy_ready_key))
+    else {
         return Ok(());
     };
-    let release = std::env::var_os(&release_key).ok_or_else(|| {
-        CliError::Usage(format!(
-            "{ready_key} requires the bounded test release selector {release_key}"
-        ))
-    })?;
+    let release = std::env::var_os(&release_key)
+        .or_else(|| std::env::var_os(&legacy_release_key))
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "{ready_key} requires the bounded test release selector {release_key}"
+            ))
+        })?;
     fs::write(PathBuf::from(ready), b"terminal provider frame received")?;
     let release = PathBuf::from(release);
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -19441,7 +19334,8 @@ fn run_claude_team_member(
 /// them. Integration tests may set this variable to bound a foreground run.
 fn claude_agent_sdk_idle_grace() -> Option<Duration> {
     member_supervisor_test_idle_grace().or_else(|| {
-        std::env::var("HARNESS_CLAUDE_AGENT_SDK_IDLE_GRACE_MS")
+        std::env::var("FIRM_CLAUDE_AGENT_SDK_IDLE_GRACE_MS")
+            .or_else(|_| std::env::var("HARNESS_CLAUDE_AGENT_SDK_IDLE_GRACE_MS"))
             .ok()
             .and_then(|raw| raw.parse::<u64>().ok())
             .map(Duration::from_millis)
@@ -19449,13 +19343,15 @@ fn claude_agent_sdk_idle_grace() -> Option<Duration> {
 }
 
 fn claude_agent_sdk_runner_path(cwd: &Path) -> CliResult<PathBuf> {
-    if let Ok(explicit) = std::env::var("HARNESS_CLAUDE_MEMBER_RUNNER") {
+    if let Ok(explicit) = std::env::var("FIRM_CLAUDE_MEMBER_RUNNER")
+        .or_else(|_| std::env::var("HARNESS_CLAUDE_MEMBER_RUNNER"))
+    {
         let path = PathBuf::from(explicit);
         if path.is_file() {
             return Ok(path);
         }
         return Err(CliError::Usage(format!(
-            "HARNESS_CLAUDE_MEMBER_RUNNER points at {}, which is not a file",
+            "FIRM_CLAUDE_MEMBER_RUNNER points at {}, which is not a file",
             path.display()
         )));
     }
@@ -22958,31 +22854,35 @@ struct MemberCollaborationEnvelope {
 impl MemberCollaborationEnvelope {
     fn environment(&self) -> Vec<(String, String)> {
         let mut values = vec![
+            ("FIRM_TEAM_RUN_ID".to_string(), self.team_run_id.clone()),
+            ("FIRM_MEMBER_RUN_ID".to_string(), self.member_run_id.clone()),
             ("HARNESS_TEAM_RUN_ID".to_string(), self.team_run_id.clone()),
             (
                 "HARNESS_MEMBER_RUN_ID".to_string(),
                 self.member_run_id.clone(),
             ),
         ];
-        for (key, value) in [
-            ("HARNESS_BIN", self.harness_bin.as_deref()),
-            ("HARNESS_SPACE", self.execution_space_id.as_deref()),
+        for (suffix, value) in [
+            ("BIN", self.harness_bin.as_deref()),
+            ("SPACE", self.execution_space_id.as_deref()),
             (
-                "HARNESS_PROJECT",
+                "PROJECT",
                 self.project_selector
                     .as_deref()
                     .or(self.project_id.as_deref()),
             ),
-            ("HARNESS_PROJECT_ID", self.project_id.as_deref()),
-            ("HARNESS_MISSION_ID", self.mission_id.as_deref()),
-            ("HARNESS_WORK_ID", self.work_id.as_deref()),
-            ("HARNESS_ORIGIN_WAVE_ID", self.origin_wave_id.as_deref()),
+            ("PROJECT_ID", self.project_id.as_deref()),
+            ("MISSION_ID", self.mission_id.as_deref()),
+            ("WORK_ID", self.work_id.as_deref()),
+            ("ORIGIN_WAVE_ID", self.origin_wave_id.as_deref()),
         ] {
             if let Some(value) = value {
-                values.push((key.to_string(), value.to_string()));
+                values.push((format!("FIRM_{suffix}"), value.to_string()));
+                values.push((format!("HARNESS_{suffix}"), value.to_string()));
             }
         }
         if let Some(version) = self.work_version {
+            values.push(("FIRM_WORK_VERSION".to_string(), version.to_string()));
             values.push(("HARNESS_WORK_VERSION".to_string(), version.to_string()));
         }
         values
@@ -23336,6 +23236,11 @@ fn dashboard_doctor_command(store: &HarnessStore, args: &[String]) -> CliResult<
     // rev is a plain value fallback, not a borrow that has to outlive `args`.
     let expected_git_rev =
         value(args, "--expected-git-rev").unwrap_or_else(|| build_git_rev().to_string());
+    if expected_git_rev != "unknown" && !is_exact_git_rev(&expected_git_rev) {
+        return Err(CliError::Usage(
+            "--expected-git-rev must be a full 40-character hexadecimal SHA".to_string(),
+        ));
+    }
 
     let store_counts = DoctorStoreCounts {
         works: store
@@ -23430,14 +23335,11 @@ fn doctor_report(
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
 
-    // Plain string equality, deliberately with no special-case for "unknown":
-    // a build that could not embed its own rev (no git available) failing to
-    // match a concrete rev is itself a real provenance gap worth surfacing,
-    // not something to silently wave through. Two builds that both landed on
-    // "unknown" register as equal — no false alarm — but the printed table
-    // still shows the raw "unknown" value so a human notices neither side
-    // could actually prove anything.
-    let rev_pass = expected_git_rev == server_git_rev;
+    // Equality is meaningful only for two exact object ids. `unknown ==
+    // unknown` cannot prove that the dashboard and CLI came from one revision.
+    let rev_pass = is_exact_git_rev(expected_git_rev)
+        && is_exact_git_rev(server_git_rev)
+        && expected_git_rev.eq_ignore_ascii_case(server_git_rev);
 
     DoctorReport {
         checks: vec![
@@ -23467,6 +23369,10 @@ fn doctor_report(
             },
         ],
     }
+}
+
+fn is_exact_git_rev(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn json_array_len(value: &serde_json::Value, key: &str) -> usize {
@@ -23584,6 +23490,9 @@ fn http_response_looks_complete(raw: &str) -> bool {
 mod dashboard_doctor_tests {
     use super::*;
 
+    const REV_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const REV_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
     fn counts(works: usize, members: usize, messages: usize) -> DoctorStoreCounts {
         DoctorStoreCounts {
             works,
@@ -23606,24 +23515,14 @@ mod dashboard_doctor_tests {
 
     #[test]
     fn all_matching_counts_and_revs_pass() {
-        let report = doctor_report(
-            &counts(2, 1, 3),
-            &meta("abc1234"),
-            &snapshot(2, 1, 3),
-            "abc1234",
-        );
+        let report = doctor_report(&counts(2, 1, 3), &meta(REV_A), &snapshot(2, 1, 3), REV_A);
         assert!(report.all_pass(), "{report:?}");
         assert!(report.checks.iter().all(|check| check.pass));
     }
 
     #[test]
     fn works_count_mismatch_fails_only_that_row() {
-        let report = doctor_report(
-            &counts(2, 1, 3),
-            &meta("abc1234"),
-            &snapshot(1, 1, 3),
-            "abc1234",
-        );
+        let report = doctor_report(&counts(2, 1, 3), &meta(REV_A), &snapshot(1, 1, 3), REV_A);
         assert!(!report.all_pass());
         let works_row = &report.checks[0];
         assert_eq!(works_row.label, "works count (store vs API)");
@@ -23634,57 +23533,39 @@ mod dashboard_doctor_tests {
 
     #[test]
     fn members_count_mismatch_fails() {
-        let report = doctor_report(
-            &counts(2, 1, 3),
-            &meta("abc1234"),
-            &snapshot(2, 0, 3),
-            "abc1234",
-        );
+        let report = doctor_report(&counts(2, 1, 3), &meta(REV_A), &snapshot(2, 0, 3), REV_A);
         assert!(!report.all_pass());
         assert!(!report.checks[1].pass);
     }
 
     #[test]
     fn messages_count_mismatch_fails() {
-        let report = doctor_report(
-            &counts(2, 1, 3),
-            &meta("abc1234"),
-            &snapshot(2, 1, 0),
-            "abc1234",
-        );
+        let report = doctor_report(&counts(2, 1, 3), &meta(REV_A), &snapshot(2, 1, 0), REV_A);
         assert!(!report.all_pass());
         assert!(!report.checks[2].pass);
     }
 
     #[test]
     fn git_rev_mismatch_fails_the_rev_row_even_when_counts_match() {
-        let report = doctor_report(
-            &counts(0, 0, 0),
-            &meta("stale0ff"),
-            &snapshot(0, 0, 0),
-            "fresh999",
-        );
+        let report = doctor_report(&counts(0, 0, 0), &meta(REV_B), &snapshot(0, 0, 0), REV_A);
         assert!(!report.all_pass());
         let rev_row = report.checks.last().expect("rev row");
         assert_eq!(rev_row.label, "git_rev (this build vs server)");
         assert!(!rev_row.pass);
-        assert_eq!(rev_row.expected, "fresh999");
-        assert_eq!(rev_row.observed, "stale0ff");
+        assert_eq!(rev_row.expected, REV_A);
+        assert_eq!(rev_row.observed, REV_B);
     }
 
     #[test]
-    fn both_sides_reporting_unknown_git_rev_counts_as_equal_not_a_failure() {
-        // Two builds that both landed on "unknown" (no git at build time) are
-        // literally equal strings, so this must not register as a mismatch —
-        // even though neither side actually proved a commit (the printed
-        // table still shows "unknown" so a human can notice that).
+    fn both_sides_reporting_unknown_git_rev_fail_exact_revision_proof() {
         let report = doctor_report(
             &counts(0, 0, 0),
             &meta("unknown"),
             &snapshot(0, 0, 0),
             "unknown",
         );
-        assert!(report.all_pass(), "{report:?}");
+        assert!(!report.all_pass(), "{report:?}");
+        assert!(!report.checks.last().expect("rev row").pass);
     }
 
     #[test]
@@ -23696,7 +23577,7 @@ mod dashboard_doctor_tests {
             &counts(0, 0, 0),
             &serde_json::json!({}),
             &snapshot(0, 0, 0),
-            "abc1234",
+            REV_A,
         );
         let rev_row = report.checks.last().expect("rev row");
         assert_eq!(rev_row.observed, "unknown");
@@ -23710,9 +23591,9 @@ mod dashboard_doctor_tests {
     fn missing_snapshot_arrays_count_as_zero_not_a_panic() {
         let report = doctor_report(
             &counts(0, 0, 0),
-            &meta("abc1234"),
+            &meta(REV_A),
             &serde_json::json!({}),
-            "abc1234",
+            REV_A,
         );
         assert!(report.all_pass(), "{report:?}");
     }
@@ -23977,7 +23858,8 @@ fn handle_sse_stream(
 }
 
 fn sse_post_snapshot_test_pause() -> Option<std::time::Duration> {
-    std::env::var("HARNESS_TEST_SSE_POST_SNAPSHOT_PAUSE_MS")
+    std::env::var("FIRM_TEST_SSE_POST_SNAPSHOT_PAUSE_MS")
+        .or_else(|_| std::env::var("HARNESS_TEST_SSE_POST_SNAPSHOT_PAUSE_MS"))
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())
         .filter(|millis| *millis > 0)
@@ -27085,38 +26967,7 @@ fn mutate_team_work_value(
             )
         }
         "accept" => {
-            // Evidence gate (issue #387 P1-2): parse optional evidence from the body.
-            let evidence = if let Some(evidence_obj) = body.get("evidence") {
-                let pr_url = evidence_obj
-                    .get("pr_url")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-                let verification_output = evidence_obj
-                    .get("verification_output")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-                let screenshot_path = evidence_obj
-                    .get("screenshot_path")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-                let bypass_reason = evidence_obj
-                    .get("bypass_reason")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-                let evidence = WorkAcceptanceEvidence {
-                    pr_url,
-                    verification_output,
-                    screenshot_path,
-                    bypass_reason,
-                };
-                if let Err(reason) = evidence.validate() {
-                    return Err(CliError::Usage(reason));
-                }
-                Some(evidence)
-            } else {
-                None
-            };
-            let work = store.accept_work(work_id, expected_version, evidence, context)?;
+            let work = store.accept_work(work_id, expected_version, context)?;
             let title = work.title.clone();
             (work, "accepted", format!("Work accepted: {title}"))
         }
@@ -30600,7 +30451,9 @@ fn build_replay_map(
 /// alters the run. Keep the hook quick (or self-detach with `&`): the run-owning
 /// process waits for it.
 fn fire_workflow_completion_hook(run: &WorkflowRun) {
-    let cmd = match std::env::var("HARNESS_WORKFLOW_ON_COMPLETE") {
+    let cmd = match std::env::var("FIRM_WORKFLOW_ON_COMPLETE")
+        .or_else(|_| std::env::var("HARNESS_WORKFLOW_ON_COMPLETE"))
+    {
         Ok(c) if !c.trim().is_empty() => c,
         _ => return,
     };
@@ -30612,7 +30465,12 @@ fn fire_workflow_completion_hook(run: &WorkflowRun) {
     let spawned = Command::new("sh")
         .arg("-c")
         .arg(&cmd)
+        .env("FIRM_RUN_ID", &run.id)
+        .env("FIRM_STATUS", &status)
+        .env("FIRM_RUN_STATUS", &status)
+        .env("FIRM_RUN_NAME", &run.workflow_name)
         .env("HARNESS_RUN_ID", &run.id)
+        .env("HARNESS_STATUS", &status)
         .env("HARNESS_RUN_STATUS", &status)
         .env("HARNESS_RUN_NAME", &run.workflow_name)
         .stdin(std::process::Stdio::piped())
@@ -36509,14 +36367,14 @@ fn now_string() -> String {
 /// time (issue #307 — `/v1/meta` must never shell out to `git` per-request).
 /// "unknown" only when the build environment had no git / was not a checkout.
 fn build_git_rev() -> &'static str {
-    option_env!("HARNESS_BUILD_GIT_REV").unwrap_or("unknown")
+    option_env!("FIRM_BUILD_GIT_REV").unwrap_or("unknown")
 }
 
 /// When this binary was compiled, in the same `unix-ms:<millis>` convention as
 /// every other timestamp this server emits. `None` only if the build
 /// environment's clock could not be read (see `build.rs`).
 fn build_built_at() -> Option<String> {
-    option_env!("HARNESS_BUILD_AT_MS")
+    option_env!("FIRM_BUILD_AT_MS")
         .and_then(|value| value.parse::<u128>().ok())
         .map(|millis| format!("unix-ms:{millis}"))
 }
@@ -36588,27 +36446,22 @@ team-run board-summary --id <id>
 team-run recover    --id <id> [--json]
 "#;
 
-const CHEATSHEET_WORK: &str = r#"work create          --team-run-id <id> --title <text>
-                    --completion-criteria <text>
-                    [--owner-member-run-id <id> --claim-mode host_assign]
-                    [--claim-mode team_claim --eligible-member-id <id>]
-                    [--priority low|normal|high|urgent] [--context <md>]
-                    [--prerequisite-work-id <id>] [--idempotency-key <key>]
-                    [--github-issue owner/repo#N]
-                    [--gate plugin[:key=val[,key=val...]]]
-                    [--worktree <path> [--workspace-base <ref>] [--workspace-no-cleanup]]
-                    [--workspace-kind worktree|dir|inherit --workspace-path <path>]
-work list            --team-run-id <id> [--brief] [--since <cursor>]
-                    [--status <status>] [--member-run-id <id>]
-work show            --work-id <id>
-work assign          --work-id <id> --expected-version <n>
-                    --member-run-id <id> [--idempotency-key <key>]
-work accept          --work-id <id> --expected-version <n>
-                    [--skip-gates] [--idempotency-key <key>]
-work request-changes --work-id <id> --expected-version <n>
-                    --reason <text> [--idempotency-key <key>]
-work poll-github-ci  --team-run-id <id>   # refresh CI snapshots + PR-merge auto-submit
-work check-gates     --work-id <id>       # evaluate declared gates
+const CHEATSHEET_WORK: &str = r#"work create --team-run-id <id> --title <text> --completion-criteria <text>
+  [--owner-member-run-id <id> --claim-mode host_assign]
+  [--claim-mode team_claim --eligible-member-id <id>]
+  [--priority low|normal|high|urgent] [--context <md>]
+  [--prerequisite-work-id <id>] [--idempotency-key <key>]
+  [--github-issue owner/repo#N] [--gate <spec>]
+  [--worktree <path> --workspace-base <ref> --workspace-no-cleanup]
+  [--workspace-kind worktree|dir|inherit --workspace-path <path>]
+work list --team-run-id <id> [--brief] [--since <cursor>]
+  [--status <status>] [--member-run-id <id>]
+work show --work-id <id>
+work assign --work-id <id> --expected-version <n> --member-run-id <id> [--idempotency-key <key>]
+work accept --work-id <id> --expected-version <n> [--skip-gates] [--idempotency-key <key>]
+work request-changes --work-id <id> --expected-version <n> --reason <text> [--idempotency-key <key>]
+work poll-github-ci --team-run-id <id>
+work check-gates --work-id <id>
 "#;
 
 const CHEATSHEET_MISSION: &str = r#"mission create        --title <text> --objective <text> [--id <id>]
@@ -36628,7 +36481,7 @@ wave list (historical) [--mission-id <id>]
 const CHEATSHEET_ALL: &str = r#"team-run create --objective <text> [--mission-id <id>] [--wave-id <id>]
   --member name:role:provider[/mode][:model][@paths]
 team-run start --id <id> [--max-concurrency <n>]
-team-run add-member --id <id> --member <spec> [--initial-work <text>]
+team-run add-member --id <id> --member <spec>
 team-run status --id <id> [--json]
 team-run wait --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
 team-run send --id <id> --from <actor> --to <csv>
@@ -36641,17 +36494,15 @@ team-run recover --id <id> [--json]
 
 work create --team-run-id <id> --title <text> --completion-criteria <text>
   [--owner-member-run-id <id> --claim-mode host_assign]
-  [--claim-mode team_claim --eligible-member-id <id>] [--idempotency-key <key>]
-  [--github-issue owner/repo#N]
-  [--gate plugin[:key=val[,key=val...]]]
-  [--worktree <path> [--workspace-base <ref>]]
+  [--claim-mode team_claim --eligible-member-id <id>]
+  [--github-issue owner/repo#N] [--gate <spec>] [--worktree <path>]
 work list --team-run-id <id> [--brief] [--since <cursor>]
 work show --work-id <id>
-work assign --work-id <id> --expected-version <n> --member-run-id <id> [--idempotency-key <key>]
+work assign --work-id <id> --expected-version <n> --member-run-id <id>
 work submit --team-run-id <id> --member-run-id <id> --work-id <id>
   --expected-version <n> --result <text> [--github-pr owner/repo#N]
-work accept --work-id <id> --expected-version <n> [--skip-gates] [--idempotency-key <key>]
-work request-changes --work-id <id> --expected-version <n> --reason <text> [--idempotency-key <key>]
+work accept --work-id <id> --expected-version <n> [--skip-gates]
+work request-changes --work-id <id> --expected-version <n> --reason <text>
 work poll-github-ci --team-run-id <id>
 work check-gates --work-id <id>
 
@@ -45180,6 +45031,7 @@ package:com.tencent.mm
         ["value", "many", "has_flag", "required"]
             .iter()
             .any(|func| source.contains(&format!("{func}(args, \"{flag}\")")))
+            || source.contains(&format!("args[i] == \"{flag}\""))
     }
 
     #[test]

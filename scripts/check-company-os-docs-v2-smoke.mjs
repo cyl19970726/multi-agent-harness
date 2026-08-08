@@ -2,7 +2,7 @@
 /**
  * AI-first Docs v2 end-to-end smoke acceptance (ADR 0054 Phase 0).
  *
- * Runs the real `target/debug/harness` binary against a throwaway Company
+ * Runs the real `target/debug/firm` binary against a throwaway Company
  * Store and proves the full loop: page create -> scoped reads (outline /
  * keyword / section / range, fragment + excerpt honesty) -> full page write
  * with expected-revision -> REVISION_CONFLICT on stale base -> idempotent
@@ -17,7 +17,7 @@ import path from "node:path";
 import process from "node:process";
 
 const repoRoot = path.resolve(new URL("..", import.meta.url).pathname);
-const harness = path.join(repoRoot, "target", "debug", "harness");
+const harness = path.join(repoRoot, "target", "debug", "firm");
 
 let failures = 0;
 const fail = (message) => {

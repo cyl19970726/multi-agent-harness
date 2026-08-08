@@ -144,7 +144,7 @@ Approved shops, rewards, prizes, magnets, stock allocations, and redemption reco
 }
 
 async function main() {
-  execFileSync("cargo", ["build", "-p", "harness-cli"], { cwd: repoRoot, stdio: "inherit" });
+  execFileSync("cargo", ["build", "-p", "firm-cli"], { cwd: repoRoot, stdio: "inherit" });
 
   const root = await mkdtemp(join(tmpdir(), "company-os-wanchengwanling-v0-"));
   const explicitStoreRoot = argument("--store", "");

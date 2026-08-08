@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 
 const root = resolve(import.meta.dirname, "..");
 const operations = resolve(root, "src/company-os/operations");
-const fixturePath = resolve(root, "../../docs/design/company-os-v1/fixtures/company-os-trademark-v1.json");
+const fixturePath = resolve(root, "../../docs/current/company-os/fixtures/company-os-trademark-v1.json");
 
 let pass = 0;
 let fail = 0;

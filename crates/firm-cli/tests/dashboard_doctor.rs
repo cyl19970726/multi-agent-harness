@@ -140,7 +140,7 @@ fn doctor_fails_non_zero_on_expected_git_rev_mismatch_but_counts_still_pass() {
             "--api",
             &api,
             "--expected-git-rev",
-            "deliberately-wrong-rev",
+            "0000000000000000000000000000000000000000",
         ],
     );
     assert!(

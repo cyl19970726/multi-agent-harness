@@ -101,7 +101,7 @@ async function main() {
 
   try {
     await materialize(storeRoot, manifest);
-    apiProcess = start(join(repoRoot, "target/debug/harness"), ["--store", storeRoot, "serve", "--addr", `127.0.0.1:${apiPort}`], "harness serve");
+    apiProcess = start(join(repoRoot, "target/debug/firm"), ["--store", storeRoot, "serve", "--addr", `127.0.0.1:${apiPort}`], "firm serve");
     webProcess = start(process.execPath, [join(repoRoot, "node_modules/vite/bin/vite.js"), "--config", "apps/agent-dashboard/vite.config.ts", "--host", "127.0.0.1", "--port", String(webPort)], "Vite dashboard");
     await Promise.race([
       Promise.all([

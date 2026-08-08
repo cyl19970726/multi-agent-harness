@@ -1,26 +1,9 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto";
-import { access, readFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
 import {
   indexFixture,
   loadCompanyOsFixture,
-  resolveContractRoute,
 } from "../fixtures/company-os-trademark-v1/fixture.mjs";
-
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const designRoot = resolve(repoRoot, "docs/design/company-os-v2");
-const visualPageToFixtureSlice = new Map([
-  ["home", "home"],
-  ["docs", "docs-workspace"],
-  ["organization", "agents-organization"],
-  ["lead-agent", "standing-agent-focus"],
-  ["business-module", "business-module-focus"],
-  ["work", "workboard"],
-]);
 
 let passed = 0;
 let failed = 0;
@@ -55,16 +38,14 @@ function collectTimestamps(value, path = "$", result = []) {
   return result;
 }
 
-async function sha256(path) {
-  return createHash("sha256").update(await readFile(path)).digest("hex");
-}
-
 async function main() {
   const { fixture, manifest, sourceSha256 } = await loadCompanyOsFixture();
-  const visual = JSON.parse(await readFile(resolve(designRoot, "visual-contract.json"), "utf8"));
   const records = indexFixture(fixture);
 
-  check(sourceSha256 === manifest.authoritative_sha256, "browser fixture is pinned to the authoritative design fixture");
+  check(sourceSha256 === manifest.authoritative_sha256, "browser fixture is pinned to the current governed fixture");
+  check(manifest.ownership === "company-os-current-fixtures", "manifest assigns current fixture ownership");
+  check(manifest.provenance?.historical_blob === "fcbdc293841529faa95c5481788957a68b882865", "manifest records the promoted historical blob");
+  check(manifest.provenance?.product_authority === false, "fixture is explicitly non-authoritative for product claims");
   check(fixture.time_contract.fixture_as_of === manifest.capture_now, "browser clock equals the canonical fixture clock");
   check(collectTimestamps(fixture).every(([, value]) => value.startsWith("2026-07")), "all fixture timestamps stay inside July 2026");
 
@@ -86,27 +67,14 @@ async function main() {
   check(fixture.financial_records.every((record) => record.type !== "payment"), "no Payment FinancialRecord exists before approval and settlement");
   check(fixture.negative_assertions?.payment_financial_records?.length === 0 && fixture.negative_assertions?.settlement_evidence?.length === 0, "no settlement evidence is present or implied");
 
-  check(typeof visual.fixture === "string" && visual.fixture.length > 0, "current visual contract declares its design fixture identity");
-  check(visual.cases.length === 6 && new Set(visual.cases.map((item) => item.page)).size === 6, "current visual contract covers six P0 operating pages");
-  check(Object.keys(fixture.page_slices).length === 12, "legacy fixture still provides one fact slice for every broad core page");
-
-  const pageNames = new Set(visual.cases.map((item) => item.page));
-  check([...pageNames].every((page) => visualPageToFixtureSlice.has(page)), "every current visual case maps to a deterministic fixture slice");
-  check(visual.viewports?.desktop?.width >= 1440 && visual.viewports?.desktop?.height >= 1000, "desktop visual evidence viewport is pinned at implementation scale");
-
-  for (const item of visual.cases) {
-    const route = resolveContractRoute(item.route, manifest.route_tokens);
-    check(!route.includes("<") && route.startsWith("/?surface="), `${item.page} resolves to a concrete deterministic route`);
-    const sliceName = visualPageToFixtureSlice.get(item.page);
-    for (const ref of fixture.page_slices[sliceName].required_refs) {
+  check(Object.keys(fixture.page_slices).length === 12, "fixture provides one deterministic fact slice for every broad core page");
+  for (const [sliceName, slice] of Object.entries(fixture.page_slices)) {
+    for (const ref of slice.required_refs) {
       check(records.has(ref), `${sliceName} required reference resolves: ${ref}`);
     }
-    const expectedPath = resolve(designRoot, item.expected);
-    await access(expectedPath);
-    if (item.expected_hash) {
-      check(`sha256:${await sha256(expectedPath)}` === item.expected_hash, `${item.page} expected design hash matches its manifest`);
-    }
   }
+
+  check(Object.values(manifest.route_tokens).every((ref) => records.has(ref)), "every deterministic route token resolves to fixture data");
 
   check(manifest.responsive_pages.every((page) => fixture.page_slices[page]), "all tablet/mobile focus pages still have deterministic fixture slices");
   check(manifest.viewports["tablet-900x1180"]?.width === 900 && manifest.viewports["mobile-390x844"]?.width === 390, "tablet and mobile evidence viewports are pinned");

@@ -201,11 +201,7 @@ fn stale_active_company_is_error_not_project_store_fallback() {
     let out = run_firm(&home, &repo, &["init"]);
     assert!(out.status.success(), "project init failed: {out:?}");
 
-    std::fs::write(
-        home.firm_home().join("ACTIVE_COMPANY"),
-        "missing-company\n",
-    )
-    .unwrap();
+    std::fs::write(home.firm_home().join("ACTIVE_COMPANY"), "missing-company\n").unwrap();
     std::fs::create_dir_all(home.firm_home().join("companies")).unwrap();
     std::fs::write(
         home.firm_home().join("companies").join("registry.json"),

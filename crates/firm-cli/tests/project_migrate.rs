@@ -1,7 +1,7 @@
 //! Integration coverage for `harness project migrate`
 //! (goal-multi-project, project-migrate task).
 //!
-//! Migration moves a repo-local `.firm/` store into the centralized
+//! Migration moves a legacy repo-local `.harness/` store into the centralized
 //! `~/.firm/projects/<id>/` store: copying active JSONL ledgers plus prompts /
 //! runtimes, writing `metadata.json` with `migrated_from`, and dropping a
 //! `MIGRATED_TO_CENTRAL` marker in the old store that points at the central one. It
@@ -12,11 +12,11 @@ use std::path::Path;
 mod firm_env;
 use firm_env::{run_firm, TempHome};
 
-/// Build a legacy repo-local `.firm/` store under HOME with representative data
+/// Build a legacy repo-local `.harness/` store under HOME with representative data
 /// across every preserved surface, returning (repo_root, local_store).
 fn seed_local_store(home: &TempHome, name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     let repo = home.home().join(name);
-    let local = repo.join(".firm");
+    let local = repo.join(".harness");
     std::fs::create_dir_all(local.join("prompts")).unwrap();
     std::fs::create_dir_all(local.join("runtimes")).unwrap();
     // Active JSONL ledgers plus one retired provider-session ledger that must

@@ -29,7 +29,7 @@ const live = argv.includes("--live");
 const keepStore = argv.includes("--keep-store");
 const store =
   valueArg("--store") ?? mkdtempSync(join(tmpdir(), "mah-workflow-starlark-"));
-const harness = valueArg("--harness") ?? join(repoRoot, "target/debug/harness");
+const harness = valueArg("--harness") ?? join(repoRoot, "target/debug/firm");
 const results = [];
 
 function valueArg(name) {
@@ -278,8 +278,11 @@ function runStructuredScript(scriptPath, runArgs) {
   }
 
   // final_output mirrors the steps and carries the structured payloads too.
-  assert(Array.isArray(run.final_output), "structured run final_output missing");
-  const withStructured = run.final_output.filter((entry) => entry.structured);
+  assert(
+    Array.isArray(run.final_output?.steps),
+    "structured run final_output.steps missing",
+  );
+  const withStructured = run.final_output.steps.filter((entry) => entry.structured);
   assert(
     withStructured.length === 3,
     `expected 3 final_output entries with structured, got ${withStructured.length}`,
@@ -405,10 +408,13 @@ function assertShape(result) {
     `expected 2 worktree-isolated steps, got ${isolated.length}`,
   );
 
-  assert(Array.isArray(run.final_output), "final_output must be present");
   assert(
-    run.final_output.length === steps.length,
-    `final_output entries (${run.final_output.length}) must match steps (${steps.length})`,
+    Array.isArray(run.final_output?.steps),
+    "final_output.steps must be present",
+  );
+  assert(
+    run.final_output.steps.length === steps.length,
+    `final_output step entries (${run.final_output.steps.length}) must match steps (${steps.length})`,
   );
   // agents_spawned is the scheduler counter delta; the parallel barrier routes
   // its fan-out through the scheduler, so the run must report a positive count.
@@ -475,14 +481,20 @@ async function assertLiveApi(runId) {
   });
   const liveSnapshot = await fetchWithRetry(`http://127.0.0.1:${port}/v1/snapshot`);
   await new Promise((resolvePromise) => server.once("exit", resolvePromise));
-  assert(!stderr.trim(), `serve stderr was not empty: ${stderr}`);
+  const expectedDeprecationWarning =
+    "warning: HARNESS_ROOT is deprecated for store selection; prefer `harness space switch`";
+  const trimmedStderr = stderr.trim();
+  assert(
+    !trimmedStderr || trimmedStderr === expectedDeprecationWarning,
+    `serve stderr contained unexpected output: ${stderr}`,
+  );
   const run = (liveSnapshot.workflow_runs ?? []).find((item) => item.id === runId);
   assert(run, "starlark run missing from live API snapshot");
   return { api_runs: liveSnapshot.workflow_runs.length };
 }
 
 if (!existsSync(harness)) {
-  run("cargo", ["build", "-p", "harness-cli"]);
+  run("cargo", ["build", "-p", "firm-cli"]);
 }
 
 let authored;
@@ -490,7 +502,7 @@ let runResult;
 let shape;
 
 stage("s0", "harness binary is built", () => {
-  if (!existsSync(harness)) run("cargo", ["build", "-p", "harness-cli"]);
+  if (!existsSync(harness)) run("cargo", ["build", "-p", "firm-cli"]);
   assert(existsSync(harness), `harness binary not found: ${harness}`);
   return { harness, mode: live ? "live" : "mock" };
 });

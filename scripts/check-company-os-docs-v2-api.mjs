@@ -2,7 +2,7 @@
 /**
  * AI-first Docs v2 serve API live acceptance (ADR 0054 Phase 0).
  *
- * Boots the real `target/debug/harness serve` against a throwaway Company
+ * Boots the real `target/debug/firm serve` against a throwaway Company
  * Store and drives the docs-v2 HTTP contract end to end: page index, create,
  * scoped read (with-ids), write with expected_revision, REVISION_CONFLICT
  * (409), idempotent replay, append, revision history, and transport-token
@@ -16,7 +16,7 @@ import path from "node:path";
 import process from "node:process";
 
 const repoRoot = path.resolve(new URL("..", import.meta.url).pathname);
-const harness = path.join(repoRoot, "target", "debug", "harness");
+const harness = path.join(repoRoot, "target", "debug", "firm");
 const addr = "127.0.0.1:18913";
 const base = `http://${addr}`;
 const companyId = "docs-v2-api-smoke";

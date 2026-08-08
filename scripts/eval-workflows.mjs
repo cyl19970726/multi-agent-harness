@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const argv = process.argv.slice(2);
 const dryRun = argv.includes("--dry-run");
-const harness = valueArg("--harness") ?? join(repoRoot, "target/debug/harness");
+const harness = valueArg("--harness") ?? join(repoRoot, "target/debug/firm");
 const tasksRoot = join(repoRoot, "evals/tasks");
 const onlyTask = valueArg("--task");
 const repeatsOverride = valueArg("--repeats") ? Number(valueArg("--repeats")) : undefined;
@@ -94,7 +94,7 @@ function stdev(xs) {
 
 async function main() {
   if (!existsSync(harness)) {
-    const build = spawnSync("cargo", ["build", "-p", "harness-cli"], { cwd: repoRoot, stdio: "inherit" });
+    const build = spawnSync("cargo", ["build", "-p", "firm-cli"], { cwd: repoRoot, stdio: "inherit" });
     if (build.status !== 0) throw new Error("cargo build failed");
   }
 

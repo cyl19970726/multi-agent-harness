@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod launch_spec_mapping_tests {
-    // Minimal mock types for testing (these would come from firm_core in real code)
+    // Minimal mock types for testing (these would come from harness_core in real code)
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum LaunchPermission {
         ReadOnly,

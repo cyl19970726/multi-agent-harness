@@ -232,7 +232,7 @@ fn migrated_local_store_is_a_distinct_source_and_keeps_unique_rows() {
     let home = TempHome::new("legacy-export-multi-source");
     let (project, id, central) = initialize_project(&home);
     seed_closed_legacy_store(&central);
-    let local = project.join(".firm");
+    let local = project.join(".harness");
     std::fs::create_dir(&local).unwrap();
     std::fs::write(
         local.join("MIGRATED_TO_CENTRAL"),
@@ -454,7 +454,7 @@ fn destination_and_symlink_safety_fail_closed() {
         assert!(String::from_utf8_lossy(&output.stderr).contains("parent/leaf"));
         std::fs::remove_file(project.join("schemas")).unwrap();
 
-        std::os::unix::fs::symlink(&store, project.join(".firm")).unwrap();
+        std::os::unix::fs::symlink(&store, project.join(".harness")).unwrap();
         let outside = home.base().join("symlink-source");
         let output = run(&home, &project, &export_args(&id, &outside));
         assert!(!output.status.success());

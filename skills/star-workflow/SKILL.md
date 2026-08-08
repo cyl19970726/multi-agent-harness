@@ -15,7 +15,7 @@ plus one `WorkflowStep` per agent leaf.
 write a .star program  ->  harness workflow run-script <prog.star>  ->  read the run back
 ```
 
-The runtime is provider-agnostic (`crates/harness-workflow`). Each `agent()` call
+The runtime is provider-agnostic (`crates/firm-workflow`). Each `agent()` call
 names a PROVIDER (`"codex"`, `"claude"`, or `"kimi"`); the CLI spins up a NEW
 one-shot ephemeral worker for that call (it does NOT deliver to a pre-existing
 member) and journals a `WorkflowRun` plus one `WorkflowStep` per agent call —
@@ -122,7 +122,7 @@ for reproducibility.
 ## Host API
 
 The interpreter is [Starlark](https://github.com/facebook/starlark-rust)
-([`crates/harness-workflow/src/starlark_front.rs`](../../crates/harness-workflow/src/starlark_front.rs)),
+([`crates/firm-workflow/src/starlark_front.rs`](../../crates/firm-workflow/src/starlark_front.rs)),
 the same dialect Bazel uses. It is HERMETIC by design: the script has no clock, no
 randomness, and no IO. The orchestration (which agents run, in what order, with what
 prompts) is therefore deterministic — the ONLY nondeterminism lives in the journaled

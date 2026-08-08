@@ -74,7 +74,7 @@ fn completion_hook_fires_with_run_id_and_status_and_is_noop_without_env() {
     // process at finalization.)
     let marker = base.join("fired.txt");
     let hook_cmd = format!(
-        "printf '%s|%s|%s' \"$FIRM_RUN_ID\" \"$FIRM_RUN_STATUS\" \"$FIRM_RUN_NAME\" > {}",
+        "printf '%s|%s|%s|%s' \"$FIRM_RUN_ID\" \"$FIRM_STATUS\" \"$FIRM_RUN_NAME\" \"$HARNESS_RUN_ID\" > {}",
         marker.to_str().unwrap()
     );
     let out = harness()
@@ -101,15 +101,19 @@ fn completion_hook_fires_with_run_id_and_status_and_is_noop_without_env() {
     let parts: Vec<&str> = fired.split('|').collect();
     assert_eq!(
         parts.len(),
-        3,
-        "marker should be id|status|name, got {fired:?}"
+        4,
+        "marker should be id|status|name|compat-id, got {fired:?}"
     );
     assert!(
         parts[0].starts_with("wfrun-"),
         "FIRM_RUN_ID not a run id: {fired:?}"
     );
-    assert_eq!(parts[1], "completed", "FIRM_RUN_STATUS wrong: {fired:?}");
+    assert_eq!(parts[1], "completed", "FIRM_STATUS wrong: {fired:?}");
     assert_eq!(parts[2], "hook-demo", "FIRM_RUN_NAME wrong: {fired:?}");
+    assert_eq!(
+        parts[3], parts[0],
+        "HARNESS_RUN_ID compatibility alias must match FIRM_RUN_ID: {fired:?}"
+    );
 
     // The run id the hook saw is the SAME run the command journaled.
     let stdout = String::from_utf8_lossy(&out.stdout);

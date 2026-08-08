@@ -16,8 +16,8 @@ fi
 
 cd "$repo_root"
 
-cargo test -p harness-core project -- --nocapture
-cargo test -p harness-cli \
+cargo test -p firm-core project -- --nocapture
+cargo test -p firm-cli \
   --test project_registry \
   --test project_resolution \
   --test init_project \

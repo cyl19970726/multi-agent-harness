@@ -7,7 +7,7 @@
 # it ran in and, if present, copies an `AGENTS.md` / `CLAUDE.md` marker from that
 # cwd, then emits one harmless line so the harness reader has something to read.
 #
-# This mirrors crates/harness-cli/tests/fake_provider/mod.rs (the unit-test shim)
+# This mirrors crates/firm-cli/tests/fake_provider/mod.rs (the unit-test shim)
 # so the live verify-fixes.sh demo proves the SAME cwd-routing guarantee end to
 # end through the real binary.
 #

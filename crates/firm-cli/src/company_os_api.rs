@@ -215,6 +215,7 @@ pub fn handle_post(
 
 fn authenticate_write_transport(token: Option<&str>) -> Result<(), ApiError> {
     let expected = std::env::var("FIRM_COMPANY_OS_TOKEN")
+        .or_else(|_| std::env::var("HARNESS_COMPANY_OS_TOKEN"))
         .ok()
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| {

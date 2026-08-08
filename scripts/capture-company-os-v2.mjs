@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const fixturePath = join(repoRoot, "docs/design/company-os-v1/fixtures/company-os-trademark-v1.json");
+const fixturePath = join(repoRoot, "docs/current/company-os/fixtures/company-os-trademark-v1.json");
 const cases = [
   { id: "home--morning-operating-review--desktop", page: "home", route: "/?surface=home", refs: ["approval-trademark-filing-fee-cn-2026-018", "trademark-application-cn-2026-018", "actor-human-brand-owner"] },
   { id: "docs--company-knowledge-workspace--desktop", page: "docs-workspace", route: "/?surface=docs", refs: ["document-trademark-application-cn-2026-018", "module-trademark-management", "governance-proposal-trademark-management"] },

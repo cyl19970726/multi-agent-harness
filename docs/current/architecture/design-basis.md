@@ -110,9 +110,9 @@ Documentation mirrors authority rather than implementation folders:
 | Location | Role |
 | --- | --- |
 | `docs/current/company-os/` | Company OS product contracts and system boundaries |
-| `docs/architecture*.md`, `docs/concept-model.md`, `docs/data-model.md` | executable architecture and object relationships |
+| `docs/architecture*.md`, `docs/current/architecture/concept-model.md`, `docs/current/architecture/data-model.md` | executable architecture and object relationships |
 | `docs/decisions/` | durable decisions and supersession records |
-| `docs/dashboard/`, `docs/integration/`, runtime/workflow docs | execution implementation and operations |
+| `docs/current/dashboard/`, `docs/current/integration/`, runtime/workflow docs | execution implementation and operations |
 | `design/<workstream>/` (git history) | versioned visual intent and evidence |
 | git history | historical provenance excluded from normal planning |
 

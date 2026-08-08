@@ -126,7 +126,7 @@ async function main() {
   try {
     await materialize(storeRoot, manifest);
     apiProcess = start(
-      join(repoRoot, "target/debug/harness"),
+      join(repoRoot, "target/debug/firm"),
       ["--store", storeRoot, "serve", "--addr", `127.0.0.1:${apiPort}`],
       "harness serve",
     );

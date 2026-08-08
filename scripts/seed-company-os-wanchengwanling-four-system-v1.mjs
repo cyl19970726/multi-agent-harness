@@ -176,7 +176,7 @@ function membership(id, orgUnitId, actor, role, title) {
 }
 
 async function main() {
-  execFileSync("cargo", ["build", "-p", "harness-cli"], { cwd: repoRoot, stdio: "inherit" });
+  execFileSync("cargo", ["build", "-p", "firm-cli"], { cwd: repoRoot, stdio: "inherit" });
 
   const root = await mkdtemp(join(tmpdir(), "company-os-wcw-four-system-v1-"));
   const explicitStoreRoot = argument("--store", "");
