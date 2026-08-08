@@ -400,9 +400,28 @@ fn claude_preflight_reports_auth_metadata_not_capacity_and_never_a_rate_limit() 
         .find(|fact| fact["key"] == serde_json::json!("ANTHROPIC_API_KEY"))
         .expect("credential presence fact");
     assert_eq!(api_key["note"], serde_json::json!("value withheld"));
+    // Capacity remains unknown (and specifically is not reported as exhausted),
+    // while the independent operational compatibility probe fails closed when
+    // the Claude SDK/version probe is unavailable in this test environment.
     assert_eq!(
         claude["start_decision"]["decision"],
-        serde_json::json!("proceed")
+        serde_json::json!("block")
+    );
+    assert_eq!(
+        claude["start_decision"]["gate"],
+        serde_json::json!("provider_compatibility")
+    );
+    assert_eq!(
+        claude["compatibility"]["operational"]["status"],
+        serde_json::json!("unavailable")
+    );
+    assert_eq!(
+        claude["compatibility"]["operational"]["source"],
+        serde_json::json!("version_probe")
+    );
+    assert!(
+        claude["compatibility"]["operational"]["probe_error"].is_string(),
+        "the compatibility refusal preserves the version-probe failure: {claude}"
     );
 }
 
@@ -457,8 +476,21 @@ fn missing_proxy_is_diagnosed_as_runtime_context_not_an_account_limit() {
     assert_eq!(claude["capacity"]["state"], serde_json::json!("unknown"));
     assert_eq!(
         claude["start_decision"]["decision"],
-        serde_json::json!("proceed"),
-        "a missing proxy must not be mistaken for an exhausted account"
+        serde_json::json!("block"),
+        "operational compatibility may block independently of account capacity"
+    );
+    assert_eq!(
+        claude["start_decision"]["gate"],
+        serde_json::json!("provider_compatibility"),
+        "the missing proxy must not be mistaken for an exhausted account"
+    );
+    assert_eq!(
+        claude["compatibility"]["operational"]["status"],
+        serde_json::json!("unavailable")
+    );
+    assert_eq!(
+        claude["compatibility"]["operational"]["source"],
+        serde_json::json!("version_probe")
     );
 }
 
