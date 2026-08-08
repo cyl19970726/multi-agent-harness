@@ -1224,7 +1224,7 @@ impl From<ReviewVerdict> for String {
 ///
 /// Concept-model invariant: a Review is *evidence for* a Decision, not the global
 /// decision itself — a Lead/gate still issues the Decision.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Review {
     pub id: String,
     pub task_id: Option<String>,
@@ -1238,6 +1238,79 @@ pub struct Review {
     pub missing_validation: Vec<String>,
     pub evidence_ids: Vec<String>,
     pub created_at: String,
+    /// Exact Work candidate reviewed. These three fields are optional only for
+    /// compatibility with historical, unbound Review rows and must be present
+    /// together for a Review to satisfy a Work gate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewed_work_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewed_work_version: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_strategy: Option<CodeReviewStrategy>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewWire {
+    id: String,
+    task_id: Option<String>,
+    goal_id: Option<String>,
+    reviewer_agent_id: String,
+    review_kind: String,
+    verdict: ReviewVerdict,
+    summary: String,
+    blockers: Vec<String>,
+    residual_risk: Option<String>,
+    missing_validation: Vec<String>,
+    evidence_ids: Vec<String>,
+    created_at: String,
+    #[serde(default)]
+    reviewed_work_id: Option<String>,
+    #[serde(default)]
+    reviewed_work_version: Option<u64>,
+    #[serde(default)]
+    review_strategy: Option<CodeReviewStrategy>,
+}
+
+impl<'de> Deserialize<'de> for Review {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| serde::de::Error::custom("Review must be a JSON object"))?;
+        for field in [
+            "reviewed_work_id",
+            "reviewed_work_version",
+            "review_strategy",
+        ] {
+            if object.get(field).is_some_and(serde_json::Value::is_null) {
+                return Err(serde::de::Error::custom(format!(
+                    "Review.{field} must not be null when present"
+                )));
+            }
+        }
+        let wire: ReviewWire = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            id: wire.id,
+            task_id: wire.task_id,
+            goal_id: wire.goal_id,
+            reviewer_agent_id: wire.reviewer_agent_id,
+            review_kind: wire.review_kind,
+            verdict: wire.verdict,
+            summary: wire.summary,
+            blockers: wire.blockers,
+            residual_risk: wire.residual_risk,
+            missing_validation: wire.missing_validation,
+            evidence_ids: wire.evidence_ids,
+            created_at: wire.created_at,
+            reviewed_work_id: wire.reviewed_work_id,
+            reviewed_work_version: wire.reviewed_work_version,
+            review_strategy: wire.review_strategy,
+        })
+    }
 }
 
 /// Severity of a [`Gap`]. Truly-closed, harness-owned set (matches the GAP
@@ -1585,7 +1658,21 @@ impl Validate for Review {
         require_non_empty(&self.review_kind, "Review.review_kind")?;
         require_non_empty(self.verdict.as_str(), "Review.verdict")?;
         require_non_empty(&self.summary, "Review.summary")?;
-        require_non_empty(&self.created_at, "Review.created_at")
+        require_non_empty(&self.created_at, "Review.created_at")?;
+        match (
+            self.reviewed_work_id.as_deref(),
+            self.reviewed_work_version,
+            self.review_strategy,
+        ) {
+            (None, None, None) => Ok(()),
+            (Some(work_id), Some(_), Some(_)) => {
+                require_non_empty(work_id, "Review.reviewed_work_id")
+            }
+            _ => Err(ValidationError::Invalid {
+                field: "Review.work_binding",
+                reason: "reviewed_work_id, reviewed_work_version, and review_strategy must be present together",
+            }),
+        }
     }
 }
 
@@ -3359,6 +3446,58 @@ pub struct GitHubLink {
     pub ci_url: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodeReviewStrategy {
+    Peer,
+    #[serde(rename = "self")]
+    SelfReview,
+    Host,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GithubPrGateConfig {
+    #[serde(default = "default_true")]
+    pub require_merged: bool,
+    #[serde(default)]
+    pub require_ci_pass: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodeReviewGateConfig {
+    pub strategy: CodeReviewStrategy,
+    #[serde(default)]
+    pub reviewer: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactExistsGateConfig {
+    #[serde(default)]
+    pub paths: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckPassGateConfig {
+    #[serde(default)]
+    pub checks: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuiltinGateConfig {
+    GithubPr(GithubPrGateConfig),
+    CodeReview(CodeReviewGateConfig),
+    ArtifactExists(ArtifactExistsGateConfig),
+    CheckPass(CheckPassGateConfig),
+}
+
 /// A declared verification gate for a [`Work`]. Each gate is an independent
 /// check that must pass before the Work can be accepted. Gates are composable:
 /// a Work with zero gates preserves today's manual-accept behaviour; a Work
@@ -3367,13 +3506,109 @@ pub struct GitHubLink {
 /// The `plugin` field names a registered gate implementation. The `config`
 /// payload is plugin-specific (e.g. `{"require_merged": true}` for github-pr).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GateSpec {
-    /// Gate plugin identifier: "github-pr" | "code-review" | "check-pass"
-    /// | "artifact-exists" | "owned-path-check" | "goal-design"
+    /// Built-in gate identifier: "github-pr" | "code-review" |
+    /// "check-pass" | "artifact-exists".
     pub plugin: String,
-    /// Plugin-specific configuration (free JSON).
+    /// Plugin-specific configuration. Store-managed Work accepts only the
+    /// typed built-ins above; custom registries remain available to embedders.
     #[serde(default)]
     pub config: serde_json::Value,
+}
+
+impl GateSpec {
+    pub fn parse_builtin_config(&self) -> Result<BuiltinGateConfig, String> {
+        if !self.config.is_object() {
+            return Err(format!(
+                "gate '{}' config must be a JSON object",
+                self.plugin
+            ));
+        }
+
+        let config_object = self.config.as_object().expect("config checked as object");
+
+        let parsed = match self.plugin.as_str() {
+            "github-pr" => BuiltinGateConfig::GithubPr(
+                serde_json::from_value(self.config.clone())
+                    .map_err(|error| format!("invalid github-pr gate config: {error}"))?,
+            ),
+            "code-review" => {
+                reject_explicit_null(config_object, "reviewer", "code-review reviewer")?;
+                let config: CodeReviewGateConfig = serde_json::from_value(self.config.clone())
+                    .map_err(|error| format!("invalid code-review gate config: {error}"))?;
+                match config.strategy {
+                    CodeReviewStrategy::Peer => match config.reviewer.as_deref() {
+                        Some(reviewer) if !reviewer.trim().is_empty() => {}
+                        _ => {
+                            return Err(
+                                "code-review peer strategy requires a non-empty reviewer".into()
+                            )
+                        }
+                    },
+                    CodeReviewStrategy::SelfReview | CodeReviewStrategy::Host => {
+                        if config.reviewer.is_some() {
+                            return Err(format!(
+                                "code-review {:?} strategy forbids reviewer",
+                                config.strategy
+                            ));
+                        }
+                    }
+                }
+                BuiltinGateConfig::CodeReview(config)
+            }
+            "artifact-exists" => {
+                reject_explicit_null(config_object, "paths", "artifact-exists paths")?;
+                let config: ArtifactExistsGateConfig = serde_json::from_value(self.config.clone())
+                    .map_err(|error| format!("invalid artifact-exists gate config: {error}"))?;
+                validate_optional_names(config.paths.as_deref(), "artifact-exists paths")?;
+                BuiltinGateConfig::ArtifactExists(config)
+            }
+            "check-pass" => {
+                reject_explicit_null(config_object, "checks", "check-pass checks")?;
+                let config: CheckPassGateConfig = serde_json::from_value(self.config.clone())
+                    .map_err(|error| format!("invalid check-pass gate config: {error}"))?;
+                validate_optional_names(config.checks.as_deref(), "check-pass checks")?;
+                BuiltinGateConfig::CheckPass(config)
+            }
+            _ => return Err(format!("unknown built-in gate plugin: {}", self.plugin)),
+        };
+        Ok(parsed)
+    }
+
+    pub fn validate_builtin(&self) -> Result<(), String> {
+        self.parse_builtin_config().map(|_| ())
+    }
+}
+
+fn reject_explicit_null(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    field: &str,
+) -> Result<(), String> {
+    if object.get(key).is_some_and(serde_json::Value::is_null) {
+        return Err(format!("{field} must not be null when provided"));
+    }
+    Ok(())
+}
+
+fn validate_optional_names(values: Option<&[String]>, field: &str) -> Result<(), String> {
+    let Some(values) = values else {
+        return Ok(());
+    };
+    if values.is_empty() {
+        return Err(format!("{field} must not be empty when provided"));
+    }
+    let mut seen = BTreeSet::new();
+    for value in values {
+        if value.trim().is_empty() {
+            return Err(format!("{field} must not contain empty values"));
+        }
+        if !seen.insert(value) {
+            return Err(format!("{field} must not contain duplicate values"));
+        }
+    }
+    Ok(())
 }
 
 /// Result of evaluating a single [`GateSpec`] against a Work and its
@@ -3505,29 +3740,31 @@ impl GateEngine {
     // ── Built-in gate implementations (pub so registry can reference) ─
 
     fn evaluate_github_pr(gate: &GateSpec, work: &Work) -> GateVerdict {
-        let require_merged = gate
-            .config
-            .get("require_merged")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
-        let require_ci_pass = gate
-            .config
-            .get("require_ci_pass")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let config = match gate.parse_builtin_config() {
+            Ok(BuiltinGateConfig::GithubPr(config)) => config,
+            Ok(_) => unreachable!("github-pr parser returned the wrong built-in config"),
+            Err(reason) => return GateVerdict::Fail { reason },
+        };
 
-        let pr_link = work
+        let pr_links: Vec<&GitHubLink> = work
             .github_links
             .iter()
-            .find(|link| link.kind == GitHubLinkKind::PullRequest);
+            .filter(|link| link.kind == GitHubLinkKind::PullRequest)
+            .collect();
 
-        let Some(pr_link) = pr_link else {
+        let Some(pr_link) = pr_links.first().copied() else {
             return GateVerdict::Blocked {
                 reason: "no GitHub pull request linked to this work".to_string(),
             };
         };
+        if pr_links.len() != 1 {
+            return GateVerdict::Fail {
+                reason: "multiple GitHub pull requests are linked; current candidate is ambiguous"
+                    .to_string(),
+            };
+        }
 
-        if require_merged {
+        if config.require_merged {
             match pr_link.status.as_deref() {
                 Some("MERGED") => {} // ok
                 None => {
@@ -3549,7 +3786,7 @@ impl GateEngine {
             }
         }
 
-        if require_ci_pass {
+        if config.require_ci_pass {
             match pr_link.ci_status.as_deref() {
                 Some("success") => {} // ok
                 Some("failure") => {
@@ -3584,24 +3821,38 @@ impl GateEngine {
 
     // ── code-review gate ────────────────────────────────────────────
 
-    fn evaluate_code_review(_gate: &GateSpec, work: &Work, reviews: &[Review]) -> GateVerdict {
-        // Match reviews by task_id (legacy field name; for Work this is the work id).
-        let matching: Vec<&Review> = reviews
-            .iter()
-            .filter(|r| r.task_id.as_deref() == Some(work.id.as_str()))
-            .collect();
+    fn evaluate_code_review(gate: &GateSpec, work: &Work, reviews: &[Review]) -> GateVerdict {
+        let config = match gate.parse_builtin_config() {
+            Ok(BuiltinGateConfig::CodeReview(config)) => config,
+            Ok(_) => unreachable!("code-review parser returned the wrong built-in config"),
+            Err(reason) => return GateVerdict::Fail { reason },
+        };
 
-        if matching.is_empty() {
+        // Reviews are append-only. The last exact match in ledger order is
+        // authoritative; timestamps are display data and are not trusted for
+        // ordering.
+        let review = reviews.iter().rev().find(|review| {
+            review.review_kind == "code"
+                && review.reviewed_work_id.as_deref() == Some(work.id.as_str())
+                && review.reviewed_work_version == Some(work.version)
+                && review.review_strategy == Some(config.strategy)
+                && match config.strategy {
+                    CodeReviewStrategy::Peer => {
+                        review.reviewer_agent_id == config.reviewer.as_deref().unwrap_or_default()
+                    }
+                    CodeReviewStrategy::SelfReview => work
+                        .owner_member_id
+                        .as_deref()
+                        .is_some_and(|owner| review.reviewer_agent_id == owner),
+                    CodeReviewStrategy::Host => true,
+                }
+        });
+
+        let Some(review) = review else {
             return GateVerdict::Blocked {
-                reason: "code review not yet completed (no Review record found)".to_string(),
+                reason: "code review not yet completed for the current Work candidate".to_string(),
             };
-        }
-
-        // Use the latest matching review (most recently created).
-        let review = matching
-            .iter()
-            .max_by_key(|r| &r.created_at)
-            .expect("non-empty");
+        };
 
         match &review.verdict {
             ReviewVerdict::Pass => GateVerdict::Pass,
@@ -3635,22 +3886,16 @@ impl GateEngine {
     // ── artifact-exists gate ────────────────────────────────────────
 
     fn evaluate_artifact_exists(gate: &GateSpec, work: &Work) -> GateVerdict {
-        // If config specifies required paths, check that all of them are
-        // present in work.artifact_refs.
-        if let Some(paths) = gate.config.get("paths").and_then(|v| v.as_array()) {
-            if paths.is_empty() {
-                return GateVerdict::Fail {
-                    reason: "artifact-exists gate configured with empty paths list".to_string(),
-                };
-            }
+        let config = match gate.parse_builtin_config() {
+            Ok(BuiltinGateConfig::ArtifactExists(config)) => config,
+            Ok(_) => unreachable!("artifact-exists parser returned the wrong built-in config"),
+            Err(reason) => return GateVerdict::Fail { reason },
+        };
+        if let Some(paths) = config.paths {
             let mut missing: Vec<String> = Vec::new();
             for path in paths {
-                let path_str = path.as_str().unwrap_or("");
-                if path_str.is_empty() {
-                    continue;
-                }
-                if !work.artifact_refs.iter().any(|r| r.contains(path_str)) {
-                    missing.push(path_str.to_string());
+                if !work.artifact_refs.contains(&path) {
+                    missing.push(path);
                 }
             }
             if !missing.is_empty() {
@@ -3673,21 +3918,16 @@ impl GateEngine {
     // ── check-pass gate ─────────────────────────────────────────────
 
     fn evaluate_check_pass(gate: &GateSpec, work: &Work) -> GateVerdict {
-        // If config specifies expected check names, verify they're present.
-        if let Some(names) = gate.config.get("checks").and_then(|v| v.as_array()) {
-            if names.is_empty() {
-                return GateVerdict::Fail {
-                    reason: "check-pass gate configured with empty checks list".to_string(),
-                };
-            }
+        let config = match gate.parse_builtin_config() {
+            Ok(BuiltinGateConfig::CheckPass(config)) => config,
+            Ok(_) => unreachable!("check-pass parser returned the wrong built-in config"),
+            Err(reason) => return GateVerdict::Fail { reason },
+        };
+        if let Some(names) = config.checks {
             let mut missing: Vec<String> = Vec::new();
             for name in names {
-                let name_str = name.as_str().unwrap_or("");
-                if name_str.is_empty() {
-                    continue;
-                }
-                if !work.check_refs.iter().any(|r| r.contains(name_str)) {
-                    missing.push(name_str.to_string());
+                if !work.check_refs.contains(&name) {
+                    missing.push(name);
                 }
             }
             if !missing.is_empty() {
@@ -4788,6 +5028,9 @@ mod tests {
             missing_validation: vec!["load test deferred".to_string()],
             evidence_ids: vec!["evidence-1".to_string()],
             created_at: "2026-05-26T00:00:00Z".to_string(),
+            reviewed_work_id: None,
+            reviewed_work_version: None,
+            review_strategy: None,
         };
 
         let json = serde_json::to_string(&review).expect("serialize review");
@@ -4795,8 +5038,41 @@ mod tests {
 
         assert_eq!(parsed, review);
         assert!(parsed.validate().is_ok());
+        assert!(!json.contains("reviewed_work_id"));
         // Canonical verdict serializes to its snake_case wire value.
         assert!(json.contains("\"verdict\":\"pass\""));
+    }
+
+    #[test]
+    fn review_serde_rejects_explicit_null_work_binding_and_unknown_fields() {
+        let base = serde_json::json!({
+            "id": "review-1",
+            "task_id": null,
+            "goal_id": null,
+            "reviewer_agent_id": "host",
+            "review_kind": "code",
+            "verdict": "pass",
+            "summary": "reviewed",
+            "blockers": [],
+            "residual_risk": null,
+            "missing_validation": [],
+            "evidence_ids": [],
+            "created_at": "unix-ms:1"
+        });
+
+        let mut explicit_null = base.clone();
+        explicit_null["reviewed_work_id"] = serde_json::Value::Null;
+        explicit_null["reviewed_work_version"] = serde_json::Value::Null;
+        explicit_null["review_strategy"] = serde_json::Value::Null;
+        let error = serde_json::from_value::<Review>(explicit_null)
+            .expect_err("schema-forbidden null binding must fail at runtime too");
+        assert!(error.to_string().contains("must not be null"));
+
+        let mut unknown = base;
+        unknown["unexpected"] = serde_json::json!(true);
+        let error = serde_json::from_value::<Review>(unknown)
+            .expect_err("schema-forbidden extra fields must fail at runtime too");
+        assert!(error.to_string().contains("unknown field"));
     }
 
     #[test]
@@ -4816,6 +5092,9 @@ mod tests {
             missing_validation: vec![],
             evidence_ids: vec![],
             created_at: "2026-05-26T00:00:00Z".to_string(),
+            reviewed_work_id: None,
+            reviewed_work_version: None,
+            review_strategy: None,
         };
 
         let json = serde_json::to_string(&review).expect("serialize review");
@@ -6477,6 +6756,79 @@ mod tests {
     }
 
     #[test]
+    fn built_in_gate_configs_reject_unknown_keys_wrong_types_and_empty_values() {
+        let invalid = [
+            GateSpec {
+                plugin: "github-pr".into(),
+                config: serde_json::Value::Null,
+            },
+            GateSpec {
+                plugin: "github-pr".into(),
+                config: serde_json::json!({"require_merged": "true"}),
+            },
+            GateSpec {
+                plugin: "github-pr".into(),
+                config: serde_json::json!({"unknown": true}),
+            },
+            GateSpec {
+                plugin: "code-review".into(),
+                config: serde_json::json!({"strategy": "peer"}),
+            },
+            GateSpec {
+                plugin: "code-review".into(),
+                config: serde_json::json!({"strategy": "self", "reviewer": "owner"}),
+            },
+            GateSpec {
+                plugin: "code-review".into(),
+                config: serde_json::json!({"strategy": "host", "reviewer": null}),
+            },
+            GateSpec {
+                plugin: "artifact-exists".into(),
+                config: serde_json::json!({"paths": []}),
+            },
+            GateSpec {
+                plugin: "artifact-exists".into(),
+                config: serde_json::json!({"paths": null}),
+            },
+            GateSpec {
+                plugin: "artifact-exists".into(),
+                config: serde_json::json!({"paths": [""]}),
+            },
+            GateSpec {
+                plugin: "check-pass".into(),
+                config: serde_json::json!({"checks": ["test", "test"]}),
+            },
+            GateSpec {
+                plugin: "check-pass".into(),
+                config: serde_json::json!({"checks": null}),
+            },
+        ];
+
+        for gate in invalid {
+            assert!(
+                gate.validate_builtin().is_err(),
+                "gate should fail: {gate:?}"
+            );
+            let work = make_work(vec![gate], vec![]);
+            assert!(matches!(
+                GateEngine::evaluate_work_gates(&work)[0].verdict,
+                GateVerdict::Fail { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn gate_spec_serde_rejects_unknown_top_level_fields() {
+        let error = serde_json::from_value::<GateSpec>(serde_json::json!({
+            "plugin": "github-pr",
+            "config": {},
+            "unexpected": true
+        }))
+        .expect_err("schema-forbidden top-level fields must fail at runtime too");
+        assert!(error.to_string().contains("unknown field"));
+    }
+
+    #[test]
     fn multiple_gates_report_all_results() {
         let work = make_work(
             vec![
@@ -6513,6 +6865,9 @@ mod tests {
             missing_validation: vec![],
             evidence_ids: vec![],
             created_at: "unix-ms:10".to_string(),
+            reviewed_work_id: Some(work_id.to_string()),
+            reviewed_work_version: Some(1),
+            review_strategy: Some(CodeReviewStrategy::Peer),
         }
     }
 
@@ -6521,7 +6876,7 @@ mod tests {
         let work = make_work(
             vec![GateSpec {
                 plugin: "code-review".into(),
-                config: serde_json::json!({}),
+                config: serde_json::json!({"strategy": "peer", "reviewer": "critic-1"}),
             }],
             vec![],
         );
@@ -6534,7 +6889,7 @@ mod tests {
         let work = make_work(
             vec![GateSpec {
                 plugin: "code-review".into(),
-                config: serde_json::json!({}),
+                config: serde_json::json!({"strategy": "peer", "reviewer": "critic-1"}),
             }],
             vec![],
         );
@@ -6548,7 +6903,7 @@ mod tests {
         let work = make_work(
             vec![GateSpec {
                 plugin: "code-review".into(),
-                config: serde_json::json!({}),
+                config: serde_json::json!({"strategy": "peer", "reviewer": "critic-1"}),
             }],
             vec![],
         );
@@ -6562,7 +6917,7 @@ mod tests {
         let work = make_work(
             vec![GateSpec {
                 plugin: "code-review".into(),
-                config: serde_json::json!({}),
+                config: serde_json::json!({"strategy": "peer", "reviewer": "critic-1"}),
             }],
             vec![],
         );
@@ -6572,6 +6927,67 @@ mod tests {
             "critic-1",
         )];
         let results = GateEngine::evaluate_work_gates_with_reviews(&work, &reviews);
+        assert!(matches!(results[0].verdict, GateVerdict::Fail { .. }));
+    }
+
+    #[test]
+    fn review_work_binding_is_all_or_none() {
+        let mut review = make_review("work-1", ReviewVerdict::Pass, "critic-1");
+        assert!(review.validate().is_ok());
+        review.reviewed_work_version = None;
+        assert!(review.validate().is_err());
+
+        review.reviewed_work_id = None;
+        review.review_strategy = None;
+        assert!(
+            review.validate().is_ok(),
+            "legacy unbound review remains readable"
+        );
+    }
+
+    #[test]
+    fn code_review_gate_ignores_unbound_stale_and_wrong_identity_reviews() {
+        let work = make_work(
+            vec![GateSpec {
+                plugin: "code-review".into(),
+                config: serde_json::json!({"strategy": "peer", "reviewer": "critic-1"}),
+            }],
+            vec![],
+        );
+        let mut legacy = make_review("work-1", ReviewVerdict::Pass, "critic-1");
+        legacy.reviewed_work_id = None;
+        legacy.reviewed_work_version = None;
+        legacy.review_strategy = None;
+        let mut stale = make_review("work-1", ReviewVerdict::Pass, "critic-1");
+        stale.reviewed_work_version = Some(work.version - 1);
+        let wrong_reviewer = make_review("work-1", ReviewVerdict::Pass, "critic-2");
+        let mut wrong_strategy = make_review("work-1", ReviewVerdict::Pass, "critic-1");
+        wrong_strategy.review_strategy = Some(CodeReviewStrategy::Host);
+        let mut wrong_kind = make_review("work-1", ReviewVerdict::Pass, "critic-1");
+        wrong_kind.review_kind = "security".into();
+
+        let results = GateEngine::evaluate_work_gates_with_reviews(
+            &work,
+            &[legacy, stale, wrong_reviewer, wrong_strategy, wrong_kind],
+        );
+        assert!(matches!(results[0].verdict, GateVerdict::Blocked { .. }));
+    }
+
+    #[test]
+    fn code_review_gate_uses_last_exact_ledger_record_not_timestamp() {
+        let work = make_work(
+            vec![GateSpec {
+                plugin: "code-review".into(),
+                config: serde_json::json!({"strategy": "peer", "reviewer": "critic-1"}),
+            }],
+            vec![],
+        );
+        let mut pass = make_review("work-1", ReviewVerdict::Pass, "critic-1");
+        pass.created_at = "unix-ms:999".into();
+        let mut changes = make_review("work-1", ReviewVerdict::NeedsChanges, "critic-1");
+        changes.created_at = "unix-ms:1".into();
+
+        let results = GateEngine::evaluate_work_gates_with_reviews(&work, &[pass, changes]);
         assert!(matches!(results[0].verdict, GateVerdict::Fail { .. }));
     }
 
@@ -6633,6 +7049,22 @@ mod tests {
         assert!(results[0].verdict.is_pass());
     }
 
+    #[test]
+    fn artifact_exists_requires_an_exact_reference() {
+        let mut work = make_work(
+            vec![GateSpec {
+                plugin: "artifact-exists".into(),
+                config: serde_json::json!({"paths": ["required/doc.md"]}),
+            }],
+            vec![],
+        );
+        work.artifact_refs = vec!["prefix-required/doc.md-suffix".into()];
+        assert!(matches!(
+            GateEngine::evaluate_work_gates(&work)[0].verdict,
+            GateVerdict::Fail { .. }
+        ));
+    }
+
     // ── check-pass gate tests ───────────────────────────────────────
 
     #[test]
@@ -6687,6 +7119,22 @@ mod tests {
         work.check_refs = vec!["cargo test".into(), "cargo clippy".into()];
         let results = GateEngine::evaluate_work_gates(&work);
         assert!(results[0].verdict.is_pass());
+    }
+
+    #[test]
+    fn check_pass_requires_an_exact_reference() {
+        let mut work = make_work(
+            vec![GateSpec {
+                plugin: "check-pass".into(),
+                config: serde_json::json!({"checks": ["cargo test"]}),
+            }],
+            vec![],
+        );
+        work.check_refs = vec!["cargo test --workspace".into()];
+        assert!(matches!(
+            GateEngine::evaluate_work_gates(&work)[0].verdict,
+            GateVerdict::Fail { .. }
+        ));
     }
 }
 

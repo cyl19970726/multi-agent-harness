@@ -46,7 +46,7 @@ Execution answers "what work is being done right now."
 Work creation answers five questions: WHERE, WHAT, HOW, WHO.
 
 - **WHERE** — `workspace`: Where the member works. Three kinds: `worktree` (isolated git checkout, for code), `dir` (plain directory, for exploration), `inherit` (project root, for read-only). Harness creates before member start, cleans up on completion. CLI: `--worktree <path>`.
-- **HOW** — `gates`: Declarative verification gates that must pass before acceptance. Four built-in: `github-pr` (PR merged, CI pass), `code-review` (Review verdict), `artifact-exists` (output files present), `check-pass` (checks run). GateRegistry allows custom gates. Empty gates = manual accept (back-compat). CLI: `--gate <plugin>[:key=val,...]`, `work check-gates`, `work accept` (auto-checks gates).
+- **HOW** — `gates`: Declarative verification gates that must pass before acceptance. Four typed built-ins: `github-pr` (one durable PR snapshot with the configured merge/CI state), `code-review` (an exact candidate-bound code Review using strategy `peer`, `self`, or `host`), `artifact-exists` (the current candidate carries the configured durable artifact refs), and `check-pass` (the current candidate carries the configured durable check refs). Artifact/check gates match refs only: they do not inspect files, prove truth, or rerun checks. A legacy unbound `Review` remains readable but cannot satisfy a gate. During `space migrate-from-project`, the complete source is preflighted before any target ledger creation/replacement: every row must deserialize and validate as `Review`, binding fields are then stripped, and the result must deserialize and validate again. Any invalid row fails the whole migration closed without partial target writes. Only valid stripped rows are preserved as historical unbound evidence; the manifest reports their count as `downgraded_bound_reviews`. Empty gates = manual Host accept (back-compat); omitting `code-review` is the only no-review form. The Store-managed `accept_work` operation enforces declared gates and exposes no waiver flag. CLI: `--gate <plugin>[:key=val,...]`, `work check-gates`, `work accept`.
 - **WHO** — `owner_member_id`, `assignee`.
 
 **Views**: All Execution visible on one page. Filters by Agent Team, status, date range. Tags on Work entries. Per-team views unchanged.
@@ -82,7 +82,7 @@ Agent Teams on different machines. Future requirement — design task, not imple
 | Component | Status | Notes |
 |---|---|---|
 | Agent Team execution | ✅ Live | Full lifecycle |
-| Work — gates | ✅ Live | PR #401 — GateSpec, GateEngine, 4 built-in gates, GateRegistry |
+| Work — gates | ✅ Live | Typed GateSpec, four built-ins, exact candidate-bound Review, Store acceptance invariant |
 | Work — workspace | ✅ Live | PR #406 — WorkWorkspace, ensure/cleanup, --worktree CLI |
 | Organization — Agent Teams | ✅ PR #385 | machine_id + labels |
 | Organization — Standing Agents | ❌ Not started | Design only |

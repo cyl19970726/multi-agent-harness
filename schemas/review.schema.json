@@ -69,9 +69,35 @@
         "minLength": 1
       }
     },
+    "reviewed_work_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reviewed_work_version": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "review_strategy": {
+      "type": "string",
+      "enum": ["peer", "self", "host"]
+    },
     "created_at": {
       "type": "string",
       "minLength": 1
     }
-  }
+  },
+  "oneOf": [
+    {
+      "not": {
+        "anyOf": [
+          { "required": ["reviewed_work_id"] },
+          { "required": ["reviewed_work_version"] },
+          { "required": ["review_strategy"] }
+        ]
+      }
+    },
+    {
+      "required": ["reviewed_work_id", "reviewed_work_version", "review_strategy"]
+    }
+  ]
 }

@@ -30,20 +30,20 @@ use harness_core::{
     ProviderCapacitySnapshot, ProviderCapacityState, ProviderCompatibilityStatus,
     ProviderControlValue, ProviderEventFidelity, ProviderExecutionControls,
     ProviderExecutionStatus, ProviderFeatureMode, ProviderIntegrationProfile,
-    ProviderInteractionMode, ProviderRuntimeContextFact, SenderKind, TeamActorKind, TeamActorRef,
-    TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus,
-    TeamMessage, TeamMessageDelivery, TeamMessageKind, TeamMessageResponseIntent,
-    TeamRecipientKind, TeamRecipientRef, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus,
-    TeamSupervisorLease, Wave, WaveExecutorKind, WaveStatus, Work, WorkCausationRef, WorkClaimMode,
-    WorkCommandContext, WorkDelivery, WorkDeliveryStatus, WorkPriority, WorkStatus, WorkWorkspace,
-    WorkWorkspaceKind, WorkflowArtifactFile, WorkflowArtifactManifest,
-    WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
-    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
-    EXECUTION_MODE_EXTERNAL_INTERACTIVE,
+    ProviderInteractionMode, ProviderRuntimeContextFact, Review, ReviewVerdict, SenderKind,
+    TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
+    TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind,
+    TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
+    TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Validate, Wave, WaveExecutorKind,
+    WaveStatus, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkDelivery,
+    WorkDeliveryStatus, WorkPriority, WorkStatus, WorkWorkspace, WorkWorkspaceKind,
+    WorkflowArtifactFile, WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch,
+    WorkflowPatchStatus, WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
+    WorkflowTerminalReason, EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
     canonical_surface, HarnessStore, HostAttentionClaimResult, MessageDeliveryClaimResult,
-    StoreError, TeamMessageDeliveryClaimResult, WorkDeliveryClaimResult,
+    StoreError, TeamMessageDeliveryClaimResult, WorkDeliveryClaimResult, WorkReviewPayload,
 };
 use thiserror::Error;
 
@@ -914,21 +914,43 @@ fn execution_space_migrate_from_project(firm_home: &Path, args: &[String]) -> Cl
         .ok_or_else(|| CliError::Usage(format!("unknown project binding: {project_selector}")))?;
     let previous_active_space_id =
         execution_space::active_space_id(firm_home).map_err(execution_space_err)?;
+    // Review migration is the only ledger transformation and its complete
+    // typed validation must finish before any target ledger is created or
+    // replaced. A corrupt/untrusted source Review therefore cannot leave a
+    // partially migrated execution space behind.
+    let review_source = project_context.store_root.join("reviews.jsonl");
+    let prepared_reviews = if review_source.is_file() {
+        Some(prepare_execution_ledger_for_migration(
+            "reviews.jsonl",
+            &std::fs::read(&review_source)?,
+        )?)
+    } else {
+        None
+    };
     let target = execution_space::space_store_root(firm_home, &id);
     std::fs::create_dir_all(&target)?;
 
     let mut copied_files = 0u64;
     let mut copied_records = 0u64;
+    let mut downgraded_bound_reviews = 0u64;
     for ledger in EXECUTION_LEDGER_NAMES {
         let source = project_context.store_root.join(ledger);
         if !source.is_file() {
             continue;
         }
         let destination = target.join(ledger);
-        let source_bytes = std::fs::read(&source)?;
+        let (migration_bytes, downgraded) = if *ledger == "reviews.jsonl" {
+            prepared_reviews
+                .as_ref()
+                .expect("review source existence preflight matches migration loop")
+                .clone()
+        } else {
+            prepare_execution_ledger_for_migration(ledger, &std::fs::read(&source)?)?
+        };
+        downgraded_bound_reviews += downgraded;
         if destination.exists() {
             let target_bytes = std::fs::read(&destination)?;
-            if source_bytes == target_bytes {
+            if migration_bytes == target_bytes {
                 copied_records += count_non_empty_lines(&source)?;
                 continue;
             }
@@ -939,7 +961,7 @@ fn execution_space_migrate_from_project(firm_home: &Path, args: &[String]) -> Cl
                 )));
             }
         }
-        std::fs::write(&destination, &source_bytes)?;
+        std::fs::write(&destination, &migration_bytes)?;
         copied_files += 1;
         copied_records += count_non_empty_lines(&source)?;
     }
@@ -983,7 +1005,9 @@ fn execution_space_migrate_from_project(firm_home: &Path, args: &[String]) -> Cl
             continue;
         }
         let destination = context.store_root.join(ledger);
-        if std::fs::read(&source)? != std::fs::read(&destination)? {
+        let source_bytes = std::fs::read(&source)?;
+        let (expected_bytes, _) = prepare_execution_ledger_for_migration(ledger, &source_bytes)?;
+        if expected_bytes != std::fs::read(&destination)? {
             return Err(CliError::Usage(format!(
                 "execution migration verification failed for {ledger}"
             )));
@@ -1008,6 +1032,7 @@ fn execution_space_migrate_from_project(firm_home: &Path, args: &[String]) -> Cl
         "copied_files": copied_files,
         "copied_records": copied_records,
         "verified_records": verified_records,
+        "downgraded_bound_reviews": downgraded_bound_reviews,
         "excluded_prefixes": ["company_os_", "provider-sessions", "runtimes"],
         "source_retained": true,
         "previous_active_space_id": previous_active_space_id,
@@ -1022,6 +1047,71 @@ fn execution_space_migrate_from_project(firm_home: &Path, args: &[String]) -> Cl
         "space": execution_space_json(&context, &context.id),
         "migration": manifest,
     }))
+}
+
+/// Historical project Review rows did not pass through the trusted Work-review
+/// writer. Preserve them as readable evidence, but strip Work binding before
+/// they enter an active execution space so raw ledger bytes cannot satisfy a
+/// code-review gate.
+fn prepare_execution_ledger_for_migration(
+    ledger: &str,
+    source_bytes: &[u8],
+) -> CliResult<(Vec<u8>, u64)> {
+    if ledger != "reviews.jsonl" {
+        return Ok((source_bytes.to_vec(), 0));
+    }
+
+    let source = std::str::from_utf8(source_bytes)
+        .map_err(|error| CliError::Usage(format!("reviews.jsonl is not valid UTF-8: {error}")))?;
+    let mut output = Vec::with_capacity(source_bytes.len());
+    let mut downgraded = 0u64;
+    for segment in source.split_inclusive('\n') {
+        let (line, newline) = segment
+            .strip_suffix('\n')
+            .map_or((segment, ""), |line| (line, "\n"));
+        if line.trim().is_empty() {
+            output.extend_from_slice(segment.as_bytes());
+            continue;
+        }
+        let mut value: serde_json::Value = serde_json::from_str(line.trim())?;
+        let source_review: Review = serde_json::from_value(value.clone()).map_err(|error| {
+            CliError::Usage(format!("reviews.jsonl row is not a valid Review: {error}"))
+        })?;
+        source_review.validate().map_err(|error| {
+            CliError::Usage(format!(
+                "reviews.jsonl row fails Review validation: {error}"
+            ))
+        })?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| CliError::Usage("reviews.jsonl rows must be JSON objects".into()))?;
+        let mut had_binding = false;
+        for field in [
+            "reviewed_work_id",
+            "reviewed_work_version",
+            "review_strategy",
+        ] {
+            had_binding |= object.remove(field).is_some();
+        }
+        let review: Review = serde_json::from_value(value.clone()).map_err(|error| {
+            CliError::Usage(format!(
+                "reviews.jsonl row is not a valid Review after migration downgrade: {error}"
+            ))
+        })?;
+        review.validate().map_err(|error| {
+            CliError::Usage(format!(
+                "reviews.jsonl row fails Review validation after migration downgrade: {error}"
+            ))
+        })?;
+        if had_binding {
+            downgraded += 1;
+            serde_json::to_writer(&mut output, &value)?;
+            output.extend_from_slice(newline.as_bytes());
+        } else {
+            output.extend_from_slice(segment.as_bytes());
+        }
+    }
+    Ok((output, downgraded))
 }
 
 /// `harness project <subcommand>` — inspect and manage Project Bindings.
@@ -12780,6 +12870,16 @@ fn parse_work_priority(value: &str) -> CliResult<WorkPriority> {
     })
 }
 
+fn parse_work_review_verdict(value: &str) -> CliResult<ReviewVerdict> {
+    let verdict = ReviewVerdict::from(value.to_string());
+    if matches!(verdict, ReviewVerdict::Other(_)) {
+        return Err(CliError::Usage(format!(
+            "unknown Work review verdict `{value}` (pass|fail|blocked|needs_changes)"
+        )));
+    }
+    Ok(verdict)
+}
+
 fn work_priority_rank(priority: WorkPriority) -> u8 {
     match priority {
         WorkPriority::Low => 0,
@@ -12789,12 +12889,59 @@ fn work_priority_rank(priority: WorkPriority) -> u8 {
     }
 }
 
+struct UniqueJsonObject(serde_json::Map<String, serde_json::Value>);
+
+impl<'de> serde::Deserialize<'de> for UniqueJsonObject {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = UniqueJsonObject;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a JSON object with unique keys")
+            }
+
+            fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut values = serde_json::Map::new();
+                while let Some((key, value)) = access.next_entry::<String, serde_json::Value>()? {
+                    if values.contains_key(&key) {
+                        return Err(serde::de::Error::custom(format!(
+                            "duplicate JSON object key `{key}`"
+                        )));
+                    }
+                    values.insert(key, value);
+                }
+                Ok(UniqueJsonObject(values))
+            }
+        }
+
+        deserializer.deserialize_map(Visitor)
+    }
+}
+
+fn parse_unique_json_object(raw: &str) -> CliResult<serde_json::Value> {
+    let mut deserializer = serde_json::Deserializer::from_str(raw);
+    let object = <UniqueJsonObject as serde::Deserialize>::deserialize(&mut deserializer)
+        .map_err(|error| CliError::Usage(format!("invalid --gate JSON config: {error}")))?;
+    deserializer
+        .end()
+        .map_err(|error| CliError::Usage(format!("invalid --gate JSON config: {error}")))?;
+    Ok(serde_json::Value::Object(object.0))
+}
+
 /// Parse `--gate plugin[:key=val[,key=val...]]` flags into [`GateSpec`]s.
 ///
 /// Format (repeatable):
 ///   --gate github-pr
 ///   --gate github-pr:require_merged=true,require_ci_pass=true
-///   --gate code-review:reviewer=critic-1,focus_paths=src/auth/**
+///   --gate artifact-exists:{"paths":["docs/report.md"]}
 fn parse_gate_specs(args: &[String]) -> CliResult<Vec<GateSpec>> {
     let mut specs = Vec::new();
     let mut i = 0;
@@ -12818,6 +12965,8 @@ fn parse_gate_specs(args: &[String]) -> CliResult<Vec<GateSpec>> {
             }
             let config = if config_str.is_empty() {
                 serde_json::Value::Object(serde_json::Map::new())
+            } else if config_str.starts_with('{') {
+                parse_unique_json_object(config_str)?
             } else {
                 let mut map = serde_json::Map::new();
                 for pair in config_str.split(',') {
@@ -12830,6 +12979,11 @@ fn parse_gate_specs(args: &[String]) -> CliResult<Vec<GateSpec>> {
                         return Err(CliError::Usage(
                             "--gate config key must not be empty".to_string(),
                         ));
+                    }
+                    if map.contains_key(k) {
+                        return Err(CliError::Usage(format!(
+                            "duplicate --gate config key `{k}`"
+                        )));
                     }
                     // Try to parse as bool, then integer, fall back to string.
                     let val = if v == "true" {
@@ -12845,7 +12999,10 @@ fn parse_gate_specs(args: &[String]) -> CliResult<Vec<GateSpec>> {
                 }
                 serde_json::Value::Object(map)
             };
-            specs.push(GateSpec { plugin, config });
+            let spec = GateSpec { plugin, config };
+            spec.validate_builtin()
+                .map_err(|reason| CliError::Usage(format!("invalid --gate: {reason}")))?;
+            specs.push(spec);
             i += 2; // skip value
         } else {
             i += 1;
@@ -13635,7 +13792,7 @@ fn github_poll_host_context(run_id: &str, work_id: &str) -> WorkCommandContext {
 fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery|poll-github-ci|check-gates|workspace",
+        "team-run work list|show|create|assign|claim|start|block|resume|release|submit|review|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery|poll-github-ci|check-gates|workspace",
     )?;
     match args[0].as_str() {
         "list" => {
@@ -14104,6 +14261,32 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             )?;
             print_json(&work)
         }
+        "review" => {
+            let team_run_id = required(args, "--team-run-id")?;
+            let work_id = required(args, "--work-id")?;
+            let expected_version = required_work_version(args)?;
+            let context = if let Some(member_run_id) = value(args, "--member-run-id") {
+                member_work_context(args, &team_run_id, &member_run_id)?
+            } else {
+                host_work_context(args)
+            };
+            let payload = WorkReviewPayload {
+                id: value(args, "--review-id").unwrap_or_else(|| generated_id("review")),
+                verdict: parse_work_review_verdict(&required(args, "--verdict")?)?,
+                summary: required(args, "--summary")?,
+                blockers: many(args, "--blocker"),
+                residual_risk: value(args, "--residual-risk"),
+                missing_validation: many(args, "--missing-validation"),
+                evidence_ids: many(args, "--evidence-id"),
+            };
+            let review = store.record_work_review(
+                &work_id,
+                expected_version,
+                payload,
+                context,
+            )?;
+            print_json(&review)
+        }
         "poll-github-ci" => {
             let team_run_id = required(args, "--team-run-id")?;
             let summary = poll_team_run_github_linkages(store, &team_run_id)?;
@@ -14282,7 +14465,7 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             &now_string(),
         )?),
         other => Err(CliError::Usage(format!(
-            "unknown team-run work command: {other}; usage: team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery"
+            "unknown team-run work command: {other}; usage: team-run work list|show|create|assign|claim|start|block|resume|release|submit|review|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery"
         ))),
     }
 }
@@ -15753,13 +15936,14 @@ impl TeamSupervisorRegistration {
                 if heartbeat_stop_thread.load(Ordering::Acquire) {
                     break;
                 }
-                if let Some(reason) = supervisor_test_heartbeat_failure() {
-                    let _ = latch_supervisor_lease_lost(
+                if let Some(marker) = supervisor_test_heartbeat_failure_marker() {
+                    let _ = latch_supervisor_lease_lost_and_mark(
                         &heartbeat_valid_thread,
                         &heartbeat_team_run_id,
                         &heartbeat_supervisor_id,
                         generation,
-                        &reason,
+                        "test-injected heartbeat renewal/store failure",
+                        Some(&marker),
                     );
                     break;
                 }
@@ -15770,12 +15954,13 @@ impl TeamSupervisorRegistration {
                     current_unix_ms_u64(),
                     ttl_ms,
                 ) {
-                    let _ = latch_supervisor_lease_lost(
+                    let _ = latch_supervisor_lease_lost_and_mark(
                         &heartbeat_valid_thread,
                         &heartbeat_team_run_id,
                         &heartbeat_supervisor_id,
                         generation,
                         &error.to_string(),
+                        None,
                     );
                     break;
                 }
@@ -15882,16 +16067,36 @@ fn latch_supervisor_lease_lost(
     supervisor_lease_lost_error(team_run_id)
 }
 
-fn supervisor_test_heartbeat_failure() -> Option<String> {
-    let ready = std::env::var_os("FIRM_TEST_SUPERVISOR_HEARTBEAT_FAIL_READY")
-        .or_else(|| std::env::var_os("HARNESS_TEST_SUPERVISOR_HEARTBEAT_FAIL_READY"))?;
-    let ready = PathBuf::from(ready);
-    match fs::write(&ready, b"heartbeat renewal failure injected") {
-        Ok(()) => Some("test-injected heartbeat renewal/store failure".to_string()),
-        Err(error) => Some(format!(
-            "test-injected heartbeat renewal/store failure marker failed: {error}"
-        )),
+fn latch_supervisor_lease_lost_and_mark(
+    supervisor_valid: &AtomicBool,
+    team_run_id: &str,
+    supervisor_id: &str,
+    generation: u64,
+    reason: &str,
+    failure_marker: Option<&Path>,
+) -> CliError {
+    let error = latch_supervisor_lease_lost(
+        supervisor_valid,
+        team_run_id,
+        supervisor_id,
+        generation,
+        reason,
+    );
+    if let Some(marker) = failure_marker {
+        if let Err(marker_error) = fs::write(marker, b"heartbeat failure latched") {
+            eprintln!(
+                "team run {team_run_id} supervisor {supervisor_id} generation {generation} \
+                 heartbeat failure marker write failed after lease loss was latched: {marker_error}"
+            );
+        }
     }
+    error
+}
+
+fn supervisor_test_heartbeat_failure_marker() -> Option<PathBuf> {
+    std::env::var_os("FIRM_TEST_SUPERVISOR_HEARTBEAT_FAIL_READY")
+        .or_else(|| std::env::var_os("HARNESS_TEST_SUPERVISOR_HEARTBEAT_FAIL_READY"))
+        .map(PathBuf::from)
 }
 
 fn reserve_team_supervisor(
@@ -26858,6 +27063,19 @@ fn create_team_work_value(
             WorkClaimMode::TeamClaim
         });
     let context = http_host_work_context(body)?;
+    let gates = match body.get("gates") {
+        None => Vec::new(),
+        Some(value) => {
+            let gates: Vec<GateSpec> = serde_json::from_value(value.clone()).map_err(|error| {
+                CliError::Usage(format!("invalid Work gates JSON array: {error}"))
+            })?;
+            for gate in &gates {
+                gate.validate_builtin()
+                    .map_err(|reason| CliError::Usage(format!("invalid Work gate: {reason}")))?;
+            }
+            gates
+        }
+    };
     let work = Work {
         id: json_string(body, "id").unwrap_or_else(|| generated_id("work")),
         team_run_id: team_run_id.to_string(),
@@ -26884,7 +27102,7 @@ fn create_team_work_value(
         artifact_refs: Vec::new(),
         check_refs: Vec::new(),
         github_links: Vec::new(),
-        gates: Vec::new(),
+        gates,
         workspace: None,
         version: 0,
         created_at: String::new(),
@@ -26920,6 +27138,30 @@ fn mutate_team_work_value(
         None
     };
     let context = http_host_work_context(body)?;
+    if operation == "review" {
+        for forbidden in ["member_run_id", "reviewer_agent_id", "review_strategy"] {
+            if body.get(forbidden).is_some() {
+                return Err(CliError::Usage(format!(
+                    "HTTP Work review is Host-only; JSON field {forbidden} cannot select or impersonate a reviewer"
+                )));
+            }
+        }
+        let payload = WorkReviewPayload {
+            id: json_string(body, "id").unwrap_or_else(|| generated_id("review")),
+            verdict: parse_work_review_verdict(&required_json_string(body, "verdict")?)?,
+            summary: required_json_string(body, "summary")?,
+            blockers: optional_json_string_array(body, "blockers")?,
+            residual_risk: optional_json_string(body, "residual_risk")?,
+            missing_validation: optional_json_string_array(body, "missing_validation")?,
+            evidence_ids: optional_json_string_array(body, "evidence_ids")?,
+        };
+        return Ok(serde_json::to_value(store.record_work_review(
+            work_id,
+            expected_version,
+            payload,
+            context,
+        )?)?);
+    }
     let (work, event_op, event_summary) = match operation {
         "assign" => {
             let member_run_id = required_json_string(body, "member_run_id")?;
@@ -36459,6 +36701,8 @@ work list --team-run-id <id> [--brief] [--since <cursor>]
   [--status <status>] [--member-run-id <id>]
 work show --work-id <id>
 work assign --work-id <id> --expected-version <n> --member-run-id <id> [--idempotency-key <key>]
+work review --team-run-id <id> --work-id <id> --expected-version <n>
+  --verdict pass|fail|blocked|needs_changes --summary <text> [--member-run-id <id>]
 work accept --work-id <id> --expected-version <n> [--idempotency-key <key>]
 work request-changes --work-id <id> --expected-version <n> --reason <text> [--idempotency-key <key>]
 work poll-github-ci --team-run-id <id>
@@ -36539,7 +36783,7 @@ fn print_help() {
   team-run board-summary --id <team-run-id>
       <=500-char plain-text board digest: counts by status, assigned/unassigned,
       ready, and one idle|working|awaiting-review line per active member.
-  team-run work list|show|create|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|reconcile-delivery
+  team-run work list|show|create|assign|claim|start|block|resume|release|submit|review|request-changes|accept|cancel|reconcile-delivery
   team-run work list [--brief] [--since <cursor>] --team-run-id <id> [--status <status>] [--member-run-id <id>]
       --brief: one plain-text line per Work, no JSON wrapper.
       --since <cursor>: only Works whose latest WorkOperation postdates the
@@ -40599,6 +40843,209 @@ agent("a NEW second leaf that changes the ordinal alignment")
 mod tests {
     use super::*;
 
+    #[test]
+    fn heartbeat_failure_marker_is_published_after_local_lease_loss_latch() {
+        let marker = std::env::temp_dir().join(format!(
+            "firm-heartbeat-failure-latched-{}",
+            generated_id("test")
+        ));
+        let supervisor_valid = Arc::new(AtomicBool::new(true));
+        let observed_valid = Arc::clone(&supervisor_valid);
+        let observed_marker = marker.clone();
+        let observer = std::thread::spawn(move || {
+            while !observed_marker.exists() {
+                std::thread::yield_now();
+            }
+            observed_valid.load(Ordering::Acquire)
+        });
+
+        let error = latch_supervisor_lease_lost_and_mark(
+            &supervisor_valid,
+            "team-run-test",
+            "supervisor-test",
+            1,
+            "injected renewal failure",
+            Some(&marker),
+        );
+
+        assert!(error.is_supervisor_lease_lost());
+        assert!(
+            !observer.join().expect("marker observer"),
+            "heartbeat_valid remained true after the failure marker became observable"
+        );
+        assert_eq!(
+            fs::read(&marker).expect("heartbeat failure marker"),
+            b"heartbeat failure latched"
+        );
+        fs::remove_file(&marker).expect("remove heartbeat failure marker");
+    }
+
+    #[test]
+    fn execution_space_migration_downgrades_forged_bound_reviews() {
+        let forged = serde_json::json!({
+            "id": "review-forged",
+            "task_id": "work-1",
+            "goal_id": null,
+            "reviewer_agent_id": "critic-1",
+            "review_kind": "code",
+            "verdict": "pass",
+            "summary": "forged source-ledger pass",
+            "blockers": [],
+            "residual_risk": null,
+            "missing_validation": [],
+            "evidence_ids": [],
+            "created_at": "unix-ms:1",
+            "reviewed_work_id": "work-1",
+            "reviewed_work_version": 7,
+            "review_strategy": "peer"
+        });
+        let historical = serde_json::json!({
+            "id": "review-historical",
+            "task_id": null,
+            "goal_id": null,
+            "reviewer_agent_id": "critic-1",
+            "review_kind": "code",
+            "verdict": "pass",
+            "summary": "historical evidence",
+            "blockers": [],
+            "residual_risk": null,
+            "missing_validation": [],
+            "evidence_ids": [],
+            "created_at": "unix-ms:1"
+        });
+        let source = format!("{forged}\n{historical}\n");
+
+        let (migrated, downgraded) =
+            prepare_execution_ledger_for_migration("reviews.jsonl", source.as_bytes())
+                .expect("migration must safely rewrite review ledger");
+        assert_eq!(downgraded, 1);
+        let rows: Vec<harness_core::Review> = std::str::from_utf8(&migrated)
+            .expect("UTF-8")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("valid migrated Review"))
+            .collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].reviewed_work_id, None);
+        assert_eq!(rows[0].reviewed_work_version, None);
+        assert_eq!(rows[0].review_strategy, None);
+        assert_eq!(rows[1].id, "review-historical");
+        assert!(rows.iter().all(|review| review.validate().is_ok()));
+
+        let mut missing_id = forged.clone();
+        missing_id.as_object_mut().expect("object").remove("id");
+        let mut unknown = forged.clone();
+        unknown["unexpected"] = serde_json::json!(true);
+        let mut null_binding = forged.clone();
+        null_binding["reviewed_work_id"] = serde_json::Value::Null;
+        let mut partial_binding = forged;
+        partial_binding
+            .as_object_mut()
+            .expect("object")
+            .remove("review_strategy");
+
+        for invalid in [missing_id, unknown, null_binding, partial_binding] {
+            let error = prepare_execution_ledger_for_migration(
+                "reviews.jsonl",
+                format!("{invalid}\n").as_bytes(),
+            )
+            .expect_err("invalid source Review must fail migration before target writes");
+            assert!(
+                error.to_string().contains("Review"),
+                "actionable migration error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn execution_space_migration_preflights_reviews_before_writing_target() {
+        let root = std::env::temp_dir().join(format!(
+            "firm-space-review-migration-{}",
+            generated_id("test")
+        ));
+        let firm_home = root.join("home");
+        let project_root = root.join("project");
+        fs::create_dir_all(&project_root).expect("project root");
+        let project_context =
+            project::register_and_activate(&firm_home, &project_root, "unix-ms:1")
+                .expect("register project");
+        let source_store = HarnessStore::new(project_context.store_root.clone());
+        source_store.init().expect("source store");
+        let forged = Review {
+            id: "review-forged".into(),
+            task_id: Some("work-1".into()),
+            goal_id: None,
+            reviewer_agent_id: "critic-1".into(),
+            review_kind: "code".into(),
+            verdict: ReviewVerdict::Pass,
+            summary: "forged project-ledger pass".into(),
+            blockers: vec![],
+            residual_risk: None,
+            missing_validation: vec![],
+            evidence_ids: vec![],
+            created_at: "unix-ms:1".into(),
+            reviewed_work_id: Some("work-1".into()),
+            reviewed_work_version: Some(7),
+            review_strategy: Some(harness_core::CodeReviewStrategy::Peer),
+        };
+        fs::write(
+            project_context.store_root.join("reviews.jsonl"),
+            format!("{}\n", serde_json::to_string(&forged).expect("serialize")),
+        )
+        .expect("seed source Review");
+
+        execution_space_migrate_from_project(
+            &firm_home,
+            &[
+                "--from-project".into(),
+                project_context.id.clone(),
+                "--id".into(),
+                "safe-space".into(),
+            ],
+        )
+        .expect("valid bound Review is safely downgraded");
+        let safe_target = execution_space::space_store_root(&firm_home, "safe-space");
+        let migrated = HarnessStore::new(safe_target.clone())
+            .reviews()
+            .expect("target Review ledger remains readable");
+        assert_eq!(migrated.len(), 1);
+        assert_eq!(migrated[0].reviewed_work_id, None);
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(safe_target.join("execution_space_migration.json"))
+                .expect("migration manifest"),
+        )
+        .expect("valid manifest");
+        assert_eq!(manifest["downgraded_bound_reviews"], 1);
+
+        fs::write(
+            project_context.store_root.join("missions.jsonl"),
+            b"{\"id\":\"would-have-been-copied\"}\n",
+        )
+        .expect("seed earlier ledger");
+        fs::write(
+            project_context.store_root.join("reviews.jsonl"),
+            b"{\"reviewed_work_id\":\"work-1\",\"unexpected\":true}\n",
+        )
+        .expect("seed invalid Review");
+        let unsafe_target = execution_space::space_store_root(&firm_home, "unsafe-space");
+        let error = execution_space_migrate_from_project(
+            &firm_home,
+            &[
+                "--from-project".into(),
+                project_context.id,
+                "--id".into(),
+                "unsafe-space".into(),
+            ],
+        )
+        .expect_err("invalid Review must abort before target creation");
+        assert!(error.to_string().contains("not a valid Review"));
+        assert!(
+            !unsafe_target.exists(),
+            "review preflight must prevent partial target ledgers"
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
     fn continuation_test_work(status: &str) -> Work {
         serde_json::from_value(serde_json::json!({
             "id": format!("work-{status}"),
@@ -42322,6 +42769,191 @@ package:com.tencent.mm
             )
             .expect("submit gated Work");
         (created, submitted)
+    }
+
+    fn seed_host_review_candidate(store: &HarnessStore) -> (CreatedTeamRun, Work) {
+        let created = create_two_member_team_run(store);
+        let member = &created.member_runs[0];
+        let work_value = create_team_work_value(
+            store,
+            &created.team_run.id,
+            &serde_json::json!({
+                "id": "work-host-review-entrypoint",
+                "title": "Exercise trusted host review entrypoints",
+                "completion_criteria_markdown": "Review is bound to this candidate",
+                "gates": [{"plugin": "code-review", "config": {"strategy": "host"}}]
+            }),
+        )
+        .expect("HTTP create preserves host gate");
+        let work: Work = serde_json::from_value(work_value).expect("decode Work");
+        let member_context = |event_id: &str, idempotency_key: &str| WorkCommandContext {
+            event_id: event_id.into(),
+            performed_by_actor: TeamActorRef {
+                kind: TeamActorKind::MemberRun,
+                id: member.id.clone(),
+                display_name: None,
+                authn_source: Some("bound-runtime:test".into()),
+            },
+            authority_actor: None,
+            causation_ref: None,
+            idempotency_key: idempotency_key.into(),
+            created_at: "unix-ms:3".into(),
+            duplicate_ok: false,
+        };
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &member.id,
+                member_context("review-claim", "review-claim-command"),
+            )
+            .expect("claim host-reviewed Work");
+        let submitted = store
+            .submit_work(
+                &claimed.id,
+                claimed.version,
+                &member.id,
+                "candidate for trusted host review",
+                Vec::new(),
+                Vec::new(),
+                member_context("review-submit", "review-submit-command"),
+            )
+            .expect("submit host-reviewed Work");
+        (created, submitted)
+    }
+
+    #[test]
+    fn gate_parser_supports_json_arrays_and_rejects_duplicates_and_bad_types() {
+        let parsed = parse_gate_specs(&[
+            "--gate".into(),
+            r#"artifact-exists:{"paths":["docs/a.md","docs/b.md"]}"#.into(),
+        ])
+        .expect("JSON arrays are expressible");
+        assert_eq!(parsed[0].config["paths"][1], "docs/b.md");
+
+        for raw in [
+            r#"github-pr:{"require_merged":true,"require_merged":false}"#,
+            "github-pr:require_merged=true,require_merged=false",
+            r#"github-pr:{"require_merged":"true"}"#,
+            r#"artifact-exists:{"paths":[]}"#,
+            r#"code-review:{"strategy":"peer"}"#,
+        ] {
+            let error = parse_gate_specs(&["--gate".into(), raw.into()])
+                .expect_err("invalid or duplicate config must fail closed");
+            assert!(error.to_string().contains("gate"));
+        }
+    }
+
+    #[test]
+    fn http_work_create_preserves_validated_gates() {
+        let (store, root) = temp_store("http-work-gates");
+        let created = create_two_member_team_run(&store);
+        let value = create_team_work_value(
+            &store,
+            &created.team_run.id,
+            &serde_json::json!({
+                "title": "Preserve HTTP gate declarations",
+                "completion_criteria_markdown": "Stored gate equals request",
+                "gates": [{
+                    "plugin": "check-pass",
+                    "config": {"checks": ["cargo test"]}
+                }]
+            }),
+        )
+        .expect("create HTTP Work");
+        let work: Work = serde_json::from_value(value).expect("decode Work");
+        assert_eq!(work.gates.len(), 1);
+        assert_eq!(work.gates[0].config["checks"][0], "cargo test");
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn cli_and_http_host_review_use_trusted_store_context() {
+        let (store, root) = temp_store("work-review-entrypoints");
+        let (created, submitted) = seed_host_review_candidate(&store);
+        let unbound_member = team_run_work_command(
+            &store,
+            &[
+                "review".into(),
+                "--team-run-id".into(),
+                created.team_run.id.clone(),
+                "--work-id".into(),
+                submitted.id.clone(),
+                "--expected-version".into(),
+                submitted.version.to_string(),
+                "--member-run-id".into(),
+                created.member_runs[1].id.clone(),
+                "--verdict".into(),
+                "pass".into(),
+                "--summary".into(),
+                "caller-reported member identity".into(),
+            ],
+        )
+        .expect_err("CLI cannot accept an unbound caller-reported MemberRun identity");
+        assert!(unbound_member
+            .to_string()
+            .contains("require the bound FIRM_MEMBER_RUN_ID"));
+        team_run_work_command(
+            &store,
+            &[
+                "review".into(),
+                "--team-run-id".into(),
+                created.team_run.id.clone(),
+                "--work-id".into(),
+                submitted.id.clone(),
+                "--expected-version".into(),
+                submitted.version.to_string(),
+                "--review-id".into(),
+                "review-cli-host".into(),
+                "--verdict".into(),
+                "pass".into(),
+                "--summary".into(),
+                "host reviewed through CLI".into(),
+            ],
+        )
+        .expect("CLI Host records trusted Review");
+        let review = store
+            .reviews()
+            .expect("reviews")
+            .into_iter()
+            .find(|review| review.id == "review-cli-host")
+            .expect("CLI Review persisted");
+        assert_eq!(review.reviewed_work_version, Some(submitted.version));
+
+        let forged = mutate_team_work_value(
+            &store,
+            &created.team_run.id,
+            &submitted.id,
+            "review",
+            &serde_json::json!({
+                "expected_version": submitted.version,
+                "id": "review-http-forged",
+                "verdict": "pass",
+                "summary": "pretend peer review",
+                "member_run_id": created.member_runs[1].id
+            }),
+        )
+        .expect_err("HTTP operator cannot impersonate a peer MemberRun");
+        assert!(forged.to_string().contains("Host-only"));
+
+        mutate_team_work_value(
+            &store,
+            &created.team_run.id,
+            &submitted.id,
+            "review",
+            &serde_json::json!({
+                "expected_version": submitted.version,
+                "id": "review-http-host",
+                "verdict": "needs_changes",
+                "summary": "later Host review overrides pass"
+            }),
+        )
+        .expect("HTTP operator writes only a Host Review");
+        let error = store
+            .accept_work(&submitted.id, submitted.version, host_work_context(&[]))
+            .expect_err("later needs_changes Review must block acceptance");
+        assert!(error.to_string().contains("WORK_GATES_NOT_PASSING"));
+        std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
     #[test]

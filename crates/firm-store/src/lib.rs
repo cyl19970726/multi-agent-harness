@@ -7,18 +7,18 @@ use std::time::{Duration, Instant};
 
 use firm_core::{
     validate_agent_team_topology, validate_work_cutover_with_fences, AgentEvent, AgentMember,
-    AgentMemberStatus, AgentMessageRoute, AgentRuntime, AgentTeam, AgentTeamRun, Decision,
-    DelegationRun, DurableAgentMember, Evidence, Gap, GateEngine, GateVerdict, GitHubLink,
-    HostAttention, HostAttentionInbox, HostAttentionKind, HostAttentionStatus, MemberAction,
-    MemberRun, Message, MessageDelivery, MessageDeliveryStatus, MessageTerminalSource, Mission,
-    MissionLogEntry, MissionStatus, PendingInteraction, Proposal, ProviderChildThread,
-    ProviderExecutionStatus, Review, TeamDeliveryPolicy, TeamDeliveryStatus,
-    TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage, TeamMessageKind, TeamRunEvent,
-    TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus, Validate, Vision, Wave,
-    WaveExecutorKind, WaveGateStatus, WaveStatus, Work, WorkClaimMode, WorkCommandContext,
-    WorkCutoverFence, WorkCutoverReport, WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate,
-    WorkEvent, WorkEventKind, WorkItem, WorkItemStatus, WorkOperation, WorkStatus,
-    WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
+    AgentMemberStatus, AgentMessageRoute, AgentRuntime, AgentTeam, AgentTeamRun, BuiltinGateConfig,
+    CodeReviewStrategy, Decision, DelegationRun, DurableAgentMember, Evidence, Gap, GateEngine,
+    GateVerdict, GitHubLink, HostAttention, HostAttentionInbox, HostAttentionKind,
+    HostAttentionStatus, MemberAction, MemberRun, Message, MessageDelivery, MessageDeliveryStatus,
+    MessageTerminalSource, Mission, MissionLogEntry, MissionStatus, PendingInteraction, Proposal,
+    ProviderChildThread, ProviderExecutionStatus, Review, ReviewVerdict, TeamDeliveryPolicy,
+    TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage,
+    TeamMessageKind, TeamRunEvent, TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus,
+    Validate, Vision, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, Work, WorkClaimMode,
+    WorkCommandContext, WorkCutoverFence, WorkCutoverReport, WorkDelivery, WorkDeliveryStatus,
+    WorkDeliveryUpdate, WorkEvent, WorkEventKind, WorkItem, WorkItemStatus, WorkOperation,
+    WorkStatus, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -69,6 +69,17 @@ pub enum StoreError {
 }
 
 pub type StoreResult<T> = Result<T, StoreError>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkReviewPayload {
+    pub id: String,
+    pub verdict: ReviewVerdict,
+    pub summary: String,
+    pub blockers: Vec<String>,
+    pub residual_risk: Option<String>,
+    pub missing_validation: Vec<String>,
+    pub evidence_ids: Vec<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageDeliveryClaimResult {
@@ -707,7 +718,144 @@ impl HarnessStore {
     }
 
     pub fn append_review(&self, value: &Review) -> StoreResult<()> {
+        value
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        if value.reviewed_work_id.is_some()
+            || value.reviewed_work_version.is_some()
+            || value.review_strategy.is_some()
+        {
+            return Err(StoreError::Conflict(
+                "BOUND_REVIEW_REQUIRES_WORK_CONTEXT: use record_work_review".to_string(),
+            ));
+        }
         self.append_jsonl("reviews.jsonl", value)
+    }
+
+    /// Record a Review bound to the exact current Work candidate. Identity and
+    /// binding fields are derived from trusted Store context rather than caller
+    /// supplied payload.
+    pub fn record_work_review(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        payload: WorkReviewPayload,
+        context: WorkCommandContext,
+    ) -> StoreResult<Review> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.ensure_work_store_compatible_unlocked()?;
+        require_non_empty_store(&payload.id, "review id")?;
+        require_non_empty_store(&payload.summary, "review summary")?;
+        if matches!(payload.verdict, ReviewVerdict::Other(_)) {
+            return Err(StoreError::Conflict(
+                "WORK_REVIEW_VERDICT_INVALID: expected pass, fail, blocked, or needs_changes"
+                    .to_string(),
+            ));
+        }
+        if self
+            .read_jsonl::<Review>("reviews.jsonl")?
+            .iter()
+            .any(|review| review.id == payload.id)
+        {
+            return Err(StoreError::Conflict(format!(
+                "review already exists: {}",
+                payload.id
+            )));
+        }
+
+        let work = self.current_work_unlocked(work_id, expected_version)?;
+        if work.status != WorkStatus::Review {
+            return Err(StoreError::Conflict(format!(
+                "work {work_id} is not awaiting review"
+            )));
+        }
+        let configs = work
+            .gates
+            .iter()
+            .filter(|gate| gate.plugin == "code-review")
+            .map(|gate| gate.parse_builtin_config())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|reason| StoreError::Conflict(format!("INVALID_WORK_GATE: {reason}")))?;
+        if configs.len() != 1 {
+            return Err(StoreError::Conflict(format!(
+                "WORK_CODE_REVIEW_GATE_REQUIRED: expected exactly one code-review gate, found {}",
+                configs.len()
+            )));
+        }
+        let BuiltinGateConfig::CodeReview(config) = &configs[0] else {
+            unreachable!("code-review plugin parsed as another built-in")
+        };
+
+        let reviewer_agent_id = match config.strategy {
+            CodeReviewStrategy::Peer => {
+                let member_run_id = &context.performed_by_actor.id;
+                require_member_actor(&context.performed_by_actor, member_run_id)?;
+                let member = self.require_member_run_unlocked(member_run_id, &work.team_run_id)?;
+                if !member.coordination_is_active() {
+                    return Err(StoreError::Conflict(
+                        "only an active MemberRun may record a peer Work review".to_string(),
+                    ));
+                }
+                let reviewer = stable_member_identity(&member);
+                if config.reviewer.as_deref() != Some(reviewer.as_str()) {
+                    return Err(StoreError::Conflict(format!(
+                        "WORK_REVIEWER_MISMATCH: expected peer reviewer {}, got {reviewer}",
+                        config.reviewer.as_deref().unwrap_or_default()
+                    )));
+                }
+                if work.owner_member_id.as_deref() == Some(reviewer.as_str()) {
+                    return Err(StoreError::Conflict(
+                        "WORK_PEER_REVIEW_REQUIRES_DISTINCT_REVIEWER".to_string(),
+                    ));
+                }
+                reviewer
+            }
+            CodeReviewStrategy::SelfReview => {
+                let member_run_id = &context.performed_by_actor.id;
+                require_member_actor(&context.performed_by_actor, member_run_id)?;
+                let member = self.require_member_run_unlocked(member_run_id, &work.team_run_id)?;
+                if !member.coordination_is_active() {
+                    return Err(StoreError::Conflict(
+                        "only an active MemberRun may record a self Work review".to_string(),
+                    ));
+                }
+                let reviewer = stable_member_identity(&member);
+                if work.owner_member_id.as_deref() != Some(reviewer.as_str()) {
+                    return Err(StoreError::Conflict(
+                        "WORK_SELF_REVIEW_REQUIRES_OWNER".to_string(),
+                    ));
+                }
+                reviewer
+            }
+            CodeReviewStrategy::Host => {
+                require_host_actor(&context.performed_by_actor)?;
+                context.performed_by_actor.id.clone()
+            }
+        };
+
+        let review = Review {
+            id: payload.id,
+            task_id: Some(work.id.clone()),
+            goal_id: None,
+            reviewer_agent_id,
+            review_kind: "code".to_string(),
+            verdict: payload.verdict,
+            summary: payload.summary,
+            blockers: payload.blockers,
+            residual_risk: payload.residual_risk,
+            missing_validation: payload.missing_validation,
+            evidence_ids: payload.evidence_ids,
+            created_at: context.created_at,
+            reviewed_work_id: Some(work.id),
+            reviewed_work_version: Some(work.version),
+            review_strategy: Some(config.strategy),
+        };
+        review
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        self.append_jsonl_unlocked("reviews.jsonl", &review)?;
+        Ok(review)
     }
 
     pub fn append_gap(&self, value: &Gap) -> StoreResult<()> {
@@ -1291,6 +1439,11 @@ impl HarnessStore {
             WorkEventKind::Created,
         )? {
             return Ok(existing.work);
+        }
+        for gate in &work.gates {
+            gate.validate_builtin().map_err(|reason| {
+                StoreError::Conflict(format!("INVALID_WORK_GATE [{}]: {reason}", gate.plugin))
+            })?;
         }
         self.ensure_work_event_id_available_unlocked(&context.event_id)?;
         let team_run = self.require_team_run_unlocked(&work.team_run_id)?;
@@ -2333,14 +2486,21 @@ impl HarnessStore {
                 work.result_summary = Some(result_summary.to_string());
                 work.artifact_refs = artifact_refs;
                 work.check_refs = check_refs;
-                // Merge rather than replace: a Work created with
-                // `--github-issue` keeps that link when a `--github-pr` is
-                // attached at submit time.
+                // Issue links describe durable provenance. Pull-request links
+                // describe this submission candidate and are replaced, so a
+                // prior merged PR cannot satisfy a resubmitted candidate.
+                let mut candidate_links = work
+                    .github_links
+                    .iter()
+                    .filter(|link| link.kind == firm_core::GitHubLinkKind::Issue)
+                    .cloned()
+                    .collect::<Vec<_>>();
                 for link in github_links {
-                    if !work.github_links.contains(&link) {
-                        work.github_links.push(link);
+                    if !candidate_links.contains(&link) {
+                        candidate_links.push(link);
                     }
                 }
+                work.github_links = candidate_links;
                 work.blocker_reason = None;
             },
         )
@@ -2421,17 +2581,17 @@ impl HarnessStore {
             serde_json::json!({ "reason": "github_pr_merge_observed" }),
             |work| {
                 work.result_summary = Some(result_summary.to_string());
-                // The fresh observed snapshot replaces the stored one; any
-                // issue links attached at create time are carried forward.
-                let mut merged = Vec::new();
+                // The fresh observed PR snapshot replaces the prior candidate;
+                // durable issue provenance is carried forward.
+                let mut merged = work
+                    .github_links
+                    .iter()
+                    .filter(|link| link.kind == firm_core::GitHubLinkKind::Issue)
+                    .cloned()
+                    .collect::<Vec<_>>();
                 for link in github_links {
                     if !merged.contains(&link) {
                         merged.push(link);
-                    }
-                }
-                for link in &work.github_links {
-                    if !merged.contains(link) {
-                        merged.push(link.clone());
                     }
                 }
                 work.github_links = merged;
@@ -8249,6 +8409,18 @@ mod tests {
         }
     }
 
+    fn work_review_payload(id: &str, verdict: ReviewVerdict) -> WorkReviewPayload {
+        WorkReviewPayload {
+            id: id.into(),
+            verdict,
+            summary: "reviewed exact candidate".into(),
+            blockers: Vec::new(),
+            residual_risk: None,
+            missing_validation: Vec::new(),
+            evidence_ids: Vec::new(),
+        }
+    }
+
     fn unassigned_test_work(run_id: &str, id: &str) -> Work {
         Work {
             id: id.into(),
@@ -8629,6 +8801,294 @@ mod tests {
             )
             .expect("manual Host acceptance remains valid when no gates were declared");
         assert_eq!(accepted.status, WorkStatus::Done);
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn work_insert_rejects_invalid_built_in_gate_config() {
+        let (root, store, run, _, _) = work_test_fixture("invalid-gate-config");
+        let mut work = unassigned_test_work(&run.id, "work-invalid-gate");
+        work.gates = vec![GateSpec {
+            plugin: "github-pr".into(),
+            config: serde_json::json!({"require_merged": "yes"}),
+        }];
+        let error = store
+            .insert_work(
+                work,
+                host_work_context("we-invalid-gate", "create-invalid-gate", "unix-ms:2"),
+            )
+            .expect_err("Store write boundary must reject invalid built-in config");
+        assert!(error.to_string().contains("INVALID_WORK_GATE"));
+        assert!(store.latest_works().expect("works").is_empty());
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn generic_review_append_rejects_bound_work_review() {
+        let root = team_test_root("bound-review-append");
+        let store = HarnessStore::new(&root);
+        store.init().expect("init store");
+        let review = Review {
+            id: "review-bound".into(),
+            task_id: Some("work-1".into()),
+            goal_id: None,
+            reviewer_agent_id: "critic".into(),
+            review_kind: "code".into(),
+            verdict: ReviewVerdict::Pass,
+            summary: "forged binding".into(),
+            blockers: Vec::new(),
+            residual_risk: None,
+            missing_validation: Vec::new(),
+            evidence_ids: Vec::new(),
+            created_at: "unix-ms:1".into(),
+            reviewed_work_id: Some("work-1".into()),
+            reviewed_work_version: Some(3),
+            review_strategy: Some(CodeReviewStrategy::Host),
+        };
+        let error = store
+            .append_review(&review)
+            .expect_err("bound Review must use trusted Work context");
+        assert!(error
+            .to_string()
+            .contains("BOUND_REVIEW_REQUIRES_WORK_CONTEXT"));
+        assert!(store.reviews().expect("reviews").is_empty());
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn peer_review_is_identity_bound_and_resubmission_invalidates_review_and_pr() {
+        let (root, store, run, owner, peer) = work_test_fixture("peer-review-binding");
+        let mut gated = unassigned_test_work(&run.id, "work-peer-review");
+        gated.gates = vec![GateSpec {
+            plugin: "code-review".into(),
+            config: serde_json::json!({"strategy": "peer", "reviewer": "agent-b"}),
+        }];
+        let work = store
+            .insert_work(
+                gated,
+                host_work_context("we-peer-1", "create-peer", "unix-ms:2"),
+            )
+            .expect("create peer-reviewed Work");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &owner.id,
+                member_work_context(&owner.id, "we-peer-2", "claim-peer", "unix-ms:3"),
+            )
+            .expect("owner claims Work");
+        let submitted = store
+            .submit_work_with_links(
+                &claimed.id,
+                claimed.version,
+                &owner.id,
+                "first candidate",
+                Vec::new(),
+                Vec::new(),
+                vec![test_github_link("MERGED", Some("success"))],
+                member_work_context(&owner.id, "we-peer-3", "submit-peer", "unix-ms:4"),
+            )
+            .expect("submit first candidate");
+
+        let wrong = store
+            .record_work_review(
+                &submitted.id,
+                submitted.version,
+                work_review_payload("review-wrong-peer", ReviewVerdict::Pass),
+                member_work_context(&owner.id, "unused", "unused", "unix-ms:5"),
+            )
+            .expect_err("owner cannot impersonate configured peer");
+        assert!(wrong.to_string().contains("WORK_REVIEWER_MISMATCH"));
+
+        let first_review = store
+            .record_work_review(
+                &submitted.id,
+                submitted.version,
+                work_review_payload("review-peer-v3", ReviewVerdict::Pass),
+                member_work_context(&peer.id, "unused", "unused", "unix-ms:6"),
+            )
+            .expect("configured peer reviews exact candidate");
+        assert_eq!(first_review.reviewed_work_version, Some(submitted.version));
+
+        let revision = store
+            .request_work_changes(
+                &submitted.id,
+                submitted.version,
+                "candidate changed",
+                host_work_context("we-peer-4", "changes-peer", "unix-ms:7"),
+            )
+            .expect("request changes");
+        let resubmitted = store
+            .submit_work(
+                &revision.id,
+                revision.version,
+                &owner.id,
+                "second candidate without a PR",
+                Vec::new(),
+                Vec::new(),
+                member_work_context(&owner.id, "we-peer-5", "resubmit-peer", "unix-ms:8"),
+            )
+            .expect("resubmit candidate");
+        assert!(resubmitted
+            .github_links
+            .iter()
+            .all(|link| link.kind != firm_core::GitHubLinkKind::PullRequest));
+
+        let stale_review = store
+            .accept_work(
+                &resubmitted.id,
+                resubmitted.version,
+                host_work_context("we-peer-6", "accept-stale-peer", "unix-ms:9"),
+            )
+            .expect_err("old candidate Review must not satisfy resubmission");
+        assert!(stale_review.to_string().contains("WORK_GATES_NOT_PASSING"));
+
+        store
+            .record_work_review(
+                &resubmitted.id,
+                resubmitted.version,
+                work_review_payload("review-peer-v5", ReviewVerdict::Pass),
+                member_work_context(&peer.id, "unused", "unused", "unix-ms:10"),
+            )
+            .expect("peer reviews resubmitted candidate");
+        let accepted = store
+            .accept_work(
+                &resubmitted.id,
+                resubmitted.version,
+                host_work_context("we-peer-7", "accept-peer", "unix-ms:11"),
+            )
+            .expect("current exact peer Review satisfies Store gate");
+        assert_eq!(accepted.status, WorkStatus::Done);
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn self_review_requires_the_bound_owner_member() {
+        let (root, store, run, owner, other) = work_test_fixture("self-review-binding");
+        let mut gated = unassigned_test_work(&run.id, "work-self-review");
+        gated.gates = vec![GateSpec {
+            plugin: "code-review".into(),
+            config: serde_json::json!({"strategy": "self"}),
+        }];
+        let work = store
+            .insert_work(
+                gated,
+                host_work_context("we-self-1", "create-self", "unix-ms:2"),
+            )
+            .expect("create self-reviewed Work");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &owner.id,
+                member_work_context(&owner.id, "we-self-2", "claim-self", "unix-ms:3"),
+            )
+            .expect("owner claims Work");
+        let submitted = store
+            .submit_work(
+                &claimed.id,
+                claimed.version,
+                &owner.id,
+                "self-review candidate",
+                Vec::new(),
+                Vec::new(),
+                member_work_context(&owner.id, "we-self-3", "submit-self", "unix-ms:4"),
+            )
+            .expect("submit candidate");
+        let error = store
+            .record_work_review(
+                &submitted.id,
+                submitted.version,
+                work_review_payload("review-self-wrong", ReviewVerdict::Pass),
+                member_work_context(&other.id, "unused", "unused", "unix-ms:5"),
+            )
+            .expect_err("non-owner cannot self-review");
+        assert!(error
+            .to_string()
+            .contains("WORK_SELF_REVIEW_REQUIRES_OWNER"));
+        store
+            .record_work_review(
+                &submitted.id,
+                submitted.version,
+                work_review_payload("review-self-owner", ReviewVerdict::Pass),
+                member_work_context(&owner.id, "unused", "unused", "unix-ms:6"),
+            )
+            .expect("owner records self Review");
+        assert_eq!(
+            store
+                .accept_work(
+                    &submitted.id,
+                    submitted.version,
+                    host_work_context("we-self-4", "accept-self", "unix-ms:7"),
+                )
+                .expect("accept self-reviewed Work")
+                .status,
+            WorkStatus::Done
+        );
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn host_review_rejects_member_writer_and_accepts_host_context() {
+        let (root, store, run, owner, _) = work_test_fixture("host-review-binding");
+        let mut gated = unassigned_test_work(&run.id, "work-host-review");
+        gated.gates = vec![GateSpec {
+            plugin: "code-review".into(),
+            config: serde_json::json!({"strategy": "host"}),
+        }];
+        let work = store
+            .insert_work(
+                gated,
+                host_work_context("we-host-1", "create-host", "unix-ms:2"),
+            )
+            .expect("create host-reviewed Work");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &owner.id,
+                member_work_context(&owner.id, "we-host-2", "claim-host", "unix-ms:3"),
+            )
+            .expect("owner claims Work");
+        let submitted = store
+            .submit_work(
+                &claimed.id,
+                claimed.version,
+                &owner.id,
+                "host-review candidate",
+                Vec::new(),
+                Vec::new(),
+                member_work_context(&owner.id, "we-host-3", "submit-host", "unix-ms:4"),
+            )
+            .expect("submit candidate");
+        let error = store
+            .record_work_review(
+                &submitted.id,
+                submitted.version,
+                work_review_payload("review-host-member", ReviewVerdict::Pass),
+                member_work_context(&owner.id, "unused", "unused", "unix-ms:5"),
+            )
+            .expect_err("ordinary Member cannot write host Review");
+        assert!(error.to_string().contains("Host authority is required"));
+        store
+            .record_work_review(
+                &submitted.id,
+                submitted.version,
+                work_review_payload("review-host", ReviewVerdict::Pass),
+                host_work_context("unused", "unused", "unix-ms:6"),
+            )
+            .expect("Host records bound Review");
+        assert_eq!(
+            store
+                .accept_work(
+                    &submitted.id,
+                    submitted.version,
+                    host_work_context("we-host-4", "accept-host", "unix-ms:7"),
+                )
+                .expect("accept host-reviewed Work")
+                .status,
+            WorkStatus::Done
+        );
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 

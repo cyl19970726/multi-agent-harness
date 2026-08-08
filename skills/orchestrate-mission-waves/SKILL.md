@@ -30,10 +30,6 @@ Host (Lead)    = decision-maker: review, accept, assign, close, re-plan
 **Host receives**: hook auto-injects host-inbox at turn start — no polling needed
 **Member receives**: daemon injects messages + work into CONTRACT prompt each round
 
-The full canonical reference is at
-(synced from the repository main branch during plugin install).
-```
-
 These hard invariants apply to every Host and Member. The full shared text lives in [`skills/shared-references/SKILL.md`](../shared-references/SKILL.md); when a rule appears in both skills, the shared copy is authoritative. The rules below are the Host-Lead-specific application.
 
 ### Wave Vocabulary (Disambiguation)
@@ -101,8 +97,10 @@ Select exactly one top-level execution driver per MemberRun — see shared hard 
    explanation, and peer discussion. Link relevant messages with `--work-id`.
    If conversation creates a durable obligation, explicitly create/update
    Work; never infer one from prose.
-7. **Integrate.** Inspect the submitted result, the artifact/check references
-   required by its completion criteria, and the resolvable native session.
+7. **Integrate.** Inspect the submitted result, the exact durable artifact/check
+   references required by the current Work candidate, and the resolvable native
+   session. Artifact/check gates only match those references; they do not read
+   artifacts, rerun checks, or establish that a referenced claim is true.
    Request changes or accept through Work operations. Do not wait for unrelated
    active Works.
 8. **Re-plan.** At material decision points — a new Work tranche, a
@@ -166,16 +164,16 @@ adds no new commands, only a discipline for the ones already listed.
   │    (see Work.workspace — already     │
   │     created by `work workspace       │
   │     ensure`)                          │
-  │ 2. Commit ALL changes before submit │
-  │ 3. Push branch to origin            │
-  │ 4. Create PR with Summary/Changes   │
-  │ 5. Wait for review → merge          │
+  │ 2. Follow the declared delivery     │
+  │    criteria and gates               │
+  │ 3. Submit exact durable refs        │
+  │ 4. Wait for Host review             │
   ├─ Gates ────────────────────────────┤
   │ Verification gates that must pass   │
   │ before Host acceptance (see below)  │
   │ github-pr / code-review / etc.      │
   ├─ Evidence ──────────────────────────┤
-  │ What counts as done (merged PR etc) │
+  │ What counts as done                 │
   │ Required artifact_refs / check_refs  │
   └─────────────────────────────────────┘
   ```
@@ -186,10 +184,9 @@ adds no new commands, only a discipline for the ones already listed.
 
   **Standard delivery requirements** (include in every code-changing work):
   - Workspace: declared via `--worktree` (harness creates and cleans up)
-  - Commit: ALL changes must be committed before `work submit`
-  - Push: Branch must be pushed to origin
-  - PR: Create PR with Summary/Changes/Verification sections
-  - Review: Wait for Host review → merge after approval
+  - Candidate identity: the exact submitted Work id and version
+  - Evidence: attach the exact durable refs named by declared gates and criteria
+  - Review: wait for Host review and explicit acceptance
   - No half-finished work: if blocked, report why, don't leave uncommitted changes
 
 ## Workspace Management
@@ -241,10 +238,10 @@ harness team-run work create \
   --idempotency-key <stable-command-key>
 ```
 
-Declare verification gates with `--gate` (repeatable). The Host's
-`work accept` checks declared gates; `--skip-gates` bypasses for
-explicit waiver. Gates are automatically injected into the Work
-context so the Member sees what must pass before acceptance.
+Declare verification gates with `--gate` (repeatable). Declared gates are an
+invariant of the Store-managed `accept_work` operation: that typed operation
+evaluates them and exposes no waiver flag. Gates are automatically injected
+into the Work context so the Member sees what must pass before acceptance.
 
 ```bash
 # Code work requiring PR merge + CI pass
@@ -284,7 +281,7 @@ harness team-run work create \
 ```
 
 Empty `eligible_member_ids` means every active Member may claim. Use
-`--prerequisite-work-id` only for minimal readiness; do not encode branches,
+`--prerequisite-work-id` only for minimal readiness; do not encode conditional paths,
 loops, conditions, retries, or a general Task Graph.
 
 An idle eligible Member may be woken from the shared board without creating a
@@ -348,16 +345,36 @@ otherwise send a queued Message for the next safe boundary.
 ## Review Work Explicitly
 
 **Review discipline.** Before issuing `request-changes`, verify the claimed
-gap against the current master branch code — not against memory, not against
-the review expectation alone. A Member's rebuttal backed by master-branch
-evidence is legitimate and must be checked; do not dismiss it without
-re-verifying.
+gap against the current target code — not against memory or review expectation
+alone. A Member's rebuttal backed by current-code evidence is legitimate and
+must be checked; do not dismiss it without re-verifying.
 
 Provider completion and conversational updates never submit or accept Work.
 When a Member moves Work to `review`, inspect the required result summary plus
-the artifact/check refs, changed files, tests, and native session that its
-completion criteria and risk require. Empty artifact/check arrays are valid
-when the criteria need no such reference.
+the exact durable artifact/check refs carried by that current candidate,
+changed files, tests, and native session that its completion criteria and risk
+require. `artifact-exists` and `check-pass` only compare configured names with
+the candidate's `artifact_refs` and `check_refs`; they do not inspect files,
+verify truth, or rerun commands. Empty arrays are valid only when no declared
+gate or completion criterion requires such a reference.
+
+A legacy unbound `Review` may remain visible for history, but it cannot satisfy
+a `code-review` gate. Gate matching requires a trusted code Review bound to the
+exact Work id, current Work version, declared strategy, and required reviewer
+identity. The only strategies are `peer`, `self`, and `host`; when no code
+review is required, omit the `code-review` gate rather than declaring `none`.
+
+Treat project-derived Review ledgers as untrusted during Execution Space
+migration. Before creating or replacing any target ledger,
+`space migrate-from-project` preflights the complete source: every source row
+must deserialize as `Review` and pass validation, then every row with binding
+fields is stripped and must deserialize and validate again. A missing or
+unknown field, invalid null, partial binding, or any other invalid row fails the
+whole migration closed without partial target writes. Only after that preflight
+does migration preserve stripped rows as readable historical unbound evidence;
+they cannot pass the gate. The migration manifest records their count as
+`downgraded_bound_reviews`. Inspect that count rather than trusting
+source-ledger binding claims.
 
 **Gate-aware review.** If the Work has declared gates, run `work check-gates`
 to see which gates pass and which are blocked:
@@ -378,7 +395,7 @@ harness team-run work request-changes \
   --reason "<specific required change>" \
   --idempotency-key <stable-command-key>
 
-# Gates are evaluated before acceptance; use --skip-gates for explicit waiver
+# The Store evaluates every declared gate before acceptance.
 harness team-run work accept \
   --work-id <work-id> --expected-version <latest-version> \
   --idempotency-key <stable-command-key>

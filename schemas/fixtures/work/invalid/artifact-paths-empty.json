@@ -1,0 +1,15 @@
+{
+  "id": "work-artifact-paths-empty",
+  "team_run_id": "team-run-1",
+  "title": "Reject empty artifact paths",
+  "context_markdown": "Provided paths cannot be empty.",
+  "completion_criteria_markdown": "The schema rejects the empty list.",
+  "status": "open",
+  "claim_mode": "team_claim",
+  "priority": "high",
+  "created_by_actor": { "kind": "host", "id": "host" },
+  "gates": [{ "plugin": "artifact-exists", "config": { "paths": [] } }],
+  "version": 1,
+  "created_at": "unix-ms:1",
+  "updated_at": "unix-ms:1"
+}

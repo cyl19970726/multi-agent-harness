@@ -80,12 +80,96 @@
       }
     },
     "gate_spec": {
+      "oneOf": [
+        { "$ref": "#/$defs/github_pr_gate" },
+        { "$ref": "#/$defs/code_review_gate" },
+        { "$ref": "#/$defs/artifact_exists_gate" },
+        { "$ref": "#/$defs/check_pass_gate" }
+      ]
+    },
+    "github_pr_gate": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["plugin"],
+      "required": ["plugin", "config"],
       "properties": {
-        "plugin": { "type": "string", "minLength": 1 },
-        "config": { "description": "Plugin-specific configuration (free JSON)" }
+        "plugin": { "const": "github-pr" },
+        "config": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "require_merged": { "type": "boolean", "default": true },
+            "require_ci_pass": { "type": "boolean", "default": false }
+          }
+        }
+      }
+    },
+    "code_review_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plugin", "config"],
+      "properties": {
+        "plugin": { "const": "code-review" },
+        "config": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["strategy", "reviewer"],
+              "properties": {
+                "strategy": { "const": "peer" },
+                "reviewer": { "type": "string", "minLength": 1, "pattern": "\\S" }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["strategy"],
+              "properties": {
+                "strategy": { "type": "string", "enum": ["self", "host"] }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "artifact_exists_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plugin", "config"],
+      "properties": {
+        "plugin": { "const": "artifact-exists" },
+        "config": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "paths": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1, "pattern": "\\S" }
+            }
+          }
+        }
+      }
+    },
+    "check_pass_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plugin", "config"],
+      "properties": {
+        "plugin": { "const": "check-pass" },
+        "config": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "checks": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1, "pattern": "\\S" }
+            }
+          }
+        }
       }
     }
   }
