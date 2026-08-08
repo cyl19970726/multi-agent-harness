@@ -1247,6 +1247,10 @@ pub struct Review {
     /// actor (for example, an operator acting as Host).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authority_actor: Option<TeamActorRef>,
+    /// Durable command key for an exact, trusted Work Review retry. Generic
+    /// and historical Reviews omit it; Store-owned bound Review writes set it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_idempotency_key: Option<String>,
     /// Exact Work candidate reviewed. These three fields are optional only for
     /// compatibility with historical, unbound Review rows and must be present
     /// together for a Review to satisfy a Work gate.
@@ -1278,6 +1282,8 @@ struct ReviewWire {
     #[serde(default)]
     authority_actor: Option<TeamActorRef>,
     #[serde(default)]
+    command_idempotency_key: Option<String>,
+    #[serde(default)]
     reviewed_work_id: Option<String>,
     #[serde(default)]
     reviewed_work_version: Option<u64>,
@@ -1300,6 +1306,7 @@ impl<'de> Deserialize<'de> for Review {
             "review_strategy",
             "performed_by_actor",
             "authority_actor",
+            "command_idempotency_key",
         ] {
             if object.get(field).is_some_and(serde_json::Value::is_null) {
                 return Err(serde::de::Error::custom(format!(
@@ -1323,6 +1330,7 @@ impl<'de> Deserialize<'de> for Review {
             created_at: wire.created_at,
             performed_by_actor: wire.performed_by_actor,
             authority_actor: wire.authority_actor,
+            command_idempotency_key: wire.command_idempotency_key,
             reviewed_work_id: wire.reviewed_work_id,
             reviewed_work_version: wire.reviewed_work_version,
             review_strategy: wire.review_strategy,
@@ -1705,12 +1713,23 @@ impl Validate for Review {
             require_non_empty(&actor.id, "Review.authority_actor.id")?;
             validate_actor_metadata(actor, "Review.authority_actor")?;
         }
+        if let Some(key) = &self.command_idempotency_key {
+            require_non_empty(key, "Review.command_idempotency_key")?;
+        }
         match (
             self.reviewed_work_id.as_deref(),
             self.reviewed_work_version,
             self.review_strategy,
         ) {
-            (None, None, None) => Ok(()),
+            (None, None, None) => {
+                if self.command_idempotency_key.is_some() {
+                    return Err(ValidationError::Invalid {
+                        field: "Review.command_idempotency_key",
+                        reason: "is reserved for a bound trusted Work Review",
+                    });
+                }
+                Ok(())
+            }
             (Some(work_id), Some(version), Some(_)) => {
                 require_non_empty(work_id, "Review.reviewed_work_id")?;
                 if version == 0 {
@@ -3179,9 +3198,213 @@ pub enum TeamMessageKind {
     ReviewResult,
     /// A real runtime control record, not ordinary chat.
     Control,
+    /// A provider-native turn is paused and has emitted a strictly typed,
+    /// canonical JSON request for Host/Operator input. This is an additive
+    /// message bridge; historical [`PendingInteraction`] rows remain valid.
+    ProviderInteractionRequest,
+    /// The correlated answer to one [`TeamMessageKind::ProviderInteractionRequest`].
+    /// Its `causation_id` must point directly at the request message.
+    ProviderInteractionResponse,
     /// Historical fan-out label; new writes use one `Message` with multiple
     /// recipients.
     Broadcast,
+}
+
+/// Closed semantic type carried inside a provider-interaction message body.
+/// Request/response phase is represented by [`TeamMessageKind`], never by this
+/// field. `Unknown` is an explicit fail-safe route, not an open string escape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderInteractionType {
+    Question,
+    ToolApproval,
+    PlanReview,
+    RejectOnly,
+    Unknown,
+}
+
+/// One provider-native answer option. This is deliberately separate from the
+/// historical [`PendingInteractionOption`] so old ledger rows remain readable
+/// while new bridge bodies reject unknown fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderInteractionMessageOption {
+    pub id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent: Option<String>,
+}
+
+/// Canonical JSON body of a provider-interaction request TeamMessage.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderInteractionRequestBody {
+    #[serde(rename = "type")]
+    pub interaction_type: ProviderInteractionType,
+    pub prompt: String,
+    pub options: Vec<ProviderInteractionMessageOption>,
+    pub provider: String,
+    pub provider_request_id: String,
+    pub method: String,
+    pub session: String,
+    pub member: String,
+    pub generation: u64,
+}
+
+/// Canonical JSON body of a provider-interaction response TeamMessage.
+/// Exactly one of `choice` and `text` is present. Choice answers are checked
+/// against the request's option ids by the Store's atomic response boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderInteractionResponseBody {
+    #[serde(rename = "type")]
+    pub interaction_type: ProviderInteractionType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choice: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    pub session: String,
+    pub member: String,
+    pub generation: u64,
+}
+
+fn require_provider_interaction_text(value: &str, field: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        Err(format!("provider interaction {field} must not be empty"))
+    } else {
+        Ok(())
+    }
+}
+
+impl ProviderInteractionRequestBody {
+    pub fn validate(&self) -> Result<(), String> {
+        require_provider_interaction_text(&self.prompt, "prompt")?;
+        require_provider_interaction_text(&self.provider, "provider")?;
+        require_provider_interaction_text(&self.provider_request_id, "provider_request_id")?;
+        require_provider_interaction_text(&self.method, "method")?;
+        require_provider_interaction_text(&self.session, "session")?;
+        require_provider_interaction_text(&self.member, "member")?;
+        if self.generation == 0 {
+            return Err("provider interaction generation must be at least 1".to_string());
+        }
+        let mut option_ids = BTreeSet::new();
+        for option in &self.options {
+            require_provider_interaction_text(&option.id, "option id")?;
+            require_provider_interaction_text(&option.label, "option label")?;
+            if option
+                .intent
+                .as_deref()
+                .is_some_and(|intent| intent.trim().is_empty())
+            {
+                return Err("provider interaction option intent must not be empty".to_string());
+            }
+            if !option_ids.insert(option.id.as_str()) {
+                return Err(format!(
+                    "provider interaction option id is duplicated: {}",
+                    option.id
+                ));
+            }
+        }
+        if !matches!(
+            self.interaction_type,
+            ProviderInteractionType::Question | ProviderInteractionType::Unknown
+        ) && self.options.is_empty()
+        {
+            return Err(
+                "provider approval/review interactions require at least one option".to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    pub fn to_canonical_json(&self) -> Result<String, String> {
+        self.validate()?;
+        serde_json::to_string(self).map_err(|error| error.to_string())
+    }
+
+    pub fn parse_canonical_json(body: &str) -> Result<Self, String> {
+        let parsed: Self = serde_json::from_str(body).map_err(|error| error.to_string())?;
+        parsed.validate()?;
+        if parsed.to_canonical_json()? != body {
+            return Err("provider interaction request body is not canonical JSON".to_string());
+        }
+        Ok(parsed)
+    }
+
+    /// Stable, unambiguous correlation derived from provider, native session,
+    /// and native request id. Length prefixes avoid delimiter collisions.
+    pub fn correlation_id(&self) -> String {
+        format!(
+            "provider-interaction:{}:{}:{}:{}:{}",
+            self.provider.len(),
+            self.provider,
+            self.session.len(),
+            self.session,
+            self.provider_request_id
+        )
+    }
+}
+
+impl ProviderInteractionResponseBody {
+    pub fn validate(&self) -> Result<(), String> {
+        require_provider_interaction_text(&self.session, "session")?;
+        require_provider_interaction_text(&self.member, "member")?;
+        if self.generation == 0 {
+            return Err("provider interaction generation must be at least 1".to_string());
+        }
+        match (self.choice.as_deref(), self.text.as_deref()) {
+            (Some(choice), None) => require_provider_interaction_text(choice, "choice")?,
+            (None, Some(text)) => require_provider_interaction_text(text, "text")?,
+            (Some(_), Some(_)) => {
+                return Err(
+                    "provider interaction response choice and text are mutually exclusive"
+                        .to_string(),
+                )
+            }
+            (None, None) => {
+                return Err(
+                    "provider interaction response requires exactly one of choice or text"
+                        .to_string(),
+                )
+            }
+        }
+        if self.text.is_some()
+            && !matches!(
+                self.interaction_type,
+                ProviderInteractionType::Question | ProviderInteractionType::Unknown
+            )
+        {
+            return Err(
+                "only question or unknown provider interactions accept free text".to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    pub fn to_canonical_json(&self) -> Result<String, String> {
+        self.validate()?;
+        serde_json::to_string(self).map_err(|error| error.to_string())
+    }
+
+    pub fn parse_canonical_json(body: &str) -> Result<Self, String> {
+        let parsed: Self = serde_json::from_str(body).map_err(|error| error.to_string())?;
+        parsed.validate()?;
+        if parsed.to_canonical_json()? != body {
+            return Err("provider interaction response body is not canonical JSON".to_string());
+        }
+        Ok(parsed)
+    }
+}
+
+/// Deterministic id of the only response allowed for one provider-interaction
+/// request. The request id is length-prefixed to keep the mapping unambiguous.
+pub fn provider_interaction_response_id(request_message_id: &str) -> Result<String, String> {
+    require_provider_interaction_text(request_message_id, "request message id")?;
+    Ok(format!(
+        "provider-interaction-response:{}:{}",
+        request_message_id.len(),
+        request_message_id
+    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -3198,6 +3421,7 @@ pub enum TeamActorKind {
 /// trusted local connection or gateway that selected the actor; it never
 /// contains a credential.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TeamActorRef {
     pub kind: TeamActorKind,
     pub id: String,
@@ -3216,6 +3440,7 @@ pub enum TeamRecipientKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TeamRecipientRef {
     pub kind: TeamRecipientKind,
     pub id: String,
@@ -3263,6 +3488,7 @@ pub enum TeamMessageResponseIntent {
 
 /// One recipient's delivery record inside a [`TeamMessage`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TeamMessageDelivery {
     pub member_id: String,
     pub policy: TeamDeliveryPolicy,
@@ -3294,6 +3520,7 @@ pub struct TeamMessageDelivery {
 /// reserved `"host"` id or a `MemberRun` id. `correlation_id` groups a message
 /// with its replies; `causation_id` points at the message this one answers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TeamMessage {
     pub id: String,
     pub team_run_id: String,
@@ -3357,8 +3584,13 @@ impl TeamMessage {
             return intent;
         }
         match self.kind {
-            TeamMessageKind::Handoff | TeamMessageKind::Control => {
+            TeamMessageKind::Handoff
+            | TeamMessageKind::Control
+            | TeamMessageKind::ProviderInteractionRequest => {
                 TeamMessageResponseIntent::ResponseRequired
+            }
+            TeamMessageKind::ProviderInteractionResponse => {
+                TeamMessageResponseIntent::Informational
             }
             _ if self.sent_by_peer_member() => TeamMessageResponseIntent::Informational,
             _ => TeamMessageResponseIntent::ResponseRequired,
@@ -3383,6 +3615,105 @@ impl TeamMessage {
     /// recipient and fences a same-correlation Handoff while still pending.
     pub fn requires_response(&self) -> bool {
         self.effective_response_intent() == TeamMessageResponseIntent::ResponseRequired
+    }
+
+    /// Validate only the additive provider-interaction envelope. Ordinary and
+    /// historical TeamMessages remain byte-for-byte compatible.
+    pub fn validate_provider_interaction_contract(&self) -> Result<(), String> {
+        match self.kind {
+            TeamMessageKind::ProviderInteractionRequest => {
+                let body = ProviderInteractionRequestBody::parse_canonical_json(&self.body)?;
+                if self.response_intent == Some(TeamMessageResponseIntent::Informational) {
+                    return Err("provider interaction request must require a response".to_string());
+                }
+                if body.member != self.from_member_id {
+                    return Err(
+                        "provider interaction request member must match from_member_id".to_string(),
+                    );
+                }
+                if !matches!(
+                    self.sender.as_ref(),
+                    Some(TeamActorRef {
+                        kind: TeamActorKind::MemberRun,
+                        id,
+                        ..
+                    }) if id == &body.member
+                ) {
+                    return Err(
+                        "provider interaction request sender must be its MemberRun".to_string()
+                    );
+                }
+                if self.recipients.as_slice()
+                    != [TeamRecipientRef {
+                        kind: TeamRecipientKind::Host,
+                        id: "host".to_string(),
+                    }]
+                    || self.to_member_ids.as_slice() != ["host"]
+                    || self.deliveries.len() != 1
+                    || self.deliveries[0].member_id != "host"
+                {
+                    return Err("provider interaction request must route only to Host".to_string());
+                }
+                if self.correlation_id != body.correlation_id() {
+                    return Err(
+                        "provider interaction request correlation_id is not provider/session/request-derived"
+                            .to_string(),
+                    );
+                }
+                if self.causation_id.is_some() {
+                    return Err(
+                        "provider interaction request must start its correlation without causation_id"
+                            .to_string(),
+                    );
+                }
+            }
+            TeamMessageKind::ProviderInteractionResponse => {
+                let body = ProviderInteractionResponseBody::parse_canonical_json(&self.body)?;
+                if self.response_intent == Some(TeamMessageResponseIntent::ResponseRequired) {
+                    return Err("provider interaction response must be informational".to_string());
+                }
+                if self.causation_id.as_deref().is_none_or(str::is_empty) {
+                    return Err(
+                        "provider interaction response requires request causation_id".to_string(),
+                    );
+                }
+                let canonical_sender = match self.sender.as_ref() {
+                    Some(sender) if sender.id.trim().is_empty() => false,
+                    Some(sender) if sender.kind == TeamActorKind::Host => {
+                        self.from_member_id == "host"
+                    }
+                    Some(sender) if sender.kind == TeamActorKind::Operator => {
+                        self.from_member_id == format!("operator:{}", sender.id)
+                    }
+                    Some(sender) if sender.kind == TeamActorKind::Service => {
+                        self.from_member_id == format!("service:{}", sender.id)
+                    }
+                    _ => false,
+                };
+                if !canonical_sender {
+                    return Err(
+                        "provider interaction response sender/from provenance is invalid"
+                            .to_string(),
+                    );
+                }
+                if self.recipients.as_slice()
+                    != [TeamRecipientRef {
+                        kind: TeamRecipientKind::MemberRun,
+                        id: body.member.clone(),
+                    }]
+                    || self.to_member_ids.as_slice() != [body.member.as_str()]
+                    || self.deliveries.len() != 1
+                    || self.deliveries[0].member_id != body.member
+                {
+                    return Err(
+                        "provider interaction response must route only to its MemberRun"
+                            .to_string(),
+                    );
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 }
 
@@ -3463,6 +3794,7 @@ pub enum WorkWorkspaceKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkWorkspace {
     pub kind: WorkWorkspaceKind,
     /// Absolute or project-relative path. For worktrees, this is OUTSIDE the
@@ -3495,6 +3827,7 @@ pub enum GitHubLinkKind {
 /// from the GitHub API (via the `gh` CLI) at link time and never silently
 /// re-synced, so a stored link states the observation made when it was created.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GitHubLink {
     pub kind: GitHubLinkKind,
     pub owner: String,
@@ -4098,6 +4431,7 @@ impl GateEngine {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Work {
     pub id: String,
     pub team_run_id: String,
@@ -5170,10 +5504,164 @@ mod tests {
     #[test]
     fn team_message_response_intent_defaults_from_kind() {
         // Review and runtime-control kinds require a response round from every sender.
-        for kind in [TeamMessageKind::Handoff, TeamMessageKind::Control] {
+        for kind in [
+            TeamMessageKind::Handoff,
+            TeamMessageKind::Control,
+            TeamMessageKind::ProviderInteractionRequest,
+        ] {
             assert!(bare_team_message(kind).requires_response(), "{kind:?}");
             assert!(peer_team_message(kind).requires_response(), "{kind:?}");
         }
+        assert!(
+            !bare_team_message(TeamMessageKind::ProviderInteractionResponse).requires_response()
+        );
+        assert!(
+            !peer_team_message(TeamMessageKind::ProviderInteractionResponse).requires_response()
+        );
+    }
+
+    fn provider_interaction_request_body() -> ProviderInteractionRequestBody {
+        ProviderInteractionRequestBody {
+            interaction_type: ProviderInteractionType::Question,
+            prompt: "Choose a path".to_string(),
+            options: vec![ProviderInteractionMessageOption {
+                id: "yes".to_string(),
+                label: "Continue".to_string(),
+                intent: Some("approve".to_string()),
+            }],
+            provider: "codex".to_string(),
+            provider_request_id: "request-7".to_string(),
+            method: "item/tool/requestUserInput".to_string(),
+            session: "thread-9".to_string(),
+            member: "member-run-2".to_string(),
+            generation: 3,
+        }
+    }
+
+    #[test]
+    fn provider_interaction_body_is_strict_canonical_json() {
+        let request = provider_interaction_request_body();
+        let canonical = request.to_canonical_json().expect("canonical request");
+        assert_eq!(
+            ProviderInteractionRequestBody::parse_canonical_json(&canonical).expect("parse"),
+            request
+        );
+
+        let reordered = canonical.replacen(
+            r#"{"type":"question","prompt":"Choose a path""#,
+            r#"{"prompt":"Choose a path","type":"question""#,
+            1,
+        );
+        assert!(
+            ProviderInteractionRequestBody::parse_canonical_json(&reordered)
+                .expect_err("noncanonical key order")
+                .contains("not canonical")
+        );
+        let with_unknown = canonical.replacen(
+            r#"{"type":"question""#,
+            r#"{"unknown":true,"type":"question""#,
+            1,
+        );
+        assert!(
+            ProviderInteractionRequestBody::parse_canonical_json(&with_unknown)
+                .expect_err("unknown body field")
+                .contains("unknown field")
+        );
+    }
+
+    #[test]
+    fn provider_interaction_response_requires_one_answer_branch() {
+        let response = ProviderInteractionResponseBody {
+            interaction_type: ProviderInteractionType::Question,
+            choice: Some("yes".to_string()),
+            text: None,
+            session: "thread-9".to_string(),
+            member: "member-run-2".to_string(),
+            generation: 3,
+        };
+        let canonical = response.to_canonical_json().expect("choice response");
+        assert_eq!(
+            ProviderInteractionResponseBody::parse_canonical_json(&canonical).expect("parse"),
+            response
+        );
+
+        let mut both = response.clone();
+        both.text = Some("also text".to_string());
+        assert!(both
+            .validate()
+            .expect_err("mutually exclusive")
+            .contains("mutually"));
+
+        let mut approval_text = response;
+        approval_text.interaction_type = ProviderInteractionType::ToolApproval;
+        approval_text.choice = None;
+        approval_text.text = Some("yes".to_string());
+        assert!(approval_text
+            .validate()
+            .expect_err("approval must choose")
+            .contains("free text"));
+        assert_eq!(
+            provider_interaction_response_id("request-7").expect("stable id"),
+            "provider-interaction-response:9:request-7"
+        );
+        assert!(provider_interaction_response_id("  ").is_err());
+    }
+
+    #[test]
+    fn provider_interaction_request_envelope_binds_identity_and_correlation() {
+        let body = provider_interaction_request_body();
+        let mut message = bare_team_message(TeamMessageKind::ProviderInteractionRequest);
+        message.from_member_id = body.member.clone();
+        message.sender = Some(TeamActorRef {
+            kind: TeamActorKind::MemberRun,
+            id: body.member.clone(),
+            display_name: None,
+            authn_source: Some("provider_reverse_rpc".to_string()),
+        });
+        message.recipients = vec![TeamRecipientRef {
+            kind: TeamRecipientKind::Host,
+            id: "host".to_string(),
+        }];
+        message.to_member_ids = vec!["host".to_string()];
+        message.deliveries = vec![TeamMessageDelivery {
+            member_id: "host".to_string(),
+            policy: TeamDeliveryPolicy::ManualAck,
+            status: TeamDeliveryStatus::Delivered,
+            attempt: 1,
+            claim_id: None,
+            claimed_by_supervisor_id: None,
+            claimed_generation: None,
+            claimed_unix_ms: None,
+            claim_expires_unix_ms: None,
+            provider_receipt_id: Some("host-receipt".to_string()),
+            failure_reason: None,
+            updated_at: "now".to_string(),
+        }];
+        message.correlation_id = body.correlation_id();
+        message.body = body.to_canonical_json().expect("body");
+        message
+            .validate_provider_interaction_contract()
+            .expect("valid request envelope");
+
+        message.correlation_id = "caller-chosen".to_string();
+        assert!(message
+            .validate_provider_interaction_contract()
+            .expect_err("unstable correlation")
+            .contains("correlation_id"));
+
+        message.correlation_id = body.correlation_id();
+        message.response_intent = Some(TeamMessageResponseIntent::Informational);
+        assert!(message
+            .validate_provider_interaction_contract()
+            .expect_err("request cannot suppress response")
+            .contains("must require"));
+
+        message.response_intent = Some(TeamMessageResponseIntent::ResponseRequired);
+        message.sender.as_mut().expect("sender").id = "forged-member".to_string();
+        assert!(message
+            .validate_provider_interaction_contract()
+            .expect_err("request sender is member-bound")
+            .contains("sender"));
     }
 
     #[test]
@@ -5297,6 +5785,7 @@ mod tests {
             created_at: "2026-05-26T00:00:00Z".to_string(),
             performed_by_actor: None,
             authority_actor: None,
+            command_idempotency_key: None,
             reviewed_work_id: None,
             reviewed_work_version: None,
             review_strategy: None,
@@ -5412,6 +5901,7 @@ mod tests {
             created_at: "2026-05-26T00:00:00Z".to_string(),
             performed_by_actor: None,
             authority_actor: None,
+            command_idempotency_key: None,
             reviewed_work_id: None,
             reviewed_work_version: None,
             review_strategy: None,
@@ -7287,6 +7777,7 @@ mod tests {
             created_at: "unix-ms:10".to_string(),
             performed_by_actor: None,
             authority_actor: None,
+            command_idempotency_key: None,
             reviewed_work_id: Some(work_id.to_string()),
             reviewed_work_version: Some(1),
             review_strategy: Some(CodeReviewStrategy::Peer),

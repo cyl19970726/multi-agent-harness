@@ -8,6 +8,65 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const pluginRoot = join(repoRoot, "plugins", "star-harness");
 const errors = [];
 
+function continuedCommands(markdown, prefix) {
+  const lines = markdown.split(/\r?\n/);
+  const commands = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!lines[index].trimStart().startsWith(prefix)) continue;
+    const commandLines = [lines[index].trim()];
+    while (commandLines.at(-1).endsWith("\\") && index + 1 < lines.length) {
+      index += 1;
+      commandLines.push(lines[index].trim());
+    }
+    commands.push(commandLines.join(" "));
+  }
+  return commands;
+}
+
+function checkWorkCreateExamples() {
+  const skillPath = join(
+    repoRoot,
+    "skills",
+    "orchestrate-mission-waves",
+    "SKILL.md",
+  );
+  const markdown = readFileSync(skillPath, "utf8");
+  const commands = [
+    ...continuedCommands(markdown, "harness team-run work create"),
+    ...continuedCommands(markdown, "firm team-run work create"),
+  ];
+  if (commands.length === 0) {
+    errors.push(`${skillPath}: must contain executable team-run work create examples`);
+    return;
+  }
+  for (const command of commands) {
+    if (command.startsWith("firm ")) {
+      errors.push(`${skillPath}: use the installed \`harness\` executable, not \`firm\`: ${command}`);
+    }
+    for (const flag of ["--team-run-id", "--title", "--completion-criteria"]) {
+      if (!command.includes(flag)) {
+        errors.push(`${skillPath}: work create example is missing required ${flag}: ${command}`);
+      }
+    }
+    if (command.includes("--claim-mode host_assign") && !command.includes("--owner-member-run-id")) {
+      errors.push(`${skillPath}: host_assign example needs --owner-member-run-id: ${command}`);
+    }
+    if (command.includes("--owner-member-run-id") && !command.includes("--claim-mode host_assign")) {
+      errors.push(`${skillPath}: assigned example must state --claim-mode host_assign: ${command}`);
+    }
+    if (command.includes("code-review:") && !command.includes("reviewer=")) {
+      errors.push(`${skillPath}: code-review example must name its reviewer: ${command}`);
+    }
+    if (command.includes("--worktree")) {
+      for (const flag of ["--context", "--owner-member-run-id", "--claim-mode host_assign"] ) {
+        if (!command.includes(flag)) {
+          errors.push(`${skillPath}: code worktree example is missing ${flag}: ${command}`);
+        }
+      }
+    }
+  }
+}
+
 function readJson(path) {
   try {
     return JSON.parse(readFileSync(path, "utf8"));
@@ -93,6 +152,7 @@ for (const skill of [
     errors.push(`missing generated plugin skill: ${skill}`);
   }
 }
+checkWorkCreateExamples();
 
 if (errors.length) {
   for (const error of errors) console.error(error);

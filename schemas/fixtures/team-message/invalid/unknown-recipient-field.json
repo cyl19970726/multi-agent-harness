@@ -1,0 +1,16 @@
+{
+  "id": "tmsg-unknown-recipient",
+  "team_run_id": "trun-1",
+  "from_member_id": "host",
+  "recipients": [
+    {
+      "kind": "member_run",
+      "id": "mrun-1",
+      "unknown_recipient_field": true
+    }
+  ],
+  "kind": "message",
+  "body": "Closed recipient wire",
+  "correlation_id": "corr-unknown-recipient",
+  "created_at": "2026-08-08T00:00:00Z"
+}

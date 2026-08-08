@@ -197,14 +197,23 @@ the first member starts and cleans it up on completion (when
 
 ```bash
 # Code work: isolated worktree (most common)
-firm team-run work create --title "implement login" \
+harness team-run work create --title "implement login" \
   --team-run-id <team-run-id> \
+  --context "Implement login only under the member's declared owned paths." \
+  --completion-criteria "Login tests pass and the merged PR contains only the declared paths." \
+  --owner-member-run-id <implementer-member-run-id> \
+  --claim-mode host_assign \
   --worktree ../repo-feat-login \
-  --gate github-pr:require_merged=true
+  --gate github-pr:require_merged=true \
+  --gate code-review:strategy=peer,reviewer=<critic-member-run-id>
 
 # Exploration work: plain directory, keep after done
-firm team-run work create --title "research async runtime" \
+harness team-run work create --title "research async runtime" \
   --team-run-id <team-run-id> \
+  --context "Compare the supported async runtimes and record source links." \
+  --completion-criteria "The comparison names tradeoffs, a recommendation, and its sources." \
+  --claim-mode team_claim \
+  --eligible-member-id <researcher-member-run-id> \
   --workspace-kind dir --workspace-path ../research-runtime \
   --workspace-no-cleanup
 
@@ -217,6 +226,13 @@ Workspace is declared at Work creation time and available on
 `Work.workspace`. When a member claims the Work, the harness populates
 `MemberRun.worktree_ref` and injects the path as cwd via
 `LaunchSpec.workspace`.
+
+`--owner-member-run-id` is the Work assignee for `host_assign`. Owned paths are
+a MemberRun boundary, configured when forming the TeamRun (for example with
+`team-run create --member name:role:provider@path` or
+`--member-owned-path name:path`); `team-run work create` has no
+`--owned-path` flag. For code work, keep the Work workspace inside that member
+boundary and name the reviewer in the `code-review` gate.
 
 ## Create And Allocate Works
 
@@ -261,9 +277,11 @@ harness team-run work create \
   --team-run-id <team-run-id> \
   --title "implement login" \
   --context "..." --completion-criteria "..." \
+  --owner-member-run-id <implementer-member-run-id> \
+  --claim-mode host_assign \
   --worktree ../repo-feat-login \
   --gate github-pr:require_merged=true,require_ci_pass=true \
-  --gate code-review:strategy=peer,reviewer=critic-1 \
+  --gate code-review:strategy=peer,reviewer=<critic-member-run-id> \
   --gate check-pass \
   --gate artifact-exists:paths=src/auth/mod.rs
 

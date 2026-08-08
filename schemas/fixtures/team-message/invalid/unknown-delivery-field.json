@@ -1,0 +1,19 @@
+{
+  "id": "tmsg-unknown-delivery",
+  "team_run_id": "trun-1",
+  "from_member_id": "host",
+  "kind": "message",
+  "body": "Closed delivery wire",
+  "correlation_id": "corr-unknown-delivery",
+  "deliveries": [
+    {
+      "member_id": "mrun-1",
+      "policy": "queue",
+      "status": "queued",
+      "attempt": 0,
+      "updated_at": "2026-08-08T00:00:00Z",
+      "unknown_delivery_field": true
+    }
+  ],
+  "created_at": "2026-08-08T00:00:00Z"
+}

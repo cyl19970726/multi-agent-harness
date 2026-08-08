@@ -23,8 +23,10 @@
 //!   this client; harness v0 does not serve client methods, so the agent must
 //!   use its own built-in tools instead. `session/request_permission` is the
 //!   one reverse-RPC method the Team Member adapter serves: the orchestrator
-//!   persists a PendingInteraction and the same ACP turn waits for an answer.
-//!   Unknown reverse-RPC methods still fail closed with method-not-found.
+//!   persists new interactions as provider request/response TeamMessages and
+//!   the same ACP turn waits for an answer. PendingInteraction remains only a
+//!   legacy compatibility read/resolve path. Unknown reverse-RPC methods still
+//!   fail closed with method-not-found.
 //! - Reasoning streams (`agent_thought_chunk`) are passed through to the
 //!   caller verbatim. The team-run orchestrator deliberately does not persist
 //!   them: thinking is not evidence, replayable history, or peer-visible
@@ -69,6 +71,21 @@ pub(crate) enum PromptControl {
     Continue,
     Cancel,
     TerminateRuntime,
+}
+
+#[derive(Clone, Copy)]
+struct PromptTimeouts {
+    idle: Duration,
+    cancel_grace: Duration,
+}
+
+impl PromptTimeouts {
+    fn production(idle: Duration) -> Self {
+        Self {
+            idle,
+            cancel_grace: CANCEL_GRACE,
+        }
+    }
 }
 
 /// One `kimi acp` child process speaking line-delimited JSON-RPC. Not `Sync`:
@@ -473,12 +490,14 @@ impl KimiAcpClient {
     ///
     /// `on_update` fires for every `session/update` notification, passed the
     /// `params.update` object (so callers pattern-match `sessionUpdate`
-    /// directly). Frames are also counted as ACTIVITY: any frame resets the
-    /// idle clock, so a slow-but-streaming turn never times out.
+    /// directly). Well-formed frames for the active session count as activity,
+    /// so a slow-but-streaming turn never times out. Frames for stale or other
+    /// sessions are ignored and cannot keep a wedged prompt alive.
     ///
     /// On `idle_timeout` (0 = default 180s) the client first sends
     /// `session/cancel` and waits [`CANCEL_GRACE`] for the prompt response;
     /// a still-silent session is then killed tree-wide and an error returned.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn prompt(
         &mut self,
         text: &str,
@@ -486,6 +505,7 @@ impl KimiAcpClient {
         mut on_accepted: impl FnMut(&str) -> CliResult<()>,
         mut on_update: impl FnMut(&serde_json::Value),
         mut on_request: impl FnMut(&serde_json::Value) -> CliResult<serde_json::Value>,
+        mut on_request_written: impl FnMut(&serde_json::Value) -> CliResult<()>,
         mut control: impl FnMut() -> CliResult<PromptControl>,
     ) -> CliResult<PromptOutcome> {
         let session_id = self
@@ -501,10 +521,11 @@ impl KimiAcpClient {
         )?;
         self.drive_prompt(
             request,
-            idle_timeout,
+            PromptTimeouts::production(idle_timeout),
             &mut on_accepted,
             &mut on_update,
             &mut on_request,
+            &mut on_request_written,
             &mut control,
         )
     }
@@ -515,13 +536,15 @@ impl KimiAcpClient {
     /// deterministically against scripted response/update channels without a
     /// timing-sensitive provider process. Production calls this immediately
     /// after writing `session/prompt`; there is no alternate receipt path.
+    #[allow(clippy::too_many_arguments)]
     fn drive_prompt(
         &mut self,
         request: (u64, Receiver<serde_json::Value>),
-        idle_timeout: Duration,
+        timeouts: PromptTimeouts,
         on_accepted: &mut impl FnMut(&str) -> CliResult<()>,
         on_update: &mut impl FnMut(&serde_json::Value),
         on_request: &mut impl FnMut(&serde_json::Value) -> CliResult<serde_json::Value>,
+        on_request_written: &mut impl FnMut(&serde_json::Value) -> CliResult<()>,
         control: &mut impl FnMut() -> CliResult<PromptControl>,
     ) -> CliResult<PromptOutcome> {
         let (prompt_id, response) = request;
@@ -529,10 +552,10 @@ impl KimiAcpClient {
             .session_id
             .clone()
             .ok_or_else(|| CliError::Usage("kimi acp session not established".to_string()))?;
-        let idle_limit = if idle_timeout.is_zero() {
+        let idle_limit = if timeouts.idle.is_zero() {
             Duration::from_secs(DEFAULT_PROMPT_IDLE_TIMEOUT_SECS)
         } else {
-            idle_timeout
+            timeouts.idle
         };
         let provider_receipt_id = format!("kimi-acp-prompt:{prompt_id}");
         let mut accepted = false;
@@ -592,7 +615,7 @@ impl KimiAcpClient {
                         on_accepted(&provider_receipt_id)?;
                     }
                     for update in &tail {
-                        self.handle_incoming(update, on_update, on_request)?;
+                        self.handle_incoming(update, on_update, on_request, on_request_written)?;
                     }
                     return Ok(outcome);
                 }
@@ -614,8 +637,14 @@ impl KimiAcpClient {
                         on_accepted(&provider_receipt_id)?;
                         accepted = true;
                     }
-                    last_activity = Instant::now();
-                    self.handle_incoming(&frame, on_update, on_request)?;
+                    // The reader multiplexes every ACP frame onto this
+                    // channel. Refresh the prompt clock only after validating
+                    // that the frame is meaningful activity for this session;
+                    // otherwise wrong-session traffic can hide a wedged turn.
+                    if active_session_activity(&frame, &session_id) {
+                        last_activity = Instant::now();
+                    }
+                    self.handle_incoming(&frame, on_update, on_request, on_request_written)?;
                     continue;
                 }
                 Err(TryRecvError::Empty) => {}
@@ -626,7 +655,7 @@ impl KimiAcpClient {
             }
 
             if let Some(cancelled) = cancelled_at {
-                if cancelled.elapsed() > CANCEL_GRACE {
+                if cancelled.elapsed() > timeouts.cancel_grace {
                     self.kill_quiet();
                     lock(&self.pending).remove(&prompt_id);
                     return Err(CliError::Usage(format!(
@@ -653,6 +682,7 @@ impl KimiAcpClient {
         frame: &serde_json::Value,
         on_update: &mut impl FnMut(&serde_json::Value),
         on_request: &mut impl FnMut(&serde_json::Value) -> CliResult<serde_json::Value>,
+        on_request_written: &mut impl FnMut(&serde_json::Value) -> CliResult<()>,
     ) -> CliResult<()> {
         if frame.get("method").and_then(|m| m.as_str()) == Some("session/update") {
             if frame
@@ -710,6 +740,9 @@ impl KimiAcpClient {
                 })
             };
             write_frame(&mut self.stdin, &response)?;
+            if method == "session/request_permission" && response.get("result").is_some() {
+                on_request_written(frame)?;
+            }
         }
         Ok(())
     }
@@ -771,6 +804,33 @@ impl Drop for KimiAcpClient {
     /// must never leak a kimi process.
     fn drop(&mut self) {
         self.kill_quiet();
+    }
+}
+
+/// Whether a queued agent frame is valid liveness evidence for `session_id`.
+///
+/// The update channel is process-wide, so session identity must be checked
+/// before the prompt idle clock is refreshed. Keep this broader than receipt
+/// evidence: session-level updates are legitimate liveness but do not prove
+/// that the current prompt was accepted.
+fn active_session_activity(frame: &serde_json::Value, session_id: &str) -> bool {
+    let method = frame.get("method").and_then(|method| method.as_str());
+    let matches_session = frame
+        .pointer("/params/sessionId")
+        .and_then(|id| id.as_str())
+        == Some(session_id);
+    match method {
+        Some("session/update") => {
+            matches_session
+                && frame
+                    .pointer("/params/update/sessionUpdate")
+                    .and_then(|kind| kind.as_str())
+                    .is_some()
+        }
+        Some("session/request_permission") => {
+            matches_session && frame.get("id").is_some_and(|id| !id.is_null())
+        }
+        _ => false,
     }
 }
 
@@ -1042,10 +1102,11 @@ mod tests {
         client
             .drive_prompt(
                 (1, response),
-                Duration::from_secs(30),
+                PromptTimeouts::production(Duration::from_secs(30)),
                 on_accepted,
                 on_update,
                 on_request,
+                &mut |_| Ok(()),
                 &mut || Ok(PromptControl::Continue),
             )
             .expect("scripted prompt completes")
@@ -1250,6 +1311,127 @@ mod tests {
         }
     }
 
+    #[test]
+    fn prompt_idle_activity_requires_a_well_formed_frame_for_the_active_session() {
+        assert!(active_session_activity(
+            &session_update("available_commands_update"),
+            "scripted-session"
+        ));
+        assert!(active_session_activity(
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "session/request_permission",
+                "params": {"sessionId": "scripted-session"}
+            }),
+            "scripted-session"
+        ));
+
+        for frame in [
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "another-session",
+                    "update": {"sessionUpdate": "agent_message_chunk"}
+                }
+            }),
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 8,
+                "method": "session/request_permission",
+                "params": {"sessionId": "another-session"}
+            }),
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {"sessionId": "scripted-session", "update": {}}
+            }),
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 9,
+                "method": "future/reverse_rpc",
+                "params": {"sessionId": "scripted-session"}
+            }),
+        ] {
+            assert!(
+                !active_session_activity(&frame, "scripted-session"),
+                "{frame}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wrong_session_frame_flood_cannot_prevent_prompt_idle_timeout() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let (mut client, update_tx) = scripted_client();
+        let (_response_tx, response) = channel::<serde_json::Value>();
+        let stop = Arc::new(AtomicBool::new(false));
+        let sent = Arc::new(AtomicUsize::new(0));
+        let producer_stop = Arc::clone(&stop);
+        let producer_sent = Arc::clone(&sent);
+        let producer = std::thread::spawn(move || {
+            let mut id = 100_u64;
+            while !producer_stop.load(Ordering::Relaxed) {
+                let frame = if id.is_multiple_of(2) {
+                    serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": "stale-session",
+                            "update": {"sessionUpdate": "agent_message_chunk"}
+                        }
+                    })
+                } else {
+                    serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "method": "session/request_permission",
+                        "params": {"sessionId": "stale-session"}
+                    })
+                };
+                if update_tx.send(frame).is_err() {
+                    break;
+                }
+                producer_sent.fetch_add(1, Ordering::Relaxed);
+                id += 1;
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+
+        let started = Instant::now();
+        let result = client.drive_prompt(
+            (1, response),
+            PromptTimeouts {
+                idle: Duration::from_millis(40),
+                cancel_grace: Duration::from_millis(40),
+            },
+            &mut |_| panic!("wrong-session traffic must not publish a receipt"),
+            &mut |_| panic!("wrong-session updates must not reach the callback"),
+            &mut |_| panic!("wrong-session requests must not reach the callback"),
+            &mut |_| panic!("wrong-session requests must not be written"),
+            &mut || Ok(PromptControl::Continue),
+        );
+        stop.store(true, Ordering::Relaxed);
+        producer.join().expect("join wrong-session producer");
+
+        let error = match result {
+            Ok(_) => panic!("wrong-session flood must not mask idle timeout"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("prompt idle"), "{error}");
+        assert!(
+            sent.load(Ordering::Relaxed) >= 10,
+            "test must sustain a real wrong-session flood"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "test timeout path should be bounded"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn scripted_session_only_update_then_provider_error_publishes_no_receipt() {
@@ -1389,6 +1571,90 @@ mod tests {
 
         assert!(outcome.provider_error.is_some());
         assert_eq!(receipts, ["kimi-acp-prompt:1"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reverse_request_written_callback_runs_only_after_native_write() {
+        let (mut client, update_tx) = scripted_client();
+        let (response_tx, response) = channel();
+        update_tx
+            .send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 44,
+                "method": "session/request_permission",
+                "params": {"sessionId": "scripted-session"}
+            }))
+            .expect("queue reverse request");
+        let mut response_tx = Some(response_tx);
+        let events = std::cell::RefCell::new(Vec::new());
+
+        let outcome = client
+            .drive_prompt(
+                (1, response),
+                PromptTimeouts::production(Duration::from_secs(30)),
+                &mut |_| Ok(()),
+                &mut |_| {},
+                &mut |_| {
+                    events.borrow_mut().push("handler_returned");
+                    response_tx
+                        .take()
+                        .expect("one terminal response")
+                        .send(provider_error_response())
+                        .expect("queue provider error");
+                    Ok(serde_json::json!({"outcome": {"outcome": "cancelled"}}))
+                },
+                &mut |request| {
+                    assert_eq!(request["id"].as_u64(), Some(44));
+                    events.borrow_mut().push("response_written");
+                    Ok(())
+                },
+                &mut || Ok(PromptControl::Continue),
+            )
+            .expect("scripted prompt completes");
+
+        assert!(outcome.provider_error.is_some());
+        assert_eq!(
+            events.into_inner(),
+            ["handler_returned", "response_written"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reverse_request_write_failure_never_publishes_written_callback() {
+        let (mut client, update_tx) = scripted_client();
+        client.child.kill().expect("kill scripted ACP sink");
+        client.child.wait().expect("reap scripted ACP sink");
+        let (_response_tx, response) = channel();
+        update_tx
+            .send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 45,
+                "method": "session/request_permission",
+                "params": {"sessionId": "scripted-session"}
+            }))
+            .expect("queue reverse request");
+        let mut written = 0;
+
+        let result = client.drive_prompt(
+            (1, response),
+            PromptTimeouts::production(Duration::from_secs(30)),
+            &mut |_| Ok(()),
+            &mut |_| {},
+            &mut |_| Ok(serde_json::json!({"outcome": {"outcome": "cancelled"}})),
+            &mut |_| {
+                written += 1;
+                Ok(())
+            },
+            &mut || Ok(PromptControl::Continue),
+        );
+
+        assert!(
+            result.is_err(),
+            "broken native pipe must fail the response write"
+        );
+        assert_eq!(written, 0, "failed native write must not publish a receipt");
     }
 
     #[cfg(unix)]

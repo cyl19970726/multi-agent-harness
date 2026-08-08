@@ -46,10 +46,13 @@
     },
     "kind": {
       "type": "string",
-      "description": "New public writes use message, handoff, or control. Durable responsibility is a Work, never a message.",
-      "enum": ["message", "plan_request", "plan_proposal", "plan_feedback", "plan_approval", "question", "answer", "progress", "blocker", "handoff", "review_request", "review_result", "control", "broadcast"]
+      "description": "New public writes use message, handoff, control, provider_interaction_request, or provider_interaction_response. Durable responsibility is a Work, never a message. Provider-interaction request/response bodies are canonical JSON strings validated by the Rust contract.",
+      "enum": ["message", "plan_request", "plan_proposal", "plan_feedback", "plan_approval", "question", "answer", "progress", "blocker", "handoff", "review_request", "review_result", "control", "provider_interaction_request", "provider_interaction_response", "broadcast"]
     },
-    "body": { "type": "string" },
+    "body": {
+      "type": "string",
+      "description": "For provider_interaction_request/response this is whitespace-free canonical JSON. The typed Rust parser rejects unknown inner fields and validates type, options/choice-or-text, provider request, native session, member, and generation bindings."
+    },
     "correlation_id": { "type": "string", "minLength": 1 },
     "causation_id": { "type": ["string", "null"], "minLength": 1 },
     "response_intent": {
@@ -78,6 +81,7 @@
           "claimed_unix_ms": { "type": ["integer", "null"], "minimum": 0 },
           "claim_expires_unix_ms": { "type": ["integer", "null"], "minimum": 0 },
           "provider_receipt_id": { "type": ["string", "null"], "minLength": 1 },
+          "failure_reason": { "type": ["string", "null"], "minLength": 1 },
           "updated_at": { "type": "string", "minLength": 1 }
         }
       }

@@ -1,0 +1,10 @@
+{
+  "id": "tmsg-unknown-top",
+  "team_run_id": "trun-1",
+  "from_member_id": "host",
+  "kind": "message",
+  "body": "Closed outer wire",
+  "correlation_id": "corr-unknown-top",
+  "created_at": "2026-08-08T00:00:00Z",
+  "unknown_top_level": true
+}

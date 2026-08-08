@@ -156,6 +156,7 @@ fn codex_disconnect_resume_continues_receipted_work_on_same_session() {
             ("PATH", path.as_str()),
             ("FAKE_CODEX_AUTO_COMPLETE", "1"),
             ("FAKE_CODEX_EXIT_AFTER_FIRST_TURN", "1"),
+            ("FAKE_CODEX_EXIT_SPAWN_COUNT", "2"),
             (
                 "FAKE_CODEX_EXIT_ONCE_MARKER",
                 exit_once_marker.to_str().expect("marker path"),
@@ -209,9 +210,10 @@ fn codex_disconnect_resume_continues_receipted_work_on_same_session() {
         let disconnected = actions
             .iter()
             .any(|action| action["action_type"].as_str() == Some("disconnected"));
-        let runtime_recovery = actions
+        let runtime_recovery_count = actions
             .iter()
-            .any(|action| action["action_type"].as_str() == Some("runtime_recovery"));
+            .filter(|action| action["action_type"].as_str() == Some("runtime_recovery"))
+            .count();
         let member_idle_same_session = snapshot["member_runs"]
             .as_array()
             .into_iter()
@@ -222,7 +224,7 @@ fn codex_disconnect_resume_continues_receipted_work_on_same_session() {
                     && member["native_session"]["native_session_id"].as_str()
                         == Some("thread_fake_codex_app_server")
             });
-        recovered = disconnected && runtime_recovery && member_idle_same_session;
+        recovered = disconnected && runtime_recovery_count >= 2 && member_idle_same_session;
         if recovered {
             break;
         }

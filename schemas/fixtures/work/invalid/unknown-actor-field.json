@@ -1,0 +1,14 @@
+{
+  "id": "work-unknown-actor-field",
+  "team_run_id": "team-run-1",
+  "title": "Reject an unknown actor field",
+  "context_markdown": "Freeze closed-object parity.",
+  "completion_criteria_markdown": "Both validators reject this fixture.",
+  "status": "open",
+  "claim_mode": "team_claim",
+  "priority": "normal",
+  "created_by_actor": { "kind": "host", "id": "host", "unknown_actor_field": true },
+  "version": 1,
+  "created_at": "unix-ms:1",
+  "updated_at": "unix-ms:1"
+}

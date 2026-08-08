@@ -493,10 +493,21 @@ if [ "$1" = "app-server" ]; then
           printf '{"method":"item/agentMessage/delta","params":{"threadId":"%s","turnId":"%s","itemId":"message-app-1","delta":"## RESULT\\ndone\\n## SUMMARY\\nexecuted approved plan\\n"}}\n' "$thread_id" "$turn_id"
           printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"completed","items":[{"id":"message-app-1","type":"agentMessage","text":"## RESULT\\ndone\\n## SUMMARY\\nexecuted approved plan\\n"}]}}}\n' "$thread_id" "$turn_id"
           if [ "${FAKE_CODEX_EXIT_AFTER_FIRST_TURN:-0}" = "1" ] && [ "$turn_seq" = "1" ]; then
+            if [ -n "${FAKE_CODEX_EXIT_SPAWN_COUNT:-}" ] && [ -n "${FAKE_CODEX_EXIT_ONCE_MARKER:-}" ]; then
+              exit_count=0
+              if [ -f "${FAKE_CODEX_EXIT_ONCE_MARKER}" ]; then
+                exit_count=$(cat "${FAKE_CODEX_EXIT_ONCE_MARKER}")
+              fi
+              if [ "$exit_count" -lt "${FAKE_CODEX_EXIT_SPAWN_COUNT}" ]; then
+                exit_count=$((exit_count + 1))
+                printf '%s\n' "$exit_count" > "${FAKE_CODEX_EXIT_ONCE_MARKER}"
+                exit 0
+              fi
+            fi
             # FAKE_CODEX_EXIT_ONCE_MARKER (optional): only the first spawned
             # process exits, so a test can model a single transport loss and
             # then let the resumed process keep running turns.
-            if [ -z "${FAKE_CODEX_EXIT_ONCE_MARKER:-}" ] || [ ! -f "${FAKE_CODEX_EXIT_ONCE_MARKER}" ]; then
+            if [ -z "${FAKE_CODEX_EXIT_SPAWN_COUNT:-}" ] && { [ -z "${FAKE_CODEX_EXIT_ONCE_MARKER:-}" ] || [ ! -f "${FAKE_CODEX_EXIT_ONCE_MARKER}" ]; }; then
               if [ -n "${FAKE_CODEX_EXIT_ONCE_MARKER:-}" ]; then
                 : > "${FAKE_CODEX_EXIT_ONCE_MARKER}"
               fi
@@ -505,6 +516,8 @@ if [ "$1" = "app-server" ]; then
           fi
         elif [ "${FAKE_CODEX_INTERRUPT_WITHOUT_REQUEST:-0}" = "1" ]; then
           printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"interrupted","items":[]}}}\n' "$thread_id" "$turn_id"
+        elif [ "${FAKE_CODEX_ASK:-0}" = "multiple" ]; then
+          printf '{"id":700,"method":"item/tool/requestUserInput","params":{"threadId":"%s","turnId":"%s","itemId":"ask-app-1","questions":[{"id":"implementation","header":"Contract","question":"Which implementation should be used?","options":[]},{"id":"verification","header":"Verification","question":"Which verification should be run?","options":[]}]}}\n' "$thread_id" "$turn_id"
         elif [ "${FAKE_CODEX_ASK:-0}" = "1" ]; then
           printf '{"id":700,"method":"item/tool/requestUserInput","params":{"threadId":"%s","turnId":"%s","itemId":"ask-app-1","questions":[{"id":"implementation","header":"Contract","question":"Which implementation should be used?","options":[{"label":"Use native contract","description":"Use the provider-native path."},{"label":"Stop","description":"Do not continue."}]}]}}\n' "$thread_id" "$turn_id"
         fi

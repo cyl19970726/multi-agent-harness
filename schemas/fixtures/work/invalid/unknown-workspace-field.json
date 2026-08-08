@@ -1,0 +1,15 @@
+{
+  "id": "work-unknown-workspace-field",
+  "team_run_id": "team-run-1",
+  "title": "Reject an unknown workspace field",
+  "context_markdown": "Freeze closed-object parity.",
+  "completion_criteria_markdown": "Both validators reject this fixture.",
+  "status": "open",
+  "claim_mode": "team_claim",
+  "priority": "normal",
+  "created_by_actor": { "kind": "host", "id": "host" },
+  "workspace": { "kind": "dir", "path": "tmp/work", "unknown_workspace_field": true },
+  "version": 1,
+  "created_at": "unix-ms:1",
+  "updated_at": "unix-ms:1"
+}

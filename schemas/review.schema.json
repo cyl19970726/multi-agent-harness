@@ -90,6 +90,11 @@
     "authority_actor": {
       "$ref": "#/$defs/actor"
     },
+    "command_idempotency_key": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
     "created_at": {
       "type": "string",
       "minLength": 1,
@@ -102,7 +107,8 @@
         "anyOf": [
           { "required": ["reviewed_work_id"] },
           { "required": ["reviewed_work_version"] },
-          { "required": ["review_strategy"] }
+          { "required": ["review_strategy"] },
+          { "required": ["command_idempotency_key"] }
         ]
       }
     },

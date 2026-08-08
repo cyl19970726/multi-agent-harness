@@ -13,27 +13,28 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
-    build_launch_spec, content_hash_hex16, resolve_team_host_authority,
-    validate_agent_team_topology, validate_gate_specs, validate_host_authority_cutover, AgentEvent,
-    AgentMember, AgentMemberStatus, AgentMessageRoute, AgentProviderConfig, AgentRuntime,
-    AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamRun, AgentTeamStatus,
-    DelegationRun, DurableAgentMember, DurableAgentMemberStatus, Evidence, ExecutionSpace,
-    GateEngine, GateSpec, GitHubLink, GitHubLinkKind, HostAttention, HostAttentionStatus,
-    HostControlMode, HostDispatchConfig, LaunchMcp, LaunchPermission, LaunchSpec, MemberAction,
-    MemberActionStatus, MemberCoordinationStatus, MemberExecutionDriver, MemberRun,
-    MemberRunStatus, MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus,
-    MessageKind, MessageTerminalSource, Mission, MissionLogEntry, MissionLogEntryKind,
-    MissionStatus, NativeSessionAvailability, NativeSessionRef, OrdinaryMessageBoundary,
-    PendingInteraction, PendingInteractionKind, PendingInteractionOption, PendingInteractionRoute,
+    build_launch_spec, content_hash_hex16, provider_interaction_response_id,
+    resolve_team_host_authority, validate_agent_team_topology, validate_gate_specs,
+    validate_host_authority_cutover, AgentEvent, AgentMember, AgentMemberStatus, AgentMessageRoute,
+    AgentProviderConfig, AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam,
+    AgentTeamRun, AgentTeamStatus, DelegationRun, DurableAgentMember, DurableAgentMemberStatus,
+    Evidence, ExecutionSpace, GateEngine, GateSpec, GitHubLink, GitHubLinkKind, HostAttention,
+    HostAttentionStatus, HostControlMode, HostDispatchConfig, LaunchMcp, LaunchPermission,
+    LaunchSpec, MemberAction, MemberActionStatus, MemberCoordinationStatus, MemberExecutionDriver,
+    MemberRun, MemberRunStatus, MemberWorkspaceSnapshot, Message, MessageDelivery,
+    MessageDeliveryStatus, MessageKind, MessageTerminalSource, Mission, MissionLogEntry,
+    MissionLogEntryKind, MissionStatus, NativeSessionAvailability, NativeSessionRef,
+    OrdinaryMessageBoundary, PendingInteraction, PendingInteractionKind, PendingInteractionRoute,
     PendingInteractionStatus, ProjectContext, ProjectKind, ProviderAccountRef,
     ProviderCapabilities, ProviderCapacityConfidence, ProviderCapacityEvidence,
     ProviderCapacitySnapshot, ProviderCapacityState, ProviderCompatibilityStatus,
     ProviderControlValue, ProviderEventFidelity, ProviderExecutionControls,
     ProviderExecutionStatus, ProviderFeatureMode, ProviderIntegrationProfile,
-    ProviderInteractionMode, ProviderRuntimeContextFact, Review, ReviewVerdict, SenderKind,
-    TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
-    TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind,
-    TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
+    ProviderInteractionMessageOption, ProviderInteractionMode, ProviderInteractionRequestBody,
+    ProviderInteractionResponseBody, ProviderInteractionType, ProviderRuntimeContextFact, Review,
+    ReviewVerdict, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus,
+    TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery,
+    TeamMessageKind, TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
     TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Validate, Wave, WaveExecutorKind,
     WaveStatus, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkDelivery,
     WorkDeliveryStatus, WorkPriority, WorkStatus, WorkWorkspace, WorkWorkspaceKind,
@@ -908,9 +909,10 @@ fn execution_space_migrate_from_project(firm_home: &Path, args: &[String]) -> Cl
     execution_space_migrate_from_project_with_activate(
         firm_home,
         args,
-        |firm_home, id, name, project_binding_id, now| {
-            execution_space::register_and_activate(
+        |firm_home, lock, id, name, project_binding_id, now| {
+            execution_space::register_and_activate_locked(
                 firm_home,
+                lock,
                 id,
                 name,
                 Some(project_binding_id.to_string()),
@@ -1044,6 +1046,7 @@ fn execution_space_migrate_from_project_with_activate<F>(
 where
     F: FnOnce(
         &Path,
+        &execution_space::ExecutionSpaceRegistryLock,
         &str,
         &str,
         &str,
@@ -1062,12 +1065,41 @@ fn execution_space_migrate_from_project_with_hooks<F, G>(
 where
     F: FnOnce(
         &Path,
+        &execution_space::ExecutionSpaceRegistryLock,
         &str,
         &str,
         &str,
         &str,
     ) -> execution_space::ExecutionSpaceResult<ExecutionSpace>,
     G: FnOnce() -> CliResult<()>,
+{
+    execution_space_migrate_from_project_with_publish_hook(
+        firm_home,
+        args,
+        before_source_verification,
+        || Ok(()),
+        activate,
+    )
+}
+
+fn execution_space_migrate_from_project_with_publish_hook<F, G, H>(
+    firm_home: &Path,
+    args: &[String],
+    before_source_verification: G,
+    before_publish: H,
+    activate: F,
+) -> CliResult<()>
+where
+    F: FnOnce(
+        &Path,
+        &execution_space::ExecutionSpaceRegistryLock,
+        &str,
+        &str,
+        &str,
+        &str,
+    ) -> execution_space::ExecutionSpaceResult<ExecutionSpace>,
+    G: FnOnce() -> CliResult<()>,
+    H: FnOnce() -> CliResult<()>,
 {
     if has_flag(args, "--force") {
         return Err(CliError::Usage(
@@ -1285,9 +1317,10 @@ where
         }
     };
 
-    // Serialize with normal execution-space creation while rechecking the
-    // absent-only target invariant. Registration is deliberately a later,
-    // independently recoverable step and acquires a fresh registry lock.
+    // Serialize publication and registration/activation as one same-id critical
+    // section. The published target remains independently recoverable if a later
+    // registry or ACTIVE_SPACE write fails, but no competing creator can claim
+    // the id between rename and registration.
     let publish_lock = execution_space::acquire_registry_lock(firm_home)
         .map_err(execution_space_err)
         .map_err(|error| migration_error_after_staging_cleanup(error, &staging))?;
@@ -1315,17 +1348,31 @@ where
             return Err(migration_error_after_staging_cleanup(error, &staging));
         }
     }
-    if let Err(error) = std::fs::rename(&staging, &target) {
-        return Err(migration_error_after_staging_cleanup(
-            format!("could not publish staged execution space: {error}"),
-            &staging,
-        ));
+    if let Err(error) = before_publish() {
+        return Err(migration_error_after_staging_cleanup(error, &staging));
     }
-    drop(publish_lock);
+    if let Err(error) = execution_space::publish_directory_no_replace(&staging, &target) {
+        let message = if target.exists() {
+            format!(
+                "target execution space appeared while publishing: {}; choose a new --id",
+                target.display()
+            )
+        } else {
+            format!("could not publish staged execution space: {error}")
+        };
+        return Err(migration_error_after_staging_cleanup(message, &staging));
+    }
     drop(source_guard);
 
     let activation_now = now_string();
-    let context = match activate(firm_home, &id, &name, &project_context.id, &activation_now) {
+    let context = match activate(
+        firm_home,
+        &publish_lock,
+        &id,
+        &name,
+        &project_context.id,
+        &activation_now,
+    ) {
         Ok(context) => context,
         Err(error) => {
             return Err(CliError::Usage(format!(
@@ -1334,6 +1381,7 @@ where
             )));
         }
     };
+    drop(publish_lock);
 
     debug_assert_eq!(context.id, planned_context.id);
     debug_assert_eq!(context.store_root, planned_context.store_root);
@@ -1364,6 +1412,7 @@ fn prepare_execution_ledger_for_migration(
         .map_err(|error| CliError::Usage(format!("reviews.jsonl is not valid UTF-8: {error}")))?;
     let mut output = Vec::with_capacity(source_bytes.len());
     let mut downgraded = 0u64;
+    let mut review_ids = HashSet::new();
     for segment in source.split_inclusive('\n') {
         let (line, newline) = segment
             .strip_suffix('\n')
@@ -1381,6 +1430,12 @@ fn prepare_execution_ledger_for_migration(
                 "reviews.jsonl row fails Review validation: {error}"
             ))
         })?;
+        if !review_ids.insert(source_review.id.clone()) {
+            return Err(CliError::Usage(format!(
+                "reviews.jsonl contains duplicate Review id `{}`; Review ids must be globally unique",
+                source_review.id
+            )));
+        }
         let object = value
             .as_object_mut()
             .ok_or_else(|| CliError::Usage("reviews.jsonl rows must be JSON objects".into()))?;
@@ -1389,6 +1444,7 @@ fn prepare_execution_ledger_for_migration(
             "reviewed_work_id",
             "reviewed_work_version",
             "review_strategy",
+            "command_idempotency_key",
         ] {
             had_binding |= object.remove(field).is_some();
         }
@@ -9570,6 +9626,20 @@ fn refreshed_team_member_provider_profile(
     Ok((profile, probe_error))
 }
 
+/// Stage a refreshed compatibility snapshot without creating an in-memory
+/// revision that was never persisted. Callers CAS only when this returns true.
+fn apply_refreshed_provider_profile(
+    member: &mut MemberRun,
+    profile: ProviderIntegrationProfile,
+) -> bool {
+    if member.provider_profile.as_ref() == Some(&profile) {
+        return false;
+    }
+    member.provider_profile = Some(profile);
+    member.last_event_at = Some(now_string());
+    true
+}
+
 fn provider_compatibility_block_reason(
     member: &MemberRun,
     profile: &ProviderIntegrationProfile,
@@ -9608,22 +9678,22 @@ fn provider_compatibility_start_gate(
     if member.is_external_interactive() {
         return Ok(None);
     }
-    let previous_profile = member.provider_profile.clone();
+    let expected = member.clone();
     let (profile, probe_error) = refreshed_team_member_provider_profile(member)?;
     let reason =
         provider_compatibility_block_reason(member, &profile, boundary, probe_error.as_deref());
-    member.provider_profile = Some(profile);
-    member.last_event_at = Some(now_string());
     if reason.is_none() {
-        if member.provider_profile != previous_profile {
-            ledger.save_member_run(member)?;
+        if apply_refreshed_provider_profile(member, profile) {
+            ledger.save_member_run(&expected, member)?;
         }
         return Ok(None);
     }
 
     let reason = reason.expect("non-current compatibility has a refusal reason");
+    apply_refreshed_provider_profile(member, profile);
     member.status = MemberRunStatus::Blocked;
-    ledger.save_member_run(member)?;
+    member.last_event_at = Some(now_string());
+    ledger.save_member_run(&expected, member)?;
     let action = ledger.append_action(
         &member.id,
         "provider_compatibility_blocked",
@@ -10567,6 +10637,88 @@ fn parse_unix_ms_timestamp(raw: &str) -> Option<u64> {
     harness_core::parse_harness_unix_ms(raw)
 }
 
+/// Clear only the Blocked projection that this capacity gate itself authored.
+/// Other Blocked reasons deliberately survive a successful capacity probe.
+fn recover_capacity_origin_block(member: &mut MemberRun) {
+    let was_capacity_blocked = member.status == MemberRunStatus::Blocked
+        && member
+            .provider_capacity
+            .as_ref()
+            .is_some_and(|capacity| capacity.state.is_known_unavailable());
+    if was_capacity_blocked && member.coordination_is_active() {
+        member.status = if member.native_session.is_some() {
+            MemberRunStatus::Disconnected
+        } else {
+            MemberRunStatus::Idle
+        };
+        member.finished_at = None;
+    }
+}
+
+fn apply_nonblocking_capacity_observation(
+    member: &mut MemberRun,
+    snapshot: ProviderCapacitySnapshot,
+) {
+    // Recovery provenance lives on the previous observation. Clear the
+    // capacity-authored Blocked projection before replacing that evidence
+    // with the fresh available/unknown snapshot.
+    recover_capacity_origin_block(member);
+    member.provider_capacity = Some(snapshot);
+    member.last_event_at = Some(now_string());
+}
+
+fn reconcile_pending_close_during_capacity_recovery(
+    ledger: &TeamRunLedger,
+    member: &mut MemberRun,
+) -> CliResult<Option<MemberOutcome>> {
+    if let Some(close) = pending_member_close(&ledger.store, &member.id)? {
+        for _ in 0..PROVIDER_MEMBER_CAS_RETRIES {
+            let mut latest = ledger
+                .latest_member_run(&member.id)?
+                .unwrap_or_else(|| member.clone());
+            match stop_member_for_latched_close(ledger, &mut latest, &close) {
+                Ok(()) => {
+                    *member = latest.clone();
+                    return Ok(Some(MemberOutcome::new(
+                        &latest,
+                        MemberRunStatus::Stopped,
+                        "member runtime closed by Host during capacity recovery".to_string(),
+                    )));
+                }
+                Err(CliError::Store(StoreError::Conflict(_))) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        let latest = ledger
+            .latest_member_run(&member.id)?
+            .unwrap_or_else(|| member.clone());
+        *member = latest.clone();
+        return Ok(Some(MemberOutcome::new(
+            &latest,
+            latest.status,
+            "capacity recovery stopped after bounded Close reconciliation contention".to_string(),
+        )));
+    }
+
+    let latest = ledger
+        .latest_member_run(&member.id)?
+        .unwrap_or_else(|| member.clone());
+    if !latest.coordination_is_active()
+        || matches!(
+            latest.status,
+            MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
+        )
+    {
+        *member = latest.clone();
+        return Ok(Some(MemberOutcome::new(
+            &latest,
+            latest.status,
+            "member lifecycle superseded capacity recovery".to_string(),
+        )));
+    }
+    Ok(None)
+}
+
 /// Observe this member's provider capacity and decide whether it may start.
 ///
 /// Returns `Some(outcome)` when the member must NOT proceed. The caller runs
@@ -10577,9 +10729,19 @@ fn provider_capacity_start_gate(
     member: &mut MemberRun,
     cwd: &Path,
 ) -> CliResult<Option<MemberOutcome>> {
+    provider_capacity_start_gate_with_hook(ledger, member, cwd, |_, _| Ok(()))
+}
+
+fn provider_capacity_start_gate_with_hook(
+    ledger: &TeamRunLedger,
+    member: &mut MemberRun,
+    cwd: &Path,
+    before_capacity_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
+) -> CliResult<Option<MemberOutcome>> {
     if !capacity_preflight_enabled() {
         return Ok(None);
     }
+    let expected = member.clone();
     // A member pinned to a mode this preflight does not probe is simply not
     // gated: no observation is honest here, and no observation never blocks.
     let Ok(execution_mode) = capacity_execution_mode(
@@ -10615,12 +10777,24 @@ fn provider_capacity_start_gate(
     }
     let decision =
         harness_core::provider_capacity_start_decision(Some(&snapshot), now_unix_ms, ttl_ms);
-    member.provider_capacity = Some(snapshot.clone());
-    member.last_event_at = Some(now_string());
     if !decision.is_blocked() {
-        ledger.save_member_run(member)?;
+        // Only a Blocked row carrying explicit capacity-unavailable provenance
+        // is self-recovering. Compatibility, degradation, review, and operator
+        // blocks remain authoritative until their own control path clears them.
+        apply_nonblocking_capacity_observation(member, snapshot.clone());
+        if let Some(outcome) = persist_capacity_recovery_with_hook(
+            ledger,
+            &expected,
+            member,
+            snapshot,
+            before_capacity_cas,
+        )? {
+            return Ok(Some(outcome));
+        }
         return Ok(None);
     }
+    member.provider_capacity = Some(snapshot.clone());
+    member.last_event_at = Some(now_string());
     // Blocked: record provider_unavailable and stop. Nothing above this point
     // claimed, delivered, or consumed a TeamMessage.
     //
@@ -10641,10 +10815,16 @@ fn provider_capacity_start_gate(
             .map(|diagnosis| format!("; {diagnosis}"))
             .unwrap_or_default()
     );
-    let mut journal_errors = Vec::new();
-    if let Err(error) = ledger.save_member_run(member) {
-        journal_errors.push(error.to_string());
+    if let Some(outcome) = persist_capacity_block_with_hook(
+        ledger,
+        &expected,
+        member,
+        snapshot.clone(),
+        before_capacity_cas,
+    )? {
+        return Ok(Some(outcome));
     }
+    let mut journal_errors = Vec::new();
     let state_label = serde_json::to_value(snapshot.state)
         .ok()
         .and_then(|value| value.as_str().map(str::to_string))
@@ -10696,6 +10876,201 @@ fn provider_capacity_start_gate(
         member,
         MemberRunStatus::Blocked,
         summary,
+    )))
+}
+
+/// Publish a fresh non-blocking capacity observation without reviving a
+/// lifecycle decision that landed while the provider probe was in flight.
+/// Only an explicit capacity-origin Blocked row may self-recover; all other
+/// Blocked reasons remain owned by their corresponding control path. As with
+/// the provider-start claim and capacity-block paths, a durable Close latch is
+/// re-read after a successful CAS so Close wins the latch-before-CAS window.
+fn persist_capacity_recovery_with_hook(
+    ledger: &TeamRunLedger,
+    anchor: &MemberRun,
+    member: &mut MemberRun,
+    snapshot: ProviderCapacitySnapshot,
+    before_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
+) -> CliResult<Option<MemberOutcome>> {
+    persist_capacity_recovery_with_hooks(
+        ledger,
+        anchor,
+        member,
+        snapshot,
+        before_cas,
+        |_, _| Ok(()),
+    )
+}
+
+fn persist_capacity_recovery_with_hooks(
+    ledger: &TeamRunLedger,
+    anchor: &MemberRun,
+    member: &mut MemberRun,
+    snapshot: ProviderCapacitySnapshot,
+    mut before_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
+    mut after_successful_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
+) -> CliResult<Option<MemberOutcome>> {
+    let mut expected = anchor.clone();
+    for attempt in 0..PROVIDER_MEMBER_CAS_RETRIES {
+        ledger.require_supervisor_lease()?;
+        if let Some(outcome) = reconcile_pending_close_during_capacity_recovery(ledger, member)? {
+            return Ok(Some(outcome));
+        }
+        before_cas(attempt, &expected)?;
+        match ledger.save_member_run(&expected, member) {
+            Ok(()) => {
+                after_successful_cas(attempt, member)?;
+                if let Some(outcome) =
+                    reconcile_pending_close_during_capacity_recovery(ledger, member)?
+                {
+                    return Ok(Some(outcome));
+                }
+                *member = ledger
+                    .latest_member_run(&member.id)?
+                    .unwrap_or_else(|| member.clone());
+                return Ok(None);
+            }
+            Err(CliError::Store(StoreError::Conflict(_))) => {
+                if let Some(outcome) =
+                    reconcile_pending_close_during_capacity_recovery(ledger, member)?
+                {
+                    return Ok(Some(outcome));
+                }
+                let Some(latest) = ledger.latest_member_run(&anchor.id)? else {
+                    return Ok(Some(MemberOutcome::new(
+                        anchor,
+                        anchor.status,
+                        "member disappeared while capacity recovery was being recorded".to_string(),
+                    )));
+                };
+                let benign_same_runtime = member_runtime_anchor_matches(anchor, &latest)
+                    && latest.status == anchor.status
+                    && latest.native_session == anchor.native_session;
+                if !benign_same_runtime {
+                    *member = latest.clone();
+                    return Ok(Some(MemberOutcome::new(
+                        &latest,
+                        latest.status,
+                        "member runtime authority superseded capacity recovery".to_string(),
+                    )));
+                }
+                expected = latest.clone();
+                *member = latest;
+                apply_nonblocking_capacity_observation(member, snapshot.clone());
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(Some(MemberOutcome::new(
+        member,
+        member.status,
+        "capacity recovery CAS contention exceeded the bounded retry budget".to_string(),
+    )))
+}
+
+/// Publish a capacity-origin Blocked transition without losing a concurrent
+/// lifecycle decision. Close wins a conflicting CAS and is fully applied;
+/// unrelated authority drift is returned as superseded. Only benign drift on
+/// the same active runtime generation may be rebased, and retries are bounded.
+fn persist_capacity_block_with_hook(
+    ledger: &TeamRunLedger,
+    anchor: &MemberRun,
+    member: &mut MemberRun,
+    snapshot: ProviderCapacitySnapshot,
+    mut before_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
+) -> CliResult<Option<MemberOutcome>> {
+    let mut expected = anchor.clone();
+    for attempt in 0..PROVIDER_MEMBER_CAS_RETRIES {
+        ledger.require_supervisor_lease()?;
+        before_cas(attempt, &expected)?;
+        match ledger.save_member_run(&expected, member) {
+            Ok(()) => {
+                // A Close latch does not mutate MemberRun until its control
+                // path marks coordination Closed, so it can land immediately
+                // before this CAS without causing a conflict. Mirror the
+                // provider-start claim fence: re-read the latch after the
+                // successful CAS and apply it before returning a terminal
+                // capacity outcome with no live provider loop left to do so.
+                if let Some(close) = pending_member_close(&ledger.store, &member.id)? {
+                    let mut latest = ledger
+                        .latest_member_run(&member.id)?
+                        .unwrap_or_else(|| member.clone());
+                    stop_member_for_latched_close(ledger, &mut latest, &close)?;
+                    *member = latest.clone();
+                    return Ok(Some(MemberOutcome::new(
+                        &latest,
+                        MemberRunStatus::Stopped,
+                        "member runtime closed by Host during capacity preflight".to_string(),
+                    )));
+                }
+                return Ok(None);
+            }
+            Err(CliError::Store(StoreError::Conflict(_))) => {
+                let Some(mut latest) = ledger.latest_member_run(&anchor.id)? else {
+                    return Ok(Some(MemberOutcome::new(
+                        anchor,
+                        anchor.status,
+                        "member disappeared while capacity block was being recorded".to_string(),
+                    )));
+                };
+                if let Some(close) = pending_member_close(&ledger.store, &latest.id)? {
+                    match stop_member_for_latched_close(ledger, &mut latest, &close) {
+                        Ok(()) => {
+                            *member = latest.clone();
+                            return Ok(Some(MemberOutcome::new(
+                                &latest,
+                                MemberRunStatus::Stopped,
+                                "member runtime closed by Host during capacity preflight"
+                                    .to_string(),
+                            )));
+                        }
+                        Err(CliError::Store(StoreError::Conflict(_)))
+                            if attempt + 1 < PROVIDER_MEMBER_CAS_RETRIES =>
+                        {
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                if !latest.coordination_is_active()
+                    || matches!(
+                        latest.status,
+                        MemberRunStatus::Completed
+                            | MemberRunStatus::Failed
+                            | MemberRunStatus::Stopped
+                    )
+                {
+                    *member = latest.clone();
+                    return Ok(Some(MemberOutcome::new(
+                        &latest,
+                        latest.status,
+                        "member lifecycle superseded capacity preflight".to_string(),
+                    )));
+                }
+                let benign_same_runtime = member_runtime_anchor_matches(anchor, &latest)
+                    && latest.status == anchor.status
+                    && latest.native_session == anchor.native_session;
+                if !benign_same_runtime {
+                    *member = latest.clone();
+                    return Ok(Some(MemberOutcome::new(
+                        &latest,
+                        latest.status,
+                        "member runtime authority superseded capacity preflight".to_string(),
+                    )));
+                }
+                expected = latest.clone();
+                *member = latest;
+                member.provider_capacity = Some(snapshot.clone());
+                member.status = MemberRunStatus::Blocked;
+                member.last_event_at = Some(now_string());
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(Some(MemberOutcome::new(
+        member,
+        member.status,
+        "capacity block CAS contention exceeded the bounded retry budget".to_string(),
     )))
 }
 
@@ -11250,7 +11625,7 @@ fn create_team_run(
     // `member_runs` is built from `members` in order above, so zip pairs each
     // MemberRun with the spec that produced it and its optional initial Work.
     for (member, member_run) in members.iter().zip(&member_runs) {
-        store.append_member_run(member_run)?;
+        store.materialize_initial_member_run(member_run)?;
         append_team_run_event(
             store,
             &run_id,
@@ -11370,21 +11745,7 @@ fn add_team_run_member(
     let mut next = current.clone();
     next.member_run_ids.push(member_run.id.clone());
     next.updated_at = now_string();
-    let linked_wave_status = match current.status {
-        TeamRunStatus::Planning => WaveStatus::Planned,
-        TeamRunStatus::Running => WaveStatus::Running,
-        TeamRunStatus::Waiting | TeamRunStatus::Reviewing => WaveStatus::Waiting,
-        TeamRunStatus::Completed | TeamRunStatus::Failed | TeamRunStatus::Cancelled => {
-            WaveStatus::Completed
-        }
-    };
-    store_conflict_as_usage(store.compare_and_append_team_run_with_wave_status(
-        &current,
-        &next,
-        linked_wave_status,
-        &now_string(),
-    ))?;
-    store.append_member_run(&member_run)?;
+    store_conflict_as_usage(store.admit_member_run(&current, &next, &member_run))?;
     append_team_run_event(
         store,
         team_run_id,
@@ -11487,10 +11848,11 @@ fn rename_team_run_member(
     if member.name == name {
         return Ok(member);
     }
+    let expected = member.clone();
     let previous_name = member.name.clone();
     member.name = name.to_string();
     member.last_event_at = Some(now_string());
-    store.append_member_run(&member)?;
+    store_conflict_as_usage(store.compare_and_append_member_run(&expected, &member))?;
     append_team_run_event(
         store,
         team_run_id,
@@ -11546,12 +11908,13 @@ fn deactivate_team_run_member(
             "member run {member_run_id} still has a managed runtime/session binding; close it first so the adapter process is released, then deactivate it"
         )));
     }
+    let expected = member.clone();
     let now = now_string();
     member.coordination_status = MemberCoordinationStatus::Retired;
     member.status = MemberRunStatus::Stopped;
     member.last_event_at = Some(now.clone());
     member.finished_at = Some(now);
-    store.append_member_run(&member)?;
+    store_conflict_as_usage(store.compare_and_append_member_run(&expected, &member))?;
     append_team_run_event(
         store,
         team_run_id,
@@ -12675,7 +13038,7 @@ fn team_run_recover(
         if !recoverable_candidate || member.is_external_interactive() {
             continue;
         }
-        let previous_profile = member.provider_profile.clone();
+        let expected = member.clone();
         let (profile, probe_error) = refreshed_team_member_provider_profile(member)?;
         let refusal = provider_compatibility_block_reason(
             member,
@@ -12683,10 +13046,8 @@ fn team_run_recover(
             "recover, reopen, or rebound durable Work",
             probe_error.as_deref(),
         );
-        member.provider_profile = Some(profile);
-        member.last_event_at = Some(now_string());
-        if member.provider_profile != previous_profile {
-            store.append_member_run(member)?;
+        if apply_refreshed_provider_profile(member, profile) {
+            store_conflict_as_usage(store.compare_and_append_member_run(&expected, member))?;
         }
         if let Some(refusal) = refusal {
             return Err(CliError::Usage(refusal));
@@ -12856,7 +13217,9 @@ fn team_run_recover(
                 };
                 reopened_member.finished_at = None;
                 reopened_member.last_event_at = Some(now_str.clone());
-                store.append_member_run(&reopened_member)?;
+                store_conflict_as_usage(
+                    store.compare_and_append_member_run(member, &reopened_member),
+                )?;
                 ledger.append_action(
                     &member.id,
                     "recovered",
@@ -12908,7 +13271,9 @@ fn team_run_recover(
                 rebound_member.status = MemberRunStatus::Queued;
                 rebound_member.finished_at = None;
                 rebound_member.last_event_at = Some(now_str.clone());
-                store.append_member_run(&rebound_member)?;
+                store_conflict_as_usage(
+                    store.compare_and_append_member_run(member, &rebound_member),
+                )?;
                 ledger.append_action(
                     &member.id,
                     "recovered",
@@ -13049,7 +13414,7 @@ fn recover_interrupted_team_run(
         stopped.status = MemberRunStatus::Stopped;
         stopped.last_event_at = Some(now_string());
         stopped.finished_at = Some(now_string());
-        ledger.save_member_run(&stopped)?;
+        ledger.save_member_run(&member, &stopped)?;
         ledger.append_action(
             &member.id,
             "interrupted",
@@ -13136,6 +13501,8 @@ fn team_message_kind_label(kind: &TeamMessageKind) -> &'static str {
         TeamMessageKind::ReviewRequest => "review_request",
         TeamMessageKind::ReviewResult => "review_result",
         TeamMessageKind::Control => "control",
+        TeamMessageKind::ProviderInteractionRequest => "provider_interaction_request",
+        TeamMessageKind::ProviderInteractionResponse => "provider_interaction_response",
         TeamMessageKind::Broadcast => "broadcast",
     }
 }
@@ -16529,9 +16896,10 @@ fn mark_member_coordination_closed(
         )));
     }
     if !member.coordination_is_closed() {
+        let expected = member.clone();
         member.coordination_status = MemberCoordinationStatus::Closed;
         member.last_event_at = Some(now_string());
-        store.append_member_run(&member)?;
+        store_conflict_as_usage(store.compare_and_append_member_run(&expected, &member))?;
     }
     Ok(member)
 }
@@ -17003,39 +17371,61 @@ impl TeamRunLedger {
     /// when this call wrote the receipt.
     fn append_provider_control_receipt_once(
         &self,
-        member_run_id: &str,
+        expected_member: &MemberRun,
         title: &str,
         summary: &str,
     ) -> CliResult<bool> {
-        let _guard = self.write_lock();
-        let already_receipted = self.store.member_actions()?.into_iter().any(|action| {
-            action.member_run_id == member_run_id
-                && action.action_type == "provider_control"
-                && action.title == title
-        });
-        if already_receipted {
-            return Ok(false);
-        }
-        self.append_action_locked(
-            member_run_id,
-            "provider_control",
-            MemberActionStatus::Succeeded,
-            title,
-            summary,
-            None,
-            &[],
-        )?;
-        Ok(true)
+        self.append_provider_control_receipt_once_with_hook(expected_member, title, summary, || {
+            Ok(())
+        })
     }
 
-    fn save_member_run(&self, member: &MemberRun) -> CliResult<()> {
+    fn append_provider_control_receipt_once_with_hook<F>(
+        &self,
+        expected_member: &MemberRun,
+        title: &str,
+        summary: &str,
+        before_atomic_append: F,
+    ) -> CliResult<bool>
+    where
+        F: FnOnce() -> CliResult<()>,
+    {
         let _guard = self.write_lock();
-        Ok(self.store.append_member_run(member)?)
+        let seq = self
+            .store
+            .member_actions()?
+            .into_iter()
+            .filter(|action| action.team_run_id == self.run_id)
+            .map(|action| action.seq)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let action = MemberAction {
+            id: generated_id("mact"),
+            seq,
+            team_run_id: self.run_id.clone(),
+            member_run_id: expected_member.id.clone(),
+            task_id: None,
+            provider_call_id: None,
+            action_type: "provider_control".to_string(),
+            status: MemberActionStatus::Succeeded,
+            provider_status: None,
+            semantic_status: None,
+            title: title.to_string(),
+            summary: summary.to_string(),
+            evidence_refs: Vec::new(),
+            started_at: now_string(),
+            completed_at: Some(now_string()),
+        };
+        before_atomic_append()?;
+        Ok(self
+            .store
+            .append_member_action_if_member_run_current(expected_member, &action)?)
     }
 
-    fn save_pending_interaction(&self, interaction: &PendingInteraction) -> CliResult<()> {
+    fn save_member_run(&self, expected: &MemberRun, next: &MemberRun) -> CliResult<()> {
         let _guard = self.write_lock();
-        Ok(self.store.append_pending_interaction(interaction)?)
+        Ok(self.store.compare_and_append_member_run(expected, next)?)
     }
 
     fn latest_member_run(&self, member_run_id: &str) -> CliResult<Option<MemberRun>> {
@@ -17357,7 +17747,9 @@ impl TeamRunLedger {
             .filter(|message| message.from_member_id != member_id)
             .filter(|message| {
                 message.deliveries.iter().any(|delivery| {
-                    delivery.member_id == member_id && delivery.status == TeamDeliveryStatus::Queued
+                    delivery.member_id == member_id
+                        && delivery.policy != TeamDeliveryPolicy::Inject
+                        && delivery.status == TeamDeliveryStatus::Queued
                 })
             })
             .collect())
@@ -17380,6 +17772,43 @@ impl TeamRunLedger {
             TeamMessageDeliveryClaimResult::Claimed(message) => Ok(Some(*message)),
             TeamMessageDeliveryClaimResult::NotQueued => Ok(None),
         }
+    }
+
+    fn complete_provider_interaction_response(
+        &self,
+        message: &TeamMessage,
+        member_id: &str,
+        provider_receipt_id: &str,
+    ) -> CliResult<()> {
+        self.require_supervisor_lease()?;
+        let delivery = message
+            .deliveries
+            .iter()
+            .find(|delivery| delivery.member_id == member_id)
+            .ok_or_else(|| {
+                CliError::Usage(format!(
+                    "provider interaction response {} has no delivery for {member_id}",
+                    message.id
+                ))
+            })?;
+        let claim_id = delivery.claim_id.as_deref().ok_or_else(|| {
+            CliError::Usage(format!(
+                "provider interaction response {} has no durable claim",
+                message.id
+            ))
+        })?;
+        store_conflict_as_usage(self.store.complete_team_message_delivery_claim(
+            &self.run_id,
+            &message.id,
+            member_id,
+            &self.supervisor_id,
+            self.supervisor_generation,
+            claim_id,
+            provider_receipt_id,
+            current_unix_ms_u64(),
+            &now_string(),
+        ))?;
+        Ok(())
     }
 
     /// Claim queued terminal-work notifications for an idle member.
@@ -17508,6 +17937,170 @@ impl TeamRunLedger {
     }
 }
 
+const PROVIDER_MEMBER_CAS_RETRIES: usize = 3;
+
+/// Provider callbacks may project only the transient `status` and
+/// `last_event_at` fields while a round is in flight.  Accepting any other
+/// drift here would let a stale transport overwrite lifecycle authority,
+/// runtime generation, native-session provenance, or operator changes.
+fn validate_provider_callback_drift(supplied: &MemberRun, latest: &MemberRun) -> CliResult<()> {
+    // Name/profile/capacity may be refreshed by same-generation operator and
+    // probe paths while the provider is paused. Those fields are intentionally
+    // rebased from `latest`. Everything that establishes execution identity,
+    // provenance, permissions, native-session ownership, or outer-round state
+    // remains frozen.
+    if latest.id != supplied.id
+        || latest.team_run_id != supplied.team_run_id
+        || latest.slot_id != supplied.slot_id
+        || latest.agent_member_id != supplied.agent_member_id
+        || latest.role != supplied.role
+        || latest.provider != supplied.provider
+        || latest.model != supplied.model
+        || latest.provider_controls != supplied.provider_controls
+        || latest.coordination_status != supplied.coordination_status
+        || latest.runtime_generation != supplied.runtime_generation
+        || latest.native_session != supplied.native_session
+        || latest.worktree_ref != supplied.worktree_ref
+        || latest.workspace_snapshot != supplied.workspace_snapshot
+        || latest.owned_paths != supplied.owned_paths
+        || latest.zero_output_streak != supplied.zero_output_streak
+        || latest.last_consumed_work_version != supplied.last_consumed_work_version
+        || latest.started_at != supplied.started_at
+        || latest.finished_at != supplied.finished_at
+    {
+        return Err(CliError::Usage(format!(
+            "provider callback for MemberRun {} crossed identity, provenance, lifecycle, native-session, or provider-control authority",
+            supplied.id
+        )));
+    }
+    Ok(())
+}
+
+#[allow(clippy::large_enum_variant)]
+enum ProviderInteractionMemberTransition {
+    Applied(MemberRun),
+    LifecycleSuperseded,
+}
+
+/// Re-fetch and CAS a provider-interaction status projection. The callback's
+/// caller can hold a round-start snapshot for arbitrarily long (including
+/// across another interaction), so that snapshot is never used directly as
+/// the CAS expectation. Close/retire wins over a late resume; a new runtime
+/// generation and every non-transient mutation fail closed.
+fn transition_provider_interaction_member(
+    ledger: &TeamRunLedger,
+    supplied: &MemberRun,
+    desired: MemberRunStatus,
+) -> CliResult<ProviderInteractionMemberTransition> {
+    transition_provider_interaction_member_with_hook(ledger, supplied, desired, |_, _| Ok(()))
+}
+
+fn transition_provider_interaction_member_with_hook(
+    ledger: &TeamRunLedger,
+    supplied: &MemberRun,
+    desired: MemberRunStatus,
+    mut before_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
+) -> CliResult<ProviderInteractionMemberTransition> {
+    for attempt in 0..PROVIDER_MEMBER_CAS_RETRIES {
+        let latest = ledger
+            .latest_member_run(&supplied.id)?
+            .ok_or_else(|| CliError::Usage(format!("member run {} not found", supplied.id)))?;
+        if latest.runtime_generation != supplied.runtime_generation {
+            return Err(CliError::Usage(format!(
+                "provider callback for MemberRun {} belongs to runtime generation {}, latest is {}",
+                supplied.id, supplied.runtime_generation, latest.runtime_generation
+            )));
+        }
+        if latest.coordination_status != supplied.coordination_status {
+            if desired == MemberRunStatus::Running
+                && matches!(
+                    latest.coordination_status,
+                    MemberCoordinationStatus::Closed | MemberCoordinationStatus::Retired
+                )
+            {
+                return Ok(ProviderInteractionMemberTransition::LifecycleSuperseded);
+            }
+            return Err(CliError::Usage(format!(
+                "provider callback for MemberRun {} was superseded by coordination lifecycle {:?}",
+                supplied.id, latest.coordination_status
+            )));
+        }
+        validate_provider_callback_drift(supplied, &latest)?;
+        let valid_status = match desired {
+            MemberRunStatus::Waiting => matches!(
+                latest.status,
+                MemberRunStatus::Running | MemberRunStatus::Waiting
+            ),
+            MemberRunStatus::Running => matches!(
+                latest.status,
+                MemberRunStatus::Waiting | MemberRunStatus::Running
+            ),
+            _ => false,
+        };
+        if !valid_status {
+            return Err(CliError::Usage(format!(
+                "provider interaction cannot transition MemberRun {} from {:?} to {:?}",
+                supplied.id, latest.status, desired
+            )));
+        }
+        if latest.status == desired {
+            return Ok(ProviderInteractionMemberTransition::Applied(latest));
+        }
+        let mut next = latest.clone();
+        next.status = desired;
+        next.last_event_at = Some(now_string());
+        before_cas(attempt, &latest)?;
+        match ledger.save_member_run(&latest, &next) {
+            Ok(()) => return Ok(ProviderInteractionMemberTransition::Applied(next)),
+            Err(CliError::Store(StoreError::Conflict(_)))
+                if attempt + 1 < PROVIDER_MEMBER_CAS_RETRIES => {}
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("bounded provider MemberRun CAS loop returns on every path")
+}
+
+/// Refresh the outer provider driver after all blocking callbacks have
+/// returned. Only callback-owned transient drift is accepted. A lingering
+/// unresolved Waiting projection is not a terminal round and therefore cannot
+/// be overwritten by an outer Idle/Stopped write.
+fn refresh_member_after_provider_callbacks(
+    ledger: &TeamRunLedger,
+    round_start: &MemberRun,
+) -> CliResult<MemberRun> {
+    let latest = ledger
+        .latest_member_run(&round_start.id)?
+        .ok_or_else(|| CliError::Usage(format!("member run {} not found", round_start.id)))?;
+    validate_provider_callback_drift(round_start, &latest)?;
+    if latest.status == MemberRunStatus::Waiting {
+        let legacy_unresolved = latest_pending_interactions_in_append_order(&ledger.store)?
+            .into_iter()
+            .any(|interaction| {
+                interaction.member_run_id == latest.id
+                    && interaction.status == PendingInteractionStatus::Pending
+            });
+        let messages = ledger.team_messages()?;
+        let message_unresolved = messages.iter().any(|request| {
+            request.kind == TeamMessageKind::ProviderInteractionRequest
+                && request.from_member_id == latest.id
+                && request.deliveries.iter().any(|delivery| {
+                    delivery.member_id == "host" && delivery.status == TeamDeliveryStatus::Delivered
+                })
+                && !messages.iter().any(|response| {
+                    response.kind == TeamMessageKind::ProviderInteractionResponse
+                        && response.causation_id.as_deref() == Some(request.id.as_str())
+                })
+        });
+        if legacy_unresolved || message_unresolved {
+            return Err(CliError::Usage(format!(
+                "provider round for MemberRun {} cannot finalize while an interaction remains pending",
+                latest.id
+            )));
+        }
+    }
+    Ok(latest)
+}
+
 fn pending_member_close(
     store: &HarnessStore,
     member_run_id: &str,
@@ -17549,11 +18142,22 @@ fn stop_member_for_latched_close(
             close.requested_by, close.reason
         ),
     )?;
+    let expected = member_row.clone();
     member_row.coordination_status = MemberCoordinationStatus::Closed;
     member_row.status = MemberRunStatus::Stopped;
     member_row.finished_at = Some(now_string());
     member_row.last_event_at = Some(now_string());
-    ledger.save_member_run(member_row)?;
+    ledger.save_member_run(&expected, member_row)?;
+    // Completing the durable latch is part of the lifecycle transition, not
+    // optional observability. Do it immediately after the stopped CAS so a
+    // later action/event journal failure cannot strand Closed+Stopped with a
+    // permanently Pending request that the roster will no longer rescan.
+    store_conflict_as_usage(ledger.store.complete_team_member_close(
+        &ledger.run_id,
+        &member_row.id,
+        &close.id,
+        &now_string(),
+    ))?;
     ledger.append_action(
         &member_row.id,
         "closed",
@@ -17569,12 +18173,6 @@ fn stop_member_for_latched_close(
         "updated",
         &format!("member {} closed by Host supervisor", member_row.name),
     )?;
-    store_conflict_as_usage(ledger.store.complete_team_member_close(
-        &ledger.run_id,
-        &member_row.id,
-        &close.id,
-        &now_string(),
-    ))?;
     Ok(())
 }
 
@@ -17609,11 +18207,12 @@ fn wait_for_idle_member_wake(
                         "member runtime closed while idle",
                         &format!("{requested_by}: {reason}"),
                     )?;
+                    let expected = member_row.clone();
                     member_row.coordination_status = MemberCoordinationStatus::Closed;
                     member_row.status = MemberRunStatus::Stopped;
                     member_row.finished_at = Some(now_string());
                     member_row.last_event_at = Some(now_string());
-                    ledger.save_member_run(member_row)?;
+                    ledger.save_member_run(&expected, member_row)?;
                     ledger.fold_event(
                         TeamRunEventSourceKind::Member,
                         Some(member_row.id.clone()),
@@ -17685,10 +18284,11 @@ fn wait_for_idle_member_wake(
                 // Try work deliveries first (work contract prompt).
                 if let Some(claimed) = ledger.claim_next_work_for(&member_row.id)? {
                     backoff.reset();
+                    let expected = member_row.clone();
                     member_row.status = MemberRunStatus::Running;
                     member_row.finished_at = None;
                     member_row.last_event_at = Some(now_string());
-                    ledger.save_member_run(member_row)?;
+                    ledger.save_member_run(&expected, member_row)?;
                     return Ok(IdleMemberWake::Work(Box::new(claimed)));
                 }
                 // Then try active-work continuation.
@@ -17702,17 +18302,19 @@ fn wait_for_idle_member_wake(
                         let pending = ledger.claim_round_triggering_messages_for(&member_row.id)?;
                         if !pending.is_empty() {
                             backoff.reset();
+                            let expected = member_row.clone();
                             member_row.status = MemberRunStatus::Running;
                             member_row.finished_at = None;
                             member_row.last_event_at = Some(now_string());
-                            ledger.save_member_run(member_row)?;
+                            ledger.save_member_run(&expected, member_row)?;
                             return Ok(IdleMemberWake::Messages(pending));
                         }
                         backoff.reset();
+                        let expected = member_row.clone();
                         member_row.status = MemberRunStatus::Running;
                         member_row.finished_at = None;
                         member_row.last_event_at = Some(now_string());
-                        ledger.save_member_run(member_row)?;
+                        ledger.save_member_run(&expected, member_row)?;
                         return Ok(IdleMemberWake::ActiveWorkContinuation(Box::new(work)));
                     }
                 }
@@ -17738,10 +18340,11 @@ fn wait_for_idle_member_wake(
                 notifs.reverse();
                 if !notifs.is_empty() {
                     backoff.reset();
+                    let expected = member_row.clone();
                     member_row.status = MemberRunStatus::Running;
                     member_row.finished_at = None;
                     member_row.last_event_at = Some(now_string());
-                    ledger.save_member_run(member_row)?;
+                    ledger.save_member_run(&expected, member_row)?;
                     return Ok(IdleMemberWake::Messages(notifs));
                 }
                 // DeliverPending predicted but nothing claimable — fall through to Sleep.
@@ -17751,10 +18354,11 @@ fn wait_for_idle_member_wake(
                 if member_supervisor_test_idle_grace().is_none() {
                     if let Some(work) = ledger.active_work_continuation_for(&member_row.id)? {
                         backoff.reset();
+                        let expected = member_row.clone();
                         member_row.status = MemberRunStatus::Running;
                         member_row.finished_at = None;
                         member_row.last_event_at = Some(now_string());
-                        ledger.save_member_run(member_row)?;
+                        ledger.save_member_run(&expected, member_row)?;
                         return Ok(IdleMemberWake::ActiveWorkContinuation(Box::new(work)));
                     }
                 }
@@ -17767,10 +18371,11 @@ fn wait_for_idle_member_wake(
                 // claim eligible Works.
                 if let Some(work) = ledger.active_work_continuation_for(&member_row.id)? {
                     backoff.reset();
+                    let expected = member_row.clone();
                     member_row.status = MemberRunStatus::Running;
                     member_row.finished_at = None;
                     member_row.last_event_at = Some(now_string());
-                    ledger.save_member_run(member_row)?;
+                    ledger.save_member_run(&expected, member_row)?;
                     return Ok(IdleMemberWake::ActiveWorkContinuation(Box::new(work)));
                 }
             }
@@ -17786,10 +18391,11 @@ fn wait_for_idle_member_wake(
             supervisor_wake::WakeDecision::Degraded(reason) => {
                 // Mark the member blocked so continuation stops.
                 // The Host must intervene (message, steer, or recover).
+                let expected = member_row.clone();
                 member_row.status = MemberRunStatus::Blocked;
                 member_row.finished_at = None;
                 member_row.last_event_at = Some(now_string());
-                ledger.save_member_run(member_row)?;
+                ledger.save_member_run(&expected, member_row)?;
                 ledger.append_action(
                     &member_row.id,
                     "degraded",
@@ -18030,7 +18636,7 @@ pub(crate) fn prepare_team_run_start_body(
         if member.is_external_interactive() {
             continue;
         }
-        let previous_profile = member.provider_profile.clone();
+        let expected = member.clone();
         let (profile, probe_error) = refreshed_team_member_provider_profile(member)?;
         let refusal = provider_compatibility_block_reason(
             member,
@@ -18038,10 +18644,8 @@ pub(crate) fn prepare_team_run_start_body(
             "start or resume persistent Agent Team execution",
             probe_error.as_deref(),
         );
-        member.provider_profile = Some(profile);
-        member.last_event_at = Some(now_string());
-        if member.provider_profile != previous_profile {
-            store.append_member_run(member)?;
+        if apply_refreshed_provider_profile(member, profile) {
+            store_conflict_as_usage(store.compare_and_append_member_run(&expected, member))?;
         }
         if let Some(refusal) = refusal {
             return Err(CliError::Usage(refusal));
@@ -18195,6 +18799,109 @@ pub(crate) fn team_run_start(
     }
 }
 
+/// Publish the workspace facts at the last boundary before a provider thread
+/// is created. The prepared roster may be arbitrarily stale: Close and Reopen
+/// are durable concurrent operations, so neither can be overwritten by a
+/// starter that still holds the old MemberRun version.
+fn prepare_member_workspace_for_spawn(
+    ledger: &TeamRunLedger,
+    prepared: &MemberRun,
+    workspace_snapshot: &MemberWorkspaceSnapshot,
+) -> CliResult<PreSpawnWorkspacePreparation> {
+    prepare_member_workspace_for_spawn_with_hook(
+        ledger,
+        prepared,
+        workspace_snapshot,
+        |_, _| Ok(()),
+    )
+}
+
+enum PreSpawnWorkspacePreparation {
+    Ready(Box<MemberRun>),
+    Superseded,
+    Retry,
+}
+
+fn prepare_member_workspace_for_spawn_with_hook(
+    ledger: &TeamRunLedger,
+    prepared: &MemberRun,
+    workspace_snapshot: &MemberWorkspaceSnapshot,
+    mut before_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
+) -> CliResult<PreSpawnWorkspacePreparation> {
+    for attempt in 0..PROVIDER_MEMBER_CAS_RETRIES {
+        ledger.require_supervisor_lease()?;
+        let Some(mut latest) = ledger.latest_member_run(&prepared.id)? else {
+            return Ok(PreSpawnWorkspacePreparation::Superseded);
+        };
+        if let Some(close) = pending_member_close(&ledger.store, &latest.id)? {
+            match stop_member_for_latched_close(ledger, &mut latest, &close) {
+                Ok(()) => return Ok(PreSpawnWorkspacePreparation::Superseded),
+                Err(CliError::Store(StoreError::Conflict(_)))
+                    if attempt + 1 < PROVIDER_MEMBER_CAS_RETRIES =>
+                {
+                    continue;
+                }
+                // Exhausted contention is local to this stale roster entry.
+                // A later supervisor rescan/generation will reconcile it.
+                Err(CliError::Store(StoreError::Conflict(_))) => {
+                    return Ok(PreSpawnWorkspacePreparation::Retry)
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if !latest.coordination_is_active()
+            || matches!(
+                latest.status,
+                MemberRunStatus::Starting
+                    | MemberRunStatus::Running
+                    | MemberRunStatus::Completed
+                    | MemberRunStatus::Failed
+                    | MemberRunStatus::Stopped
+            )
+        {
+            return Ok(PreSpawnWorkspacePreparation::Superseded);
+        }
+        // Display name, refreshed provider observations, timestamps, and a
+        // previous workspace observation are benign same-generation drift and
+        // stay rebased from latest. Execution identity, provenance, controls,
+        // lifecycle, and provider-native history are hard fences.
+        if latest.id != prepared.id
+            || latest.team_run_id != prepared.team_run_id
+            || latest.slot_id != prepared.slot_id
+            || latest.agent_member_id != prepared.agent_member_id
+            || latest.role != prepared.role
+            || latest.provider != prepared.provider
+            || latest.model != prepared.model
+            || latest.provider_controls != prepared.provider_controls
+            || latest.coordination_status != prepared.coordination_status
+            || latest.runtime_generation != prepared.runtime_generation
+            || latest.status != prepared.status
+            || latest.native_session != prepared.native_session
+            || latest.worktree_ref != prepared.worktree_ref
+            || latest.owned_paths != prepared.owned_paths
+            || latest.zero_output_streak != prepared.zero_output_streak
+            || latest.last_consumed_work_version != prepared.last_consumed_work_version
+            || latest.started_at != prepared.started_at
+            || latest.finished_at != prepared.finished_at
+        {
+            return Ok(PreSpawnWorkspacePreparation::Superseded);
+        }
+        let expected = latest.clone();
+        latest.workspace_snapshot = Some(workspace_snapshot.clone());
+        before_cas(attempt, &expected)?;
+        match ledger.save_member_run(&expected, &latest) {
+            Ok(()) => return Ok(PreSpawnWorkspacePreparation::Ready(Box::new(latest))),
+            Err(CliError::Store(StoreError::Conflict(_)))
+                if attempt + 1 < PROVIDER_MEMBER_CAS_RETRIES => {}
+            Err(CliError::Store(StoreError::Conflict(_))) => {
+                return Ok(PreSpawnWorkspacePreparation::Retry)
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("bounded pre-spawn MemberRun CAS loop returns on every path")
+}
+
 pub(crate) fn drive_prepared_team_run(
     prepared: PreparedTeamRunStart,
     execution_space: Option<ExecutionSpace>,
@@ -18238,6 +18945,7 @@ pub(crate) fn drive_prepared_team_run(
         .as_ref()
         .map(|context| context.project_root.to_string_lossy().into_owned());
     let mut seen_runtime_generations = HashMap::<String, u64>::new();
+    let mut member_retry_not_before = HashMap::<String, Instant>::new();
     let mut pending_members = members;
     let mut handles = HashMap::new();
     let mut outcomes = Vec::new();
@@ -18263,7 +18971,18 @@ pub(crate) fn drive_prepared_team_run(
             }
         }
         if !lease_lost {
-            for mut member in pending_members.drain(..) {
+            for mut member in std::mem::take(&mut pending_members) {
+                if handles.contains_key(&member.id) {
+                    continue;
+                }
+                if member_retry_not_before
+                    .get(&member.id)
+                    .is_some_and(|deadline| *deadline > Instant::now())
+                {
+                    pending_members.push(member);
+                    continue;
+                }
+                member_retry_not_before.remove(&member.id);
                 seen_runtime_generations.insert(member.id.clone(), member.runtime_generation);
                 let member_ledger = Arc::clone(&ledger);
                 // A declared external interactive member is driven by the user
@@ -18287,7 +19006,7 @@ pub(crate) fn drive_prepared_team_run(
                 }
                 let member_objective = objective.clone();
                 let cwd = member_spawn_cwd(project_context.as_ref(), &running, &member);
-                member.workspace_snapshot = Some(snapshot_member_workspace(
+                let workspace_snapshot = snapshot_member_workspace(
                     &cwd,
                     project_context.as_ref().map(|context| context.id.as_str()),
                     project_context
@@ -18310,8 +19029,28 @@ pub(crate) fn drive_prepared_team_run(
                     } else {
                         "explicit_unbound"
                     },
-                ));
-                member_ledger.save_member_run(&member)?;
+                );
+                let published_member = match prepare_member_workspace_for_spawn(
+                    &member_ledger,
+                    &member,
+                    &workspace_snapshot,
+                )? {
+                    PreSpawnWorkspacePreparation::Ready(member) => *member,
+                    PreSpawnWorkspacePreparation::Superseded => {
+                        member_retry_not_before.remove(&member.id);
+                        continue;
+                    }
+                    PreSpawnWorkspacePreparation::Retry => {
+                        member_retry_not_before.insert(
+                            member.id.clone(),
+                            Instant::now() + Duration::from_millis(50),
+                        );
+                        pending_members.push(member);
+                        continue;
+                    }
+                };
+                member_retry_not_before.remove(&member.id);
+                member = published_member;
                 member_ledger.fold_event(
                     TeamRunEventSourceKind::Host,
                     Some(member.id.clone()),
@@ -18368,10 +19107,10 @@ pub(crate) fn drive_prepared_team_run(
             }
         }
 
-        pending_members = if lease_lost {
-            Vec::new()
+        if lease_lost {
+            pending_members.clear();
         } else {
-            latest_member_runs_in_append_order(&ledger.store)?
+            let rescanned = latest_member_runs_in_append_order(&ledger.store)?
                 .into_iter()
                 .filter(|member| {
                     member.team_run_id == run_id
@@ -18388,9 +19127,18 @@ pub(crate) fn drive_prepared_team_run(
                                 .get(&member.id)
                                 .copied()
                                 .unwrap_or(0)
+                        && !handles.contains_key(&member.id)
                 })
-                .collect()
-        };
+                .collect::<Vec<_>>();
+            for member in rescanned {
+                if !pending_members.iter().any(|pending| {
+                    pending.id == member.id
+                        && pending.runtime_generation == member.runtime_generation
+                }) {
+                    pending_members.push(member);
+                }
+            }
+        }
         if !pending_members.is_empty() {
             ledger.fold_event(
                 TeamRunEventSourceKind::Host,
@@ -18403,6 +19151,15 @@ pub(crate) fn drive_prepared_team_run(
                     pending_members.len()
                 ),
             )?;
+            if let Some(delay) = pending_members
+                .iter()
+                .filter_map(|member| member_retry_not_before.get(&member.id))
+                .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+                .min()
+                .filter(|delay| !delay.is_zero())
+            {
+                std::thread::sleep(delay.min(Duration::from_millis(50)));
+            }
             continue;
         }
 
@@ -18523,6 +19280,168 @@ pub(crate) fn drive_prepared_team_run(
     Ok(())
 }
 
+enum MemberProviderStartClaim {
+    Claimed(MemberRun),
+    Superseded(MemberRun),
+    Retry,
+}
+
+fn member_requested_controls_match(anchor: &MemberRun, candidate: &MemberRun) -> bool {
+    anchor.provider_controls.model.requested == candidate.provider_controls.model.requested
+        && anchor.provider_controls.reasoning_effort.requested
+            == candidate.provider_controls.reasoning_effort.requested
+        && anchor.provider_controls.service_tier.requested
+            == candidate.provider_controls.service_tier.requested
+}
+
+fn member_runtime_anchor_matches(anchor: &MemberRun, candidate: &MemberRun) -> bool {
+    candidate.id == anchor.id
+        && candidate.team_run_id == anchor.team_run_id
+        && candidate.slot_id == anchor.slot_id
+        && candidate.agent_member_id == anchor.agent_member_id
+        && candidate.role == anchor.role
+        && candidate.provider == anchor.provider
+        && candidate.model == anchor.model
+        && member_requested_controls_match(anchor, candidate)
+        && candidate.runtime_generation == anchor.runtime_generation
+        && candidate.worktree_ref == anchor.worktree_ref
+        && candidate.owned_paths == anchor.owned_paths
+        && candidate.started_at == anchor.started_at
+}
+
+fn member_runtime_progress_matches(
+    anchor: &MemberRun,
+    accepted: &MemberRun,
+    candidate: &MemberRun,
+    allow_owned_initial_bind: bool,
+) -> bool {
+    member_runtime_anchor_matches(anchor, candidate)
+        && match (&accepted.native_session, &candidate.native_session) {
+            (None, None) => true,
+            (None, Some(_)) => allow_owned_initial_bind,
+            (Some(_), None) => false,
+            (Some(accepted), Some(candidate)) => {
+                accepted.provider == candidate.provider
+                    && accepted.execution_mode == candidate.execution_mode
+                    && accepted.native_session_id == candidate.native_session_id
+                    && accepted.native_locator_kind == candidate.native_locator_kind
+                    && accepted.adapter_contract_version == candidate.adapter_contract_version
+            }
+        }
+}
+
+/// Linearization point for provider-native side effects. Close writes its
+/// durable latch and coordination transition before this CAS; therefore only
+/// an exact active queued/idle/disconnected generation may claim Starting.
+/// Queued is the durable projection emitted by Reopen/recovery while waiting
+/// for a Supervisor rescan. Once this CAS wins, Start precedes a later
+/// concurrent Close, whose normal control path is responsible for stopping the
+/// newly owned transport.
+fn claim_member_provider_start(
+    ledger: &TeamRunLedger,
+    scheduled: &MemberRun,
+) -> CliResult<MemberProviderStartClaim> {
+    claim_member_provider_start_with_hook(ledger, scheduled, |_, _| Ok(()))
+}
+
+fn claim_member_provider_start_with_hook(
+    ledger: &TeamRunLedger,
+    scheduled: &MemberRun,
+    mut before_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
+) -> CliResult<MemberProviderStartClaim> {
+    for attempt in 0..PROVIDER_MEMBER_CAS_RETRIES {
+        ledger.require_supervisor_lease()?;
+        let Some(mut latest) = ledger.latest_member_run(&scheduled.id)? else {
+            return Ok(MemberProviderStartClaim::Superseded(scheduled.clone()));
+        };
+        if let Some(close) = pending_member_close(&ledger.store, &latest.id)? {
+            match stop_member_for_latched_close(ledger, &mut latest, &close) {
+                Ok(()) => return Ok(MemberProviderStartClaim::Superseded(latest)),
+                Err(CliError::Store(StoreError::Conflict(_)))
+                    if attempt + 1 < PROVIDER_MEMBER_CAS_RETRIES =>
+                {
+                    continue;
+                }
+                Err(CliError::Store(StoreError::Conflict(_))) => {
+                    return Ok(MemberProviderStartClaim::Retry)
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if !latest.coordination_is_active()
+            || latest.runtime_generation != scheduled.runtime_generation
+            || latest.native_session != scheduled.native_session
+            || latest.id != scheduled.id
+            || latest.team_run_id != scheduled.team_run_id
+            || latest.slot_id != scheduled.slot_id
+            || latest.agent_member_id != scheduled.agent_member_id
+            || latest.role != scheduled.role
+            || latest.provider != scheduled.provider
+            || latest.model != scheduled.model
+            || latest.provider_controls != scheduled.provider_controls
+            || latest.worktree_ref != scheduled.worktree_ref
+            || latest.owned_paths != scheduled.owned_paths
+            || !matches!(
+                latest.status,
+                MemberRunStatus::Queued | MemberRunStatus::Idle | MemberRunStatus::Disconnected
+            )
+        {
+            return Ok(MemberProviderStartClaim::Superseded(latest));
+        }
+        let expected = latest.clone();
+        latest.status = MemberRunStatus::Starting;
+        latest.last_event_at = Some(now_string());
+        before_cas(attempt, &expected)?;
+        match ledger.save_member_run(&expected, &latest) {
+            Ok(()) => {
+                // Close latches before changing coordination. Re-read after
+                // the claim CAS to close the latch-between-read-and-CAS
+                // window: a latch already durable here precedes provider
+                // start and must be fully applied with zero native spawn.
+                if let Some(close) = pending_member_close(&ledger.store, &latest.id)? {
+                    match stop_member_for_latched_close(ledger, &mut latest, &close) {
+                        Ok(()) => return Ok(MemberProviderStartClaim::Superseded(latest)),
+                        Err(CliError::Store(StoreError::Conflict(_)))
+                            if attempt + 1 < PROVIDER_MEMBER_CAS_RETRIES =>
+                        {
+                            continue;
+                        }
+                        Err(CliError::Store(StoreError::Conflict(_))) => {
+                            return Ok(MemberProviderStartClaim::Retry)
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                return Ok(MemberProviderStartClaim::Claimed(latest));
+            }
+            Err(CliError::Store(StoreError::Conflict(_)))
+                if attempt + 1 < PROVIDER_MEMBER_CAS_RETRIES => {}
+            Err(CliError::Store(StoreError::Conflict(_))) => {
+                return Ok(MemberProviderStartClaim::Retry)
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("bounded provider start claim returns on every path")
+}
+
+fn reconcile_member_lifecycle_after_provider_error(
+    ledger: &TeamRunLedger,
+    member: &mut MemberRun,
+) -> CliResult<bool> {
+    if let Some(close) = pending_member_close(&ledger.store, &member.id)? {
+        stop_member_for_latched_close(ledger, member, &close)?;
+        return Ok(true);
+    }
+    // A lifecycle transition without this generation's pending Close is still
+    // authoritative. Never journal a provider failure over Closed/Retired.
+    Ok(!member.coordination_is_active()
+        || matches!(
+            member.status,
+            MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
+        ))
+}
+
 /// One persistent member supervisor. Provider transports and turns are
 /// disposable generations beneath the durable MemberRun/native-session
 /// binding. A transport that disappears after binding is journaled as
@@ -18544,6 +19463,8 @@ fn run_member_orchestration(
             "external interactive member is user-driven; Harness does not drive it".to_string(),
         );
     }
+    let hard_anchor = member.clone();
+    let mut accepted = member.clone();
     let mut generation = 0u64;
     loop {
         let mut current = ledger
@@ -18553,6 +19474,18 @@ fn run_member_orchestration(
             .unwrap_or_else(|| member.clone());
         if let Err(error) = ledger.require_supervisor_lease() {
             return MemberOutcome::new(&current, current.status, error.to_string());
+        }
+        // The immutable anchor fences identity, operator intent, workspace
+        // authority, and runtime generation. The rolling accepted snapshot is
+        // narrower: it lets this same generation retain its own provider bind
+        // and effective receipts across a disconnect, but never adopts a
+        // session replacement observed only at a later loop entry.
+        if !member_runtime_anchor_matches(&hard_anchor, &current) {
+            return MemberOutcome::new(
+                &current,
+                current.status,
+                "scheduled member runtime was superseded before provider start".to_string(),
+            );
         }
         let pending_close = match pending_member_close(&ledger.store, &current.id) {
             Ok(close) => close,
@@ -18570,13 +19503,30 @@ fn run_member_orchestration(
                 "member runtime closed by Host".to_string(),
             );
         }
-        if current.status == MemberRunStatus::Stopped {
+        if !current.coordination_is_active()
+            || matches!(
+                current.status,
+                MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
+            )
+        {
             return MemberOutcome::new(
                 &current,
-                MemberRunStatus::Stopped,
-                "member runtime closed".to_string(),
+                current.status,
+                "member runtime lifecycle superseded provider start".to_string(),
             );
         }
+        if !member_runtime_progress_matches(&hard_anchor, &accepted, &current, false) {
+            return MemberOutcome::new(
+                &current,
+                current.status,
+                "scheduled member native session was replaced before provider start".to_string(),
+            );
+        }
+        // Same-generation status, timestamps, provider observations/effective
+        // controls, and turn-progress fields are durable progress. Rebase them
+        // exactly; the short-window start claim below still CASes the complete
+        // fresh row and therefore loses to Close or any later mutation.
+        accepted = current.clone();
         // Re-probe every transport generation. This is the last fence before
         // capacity checks, WorkDelivery claim, process spawn, or native-session
         // attach, so a binary upgraded to an unreviewed version cannot fall
@@ -18590,9 +19540,10 @@ fn run_member_orchestration(
             Ok(Some(outcome)) => return outcome,
             Ok(None) => {}
             Err(error) if error.is_provider_compatibility_blocked() => {
+                let expected = current.clone();
                 current.status = MemberRunStatus::Blocked;
                 let reason = error.to_string();
-                let _ = ledger.save_member_run(&current);
+                let _ = ledger.save_member_run(&expected, &current);
                 return MemberOutcome::new(&current, MemberRunStatus::Blocked, reason);
             }
             Err(error) => {
@@ -18623,6 +19574,24 @@ fn run_member_orchestration(
                 }
             }
         }
+        current = match claim_member_provider_start(ledger, &current) {
+            Ok(MemberProviderStartClaim::Claimed(starting)) => starting,
+            Ok(MemberProviderStartClaim::Superseded(latest)) => {
+                return MemberOutcome::new(
+                    &latest,
+                    latest.status,
+                    "member provider start was superseded by lifecycle control".to_string(),
+                )
+            }
+            Ok(MemberProviderStartClaim::Retry) => {
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            }
+            Err(error) => {
+                return MemberOutcome::new(&current, MemberRunStatus::Failed, error.to_string())
+            }
+        };
+        accepted = current.clone();
         generation += 1;
         let execution_mode = current
             .provider_profile
@@ -18681,13 +19650,30 @@ fn run_member_orchestration(
             }
             Err(error) => {
                 let reason = error.to_string();
-                let latest = ledger
+                let mut latest = ledger
                     .latest_member_run(&current.id)
                     .ok()
                     .flatten()
                     .unwrap_or(current);
                 if error.is_supervisor_lease_lost() {
                     return MemberOutcome::new(&latest, latest.status, reason);
+                }
+                match reconcile_member_lifecycle_after_provider_error(ledger, &mut latest) {
+                    Ok(true) => {
+                        return MemberOutcome::new(
+                            &latest,
+                            latest.status,
+                            "provider start was superseded by member lifecycle control".to_string(),
+                        )
+                    }
+                    Ok(false) => {}
+                    Err(close_error) => {
+                        return MemberOutcome::new(
+                            &latest,
+                            MemberRunStatus::Failed,
+                            close_error.to_string(),
+                        )
+                    }
                 }
                 if latest.native_session.is_none() {
                     journal_member_failure(ledger, &latest, &reason);
@@ -18696,6 +19682,14 @@ fn run_member_orchestration(
                     // reaches a resolved state (observable via inbox).
                     let _ = ledger.fail_team_messages_for(&latest.id, &reason);
                     return MemberOutcome::new(&latest, MemberRunStatus::Failed, reason);
+                }
+                if !member_runtime_progress_matches(&hard_anchor, &accepted, &latest, true) {
+                    return MemberOutcome::new(
+                        &latest,
+                        latest.status,
+                        "provider result was superseded by a different runtime authority"
+                            .to_string(),
+                    );
                 }
                 if let Err(failure_error) =
                     ledger.fail_unreceived_work_claims_for(&latest.id, &reason)
@@ -18720,6 +19714,11 @@ fn run_member_orchestration(
                     );
                 }
                 journal_member_disconnected(ledger, &latest, generation, &reason);
+                accepted = ledger
+                    .latest_member_run(&latest.id)
+                    .ok()
+                    .flatten()
+                    .unwrap_or(latest);
                 std::thread::sleep(Duration::from_millis(250));
             }
         }
@@ -18743,13 +19742,10 @@ fn run_codex_member(
     let live_sink = context.live_sink.clone();
     let turn_leases = &context.turn_leases;
     let mut member_row = member.clone();
-    member_row.status = MemberRunStatus::Starting;
     if let Some(profile) = member_row.provider_profile.as_mut() {
         ledger.require_supervisor_lease()?;
         apply_provider_version(profile, provider_version_output("codex").ok());
     }
-    member_row.last_event_at = Some(now_string());
-    ledger.save_member_run(&member_row)?;
     ledger.fold_event(
         TeamRunEventSourceKind::Member,
         Some(member.id.clone()),
@@ -18794,6 +19790,7 @@ fn run_codex_member(
             plan_mode: false,
         },
     )?;
+    let expected = member.clone();
     member_row.provider_controls.model.mark_effective(
         Some(app_server.model().to_string()),
         "confirmed by codex app-server thread start/resume response",
@@ -18835,7 +19832,7 @@ fn run_codex_member(
 
     member_row.status = MemberRunStatus::Idle;
     member_row.last_event_at = Some(now_string());
-    ledger.save_member_run(&member_row)?;
+    ledger.save_member_run(&expected, &member_row)?;
 
     let mut round = 0u32;
     let mut prompt_text;
@@ -18971,6 +19968,7 @@ fn run_codex_member(
     }
     loop {
         round += 1;
+        let expected_round = member_row.clone();
         active_assignment =
             active_assignment_for_round(active_assignment.as_ref(), &accepted_messages);
         let round_trigger = accepted_messages.last().cloned();
@@ -19005,6 +20003,7 @@ fn run_codex_member(
         // MemberRun write may follow a terminal transport result from a stale
         // Supervisor generation.
         ledger.require_supervisor_lease()?;
+        member_row = refresh_member_after_provider_callbacks(ledger, &expected_round)?;
         accepted_messages.clear();
         let verified_thread_id = turn.thread_id.clone().or_else(|| {
             member_row
@@ -19013,13 +20012,15 @@ fn run_codex_member(
                 .map(|session| session.native_session_id.clone())
         });
         if let Some(thread_id) = verified_thread_id {
+            let expected = member_row.clone();
             member_row.native_session =
                 Some(native_session_ref(&member_row, thread_id, "codex_rollout"));
-            ledger.save_member_run(&member_row)?;
+            ledger.save_member_run(&expected, &member_row)?;
         }
         // The Work receipt was already recorded at turn/start acceptance
         // inside run_codex_app_server_turn; nothing to complete here.
         if turn.interrupted {
+            let expected = member_row.clone();
             let interruption_summary = if turn.close_requested_by_harness {
                 "The Host explicitly closed the Codex member runtime."
             } else if turn.interrupt_requested_by_harness {
@@ -19037,7 +20038,7 @@ fn run_codex_member(
             };
             member_row.finished_at = turn.close_requested_by_harness.then(now_string);
             member_row.last_event_at = Some(now_string());
-            ledger.save_member_run(&member_row)?;
+            ledger.save_member_run(&expected, &member_row)?;
             ledger.append_action(
                 &member.id,
                 if turn.close_requested_by_harness {
@@ -19099,12 +20100,13 @@ fn run_codex_member(
                 &format!("{} completed provider round {round}", member.name),
             )?;
 
+            let expected = member_row.clone();
             member_row.zero_output_streak = zero_output_streak;
             member_row.last_consumed_work_version = last_consumed_work_version;
             member_row.status = MemberRunStatus::Idle;
             member_row.finished_at = None;
             member_row.last_event_at = Some(now_string());
-            ledger.save_member_run(&member_row)?;
+            ledger.save_member_run(&expected, &member_row)?;
             ledger.fold_event(
                 TeamRunEventSourceKind::Member,
                 Some(member.id.clone()),
@@ -19579,9 +20581,18 @@ fn run_codex_app_server_turn(
                     }
                     _ if frame.get("id").is_some() && method.is_some() => {
                         ledger.require_supervisor_lease()?;
-                        let result = handle_codex_provider_request(ledger, member, &frame)?;
+                        let reply = handle_codex_provider_request(ledger, member, &frame)?;
                         ledger.require_supervisor_lease()?;
-                        client.respond(frame.get("id").expect("checked"), result)?;
+                        client.respond(frame.get("id").expect("checked"), reply.result.clone())?;
+                        complete_provider_interaction_reply(
+                            ledger,
+                            &member.id,
+                            &reply,
+                            &format!(
+                                "codex-app-server-reverse:{}",
+                                frame.get("id").expect("checked")
+                            ),
+                        )?;
                     }
                     _ => {}
                 }
@@ -19634,12 +20645,13 @@ fn run_claude_team_member(
     live_sink: Option<LiveMemberActivitySink>,
 ) -> CliResult<MemberOutcome> {
     let mut member_row = member.clone();
+    let expected = member_row.clone();
     member_row.status = MemberRunStatus::Starting;
     if let Some(profile) = member_row.provider_profile.as_mut() {
         apply_provider_version(profile, provider_version_output("claude").ok());
     }
     member_row.last_event_at = Some(now_string());
-    ledger.save_member_run(&member_row)?;
+    ledger.save_member_run(&expected, &member_row)?;
     ledger.fold_event(
         TeamRunEventSourceKind::Member,
         Some(member.id.clone()),
@@ -19701,12 +20713,13 @@ fn run_claude_team_member(
                 )?;
             }
         }
+        let expected = member_row.clone();
         member_row.native_session = Some(native_session_ref(
             &member_row,
             &turn.session_id,
             "claude_project_session",
         ));
-        ledger.save_member_run(&member_row)?;
+        ledger.save_member_run(&expected, &member_row)?;
 
         let handoff = TeamMessage {
             id: generated_id("tmsg"),
@@ -19785,10 +20798,11 @@ fn run_claude_team_member(
             "created",
             &format!("{} round {round}: {action_type}", member.name),
         )?;
+        let expected = member_row.clone();
         member_row.status = member_status;
         member_row.finished_at = Some(now_string());
         member_row.last_event_at = Some(now_string());
-        ledger.save_member_run(&member_row)?;
+        ledger.save_member_run(&expected, &member_row)?;
         final_status = member_status;
         final_summary = extract_report_section(&turn.final_text, "SUMMARY").unwrap_or_else(|| {
             turn.final_text
@@ -19821,9 +20835,10 @@ fn run_claude_team_member(
                 &format!("historical-claude-cli-round-{}", round + 1),
             )?;
         }
+        let expected = member_row.clone();
         member_row.status = MemberRunStatus::Running;
         member_row.finished_at = None;
-        ledger.save_member_run(&member_row)?;
+        ledger.save_member_run(&expected, &member_row)?;
         next_prompt = Some(follow_up);
     }
     Ok(MemberOutcome::new(member, final_status, final_summary))
@@ -19929,9 +20944,6 @@ fn run_claude_agent_sdk_team_member(
             "claude_agent_sdk query options expose model and effort but no reviewed service-tier or fast-mode control",
         );
     }
-    member_row.status = MemberRunStatus::Starting;
-    member_row.last_event_at = Some(now_string());
-    ledger.save_member_run(&member_row)?;
     ledger.fold_event(
         TeamRunEventSourceKind::Member,
         Some(member.id.clone()),
@@ -19944,9 +20956,6 @@ fn run_claude_agent_sdk_team_member(
             cwd.display()
         ),
     )?;
-    member_row.status = MemberRunStatus::Starting;
-    ledger.save_member_run(&member_row)?;
-
     let envelope = member_work_collaboration_envelope(
         ledger,
         context.execution_space_id.as_deref(),
@@ -20145,13 +21154,14 @@ fn run_claude_agent_sdk_team_member(
     // Publish the live handle only after the runner transport exists. Close is
     // an explicit Host operation; normal mailbox idleness never tears it down.
     let (live_control, _live_control_registration) = register_live_member_control(&member_row, 16);
+    let expected = member.clone();
     member_row.status = if !inflight_works.is_empty() || active_work_continuation_inflight {
         MemberRunStatus::Running
     } else {
         MemberRunStatus::Idle
     };
     member_row.last_event_at = Some(now_string());
-    ledger.save_member_run(&member_row)?;
+    ledger.save_member_run(&expected, &member_row)?;
     ledger.fold_event(
         TeamRunEventSourceKind::Member,
         Some(member.id.clone()),
@@ -20271,6 +21281,7 @@ fn run_claude_agent_sdk_team_member(
             match name {
                 "session_bound" => {
                     if let Some(session_id) = data.get("sessionId").and_then(|v| v.as_str()) {
+                        let expected = member_row.clone();
                         if let Some(provider_version) =
                             data.get("providerVersion").and_then(|v| v.as_str())
                         {
@@ -20295,7 +21306,7 @@ fn run_claude_agent_sdk_team_member(
                                 "applied by the reviewed Claude Agent SDK query options before session init",
                             );
                         }
-                        ledger.save_member_run(&member_row)?;
+                        ledger.save_member_run(&expected, &member_row)?;
                     }
                 }
                 "assistant_message" => {
@@ -20445,10 +21456,11 @@ fn run_claude_agent_sdk_team_member(
                         "created",
                         &format!("{} completed provider round {round}", member.name),
                     )?;
+                    let expected = member_row.clone();
                     member_row.status = MemberRunStatus::Idle;
                     member_row.finished_at = None;
                     member_row.last_event_at = Some(now_string());
-                    ledger.save_member_run(&member_row)?;
+                    ledger.save_member_run(&expected, &member_row)?;
                     final_status = MemberRunStatus::Idle;
                     final_summary = summary;
                     turn_text.clear();
@@ -20594,9 +21606,10 @@ fn run_claude_agent_sdk_team_member(
             delivered_any = true;
         }
         if delivered_any {
+            let expected = member_row.clone();
             member_row.status = MemberRunStatus::Running;
             member_row.finished_at = None;
-            ledger.save_member_run(&member_row)?;
+            ledger.save_member_run(&expected, &member_row)?;
             idle_since = None;
         } else if let (Some(since), Some(grace)) = (idle_since, claude_agent_sdk_idle_grace()) {
             if inflight_messages.is_empty()
@@ -20621,11 +21634,12 @@ fn run_claude_agent_sdk_team_member(
     ledger.require_supervisor_lease()?;
     if round == 0 {
         if closed_by_host {
+            let expected = member_row.clone();
             member_row.coordination_status = MemberCoordinationStatus::Closed;
             member_row.status = MemberRunStatus::Stopped;
             member_row.finished_at = Some(now_string());
             member_row.last_event_at = Some(now_string());
-            ledger.save_member_run(&member_row)?;
+            ledger.save_member_run(&expected, &member_row)?;
             return Ok(MemberOutcome::new(
                 member,
                 MemberRunStatus::Stopped,
@@ -20639,11 +21653,12 @@ fn run_claude_agent_sdk_team_member(
         )));
     }
     if closed_by_host && closed_cleanly {
+        let expected = member_row.clone();
         member_row.coordination_status = MemberCoordinationStatus::Closed;
         member_row.status = MemberRunStatus::Stopped;
         member_row.finished_at = Some(now_string());
         member_row.last_event_at = Some(now_string());
-        ledger.save_member_run(&member_row)?;
+        ledger.save_member_run(&expected, &member_row)?;
         return Ok(MemberOutcome::new(
             &member_row,
             MemberRunStatus::Stopped,
@@ -20933,7 +21948,7 @@ fn record_provider_error_round(
     member_row.status = MemberRunStatus::Idle;
     member_row.finished_at = None;
     member_row.last_event_at = Some(now_string());
-    ledger.save_member_run(member_row)?;
+    ledger.save_member_run(&expected, member_row)?;
     Ok((
         MemberRunStatus::Idle,
         format!("provider turn failed: {provider_error}"),
@@ -21007,10 +22022,11 @@ fn record_member_round(
         "created",
         &format!("{} round {}: {action_type}", member_row.name, record.round),
     )?;
+    let expected = member_row.clone();
     member_row.status = MemberRunStatus::Idle;
     member_row.finished_at = None;
     member_row.last_event_at = Some(now_string());
-    ledger.save_member_run(member_row)?;
+    ledger.save_member_run(&expected, member_row)?;
 
     let summary = extract_report_section(record.final_text, "SUMMARY").unwrap_or_else(|| {
         record
@@ -21111,7 +22127,7 @@ fn run_claude_team_turn(
                                 "claude_project_session",
                             ));
                             bound.last_event_at = Some(now_string());
-                            ledger.save_member_run(&bound)?;
+                            ledger.save_member_run(member, &bound)?;
                             bound_session_id = Some(session_id);
                         }
                     }
@@ -21282,9 +22298,6 @@ fn run_kimi_member(
     let live_sink = context.live_sink.clone();
     let turn_leases = &context.turn_leases;
     let mut member_row = member.clone();
-    member_row.status = MemberRunStatus::Starting;
-    member_row.last_event_at = Some(now_string());
-    ledger.save_member_run(&member_row)?;
     ledger.fold_event(
         TeamRunEventSourceKind::Member,
         Some(member.id.clone()),
@@ -21326,6 +22339,7 @@ fn run_kimi_member(
             .map(|session| session.native_session_id.as_str()),
         &collaboration_env,
     )?;
+    let expected = member_row.clone();
     member_row.status = MemberRunStatus::Idle;
     if let Some(profile) = member_row.provider_profile.as_mut() {
         apply_provider_version(profile, client.provider_version().map(str::to_string));
@@ -21375,7 +22389,7 @@ fn run_kimi_member(
     // an operator cannot observe Running and race into a false "no session".
     let (live_control, _live_control_registration) = register_live_member_control(&member_row, 8);
     member_row.last_event_at = Some(now_string());
-    ledger.save_member_run(&member_row)?;
+    ledger.save_member_run(&expected, &member_row)?;
     ledger.fold_event(
         TeamRunEventSourceKind::Member,
         Some(member.id.clone()),
@@ -21534,10 +22548,14 @@ fn run_kimi_member(
             active_assignment_for_round(active_assignment.as_ref(), &accepted_messages);
         let handoffs_before_round = member_handoff_ids(ledger, &member.id)?;
         let mut close_requested = false;
+        let expected_round = member_row.clone();
         let mut mapper = MemberUpdateMapper::new(ledger, member_row.clone(), live_sink.clone());
         let outcome = {
             let _turn_lease = turn_leases.acquire();
             ledger.require_supervisor_lease()?;
+            let claimed_reverse_response = Arc::new(Mutex::new(None::<TeamMessage>));
+            let claimed_for_request = Arc::clone(&claimed_reverse_response);
+            let claimed_after_write = Arc::clone(&claimed_reverse_response);
             client.prompt(
                 &prompt_text,
                 idle_timeout,
@@ -21553,7 +22571,28 @@ fn run_kimi_member(
                 |update| mapper.handle(update),
                 |request| {
                     ledger.require_supervisor_lease()?;
-                    handle_kimi_provider_request(ledger, &member_row, request)
+                    let reply = handle_kimi_provider_request(ledger, &member_row, request)?;
+                    *claimed_for_request
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner()) = reply.claimed_response;
+                    Ok(reply.result)
+                },
+                |request| {
+                    let claimed = claimed_after_write
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .take();
+                    if let Some(message) = claimed {
+                        ledger.complete_provider_interaction_response(
+                            &message,
+                            &member.id,
+                            &format!(
+                                "kimi-acp-reverse:{}",
+                                request.get("id").unwrap_or(&serde_json::Value::Null)
+                            ),
+                        )?;
+                    }
+                    Ok(())
                 },
                 || {
                     ledger.require_supervisor_lease()?;
@@ -21618,13 +22657,19 @@ fn run_kimi_member(
         accepted_messages.clear();
         active_work = None;
         let final_text = mapper.text().to_string();
-        member_row = mapper.into_member();
+        // Mapper state is an in-memory output accumulator, not lifecycle
+        // authority. A blocking permission callback may have advanced the
+        // durable row Waiting -> Running while the mapper retained the
+        // round-start snapshot.
+        let _mapper_member = mapper.into_member();
+        member_row = refresh_member_after_provider_callbacks(ledger, &expected_round)?;
         if outcome.stop_reason == "harness_runtime_closed" && close_requested {
+            let expected = member_row.clone();
             member_row.coordination_status = MemberCoordinationStatus::Closed;
             member_row.status = MemberRunStatus::Stopped;
             member_row.finished_at = Some(now_string());
             member_row.last_event_at = Some(now_string());
-            ledger.save_member_run(&member_row)?;
+            ledger.save_member_run(&expected, &member_row)?;
             ledger.append_action(
                 &member.id,
                 "closed",
@@ -21638,6 +22683,7 @@ fn run_kimi_member(
                 "Kimi member runtime closed by Host".to_string(),
             ));
         } else if matches!(outcome.stop_reason.as_str(), "cancelled" | "canceled") {
+            let expected = member_row.clone();
             if close_requested {
                 member_row.coordination_status = MemberCoordinationStatus::Closed;
             }
@@ -21648,7 +22694,7 @@ fn run_kimi_member(
             };
             member_row.finished_at = close_requested.then(now_string);
             member_row.last_event_at = Some(now_string());
-            ledger.save_member_run(&member_row)?;
+            ledger.save_member_run(&expected, &member_row)?;
             ledger.append_action(
                 &member.id,
                 if close_requested {
@@ -21720,10 +22766,11 @@ fn run_kimi_member(
                 "created",
                 &format!("{} completed provider round {round}", member.name),
             )?;
+            let expected = member_row.clone();
             member_row.status = MemberRunStatus::Idle;
             member_row.finished_at = None;
             member_row.last_event_at = Some(now_string());
-            ledger.save_member_run(&member_row)?;
+            ledger.save_member_run(&expected, &member_row)?;
             let _ = (
                 active_assignment.as_ref(),
                 round_trigger.as_ref(),
@@ -21745,9 +22792,10 @@ fn run_kimi_member(
             let circuit_outcome =
                 unproductive_rounds.observe(&final_text, outcome.provider_error.as_deref());
             zero_output_streak = unproductive_rounds.consecutive;
+            let expected = member_row.clone();
             member_row.zero_output_streak = zero_output_streak;
             member_row.last_consumed_work_version = last_consumed_work_version;
-            ledger.save_member_run(&member_row)?;
+            ledger.save_member_run(&expected, &member_row)?;
             if let Some(kind) = circuit_outcome {
                 let mut reason = format!(
                     "Kimi provider circuit breaker opened after {KIMI_UNPRODUCTIVE_ROUND_LIMIT} consecutive unproductive rounds (last outcome: {}). No durable agent output was produced. Provider capacity remains unknown because Kimi ACP exposes no reviewed quota signal. Inspect the provider-native session, account access, and model-specific controls before explicitly reopening the member.",
@@ -21758,10 +22806,11 @@ fn run_kimi_member(
                         " The unreceived Work claim also needs reconciliation: {error}"
                     ));
                 }
+                let expected = member_row.clone();
                 member_row.status = MemberRunStatus::Failed;
                 member_row.finished_at = Some(now_string());
                 member_row.last_event_at = Some(now_string());
-                ledger.save_member_run(&member_row)?;
+                ledger.save_member_run(&expected, &member_row)?;
                 let action = ledger.append_action(
                     &member.id,
                     "provider_circuit_breaker",
@@ -21928,13 +22977,10 @@ fn run_pi_team_member(
     let turn_leases = &context.turn_leases;
 
     let mut member_row = member.clone();
-    member_row.status = MemberRunStatus::Starting;
     if let Some(profile) = member_row.provider_profile.as_mut() {
         ledger.require_supervisor_lease()?;
         apply_provider_version(profile, provider_version_output("pi").ok());
     }
-    member_row.last_event_at = Some(now_string());
-    ledger.save_member_run(&member_row)?;
     ledger.fold_event(
         TeamRunEventSourceKind::Member,
         Some(member.id.clone()),
@@ -21968,6 +23014,7 @@ fn run_pi_team_member(
         ))
     })?;
 
+    let expected = member.clone();
     if member_row
         .provider_controls
         .reasoning_effort
@@ -22031,7 +23078,7 @@ fn run_pi_team_member(
 
     member_row.status = MemberRunStatus::Idle;
     member_row.last_event_at = Some(now_string());
-    ledger.save_member_run(&member_row)?;
+    ledger.save_member_run(&expected, &member_row)?;
 
     let mut round = 0u32;
     let mut prompt_text;
@@ -22166,12 +23213,13 @@ fn run_pi_team_member(
 
         ledger.require_supervisor_lease()?;
         // Update native session ref with current session file.
+        let expected = member_row.clone();
         member_row.native_session = Some(native_session_ref(
             &member_row,
             pi_client.session_file(),
             "pi_session",
         ));
-        ledger.save_member_run(&member_row)?;
+        ledger.save_member_run(&expected, &member_row)?;
 
         let receipt = format!("pi:{}:round-{round}", pi_client.session_file());
         if let Some(claimed) = active_work.as_ref() {
@@ -22184,6 +23232,7 @@ fn run_pi_team_member(
         accepted_messages.clear();
 
         if turn.interrupted {
+            let expected = member_row.clone();
             let interruption_summary = if turn.close_requested_by_harness {
                 "The Host explicitly closed the Pi member runtime."
             } else {
@@ -22199,7 +23248,7 @@ fn run_pi_team_member(
             };
             member_row.finished_at = turn.close_requested_by_harness.then(now_string);
             member_row.last_event_at = Some(now_string());
-            ledger.save_member_run(&member_row)?;
+            ledger.save_member_run(&expected, &member_row)?;
             ledger.append_action(
                 &member.id,
                 if turn.close_requested_by_harness {
@@ -22260,12 +23309,13 @@ fn run_pi_team_member(
                 &format!("{} completed provider round {round}", member.name),
             )?;
 
+            let expected = member_row.clone();
             member_row.zero_output_streak = zero_output_streak;
             member_row.last_consumed_work_version = last_consumed_work_version;
             member_row.status = MemberRunStatus::Idle;
             member_row.finished_at = None;
             member_row.last_event_at = Some(now_string());
-            ledger.save_member_run(&member_row)?;
+            ledger.save_member_run(&expected, &member_row)?;
             ledger.fold_event(
                 TeamRunEventSourceKind::Member,
                 Some(member.id.clone()),
@@ -22369,10 +23419,11 @@ fn journal_member_failure(ledger: &TeamRunLedger, member: &MemberRun, reason: &s
         .ok()
         .flatten()
         .unwrap_or_else(|| member.clone());
+    let expected = failed.clone();
     failed.status = MemberRunStatus::Failed;
     failed.finished_at = Some(now_string());
     failed.last_event_at = Some(now_string());
-    let _ = ledger.save_member_run(&failed);
+    let _ = ledger.save_member_run(&expected, &failed);
     let _ = ledger.append_action(
         &member.id,
         "error",
@@ -22404,10 +23455,11 @@ fn journal_member_disconnected(
     if disconnected.status == MemberRunStatus::Stopped {
         return;
     }
+    let expected = disconnected.clone();
     disconnected.status = MemberRunStatus::Disconnected;
     disconnected.finished_at = None;
     disconnected.last_event_at = Some(now_string());
-    let _ = ledger.save_member_run(&disconnected);
+    let _ = ledger.save_member_run(&expected, &disconnected);
     let _ = ledger.append_action(
         &member.id,
         "disconnected",
@@ -22714,11 +23766,214 @@ fn kimi_interaction_prompt(frame: &serde_json::Value) -> String {
         .join("\n")
 }
 
+#[derive(Debug)]
+struct ProviderInteractionReply {
+    result: serde_json::Value,
+    claimed_response: Option<TeamMessage>,
+}
+
+fn provider_interaction_request_message(
+    ledger: &TeamRunLedger,
+    member: &MemberRun,
+    provider_request_id: &str,
+    method: &str,
+    interaction_type: ProviderInteractionType,
+    prompt: String,
+    options: Vec<ProviderInteractionMessageOption>,
+) -> CliResult<(TeamMessage, bool)> {
+    let native_session = member.native_session.as_ref().ok_or_else(|| {
+        CliError::Usage(format!(
+            "MemberRun {} has no native session for provider interaction",
+            member.id
+        ))
+    })?;
+    let body = ProviderInteractionRequestBody {
+        interaction_type,
+        prompt,
+        options,
+        provider: member.provider.clone(),
+        provider_request_id: provider_request_id.to_string(),
+        method: method.to_string(),
+        session: native_session.native_session_id.clone(),
+        member: member.id.clone(),
+        generation: member.runtime_generation,
+    };
+    let canonical_body = body.to_canonical_json().map_err(CliError::Usage)?;
+    let correlation_id = body.correlation_id();
+    let _guard = ledger.write_lock();
+    let existing = latest_team_messages_in_append_order(&ledger.store)?
+        .into_iter()
+        .filter(|message| {
+            message.team_run_id == ledger.run_id
+                && message.kind == TeamMessageKind::ProviderInteractionRequest
+                && message.correlation_id == correlation_id
+        })
+        .collect::<Vec<_>>();
+    if let Some(request) = existing.first() {
+        if existing.len() != 1 || request.body != canonical_body {
+            return Err(CliError::Usage(format!(
+                "provider request {provider_request_id} was replayed with different semantics"
+            )));
+        }
+        return Ok((request.clone(), false));
+    }
+
+    let created_at = now_string();
+    let sender = TeamActorRef {
+        kind: TeamActorKind::MemberRun,
+        id: member.id.clone(),
+        display_name: Some(member.name.clone()),
+        authn_source: Some("provider_reverse_request".to_string()),
+    };
+    let request = TeamMessage {
+        id: format!(
+            "tmsg-provider-request-{}",
+            content_hash_hex16(&correlation_id)
+        ),
+        team_run_id: ledger.run_id.clone(),
+        work_id: None,
+        origin_wave_id: None,
+        sender: Some(sender.clone()),
+        from_member_id: member.id.clone(),
+        recipients: vec![compatibility_team_recipient("host")],
+        to_member_ids: vec!["host".to_string()],
+        kind: TeamMessageKind::ProviderInteractionRequest,
+        body: canonical_body,
+        correlation_id,
+        causation_id: None,
+        response_intent: Some(TeamMessageResponseIntent::ResponseRequired),
+        evidence_refs: Vec::new(),
+        deliveries: vec![TeamMessageDelivery {
+            member_id: "host".to_string(),
+            policy: TeamDeliveryPolicy::ManualAck,
+            status: TeamDeliveryStatus::Delivered,
+            attempt: 1,
+            claim_id: None,
+            claimed_by_supervisor_id: None,
+            claimed_generation: None,
+            claimed_unix_ms: None,
+            claim_expires_unix_ms: None,
+            provider_receipt_id: Some(format!("provider-reverse-request:{provider_request_id}")),
+            failure_reason: None,
+            updated_at: created_at.clone(),
+        }],
+        created_at,
+    };
+    ledger.store.append_team_message_checked(&request)?;
+    let seq = next_team_run_seq(&ledger.store, &ledger.run_id)?;
+    append_team_run_event(
+        &ledger.store,
+        &ledger.run_id,
+        seq,
+        TeamRunEventSourceKind::Member,
+        Some(member.id.clone()),
+        "message",
+        &request.id,
+        "created",
+        "provider interaction request awaiting Host response",
+    )?;
+    Ok((request, true))
+}
+
+fn wait_for_provider_interaction_response(
+    ledger: &TeamRunLedger,
+    member: &MemberRun,
+    request: &TeamMessage,
+) -> CliResult<Option<(ProviderInteractionResponseBody, Option<TeamMessage>)>> {
+    loop {
+        ledger.require_supervisor_lease()?;
+        let latest_member = ledger
+            .latest_member_run(&member.id)?
+            .ok_or_else(|| CliError::Usage(format!("member run {} not found", member.id)))?;
+        let same_generation = latest_member.runtime_generation == member.runtime_generation
+            && latest_member.native_session == member.native_session;
+        if !same_generation
+            || !latest_member.coordination_is_active()
+            || matches!(
+                latest_member.status,
+                MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
+            )
+            || latest_team_run(&ledger.store, &ledger.run_id)?.status != TeamRunStatus::Running
+        {
+            return Ok(None);
+        }
+
+        let messages = ledger.team_messages()?;
+        let response = messages
+            .iter()
+            .find(|message| {
+                message.kind == TeamMessageKind::ProviderInteractionResponse
+                    && message.causation_id.as_deref() == Some(request.id.as_str())
+            })
+            .cloned();
+        if let Some(response) = response {
+            let body = ProviderInteractionResponseBody::parse_canonical_json(&response.body)
+                .map_err(CliError::Usage)?;
+            let delivery = response
+                .deliveries
+                .iter()
+                .find(|delivery| delivery.member_id == member.id)
+                .ok_or_else(|| {
+                    CliError::Usage(format!(
+                        "provider response {} has no delivery for {}",
+                        response.id, member.id
+                    ))
+                })?;
+            return match delivery.status {
+                TeamDeliveryStatus::Queued => {
+                    let Some(claimed) = ledger.claim_message(&response.id, &member.id)? else {
+                        continue;
+                    };
+                    Ok(Some((body, Some(claimed))))
+                }
+                TeamDeliveryStatus::Delivered | TeamDeliveryStatus::Acknowledged => {
+                    Ok(Some((body, None)))
+                }
+                TeamDeliveryStatus::Claimed => Err(CliError::Usage(format!(
+                    "provider response {} has an uncertain claimed delivery; reconcile it before replay",
+                    response.id
+                ))),
+                TeamDeliveryStatus::Failed | TeamDeliveryStatus::Expired => Ok(None),
+            };
+        }
+        if messages
+            .iter()
+            .find(|message| message.id == request.id)
+            .is_some_and(|latest_request| {
+                latest_request.deliveries.iter().any(|delivery| {
+                    delivery.member_id == "host"
+                        && delivery.status == TeamDeliveryStatus::Acknowledged
+                })
+            })
+        {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn complete_provider_interaction_reply(
+    ledger: &TeamRunLedger,
+    member_id: &str,
+    reply: &ProviderInteractionReply,
+    provider_receipt_id: &str,
+) -> CliResult<()> {
+    if let Some(message) = reply.claimed_response.as_ref() {
+        ledger.complete_provider_interaction_response(message, member_id, provider_receipt_id)?;
+    }
+    Ok(())
+}
+
 fn handle_codex_provider_request(
     ledger: &TeamRunLedger,
     member: &MemberRun,
     frame: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
+) -> CliResult<ProviderInteractionReply> {
+    let supplied_member = member;
+    let member = ledger
+        .latest_member_run(&supplied_member.id)?
+        .ok_or_else(|| CliError::Usage(format!("member run {} not found", supplied_member.id)))?;
+    validate_provider_callback_drift(supplied_member, &member)?;
     let method = frame
         .get("method")
         .and_then(|value| value.as_str())
@@ -22734,11 +23989,23 @@ fn handle_codex_provider_request(
         })
         .unwrap_or_else(|| generated_id("provider-request"));
 
-    let (kind, route, title, prompt, options) = if method == "item/tool/requestUserInput" {
-        let question = params
+    let (interaction_type, title, prompt, options) = if method == "item/tool/requestUserInput" {
+        let questions = params
             .get("questions")
             .and_then(|value| value.as_array())
-            .and_then(|questions| questions.first());
+            .ok_or_else(|| {
+                CliError::Usage(
+                    "Codex requestUserInput must contain exactly one question; denied fail-closed"
+                        .to_string(),
+                )
+            })?;
+        if questions.len() != 1 {
+            return Err(CliError::Usage(format!(
+                "Codex requestUserInput supports exactly one question; received {}; denied fail-closed",
+                questions.len()
+            )));
+        }
+        let question = questions.first();
         let question_id = question
             .and_then(|question| question.get("id"))
             .and_then(|value| value.as_str())
@@ -22749,7 +24016,7 @@ fn handle_codex_provider_request(
             .into_iter()
             .flatten()
             .enumerate()
-            .map(|(index, option)| PendingInteractionOption {
+            .map(|(index, option)| ProviderInteractionMessageOption {
                 id: format!("{question_id}::{index}"),
                 label: option
                     .get("label")
@@ -22760,8 +24027,7 @@ fn handle_codex_provider_request(
             })
             .collect::<Vec<_>>();
         (
-            PendingInteractionKind::Question,
-            PendingInteractionRoute::Lead,
+            ProviderInteractionType::Question,
             question
                 .and_then(|question| question.get("header"))
                 .and_then(|value| value.as_str())
@@ -22781,8 +24047,7 @@ fn handle_codex_provider_request(
             | "item/permissions/requestApproval"
     ) {
         (
-            PendingInteractionKind::ToolApproval,
-            PendingInteractionRoute::Policy,
+            ProviderInteractionType::ToolApproval,
             "Codex approval".to_string(),
             params
                 .get("reason")
@@ -22791,12 +24056,12 @@ fn handle_codex_provider_request(
                 .unwrap_or("Codex requested permission for an action")
                 .to_string(),
             vec![
-                PendingInteractionOption {
+                ProviderInteractionMessageOption {
                     id: "approve_once".to_string(),
                     label: "Approve once".to_string(),
                     intent: Some("allow_once".to_string()),
                 },
-                PendingInteractionOption {
+                ProviderInteractionMessageOption {
                     id: "deny".to_string(),
                     label: "Deny".to_string(),
                     intent: Some("reject_once".to_string()),
@@ -22809,129 +24074,135 @@ fn handle_codex_provider_request(
         )));
     };
 
-    let interaction = PendingInteraction {
-        id: generated_id("interaction"),
-        team_run_id: ledger.run_id.clone(),
-        member_run_id: member.id.clone(),
-        provider: member.provider.clone(),
-        provider_request_id,
-        method: method.to_string(),
-        kind,
-        route,
-        status: PendingInteractionStatus::Pending,
-        title,
-        prompt,
-        options,
-        tool_call_id: params
-            .get("itemId")
-            .and_then(|value| value.as_str())
-            .map(str::to_string),
-        response_option_id: None,
-        response_text: None,
-        created_at: now_string(),
-        resolved_at: None,
-        resolved_by: None,
-    };
-    ledger.save_pending_interaction(&interaction)?;
-    ledger.fold_event(
-        TeamRunEventSourceKind::Member,
-        Some(member.id.clone()),
-        "pending_interaction",
-        &interaction.id,
-        "created",
-        &format!("{} waiting for {:?}", interaction.title, interaction.route),
+    let (request, created) = provider_interaction_request_message(
+        ledger,
+        &member,
+        &provider_request_id,
+        method,
+        interaction_type,
+        prompt.clone(),
+        options.clone(),
     )?;
-    ledger.append_action(
-        &member.id,
-        if kind == PendingInteractionKind::Question {
-            "waiting_for_input"
-        } else {
-            "waiting_for_approval"
-        },
-        MemberActionStatus::Started,
-        &interaction.title,
-        &interaction.prompt,
-    )?;
-    let mut waiting = member.clone();
-    waiting.status = MemberRunStatus::Waiting;
-    waiting.last_event_at = Some(now_string());
-    ledger.save_member_run(&waiting)?;
+    if created {
+        ledger.append_action(
+            &member.id,
+            if interaction_type == ProviderInteractionType::Question {
+                "waiting_for_input"
+            } else {
+                "waiting_for_approval"
+            },
+            MemberActionStatus::Started,
+            &title,
+            &prompt,
+        )?;
+    }
+    let waiting =
+        match transition_provider_interaction_member(ledger, &member, MemberRunStatus::Waiting)? {
+            ProviderInteractionMemberTransition::Applied(waiting) => waiting,
+            ProviderInteractionMemberTransition::LifecycleSuperseded => {
+                unreachable!(
+                    "entering Waiting never treats lifecycle change as a resumable outcome"
+                )
+            }
+        };
 
-    let resolved = loop {
-        let current = latest_pending_interactions_in_append_order(&ledger.store)?
-            .into_iter()
-            .find(|candidate| candidate.id == interaction.id)
-            .unwrap_or_else(|| interaction.clone());
-        if current.status != PendingInteractionStatus::Pending {
-            break current;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    };
-    let mut running = member.clone();
-    running.status = MemberRunStatus::Running;
-    running.last_event_at = Some(now_string());
-    ledger.save_member_run(&running)?;
+    let resolved = wait_for_provider_interaction_response(ledger, &member, &request)?;
+    let lifecycle_superseded =
+        match transition_provider_interaction_member(ledger, &waiting, MemberRunStatus::Running)? {
+            ProviderInteractionMemberTransition::Applied(_) => false,
+            ProviderInteractionMemberTransition::LifecycleSuperseded => true,
+        };
     ledger.append_action(
         &member.id,
         "interaction_resolved",
-        if matches!(
-            resolved.status,
-            PendingInteractionStatus::Answered | PendingInteractionStatus::Approved
-        ) {
+        if resolved.is_some() {
             MemberActionStatus::Succeeded
         } else {
             MemberActionStatus::Cancelled
         },
-        &resolved.title,
-        &format!("resolved as {}", serde_snake_label(&resolved.status)),
+        &title,
+        if resolved.is_some() {
+            "provider interaction response received"
+        } else {
+            "provider interaction cancelled by lifecycle"
+        },
     )?;
+
+    let (response, claimed_response) = match resolved {
+        Some((response, claimed_response)) if !lifecycle_superseded => {
+            (Some(response), claimed_response)
+        }
+        _ => (None, None),
+    };
 
     if method == "item/tool/requestUserInput" {
         let question_id = params
             .pointer("/questions/0/id")
             .and_then(|value| value.as_str())
             .unwrap_or("answer");
-        let answer = resolved
-            .response_text
-            .clone()
-            .or_else(|| {
-                resolved.response_option_id.as_deref().and_then(|selected| {
-                    interaction
-                        .options
-                        .iter()
-                        .find(|option| option.id == selected)
-                        .map(|option| option.label.clone())
+        let answer = response
+            .as_ref()
+            .and_then(|response| {
+                response.text.clone().or_else(|| {
+                    response.choice.as_deref().and_then(|selected| {
+                        options
+                            .iter()
+                            .find(|option| option.id == selected)
+                            .map(|option| option.label.clone())
+                    })
                 })
             })
             .unwrap_or_default();
-        return Ok(serde_json::json!({
-            "answers": {question_id: {"answers": [answer]}}
-        }));
+        return Ok(ProviderInteractionReply {
+            result: serde_json::json!({
+                "answers": {question_id: {"answers": [answer]}}
+            }),
+            claimed_response,
+        });
     }
     if method == "item/permissions/requestApproval" {
-        return Ok(serde_json::json!({
-            "permissions": if resolved.status == PendingInteractionStatus::Approved {
+        let approved = response.as_ref().is_some_and(|response| {
+            response
+                .choice
+                .as_deref()
+                .is_some_and(|choice| choice == "approve_once")
+        });
+        return Ok(ProviderInteractionReply {
+            result: serde_json::json!({
+            "permissions": if approved {
                 params.get("permissions").cloned().unwrap_or_else(|| serde_json::json!({}))
             } else {
                 serde_json::json!({})
             },
             "scope": "turn"
-        }));
+            }),
+            claimed_response,
+        });
     }
-    Ok(serde_json::json!({
-        "decision": if resolved.status == PendingInteractionStatus::Approved {
+    let approved = response.as_ref().is_some_and(|response| {
+        response
+            .choice
+            .as_deref()
+            .is_some_and(|choice| choice == "approve_once")
+    });
+    Ok(ProviderInteractionReply {
+        result: serde_json::json!({
+        "decision": if approved {
             "accept"
         } else {
             "decline"
         }
-    }))
+        }),
+        claimed_response,
+    })
 }
 
 fn handle_kimi_provider_request(
     ledger: &TeamRunLedger,
     member: &MemberRun,
     frame: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
+) -> CliResult<ProviderInteractionReply> {
+    let supplied_member = member;
     let params = frame.get("params").unwrap_or(frame);
     let options = params
         .get("options")
@@ -22939,7 +24210,7 @@ fn handle_kimi_provider_request(
         .into_iter()
         .flatten()
         .filter_map(|option| {
-            Some(PendingInteractionOption {
+            Some(ProviderInteractionMessageOption {
                 id: option.get("optionId")?.as_str()?.to_string(),
                 label: option
                     .get("name")
@@ -22961,21 +24232,23 @@ fn handle_kimi_provider_request(
     let question =
         title == "AskUserQuestion" || options.iter().any(|option| option.id.starts_with("q0_"));
     let plan_review = options.iter().any(|option| option.id.starts_with("plan_"));
-    let kind = if question {
-        PendingInteractionKind::Question
+    let interaction_type = if question {
+        ProviderInteractionType::Question
     } else if plan_review {
-        PendingInteractionKind::PlanReview
+        ProviderInteractionType::PlanReview
+    } else if options.iter().any(|option| {
+        option
+            .intent
+            .as_deref()
+            .is_some_and(|intent| intent.starts_with("allow"))
+            || option.id.contains("approve")
+            || option.id.contains("allow")
+    }) {
+        ProviderInteractionType::ToolApproval
     } else if !options.is_empty() {
-        PendingInteractionKind::ToolApproval
+        ProviderInteractionType::RejectOnly
     } else {
-        PendingInteractionKind::Unknown
-    };
-    let route = match kind {
-        PendingInteractionKind::Question | PendingInteractionKind::PlanReview => {
-            PendingInteractionRoute::Lead
-        }
-        PendingInteractionKind::ToolApproval => PendingInteractionRoute::Policy,
-        PendingInteractionKind::Unknown => PendingInteractionRoute::Human,
+        ProviderInteractionType::Unknown
     };
     let provider_request_id = frame
         .get("id")
@@ -22987,6 +24260,13 @@ fn handle_kimi_provider_request(
         })
         .unwrap_or_else(|| generated_id("provider-request"));
     let prompt = kimi_interaction_prompt(frame);
+    // Re-read and validate the canonical MemberRun before any callback branch
+    // can acknowledge provider work. In particular, the bounded full-access
+    // receipt below must never be written from a stale callback snapshot.
+    let member = ledger
+        .latest_member_run(&supplied_member.id)?
+        .ok_or_else(|| CliError::Usage(format!("member run {} not found", supplied_member.id)))?;
+    validate_provider_callback_drift(supplied_member, &member)?;
 
     // Agent Team members run with the explicit full-access launch contract.
     // A routine tool permission prompt that exposes a safe allow option is an
@@ -22997,7 +24277,7 @@ fn handle_kimi_provider_request(
     // bounded to the first safe acknowledgement per MemberRun: one durable row
     // proves the policy became active, later per-tool prompts are answered the
     // same way without new rows, and no tool title or command text is logged.
-    if kind == PendingInteractionKind::ToolApproval {
+    if interaction_type == ProviderInteractionType::ToolApproval {
         if let Some(option_id) = options
             .iter()
             .find(|option| {
@@ -23018,118 +24298,102 @@ fn handle_kimi_provider_request(
             .map(|option| option.id.clone())
         {
             ledger.append_provider_control_receipt_once(
-                &member.id,
+                &member,
                 "Kimi full-access tool permission acknowledged",
                 "provider exposed a safe allow option; full-access adapter acknowledged it without creating a PendingInteraction",
             )?;
-            return Ok(serde_json::json!({
-                "outcome": {"outcome": "selected", "optionId": option_id}
-            }));
-        }
-    }
-    let interaction = PendingInteraction {
-        id: generated_id("interaction"),
-        team_run_id: ledger.run_id.clone(),
-        member_run_id: member.id.clone(),
-        provider: member.provider.clone(),
-        provider_request_id,
-        method: "session/request_permission".to_string(),
-        kind,
-        route,
-        status: PendingInteractionStatus::Pending,
-        title: title.clone(),
-        prompt: if prompt.trim().is_empty() {
-            format!("{title} requires a decision")
-        } else {
-            prompt
-        },
-        options,
-        tool_call_id: params
-            .pointer("/toolCall/toolCallId")
-            .and_then(|value| value.as_str())
-            .map(str::to_string),
-        response_option_id: None,
-        response_text: None,
-        created_at: now_string(),
-        resolved_at: None,
-        resolved_by: None,
-    };
-    ledger.save_pending_interaction(&interaction)?;
-    ledger.fold_event(
-        TeamRunEventSourceKind::Member,
-        Some(member.id.clone()),
-        "pending_interaction",
-        &interaction.id,
-        "created",
-        &format!("{} waiting for {:?}", interaction.title, interaction.route),
-    )?;
-    ledger.append_action(
-        &member.id,
-        if kind == PendingInteractionKind::Question {
-            "waiting_for_input"
-        } else {
-            "waiting_for_approval"
-        },
-        MemberActionStatus::Started,
-        &interaction.title,
-        &interaction.prompt,
-    )?;
-
-    let mut waiting = member.clone();
-    waiting.status = MemberRunStatus::Waiting;
-    waiting.last_event_at = Some(now_string());
-    ledger.save_member_run(&waiting)?;
-
-    loop {
-        let current = latest_pending_interactions_in_append_order(&ledger.store)?
-            .into_iter()
-            .find(|candidate| candidate.id == interaction.id)
-            .unwrap_or_else(|| interaction.clone());
-        if current.status != PendingInteractionStatus::Pending {
-            let action_status = match current.status {
-                PendingInteractionStatus::Answered | PendingInteractionStatus::Approved => {
-                    MemberActionStatus::Succeeded
-                }
-                PendingInteractionStatus::Denied
-                | PendingInteractionStatus::Dismissed
-                | PendingInteractionStatus::Unsupported
-                | PendingInteractionStatus::Cancelled => MemberActionStatus::Cancelled,
-                PendingInteractionStatus::Pending => MemberActionStatus::Progress,
-            };
-            ledger.append_action(
-                &member.id,
-                "interaction_resolved",
-                action_status,
-                &current.title,
-                &format!(
-                    "interaction {} by {}",
-                    serde_snake_label(&current.status),
-                    current.resolved_by.as_deref().unwrap_or("unknown")
-                ),
-            )?;
-            if latest_team_run(&ledger.store, &ledger.run_id)?.status == TeamRunStatus::Running {
-                let mut resumed = waiting.clone();
-                resumed.status = MemberRunStatus::Running;
-                resumed.last_event_at = Some(now_string());
-                ledger.save_member_run(&resumed)?;
-            }
-            return Ok(match current.response_option_id {
-                Some(option_id) => serde_json::json!({
+            return Ok(ProviderInteractionReply {
+                result: serde_json::json!({
                     "outcome": {"outcome": "selected", "optionId": option_id}
                 }),
-                None => serde_json::json!({"outcome": {"outcome": "cancelled"}}),
+                claimed_response: None,
             });
         }
-        if latest_team_run(&ledger.store, &ledger.run_id)?.status == TeamRunStatus::Cancelled {
-            let mut cancelled = current;
-            cancelled.status = PendingInteractionStatus::Cancelled;
-            cancelled.resolved_at = Some(now_string());
-            cancelled.resolved_by = Some("host".to_string());
-            ledger.save_pending_interaction(&cancelled)?;
-            return Ok(serde_json::json!({"outcome": {"outcome": "cancelled"}}));
-        }
-        std::thread::sleep(Duration::from_millis(100));
     }
+    // ACP can only answer `session/request_permission` with a provider option.
+    // An unknown request with no options has no recoverable native responder;
+    // fail closed in-process instead of creating a durable request that no
+    // valid TeamMessage response could ever deliver.
+    if interaction_type == ProviderInteractionType::Unknown {
+        return Ok(ProviderInteractionReply {
+            result: serde_json::json!({"outcome": {"outcome": "cancelled"}}),
+            claimed_response: None,
+        });
+    }
+    let prompt = if prompt.trim().is_empty() {
+        format!("{title} requires a decision")
+    } else {
+        prompt
+    };
+    let (request, created) = provider_interaction_request_message(
+        ledger,
+        &member,
+        &provider_request_id,
+        "session/request_permission",
+        interaction_type,
+        prompt.clone(),
+        options,
+    )?;
+    if created {
+        ledger.append_action(
+            &member.id,
+            if interaction_type == ProviderInteractionType::Question {
+                "waiting_for_input"
+            } else {
+                "waiting_for_approval"
+            },
+            MemberActionStatus::Started,
+            &title,
+            &prompt,
+        )?;
+    }
+
+    let waiting =
+        match transition_provider_interaction_member(ledger, &member, MemberRunStatus::Waiting)? {
+            ProviderInteractionMemberTransition::Applied(waiting) => waiting,
+            ProviderInteractionMemberTransition::LifecycleSuperseded => {
+                unreachable!(
+                    "entering Waiting never treats lifecycle change as a resumable outcome"
+                )
+            }
+        };
+
+    let resolved = wait_for_provider_interaction_response(ledger, &member, &request)?;
+    let lifecycle_superseded =
+        match transition_provider_interaction_member(ledger, &waiting, MemberRunStatus::Running)? {
+            ProviderInteractionMemberTransition::Applied(_) => false,
+            ProviderInteractionMemberTransition::LifecycleSuperseded => true,
+        };
+    let (response, claimed_response) = match resolved {
+        Some((response, claimed_response)) if !lifecycle_superseded => {
+            (Some(response), claimed_response)
+        }
+        _ => (None, None),
+    };
+    ledger.append_action(
+        &member.id,
+        "interaction_resolved",
+        if response.is_some() {
+            MemberActionStatus::Succeeded
+        } else {
+            MemberActionStatus::Cancelled
+        },
+        &title,
+        if response.is_some() {
+            "provider interaction response received"
+        } else {
+            "provider interaction cancelled by lifecycle"
+        },
+    )?;
+    Ok(ProviderInteractionReply {
+        result: match response.and_then(|response| response.choice) {
+            Some(option_id) => serde_json::json!({
+                "outcome": {"outcome": "selected", "optionId": option_id}
+            }),
+            None => serde_json::json!({"outcome": {"outcome": "cancelled"}}),
+        },
+        claimed_response,
+    })
 }
 
 /// Maps `session/update` frames of one prompt round onto the member ledger.
@@ -26276,6 +27540,33 @@ fn cancel_pending_member_interactions(
     requested_by: &str,
     reason: &str,
 ) -> CliResult<()> {
+    // Message-bridged provider requests have no PendingInteraction row. ACK
+    // the delivered Host request without fabricating an answer; the blocked
+    // provider callback observes the ACK and returns a native cancellation.
+    for request in latest_team_messages_in_append_order(store)?
+        .into_iter()
+        .filter(|message| {
+            message.team_run_id == team_run_id
+                && message.kind == TeamMessageKind::ProviderInteractionRequest
+                && message.from_member_id == member_run_id
+                && message.deliveries.iter().any(|delivery| {
+                    delivery.member_id == "host" && delivery.status == TeamDeliveryStatus::Delivered
+                })
+        })
+    {
+        store.acknowledge_team_message_delivery(team_run_id, &request.id, "host", &now_string())?;
+        append_team_run_event(
+            store,
+            team_run_id,
+            0,
+            TeamRunEventSourceKind::Host,
+            Some(member_run_id.to_string()),
+            "message",
+            &request.id,
+            "cancelled",
+            &format!("provider interaction cancelled by {requested_by}: {reason}"),
+        )?;
+    }
     // Unblock reverse provider requests before waiting for a live adapter
     // acknowledgement. Otherwise the provider thread and HTTP caller can
     // deadlock while the adapter is paused in PendingInteraction.
@@ -26423,10 +27714,11 @@ fn close_team_member_value(
         MemberRunStatus::Starting | MemberRunStatus::Running
     );
     let mut member = member;
+    let expected = member.clone();
     member.status = MemberRunStatus::Stopped;
     member.finished_at = Some(now_string());
     member.last_event_at = Some(now_string());
-    store.append_member_run(&member)?;
+    store_conflict_as_usage(store.compare_and_append_member_run(&expected, &member))?;
     store_conflict_as_usage(store.complete_team_member_close(
         team_run_id,
         member_run_id,
@@ -26581,12 +27873,10 @@ pub(crate) fn reopen_team_member_value(
         // history. Freshly probe before the runtime generation changes so an
         // installed upgrade cannot hide behind a formerly Current snapshot.
         let probe_error = if member.native_session.is_some() {
-            let previous_profile = member.provider_profile.clone();
+            let expected = member.clone();
             let (profile, probe_error) = refreshed_team_member_provider_profile(&member)?;
-            member.provider_profile = Some(profile);
-            member.last_event_at = Some(now_string());
-            if member.provider_profile != previous_profile {
-                store.append_member_run(&member)?;
+            if apply_refreshed_provider_profile(&mut member, profile) {
+                store_conflict_as_usage(store.compare_and_append_member_run(&expected, &member))?;
             }
             probe_error
         } else {
@@ -26642,6 +27932,7 @@ pub(crate) fn reopen_team_member_value(
             )));
         }
     }
+    let expected = member.clone();
     member.runtime_generation = member.runtime_generation.checked_add(1).ok_or_else(|| {
         CliError::Usage(format!(
             "member run {member_run_id} runtime generation overflowed"
@@ -26656,7 +27947,7 @@ pub(crate) fn reopen_team_member_value(
     };
     member.finished_at = None;
     member.last_event_at = Some(now_string());
-    store.append_member_run(&member)?;
+    store_conflict_as_usage(store.compare_and_append_member_run(&expected, &member))?;
 
     let ledger = TeamRunLedger::without_supervisor(store, team_run_id);
     ledger.append_action(
@@ -26769,8 +28060,15 @@ pub(crate) fn resolve_pending_interaction_value(
 ) -> CliResult<serde_json::Value> {
     let current = latest_pending_interactions_in_append_order(store)?
         .into_iter()
-        .find(|interaction| interaction.id == interaction_id)
-        .ok_or_else(|| CliError::Usage(format!("interaction not found: {interaction_id}")))?;
+        .find(|interaction| interaction.id == interaction_id);
+    let Some(current) = current else {
+        return resolve_provider_interaction_message_value(
+            store,
+            team_run_id,
+            interaction_id,
+            body,
+        );
+    };
     if current.team_run_id != team_run_id {
         return Err(CliError::Usage(format!(
             "interaction {interaction_id} does not belong to team run {team_run_id}"
@@ -26870,6 +28168,140 @@ pub(crate) fn resolve_pending_interaction_value(
         ),
     )?;
     serde_json::to_value(resolved).map_err(CliError::Json)
+}
+
+fn resolve_provider_interaction_message_value(
+    store: &HarnessStore,
+    team_run_id: &str,
+    request_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let request = latest_team_messages_in_append_order(store)?
+        .into_iter()
+        .find(|message| message.id == request_id)
+        .ok_or_else(|| CliError::Usage(format!("interaction not found: {request_id}")))?;
+    if request.team_run_id != team_run_id
+        || request.kind != TeamMessageKind::ProviderInteractionRequest
+    {
+        return Err(CliError::Usage(format!(
+            "interaction {request_id} is not a provider request in team run {team_run_id}"
+        )));
+    }
+    let request_body = ProviderInteractionRequestBody::parse_canonical_json(&request.body)
+        .map_err(CliError::Usage)?;
+    let resolved_by = required_json_string(body, "resolved_by")?;
+    let authorized = match request_body.interaction_type {
+        ProviderInteractionType::Question | ProviderInteractionType::PlanReview => {
+            matches!(resolved_by.as_str(), "host" | "lead")
+        }
+        ProviderInteractionType::ToolApproval | ProviderInteractionType::RejectOnly => {
+            resolved_by == "policy"
+        }
+        ProviderInteractionType::Unknown => {
+            matches!(resolved_by.as_str(), "operator" | "human")
+        }
+    };
+    if !authorized {
+        return Err(CliError::Usage(format!(
+            "provider interaction {request_id} does not authorize resolved_by={resolved_by}"
+        )));
+    }
+    let choice = optional_json_string(body, "option_id")?;
+    let text = optional_json_string(body, "response_text")?;
+    if choice.is_some() == text.is_some() {
+        return Err(CliError::Usage(
+            "interaction resolution requires exactly one of option_id or response_text".to_string(),
+        ));
+    }
+    let response_body = ProviderInteractionResponseBody {
+        interaction_type: request_body.interaction_type,
+        choice,
+        text,
+        session: request_body.session.clone(),
+        member: request_body.member.clone(),
+        generation: request_body.generation,
+    };
+    let response_json = response_body.to_canonical_json().map_err(CliError::Usage)?;
+    let sender = match resolved_by.as_str() {
+        "host" | "lead" => TeamActorRef {
+            kind: TeamActorKind::Host,
+            id: "host".to_string(),
+            display_name: None,
+            authn_source: Some("interaction_resolve".to_string()),
+        },
+        "policy" => TeamActorRef {
+            kind: TeamActorKind::Service,
+            id: "policy".to_string(),
+            display_name: None,
+            authn_source: Some("interaction_resolve".to_string()),
+        },
+        _ => TeamActorRef {
+            kind: TeamActorKind::Operator,
+            id: resolved_by.clone(),
+            display_name: None,
+            authn_source: Some("interaction_resolve".to_string()),
+        },
+    };
+    let response_id = provider_interaction_response_id(request_id).map_err(CliError::Usage)?;
+    let existed = latest_team_messages_in_append_order(store)?
+        .into_iter()
+        .any(|message| {
+            message.kind == TeamMessageKind::ProviderInteractionResponse
+                && message.causation_id.as_deref() == Some(request_id)
+        });
+    let response = TeamMessage {
+        id: response_id,
+        team_run_id: team_run_id.to_string(),
+        work_id: request.work_id.clone(),
+        origin_wave_id: request.origin_wave_id.clone(),
+        sender: Some(sender.clone()),
+        from_member_id: match sender.kind {
+            TeamActorKind::Host => "host".to_string(),
+            TeamActorKind::Operator => format!("operator:{}", sender.id),
+            TeamActorKind::Service => format!("service:{}", sender.id),
+            _ => unreachable!("provider response authority is coordination-plane only"),
+        },
+        recipients: vec![compatibility_team_recipient(&request_body.member)],
+        to_member_ids: vec![request_body.member.clone()],
+        kind: TeamMessageKind::ProviderInteractionResponse,
+        body: response_json,
+        correlation_id: request.correlation_id.clone(),
+        causation_id: Some(request.id.clone()),
+        response_intent: Some(TeamMessageResponseIntent::Informational),
+        evidence_refs: Vec::new(),
+        deliveries: vec![TeamMessageDelivery {
+            member_id: request_body.member.clone(),
+            policy: TeamDeliveryPolicy::Inject,
+            status: TeamDeliveryStatus::Queued,
+            attempt: 0,
+            claim_id: None,
+            claimed_by_supervisor_id: None,
+            claimed_generation: None,
+            claimed_unix_ms: None,
+            claim_expires_unix_ms: None,
+            provider_receipt_id: None,
+            failure_reason: None,
+            // Stable across exact retries; the Store's semantic idempotency
+            // comparison deliberately includes the initial delivery row.
+            updated_at: request.created_at.clone(),
+        }],
+        created_at: now_string(),
+    };
+    let response = store.record_provider_interaction_response(&response, &now_string())?;
+    if !existed {
+        append_team_run_event(
+            store,
+            team_run_id,
+            0,
+            team_event_source_for_actor(&sender),
+            None,
+            "message",
+            &response.id,
+            "created",
+            "provider interaction response queued for native injection",
+        )?;
+    }
+    serde_json::to_value(response).map_err(CliError::Json)
 }
 
 /// POST /v1/missions — create native Mission intent from the JSON body.
@@ -27327,7 +28759,7 @@ fn require_reviewed_member_before_work_rebind(
     if member.is_external_interactive() {
         return Ok(());
     }
-    let previous_profile = member.provider_profile.clone();
+    let expected = member.clone();
     let (profile, probe_error) = refreshed_team_member_provider_profile(&member)?;
     let refusal = provider_compatibility_block_reason(
         &member,
@@ -27335,10 +28767,8 @@ fn require_reviewed_member_before_work_rebind(
         "receive rebound durable Work",
         probe_error.as_deref(),
     );
-    member.provider_profile = Some(profile);
-    member.last_event_at = Some(now_string());
-    if member.provider_profile != previous_profile {
-        store.append_member_run(&member)?;
+    if apply_refreshed_provider_profile(&mut member, profile) {
+        store_conflict_as_usage(store.compare_and_append_member_run(&expected, &member))?;
     }
     refusal
         .map(|reason| Err(CliError::Usage(reason)))
@@ -41172,6 +42602,7 @@ mod tests {
             "missing_validation": [],
             "evidence_ids": [],
             "created_at": "unix-ms:1",
+            "command_idempotency_key": "review-key-1",
             "reviewed_work_id": "work-1",
             "reviewed_work_version": 7,
             "review_strategy": "peer"
@@ -41205,8 +42636,17 @@ mod tests {
         assert_eq!(rows[0].reviewed_work_id, None);
         assert_eq!(rows[0].reviewed_work_version, None);
         assert_eq!(rows[0].review_strategy, None);
+        assert_eq!(rows[0].command_idempotency_key, None);
         assert_eq!(rows[1].id, "review-historical");
         assert!(rows.iter().all(|review| review.validate().is_ok()));
+
+        let duplicate_error = prepare_execution_ledger_for_migration(
+            "reviews.jsonl",
+            format!("{historical}\n{historical}\n").as_bytes(),
+        )
+        .expect_err("duplicate Review ids must fail migration");
+        assert!(duplicate_error.to_string().contains("duplicate Review id"));
+        assert!(duplicate_error.to_string().contains("review-historical"));
 
         let mut missing_id = forged.clone();
         missing_id.as_object_mut().expect("object").remove("id");
@@ -41262,6 +42702,7 @@ mod tests {
             created_at: "unix-ms:1".into(),
             performed_by_actor: None,
             authority_actor: None,
+            command_idempotency_key: None,
             reviewed_work_id: Some("work-1".into()),
             reviewed_work_version: Some(7),
             review_strategy: Some(harness_core::CodeReviewStrategy::Peer),
@@ -41446,6 +42887,47 @@ mod tests {
     }
 
     #[test]
+    fn execution_space_migration_rejects_duplicate_review_ids_before_staging() {
+        let (root, firm_home, project_context) = migration_test_project("duplicate-reviews");
+        let review = Review {
+            id: "duplicate-review".into(),
+            task_id: None,
+            goal_id: None,
+            reviewer_agent_id: "critic-1".into(),
+            review_kind: "code".into(),
+            verdict: ReviewVerdict::Pass,
+            summary: "historical review".into(),
+            blockers: vec![],
+            residual_risk: None,
+            missing_validation: vec![],
+            evidence_ids: vec![],
+            created_at: "unix-ms:1".into(),
+            performed_by_actor: None,
+            authority_actor: None,
+            command_idempotency_key: None,
+            reviewed_work_id: None,
+            reviewed_work_version: None,
+            review_strategy: None,
+        };
+        let row = serde_json::to_string(&review).expect("serialize Review");
+        fs::write(
+            project_context.store_root.join("reviews.jsonl"),
+            format!("{row}\n{row}\n"),
+        )
+        .expect("duplicate source reviews");
+
+        let error = execution_space_migrate_from_project(
+            &firm_home,
+            &migration_args(&project_context.id, "duplicate-review-space", false),
+        )
+        .expect_err("duplicate Review ids must fail before target writes");
+        assert!(error.to_string().contains("duplicate Review id"));
+        assert!(!execution_space::space_store_root(&firm_home, "duplicate-review-space").exists());
+        assert!(hidden_migration_paths(&firm_home, "duplicate-review-space").is_empty());
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn execution_space_migration_preserves_target_that_appears_during_staging() {
         let (root, firm_home, project_context) = migration_test_project("target-race");
         fs::write(
@@ -41466,7 +42948,7 @@ mod tests {
                 fs::write(hook_target.join("foreign.txt"), b"foreign target")?;
                 Ok(())
             },
-            |_home, _id, _name, _binding, _now| panic!("activation must not run"),
+            |_home, _lock, _id, _name, _binding, _now| panic!("activation must not run"),
         )
         .expect_err("a target that appears before publish must be preserved");
         assert!(error.to_string().contains("appeared while staging"));
@@ -41484,6 +42966,118 @@ mod tests {
             active_before
         );
         assert!(hidden_migration_paths(&firm_home, "raced-space").is_empty());
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn execution_space_migration_no_replace_closes_final_check_publish_race() {
+        let (root, firm_home, project_context) = migration_test_project("publish-window-race");
+        let target = execution_space::space_store_root(&firm_home, "publish-raced-space");
+        let hook_target = target.clone();
+
+        let error = execution_space_migrate_from_project_with_publish_hook(
+            &firm_home,
+            &migration_args(&project_context.id, "publish-raced-space", false),
+            || Ok(()),
+            move || {
+                // This runs after the final target absence check and immediately
+                // before the no-replace publication primitive.
+                fs::create_dir(&hook_target)?;
+                Ok(())
+            },
+            |_home, _lock, _id, _name, _binding, _now| panic!("activation must not run"),
+        )
+        .expect_err("an empty target appearing in the publish window must be preserved");
+        assert!(error.to_string().contains("appeared while publishing"));
+        assert!(target.is_dir(), "foreign empty directory must remain");
+        assert!(!target.join("metadata.json").exists());
+        assert!(hidden_migration_paths(&firm_home, "publish-raced-space").is_empty());
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn concurrent_migrations_cannot_both_publish_or_register_the_same_id() {
+        let (root, firm_home, first_project) = migration_test_project("same-id-race");
+        let second_root = root.join("second-project");
+        fs::create_dir_all(&second_root).expect("second project root");
+        let second_project = project::register_and_activate(&firm_home, &second_root, "unix-ms:2")
+            .expect("second project registration");
+        HarnessStore::new(second_project.store_root.clone())
+            .init()
+            .expect("second source store");
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+
+        let spawn_migration = |project_context: ProjectContext| {
+            let home = firm_home.clone();
+            let rendezvous = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let project_id = project_context.id.clone();
+                let result = execution_space_migrate_from_project_with_hooks(
+                    &home,
+                    &migration_args(&project_id, "contended-space", false),
+                    move || {
+                        rendezvous.wait();
+                        Ok(())
+                    },
+                    |home, lock, id, name, binding, now| {
+                        execution_space::register_and_activate_locked(
+                            home,
+                            lock,
+                            id,
+                            name,
+                            Some(binding.to_string()),
+                            None,
+                            now,
+                        )
+                    },
+                );
+                (project_id, result)
+            })
+        };
+        let first = spawn_migration(first_project);
+        let second = spawn_migration(second_project);
+        let outcomes = [
+            first.join().expect("first migration"),
+            second.join().expect("second migration"),
+        ];
+        assert_eq!(
+            outcomes.iter().filter(|(_, result)| result.is_ok()).count(),
+            1,
+            "exactly one same-id migration may succeed: {outcomes:?}"
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|(_, result)| result.is_err())
+                .count(),
+            1
+        );
+
+        let winner = outcomes
+            .iter()
+            .find(|(_, result)| result.is_ok())
+            .map(|(project_id, _)| project_id.as_str())
+            .expect("winning source");
+        let registry = execution_space::ExecutionSpaceRegistry::load(&firm_home)
+            .expect("parseable registry after contention");
+        let entries = registry
+            .spaces
+            .iter()
+            .filter(|entry| entry.id == "contended-space")
+            .collect::<Vec<_>>();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].default_project_binding_id.as_deref(),
+            Some(winner)
+        );
+        let metadata = execution_space::read_metadata(&execution_space::space_store_root(
+            &firm_home,
+            "contended-space",
+        ))
+        .expect("read target metadata")
+        .expect("target metadata");
+        assert_eq!(metadata.default_project_binding_id.as_deref(), Some(winner));
+        assert!(hidden_migration_paths(&firm_home, "contended-space").is_empty());
         fs::remove_dir_all(root).expect("cleanup");
     }
 
@@ -41558,9 +43152,10 @@ mod tests {
                 );
                 Ok(())
             },
-            |home, id, name, binding, now| {
-                execution_space::register_and_activate(
+            |home, lock, id, name, binding, now| {
+                execution_space::register_and_activate_locked(
                     home,
+                    lock,
                     id,
                     name,
                     Some(binding.to_string()),
@@ -41611,7 +43206,7 @@ mod tests {
                     "injected stage verification failure".into(),
                 ))
             },
-            |_home, _id, _name, _binding, _now| panic!("activation must not run"),
+            |_home, _lock, _id, _name, _binding, _now| panic!("activation must not run"),
         )
         .expect_err("stage failure");
         assert!(error
@@ -41635,7 +43230,7 @@ mod tests {
         let error = execution_space_migrate_from_project_with_activate(
             &firm_home,
             &migration_args(&project_context.id, "pending-space", false),
-            |_home, _id, _name, _binding, _now| {
+            |_home, _lock, _id, _name, _binding, _now| {
                 Err(execution_space::ExecutionSpaceError::Io(
                     std::io::Error::other("injected registration failure"),
                 ))
@@ -41938,11 +43533,213 @@ mod tests {
         }
     }
 
+    fn persisted_native_test_member(
+        store: &HarnessStore,
+        provider: &str,
+        mode: &str,
+        session_id: &str,
+    ) -> (TeamRunLedger, MemberRun) {
+        let created = create_team_run(
+            store,
+            None,
+            None,
+            "Exercise provider callback validation",
+            None,
+            "test",
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[TeamMemberSpec {
+                agent_member_id: None,
+                name: "ProviderCallback".into(),
+                role: "reviewer".into(),
+                provider: provider.into(),
+                execution_mode: Some(mode.into()),
+                model: None,
+                effort: None,
+                service_tier: None,
+                worktree_ref: None,
+                owned_paths: Vec::new(),
+                resume_native_session_id: None,
+                initial_work: None,
+            }],
+        )
+        .expect("create persisted provider callback member");
+        let initial = created.member_runs[0].clone();
+        let mut running = initial.clone();
+        running.status = MemberRunStatus::Running;
+        running.native_session = Some(NativeSessionRef {
+            provider: provider.into(),
+            execution_mode: mode.into(),
+            native_session_id: session_id.into(),
+            native_locator_kind: "test_native_session".into(),
+            provider_version: None,
+            adapter_contract_version: "test".into(),
+            availability: NativeSessionAvailability::Available,
+            supports_resume: true,
+            last_verified_at: None,
+            parent_native_session_id: None,
+        });
+        store
+            .compare_and_append_member_run(&initial, &running)
+            .expect("seed persisted provider callback member");
+        (
+            TeamRunLedger::without_supervisor(store, &created.team_run.id),
+            running,
+        )
+    }
+
+    fn kimi_safe_approval_frame(session_id: &str, id: u64) -> serde_json::Value {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "session/request_permission",
+            "params": {
+                "sessionId": session_id,
+                "options": [
+                    {"optionId": format!("tool_allow_always_{id}"), "name": "Always allow", "kind": "allow_always"},
+                    {"optionId": "tool_reject_once", "name": "Reject", "kind": "reject_once"}
+                ],
+                "toolCall": {"toolCallId": format!("{id}:bash"), "title": "Bash"}
+            }
+        })
+    }
+
+    #[test]
+    fn provider_callback_drift_allows_only_transient_status_and_timestamp() {
+        let mut round_start = native_open_test_member("kimi", "kimi_acp", "session-cas-fence");
+        round_start.status = MemberRunStatus::Running;
+        let mut waiting = round_start.clone();
+        waiting.status = MemberRunStatus::Waiting;
+        waiting.last_event_at = Some("unix-ms:2".into());
+        validate_provider_callback_drift(&round_start, &waiting)
+            .expect("interaction-owned transient drift is legal");
+
+        let mut safe_same_generation = waiting.clone();
+        safe_same_generation.name = "OperatorRename".into();
+        safe_same_generation.provider_profile = Some(team_member_provider_profile_for_mode(
+            "kimi",
+            Some("kimi_acp"),
+        ));
+        validate_provider_callback_drift(&round_start, &safe_same_generation)
+            .expect("same-generation rename and profile refresh are rebased");
+
+        let mut changed_controls = waiting.clone();
+        changed_controls.provider_controls.model.requested = Some("other-model".into());
+        assert!(validate_provider_callback_drift(&round_start, &changed_controls).is_err());
+
+        let mut replaced_generation = waiting.clone();
+        replaced_generation.runtime_generation += 1;
+        assert!(validate_provider_callback_drift(&round_start, &replaced_generation).is_err());
+
+        let mut closed = waiting;
+        closed.coordination_status = MemberCoordinationStatus::Closed;
+        closed.status = MemberRunStatus::Stopped;
+        assert!(validate_provider_callback_drift(&round_start, &closed).is_err());
+    }
+
+    #[test]
+    fn codex_multi_question_request_fails_closed_without_durable_side_effects() {
+        let (store, _root) = temp_store("codex-multi-question-fail-closed");
+        let (ledger, member) = persisted_native_test_member(
+            &store,
+            "codex",
+            "codex_app_server",
+            "thread-multi-question",
+        );
+        let messages_before = store.team_messages().expect("team messages before").len();
+        let interactions_before = store
+            .pending_interactions()
+            .expect("pending interactions before")
+            .len();
+        let actions_before = store.member_actions().expect("member actions before").len();
+        let frame = serde_json::json!({
+            "id": 700,
+            "method": "item/tool/requestUserInput",
+            "params": {
+                "threadId": "thread-multi-question",
+                "questions": [
+                    {"id": "first", "header": "First", "question": "First question?", "options": []},
+                    {"id": "second", "header": "Second", "question": "Second question?", "options": []}
+                ]
+            }
+        });
+
+        let error = handle_codex_provider_request(&ledger, &member, &frame)
+            .expect_err("multi-question request must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("supports exactly one question; received 2"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            store.team_messages().expect("team messages after").len(),
+            messages_before,
+            "unsupported request must not create a provider request message"
+        );
+        assert_eq!(
+            store
+                .pending_interactions()
+                .expect("pending interactions after")
+                .len(),
+            interactions_before,
+            "unsupported request must not create a legacy interaction"
+        );
+        assert_eq!(
+            store.member_actions().expect("member actions after").len(),
+            actions_before,
+            "unsupported request must not create a provider-control receipt"
+        );
+    }
+
+    fn assert_unchanged_profile_refresh_has_no_in_memory_revision() {
+        let mut member = native_open_test_member("codex", "codex_app_server", "session-profile");
+        member.provider_profile = Some(team_member_provider_profile_for_mode(
+            "codex",
+            Some("codex_app_server"),
+        ));
+        member.last_event_at = Some("unix-ms:stable".into());
+        let before = member.clone();
+        let changed = apply_refreshed_provider_profile(
+            &mut member,
+            before.provider_profile.clone().expect("profile"),
+        );
+        assert!(!changed);
+        assert_eq!(member, before);
+
+        let mut changed_profile = before.provider_profile.clone().expect("profile");
+        changed_profile.compatibility_note = Some("refreshed contract".into());
+        assert!(apply_refreshed_provider_profile(
+            &mut member,
+            changed_profile.clone()
+        ));
+        assert_eq!(member.provider_profile.as_ref(), Some(&changed_profile));
+        assert_ne!(member.last_event_at.as_deref(), Some("unix-ms:stable"));
+    }
+
+    #[test]
+    fn recovery_unchanged_profile_does_not_drift_last_event_at() {
+        assert_unchanged_profile_refresh_has_no_in_memory_revision();
+    }
+
+    #[test]
+    fn start_unchanged_profile_does_not_drift_last_event_at() {
+        assert_unchanged_profile_refresh_has_no_in_memory_revision();
+    }
+
+    #[test]
+    fn reopen_unchanged_profile_does_not_drift_last_event_at() {
+        assert_unchanged_profile_refresh_has_no_in_memory_revision();
+    }
+
     #[test]
     fn kimi_full_access_safe_approvals_converge_to_one_bounded_receipt() {
         let (store, _root) = temp_store("kimi-receipt-once");
-        let ledger = TeamRunLedger::without_supervisor(&store, "team-run-receipt-bound");
-        let member = native_open_test_member("kimi", "kimi_acp", "session-receipt-bound");
+        let (ledger, member) =
+            persisted_native_test_member(&store, "kimi", "kimi_acp", "session-receipt-bound");
 
         let safe_frame = |id: u64| {
             serde_json::json!({
@@ -41972,7 +43769,7 @@ mod tests {
                 .expect("safe acknowledgement");
             let expected_option = format!("tool_allow_always_{id}");
             assert_eq!(
-                outcome["outcome"]["optionId"].as_str(),
+                outcome.result["outcome"]["optionId"].as_str(),
                 Some(expected_option.as_str()),
                 "each safe prompt must still be acknowledged"
             );
@@ -42014,18 +43811,16 @@ mod tests {
     #[test]
     fn kimi_full_access_receipt_ignores_unrelated_provider_control_rows() {
         let (store, _root) = temp_store("kimi-receipt-identity");
-        let ledger = TeamRunLedger::without_supervisor(&store, "team-run-receipt-identity");
-        let member = native_open_test_member("kimi", "kimi_acp", "session-receipt-identity");
+        let (ledger, member) =
+            persisted_native_test_member(&store, "kimi", "kimi_acp", "session-receipt-identity");
 
         // An unrelated provider_control row for the same MemberRun must not
         // suppress the bounded Kimi receipt: the convergence key is the
         // stable (member_run_id, action_type, title) identity, not the bare
         // action type.
         ledger
-            .append_action(
-                &member.id,
-                "provider_control",
-                MemberActionStatus::Succeeded,
+            .append_provider_control_receipt_once(
+                &member,
                 "Unrelated provider control observation",
                 "pre-existing control row from another control path",
             )
@@ -42056,7 +43851,7 @@ mod tests {
                 .expect("safe acknowledgement");
             let expected_option = format!("tool_allow_always_{id}");
             assert_eq!(
-                outcome["outcome"]["optionId"].as_str(),
+                outcome.result["outcome"]["optionId"].as_str(),
                 Some(expected_option.as_str()),
                 "each safe prompt must still be acknowledged"
             );
@@ -42092,6 +43887,106 @@ mod tests {
                 .is_empty(),
             "safe approvals must never create PendingInteractions"
         );
+    }
+
+    #[test]
+    fn kimi_safe_approval_rejects_closed_retired_generation_and_session_drift() {
+        for case in ["closed", "retired", "generation", "session"] {
+            let (store, _root) = temp_store(&format!("kimi-safe-stale-{case}"));
+            let session_id = format!("session-{case}");
+            let (ledger, supplied) =
+                persisted_native_test_member(&store, "kimi", "kimi_acp", &session_id);
+            let mut latest = supplied.clone();
+            match case {
+                "closed" => {
+                    latest.coordination_status = MemberCoordinationStatus::Closed;
+                    latest.status = MemberRunStatus::Stopped;
+                    latest.finished_at = Some("unix-ms:closed".into());
+                }
+                "retired" => {
+                    latest.coordination_status = MemberCoordinationStatus::Retired;
+                    latest.status = MemberRunStatus::Stopped;
+                    latest.finished_at = Some("unix-ms:retired".into());
+                }
+                "generation" => latest.runtime_generation += 1,
+                "session" => {
+                    latest
+                        .native_session
+                        .as_mut()
+                        .expect("native session")
+                        .native_session_id = "replacement-session".into();
+                }
+                _ => unreachable!(),
+            }
+            store
+                .compare_and_append_member_run(&supplied, &latest)
+                .expect("advance canonical member before callback");
+
+            let error = handle_kimi_provider_request(
+                &ledger,
+                &supplied,
+                &kimi_safe_approval_frame(&session_id, 730),
+            )
+            .expect_err("stale safe approval must fail closed");
+            assert!(
+                error.to_string().contains("crossed identity")
+                    || error
+                        .to_string()
+                        .contains("changed during provider callback")
+                    || error.to_string().contains("is no longer active"),
+                "unexpected {case} error: {error}"
+            );
+            assert!(
+                store
+                    .member_actions()
+                    .expect("member actions")
+                    .into_iter()
+                    .all(|action| action.action_type != "provider_control"),
+                "{case} callback wrote a provider-control receipt"
+            );
+        }
+    }
+
+    #[test]
+    fn kimi_safe_approval_atomic_receipt_loses_to_concurrent_close() {
+        let (store, _root) = temp_store("kimi-safe-atomic-close-race");
+        let (ledger, expected) =
+            persisted_native_test_member(&store, "kimi", "kimi_acp", "session-atomic-close");
+        let mut closed = expected.clone();
+        closed.coordination_status = MemberCoordinationStatus::Closed;
+        closed.status = MemberRunStatus::Stopped;
+        closed.finished_at = Some("unix-ms:atomic-close".into());
+
+        let error = ledger
+            .append_provider_control_receipt_once_with_hook(
+                &expected,
+                "Kimi full-access tool permission acknowledged",
+                "safe acknowledgement",
+                || {
+                    store_conflict_as_usage(
+                        store.compare_and_append_member_run(&expected, &closed),
+                    )?;
+                    Ok(())
+                },
+            )
+            .expect_err("concurrent close must win over the receipt append");
+        assert!(
+            error
+                .to_string()
+                .contains("provider receipt was not appended"),
+            "unexpected atomic conflict: {error}"
+        );
+        assert!(
+            store
+                .member_actions()
+                .expect("member actions")
+                .into_iter()
+                .all(|action| action.action_type != "provider_control"),
+            "atomic CAS loss must not leave a receipt"
+        );
+        let latest = ledger.latest_member_run(&expected.id).unwrap().unwrap();
+        assert_eq!(latest.coordination_status, MemberCoordinationStatus::Closed);
+        assert_eq!(latest.status, MemberRunStatus::Stopped);
     }
 
     #[test]
@@ -42178,6 +44073,29 @@ package:com.tencent.mm
         let root =
             std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("native-open")));
         let store = HarnessStore::new(&root);
+        store
+            .append_team_run(&AgentTeamRun {
+                id: "team-native-open".into(),
+                definition_id: None,
+                agent_team_id: None,
+                previous_run_id: None,
+                mission_id: None,
+                wave_id: None,
+                project_binding_id: None,
+                host_surface: "test".into(),
+                host_thread_id: None,
+                host_actor: None,
+                host_control_mode: Default::default(),
+                objective: "native open print-only test".into(),
+                execution_root: None,
+                status: TeamRunStatus::Planning,
+                member_run_ids: vec!["member-native-open".into()],
+                budget_limit_usd: None,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+                completed_at: None,
+            })
+            .expect("declare native-open test member");
         store
             .append_member_run(&native_open_test_member(
                 "claude",
@@ -43927,6 +45845,1421 @@ package:com.tencent.mm
         .expect("create team run")
     }
 
+    #[test]
+    fn legacy_pending_interaction_resolve_stays_on_legacy_ledger() {
+        let (store, root) = temp_store("legacy-pending-interaction-resolve");
+        let created = create_two_member_team_run(&store);
+        let member = &created.member_runs[0];
+        let legacy = PendingInteraction {
+            id: "legacy-pending-1".into(),
+            team_run_id: created.team_run.id.clone(),
+            member_run_id: member.id.clone(),
+            provider: "codex".into(),
+            provider_request_id: "legacy-provider-request-1".into(),
+            method: "item/tool/requestUserInput".into(),
+            kind: PendingInteractionKind::Question,
+            route: PendingInteractionRoute::Lead,
+            status: PendingInteractionStatus::Pending,
+            title: "Legacy question".into(),
+            prompt: "Continue the legacy operation?".into(),
+            options: vec![harness_core::PendingInteractionOption {
+                id: "continue".into(),
+                label: "Continue".into(),
+                intent: Some("answer".into()),
+            }],
+            tool_call_id: None,
+            response_option_id: None,
+            response_text: None,
+            created_at: "unix-ms:legacy-created".into(),
+            resolved_at: None,
+            resolved_by: None,
+        };
+        store
+            .append_pending_interaction(&legacy)
+            .expect("seed legacy pending interaction");
+        let messages_before = store.team_messages().expect("messages before");
+
+        let resolved = resolve_pending_interaction_value(
+            &store,
+            &created.team_run.id,
+            &legacy.id,
+            &serde_json::json!({
+                "resolved_by": "host",
+                "option_id": "continue"
+            }),
+        )
+        .expect("resolve legacy row through compatibility endpoint");
+        assert_eq!(resolved["status"].as_str(), Some("answered"));
+        assert_eq!(resolved["response_option_id"].as_str(), Some("continue"));
+        assert_eq!(
+            store.team_messages().expect("messages after"),
+            messages_before,
+            "legacy resolve must not fabricate or consume TeamMessages"
+        );
+        let latest = latest_pending_interactions_in_append_order(&store)
+            .expect("latest legacy interactions")
+            .into_iter()
+            .find(|interaction| interaction.id == legacy.id)
+            .expect("resolved legacy row");
+        assert_eq!(latest.status, PendingInteractionStatus::Answered);
+        assert_eq!(latest.resolved_by.as_deref(), Some("host"));
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn provider_interaction_cas_rebases_retries_and_fences_lifecycle() {
+        let (store, root) = temp_store("provider-interaction-cas");
+        let created = create_two_member_team_run(&store);
+        let ledger = TeamRunLedger::without_supervisor(&store, &created.team_run.id);
+        let initial = created.member_runs[0].clone();
+        let mut running = initial.clone();
+        running.status = MemberRunStatus::Running;
+        store
+            .compare_and_append_member_run(&initial, &running)
+            .expect("seed provider round");
+
+        // The callback receives the same round snapshot twice. Each cycle must
+        // refetch latest rather than reuse that stale snapshot.
+        for _ in 0..2 {
+            let waiting = match transition_provider_interaction_member(
+                &ledger,
+                &running,
+                MemberRunStatus::Waiting,
+            )
+            .expect("enter Waiting")
+            {
+                ProviderInteractionMemberTransition::Applied(member) => member,
+                ProviderInteractionMemberTransition::LifecycleSuperseded => {
+                    panic!("active member cannot be lifecycle-superseded")
+                }
+            };
+            assert_eq!(waiting.status, MemberRunStatus::Waiting);
+            let resumed = match transition_provider_interaction_member(
+                &ledger,
+                &waiting,
+                MemberRunStatus::Running,
+            )
+            .expect("resume Running")
+            {
+                ProviderInteractionMemberTransition::Applied(member) => member,
+                ProviderInteractionMemberTransition::LifecycleSuperseded => {
+                    panic!("active member cannot be lifecycle-superseded")
+                }
+            };
+            assert_eq!(resumed.status, MemberRunStatus::Running);
+        }
+
+        let mut stale_idle = running.clone();
+        stale_idle.status = MemberRunStatus::Idle;
+        assert!(store
+            .compare_and_append_member_run(&running, &stale_idle)
+            .is_err());
+        let rebased = refresh_member_after_provider_callbacks(&ledger, &running)
+            .expect("terminal driver rebases after callbacks");
+        let mut idle = rebased.clone();
+        idle.status = MemberRunStatus::Idle;
+        store
+            .compare_and_append_member_run(&rebased, &idle)
+            .expect("terminal rebase writes Idle from latest");
+        running = idle.clone();
+        running.status = MemberRunStatus::Running;
+        store
+            .compare_and_append_member_run(&idle, &running)
+            .expect("start next provider round");
+
+        // Inject an exact CAS loss after the helper's read. A same-generation
+        // rename is safe drift: retry must preserve it and still enter Waiting.
+        let mut injected = false;
+        let waiting = match transition_provider_interaction_member_with_hook(
+            &ledger,
+            &running,
+            MemberRunStatus::Waiting,
+            |attempt, observed| {
+                if attempt == 0 && !injected {
+                    injected = true;
+                    let mut renamed = observed.clone();
+                    renamed.name = "RenamedDuringCallback".into();
+                    store_conflict_as_usage(
+                        store.compare_and_append_member_run(observed, &renamed),
+                    )?;
+                }
+                Ok(())
+            },
+        )
+        .expect("bounded retry converges")
+        {
+            ProviderInteractionMemberTransition::Applied(member) => member,
+            ProviderInteractionMemberTransition::LifecycleSuperseded => {
+                panic!("rename is not lifecycle supersession")
+            }
+        };
+        assert_eq!(waiting.name, "RenamedDuringCallback");
+        assert_eq!(waiting.status, MemberRunStatus::Waiting);
+
+        // Close wins while the provider is waiting. A delayed resolution gets
+        // a cancellation outcome and must not write Running over Stopped.
+        let mut closed = waiting.clone();
+        closed.coordination_status = MemberCoordinationStatus::Closed;
+        closed.status = MemberRunStatus::Stopped;
+        closed.finished_at = Some("unix-ms:closed".into());
+        store
+            .compare_and_append_member_run(&waiting, &closed)
+            .expect("close waiting member");
+        let superseded =
+            transition_provider_interaction_member(&ledger, &waiting, MemberRunStatus::Running)
+                .expect("late resolution is handled");
+        assert!(matches!(
+            superseded,
+            ProviderInteractionMemberTransition::LifecycleSuperseded
+        ));
+        assert_eq!(
+            ledger
+                .latest_member_run(&closed.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            MemberRunStatus::Stopped
+        );
+
+        // A reopened generation is different execution authority. The old
+        // callback cannot resume it even when the stable MemberRun id is reused.
+        let mut reopened = closed.clone();
+        reopened.coordination_status = MemberCoordinationStatus::Active;
+        reopened.runtime_generation += 1;
+        reopened.status = MemberRunStatus::Idle;
+        reopened.finished_at = None;
+        store
+            .compare_and_append_member_run(&closed, &reopened)
+            .expect("reopen next generation");
+        assert!(transition_provider_interaction_member(
+            &ledger,
+            &waiting,
+            MemberRunStatus::Running
+        )
+        .is_err());
+
+        let second_initial = created.member_runs[1].clone();
+        let mut second_running = second_initial.clone();
+        second_running.status = MemberRunStatus::Running;
+        store
+            .compare_and_append_member_run(&second_initial, &second_running)
+            .expect("seed second provider round");
+        let second_waiting = match transition_provider_interaction_member(
+            &ledger,
+            &second_running,
+            MemberRunStatus::Waiting,
+        )
+        .expect("second member waits")
+        {
+            ProviderInteractionMemberTransition::Applied(member) => member,
+            ProviderInteractionMemberTransition::LifecycleSuperseded => unreachable!(),
+        };
+        let mut retired = second_waiting.clone();
+        retired.coordination_status = MemberCoordinationStatus::Retired;
+        retired.status = MemberRunStatus::Stopped;
+        retired.finished_at = Some("unix-ms:retired".into());
+        store
+            .compare_and_append_member_run(&second_waiting, &retired)
+            .expect("retire waiting member");
+        assert!(matches!(
+            transition_provider_interaction_member(
+                &ledger,
+                &second_waiting,
+                MemberRunStatus::Running
+            )
+            .expect("late retired resolution is handled"),
+            ProviderInteractionMemberTransition::LifecycleSuperseded
+        ));
+        let retired_latest = ledger.latest_member_run(&retired.id).unwrap().unwrap();
+        assert_eq!(
+            retired_latest.coordination_status,
+            MemberCoordinationStatus::Retired
+        );
+        assert_eq!(retired_latest.status, MemberRunStatus::Stopped);
+
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn provider_interaction_message_bridge_recovers_by_reverse_request_replay() {
+        let (store, root) = temp_store("provider-interaction-message-bridge");
+        let created = create_two_member_team_run(&store);
+        let initial_run = created.team_run.clone();
+        let mut active_run = initial_run.clone();
+        active_run.status = TeamRunStatus::Running;
+        active_run.updated_at = "unix-ms:provider-bridge-running".into();
+        store
+            .compare_and_append_team_run_with_wave_status(
+                &initial_run,
+                &active_run,
+                WaveStatus::Running,
+                "unix-ms:provider-bridge-running",
+            )
+            .expect("seed running TeamRun");
+        let initial = created.member_runs[0].clone();
+        let mut running = initial.clone();
+        running.status = MemberRunStatus::Running;
+        running.native_session = Some(NativeSessionRef {
+            provider: running.provider.clone(),
+            execution_mode: "codex_app_server".into(),
+            native_session_id: "codex-session-bridge".into(),
+            native_locator_kind: "codex_thread".into(),
+            provider_version: None,
+            adapter_contract_version: "test".into(),
+            availability: NativeSessionAvailability::Available,
+            supports_resume: true,
+            last_verified_at: None,
+            parent_native_session_id: None,
+        });
+        store
+            .compare_and_append_member_run(&initial, &running)
+            .expect("seed native running member");
+        let ledger = TeamRunLedger::without_supervisor(&store, &created.team_run.id);
+        let options = vec![ProviderInteractionMessageOption {
+            id: "answer::0".into(),
+            label: "Proceed".into(),
+            intent: Some("answer".into()),
+        }];
+        let (request, created_now) = provider_interaction_request_message(
+            &ledger,
+            &running,
+            "reverse-7",
+            "item/tool/requestUserInput",
+            ProviderInteractionType::Question,
+            "Continue?".into(),
+            options.clone(),
+        )
+        .expect("create message request");
+        assert!(created_now);
+        let (replayed, created_again) = provider_interaction_request_message(
+            &ledger,
+            &running,
+            "reverse-7",
+            "item/tool/requestUserInput",
+            ProviderInteractionType::Question,
+            "Continue?".into(),
+            options,
+        )
+        .expect("exact provider replay converges");
+        assert!(!created_again);
+        assert_eq!(replayed.id, request.id);
+        let mut replacement_runtime = running.clone();
+        replacement_runtime.runtime_generation += 1;
+        let stale_replay = provider_interaction_request_message(
+            &ledger,
+            &replacement_runtime,
+            "reverse-7",
+            "item/tool/requestUserInput",
+            ProviderInteractionType::Question,
+            "Continue?".into(),
+            vec![ProviderInteractionMessageOption {
+                id: "answer::0".into(),
+                label: "Proceed".into(),
+                intent: Some("answer".into()),
+            }],
+        )
+        .expect_err("a new MemberRun generation cannot consume the old reverse request");
+        assert!(stale_replay
+            .to_string()
+            .contains("replayed with different semantics"));
+        assert!(store
+            .pending_interactions()
+            .expect("legacy pending ledger")
+            .is_empty());
+
+        let response = resolve_pending_interaction_value(
+            &store,
+            &created.team_run.id,
+            &request.id,
+            &serde_json::json!({
+                "resolved_by": "host",
+                "option_id": "answer::0"
+            }),
+        )
+        .expect("resolve request message");
+        assert_eq!(
+            response["kind"].as_str(),
+            Some("provider_interaction_response")
+        );
+        let exact_retry = resolve_pending_interaction_value(
+            &store,
+            &created.team_run.id,
+            &request.id,
+            &serde_json::json!({
+                "resolved_by": "host",
+                "option_id": "answer::0"
+            }),
+        )
+        .expect("exact response retry converges");
+        assert_eq!(exact_retry["id"], response["id"]);
+        let conflict = resolve_pending_interaction_value(
+            &store,
+            &created.team_run.id,
+            &request.id,
+            &serde_json::json!({
+                "resolved_by": "host",
+                "response_text": "different"
+            }),
+        )
+        .expect_err("different second response conflicts");
+        assert!(conflict
+            .to_string()
+            .contains("PROVIDER_INTERACTION_RESPONSE_CONFLICT"));
+
+        // A replacement Supervisor/provider callback does not fabricate an
+        // in-memory responder. It recovers only when the provider replays the
+        // same native reverse request; that replay reuses the durable request
+        // and consumes the already queued answer under the new lease.
+        let now = current_unix_ms_u64();
+        let old_lease = store
+            .acquire_team_supervisor_lease(
+                &created.team_run.id,
+                "supervisor-before-restart",
+                std::process::id(),
+                "test://before-restart",
+                now,
+                30_000,
+            )
+            .expect("old Supervisor lease");
+        store
+            .release_team_supervisor_lease(
+                &created.team_run.id,
+                &old_lease.supervisor_id,
+                old_lease.generation,
+                now + 1,
+            )
+            .expect("release old Supervisor");
+        let replacement = store
+            .acquire_team_supervisor_lease(
+                &created.team_run.id,
+                "supervisor-after-restart",
+                std::process::id(),
+                "test://after-restart",
+                now + 2,
+                30_000,
+            )
+            .expect("replacement Supervisor lease");
+        assert!(replacement.generation > old_lease.generation);
+        let restarted = TeamRunLedger::new(
+            &store,
+            &created.team_run.id,
+            &replacement.supervisor_id,
+            replacement.generation,
+            Arc::new(AtomicBool::new(true)),
+        );
+        let (request_after_restart, duplicate_after_restart) =
+            provider_interaction_request_message(
+                &restarted,
+                &running,
+                "reverse-7",
+                "item/tool/requestUserInput",
+                ProviderInteractionType::Question,
+                "Continue?".into(),
+                vec![ProviderInteractionMessageOption {
+                    id: "answer::0".into(),
+                    label: "Proceed".into(),
+                    intent: Some("answer".into()),
+                }],
+            )
+            .expect("replayed reverse request after restart");
+        assert!(!duplicate_after_restart);
+        assert_eq!(request_after_restart.id, request.id);
+        let (_, claimed_after_restart) =
+            wait_for_provider_interaction_response(&restarted, &running, &request_after_restart)
+                .expect("replacement callback reads durable answer")
+                .expect("durable answer exists");
+        let claimed_after_restart = claimed_after_restart.expect("replacement claims Inject");
+        restarted
+            .complete_provider_interaction_response(
+                &claimed_after_restart,
+                &running.id,
+                "test-provider-receipt-after-restart",
+            )
+            .expect("replacement completes after native write");
+
+        let messages = latest_team_messages_in_append_order(&store).expect("messages");
+        let latest_request = messages
+            .iter()
+            .find(|message| message.id == request.id)
+            .expect("latest request");
+        assert!(latest_request.deliveries.iter().any(|delivery| {
+            delivery.member_id == "host" && delivery.status == TeamDeliveryStatus::Acknowledged
+        }));
+        let response_message = messages
+            .iter()
+            .find(|message| {
+                message.kind == TeamMessageKind::ProviderInteractionResponse
+                    && message.causation_id.as_deref() == Some(request.id.as_str())
+            })
+            .expect("response message");
+        assert!(response_message.deliveries.iter().any(|delivery| {
+            delivery.member_id == running.id
+                && delivery.policy == TeamDeliveryPolicy::Inject
+                && delivery.status == TeamDeliveryStatus::Delivered
+                && delivery.provider_receipt_id.as_deref()
+                    == Some("test-provider-receipt-after-restart")
+        }));
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| { message.kind == TeamMessageKind::ProviderInteractionRequest })
+                .count(),
+            1,
+            "provider replay must reuse the request message"
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    fn test_workspace_snapshot(root: &Path) -> MemberWorkspaceSnapshot {
+        snapshot_member_workspace(root, None, None, "explicit_unbound")
+    }
+
+    fn capacity_test_snapshot(state: ProviderCapacityState) -> ProviderCapacitySnapshot {
+        ProviderCapacitySnapshot {
+            provider: "codex".into(),
+            execution_mode: "codex_app_server".into(),
+            account: ProviderAccountRef::unknown(),
+            state,
+            observed_at: "unix-ms:100".into(),
+            observed_unix_ms: 100,
+            reset_at: None,
+            evidence_source: ProviderCapacityEvidence::ProviderError,
+            confidence: ProviderCapacityConfidence::Observed,
+            windows: Vec::new(),
+            diagnosis: None,
+            runtime_context: Vec::new(),
+            detail: Some("capacity recovery regression fixture".into()),
+        }
+    }
+
+    fn capacity_test_session() -> NativeSessionRef {
+        NativeSessionRef {
+            provider: "codex".into(),
+            execution_mode: "codex_app_server".into(),
+            native_session_id: "thread-capacity-recovery".into(),
+            native_locator_kind: "thread_id".into(),
+            provider_version: Some("test".into()),
+            adapter_contract_version: "test".into(),
+            availability: NativeSessionAvailability::Available,
+            supports_resume: true,
+            last_verified_at: Some("unix-ms:99".into()),
+            parent_native_session_id: None,
+        }
+    }
+
+    #[test]
+    fn capacity_recovery_clears_only_capacity_origin_blocked_projection() {
+        let (store, root) = temp_store("capacity-recovery-provenance");
+        let created = create_two_member_team_run(&store);
+        let base = created.member_runs[0].clone();
+
+        let mut without_session = base.clone();
+        without_session.status = MemberRunStatus::Blocked;
+        without_session.finished_at = Some("unix-ms:90".into());
+        without_session.provider_capacity =
+            Some(capacity_test_snapshot(ProviderCapacityState::Exhausted));
+        apply_nonblocking_capacity_observation(
+            &mut without_session,
+            capacity_test_snapshot(ProviderCapacityState::Available),
+        );
+        assert_eq!(without_session.status, MemberRunStatus::Idle);
+        assert!(without_session.finished_at.is_none());
+        assert_eq!(
+            without_session.provider_capacity.as_ref().unwrap().state,
+            ProviderCapacityState::Available
+        );
+
+        let mut with_session = base.clone();
+        with_session.status = MemberRunStatus::Blocked;
+        with_session.native_session = Some(capacity_test_session());
+        with_session.provider_capacity =
+            Some(capacity_test_snapshot(ProviderCapacityState::Unauthorized));
+        apply_nonblocking_capacity_observation(
+            &mut with_session,
+            capacity_test_snapshot(ProviderCapacityState::Available),
+        );
+        assert_eq!(with_session.status, MemberRunStatus::Disconnected);
+
+        let mut unrelated_block = base.clone();
+        unrelated_block.status = MemberRunStatus::Blocked;
+        unrelated_block.provider_capacity =
+            Some(capacity_test_snapshot(ProviderCapacityState::Unknown));
+        apply_nonblocking_capacity_observation(
+            &mut unrelated_block,
+            capacity_test_snapshot(ProviderCapacityState::Available),
+        );
+        assert_eq!(unrelated_block.status, MemberRunStatus::Blocked);
+
+        let mut closed_capacity_block = base;
+        closed_capacity_block.status = MemberRunStatus::Blocked;
+        closed_capacity_block.coordination_status = MemberCoordinationStatus::Closed;
+        closed_capacity_block.provider_capacity =
+            Some(capacity_test_snapshot(ProviderCapacityState::Exhausted));
+        apply_nonblocking_capacity_observation(
+            &mut closed_capacity_block,
+            capacity_test_snapshot(ProviderCapacityState::Available),
+        );
+        assert_eq!(closed_capacity_block.status, MemberRunStatus::Blocked);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn seed_capacity_blocked_member(store: &HarnessStore, initial: &MemberRun) -> MemberRun {
+        let mut blocked = initial.clone();
+        blocked.status = MemberRunStatus::Blocked;
+        blocked.provider_capacity = Some(capacity_test_snapshot(ProviderCapacityState::Exhausted));
+        blocked.last_event_at = Some("unix-ms:100".into());
+        store
+            .compare_and_append_member_run(initial, &blocked)
+            .expect("seed capacity-origin Blocked member");
+        blocked
+    }
+
+    #[test]
+    fn capacity_recovery_applies_close_latched_before_successful_cas_returns() {
+        let (store, root) = temp_store("capacity-recovery-post-cas-close");
+        let created = create_two_member_team_run(&store);
+        let blocked = seed_capacity_blocked_member(&store, &created.member_runs[0]);
+        let lease = store
+            .acquire_team_supervisor_lease(
+                &created.team_run.id,
+                "supervisor-capacity-recovery-post-cas",
+                std::process::id(),
+                "test://capacity-recovery-post-cas",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire Supervisor lease");
+        let ledger = TeamRunLedger::new(
+            &store,
+            &created.team_run.id,
+            &lease.supervisor_id,
+            lease.generation,
+            Arc::new(AtomicBool::new(true)),
+        );
+        let available = capacity_test_snapshot(ProviderCapacityState::Available);
+        let mut recovered = blocked.clone();
+        recover_capacity_origin_block(&mut recovered);
+        recovered.provider_capacity = Some(available.clone());
+        recovered.last_event_at = Some("unix-ms:101".into());
+
+        let outcome = persist_capacity_recovery_with_hook(
+            &ledger,
+            &blocked,
+            &mut recovered,
+            available,
+            |attempt, _| {
+                if attempt == 0 {
+                    latch_member_close(
+                        &store,
+                        &created.team_run.id,
+                        &blocked.id,
+                        "host",
+                        "close lands without mutating MemberRun",
+                    )?;
+                }
+                Ok(())
+            },
+        )
+        .expect("capacity recovery reconciles post-CAS Close")
+        .expect("Close supersedes capacity recovery");
+        assert_eq!(outcome.status, MemberRunStatus::Stopped);
+        assert_eq!(recovered.status, MemberRunStatus::Stopped);
+        assert!(recovered.coordination_is_closed());
+        let close = store
+            .latest_team_member_close_request(&blocked.id)
+            .expect("read Close")
+            .expect("Close row");
+        assert_eq!(close.status, TeamMemberCloseStatus::Applied);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn capacity_recovery_applies_close_after_member_cas_conflict() {
+        let (store, root) = temp_store("capacity-recovery-conflict-close");
+        let created = create_two_member_team_run(&store);
+        let blocked = seed_capacity_blocked_member(&store, &created.member_runs[0]);
+        let lease = store
+            .acquire_team_supervisor_lease(
+                &created.team_run.id,
+                "supervisor-capacity-recovery-conflict",
+                std::process::id(),
+                "test://capacity-recovery-conflict",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire Supervisor lease");
+        let ledger = TeamRunLedger::new(
+            &store,
+            &created.team_run.id,
+            &lease.supervisor_id,
+            lease.generation,
+            Arc::new(AtomicBool::new(true)),
+        );
+        let available = capacity_test_snapshot(ProviderCapacityState::Available);
+        let mut recovered = blocked.clone();
+        recover_capacity_origin_block(&mut recovered);
+        recovered.provider_capacity = Some(available.clone());
+        recovered.last_event_at = Some("unix-ms:101".into());
+
+        let outcome = persist_capacity_recovery_with_hook(
+            &ledger,
+            &blocked,
+            &mut recovered,
+            available,
+            |attempt, _| {
+                if attempt == 0 {
+                    latch_member_close(
+                        &store,
+                        &created.team_run.id,
+                        &blocked.id,
+                        "host",
+                        "close changes coordination before recovery CAS",
+                    )?;
+                    mark_member_coordination_closed(&store, &created.team_run.id, &blocked.id)?;
+                }
+                Ok(())
+            },
+        )
+        .expect("capacity recovery reconciles conflicting Close")
+        .expect("Close supersedes capacity recovery");
+        assert_eq!(outcome.status, MemberRunStatus::Stopped);
+        assert_eq!(recovered.status, MemberRunStatus::Stopped);
+        assert!(recovered.coordination_is_closed());
+        let close = store
+            .latest_team_member_close_request(&blocked.id)
+            .expect("read Close")
+            .expect("Close row");
+        assert_eq!(close.status, TeamMemberCloseStatus::Applied);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn capacity_recovery_preserves_failed_member_after_cas_conflict() {
+        let (store, root) = temp_store("capacity-recovery-conflict-failed");
+        let created = create_two_member_team_run(&store);
+        let blocked = seed_capacity_blocked_member(&store, &created.member_runs[0]);
+        let lease = store
+            .acquire_team_supervisor_lease(
+                &created.team_run.id,
+                "supervisor-capacity-recovery-failed",
+                std::process::id(),
+                "test://capacity-recovery-failed",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire Supervisor lease");
+        let ledger = TeamRunLedger::new(
+            &store,
+            &created.team_run.id,
+            &lease.supervisor_id,
+            lease.generation,
+            Arc::new(AtomicBool::new(true)),
+        );
+        let available = capacity_test_snapshot(ProviderCapacityState::Available);
+        let mut recovered = blocked.clone();
+        apply_nonblocking_capacity_observation(&mut recovered, available.clone());
+
+        let outcome = persist_capacity_recovery_with_hook(
+            &ledger,
+            &blocked,
+            &mut recovered,
+            available,
+            |attempt, expected| {
+                if attempt == 0 {
+                    let mut failed = expected.clone();
+                    failed.status = MemberRunStatus::Failed;
+                    failed.finished_at = Some("unix-ms:102".into());
+                    failed.last_event_at = Some("unix-ms:102".into());
+                    store.compare_and_append_member_run(expected, &failed)?;
+                }
+                Ok(())
+            },
+        )
+        .expect("capacity recovery reconciles conflicting Failed")
+        .expect("Failed supersedes capacity recovery");
+        assert_eq!(outcome.status, MemberRunStatus::Failed);
+        assert_eq!(recovered.status, MemberRunStatus::Failed);
+        assert_eq!(
+            ledger
+                .latest_member_run(&blocked.id)
+                .expect("read member")
+                .expect("member row")
+                .status,
+            MemberRunStatus::Failed
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn capacity_recovery_preserves_failed_member_after_successful_cas() {
+        let (store, root) = temp_store("capacity-recovery-post-cas-failed");
+        let created = create_two_member_team_run(&store);
+        let blocked = seed_capacity_blocked_member(&store, &created.member_runs[0]);
+        let lease = store
+            .acquire_team_supervisor_lease(
+                &created.team_run.id,
+                "supervisor-capacity-recovery-post-cas-failed",
+                std::process::id(),
+                "test://capacity-recovery-post-cas-failed",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire Supervisor lease");
+        let ledger = TeamRunLedger::new(
+            &store,
+            &created.team_run.id,
+            &lease.supervisor_id,
+            lease.generation,
+            Arc::new(AtomicBool::new(true)),
+        );
+        let available = capacity_test_snapshot(ProviderCapacityState::Available);
+        let mut recovered = blocked.clone();
+        apply_nonblocking_capacity_observation(&mut recovered, available.clone());
+
+        let outcome = persist_capacity_recovery_with_hooks(
+            &ledger,
+            &blocked,
+            &mut recovered,
+            available,
+            |_, _| Ok(()),
+            |attempt, persisted| {
+                if attempt == 0 {
+                    let mut failed = persisted.clone();
+                    failed.status = MemberRunStatus::Failed;
+                    failed.finished_at = Some("unix-ms:102".into());
+                    failed.last_event_at = Some("unix-ms:102".into());
+                    store.compare_and_append_member_run(persisted, &failed)?;
+                }
+                Ok(())
+            },
+        )
+        .expect("capacity recovery re-reads terminal state after successful CAS")
+        .expect("Failed supersedes capacity recovery");
+        assert_eq!(outcome.status, MemberRunStatus::Failed);
+        assert_eq!(recovered.status, MemberRunStatus::Failed);
+        assert_eq!(
+            ledger
+                .latest_member_run(&blocked.id)
+                .expect("read member")
+                .expect("member row")
+                .status,
+            MemberRunStatus::Failed
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn capacity_block_applies_close_latched_before_successful_cas_returns() {
+        let (store, root) = temp_store("capacity-block-post-cas-close");
+        let created = create_two_member_team_run(&store);
+        let initial = created.member_runs[0].clone();
+        let lease = store
+            .acquire_team_supervisor_lease(
+                &created.team_run.id,
+                "supervisor-capacity-block-post-cas",
+                std::process::id(),
+                "test://capacity-block-post-cas",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire Supervisor lease");
+        let ledger = TeamRunLedger::new(
+            &store,
+            &created.team_run.id,
+            &lease.supervisor_id,
+            lease.generation,
+            Arc::new(AtomicBool::new(true)),
+        );
+        let exhausted = capacity_test_snapshot(ProviderCapacityState::Exhausted);
+        let mut blocked = initial.clone();
+        blocked.status = MemberRunStatus::Blocked;
+        blocked.provider_capacity = Some(exhausted.clone());
+        blocked.last_event_at = Some("unix-ms:101".into());
+
+        let outcome = persist_capacity_block_with_hook(
+            &ledger,
+            &initial,
+            &mut blocked,
+            exhausted,
+            |attempt, _| {
+                if attempt == 0 {
+                    latch_member_close(
+                        &store,
+                        &created.team_run.id,
+                        &initial.id,
+                        "host",
+                        "close lands without mutating MemberRun",
+                    )?;
+                }
+                Ok(())
+            },
+        )
+        .expect("capacity block reconciles post-CAS Close")
+        .expect("Close supersedes capacity block");
+        assert_eq!(outcome.status, MemberRunStatus::Stopped);
+        assert_eq!(blocked.status, MemberRunStatus::Stopped);
+        assert!(blocked.coordination_is_closed());
+        assert_eq!(
+            store
+                .latest_team_member_close_request(&initial.id)
+                .expect("read Close")
+                .expect("Close row")
+                .status,
+            TeamMemberCloseStatus::Applied
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn capacity_block_applies_close_after_member_cas_conflict() {
+        let (store, root) = temp_store("capacity-block-conflict-close");
+        let created = create_two_member_team_run(&store);
+        let initial = created.member_runs[0].clone();
+        let lease = store
+            .acquire_team_supervisor_lease(
+                &created.team_run.id,
+                "supervisor-capacity-block-conflict",
+                std::process::id(),
+                "test://capacity-block-conflict",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire Supervisor lease");
+        let ledger = TeamRunLedger::new(
+            &store,
+            &created.team_run.id,
+            &lease.supervisor_id,
+            lease.generation,
+            Arc::new(AtomicBool::new(true)),
+        );
+        let exhausted = capacity_test_snapshot(ProviderCapacityState::Exhausted);
+        let mut blocked = initial.clone();
+        blocked.status = MemberRunStatus::Blocked;
+        blocked.provider_capacity = Some(exhausted.clone());
+        blocked.last_event_at = Some("unix-ms:101".into());
+
+        let outcome = persist_capacity_block_with_hook(
+            &ledger,
+            &initial,
+            &mut blocked,
+            exhausted,
+            |attempt, _| {
+                if attempt == 0 {
+                    latch_member_close(
+                        &store,
+                        &created.team_run.id,
+                        &initial.id,
+                        "host",
+                        "close changes coordination before capacity block CAS",
+                    )?;
+                    mark_member_coordination_closed(&store, &created.team_run.id, &initial.id)?;
+                }
+                Ok(())
+            },
+        )
+        .expect("capacity block reconciles conflicting Close")
+        .expect("Close supersedes capacity block");
+        assert_eq!(outcome.status, MemberRunStatus::Stopped);
+        assert_eq!(blocked.status, MemberRunStatus::Stopped);
+        assert!(blocked.coordination_is_closed());
+        assert_eq!(
+            store
+                .latest_team_member_close_request(&initial.id)
+                .expect("read Close")
+                .expect("Close row")
+                .status,
+            TeamMemberCloseStatus::Applied
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pre_spawn_workspace_publish_reconciles_close_before_provider_spawn() {
+        let (store, root) = temp_store("pre-spawn-close-race");
+        let created = create_two_member_team_run(&store);
+        let member = created.member_runs[0].clone();
+        let lease = store
+            .acquire_team_supervisor_lease(
+                &created.team_run.id,
+                "supervisor-pre-spawn-close",
+                std::process::id(),
+                "test://pre-spawn-close",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire Supervisor lease");
+        let snapshot = test_workspace_snapshot(&root);
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let worker_barrier = Arc::clone(&barrier);
+        let store_root = store.root().to_path_buf();
+        let run_id = created.team_run.id.clone();
+        let supervisor_id = lease.supervisor_id.clone();
+        let generation = lease.generation;
+        let prepared = member.clone();
+        let worker = std::thread::spawn(move || {
+            let worker_store = HarnessStore::new(store_root);
+            let ledger = TeamRunLedger::new(
+                &worker_store,
+                &run_id,
+                &supervisor_id,
+                generation,
+                Arc::new(AtomicBool::new(true)),
+            );
+            prepare_member_workspace_for_spawn_with_hook(
+                &ledger,
+                &prepared,
+                &snapshot,
+                |attempt, _| {
+                    if attempt == 0 {
+                        worker_barrier.wait();
+                        worker_barrier.wait();
+                    }
+                    Ok(())
+                },
+            )
+        });
+
+        barrier.wait();
+        let close = latch_member_close(
+            &store,
+            &created.team_run.id,
+            &member.id,
+            "host",
+            "close wins before provider spawn",
+        )
+        .expect("latch Close");
+        mark_member_coordination_closed(&store, &created.team_run.id, &member.id)
+            .expect("close coordination");
+        barrier.wait();
+
+        assert!(matches!(
+            worker
+                .join()
+                .expect("pre-spawn worker")
+                .expect("reconcile Close"),
+            PreSpawnWorkspacePreparation::Superseded
+        ));
+        let latest = latest_member_runs_in_append_order(&store)
+            .expect("latest members")
+            .into_iter()
+            .find(|candidate| candidate.id == member.id)
+            .expect("member");
+        assert_eq!(latest.coordination_status, MemberCoordinationStatus::Closed);
+        assert_eq!(latest.status, MemberRunStatus::Stopped);
+        assert!(latest.finished_at.is_some());
+        let applied = store
+            .latest_team_member_close_request(&member.id)
+            .expect("close request")
+            .expect("close row");
+        assert_eq!(applied.id, close.id);
+        assert_eq!(applied.status, TeamMemberCloseStatus::Applied);
+        assert!(applied.applied_at.is_some());
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn pre_spawn_workspace_publish_rebases_benign_drift_and_fences_provenance() {
+        let (store, root) = temp_store("pre-spawn-rebase-fences");
+        let created = create_two_member_team_run(&store);
+        let lease = store
+            .acquire_team_supervisor_lease(
+                &created.team_run.id,
+                "supervisor-pre-spawn-rebase",
+                std::process::id(),
+                "test://pre-spawn-rebase",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire Supervisor lease");
+        let ledger = TeamRunLedger::new(
+            &store,
+            &created.team_run.id,
+            &lease.supervisor_id,
+            lease.generation,
+            Arc::new(AtomicBool::new(true)),
+        );
+        let first = created.member_runs[0].clone();
+        let snapshot = test_workspace_snapshot(&root);
+        let published = match prepare_member_workspace_for_spawn_with_hook(
+            &ledger,
+            &first,
+            &snapshot,
+            |attempt, observed| {
+                if attempt == 0 {
+                    let mut renamed = observed.clone();
+                    renamed.name = "BenignRename".into();
+                    store_conflict_as_usage(
+                        store.compare_and_append_member_run(observed, &renamed),
+                    )?;
+                }
+                Ok(())
+            },
+        )
+        .expect("benign drift rebases")
+        {
+            PreSpawnWorkspacePreparation::Ready(member) => *member,
+            _ => panic!("member remains spawnable"),
+        };
+        assert_eq!(published.name, "BenignRename");
+        assert_eq!(published.workspace_snapshot.as_ref(), Some(&snapshot));
+
+        let second = created.member_runs[1].clone();
+        let mut new_generation = second.clone();
+        new_generation.runtime_generation += 1;
+        new_generation.native_session = Some(NativeSessionRef {
+            provider: second.provider.clone(),
+            execution_mode: "codex_app_server".into(),
+            native_session_id: "new-generation-session".into(),
+            native_locator_kind: "thread_id".into(),
+            provider_version: None,
+            adapter_contract_version: "test".into(),
+            availability: NativeSessionAvailability::Available,
+            supports_resume: true,
+            last_verified_at: None,
+            parent_native_session_id: None,
+        });
+        store
+            .compare_and_append_member_run(&second, &new_generation)
+            .expect("advance generation and session");
+        assert!(matches!(
+            prepare_member_workspace_for_spawn(&ledger, &second, &snapshot)
+                .expect("provenance fence is a local skip"),
+            PreSpawnWorkspacePreparation::Superseded
+        ));
+        let latest = ledger
+            .latest_member_run(&second.id)
+            .expect("latest member")
+            .expect("member exists");
+        assert_eq!(latest.runtime_generation, new_generation.runtime_generation);
+        assert_eq!(latest.native_session, new_generation.native_session);
+        assert!(latest.workspace_snapshot.is_none());
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn pre_spawn_workspace_publish_bounds_repeated_conflicts_locally() {
+        let (store, root) = temp_store("pre-spawn-bounded-conflicts");
+        let created = create_two_member_team_run(&store);
+        let lease = store
+            .acquire_team_supervisor_lease(
+                &created.team_run.id,
+                "supervisor-pre-spawn-conflicts",
+                std::process::id(),
+                "test://pre-spawn-conflicts",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire Supervisor lease");
+        let ledger = TeamRunLedger::new(
+            &store,
+            &created.team_run.id,
+            &lease.supervisor_id,
+            lease.generation,
+            Arc::new(AtomicBool::new(true)),
+        );
+        let member = created.member_runs[0].clone();
+        let snapshot = test_workspace_snapshot(&root);
+        let mut conflicts = 0usize;
+        let result = prepare_member_workspace_for_spawn_with_hook(
+            &ledger,
+            &member,
+            &snapshot,
+            |_, observed| {
+                conflicts += 1;
+                let mut drift = observed.clone();
+                drift.name = format!("conflict-{conflicts}");
+                store_conflict_as_usage(store.compare_and_append_member_run(observed, &drift))?;
+                Ok(())
+            },
+        )
+        .expect("exhausted CAS contention is local");
+        assert!(matches!(result, PreSpawnWorkspacePreparation::Retry));
+        assert_eq!(conflicts, PROVIDER_MEMBER_CAS_RETRIES);
+        let latest = ledger
+            .latest_member_run(&member.id)
+            .expect("latest member")
+            .expect("member exists");
+        assert_eq!(latest.name, "conflict-3");
+        assert!(latest.workspace_snapshot.is_none());
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn provider_start_claim_reconciles_close_latched_between_read_and_cas() {
+        let (store, root) = temp_store("provider-start-claim-close-race");
+        let created = create_two_member_team_run(&store);
+        let member = created.member_runs[0].clone();
+        let lease = store
+            .acquire_team_supervisor_lease(
+                &created.team_run.id,
+                "supervisor-start-claim-close",
+                std::process::id(),
+                "test://start-claim-close",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire Supervisor lease");
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let worker_barrier = Arc::clone(&barrier);
+        let store_root = store.root().to_path_buf();
+        let run_id = created.team_run.id.clone();
+        let supervisor_id = lease.supervisor_id.clone();
+        let generation = lease.generation;
+        let scheduled = member.clone();
+        let worker = std::thread::spawn(move || {
+            let worker_store = HarnessStore::new(store_root);
+            let ledger = TeamRunLedger::new(
+                &worker_store,
+                &run_id,
+                &supervisor_id,
+                generation,
+                Arc::new(AtomicBool::new(true)),
+            );
+            claim_member_provider_start_with_hook(&ledger, &scheduled, |attempt, _| {
+                if attempt == 0 {
+                    worker_barrier.wait();
+                    worker_barrier.wait();
+                }
+                Ok(())
+            })
+        });
+
+        barrier.wait();
+        let close = latch_member_close(
+            &store,
+            &created.team_run.id,
+            &member.id,
+            "host",
+            "latch lands after claim read",
+        )
+        .expect("latch Close without yet changing coordination");
+        barrier.wait();
+        let outcome = worker
+            .join()
+            .expect("claim worker")
+            .expect("post-claim Close reconciliation");
+        assert!(matches!(outcome, MemberProviderStartClaim::Superseded(_)));
+        let latest = latest_member_runs_in_append_order(&store)
+            .expect("latest members")
+            .into_iter()
+            .find(|candidate| candidate.id == member.id)
+            .expect("member");
+        assert_eq!(latest.coordination_status, MemberCoordinationStatus::Closed);
+        assert_eq!(latest.status, MemberRunStatus::Stopped);
+        let applied = store
+            .latest_team_member_close_request(&member.id)
+            .expect("close request")
+            .expect("close row");
+        assert_eq!(applied.id, close.id);
+        assert_eq!(applied.status, TeamMemberCloseStatus::Applied);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn provider_start_claim_accepts_reopened_queued_generation() {
+        let (store, root) = temp_store("provider-start-claim-reopened-queued");
+        let created = create_two_member_team_run(&store);
+        let initial = created.member_runs[0].clone();
+        let mut reopened = initial.clone();
+        reopened.runtime_generation = initial.runtime_generation + 1;
+        reopened.status = MemberRunStatus::Queued;
+        reopened.native_session = Some(capacity_test_session());
+        reopened.started_at = "unix-ms:200".into();
+        reopened.last_event_at = Some("unix-ms:200".into());
+        store
+            .compare_and_append_member_run(&initial, &reopened)
+            .expect("seed reopened queued generation");
+        let lease = store
+            .acquire_team_supervisor_lease(
+                &created.team_run.id,
+                "supervisor-reopened-queued",
+                std::process::id(),
+                "test://reopened-queued",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire Supervisor lease");
+        let ledger = TeamRunLedger::new(
+            &store,
+            &created.team_run.id,
+            &lease.supervisor_id,
+            lease.generation,
+            Arc::new(AtomicBool::new(true)),
+        );
+
+        let claimed = claim_member_provider_start(&ledger, &reopened)
+            .expect("reopened generation claims provider start");
+        let MemberProviderStartClaim::Claimed(starting) = claimed else {
+            panic!("reopened queued generation must become Starting");
+        };
+        assert_eq!(starting.runtime_generation, reopened.runtime_generation);
+        assert_eq!(starting.status, MemberRunStatus::Starting);
+        assert_eq!(starting.native_session, reopened.native_session);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn provider_error_after_start_claim_applies_close_before_prebind_failure() {
+        let (store, root) = temp_store("provider-error-after-start-claim-close");
+        let created = create_two_member_team_run(&store);
+        let member = created.member_runs[0].clone();
+        let lease = store
+            .acquire_team_supervisor_lease(
+                &created.team_run.id,
+                "supervisor-post-claim-close",
+                std::process::id(),
+                "test://post-claim-close",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire Supervisor lease");
+        let ledger = TeamRunLedger::new(
+            &store,
+            &created.team_run.id,
+            &lease.supervisor_id,
+            lease.generation,
+            Arc::new(AtomicBool::new(true)),
+        );
+        let starting =
+            match claim_member_provider_start(&ledger, &member).expect("claim provider start") {
+                MemberProviderStartClaim::Claimed(starting) => starting,
+                _ => panic!("active idle member must claim Starting"),
+            };
+        assert_eq!(starting.status, MemberRunStatus::Starting);
+        assert!(starting.native_session.is_none());
+
+        let close = latch_member_close(
+            &store,
+            &created.team_run.id,
+            &member.id,
+            "host",
+            "Close lands after Start linearized but before provider bind",
+        )
+        .expect("latch Close");
+        mark_member_coordination_closed(&store, &created.team_run.id, &member.id)
+            .expect("close coordination after claim");
+        let mut latest = ledger
+            .latest_member_run(&member.id)
+            .expect("latest member")
+            .expect("member exists");
+        assert!(
+            reconcile_member_lifecycle_after_provider_error(&ledger, &mut latest)
+                .expect("provider Err path applies Close")
+        );
+        assert_eq!(latest.coordination_status, MemberCoordinationStatus::Closed);
+        assert_eq!(latest.status, MemberRunStatus::Stopped);
+        assert!(latest.native_session.is_none());
+        let applied = store
+            .latest_team_member_close_request(&member.id)
+            .expect("close request")
+            .expect("close row");
+        assert_eq!(applied.id, close.id);
+        assert_eq!(applied.status, TeamMemberCloseStatus::Applied);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn runtime_anchor_accepts_owned_progress_but_rejects_authority_drift() {
+        let (store, root) = temp_store("runtime-anchor-progress");
+        let created = create_two_member_team_run(&store);
+        let anchor = created.member_runs[0].clone();
+        let accepted = anchor.clone();
+        let mut bound = accepted.clone();
+        bound.native_session = Some(NativeSessionRef {
+            provider: bound.provider.clone(),
+            execution_mode: "codex_app_server".into(),
+            native_session_id: "owned-session".into(),
+            native_locator_kind: "codex_rollout".into(),
+            provider_version: Some("test".into()),
+            adapter_contract_version: "test".into(),
+            availability: NativeSessionAvailability::Available,
+            supports_resume: true,
+            last_verified_at: Some("unix-ms:verified".into()),
+            parent_native_session_id: None,
+        });
+        bound
+            .provider_controls
+            .model
+            .mark_effective(Some("gpt-5.6-sol".into()), "provider receipt");
+        bound.status = MemberRunStatus::Disconnected;
+        bound.zero_output_streak = 2;
+        bound.last_consumed_work_version = Some(7);
+        assert!(member_runtime_progress_matches(
+            &anchor, &accepted, &bound, true
+        ));
+        assert!(member_runtime_progress_matches(
+            &anchor, &bound, &bound, false
+        ));
+        let mut refreshed_session = bound.clone();
+        let refreshed = refreshed_session
+            .native_session
+            .as_mut()
+            .expect("bound session");
+        refreshed.provider_version = Some("new-observation".into());
+        refreshed.availability = NativeSessionAvailability::Stale;
+        refreshed.supports_resume = false;
+        refreshed.last_verified_at = Some("unix-ms:later".into());
+        refreshed.parent_native_session_id = Some("lineage-observation".into());
+        assert!(member_runtime_progress_matches(
+            &anchor,
+            &bound,
+            &refreshed_session,
+            false
+        ));
+
+        let mut replaced_session = bound.clone();
+        replaced_session
+            .native_session
+            .as_mut()
+            .expect("bound session")
+            .native_session_id = "foreign-replacement".into();
+        assert!(!member_runtime_progress_matches(
+            &anchor,
+            &bound,
+            &replaced_session,
+            false
+        ));
+        for mutation in ["mode", "locator", "contract"] {
+            let mut replaced = bound.clone();
+            let session = replaced.native_session.as_mut().expect("bound session");
+            match mutation {
+                "mode" => session.execution_mode = "different-mode".into(),
+                "locator" => session.native_locator_kind = "different-locator".into(),
+                "contract" => session.adapter_contract_version = "different-contract".into(),
+                _ => unreachable!(),
+            }
+            assert!(
+                !member_runtime_progress_matches(&anchor, &bound, &replaced, false),
+                "stable session authority mutation {mutation} must be rejected"
+            );
+        }
+        let mut changed_request = bound.clone();
+        changed_request.provider_controls.model.requested = Some("operator-change".into());
+        assert!(!member_runtime_progress_matches(
+            &anchor,
+            &bound,
+            &changed_request,
+            false
+        ));
+        let mut changed_identity = bound.clone();
+        changed_identity.role = "different-role".into();
+        assert!(!member_runtime_progress_matches(
+            &anchor,
+            &bound,
+            &changed_identity,
+            false
+        ));
+        let mut changed_generation = bound.clone();
+        changed_generation.runtime_generation += 1;
+        assert!(!member_runtime_progress_matches(
+            &anchor,
+            &bound,
+            &changed_generation,
+            false
+        ));
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
     fn seed_host_conversation(
         store: &HarnessStore,
         created: &CreatedTeamRun,
@@ -44002,15 +47335,24 @@ package:com.tencent.mm
         // must stay possible afterwards.
         let (store, root) = temp_store("durable-close-reap");
         let created = create_two_member_team_run(&store);
-        let mut run = created.team_run;
+        let initial_run = created.team_run;
+        let mut run = initial_run.clone();
         run.status = TeamRunStatus::Running;
         run.updated_at = "unix-ms:2".into();
-        store.append_team_run(&run).expect("mark run running");
-        let mut member = created.member_runs[0].clone();
+        store
+            .compare_and_append_team_run_with_wave_status(
+                &initial_run,
+                &run,
+                WaveStatus::Running,
+                "unix-ms:2",
+            )
+            .expect("mark run running");
+        let initial_member = created.member_runs[0].clone();
+        let mut member = initial_member.clone();
         member.status = MemberRunStatus::Running;
         member.last_event_at = Some("unix-ms:2".into());
         store
-            .append_member_run(&member)
+            .compare_and_append_member_run(&initial_member, &member)
             .expect("mark member running");
 
         let result = close_team_member_value(

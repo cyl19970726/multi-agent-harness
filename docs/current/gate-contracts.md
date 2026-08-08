@@ -121,6 +121,10 @@ Work review 写入边界为当前候选派生的精确绑定，不接受任意 l
 绑定 Review 的 `reviewed_work_version` 必须大于 `0`；合法 Work 候选从
 version `1` 开始。Review ledger 是 append-only 审计历史，`Review.id`
 在完整历史中全局唯一；通用和 Work-bound 写入口都拒绝复用既有 id。
+可信 Work Review 还持久化 `command_idempotency_key`：同 key、同 Work/version、
+同 payload 与 actor 语义的重试返回原 Review 而不追加；同 key 的不同语义
+以及不同 key 复用既有 Review id 都会 fail closed。该字段只属于绑定的可信
+Work Review，通用或历史未绑定 Review 不得声明它。
 
 ### Review 执行者与权限归因
 
@@ -134,6 +138,15 @@ version `1` 开始。Review ledger 是 append-only 审计历史，`Review.id`
 固定为 `TeamActorKind::Host` / `host`，`reviewer_agent_id` 也固定为 `host`。
 CLI `--actor` 或 HTTP `actor_id` 只改变 `performed_by_actor` 的归因，不能
 修改 `authority_actor` 或冒充 reviewer 身份。
+
+peer/self 的 membership 只信 Store 的受约束写路径：初始 MemberRun id 必须
+由首个 TeamRun row 预声明；后续成员或更高 generation replacement 必须通过
+单锁 admission CAS 同时发布。普通 TeamRun revision 不能改变 `member_run_ids`，
+raw TeamRun/MemberRun append 对既有 id 只接受 exact duplicate；Host binding、
+lifecycle、durable-team link、member lifecycle 与 membership admission 分别走受约束
+CAS，MemberRun CAS 仍冻结 team、stable identity、role 与 provider provenance。
+这个 Store API 是进程内 authority boundary，不等同于 HTTP/MCP transport auth；
+外部 transport 仍必须在调用前完成自己的认证与权限检查。
 
 ### Execution Space 迁移的 Review 信任边界
 

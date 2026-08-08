@@ -1,0 +1,27 @@
+{
+  "id": "provider-request-1",
+  "team_run_id": "trun-1",
+  "sender": {
+    "kind": "member_run",
+    "id": "mrun-1",
+    "authn_source": "provider_reverse_rpc"
+  },
+  "from_member_id": "mrun-1",
+  "recipients": [{"kind": "host", "id": "host"}],
+  "to_member_ids": ["host"],
+  "kind": "provider_interaction_request",
+  "body": "{\"type\":\"question\",\"prompt\":\"Choose a path\",\"options\":[{\"id\":\"continue\",\"label\":\"Continue\",\"intent\":\"approve\"}],\"provider\":\"codex\",\"provider_request_id\":\"request-7\",\"method\":\"item/tool/requestUserInput\",\"session\":\"thread-9\",\"member\":\"mrun-1\",\"generation\":3}",
+  "correlation_id": "provider-interaction:5:codex:8:thread-9:request-7",
+  "response_intent": "response_required",
+  "deliveries": [
+    {
+      "member_id": "host",
+      "policy": "manual_ack",
+      "status": "delivered",
+      "attempt": 1,
+      "provider_receipt_id": "host-receipt-1",
+      "updated_at": "2026-08-08T00:00:01Z"
+    }
+  ],
+  "created_at": "2026-08-08T00:00:00Z"
+}
