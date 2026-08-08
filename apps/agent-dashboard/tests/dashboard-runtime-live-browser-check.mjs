@@ -149,9 +149,16 @@ await mkdir(harnessHome, { recursive: true });
 await mkdir(projectRoot, { recursive: true });
 const env = {
   ...process.env,
+  FIRM_HOME: harnessHome,
+  FIRM_COMPANY_OS_TOKEN: token,
   HARNESS_HOME: harnessHome,
   HARNESS_COMPANY_OS_TOKEN: token,
 };
+delete env.FIRM_ROOT;
+delete env.FIRM_PROJECT;
+delete env.FIRM_PROJECT_ID;
+delete env.FIRM_SPACE;
+delete env.FIRM_COMPANY;
 delete env.HARNESS_ROOT;
 delete env.HARNESS_PROJECT;
 delete env.HARNESS_PROJECT_ID;
