@@ -3,6 +3,7 @@
 //! An Execution Space owns coordination ledgers. It does not own provider cwd,
 //! Git state, project instructions, Skills, or Company OS truth.
 
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 use harness_core::ExecutionSpace;
@@ -101,6 +102,51 @@ pub fn active_space_path(firm_home: &Path) -> PathBuf {
     firm_home.join("ACTIVE_SPACE")
 }
 
+fn registry_lock_path(firm_home: &Path) -> PathBuf {
+    spaces_dir(firm_home).join(".registry.lock")
+}
+
+/// Exclusive advisory lock for execution-space registry and ACTIVE_SPACE
+/// mutations. The standard-library lock maps to `flock` on Unix and
+/// `LockFileEx` on Windows and is released on drop, including process exit.
+pub struct ExecutionSpaceRegistryLock {
+    file: File,
+    lock_path: PathBuf,
+}
+
+impl Drop for ExecutionSpaceRegistryLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+pub fn acquire_registry_lock(firm_home: &Path) -> ExecutionSpaceResult<ExecutionSpaceRegistryLock> {
+    std::fs::create_dir_all(spaces_dir(firm_home))?;
+    let lock_path = registry_lock_path(firm_home);
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    file.lock()?;
+    Ok(ExecutionSpaceRegistryLock { file, lock_path })
+}
+
+fn validate_registry_lock(
+    firm_home: &Path,
+    lock: &ExecutionSpaceRegistryLock,
+) -> ExecutionSpaceResult<()> {
+    if lock.lock_path == registry_lock_path(firm_home) {
+        Ok(())
+    } else {
+        Err(ExecutionSpaceError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "execution-space registry lock belongs to a different firm home",
+        )))
+    }
+}
+
 pub fn validate_space_id(id: &str) -> ExecutionSpaceResult<()> {
     if id.is_empty() || id == "." || id == ".." {
         return Err(ExecutionSpaceError::InvalidId(id.to_string()));
@@ -186,6 +232,28 @@ pub fn register_and_activate(
     company_id: Option<String>,
     now: &str,
 ) -> ExecutionSpaceResult<ExecutionSpace> {
+    let lock = acquire_registry_lock(firm_home)?;
+    register_and_activate_locked(
+        firm_home,
+        &lock,
+        id,
+        name,
+        default_project_binding_id,
+        company_id,
+        now,
+    )
+}
+
+pub fn register_and_activate_locked(
+    firm_home: &Path,
+    lock: &ExecutionSpaceRegistryLock,
+    id: &str,
+    name: &str,
+    default_project_binding_id: Option<String>,
+    company_id: Option<String>,
+    now: &str,
+) -> ExecutionSpaceResult<ExecutionSpace> {
+    validate_registry_lock(firm_home, lock)?;
     validate_space_id(id)?;
     let context = ExecutionSpace {
         id: id.to_string(),
@@ -223,6 +291,17 @@ pub fn switch_current_space(
     id: &str,
     now: &str,
 ) -> ExecutionSpaceResult<ExecutionSpace> {
+    let lock = acquire_registry_lock(firm_home)?;
+    switch_current_space_locked(firm_home, &lock, id, now)
+}
+
+pub fn switch_current_space_locked(
+    firm_home: &Path,
+    lock: &ExecutionSpaceRegistryLock,
+    id: &str,
+    now: &str,
+) -> ExecutionSpaceResult<ExecutionSpace> {
+    validate_registry_lock(firm_home, lock)?;
     let context = context_for_id(firm_home, id)?.ok_or_else(|| {
         ExecutionSpaceError::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -358,6 +437,34 @@ mod tests {
             active_space_id(&home).expect("active").as_deref(),
             Some("company-dev")
         );
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn registry_lock_serializes_mutations_across_file_handles() {
+        let home = temp_home("registry-lock");
+        let first = acquire_registry_lock(&home).expect("first registry lock");
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::sync_channel(0);
+        let other_home = home.clone();
+        let waiter = std::thread::spawn(move || {
+            started_tx.send(()).expect("announce lock attempt");
+            let second = acquire_registry_lock(&other_home).expect("second registry lock");
+            acquired_tx.send(()).expect("announce acquired lock");
+            drop(second);
+        });
+        started_rx.recv().expect("waiter started");
+        assert!(
+            acquired_rx
+                .recv_timeout(std::time::Duration::from_millis(100))
+                .is_err(),
+            "a second registry writer acquired the lock before the first released it"
+        );
+        drop(first);
+        acquired_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("waiter acquires after release");
+        waiter.join().expect("lock waiter");
         let _ = std::fs::remove_dir_all(home);
     }
 }

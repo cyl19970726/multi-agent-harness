@@ -81,6 +81,12 @@
       "type": "string",
       "enum": ["peer", "self", "host"]
     },
+    "performed_by_actor": {
+      "$ref": "#/$defs/actor"
+    },
+    "authority_actor": {
+      "$ref": "#/$defs/actor"
+    },
     "created_at": {
       "type": "string",
       "minLength": 1
@@ -99,5 +105,21 @@
     {
       "required": ["reviewed_work_id", "reviewed_work_version", "review_strategy"]
     }
-  ]
+  ],
+  "$defs": {
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["host", "member_run", "agent_member", "operator", "service"]
+        },
+        "id": { "type": "string", "minLength": 1, "pattern": "\\S" },
+        "display_name": { "type": ["string", "null"], "minLength": 1 },
+        "authn_source": { "type": ["string", "null"], "minLength": 1 }
+      }
+    }
+  }
 }

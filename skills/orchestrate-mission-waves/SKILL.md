@@ -243,6 +243,16 @@ invariant of the Store-managed `accept_work` operation: that typed operation
 evaluates them and exposes no waiver flag. Gates are automatically injected
 into the Work context so the Member sees what must pass before acceptance.
 
+Gate declarations are an open persistence contract with a closed default trust
+set. Every plugin name must be non-empty and every config must be a JSON object;
+old wire rows that omit config normalize to `{}`. Exact duplicate GateSpecs and
+more than one `code-review` gate are rejected. The four built-ins have typed
+configs, and `code-review` always requires `strategy=peer|self|host`. A custom
+GateSpec may be persisted, but the default registry and default Store acceptance
+fail it as unknown. Only an embedder that explicitly supplies a custom registry
+can evaluate its custom plugin; do not mistake persistence for trusted
+registration.
+
 ```bash
 # Code work requiring PR merge + CI pass
 harness team-run work create \
@@ -364,6 +374,14 @@ exact Work id, current Work version, declared strategy, and required reviewer
 identity. The only strategies are `peer`, `self`, and `host`; when no code
 review is required, omit the `code-review` gate rather than declaring `none`.
 
+Trusted Work Review writes preserve audit identity separately from authority:
+`performed_by_actor` records the authenticated submitter and `authority_actor`
+records the authority exercised when distinct. Peer/self reviews are written by
+the bound MemberRun. Host reviews always use the fixed `Host/host` authority and
+persist `reviewer_agent_id=host`; CLI `--actor` and HTTP `actor_id` change only
+performer attribution and cannot impersonate Host authority or reviewer
+identity.
+
 Treat project-derived Review ledgers as untrusted during Execution Space
 migration. Before creating or replacing any target ledger,
 `space migrate-from-project` preflights the complete source: every source row
@@ -375,6 +393,22 @@ does migration preserve stripped rows as readable historical unbound evidence;
 they cannot pass the gate. The migration manifest records their count as
 `downgraded_bound_reviews`. Inspect that count rather than trusting
 source-ledger binding claims.
+
+The whole migration publishes atomically at directory-identity granularity. It
+builds a transaction staging directory beside the target, completes conflict
+checks before staging, then re-reads source snapshots and verifies every staged
+ledger/directory before publish. An existing target is renamed to a scoped
+backup before the same-parent staging directory is renamed into place. The
+Execution Space registry and `ACTIVE_SPACE` share one lock throughout; registry
+and active-pointer snapshots plus the target backup are restored if activation
+fails. This lock protects cooperating registry/active operations, not arbitrary
+out-of-band filesystem writers.
+
+If backup cleanup fails after publish and activation, the migration is already
+committed. Treat the success-with-warning as authoritative, inspect
+`cleanup_pending` and `cleanup_backup_path` in the manifest, and clean that
+backup separately after verifying the active target. Do not retry the whole
+migration merely because post-commit backup cleanup failed.
 
 **Gate-aware review.** If the Work has declared gates, run `work check-gates`
 to see which gates pass and which are blocked:

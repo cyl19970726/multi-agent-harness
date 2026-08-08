@@ -5753,11 +5753,12 @@ fn kimi_provider_error_round_records_failure_without_fabricated_handoff_and_reco
     );
 }
 
-/// A prompt the provider rejects BEFORE any session/update was never accepted.
-/// Publishing a provider receipt for it would complete the Work delivery and
-/// burn the work before the provider accepted responsibility.
+/// A prompt the provider rejects before any prompt-scoped update was never
+/// accepted. A late session-level command-catalog notification must still be
+/// processed, but publishing a receipt for it would burn the Work before the
+/// provider accepted responsibility.
 #[test]
-fn kimi_prompt_rejected_before_any_update_never_burns_the_work() {
+fn kimi_prompt_rejected_before_any_prompt_update_never_burns_the_work() {
     let home = TempHome::new("team-run-kimi-reject-before-update");
     let _project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
@@ -5775,6 +5776,7 @@ fn kimi_prompt_rejected_before_any_update_never_burns_the_work() {
                 "FAKE_KIMI_REJECT_BEFORE_UPDATE_MARKER",
                 reject_once_value.as_str(),
             ),
+            ("FAKE_KIMI_LATE_AVAILABLE_BEFORE_REJECT", "1"),
             ("FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS", "30000"),
         ],
     );
@@ -5851,10 +5853,15 @@ fn kimi_prompt_rejected_before_any_update_never_burns_the_work() {
         .find(|delivery| delivery["work_id"].as_str() == Some(work_id.as_str()))
         .cloned()
         .expect("Work delivery");
-    assert_ne!(
+    assert_eq!(
         work_delivery["status"].as_str(),
-        Some("provider_received"),
-        "a rejected prompt must not complete the Work delivery: {work_delivery}"
+        Some("claimed"),
+        "a rejected prompt must leave the Work delivery claimed and replayable: {work_delivery}"
+    );
+    assert_eq!(
+        work_delivery["attempt"].as_u64(),
+        Some(1),
+        "a rejected prompt must not advance the delivery attempt: {work_delivery}"
     );
     assert!(
         work_delivery["provider_receipt_id"].is_null(),
@@ -5867,11 +5874,12 @@ fn kimi_prompt_rejected_before_any_update_never_burns_the_work() {
             .flatten()
             .any(|event| {
                 event["entity_id"].as_str() == Some(work_id.as_str())
-                    && event["summary"]
-                        .as_str()
-                        .is_some_and(|summary| summary.contains("accepted by provider"))
+                    && event["summary"].as_str().is_some_and(|summary| {
+                        summary.contains("accepted by provider")
+                            || summary.contains("provider_received")
+                    })
             }),
-        "a rejected prompt must not journal `Work accepted by provider`: {}",
+        "a rejected prompt must not journal accepted/provider_received: {}",
         snapshot["team_run_events"]
     );
 }

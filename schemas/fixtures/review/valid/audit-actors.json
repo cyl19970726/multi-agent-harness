@@ -1,0 +1,16 @@
+{
+  "id": "review-audit-1",
+  "task_id": null,
+  "goal_id": null,
+  "reviewer_agent_id": "host",
+  "review_kind": "code_review",
+  "verdict": "pass",
+  "summary": "The operator submitted a Review under explicit Host authority.",
+  "blockers": [],
+  "residual_risk": null,
+  "missing_validation": [],
+  "evidence_ids": [],
+  "performed_by_actor": { "kind": "operator", "id": "operator-1", "authn_source": "local-session" },
+  "authority_actor": { "kind": "host", "id": "host" },
+  "created_at": "2026-08-08T00:00:00Z"
+}

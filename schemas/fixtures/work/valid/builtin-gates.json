@@ -11,8 +11,6 @@
   "gates": [
     { "plugin": "github-pr", "config": {} },
     { "plugin": "code-review", "config": { "strategy": "peer", "reviewer": "critic-1" } },
-    { "plugin": "code-review", "config": { "strategy": "self" } },
-    { "plugin": "code-review", "config": { "strategy": "host" } },
     { "plugin": "artifact-exists", "config": {} },
     { "plugin": "artifact-exists", "config": { "paths": ["docs/report.md", "artifacts/run.log"] } },
     { "plugin": "check-pass", "config": {} },

@@ -1238,6 +1238,15 @@ pub struct Review {
     pub missing_validation: Vec<String>,
     pub evidence_ids: Vec<String>,
     pub created_at: String,
+    /// Authenticated actor that physically submitted this Review record.
+    /// Historical Review rows predate this audit field and deserialize as
+    /// `None`; gate authority remains defined by the bound review fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub performed_by_actor: Option<TeamActorRef>,
+    /// Actor whose authority was exercised when it differs from the transport
+    /// actor (for example, an operator acting as Host).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_actor: Option<TeamActorRef>,
     /// Exact Work candidate reviewed. These three fields are optional only for
     /// compatibility with historical, unbound Review rows and must be present
     /// together for a Review to satisfy a Work gate.
@@ -1265,6 +1274,10 @@ struct ReviewWire {
     evidence_ids: Vec<String>,
     created_at: String,
     #[serde(default)]
+    performed_by_actor: Option<TeamActorRef>,
+    #[serde(default)]
+    authority_actor: Option<TeamActorRef>,
+    #[serde(default)]
     reviewed_work_id: Option<String>,
     #[serde(default)]
     reviewed_work_version: Option<u64>,
@@ -1285,6 +1298,8 @@ impl<'de> Deserialize<'de> for Review {
             "reviewed_work_id",
             "reviewed_work_version",
             "review_strategy",
+            "performed_by_actor",
+            "authority_actor",
         ] {
             if object.get(field).is_some_and(serde_json::Value::is_null) {
                 return Err(serde::de::Error::custom(format!(
@@ -1306,6 +1321,8 @@ impl<'de> Deserialize<'de> for Review {
             missing_validation: wire.missing_validation,
             evidence_ids: wire.evidence_ids,
             created_at: wire.created_at,
+            performed_by_actor: wire.performed_by_actor,
+            authority_actor: wire.authority_actor,
             reviewed_work_id: wire.reviewed_work_id,
             reviewed_work_version: wire.reviewed_work_version,
             review_strategy: wire.review_strategy,
@@ -1659,6 +1676,12 @@ impl Validate for Review {
         require_non_empty(self.verdict.as_str(), "Review.verdict")?;
         require_non_empty(&self.summary, "Review.summary")?;
         require_non_empty(&self.created_at, "Review.created_at")?;
+        if let Some(actor) = &self.performed_by_actor {
+            require_non_empty(&actor.id, "Review.performed_by_actor.id")?;
+        }
+        if let Some(actor) = &self.authority_actor {
+            require_non_empty(&actor.id, "Review.authority_actor.id")?;
+        }
         match (
             self.reviewed_work_id.as_deref(),
             self.reviewed_work_version,
@@ -3505,19 +3528,65 @@ pub enum BuiltinGateConfig {
 ///
 /// The `plugin` field names a registered gate implementation. The `config`
 /// payload is plugin-specific (e.g. `{"require_merged": true}` for github-pr).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GateSpec {
     /// Built-in gate identifier: "github-pr" | "code-review" |
     /// "check-pass" | "artifact-exists".
     pub plugin: String,
-    /// Plugin-specific configuration. Store-managed Work accepts only the
-    /// typed built-ins above; custom registries remain available to embedders.
-    #[serde(default)]
+    /// Plugin-specific configuration. An omitted configuration is normalized
+    /// to `{}` while deserializing so old wire records have one canonical
+    /// in-memory and re-serialized representation.
     pub config: serde_json::Value,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GateSpecWire {
+    plugin: String,
+    #[serde(default = "empty_gate_config")]
+    config: serde_json::Value,
+}
+
+fn empty_gate_config() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
+}
+
+impl<'de> Deserialize<'de> for GateSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = GateSpecWire::deserialize(deserializer)?;
+        Ok(Self {
+            plugin: wire.plugin,
+            config: wire.config,
+        })
+    }
+}
+
 impl GateSpec {
+    /// Validate the common wire contract and, for built-ins, their typed
+    /// configuration. Unknown non-empty plugin names are valid declarations:
+    /// the default registry still evaluates them fail-closed, while embedders
+    /// may supply an explicit custom registry.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.plugin.trim().is_empty() {
+            return Err("gate plugin must be non-empty".to_string());
+        }
+        if !self.config.is_object() {
+            return Err(format!(
+                "gate '{}' config must be a JSON object",
+                self.plugin
+            ));
+        }
+        match self.plugin.as_str() {
+            "github-pr" | "code-review" | "artifact-exists" | "check-pass" => {
+                self.validate_builtin()
+            }
+            _ => Ok(()),
+        }
+    }
+
     pub fn parse_builtin_config(&self) -> Result<BuiltinGateConfig, String> {
         if !self.config.is_object() {
             return Err(format!(
@@ -3606,6 +3675,28 @@ fn validate_optional_names(values: Option<&[String]>, field: &str) -> Result<(),
         }
         if !seen.insert(value) {
             return Err(format!("{field} must not contain duplicate values"));
+        }
+    }
+    Ok(())
+}
+
+/// Validate a complete gate declaration list before it is attached to Work.
+/// This is the construction-time companion to [`Work::validate_gates`].
+pub fn validate_gate_specs(gates: &[GateSpec]) -> Result<(), String> {
+    let mut code_review_count = 0usize;
+    for (index, gate) in gates.iter().enumerate() {
+        gate.validate()?;
+        if gate.plugin == "code-review" {
+            code_review_count += 1;
+            if code_review_count > 1 {
+                return Err("Work must not declare more than one code-review gate".to_string());
+            }
+        }
+        if gates[..index].contains(gate) {
+            return Err(format!(
+                "Work must not declare an exact duplicate gate: {}",
+                gate.plugin
+            ));
         }
     }
     Ok(())
@@ -3728,6 +3819,19 @@ impl GateEngine {
         reviews: &[Review],
         registry: &GateRegistry,
     ) -> Vec<GateResult> {
+        if let Err(reason) = work.validate_gates() {
+            return work
+                .gates
+                .iter()
+                .cloned()
+                .map(|gate| GateResult {
+                    gate,
+                    verdict: GateVerdict::Fail {
+                        reason: reason.clone(),
+                    },
+                })
+                .collect();
+        }
         work.gates
             .iter()
             .map(|gate| GateResult {
@@ -4015,6 +4119,16 @@ pub struct Work {
 }
 
 impl Work {
+    /// Validate declared gates as one Work-level contract.
+    ///
+    /// Gate order is meaningful for reporting, but exact duplicate specs are
+    /// never meaningful and make acceptance evidence ambiguous. Code review
+    /// is a single authoritative decision stream, so at most one declaration
+    /// is allowed even when two declarations use different strategies.
+    pub fn validate_gates(&self) -> Result<(), String> {
+        validate_gate_specs(&self.gates)
+    }
+
     pub fn is_terminal(&self) -> bool {
         matches!(self.status, WorkStatus::Done | WorkStatus::Cancelled)
     }
@@ -5028,6 +5142,8 @@ mod tests {
             missing_validation: vec!["load test deferred".to_string()],
             evidence_ids: vec!["evidence-1".to_string()],
             created_at: "2026-05-26T00:00:00Z".to_string(),
+            performed_by_actor: None,
+            authority_actor: None,
             reviewed_work_id: None,
             reviewed_work_version: None,
             review_strategy: None,
@@ -5039,6 +5155,8 @@ mod tests {
         assert_eq!(parsed, review);
         assert!(parsed.validate().is_ok());
         assert!(!json.contains("reviewed_work_id"));
+        assert!(!json.contains("performed_by_actor"));
+        assert!(!json.contains("authority_actor"));
         // Canonical verdict serializes to its snake_case wire value.
         assert!(json.contains("\"verdict\":\"pass\""));
     }
@@ -5068,11 +5186,58 @@ mod tests {
             .expect_err("schema-forbidden null binding must fail at runtime too");
         assert!(error.to_string().contains("must not be null"));
 
+        let mut explicit_null_actor = base.clone();
+        explicit_null_actor["performed_by_actor"] = serde_json::Value::Null;
+        let error = serde_json::from_value::<Review>(explicit_null_actor)
+            .expect_err("schema-forbidden null audit actor must fail at runtime too");
+        assert!(error.to_string().contains("must not be null"));
+
         let mut unknown = base;
         unknown["unexpected"] = serde_json::json!(true);
         let error = serde_json::from_value::<Review>(unknown)
             .expect_err("schema-forbidden extra fields must fail at runtime too");
         assert!(error.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn review_audit_actors_round_trip_and_validate_non_empty_ids() {
+        let value = serde_json::json!({
+            "id": "review-audit",
+            "task_id": null,
+            "goal_id": null,
+            "reviewer_agent_id": "host",
+            "review_kind": "code",
+            "verdict": "pass",
+            "summary": "reviewed",
+            "blockers": [],
+            "residual_risk": null,
+            "missing_validation": [],
+            "evidence_ids": [],
+            "created_at": "unix-ms:1",
+            "performed_by_actor": {"kind": "operator", "id": "operator-1"},
+            "authority_actor": {"kind": "host", "id": "host"}
+        });
+        let review: Review = serde_json::from_value(value).expect("audit actor wire");
+        assert!(review.validate().is_ok());
+        let serialized = serde_json::to_value(&review).expect("serialize audit actors");
+        let reparsed: Review = serde_json::from_value(serialized).expect("round-trip audit actors");
+        assert_eq!(reparsed, review);
+        assert_eq!(
+            review
+                .performed_by_actor
+                .as_ref()
+                .expect("performed actor")
+                .id,
+            "operator-1"
+        );
+
+        let mut invalid = review;
+        invalid
+            .performed_by_actor
+            .as_mut()
+            .expect("performed actor")
+            .id = "  ".to_string();
+        assert!(invalid.validate().is_err());
     }
 
     #[test]
@@ -5092,6 +5257,8 @@ mod tests {
             missing_validation: vec![],
             evidence_ids: vec![],
             created_at: "2026-05-26T00:00:00Z".to_string(),
+            performed_by_actor: None,
+            authority_actor: None,
             reviewed_work_id: None,
             reviewed_work_version: None,
             review_strategy: None,
@@ -6756,6 +6923,106 @@ mod tests {
     }
 
     #[test]
+    fn old_wire_gate_without_config_normalizes_to_empty_object() {
+        for plugin in [
+            "github-pr",
+            "artifact-exists",
+            "check-pass",
+            "custom-policy",
+        ] {
+            let gate: GateSpec = serde_json::from_value(serde_json::json!({
+                "plugin": plugin
+            }))
+            .expect("old wire gate remains readable");
+            assert_eq!(gate.config, serde_json::json!({}));
+            assert_eq!(
+                serde_json::to_value(&gate).expect("canonical serialization"),
+                serde_json::json!({"plugin": plugin, "config": {}})
+            );
+            assert!(gate.validate().is_ok());
+        }
+
+        let code_review: GateSpec = serde_json::from_value(serde_json::json!({
+            "plugin": "code-review"
+        }))
+        .expect("old wire shape deserializes before semantic validation");
+        assert_eq!(code_review.config, serde_json::json!({}));
+        assert!(
+            code_review.validate().is_err(),
+            "code-review still requires an explicit strategy"
+        );
+    }
+
+    #[test]
+    fn custom_gate_config_is_preserved_and_requires_explicit_registry_to_pass() {
+        let gate: GateSpec = serde_json::from_value(serde_json::json!({
+            "plugin": "custom-policy",
+            "config": {"threshold": 2, "labels": ["trusted"]}
+        }))
+        .expect("custom object config is valid wire data");
+        assert!(gate.validate().is_ok());
+        assert_eq!(gate.config["threshold"], 2);
+        assert!(GateSpec {
+            plugin: "custom-policy".into(),
+            config: serde_json::Value::Null,
+        }
+        .validate()
+        .is_err());
+
+        let work = make_work(vec![gate.clone()], vec![]);
+        assert!(matches!(
+            GateEngine::evaluate_work_gates(&work)[0].verdict,
+            GateVerdict::Fail { .. }
+        ));
+
+        let mut registry = GateRegistry::default();
+        registry.register("custom-policy", |_gate, _work, _reviews| GateVerdict::Pass);
+        assert!(
+            GateEngine::evaluate_work_gates_with_registry(&work, &[], &registry)[0]
+                .verdict
+                .is_pass()
+        );
+    }
+
+    #[test]
+    fn work_gate_validation_rejects_exact_duplicates_and_multiple_code_reviews() {
+        let artifact = GateSpec {
+            plugin: "artifact-exists".into(),
+            config: serde_json::json!({}),
+        };
+        let duplicate = make_work(vec![artifact.clone(), artifact], vec![]);
+        assert!(duplicate.validate_gates().is_err());
+        assert!(GateEngine::evaluate_work_gates(&duplicate)
+            .iter()
+            .all(|result| matches!(result.verdict, GateVerdict::Fail { .. })));
+
+        let old_wire_equivalent: Vec<GateSpec> = serde_json::from_value(serde_json::json!([
+            {"plugin": "check-pass"},
+            {"plugin": "check-pass", "config": {}}
+        ]))
+        .expect("old and canonical wire shapes deserialize");
+        assert!(validate_gate_specs(&old_wire_equivalent).is_err());
+
+        let multiple_reviews = make_work(
+            vec![
+                GateSpec {
+                    plugin: "code-review".into(),
+                    config: serde_json::json!({"strategy": "self"}),
+                },
+                GateSpec {
+                    plugin: "code-review".into(),
+                    config: serde_json::json!({"strategy": "host"}),
+                },
+            ],
+            vec![],
+        );
+        assert!(multiple_reviews.validate_gates().is_err());
+        assert!(GateEngine::evaluate_work_gates(&multiple_reviews)
+            .iter()
+            .all(|result| matches!(result.verdict, GateVerdict::Fail { .. })));
+    }
+
+    #[test]
     fn built_in_gate_configs_reject_unknown_keys_wrong_types_and_empty_values() {
         let invalid = [
             GateSpec {
@@ -6865,6 +7132,8 @@ mod tests {
             missing_validation: vec![],
             evidence_ids: vec![],
             created_at: "unix-ms:10".to_string(),
+            performed_by_actor: None,
+            authority_actor: None,
             reviewed_work_id: Some(work_id.to_string()),
             reviewed_work_version: Some(1),
             review_strategy: Some(CodeReviewStrategy::Peer),

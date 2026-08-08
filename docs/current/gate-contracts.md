@@ -58,15 +58,26 @@ GateEngine 只读当前 Work 候选和精确绑定的 Review。它不启动 agen
 
 ```rust
 struct GateSpec {
-    // "github-pr" | "code-review" | "check-pass" | "artifact-exists"
+    // 非空 built-in 或 custom plugin name
     plugin: String,
-    // 内建 Gate 的字段受类型配置和 deny_unknown_fields 约束
+    // 必须是 JSON object；旧 wire 省略时规范化为 {}
     config: serde_json::Value,
 }
 ```
 
-Store-managed Work 只接受上述四种类型内建 Gate。`GateRegistry` 的显式注册 seam
-可供 embedder 和测试使用，但不是 Store 的未类型逃生口。
+Work 可持久化 custom Gate，前提是 `plugin` 非空且 `config` 是 object。
+四种 built-in 的 config 还受各自的类型结构和 `deny_unknown_fields` 约束；
+`code-review.strategy` 仍然必填。旧 wire 省略 `config` 时，反序列化统一
+规范化为 `{}`，因此它与显式空 object 是同一个声明。
+
+完整 Gate 列表 fail closed：精确重复的 `GateSpec` 被拒绝，且一个 Work
+最多声明一个 `code-review` Gate。同 plugin 的不同 custom config 不是
+“精确重复”，但仍需有明确 evaluator 语义。
+
+默认 `GateRegistry` 只信任四种 built-in。因此 custom Gate 可持久化，
+但默认 GateEngine 和默认 Store `accept_work` 会对未注册 plugin 返回
+`Fail`。只有显式提供 custom `GateRegistry` 的 embedder 评估入口才能
+调用 custom evaluator；这不会暗中改变默认 Store 的信任集。
 
 ### GateVerdict
 
@@ -108,6 +119,18 @@ Verdict 不是 Work 状态。`Fail` / `Blocked` 会让 Store 拒绝 accept，
 Work review 写入边界为当前候选派生的精确绑定，不接受任意 ledger 字段声明。
 重新 submit 会产生新 Work version，旧候选的 Review 不再匹配。
 
+### Review 执行者与权限归因
+
+可信 Work review 写入会持久化两个不同概念：
+
+- `performed_by_actor`：实际提交 Review 的认证 actor。
+- `authority_actor`：实际使用的权限 actor；与执行者相同时可为空。
+
+`peer` / `self` 由绑定 MemberRun 身份执行。`host` Review 的可信权限
+固定为 `TeamActorKind::Host` / `host`，`reviewer_agent_id` 也固定为 `host`。
+CLI `--actor` 或 HTTP `actor_id` 只改变 `performed_by_actor` 的归因，不能
+修改 `authority_actor` 或冒充 reviewer 身份。
+
 ### Execution Space 迁移的 Review 信任边界
 
 `space migrate-from-project` 不信任原项目 `reviews.jsonl` 中的 Work 绑定声明。
@@ -127,6 +150,23 @@ Work review 写入边界为当前候选派生的精确绑定，不接受任意 l
 `code-review` Gate。迁移 manifest 用 `downgraded_bound_reviews` 记录
 受影响的 Review 行数；运营者应检查此计数，而不应将原始 ledger
 视为 Gate 信任来源。
+
+整个 Execution Space 迁移使用与 target 同 parent 的 staging directory，
+以便通过 rename 发布同一文件系统上的目录身份。在创建 staging 前，
+它完成所有 source 读取、类型变换和 target conflict 检查；在发布前，
+它重读 source 快照并验证 staged ledger/directory，同时再检查 target
+的存在性和类型。已有 target 会先 rename 为 transaction-scoped backup，
+然后 staging 才发布到 target。
+
+迁移在 Execution Space registry/`ACTIVE_SPACE` 的共享锁下执行。发布前会
+快照 registry 和 `ACTIVE_SPACE`；如果 activation 失败，则恢复 target backup
+与这两个指针。这保护了 CLI 共享 registry/active 路径，不声称能阻止
+锁外进程直接修改文件系统。
+
+发布和 activation 成功后，backup cleanup 失败不回滚已提交迁移：
+命令仍是 committed success，输出 warning，并尽力在 manifest 写入
+`cleanup_pending: true` 和 `cleanup_backup_path`。此时不应重试整个迁移；
+应核对 manifest/active target 后单独清理该 backup。
 
 ```json
 { "plugin": "code-review", "config": { "strategy": "peer", "reviewer": "critic-1" } }
@@ -191,10 +231,14 @@ Store 已实现的精确绑定和接受不变量。
 
 - [x] 四种类型 built-in Gate
 - [x] GateEngine 和 embedder/test `GateRegistry` seam
+- [x] custom Gate 持久化、旧 wire `{}` 规范化与默认 Store fail-closed
+- [x] 精确重复 Gate 与多个 `code-review` Gate 拒绝
 - [x] 当前候选的精确 durable ref / Review 绑定
+- [x] Review performer/authority 持久化与固定 Host review authority
 - [x] Store `accept_work` 最终入口强制 Gate 检查
 - [x] CLI 拒绝已退役的 `--skip-gates`
 - [x] Execution Space 迁移降级原项目 ledger 的 Review 绑定并记录计数
+- [x] same-parent staging、backup publish、shared registry lock 与 activation rollback
 
 ### Phase 3：Agent 管线（部分完成）
 

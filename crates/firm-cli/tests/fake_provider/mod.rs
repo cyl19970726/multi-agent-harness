@@ -130,7 +130,9 @@ while IFS= read -r line; do
       ;;
     *'"method":"session/new"'*)
       printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"%s","configOptions":[{"type":"select","id":"model","currentValue":"k2.5","options":[{"value":"k2.5","name":"K2.5"},{"value":"qwen/qwen3.8-max","name":"Qwen 3.8 Max"}]},{"type":"select","id":"thinking","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"}]}]}}\n' "$id" "$session_id"
-      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"available_commands_update","availableCommands":[]}}}\n' "$session_id"
+      if [ "${FAKE_KIMI_LATE_AVAILABLE_BEFORE_REJECT:-0}" != "1" ]; then
+        printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"available_commands_update","availableCommands":[]}}}\n' "$session_id"
+      fi
       ;;
     *'"method":"session/load"'*)
       session_id=$(printf '%s' "$line" | sed -n 's/.*"sessionId":"\([^"]*\)".*/\1/p')
@@ -207,9 +209,14 @@ while IFS= read -r line; do
         continue
       fi
       if [ -n "${FAKE_KIMI_REJECT_BEFORE_UPDATE_MARKER:-}" ] && [ ! -e "${FAKE_KIMI_REJECT_BEFORE_UPDATE_MARKER}" ]; then
-        # Immediate non-retryable rejection with NO preceding session/update:
-        # the provider never accepted the prompt, so Harness must not publish
-        # a provider receipt for it and must leave the delivery replayable.
+        # A late session-scoped update can race out after session creation but
+        # is not evidence that this prompt was accepted. The opt-in branch
+        # makes that wire order deterministic for the receipt regression.
+        if [ "${FAKE_KIMI_LATE_AVAILABLE_BEFORE_REJECT:-0}" = "1" ]; then
+          printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"available_commands_update","availableCommands":[]}}}\n' "$session_id"
+        fi
+        # Immediate non-retryable rejection with no prompt-scoped update: the
+        # provider never accepted the prompt, so Harness must leave replayable.
         : > "${FAKE_KIMI_REJECT_BEFORE_UPDATE_MARKER}"
         printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"provider API 429: rate limited before the turn started"}}\n' "$id"
         continue

@@ -14,17 +14,17 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
     build_launch_spec, content_hash_hex16, resolve_team_host_authority,
-    validate_agent_team_topology, validate_host_authority_cutover, AgentEvent, AgentMember,
-    AgentMemberStatus, AgentMessageRoute, AgentProviderConfig, AgentRuntime, AgentRuntimeHealth,
-    AgentRuntimeStatus, AgentTeam, AgentTeamRun, AgentTeamStatus, DelegationRun,
-    DurableAgentMember, DurableAgentMemberStatus, Evidence, ExecutionSpace, GateEngine, GateSpec,
-    GitHubLink, GitHubLinkKind, HostAttention, HostAttentionStatus, HostControlMode,
-    HostDispatchConfig, LaunchMcp, LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus,
-    MemberCoordinationStatus, MemberExecutionDriver, MemberRun, MemberRunStatus,
-    MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus, MessageKind,
-    MessageTerminalSource, Mission, MissionLogEntry, MissionLogEntryKind, MissionStatus,
-    NativeSessionAvailability, NativeSessionRef, OrdinaryMessageBoundary, PendingInteraction,
-    PendingInteractionKind, PendingInteractionOption, PendingInteractionRoute,
+    validate_agent_team_topology, validate_gate_specs, validate_host_authority_cutover, AgentEvent,
+    AgentMember, AgentMemberStatus, AgentMessageRoute, AgentProviderConfig, AgentRuntime,
+    AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamRun, AgentTeamStatus,
+    DelegationRun, DurableAgentMember, DurableAgentMemberStatus, Evidence, ExecutionSpace,
+    GateEngine, GateSpec, GitHubLink, GitHubLinkKind, HostAttention, HostAttentionStatus,
+    HostControlMode, HostDispatchConfig, LaunchMcp, LaunchPermission, LaunchSpec, MemberAction,
+    MemberActionStatus, MemberCoordinationStatus, MemberExecutionDriver, MemberRun,
+    MemberRunStatus, MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus,
+    MessageKind, MessageTerminalSource, Mission, MissionLogEntry, MissionLogEntryKind,
+    MissionStatus, NativeSessionAvailability, NativeSessionRef, OrdinaryMessageBoundary,
+    PendingInteraction, PendingInteractionKind, PendingInteractionOption, PendingInteractionRoute,
     PendingInteractionStatus, ProjectContext, ProjectKind, ProviderAccountRef,
     ProviderCapabilities, ProviderCapacityConfidence, ProviderCapacityEvidence,
     ProviderCapacitySnapshot, ProviderCapacityState, ProviderCompatibilityStatus,
@@ -905,6 +905,382 @@ const EXECUTION_LEDGER_NAMES: &[&str] = &[
 ];
 
 fn execution_space_migrate_from_project(firm_home: &Path, args: &[String]) -> CliResult<()> {
+    let registry_lock =
+        execution_space::acquire_registry_lock(firm_home).map_err(execution_space_err)?;
+    execution_space_migrate_from_project_with_activate(
+        firm_home,
+        args,
+        &registry_lock,
+        |firm_home, id, name, project_binding_id, now| {
+            execution_space::register_and_activate_locked(
+                firm_home,
+                &registry_lock,
+                id,
+                name,
+                Some(project_binding_id.to_string()),
+                None,
+                now,
+            )
+        },
+    )
+}
+
+#[derive(Debug)]
+struct ExecutionLedgerMigrationPlan {
+    name: &'static str,
+    source: PathBuf,
+    source_bytes: Vec<u8>,
+    migration_bytes: Vec<u8>,
+    record_count: u64,
+    downgraded_bound_reviews: u64,
+    replace_target: bool,
+}
+
+#[derive(Debug)]
+struct ExecutionDirectoryMigrationPlan {
+    name: &'static str,
+    source: PathBuf,
+    source_snapshot: Vec<(PathBuf, Vec<u8>)>,
+    replace_target: bool,
+}
+
+#[derive(Debug)]
+enum RawFileSnapshot {
+    Missing,
+    Present(Vec<u8>),
+}
+
+fn snapshot_raw_file(path: &Path) -> CliResult<RawFileSnapshot> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(RawFileSnapshot::Present(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(RawFileSnapshot::Missing),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn write_raw_file_atomically(path: &Path, bytes: &[u8]) -> CliResult<()> {
+    let parent = path.parent().ok_or_else(|| {
+        CliError::Usage(format!(
+            "cannot atomically write path without parent: {}",
+            path.display()
+        ))
+    })?;
+    std::fs::create_dir_all(parent)?;
+    let temporary = parent.join(format!(
+        ".{}.restore-{}",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("state"),
+        generated_id("tmp")
+    ));
+    let write_result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()
+    })();
+    if let Err(error) = write_result {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error.into());
+    }
+
+    if let Err(error) = replace_raw_file(path, &temporary) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_raw_file(path: &Path, replacement: &Path) -> std::io::Result<()> {
+    // POSIX rename replaces an existing non-directory destination atomically.
+    std::fs::rename(replacement, path)
+}
+
+#[cfg(windows)]
+fn replace_raw_file(path: &Path, replacement: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "Kernel32")]
+    unsafe extern "system" {
+        fn ReplaceFileW(
+            replaced_file_name: *const u16,
+            replacement_file_name: *const u16,
+            backup_file_name: *const u16,
+            replace_flags: u32,
+            exclude: *mut std::ffi::c_void,
+            reserved: *mut std::ffi::c_void,
+        ) -> i32;
+    }
+
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // A destination that did not exist needs no replacement semantics.
+            // rename is atomic and fails safely if another writer creates it.
+            std::fs::rename(replacement, path)
+        }
+        Err(error) => Err(error),
+        Ok(_) => {
+            let replaced: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+            let replacement: Vec<u16> = replacement
+                .as_os_str()
+                .encode_wide()
+                .chain(Some(0))
+                .collect();
+            // ReplaceFileW is the Windows replace-existing primitive: on
+            // failure the old destination remains available, and on success
+            // readers observe the replacement without a delete-first gap.
+            let result = unsafe {
+                ReplaceFileW(
+                    replaced.as_ptr(),
+                    replacement.as_ptr(),
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            };
+            if result == 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
+fn restore_raw_file(path: &Path, snapshot: &RawFileSnapshot) -> CliResult<()> {
+    match snapshot {
+        RawFileSnapshot::Present(bytes) => write_raw_file_atomically(path, bytes),
+        RawFileSnapshot::Missing => match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        },
+    }
+}
+
+fn snapshot_directory_files(root: &Path) -> CliResult<Vec<(PathBuf, Vec<u8>)>> {
+    match std::fs::symlink_metadata(root) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => {
+            return Err(CliError::Usage(format!(
+                "execution migration refuses symbolic links or special files: {}",
+                root.display()
+            )))
+        }
+        Err(error) => return Err(error.into()),
+    }
+    directory_file_index(root)?
+        .into_iter()
+        .map(|relative| {
+            let bytes = std::fs::read(root.join(&relative))?;
+            Ok((relative, bytes))
+        })
+        .collect()
+}
+
+fn ensure_real_migration_source_ancestors(store_root: &Path, source: &Path) -> CliResult<()> {
+    let relative = source.strip_prefix(store_root).map_err(|_| {
+        CliError::Usage(format!(
+            "execution migration source escapes its store root: {}",
+            source.display()
+        ))
+    })?;
+    match std::fs::symlink_metadata(store_root) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => {
+            return Err(CliError::Usage(format!(
+                "execution migration refuses symbolic links or special source ancestors: {}",
+                store_root.display()
+            )))
+        }
+        Err(error) => return Err(error.into()),
+    }
+    let mut current = store_root.to_path_buf();
+    let parent = relative.parent().unwrap_or_else(|| Path::new(""));
+    for component in parent.components() {
+        current.push(component.as_os_str());
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_dir() => {}
+            Ok(_) => {
+                return Err(CliError::Usage(format!(
+                    "execution migration refuses symbolic links or special source ancestors: {}",
+                    current.display()
+                )))
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+fn copy_dir_recursive_strict(src: &Path, dst: &Path) -> CliResult<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        let target = dst.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            copy_dir_recursive_strict(&path, &target)?;
+        } else if file_type.is_file() {
+            std::fs::copy(&path, &target)?;
+        } else {
+            return Err(CliError::Usage(format!(
+                "execution migration refuses symbolic links or special files: {}",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn verify_directory_snapshot(root: &Path, expected: &[(PathBuf, Vec<u8>)]) -> CliResult<bool> {
+    Ok(snapshot_directory_files(root)? == expected)
+}
+
+fn migration_error_after_staging_cleanup(
+    error: impl std::fmt::Display,
+    staging: &Path,
+) -> CliError {
+    let cleanup_error = if staging.exists() {
+        std::fs::remove_dir_all(staging).err()
+    } else {
+        None
+    };
+    CliError::Usage(match cleanup_error {
+        Some(cleanup_error) => format!(
+            "{error}; staging cleanup also failed at {}: {cleanup_error}",
+            staging.display()
+        ),
+        None => error.to_string(),
+    })
+}
+
+fn rollback_execution_space_migration(
+    target: &Path,
+    displaced_target: Option<&Path>,
+    failed_target: &Path,
+    registry_path: &Path,
+    registry_snapshot: &RawFileSnapshot,
+    active_path: &Path,
+    active_snapshot: &RawFileSnapshot,
+) -> Result<(), String> {
+    let mut errors = Vec::new();
+    let mut directory_restored = false;
+
+    if target.exists() {
+        if failed_target.exists() {
+            if let Err(error) = std::fs::remove_dir_all(failed_target) {
+                errors.push(format!(
+                    "could not clear failed-target staging {}: {error}",
+                    failed_target.display()
+                ));
+            }
+        }
+        if !failed_target.exists() {
+            match std::fs::rename(target, failed_target) {
+                Ok(()) => directory_restored = true,
+                Err(error) => errors.push(format!(
+                    "could not move new target {} aside to {}: {error}",
+                    target.display(),
+                    failed_target.display()
+                )),
+            }
+        }
+    } else {
+        directory_restored = true;
+    }
+
+    if directory_restored {
+        if let Some(backup) = displaced_target {
+            if let Err(error) = std::fs::rename(backup, target) {
+                directory_restored = false;
+                errors.push(format!(
+                    "could not restore displaced target {} to {}: {error}",
+                    backup.display(),
+                    target.display()
+                ));
+            }
+        }
+    }
+
+    // Restore pointers only after the directory identity has been restored. If
+    // directory rollback itself fails, retaining the newly registered pointers
+    // is less inconsistent than pointing them at a target we could not recover.
+    if directory_restored {
+        if let Err(error) = restore_raw_file(registry_path, registry_snapshot) {
+            errors.push(format!(
+                "could not restore execution-space registry: {error}"
+            ));
+        }
+        if let Err(error) = restore_raw_file(active_path, active_snapshot) {
+            errors.push(format!("could not restore ACTIVE_SPACE: {error}"));
+        }
+        if failed_target.exists() {
+            if let Err(error) = std::fs::remove_dir_all(failed_target) {
+                errors.push(format!(
+                    "could not clean failed migrated target {}: {error}",
+                    failed_target.display()
+                ));
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+fn execution_space_migrate_from_project_with_activate<F>(
+    firm_home: &Path,
+    args: &[String],
+    registry_lock: &execution_space::ExecutionSpaceRegistryLock,
+    activate: F,
+) -> CliResult<()>
+where
+    F: FnOnce(
+        &Path,
+        &str,
+        &str,
+        &str,
+        &str,
+    ) -> execution_space::ExecutionSpaceResult<ExecutionSpace>,
+{
+    execution_space_migrate_from_project_with_hooks(
+        firm_home,
+        args,
+        registry_lock,
+        || Ok(()),
+        |backup| std::fs::remove_dir_all(backup).map_err(CliError::from),
+        activate,
+    )
+}
+
+fn execution_space_migrate_from_project_with_hooks<F, G, H>(
+    firm_home: &Path,
+    args: &[String],
+    _registry_lock: &execution_space::ExecutionSpaceRegistryLock,
+    before_source_verification: G,
+    cleanup_displaced_target: H,
+    activate: F,
+) -> CliResult<()>
+where
+    F: FnOnce(
+        &Path,
+        &str,
+        &str,
+        &str,
+        &str,
+    ) -> execution_space::ExecutionSpaceResult<ExecutionSpace>,
+    G: FnOnce() -> CliResult<()>,
+    H: FnOnce(&Path) -> CliResult<()>,
+{
     let project_selector = required(args, "--from-project")?;
     let id = required(args, "--id")?;
     execution_space::validate_space_id(&id).map_err(execution_space_err)?;
@@ -912,137 +1288,365 @@ fn execution_space_migrate_from_project(firm_home: &Path, args: &[String]) -> Cl
     let force = has_flag(args, "--force");
     let project_context = resolve_project_selector(firm_home, &project_selector)
         .ok_or_else(|| CliError::Usage(format!("unknown project binding: {project_selector}")))?;
+    ensure_real_migration_source_ancestors(
+        &project_context.store_root,
+        &project_context.store_root,
+    )?;
     let previous_active_space_id =
         execution_space::active_space_id(firm_home).map_err(execution_space_err)?;
-    // Review migration is the only ledger transformation and its complete
-    // typed validation must finish before any target ledger is created or
-    // replaced. A corrupt/untrusted source Review therefore cannot leave a
-    // partially migrated execution space behind.
-    let review_source = project_context.store_root.join("reviews.jsonl");
-    let prepared_reviews = if review_source.is_file() {
-        Some(prepare_execution_ledger_for_migration(
-            "reviews.jsonl",
-            &std::fs::read(&review_source)?,
-        )?)
-    } else {
-        None
-    };
     let target = execution_space::space_store_root(firm_home, &id);
-    std::fs::create_dir_all(&target)?;
+    let target_preexisting = match std::fs::symlink_metadata(&target) {
+        Ok(metadata) if metadata.file_type().is_dir() => true,
+        Ok(_) => {
+            return Err(CliError::Usage(format!(
+                "target execution space is not a real directory: {}",
+                target.display()
+            )))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.into()),
+    };
+    if target_preexisting {
+        // Staging clones the complete old target so files outside the migration
+        // whitelist remain intact. Reject links/special files up front rather
+        // than silently omitting them from that clone.
+        let _ = directory_file_index(&target)?;
+    }
 
-    let mut copied_files = 0u64;
-    let mut copied_records = 0u64;
-    let mut downgraded_bound_reviews = 0u64;
+    // Complete every source read, typed transformation and conflict check
+    // before creating staging or touching the current target.
+    let mut ledger_plans = Vec::new();
     for ledger in EXECUTION_LEDGER_NAMES {
         let source = project_context.store_root.join(ledger);
-        if !source.is_file() {
-            continue;
+        ensure_real_migration_source_ancestors(&project_context.store_root, &source)?;
+        match std::fs::symlink_metadata(&source) {
+            Ok(metadata) if metadata.file_type().is_file() => {}
+            Ok(_) => {
+                return Err(CliError::Usage(format!(
+                    "execution migration refuses symbolic links or special files: {}",
+                    source.display()
+                )))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
         }
         let destination = target.join(ledger);
-        let (migration_bytes, downgraded) = if *ledger == "reviews.jsonl" {
-            prepared_reviews
-                .as_ref()
-                .expect("review source existence preflight matches migration loop")
-                .clone()
-        } else {
-            prepare_execution_ledger_for_migration(ledger, &std::fs::read(&source)?)?
-        };
-        downgraded_bound_reviews += downgraded;
-        if destination.exists() {
-            let target_bytes = std::fs::read(&destination)?;
-            if migration_bytes == target_bytes {
-                copied_records += count_non_empty_lines(&source)?;
-                continue;
-            }
-            if !force {
-                return Err(CliError::Usage(format!(
-                    "target execution ledger already differs: {} (pass --force to replace execution ledgers only)",
+        let source_bytes = std::fs::read(&source)?;
+        let (migration_bytes, downgraded_bound_reviews) =
+            prepare_execution_ledger_for_migration(ledger, &source_bytes)?;
+        let replace_target =
+            !destination.exists() || std::fs::read(&destination)? != migration_bytes;
+        if replace_target && destination.exists() && !force {
+            return Err(CliError::Usage(format!(
+                "target execution ledger already differs: {} (pass --force to replace execution ledgers only)",
+                destination.display()
+            )));
+        }
+        ledger_plans.push(ExecutionLedgerMigrationPlan {
+            name: ledger,
+            source,
+            record_count: source_bytes
+                .split(|byte| *byte == b'\n')
+                .filter(|line| line.iter().any(|byte| !byte.is_ascii_whitespace()))
+                .count() as u64,
+            source_bytes,
+            migration_bytes,
+            downgraded_bound_reviews,
+            replace_target,
+        });
+    }
+
+    let mut directory_plans = Vec::new();
+    for directory in ["checks", "compiled", "workflow-patches"] {
+        let source = project_context.store_root.join(directory);
+        ensure_real_migration_source_ancestors(&project_context.store_root, &source)?;
+        match std::fs::symlink_metadata(&source) {
+            Ok(metadata) if metadata.file_type().is_dir() => {
+                let destination = target.join(directory);
+                let source_snapshot = snapshot_directory_files(&source)?;
+                let replace_target = !destination.exists()
+                    || !verify_directory_snapshot(&destination, &source_snapshot)?;
+                if replace_target && destination.exists() && !force {
+                    return Err(CliError::Usage(format!(
+                    "target execution evidence directory already differs: {} (pass --force to replace this whitelisted target directory only)",
                     destination.display()
+                )));
+                }
+                directory_plans.push(ExecutionDirectoryMigrationPlan {
+                    name: directory,
+                    source,
+                    source_snapshot,
+                    replace_target,
+                });
+            }
+            Ok(_) => {
+                return Err(CliError::Usage(format!(
+                    "execution migration refuses symbolic links or special files: {}",
+                    source.display()
+                )))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    let spaces_parent = execution_space::spaces_dir(firm_home);
+    std::fs::create_dir_all(&spaces_parent)?;
+    let transaction_id = generated_id("migration");
+    let staging = spaces_parent.join(format!(".{id}.{transaction_id}.staging"));
+    let backup = spaces_parent.join(format!(".{id}.{transaction_id}.backup"));
+    let stage_setup = if target_preexisting {
+        copy_dir_recursive_strict(&target, &staging)
+    } else {
+        std::fs::create_dir(&staging).map_err(CliError::from)
+    };
+    if let Err(error) = stage_setup {
+        return Err(migration_error_after_staging_cleanup(error, &staging));
+    }
+
+    let stage_result = (|| -> CliResult<(ExecutionSpace, serde_json::Value)> {
+        for plan in &ledger_plans {
+            if plan.replace_target {
+                std::fs::write(staging.join(plan.name), &plan.migration_bytes)?;
+            }
+        }
+        for plan in &directory_plans {
+            if plan.replace_target {
+                ensure_real_migration_source_ancestors(&project_context.store_root, &plan.source)?;
+                let destination = staging.join(plan.name);
+                if destination.exists() {
+                    std::fs::remove_dir_all(&destination)?;
+                }
+                copy_dir_recursive_strict(&plan.source, &destination)?;
+            }
+        }
+
+        let staged_context = ExecutionSpace {
+            id: id.clone(),
+            name: name.clone(),
+            store_root: staging.clone(),
+            default_project_binding_id: Some(project_context.id.clone()),
+            company_id: None,
+        };
+        execution_space::write_metadata(&staged_context).map_err(execution_space_err)?;
+        HarnessStore::new(staging.clone()).init()?;
+        before_source_verification()?;
+        ensure_real_migration_source_ancestors(
+            &project_context.store_root,
+            &project_context.store_root,
+        )?;
+
+        // Re-read source bytes after staging. This detects a source that changed
+        // during the migration instead of verifying a stale in-memory plan.
+        for plan in &ledger_plans {
+            ensure_real_migration_source_ancestors(&project_context.store_root, &plan.source)?;
+            match std::fs::symlink_metadata(&plan.source) {
+                Ok(metadata) if metadata.file_type().is_file() => {}
+                Ok(_) => {
+                    return Err(CliError::Usage(format!(
+                    "execution migration refuses symbolic links or special files after staging: {}",
+                    plan.source.display()
+                )))
+                }
+                Err(error) => return Err(error.into()),
+            }
+            let current_source = std::fs::read(&plan.source)?;
+            if current_source != plan.source_bytes {
+                return Err(CliError::Usage(format!(
+                    "execution migration source changed while staging: {}",
+                    plan.source.display()
+                )));
+            }
+            let (expected_bytes, _) =
+                prepare_execution_ledger_for_migration(plan.name, &current_source)?;
+            if expected_bytes != std::fs::read(staging.join(plan.name))? {
+                return Err(CliError::Usage(format!(
+                    "execution migration verification failed for {}",
+                    plan.name
                 )));
             }
         }
-        std::fs::write(&destination, &migration_bytes)?;
-        copied_files += 1;
-        copied_records += count_non_empty_lines(&source)?;
-    }
-    for directory in ["checks", "compiled", "workflow-patches"] {
-        let source = project_context.store_root.join(directory);
-        if source.is_dir() {
-            let destination = target.join(directory);
-            let source_files = directory_file_index(&source)?;
-            if destination.exists() {
-                if directory_trees_equal(&source, &destination)? {
-                    continue;
-                }
-                if !force {
-                    return Err(CliError::Usage(format!(
-                        "target execution evidence directory already differs: {} (pass --force to replace this whitelisted target directory only)",
-                        destination.display()
-                    )));
-                }
-                std::fs::remove_dir_all(&destination)?;
+        for plan in &directory_plans {
+            ensure_real_migration_source_ancestors(&project_context.store_root, &plan.source)?;
+            if !verify_directory_snapshot(&plan.source, &plan.source_snapshot)? {
+                return Err(CliError::Usage(format!(
+                    "execution migration source changed while staging: {}/",
+                    plan.source.display()
+                )));
             }
-            copy_dir_recursive(&source, &destination)?;
-            copied_files += source_files.len() as u64;
+            if !verify_directory_snapshot(&staging.join(plan.name), &plan.source_snapshot)? {
+                return Err(CliError::Usage(format!(
+                    "execution migration verification failed for {}/",
+                    plan.name
+                )));
+            }
         }
+
+        let copied_files = ledger_plans
+            .iter()
+            .filter(|plan| plan.replace_target)
+            .count() as u64
+            + directory_plans
+                .iter()
+                .filter(|plan| plan.replace_target)
+                .map(|plan| plan.source_snapshot.len() as u64)
+                .sum::<u64>();
+        let copied_records = ledger_plans
+            .iter()
+            .map(|plan| plan.record_count)
+            .sum::<u64>();
+        let downgraded_bound_reviews = ledger_plans
+            .iter()
+            .map(|plan| plan.downgraded_bound_reviews)
+            .sum::<u64>();
+        let final_context = ExecutionSpace {
+            store_root: target.clone(),
+            ..staged_context
+        };
+        let manifest = serde_json::json!({
+            "kind": "project_execution_store_to_execution_space",
+            "source_project_binding_id": project_context.id,
+            "source_store_root": project_context.store_root.display().to_string(),
+            "target_space_id": final_context.id,
+            "target_store_root": final_context.store_root.display().to_string(),
+            "copied_files": copied_files,
+            "copied_records": copied_records,
+            "verified_records": copied_records,
+            "downgraded_bound_reviews": downgraded_bound_reviews,
+            "excluded_prefixes": ["company_os_", "provider-sessions", "runtimes"],
+            "source_retained": true,
+            "previous_active_space_id": previous_active_space_id,
+            "rollback": previous_active_space_id.as_ref().map(|previous| format!("harness space switch {previous}")),
+            "created_at": now_string(),
+        });
+        std::fs::write(
+            staging.join("execution_space_migration.json"),
+            serde_json::to_string_pretty(&manifest)?,
+        )?;
+        Ok((final_context, manifest))
+    })();
+
+    let (planned_context, mut manifest) = match stage_result {
+        Ok(result) => result,
+        Err(error) => {
+            return Err(migration_error_after_staging_cleanup(error, &staging));
+        }
+    };
+
+    let registry_path = execution_space::registry_path(firm_home);
+    let active_path = execution_space::active_space_path(firm_home);
+    let registry_snapshot = match snapshot_raw_file(&registry_path) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            return Err(migration_error_after_staging_cleanup(error, &staging));
+        }
+    };
+    let active_snapshot = match snapshot_raw_file(&active_path) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            return Err(migration_error_after_staging_cleanup(error, &staging));
+        }
+    };
+    let had_target = target_preexisting;
+    match (had_target, std::fs::symlink_metadata(&target)) {
+        (true, Ok(metadata)) if metadata.file_type().is_dir() => {}
+        (false, Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+        (true, Ok(_)) => {
+            return Err(migration_error_after_staging_cleanup(
+                format!(
+                    "target execution space changed type while staging: {}",
+                    target.display()
+                ),
+                &staging,
+            ))
+        }
+        (false, Ok(_)) => {
+            return Err(migration_error_after_staging_cleanup(
+                format!(
+                    "target execution space appeared while staging: {}",
+                    target.display()
+                ),
+                &staging,
+            ))
+        }
+        (_, Err(error)) => {
+            return Err(migration_error_after_staging_cleanup(error, &staging));
+        }
+    }
+    if had_target {
+        if let Err(error) = std::fs::rename(&target, &backup) {
+            return Err(migration_error_after_staging_cleanup(error, &staging));
+        }
+    }
+    if let Err(error) = std::fs::rename(&staging, &target) {
+        let restore_error = if had_target {
+            std::fs::rename(&backup, &target).err()
+        } else {
+            None
+        };
+        let publish_error = match restore_error {
+            Some(restore_error) => format!(
+                "could not publish staged execution space: {error}; target restore also failed: {restore_error}"
+            ),
+            None => format!("could not publish staged execution space: {error}"),
+        };
+        return Err(migration_error_after_staging_cleanup(
+            publish_error,
+            &staging,
+        ));
     }
 
-    let context = execution_space::register_and_activate(
-        firm_home,
-        &id,
-        &name,
-        Some(project_context.id.clone()),
-        None,
-        &now_string(),
-    )
-    .map_err(execution_space_err)?;
-    HarnessStore::new(context.store_root.clone()).init()?;
+    let activation_now = now_string();
+    let context = match activate(firm_home, &id, &name, &project_context.id, &activation_now) {
+        Ok(context) => context,
+        Err(error) => {
+            let rollback_error = rollback_execution_space_migration(
+                &target,
+                had_target.then_some(backup.as_path()),
+                &staging,
+                &registry_path,
+                &registry_snapshot,
+                &active_path,
+                &active_snapshot,
+            )
+            .err();
+            return Err(CliError::Usage(match rollback_error {
+                Some(rollback_error) => format!(
+                    "execution-space activation failed: {error}; rollback incomplete: {rollback_error}"
+                ),
+                None => format!("execution-space activation failed and was rolled back: {error}"),
+            }));
+        }
+    };
 
-    let mut verified_records = 0u64;
-    for ledger in EXECUTION_LEDGER_NAMES {
-        let source = project_context.store_root.join(ledger);
-        if !source.is_file() {
-            continue;
+    debug_assert_eq!(context.id, planned_context.id);
+    debug_assert_eq!(context.store_root, planned_context.store_root);
+    if had_target {
+        if let Err(error) = cleanup_displaced_target(&backup) {
+            let object = manifest
+                .as_object_mut()
+                .expect("migration manifest is always an object");
+            object.insert("cleanup_pending".into(), serde_json::Value::Bool(true));
+            object.insert(
+                "cleanup_backup_path".into(),
+                serde_json::Value::String(backup.display().to_string()),
+            );
+            let manifest_path = target.join("execution_space_migration.json");
+            let manifest_update = serde_json::to_vec_pretty(&manifest)
+                .map_err(CliError::from)
+                .and_then(|bytes| write_raw_file_atomically(&manifest_path, &bytes));
+            match manifest_update {
+                Ok(()) => eprintln!(
+                    "warning: execution migration committed; displaced target cleanup is pending at {}: {error}",
+                    backup.display()
+                ),
+                Err(manifest_error) => eprintln!(
+                    "warning: execution migration committed; displaced target cleanup is pending at {}: {error}; could not persist cleanup_pending manifest: {manifest_error}",
+                    backup.display()
+                ),
+            }
         }
-        let destination = context.store_root.join(ledger);
-        let source_bytes = std::fs::read(&source)?;
-        let (expected_bytes, _) = prepare_execution_ledger_for_migration(ledger, &source_bytes)?;
-        if expected_bytes != std::fs::read(&destination)? {
-            return Err(CliError::Usage(format!(
-                "execution migration verification failed for {ledger}"
-            )));
-        }
-        verified_records += count_non_empty_lines(&source)?;
     }
-    for directory in ["checks", "compiled", "workflow-patches"] {
-        let source = project_context.store_root.join(directory);
-        if source.is_dir() && !directory_trees_equal(&source, &context.store_root.join(directory))?
-        {
-            return Err(CliError::Usage(format!(
-                "execution migration verification failed for {directory}/"
-            )));
-        }
-    }
-    let manifest = serde_json::json!({
-        "kind": "project_execution_store_to_execution_space",
-        "source_project_binding_id": project_context.id,
-        "source_store_root": project_context.store_root.display().to_string(),
-        "target_space_id": context.id,
-        "target_store_root": context.store_root.display().to_string(),
-        "copied_files": copied_files,
-        "copied_records": copied_records,
-        "verified_records": verified_records,
-        "downgraded_bound_reviews": downgraded_bound_reviews,
-        "excluded_prefixes": ["company_os_", "provider-sessions", "runtimes"],
-        "source_retained": true,
-        "previous_active_space_id": previous_active_space_id,
-        "rollback": previous_active_space_id.as_ref().map(|previous| format!("harness space switch {previous}")),
-        "created_at": now_string(),
-    });
-    std::fs::write(
-        context.store_root.join("execution_space_migration.json"),
-        serde_json::to_string_pretty(&manifest)?,
-    )?;
     print_json(&serde_json::json!({
         "space": execution_space_json(&context, &context.id),
         "migration": manifest,
@@ -1476,39 +2080,35 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> CliResult<()> {
 fn directory_file_index(root: &Path) -> CliResult<Vec<PathBuf>> {
     fn visit(root: &Path, relative: &Path, out: &mut Vec<PathBuf>) -> CliResult<()> {
         let current = root.join(relative);
-        for entry in std::fs::read_dir(current)?.flatten() {
+        for entry in std::fs::read_dir(current)? {
+            let entry = entry?;
             let file_type = entry.file_type()?;
             let next = relative.join(entry.file_name());
             if file_type.is_dir() {
                 visit(root, &next, out)?;
             } else if file_type.is_file() {
                 out.push(next);
+            } else {
+                return Err(CliError::Usage(format!(
+                    "execution migration refuses symbolic links or special files: {}",
+                    root.join(next).display()
+                )));
             }
         }
         Ok(())
     }
 
+    let metadata = std::fs::symlink_metadata(root)?;
+    if !metadata.file_type().is_dir() {
+        return Err(CliError::Usage(format!(
+            "execution migration refuses symbolic links or special files: {}",
+            root.display()
+        )));
+    }
     let mut files = Vec::new();
     visit(root, Path::new(""), &mut files)?;
     files.sort();
     Ok(files)
-}
-
-fn directory_trees_equal(left: &Path, right: &Path) -> CliResult<bool> {
-    if !right.is_dir() {
-        return Ok(false);
-    }
-    let left_files = directory_file_index(left)?;
-    let right_files = directory_file_index(right)?;
-    if left_files != right_files {
-        return Ok(false);
-    }
-    for relative in left_files {
-        if std::fs::read(left.join(&relative))? != std::fs::read(right.join(&relative))? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
 }
 
 fn run() -> CliResult<()> {
@@ -13000,7 +13600,7 @@ fn parse_gate_specs(args: &[String]) -> CliResult<Vec<GateSpec>> {
                 serde_json::Value::Object(map)
             };
             let spec = GateSpec { plugin, config };
-            spec.validate_builtin()
+            spec.validate()
                 .map_err(|reason| CliError::Usage(format!("invalid --gate: {reason}")))?;
             specs.push(spec);
             i += 2; // skip value
@@ -13008,6 +13608,8 @@ fn parse_gate_specs(args: &[String]) -> CliResult<Vec<GateSpec>> {
             i += 1;
         }
     }
+    validate_gate_specs(&specs)
+        .map_err(|reason| CliError::Usage(format!("invalid --gate declarations: {reason}")))?;
     Ok(specs)
 }
 
@@ -27069,10 +27671,8 @@ fn create_team_work_value(
             let gates: Vec<GateSpec> = serde_json::from_value(value.clone()).map_err(|error| {
                 CliError::Usage(format!("invalid Work gates JSON array: {error}"))
             })?;
-            for gate in &gates {
-                gate.validate_builtin()
-                    .map_err(|reason| CliError::Usage(format!("invalid Work gate: {reason}")))?;
-            }
+            validate_gate_specs(&gates)
+                .map_err(|reason| CliError::Usage(format!("invalid Work gates: {reason}")))?;
             gates
         }
     };
@@ -40983,6 +41583,8 @@ mod tests {
             missing_validation: vec![],
             evidence_ids: vec![],
             created_at: "unix-ms:1".into(),
+            performed_by_actor: None,
+            authority_actor: None,
             reviewed_work_id: Some("work-1".into()),
             reviewed_work_version: Some(7),
             review_strategy: Some(harness_core::CodeReviewStrategy::Peer),
@@ -41042,6 +41644,555 @@ mod tests {
             !unsafe_target.exists(),
             "review preflight must prevent partial target ledgers"
         );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    fn migration_test_project(tag: &str) -> (PathBuf, PathBuf, ProjectContext) {
+        let root = std::env::temp_dir().join(format!(
+            "firm-space-atomic-migration-{tag}-{}",
+            generated_id("test")
+        ));
+        let firm_home = root.join("home");
+        let project_root = root.join("project");
+        fs::create_dir_all(&project_root).expect("project root");
+        let project_context =
+            project::register_and_activate(&firm_home, &project_root, "unix-ms:1")
+                .expect("register project");
+        HarnessStore::new(project_context.store_root.clone())
+            .init()
+            .expect("source store");
+        (root, firm_home, project_context)
+    }
+
+    fn migration_args(project_id: &str, space_id: &str, force: bool) -> Vec<String> {
+        let mut args = vec![
+            "--from-project".into(),
+            project_id.into(),
+            "--id".into(),
+            space_id.into(),
+        ];
+        if force {
+            args.push("--force".into());
+        }
+        args
+    }
+
+    fn hidden_migration_paths(firm_home: &Path, space_id: &str) -> Vec<PathBuf> {
+        let prefix = format!(".{space_id}.");
+        fs::read_dir(execution_space::spaces_dir(firm_home))
+            .expect("spaces directory")
+            .map(|entry| entry.expect("directory entry").path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(&prefix))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn atomic_raw_file_write_replaces_an_existing_file_and_restores_present_snapshot() {
+        let root =
+            std::env::temp_dir().join(format!("firm-atomic-raw-replace-{}", generated_id("test")));
+        fs::create_dir_all(&root).expect("test root");
+        let path = root.join("registry.json");
+        fs::write(&path, b"original").expect("original state");
+        let snapshot = snapshot_raw_file(&path).expect("present snapshot");
+
+        write_raw_file_atomically(&path, b"replacement").expect("replace existing file");
+        assert_eq!(fs::read(&path).unwrap(), b"replacement");
+        restore_raw_file(&path, &snapshot).expect("restore over existing file");
+        assert_eq!(fs::read(&path).unwrap(), b"original");
+        assert_eq!(
+            fs::read_dir(&root).unwrap().count(),
+            1,
+            "successful replacement leaves no temporary state"
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn execution_space_migration_preflights_late_ledger_conflict_before_staging() {
+        let (root, firm_home, project_context) = migration_test_project("late-conflict");
+        fs::write(
+            project_context.store_root.join("missions.jsonl"),
+            b"{\"id\":\"new-mission\"}\n",
+        )
+        .expect("source early ledger");
+        fs::write(
+            project_context
+                .store_root
+                .join("workflow_artifact_manifests.jsonl"),
+            b"{\"id\":\"new-late-ledger\"}\n",
+        )
+        .expect("source late ledger");
+        let target = execution_space::space_store_root(&firm_home, "late-conflict-space");
+        fs::create_dir_all(&target).expect("target");
+        fs::write(
+            target.join("workflow_artifact_manifests.jsonl"),
+            b"{\"id\":\"existing-late-ledger\"}\n",
+        )
+        .expect("conflicting late target ledger");
+        fs::write(target.join("keep.txt"), b"untouched").expect("sentinel");
+
+        let error = execution_space_migrate_from_project(
+            &firm_home,
+            &migration_args(&project_context.id, "late-conflict-space", false),
+        )
+        .expect_err("late conflict must abort the complete plan");
+        assert!(error
+            .to_string()
+            .contains("workflow_artifact_manifests.jsonl"));
+        assert!(!target.join("missions.jsonl").exists());
+        assert_eq!(fs::read(target.join("keep.txt")).unwrap(), b"untouched");
+        assert!(hidden_migration_paths(&firm_home, "late-conflict-space").is_empty());
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn execution_space_migration_preflights_evidence_conflict_before_staging() {
+        let (root, firm_home, project_context) = migration_test_project("evidence-conflict");
+        fs::write(
+            project_context.store_root.join("missions.jsonl"),
+            b"{\"id\":\"new-mission\"}\n",
+        )
+        .expect("source ledger");
+        fs::create_dir_all(project_context.store_root.join("checks/nested"))
+            .expect("source checks");
+        fs::write(
+            project_context.store_root.join("checks/nested/result.json"),
+            b"new",
+        )
+        .expect("source check");
+        let target = execution_space::space_store_root(&firm_home, "evidence-conflict-space");
+        fs::create_dir_all(target.join("checks/nested")).expect("target checks");
+        fs::write(target.join("checks/nested/result.json"), b"old").expect("target check");
+
+        let error = execution_space_migrate_from_project(
+            &firm_home,
+            &migration_args(&project_context.id, "evidence-conflict-space", false),
+        )
+        .expect_err("evidence conflict must abort before staging");
+        assert!(error.to_string().contains("checks"));
+        assert!(!target.join("missions.jsonl").exists());
+        assert_eq!(
+            fs::read(target.join("checks/nested/result.json")).unwrap(),
+            b"old"
+        );
+        assert!(hidden_migration_paths(&firm_home, "evidence-conflict-space").is_empty());
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn execution_space_migration_rejects_source_change_after_staging() {
+        let (root, firm_home, project_context) = migration_test_project("source-change");
+        let source = project_context.store_root.join("missions.jsonl");
+        fs::write(&source, b"{\"id\":\"before\"}\n").expect("source ledger");
+        let changed_source = source.clone();
+        let registry_lock =
+            execution_space::acquire_registry_lock(&firm_home).expect("registry lock");
+
+        let error = execution_space_migrate_from_project_with_hooks(
+            &firm_home,
+            &migration_args(&project_context.id, "source-change-space", false),
+            &registry_lock,
+            move || {
+                fs::write(&changed_source, b"{\"id\":\"after\"}\n")?;
+                Ok(())
+            },
+            |backup| fs::remove_dir_all(backup).map_err(CliError::from),
+            |_home, _id, _name, _binding, _now| {
+                panic!("activation must not run after source verification fails")
+            },
+        )
+        .expect_err("a changed source must invalidate staged verification");
+        assert!(error.to_string().contains("source changed while staging"));
+        assert!(!execution_space::space_store_root(&firm_home, "source-change-space").exists());
+        assert!(hidden_migration_paths(&firm_home, "source-change-space").is_empty());
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execution_space_migration_rejects_same_bytes_ledger_symlink_swap() {
+        use std::os::unix::fs::symlink;
+
+        let (root, firm_home, project_context) = migration_test_project("ledger-symlink-swap");
+        let source = project_context.store_root.join("missions.jsonl");
+        let replacement = root.join("same-missions.jsonl");
+        let bytes = b"{\"id\":\"same\"}\n";
+        fs::write(&source, bytes).expect("source ledger");
+        fs::write(&replacement, bytes).expect("same-byte replacement");
+        let swapped_source = source.clone();
+        let registry_lock =
+            execution_space::acquire_registry_lock(&firm_home).expect("registry lock");
+
+        let error = execution_space_migrate_from_project_with_hooks(
+            &firm_home,
+            &migration_args(&project_context.id, "ledger-symlink-space", false),
+            &registry_lock,
+            move || {
+                fs::remove_file(&swapped_source)?;
+                symlink(&replacement, &swapped_source)?;
+                Ok(())
+            },
+            |backup| fs::remove_dir_all(backup).map_err(CliError::from),
+            |_home, _id, _name, _binding, _now| {
+                panic!("activation must not run after ledger type changes")
+            },
+        )
+        .expect_err("same-byte symlink replacement must fail closed");
+        assert!(error.to_string().contains("symbolic links"));
+        assert!(!execution_space::space_store_root(&firm_home, "ledger-symlink-space").exists());
+        assert!(hidden_migration_paths(&firm_home, "ledger-symlink-space").is_empty());
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execution_space_migration_rejects_same_bytes_evidence_symlink_swap() {
+        use std::os::unix::fs::symlink;
+
+        let (root, firm_home, project_context) = migration_test_project("evidence-symlink-swap");
+        let checks = project_context.store_root.join("checks");
+        let replacement = root.join("same-checks");
+        fs::create_dir_all(&checks).expect("source checks");
+        fs::create_dir_all(&replacement).expect("replacement checks");
+        fs::write(checks.join("result.json"), b"same").expect("source check");
+        fs::write(replacement.join("result.json"), b"same").expect("same-byte replacement");
+        let swapped_checks = checks.clone();
+        let registry_lock =
+            execution_space::acquire_registry_lock(&firm_home).expect("registry lock");
+
+        let error = execution_space_migrate_from_project_with_hooks(
+            &firm_home,
+            &migration_args(&project_context.id, "evidence-symlink-space", false),
+            &registry_lock,
+            move || {
+                fs::remove_dir_all(&swapped_checks)?;
+                symlink(&replacement, &swapped_checks)?;
+                Ok(())
+            },
+            |backup| fs::remove_dir_all(backup).map_err(CliError::from),
+            |_home, _id, _name, _binding, _now| {
+                panic!("activation must not run after evidence root type changes")
+            },
+        )
+        .expect_err("same-byte evidence symlink replacement must fail closed");
+        assert!(error.to_string().contains("symbolic links"));
+        assert!(!execution_space::space_store_root(&firm_home, "evidence-symlink-space").exists());
+        assert!(hidden_migration_paths(&firm_home, "evidence-symlink-space").is_empty());
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execution_space_migration_rejects_same_bytes_store_root_symlink_swap() {
+        use std::os::unix::fs::symlink;
+
+        let (root, firm_home, project_context) = migration_test_project("store-root-swap");
+        fs::write(
+            project_context.store_root.join("missions.jsonl"),
+            b"{\"id\":\"same\"}\n",
+        )
+        .expect("source ledger");
+        let source_root = project_context.store_root.clone();
+        let backing_root = source_root.with_extension("same-store-backing");
+        let registry_lock =
+            execution_space::acquire_registry_lock(&firm_home).expect("registry lock");
+
+        let error = execution_space_migrate_from_project_with_hooks(
+            &firm_home,
+            &migration_args(&project_context.id, "store-root-swap-space", false),
+            &registry_lock,
+            move || {
+                fs::rename(&source_root, &backing_root)?;
+                symlink(&backing_root, &source_root)?;
+                Ok(())
+            },
+            |backup| fs::remove_dir_all(backup).map_err(CliError::from),
+            |_home, _id, _name, _binding, _now| {
+                panic!("activation must not run after source store root changes type")
+            },
+        )
+        .expect_err("same-byte store-root symlink replacement must fail closed");
+        assert!(error.to_string().contains("source ancestors"));
+        assert!(!execution_space::space_store_root(&firm_home, "store-root-swap-space").exists());
+        assert!(hidden_migration_paths(&firm_home, "store-root-swap-space").is_empty());
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execution_space_migration_rejects_same_bytes_nested_evidence_ancestor_symlink_swap() {
+        use std::os::unix::fs::symlink;
+
+        let (root, firm_home, project_context) = migration_test_project("nested-evidence-swap");
+        let checks = project_context.store_root.join("checks");
+        let nested = checks.join("nested");
+        let backing = checks.join("same-nested-backing");
+        fs::create_dir_all(&nested).expect("nested evidence");
+        fs::write(nested.join("result.json"), b"same").expect("source evidence");
+        let registry_lock =
+            execution_space::acquire_registry_lock(&firm_home).expect("registry lock");
+
+        let error = execution_space_migrate_from_project_with_hooks(
+            &firm_home,
+            &migration_args(&project_context.id, "nested-evidence-swap-space", false),
+            &registry_lock,
+            move || {
+                fs::rename(&nested, &backing)?;
+                symlink(&backing, &nested)?;
+                Ok(())
+            },
+            |backup| fs::remove_dir_all(backup).map_err(CliError::from),
+            |_home, _id, _name, _binding, _now| {
+                panic!("activation must not run after evidence ancestor changes type")
+            },
+        )
+        .expect_err("same-byte nested evidence symlink replacement must fail closed");
+        assert!(error.to_string().contains("symbolic links"));
+        assert!(
+            !execution_space::space_store_root(&firm_home, "nested-evidence-swap-space").exists()
+        );
+        assert!(hidden_migration_paths(&firm_home, "nested-evidence-swap-space").is_empty());
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn forced_execution_space_migration_rolls_back_target_and_raw_activation_state() {
+        let (root, firm_home, project_context) = migration_test_project("activation-rollback");
+        let old_target = execution_space::register_and_activate(
+            &firm_home,
+            "rollback-space",
+            "Old Space",
+            Some("old-binding".into()),
+            None,
+            "unix-ms:2",
+        )
+        .expect("old target registration");
+        HarnessStore::new(old_target.store_root.clone())
+            .init()
+            .expect("old target store");
+        fs::write(
+            old_target.store_root.join("missions.jsonl"),
+            b"{\"id\":\"old\"}\n",
+        )
+        .expect("old target truth");
+        fs::write(old_target.store_root.join("keep.txt"), b"old-only").expect("old sentinel");
+        execution_space::register_and_activate(
+            &firm_home,
+            "previous-space",
+            "Previous Space",
+            None,
+            None,
+            "unix-ms:3",
+        )
+        .expect("previous active space");
+        fs::write(
+            project_context.store_root.join("missions.jsonl"),
+            b"{\"id\":\"new\"}\n",
+        )
+        .expect("new source truth");
+
+        let target_snapshot =
+            snapshot_directory_files(&old_target.store_root).expect("target snapshot");
+        let registry_before = fs::read(execution_space::registry_path(&firm_home)).unwrap();
+        let active_before = fs::read(execution_space::active_space_path(&firm_home)).unwrap();
+        let registry_lock =
+            execution_space::acquire_registry_lock(&firm_home).expect("registry lock");
+        let error = execution_space_migrate_from_project_with_activate(
+            &firm_home,
+            &migration_args(&project_context.id, "rollback-space", true),
+            &registry_lock,
+            |home, id, name, binding, now| {
+                let _ = execution_space::register_and_activate_locked(
+                    home,
+                    &registry_lock,
+                    id,
+                    name,
+                    Some(binding.to_string()),
+                    None,
+                    now,
+                )?;
+                Err(execution_space::ExecutionSpaceError::Io(
+                    std::io::Error::other("injected post-registration failure"),
+                ))
+            },
+        )
+        .expect_err("activation failure must roll back the published target");
+        assert!(error.to_string().contains("was rolled back"));
+        assert_eq!(
+            snapshot_directory_files(&old_target.store_root).expect("restored target snapshot"),
+            target_snapshot
+        );
+        assert_eq!(
+            fs::read(execution_space::registry_path(&firm_home)).unwrap(),
+            registry_before
+        );
+        assert_eq!(
+            fs::read(execution_space::active_space_path(&firm_home)).unwrap(),
+            active_before
+        );
+        assert!(hidden_migration_paths(&firm_home, "rollback-space").is_empty());
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn committed_migration_reports_displaced_target_cleanup_as_pending() {
+        let (root, firm_home, project_context) = migration_test_project("cleanup-pending");
+        let old_target = execution_space::register_and_activate(
+            &firm_home,
+            "cleanup-space",
+            "Old Cleanup Space",
+            None,
+            None,
+            "unix-ms:2",
+        )
+        .expect("old target registration");
+        HarnessStore::new(old_target.store_root.clone())
+            .init()
+            .expect("old target store");
+        fs::write(
+            old_target.store_root.join("missions.jsonl"),
+            b"{\"id\":\"old\"}\n",
+        )
+        .expect("old target truth");
+        fs::write(
+            project_context.store_root.join("missions.jsonl"),
+            b"{\"id\":\"new\"}\n",
+        )
+        .expect("new source truth");
+        let registry_lock =
+            execution_space::acquire_registry_lock(&firm_home).expect("registry lock");
+
+        execution_space_migrate_from_project_with_hooks(
+            &firm_home,
+            &migration_args(&project_context.id, "cleanup-space", true),
+            &registry_lock,
+            || Ok(()),
+            |_backup| {
+                Err(CliError::Io(std::io::Error::other(
+                    "injected backup cleanup failure",
+                )))
+            },
+            |home, id, name, binding, now| {
+                execution_space::register_and_activate_locked(
+                    home,
+                    &registry_lock,
+                    id,
+                    name,
+                    Some(binding.to_string()),
+                    None,
+                    now,
+                )
+            },
+        )
+        .expect("cleanup failure must not report the committed migration as failed");
+
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(
+                execution_space::space_store_root(&firm_home, "cleanup-space")
+                    .join("execution_space_migration.json"),
+            )
+            .expect("committed manifest"),
+        )
+        .expect("valid manifest");
+        assert_eq!(manifest["cleanup_pending"], true);
+        let backup = PathBuf::from(
+            manifest["cleanup_backup_path"]
+                .as_str()
+                .expect("pending backup path"),
+        );
+        assert!(backup.is_dir(), "displaced target remains recoverable");
+        assert_eq!(
+            fs::read(
+                execution_space::space_store_root(&firm_home, "cleanup-space")
+                    .join("missions.jsonl")
+            )
+            .unwrap(),
+            b"{\"id\":\"new\"}\n"
+        );
+
+        drop(registry_lock);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execution_space_migration_rejects_existing_target_symlinks_before_staging() {
+        use std::os::unix::fs::symlink;
+
+        let (root, firm_home, project_context) = migration_test_project("target-symlink");
+        let target = execution_space::space_store_root(&firm_home, "symlink-space");
+        fs::create_dir_all(&target).expect("target");
+        let outside = root.join("outside.txt");
+        fs::write(&outside, b"must remain external").expect("outside file");
+        symlink(&outside, target.join("linked.txt")).expect("target symlink");
+
+        let error = execution_space_migrate_from_project(
+            &firm_home,
+            &migration_args(&project_context.id, "symlink-space", true),
+        )
+        .expect_err("target symlink cannot be silently dropped during clone");
+        assert!(error.to_string().contains("refuses symbolic links"));
+        assert!(target.join("linked.txt").symlink_metadata().is_ok());
+        assert_eq!(fs::read(outside).unwrap(), b"must remain external");
+        assert!(hidden_migration_paths(&firm_home, "symlink-space").is_empty());
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execution_space_migration_rejects_target_root_symlink_before_staging() {
+        use std::os::unix::fs::symlink;
+
+        let (root, firm_home, project_context) = migration_test_project("target-root-symlink");
+        let outside = root.join("outside-target");
+        fs::create_dir_all(&outside).expect("outside target");
+        let target = execution_space::space_store_root(&firm_home, "linked-root-space");
+        fs::create_dir_all(target.parent().expect("target parent")).expect("spaces directory");
+        symlink(&outside, &target).expect("target root symlink");
+
+        let error = execution_space_migrate_from_project(
+            &firm_home,
+            &migration_args(&project_context.id, "linked-root-space", true),
+        )
+        .expect_err("target root symlink must fail closed");
+        assert!(error.to_string().contains("not a real directory"));
+        assert!(target.symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(hidden_migration_paths(&firm_home, "linked-root-space").is_empty());
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execution_space_migration_rejects_source_evidence_root_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let (root, firm_home, project_context) = migration_test_project("source-root-symlink");
+        let outside = root.join("outside-checks");
+        fs::create_dir_all(&outside).expect("outside checks");
+        fs::write(outside.join("result.json"), b"external").expect("outside evidence");
+        symlink(&outside, project_context.store_root.join("checks"))
+            .expect("source evidence root symlink");
+
+        let error = execution_space_migrate_from_project(
+            &firm_home,
+            &migration_args(&project_context.id, "source-linked-space", false),
+        )
+        .expect_err("source evidence root symlink must fail closed");
+        assert!(error.to_string().contains("refuses symbolic links"));
+        assert!(!execution_space::space_store_root(&firm_home, "source-linked-space").exists());
+        assert!(hidden_migration_paths(&firm_home, "source-linked-space").is_empty());
 
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -42831,6 +43982,16 @@ package:com.tencent.mm
         .expect("JSON arrays are expressible");
         assert_eq!(parsed[0].config["paths"][1], "docs/b.md");
 
+        let compatible = parse_gate_specs(&[
+            "--gate".into(),
+            "github-pr".into(),
+            "--gate".into(),
+            r#"owned-path-check:{"paths":["crates/firm-core"]}"#.into(),
+        ])
+        .expect("old-wire empty config and custom declarations remain persistable");
+        assert_eq!(compatible[0].config, serde_json::json!({}));
+        assert_eq!(compatible[1].plugin, "owned-path-check");
+
         for raw in [
             r#"github-pr:{"require_merged":true,"require_merged":false}"#,
             "github-pr:require_merged=true,require_merged=false",
@@ -42841,6 +44002,24 @@ package:com.tencent.mm
             let error = parse_gate_specs(&["--gate".into(), raw.into()])
                 .expect_err("invalid or duplicate config must fail closed");
             assert!(error.to_string().contains("gate"));
+        }
+
+        for declarations in [
+            vec![
+                "--gate".into(),
+                "github-pr".into(),
+                "--gate".into(),
+                "github-pr".into(),
+            ],
+            vec![
+                "--gate".into(),
+                r#"code-review:{"strategy":"host"}"#.into(),
+                "--gate".into(),
+                r#"code-review:{"strategy":"self"}"#.into(),
+            ],
+        ] {
+            parse_gate_specs(&declarations)
+                .expect_err("duplicate and multiple code-review declarations must fail closed");
         }
     }
 
@@ -42864,6 +44043,35 @@ package:com.tencent.mm
         let work: Work = serde_json::from_value(value).expect("decode Work");
         assert_eq!(work.gates.len(), 1);
         assert_eq!(work.gates[0].config["checks"][0], "cargo test");
+
+        let custom = create_team_work_value(
+            &store,
+            &created.team_run.id,
+            &serde_json::json!({
+                "title": "Persist a custom gate declaration",
+                "completion_criteria_markdown": "Custom verifier must be explicitly registered",
+                "gates": [{"plugin": "goal-design"}]
+            }),
+        )
+        .expect("HTTP preserves old-wire custom Gate with omitted config");
+        let custom: Work = serde_json::from_value(custom).expect("decode custom Work");
+        assert_eq!(custom.gates[0].plugin, "goal-design");
+        assert_eq!(custom.gates[0].config, serde_json::json!({}));
+
+        let duplicate_error = create_team_work_value(
+            &store,
+            &created.team_run.id,
+            &serde_json::json!({
+                "title": "Reject duplicate gates",
+                "completion_criteria_markdown": "No ambiguous duplicate declarations",
+                "gates": [
+                    {"plugin": "github-pr"},
+                    {"plugin": "github-pr"}
+                ]
+            }),
+        )
+        .expect_err("HTTP rejects exact duplicate Gate declarations");
+        assert!(duplicate_error.to_string().contains("exact duplicate"));
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
@@ -42909,6 +44117,8 @@ package:com.tencent.mm
                 "pass".into(),
                 "--summary".into(),
                 "host reviewed through CLI".into(),
+                "--actor".into(),
+                "operator:cli-alice".into(),
             ],
         )
         .expect("CLI Host records trusted Review");
@@ -42919,6 +44129,21 @@ package:com.tencent.mm
             .find(|review| review.id == "review-cli-host")
             .expect("CLI Review persisted");
         assert_eq!(review.reviewed_work_version, Some(submitted.version));
+        assert_eq!(review.reviewer_agent_id, "host");
+        assert_eq!(
+            review
+                .performed_by_actor
+                .as_ref()
+                .map(|actor| actor.id.as_str()),
+            Some("operator:cli-alice")
+        );
+        assert_eq!(
+            review
+                .authority_actor
+                .as_ref()
+                .map(|actor| actor.id.as_str()),
+            Some("host")
+        );
 
         let forged = mutate_team_work_value(
             &store,
@@ -42945,10 +44170,32 @@ package:com.tencent.mm
                 "expected_version": submitted.version,
                 "id": "review-http-host",
                 "verdict": "needs_changes",
-                "summary": "later Host review overrides pass"
+                "summary": "later Host review overrides pass",
+                "actor_id": "operator:http-bob"
             }),
         )
         .expect("HTTP operator writes only a Host Review");
+        let http_review = store
+            .reviews()
+            .expect("reviews")
+            .into_iter()
+            .find(|review| review.id == "review-http-host")
+            .expect("HTTP Review persisted");
+        assert_eq!(http_review.reviewer_agent_id, "host");
+        assert_eq!(
+            http_review
+                .performed_by_actor
+                .as_ref()
+                .map(|actor| actor.id.as_str()),
+            Some("operator:http-bob")
+        );
+        assert_eq!(
+            http_review
+                .authority_actor
+                .as_ref()
+                .map(|actor| actor.id.as_str()),
+            Some("host")
+        );
         let error = store
             .accept_work(&submitted.id, submitted.version, host_work_context(&[]))
             .expect_err("later needs_changes Review must block acceptance");

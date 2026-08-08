@@ -38,6 +38,7 @@ const LOCK_NB: i32 = 4;
 const LOCK_UN: i32 = 8;
 const COMPANY_WORK_ITEMS_LEDGER: &str = "company_os_work_items.jsonl";
 const WORK_CUTOVER_FENCES_LEDGER: &str = "company_os_work_cutover_fences.jsonl";
+const TRUSTED_HOST_REVIEWER_ID: &str = "host";
 
 /// Normalize surface identifiers into their canonical form.
 /// All surface comparisons and storage MUST route through this.
@@ -830,7 +831,7 @@ impl HarnessStore {
             }
             CodeReviewStrategy::Host => {
                 require_host_actor(&context.performed_by_actor)?;
-                context.performed_by_actor.id.clone()
+                trusted_host_review_authority(&context)?.id.clone()
             }
         };
 
@@ -850,6 +851,8 @@ impl HarnessStore {
             reviewed_work_id: Some(work.id),
             reviewed_work_version: Some(work.version),
             review_strategy: Some(config.strategy),
+            performed_by_actor: Some(context.performed_by_actor),
+            authority_actor: context.authority_actor,
         };
         review
             .validate()
@@ -1440,11 +1443,8 @@ impl HarnessStore {
         )? {
             return Ok(existing.work);
         }
-        for gate in &work.gates {
-            gate.validate_builtin().map_err(|reason| {
-                StoreError::Conflict(format!("INVALID_WORK_GATE [{}]: {reason}", gate.plugin))
-            })?;
-        }
+        work.validate_gates()
+            .map_err(|reason| StoreError::Conflict(format!("INVALID_WORK_GATES: {reason}")))?;
         self.ensure_work_event_id_available_unlocked(&context.event_id)?;
         let team_run = self.require_team_run_unlocked(&work.team_run_id)?;
         if matches!(
@@ -5744,6 +5744,24 @@ fn require_host_actor(actor: &firm_core::TeamActorRef) -> StoreResult<()> {
     }
 }
 
+fn trusted_host_review_authority(
+    context: &WorkCommandContext,
+) -> StoreResult<&firm_core::TeamActorRef> {
+    let authority = context.authority_actor.as_ref().ok_or_else(|| {
+        StoreError::Conflict(
+            "WORK_HOST_REVIEW_AUTHORITY_REQUIRED: fixed Host authority is required".to_string(),
+        )
+    })?;
+    if authority.kind != firm_core::TeamActorKind::Host || authority.id != TRUSTED_HOST_REVIEWER_ID
+    {
+        return Err(StoreError::Conflict(format!(
+            "WORK_HOST_REVIEW_AUTHORITY_MISMATCH: expected Host authority {}, got {:?}/{}",
+            TRUSTED_HOST_REVIEWER_ID, authority.kind, authority.id
+        )));
+    }
+    Ok(authority)
+}
+
 fn require_member_actor(actor: &firm_core::TeamActorRef, member_run_id: &str) -> StoreResult<()> {
     if actor.kind == firm_core::TeamActorKind::MemberRun && actor.id == member_run_id {
         Ok(())
@@ -8409,6 +8427,32 @@ mod tests {
         }
     }
 
+    fn trusted_host_review_context(
+        performed_by_kind: firm_core::TeamActorKind,
+        performed_by_id: &str,
+        at: &str,
+    ) -> WorkCommandContext {
+        WorkCommandContext {
+            event_id: "unused-review-event".into(),
+            performed_by_actor: firm_core::TeamActorRef {
+                kind: performed_by_kind,
+                id: performed_by_id.into(),
+                display_name: None,
+                authn_source: Some("authenticated-review-writer:test".into()),
+            },
+            authority_actor: Some(firm_core::TeamActorRef {
+                kind: firm_core::TeamActorKind::Host,
+                id: TRUSTED_HOST_REVIEWER_ID.into(),
+                display_name: Some("Harness Host".into()),
+                authn_source: Some("fixed-host-authority:test".into()),
+            }),
+            causation_ref: None,
+            idempotency_key: "unused-review-key".into(),
+            created_at: at.into(),
+            duplicate_ok: false,
+        }
+    }
+
     fn work_review_payload(id: &str, verdict: ReviewVerdict) -> WorkReviewPayload {
         WorkReviewPayload {
             id: id.into(),
@@ -8824,6 +8868,102 @@ mod tests {
     }
 
     #[test]
+    fn custom_gate_persists_but_default_store_acceptance_fails_closed() {
+        let (root, store, run, member, _) = work_test_fixture("custom-gate-persistence");
+        let mut candidate = unassigned_test_work(&run.id, "work-custom-gate");
+        candidate.gates = vec![GateSpec {
+            plugin: "owned-path-check".into(),
+            config: serde_json::json!({"paths": ["crates/firm-core"]}),
+        }];
+        let work = store
+            .insert_work(
+                candidate,
+                host_work_context("we-custom-1", "create-custom", "unix-ms:2"),
+            )
+            .expect("custom Gate declaration remains persistable");
+        assert_eq!(work.gates[0].plugin, "owned-path-check");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &member.id,
+                member_work_context(&member.id, "we-custom-2", "claim-custom", "unix-ms:3"),
+            )
+            .expect("claim custom-gated Work");
+        let submitted = store
+            .submit_work(
+                &claimed.id,
+                claimed.version,
+                &member.id,
+                "candidate ready for custom verification",
+                Vec::new(),
+                Vec::new(),
+                member_work_context(&member.id, "we-custom-3", "submit-custom", "unix-ms:4"),
+            )
+            .expect("submit custom-gated Work");
+        let error = store
+            .accept_work(
+                &submitted.id,
+                submitted.version,
+                host_work_context("we-custom-4", "accept-custom", "unix-ms:5"),
+            )
+            .expect_err("default Store has no trusted custom registry and must fail closed");
+        assert!(error.to_string().contains("unknown gate plugin"));
+        assert_eq!(
+            store
+                .latest_works()
+                .expect("works")
+                .into_iter()
+                .find(|work| work.id == submitted.id)
+                .expect("custom Work")
+                .status,
+            WorkStatus::Review
+        );
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn work_insert_rejects_duplicate_and_multiple_code_review_gates() {
+        let (root, store, run, _, _) = work_test_fixture("ambiguous-gate-list");
+        let duplicate = GateSpec {
+            plugin: "github-pr".into(),
+            config: serde_json::json!({}),
+        };
+        let mut duplicate_work = unassigned_test_work(&run.id, "work-duplicate-gate");
+        duplicate_work.gates = vec![duplicate.clone(), duplicate];
+        let duplicate_error = store
+            .insert_work(
+                duplicate_work,
+                host_work_context("we-dup-gate", "create-dup-gate", "unix-ms:2"),
+            )
+            .expect_err("exact duplicate Gates are ambiguous");
+        assert!(duplicate_error.to_string().contains("exact duplicate gate"));
+
+        let mut multi_review = unassigned_test_work(&run.id, "work-multi-review-gate");
+        multi_review.gates = vec![
+            GateSpec {
+                plugin: "code-review".into(),
+                config: serde_json::json!({"strategy": "host"}),
+            },
+            GateSpec {
+                plugin: "code-review".into(),
+                config: serde_json::json!({"strategy": "self"}),
+            },
+        ];
+        let multi_error = store
+            .insert_work(
+                multi_review,
+                host_work_context("we-multi-review", "create-multi-review", "unix-ms:3"),
+            )
+            .expect_err("one Work cannot declare multiple code-review Gates");
+        assert!(multi_error
+            .to_string()
+            .contains("more than one code-review"));
+        assert!(store.latest_works().expect("works").is_empty());
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
     fn generic_review_append_rejects_bound_work_review() {
         let root = team_test_root("bound-review-append");
         let store = HarnessStore::new(&root);
@@ -8844,6 +8984,8 @@ mod tests {
             reviewed_work_id: Some("work-1".into()),
             reviewed_work_version: Some(3),
             review_strategy: Some(CodeReviewStrategy::Host),
+            performed_by_actor: None,
+            authority_actor: None,
         };
         let error = store
             .append_review(&review)
@@ -9029,7 +9171,7 @@ mod tests {
     }
 
     #[test]
-    fn host_review_rejects_member_writer_and_accepts_host_context() {
+    fn host_review_requires_fixed_authority_and_keeps_writer_out_of_reviewer_identity() {
         let (root, store, run, owner, _) = work_test_fixture("host-review-binding");
         let mut gated = unassigned_test_work(&run.id, "work-host-review");
         gated.gates = vec![GateSpec {
@@ -9070,20 +9212,115 @@ mod tests {
             )
             .expect_err("ordinary Member cannot write host Review");
         assert!(error.to_string().contains("Host authority is required"));
-        store
+
+        let missing_authority = store
+            .record_work_review(
+                &submitted.id,
+                submitted.version,
+                work_review_payload("review-host-no-authority", ReviewVerdict::Pass),
+                host_work_context("unused", "unused", "unix-ms:6"),
+            )
+            .expect_err("performed-by Host is not itself trusted review authority");
+        assert!(missing_authority
+            .to_string()
+            .contains("WORK_HOST_REVIEW_AUTHORITY_REQUIRED"));
+
+        let mut wrong_authority_kind = trusted_host_review_context(
+            firm_core::TeamActorKind::Operator,
+            "operator:alice",
+            "unix-ms:7",
+        );
+        wrong_authority_kind.authority_actor = Some(firm_core::TeamActorRef {
+            kind: firm_core::TeamActorKind::Operator,
+            id: TRUSTED_HOST_REVIEWER_ID.into(),
+            display_name: None,
+            authn_source: Some("untrusted-operator:test".into()),
+        });
+        let wrong_kind = store
+            .record_work_review(
+                &submitted.id,
+                submitted.version,
+                work_review_payload("review-host-wrong-authority-kind", ReviewVerdict::Pass),
+                wrong_authority_kind,
+            )
+            .expect_err("Operator authority cannot impersonate fixed Host reviewer");
+        assert!(wrong_kind
+            .to_string()
+            .contains("WORK_HOST_REVIEW_AUTHORITY_MISMATCH"));
+
+        let mut wrong_authority_id = trusted_host_review_context(
+            firm_core::TeamActorKind::Operator,
+            "operator:alice",
+            "unix-ms:8",
+        );
+        wrong_authority_id
+            .authority_actor
+            .as_mut()
+            .expect("authority")
+            .id = "host:caller-supplied".into();
+        let wrong_id = store
+            .record_work_review(
+                &submitted.id,
+                submitted.version,
+                work_review_payload("review-host-wrong-authority-id", ReviewVerdict::Pass),
+                wrong_authority_id,
+            )
+            .expect_err("caller-supplied Host id cannot become reviewer identity");
+        assert!(wrong_id
+            .to_string()
+            .contains("WORK_HOST_REVIEW_AUTHORITY_MISMATCH"));
+
+        let performed_by_id = "operator:alice";
+        let trusted_context = trusted_host_review_context(
+            firm_core::TeamActorKind::Operator,
+            performed_by_id,
+            "unix-ms:9",
+        );
+        assert_eq!(trusted_context.performed_by_actor.id, performed_by_id);
+        assert_eq!(
+            trusted_context
+                .authority_actor
+                .as_ref()
+                .expect("fixed Host authority")
+                .id,
+            TRUSTED_HOST_REVIEWER_ID
+        );
+        let review = store
             .record_work_review(
                 &submitted.id,
                 submitted.version,
                 work_review_payload("review-host", ReviewVerdict::Pass),
-                host_work_context("unused", "unused", "unix-ms:6"),
+                trusted_context,
             )
-            .expect("Host records bound Review");
+            .expect("authenticated operator acts under fixed Host review authority");
+        assert_eq!(review.reviewer_agent_id, TRUSTED_HOST_REVIEWER_ID);
+        assert_ne!(review.reviewer_agent_id, performed_by_id);
+        let performed_by = review
+            .performed_by_actor
+            .as_ref()
+            .expect("trusted writer persists actual performer attribution");
+        assert_eq!(performed_by.kind, firm_core::TeamActorKind::Operator);
+        assert_eq!(performed_by.id, performed_by_id);
+        let authority = review
+            .authority_actor
+            .as_ref()
+            .expect("trusted writer persists fixed Host authority");
+        assert_eq!(authority.kind, firm_core::TeamActorKind::Host);
+        assert_eq!(authority.id, TRUSTED_HOST_REVIEWER_ID);
+        let persisted = store
+            .reviews()
+            .expect("read persisted Review audit attribution")
+            .into_iter()
+            .find(|candidate| candidate.id == review.id)
+            .expect("persisted trusted Review");
+        assert_eq!(persisted.performed_by_actor, review.performed_by_actor);
+        assert_eq!(persisted.authority_actor, review.authority_actor);
         assert_eq!(
             store
                 .accept_work(
                     &submitted.id,
                     submitted.version,
-                    host_work_context("we-host-4", "accept-host", "unix-ms:7"),
+                    host_work_context("we-host-4", "accept-host", "unix-ms:10"),
                 )
                 .expect("accept host-reviewed Work")
                 .status,

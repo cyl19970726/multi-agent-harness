@@ -537,9 +537,9 @@ impl KimiAcpClient {
                     // ...but the reader dispatched every update that preceded
                     // the response on the wire BEFORE enqueueing it, so
                     // draining here recovers the tail of the stream in order.
-                    // Drain BEFORE deciding acceptance: a buffered update is
-                    // proof the provider started this turn even when the
-                    // terminal frame won the same poll iteration.
+                    // Drain BEFORE deciding acceptance: buffered prompt output
+                    // or a reverse request proves the provider started this
+                    // turn even when the terminal frame won the same poll.
                     let mut tail = Vec::new();
                     while let Ok(update) = self.updates.try_recv() {
                         tail.push(update);
@@ -550,7 +550,10 @@ impl KimiAcpClient {
                     // rejection) never started work: publishing a receipt for
                     // it would complete the Assignment delivery and burn the
                     // assignment with no Handoff and nothing to replay.
-                    if !accepted && (!tail.is_empty() || outcome.provider_error.is_none()) {
+                    if !accepted
+                        && (tail.iter().any(prompt_acceptance_evidence)
+                            || outcome.provider_error.is_none())
+                    {
                         // Publish the receipt before handling the tail so tools
                         // invoked by this turn may immediately send a
                         // correlation-valid handoff or peer message.
@@ -568,13 +571,13 @@ impl KimiAcpClient {
             }
             match self.updates.try_recv() {
                 Ok(frame) => {
-                    if !accepted {
+                    if !accepted && prompt_acceptance_evidence(&frame) {
                         // ACP has no separate prompt-start acknowledgement.
-                        // Its first session update or provider request is the
-                        // earliest honest evidence that the prompt was
-                        // accepted. Publish that receipt before handling the
-                        // frame so tools invoked by this turn may immediately
-                        // send a correlation-valid handoff or peer message.
+                        // Its first prompt-scoped update or reverse request is
+                        // the earliest honest evidence that the prompt was
+                        // accepted. Publish before handling the frame so tools
+                        // invoked by this turn can immediately send a
+                        // correlation-valid handoff or peer message.
                         on_accepted(&provider_receipt_id)?;
                         accepted = true;
                     }
@@ -717,6 +720,39 @@ impl Drop for KimiAcpClient {
     fn drop(&mut self) {
         self.kill_quiet();
     }
+}
+
+/// Whether an agent→client frame proves that the current prompt started.
+///
+/// ACP multiplexes prompt output with session-scoped notifications on the
+/// same `session/update` stream. In particular, an
+/// `available_commands_update` may be emitted after session creation or after
+/// asynchronous skill discovery, including immediately before an unrelated
+/// prompt rejection. Such session state must still be handled, but cannot be
+/// used as a provider receipt. Fail closed for unknown update kinds: only
+/// prompt output defined by ACP v1, or a reverse request that the agent could
+/// only make while serving this turn, is acceptance evidence.
+fn prompt_acceptance_evidence(frame: &serde_json::Value) -> bool {
+    let method = frame.get("method").and_then(|method| method.as_str());
+    if frame.get("id").is_some_and(|id| !id.is_null()) && method.is_some() {
+        return true;
+    }
+    if method != Some("session/update") {
+        return false;
+    }
+    matches!(
+        frame
+            .pointer("/params/update/sessionUpdate")
+            .and_then(|kind| kind.as_str()),
+        Some(
+            "user_message_chunk"
+                | "agent_message_chunk"
+                | "agent_thought_chunk"
+                | "tool_call"
+                | "tool_call_update"
+                | "plan"
+        )
+    )
 }
 
 fn current_config_value(options: &[serde_json::Value], config_id: &str) -> Option<String> {
@@ -976,6 +1012,58 @@ mod tests {
                 "jsonrpc": "2.0", "id": 5, "result": {"stopReason": stop_reason}
             }));
             assert_eq!(outcome.provider_error, None, "{stop_reason}");
+        }
+    }
+
+    #[test]
+    fn prompt_receipt_evidence_excludes_session_level_and_unknown_updates() {
+        let session_level = [
+            "available_commands_update",
+            "current_mode_update",
+            "config_option_update",
+            "session_info_update",
+            "usage_update",
+            "future_session_state_update",
+        ];
+        let prompt_scoped = [
+            "user_message_chunk",
+            "agent_message_chunk",
+            "agent_thought_chunk",
+            "tool_call",
+            "tool_call_update",
+            "plan",
+        ];
+
+        // Exercise the exact predicate repeatedly without timing or sleeps so
+        // scheduler order cannot hide a regression in this acceptance gate.
+        for _ in 0..200 {
+            for kind in session_level {
+                let frame = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {"sessionId": "s", "update": {"sessionUpdate": kind}}
+                });
+                assert!(!prompt_acceptance_evidence(&frame), "{kind}");
+            }
+            for kind in prompt_scoped {
+                let frame = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {"sessionId": "s", "update": {"sessionUpdate": kind}}
+                });
+                assert!(prompt_acceptance_evidence(&frame), "{kind}");
+            }
+            assert!(prompt_acceptance_evidence(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 41,
+                "method": "session/request_permission",
+                "params": {"sessionId": "s"}
+            })));
+            assert!(!prompt_acceptance_evidence(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "session/cancel",
+                "params": {"sessionId": "s"}
+            })));
         }
     }
 }

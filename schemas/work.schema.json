@@ -34,7 +34,19 @@
     "gates": {
       "type": "array",
       "description": "Declared verification gates this Work must pass before acceptance. Empty vec preserves manual-accept semantics.",
-      "items": { "$ref": "#/$defs/gate_spec" }
+      "items": { "$ref": "#/$defs/gate_spec" },
+      "uniqueItems": true,
+      "allOf": [
+        {
+          "contains": {
+            "type": "object",
+            "required": ["plugin"],
+            "properties": { "plugin": { "const": "code-review" } }
+          },
+          "minContains": 0,
+          "maxContains": 1
+        }
+      ]
     },
     "workspace": {
       "type": ["object", "null"],
@@ -84,13 +96,14 @@
         { "$ref": "#/$defs/github_pr_gate" },
         { "$ref": "#/$defs/code_review_gate" },
         { "$ref": "#/$defs/artifact_exists_gate" },
-        { "$ref": "#/$defs/check_pass_gate" }
+        { "$ref": "#/$defs/check_pass_gate" },
+        { "$ref": "#/$defs/custom_gate" }
       ]
     },
     "github_pr_gate": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["plugin", "config"],
+      "required": ["plugin"],
       "properties": {
         "plugin": { "const": "github-pr" },
         "config": {
@@ -135,7 +148,7 @@
     "artifact_exists_gate": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["plugin", "config"],
+      "required": ["plugin"],
       "properties": {
         "plugin": { "const": "artifact-exists" },
         "config": {
@@ -155,7 +168,7 @@
     "check_pass_gate": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["plugin", "config"],
+      "required": ["plugin"],
       "properties": {
         "plugin": { "const": "check-pass" },
         "config": {
@@ -170,6 +183,22 @@
             }
           }
         }
+      }
+    },
+    "custom_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plugin"],
+      "properties": {
+        "plugin": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "not": {
+            "enum": ["github-pr", "code-review", "artifact-exists", "check-pass"]
+          }
+        },
+        "config": { "type": "object" }
       }
     }
   }
