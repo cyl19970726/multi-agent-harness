@@ -10,6 +10,7 @@ use harness_core::{
     HostAttention, HostBindingLease, HostBindingLeaseOwnerKind, HostDispatchConfig,
 };
 use harness_store::{HarnessStore, StoreError};
+use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 
 /// Typed result of inspecting one TeamRun for Host work.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,6 +183,29 @@ pub struct DispatcherBatchRequest<'a> {
     pub updated_at: &'a str,
 }
 
+/// A consumer may report success only together with the provider-native
+/// receipt that durably proves delivery of the entire claimed batch.
+pub struct DispatcherConsumerSuccess<T> {
+    value: T,
+    provider_receipt_id: String,
+}
+
+impl<T> DispatcherConsumerSuccess<T> {
+    #[allow(dead_code)] // Public kernel constructor for the future headless driver (#415).
+    pub fn new(value: T, provider_receipt_id: impl Into<String>) -> Result<Self, StoreError> {
+        let provider_receipt_id = provider_receipt_id.into();
+        if provider_receipt_id.trim().is_empty() {
+            return Err(StoreError::Conflict(
+                "dispatcher consumer provider receipt id must not be empty".to_string(),
+            ));
+        }
+        Ok(Self {
+            value,
+            provider_receipt_id,
+        })
+    }
+}
+
 #[allow(dead_code)] // Kernel seam for the future headless driver (#415).
 pub fn claim_dispatcher_batch_with_consumer<T, F>(
     store: &HarnessStore,
@@ -189,7 +213,7 @@ pub fn claim_dispatcher_batch_with_consumer<T, F>(
     consumer: F,
 ) -> Result<T, StoreError>
 where
-    F: FnOnce(&[HostAttention]) -> Result<T, StoreError>,
+    F: FnOnce(&[HostAttention]) -> Result<DispatcherConsumerSuccess<T>, StoreError>,
 {
     let DispatcherBatchRequest {
         lease,
@@ -213,18 +237,87 @@ where
         now_unix_ms,
         updated_at,
     )?;
-    match consumer(&claimed) {
-        Ok(value) => Ok(value),
-        Err(error) => {
-            for attention in &claimed {
-                store.fail_host_attention_claim(
+    match catch_unwind(AssertUnwindSafe(|| consumer(&claimed))) {
+        Ok(Ok(success)) => {
+            let DispatcherConsumerSuccess {
+                value,
+                provider_receipt_id,
+            } = success;
+            // JSONL has no multi-row transaction. If a later append fails,
+            // earlier Delivered rows remain durable and only the still-owned
+            // suffix is returned to Actionable for a conservative retry.
+            for (index, attention) in claimed.iter().enumerate() {
+                if let Err(error) = store.complete_host_attention_claim(
                     &attention.id,
                     claim_id,
-                    "dispatcher consumer rejected claimed batch",
+                    &provider_receipt_id,
                     updated_at,
-                )?;
+                ) {
+                    let cleanup = requeue_dispatcher_claims(
+                        store,
+                        &claimed[index..],
+                        claim_id,
+                        "dispatcher batch completion was only partially durable",
+                        updated_at,
+                    );
+                    return Err(with_cleanup_error(error, cleanup));
+                }
             }
-            Err(error)
+            Ok(value)
+        }
+        Ok(Err(error)) => {
+            let cleanup = requeue_dispatcher_claims(
+                store,
+                &claimed,
+                claim_id,
+                "dispatcher consumer rejected claimed batch",
+                updated_at,
+            );
+            Err(with_cleanup_error(error, cleanup))
+        }
+        Err(payload) => {
+            let _ = requeue_dispatcher_claims(
+                store,
+                &claimed,
+                claim_id,
+                "dispatcher consumer panicked",
+                updated_at,
+            );
+            resume_unwind(payload)
+        }
+    }
+}
+
+fn requeue_dispatcher_claims(
+    store: &HarnessStore,
+    claimed: &[HostAttention],
+    claim_id: &str,
+    reason: &str,
+    updated_at: &str,
+) -> Result<(), StoreError> {
+    let mut failures = Vec::new();
+    for attention in claimed {
+        if let Err(error) =
+            store.fail_host_attention_claim(&attention.id, claim_id, reason, updated_at)
+        {
+            failures.push(format!("{}: {error}", attention.id));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(StoreError::Conflict(format!(
+            "dispatcher could not requeue every claimed attention: {}",
+            failures.join("; ")
+        )))
+    }
+}
+
+fn with_cleanup_error(error: StoreError, cleanup: Result<(), StoreError>) -> StoreError {
+    match cleanup {
+        Ok(()) => error,
+        Err(cleanup_error) => {
+            StoreError::Conflict(format!("{error}; cleanup also failed: {cleanup_error}"))
         }
     }
 }
@@ -389,7 +482,7 @@ mod tests {
                 now_unix_ms: 112,
                 updated_at: "unix-ms:112",
             },
-            |_| Ok(()),
+            |_| DispatcherConsumerSuccess::new((), "stale-receipt"),
         )
         .expect_err("old lease fenced");
         assert!(stale.to_string().contains("HOST_BINDING_LEASE_FENCED"));
@@ -406,7 +499,9 @@ mod tests {
             },
             |batch| {
                 assert!(!batch.is_empty());
-                Err::<(), _>(StoreError::Conflict("consumer unavailable".into()))
+                Err::<DispatcherConsumerSuccess<()>, _>(StoreError::Conflict(
+                    "consumer unavailable".into(),
+                ))
             },
         )
         .expect_err("consumer failure");
@@ -419,6 +514,188 @@ mod tests {
             .expect("attention");
         assert_eq!(row.status, HostAttentionStatus::Actionable);
         assert!(row.claim_id.is_none());
+
+        let value = claim_dispatcher_batch_with_consumer(
+            &store,
+            DispatcherBatchRequest {
+                lease: &current,
+                older_than_unix_ms: 100,
+                limit: 10,
+                claim_id: "claim-success",
+                now_unix_ms: 113,
+                updated_at: "unix-ms:113",
+            },
+            |batch| {
+                assert_eq!(batch.len(), 1);
+                DispatcherConsumerSuccess::new("consumer-value", "provider-receipt-1")
+            },
+        )
+        .expect("consumer success completes batch");
+        assert_eq!(value, "consumer-value");
+        let delivered = store
+            .host_attentions()
+            .expect("attentions")
+            .into_iter()
+            .find(|row| row.id == attention_id)
+            .expect("attention");
+        assert_eq!(delivered.status, HostAttentionStatus::Delivered);
+        assert_eq!(
+            delivered.provider_receipt_id.as_deref(),
+            Some("provider-receipt-1")
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn consumer_panic_requeues_every_claim_before_resuming_unwind() {
+        let (store, root, run) = fixture();
+        let attention_id = store
+            .reconcile_host_binding_stale_attentions(50, "unix-ms:50")
+            .expect("stale attention")
+            .into_iter()
+            .find(|row| row.team_run_id == run.id)
+            .expect("run stale attention")
+            .id;
+        let lease = store
+            .acquire_host_binding_lease(
+                &run.id,
+                "codex",
+                "thread-1",
+                HostBindingLeaseOwnerKind::Dispatcher,
+                "dispatcher",
+                "lease-panic",
+                100,
+                100,
+            )
+            .expect("lease");
+        let panic = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let _ = claim_dispatcher_batch_with_consumer::<(), _>(
+                &store,
+                DispatcherBatchRequest {
+                    lease: &lease,
+                    older_than_unix_ms: 100,
+                    limit: 10,
+                    claim_id: "claim-panic",
+                    now_unix_ms: 101,
+                    updated_at: "unix-ms:101",
+                },
+                |_| panic!("consumer panic"),
+            );
+        }));
+        assert!(panic.is_err());
+        let row = store
+            .host_attentions()
+            .expect("attentions")
+            .into_iter()
+            .find(|row| row.id == attention_id)
+            .expect("attention");
+        assert_eq!(row.status, HostAttentionStatus::Actionable);
+        assert!(row.claim_id.is_none());
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn expired_dispatcher_claim_is_recovered_once_after_takeover() {
+        let (store, root, run) = fixture();
+        let attention_id = store
+            .reconcile_host_binding_stale_attentions(50, "unix-ms:50")
+            .expect("stale attention")
+            .into_iter()
+            .find(|row| row.team_run_id == run.id)
+            .expect("run stale attention")
+            .id;
+        let old = store
+            .acquire_host_binding_lease(
+                &run.id,
+                "codex",
+                "thread-1",
+                HostBindingLeaseOwnerKind::Dispatcher,
+                "dispatcher-old",
+                "lease-old-crash",
+                100,
+                10,
+            )
+            .expect("old lease");
+        let crashed = store
+            .claim_dispatcher_host_attention_batch(
+                &old,
+                100,
+                10,
+                "claim-before-crash",
+                101,
+                "unix-ms:101",
+            )
+            .expect("claim before simulated crash");
+        assert_eq!(crashed.len(), 1);
+        let still_claimed = store
+            .claim_dispatcher_host_attention_batch(
+                &old,
+                100,
+                10,
+                "claim-while-live",
+                102,
+                "unix-ms:102",
+            )
+            .expect("live lease does not steal its claim");
+        assert!(still_claimed.is_empty());
+
+        let current = store
+            .acquire_host_binding_lease(
+                &run.id,
+                "codex",
+                "thread-1",
+                HostBindingLeaseOwnerKind::Dispatcher,
+                "dispatcher-current",
+                "lease-current-recovery",
+                110,
+                100,
+            )
+            .expect("take over expired lease");
+        assert!(store
+            .complete_host_attention_claim(
+                &attention_id,
+                "claim-before-crash",
+                "stale-receipt",
+                "unix-ms:111",
+            )
+            .expect_err("stale lease cannot complete")
+            .to_string()
+            .contains("LEASE_FENCED"));
+        assert!(store
+            .fail_host_attention_claim(
+                &attention_id,
+                "claim-before-crash",
+                "stale failure",
+                "unix-ms:111",
+            )
+            .expect_err("stale lease cannot fail")
+            .to_string()
+            .contains("LEASE_FENCED"));
+
+        let recovered = store
+            .claim_dispatcher_host_attention_batch(
+                &current,
+                100,
+                10,
+                "claim-after-takeover",
+                111,
+                "unix-ms:111",
+            )
+            .expect("recover and claim");
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].id, attention_id);
+        assert_eq!(recovered[0].attempt, 2);
+        let repeat = store
+            .claim_dispatcher_host_attention_batch(
+                &current,
+                100,
+                10,
+                "claim-repeat",
+                112,
+                "unix-ms:112",
+            )
+            .expect("idempotent recovery");
+        assert!(repeat.is_empty());
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 }

@@ -1669,7 +1669,7 @@ impl HarnessStore {
             &current.host_surface,
             &current.host_thread_id,
         )?;
-        self.requeue_fenced_host_attention_claims_unlocked(&current, updated_at)?;
+        self.requeue_fenced_host_attention_claims_unlocked(&current, now_unix_ms, updated_at)?;
 
         let mut eligible = self
             .latest_host_attentions_unlocked()?
@@ -3809,17 +3809,33 @@ impl HarnessStore {
     fn requeue_fenced_host_attention_claims_unlocked(
         &self,
         current: &HostBindingLease,
+        now_unix_ms: u64,
         updated_at: &str,
     ) -> StoreResult<()> {
+        let run = self.require_team_run_unlocked(&current.team_run_id)?;
+        let current_is_effective_exact_dispatcher = current.owner_kind
+            == HostBindingLeaseOwnerKind::Dispatcher
+            && current.is_effective_at(now_unix_ms)
+            && canonical_surface(&current.host_surface) == canonical_surface(&run.host_surface)
+            && run.host_thread_id.as_deref() == Some(current.host_thread_id.as_str());
         let attentions = self.latest_host_attentions_unlocked()?;
         for mut attention in attentions.into_values().filter(|attention| {
             attention.team_run_id == current.team_run_id
                 && attention.status == HostAttentionStatus::Claimed
                 && attention.claimed_host_lease_id.is_some()
-                && (attention.claimed_host_lease_id.as_deref() != Some(current.lease_id.as_str())
+                && (!current_is_effective_exact_dispatcher
+                    || attention.claimed_host_lease_id.as_deref()
+                        != Some(current.lease_id.as_str())
                     || attention.claimed_host_lease_generation != Some(current.generation)
                     || attention.claimed_host_lease_owner_id.as_deref()
-                        != Some(current.owner_id.as_str()))
+                        != Some(current.owner_id.as_str())
+                    || attention
+                        .claimed_host_surface
+                        .as_deref()
+                        .map(canonical_surface)
+                        != Some(canonical_surface(&current.host_surface))
+                    || attention.claimed_host_thread_id.as_deref()
+                        != Some(current.host_thread_id.as_str()))
         }) {
             attention.status = HostAttentionStatus::Actionable;
             attention.claim_id = None;

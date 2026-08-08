@@ -48,12 +48,7 @@ pub(crate) fn discover_codex_rollout(
         Err(error) => return Err(error.into()),
     };
     let suffix = format!("{session_id}.jsonl");
-    Ok(find_codex_rollout_with_metadata(
-        &canonical_sessions,
-        &suffix,
-        session_id,
-        5,
-    ))
+    find_codex_rollout_with_metadata(&canonical_sessions, &suffix, session_id, 5)
 }
 
 fn find_codex_rollout_with_metadata(
@@ -61,13 +56,15 @@ fn find_codex_rollout_with_metadata(
     filename_suffix: &str,
     session_id: &str,
     depth: usize,
-) -> Option<PathBuf> {
+) -> CliResult<Option<PathBuf>> {
     if depth == 0 || !root.is_dir() {
-        return None;
+        return Ok(None);
     }
-    for entry in fs::read_dir(root).ok()?.flatten() {
+    let mut found = None;
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
         let path = entry.path();
-        let metadata = fs::symlink_metadata(&path).ok()?;
+        let metadata = fs::symlink_metadata(&path)?;
         if metadata.file_type().is_symlink() {
             continue;
         }
@@ -76,37 +73,73 @@ fn find_codex_rollout_with_metadata(
                 .file_name()
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.ends_with(filename_suffix))
-            && codex_rollout_metadata_matches(&path, session_id)
         {
-            return Some(path);
+            validate_codex_rollout_metadata(&path, session_id)?;
+            let canonical = fs::canonicalize(&path)?;
+            if !canonical.starts_with(root) {
+                return Err(CliError::Usage(format!(
+                    "Codex rollout candidate escapes the canonical sessions root: {}",
+                    path.display()
+                )));
+            }
+            if found.replace(canonical).is_some() {
+                return Err(CliError::Usage(format!(
+                    "multiple Codex rollout candidates name exact session `{session_id}`"
+                )));
+            }
         }
         if metadata.is_dir() {
-            if let Some(found) =
-                find_codex_rollout_with_metadata(&path, filename_suffix, session_id, depth - 1)
+            if let Some(nested) =
+                find_codex_rollout_with_metadata(&path, filename_suffix, session_id, depth - 1)?
             {
-                return Some(found);
+                if found.replace(nested).is_some() {
+                    return Err(CliError::Usage(format!(
+                        "multiple Codex rollout candidates name exact session `{session_id}`"
+                    )));
+                }
             }
         }
     }
-    None
+    Ok(found)
 }
 
-fn codex_rollout_metadata_matches(path: &Path, session_id: &str) -> bool {
-    let Ok(file) = fs::File::open(path) else {
-        return false;
-    };
-    BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .any(|line| {
-            serde_json::from_str::<serde_json::Value>(&line)
-                .ok()
-                .is_some_and(|row| {
-                    row.get("type").and_then(|value| value.as_str()) == Some("session_meta")
-                        && row.pointer("/payload/id").and_then(|value| value.as_str())
-                            == Some(session_id)
-                })
-        })
+fn validate_codex_rollout_metadata(path: &Path, session_id: &str) -> CliResult<()> {
+    let file = fs::File::open(path)?;
+    let mut session_meta_id = None;
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        let row = serde_json::from_str::<serde_json::Value>(&line)?;
+        if row.get("type").and_then(|value| value.as_str()) != Some("session_meta") {
+            continue;
+        }
+        let payload_id = row
+            .pointer("/payload/id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                CliError::Usage(format!(
+                    "Codex rollout candidate has session_meta without a string payload.id: {}",
+                    path.display()
+                ))
+            })?;
+        if session_meta_id.replace(payload_id.to_string()).is_some() {
+            return Err(CliError::Usage(format!(
+                "Codex rollout candidate has multiple session_meta rows: {}",
+                path.display()
+            )));
+        }
+    }
+    let metadata_id = session_meta_id.ok_or_else(|| {
+        CliError::Usage(format!(
+            "Codex rollout candidate has no session_meta row: {}",
+            path.display()
+        ))
+    })?;
+    if metadata_id != session_id {
+        return Err(CliError::Usage(format!(
+            "Codex rollout candidate metadata id `{metadata_id}` does not match requested session `{session_id}`"
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn read_activity(session: &NativeSessionRef) -> CliResult<serde_json::Value> {
@@ -478,9 +511,48 @@ mod tests {
             "{\"type\":\"session_meta\",\"payload\":{\"id\":\"019f-different\"}}\n",
         )
         .expect("rollout");
-        assert!(discover_codex_rollout(&home, requested)
-            .expect("discovery")
-            .is_none());
+        let error = discover_codex_rollout(&home, requested).expect_err("mismatch rejects");
+        assert!(error
+            .to_string()
+            .contains("does not match requested session"));
         fs::remove_dir_all(home).expect("cleanup");
+    }
+
+    #[test]
+    fn malformed_line_before_exact_codex_metadata_rejects_candidate() {
+        let home = codex_home("malformed-before-exact");
+        let session_id = "019f-malformed-before-exact";
+        let rollout = home
+            .join("sessions/2026/08/09")
+            .join(format!("rollout-2026-08-09T00-00-00-{session_id}.jsonl"));
+        fs::write(
+            rollout,
+            format!(
+                "not-json\n{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{session_id}\"}}}}\n"
+            ),
+        )
+        .expect("rollout");
+        assert!(discover_codex_rollout(&home, session_id).is_err());
+        fs::remove_dir_all(home).expect("cleanup");
+    }
+
+    #[test]
+    fn missing_or_multiple_codex_metadata_rejects_candidate() {
+        for (label, contents) in [
+            ("missing", "{\"type\":\"event_msg\",\"payload\":{}}\n"),
+            (
+                "multiple",
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"019f-ambiguous\"}}\n{\"type\":\"session_meta\",\"payload\":{\"id\":\"019f-ambiguous\"}}\n",
+            ),
+        ] {
+            let home = codex_home(label);
+            let session_id = "019f-ambiguous";
+            let rollout = home
+                .join("sessions/2026/08/09")
+                .join(format!("rollout-2026-08-09T00-00-00-{session_id}.jsonl"));
+            fs::write(rollout, contents).expect("rollout");
+            assert!(discover_codex_rollout(&home, session_id).is_err());
+            fs::remove_dir_all(home).expect("cleanup");
+        }
     }
 }
