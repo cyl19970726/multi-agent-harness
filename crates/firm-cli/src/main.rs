@@ -132,12 +132,14 @@ enum StoreSource {
     /// full provider permissions, so nested `harness ...` commands default to a
     /// session-local store unless the operator explicitly opts out.
     WorkflowChildEnv,
-    /// `HARNESS_ROOT` env override (deprecated, kept for tests/back-compat).
+    /// `FIRM_ROOT` env override, or deprecated `HARNESS_ROOT` alias.
+    FirmRootEnv,
+    /// Deprecated `HARNESS_ROOT` compatibility alias.
     HarnessRootEnv,
     /// `--company <id>` explicit Company Store selector. Only applies to
     /// `harness company ...` commands.
     CompanyFlag,
-    /// `HARNESS_COMPANY` Company Store selector. Only applies to
+    /// `FIRM_COMPANY` Company Store selector, with `HARNESS_COMPANY` alias.
     /// `harness company ...` commands.
     CompanyEnv,
     /// Active Company Store marker / registry current. Only applies to
@@ -145,13 +147,13 @@ enum StoreSource {
     CompanyCurrent,
     /// `--space <id>` explicit Execution Space selector.
     SpaceFlag,
-    /// `HARNESS_SPACE` Execution Space selector.
+    /// `FIRM_SPACE` Execution Space selector, with `HARNESS_SPACE` alias.
     SpaceEnv,
     /// Active Execution Space marker / registry current.
     SpaceCurrent,
     /// `--project <id|path>` explicit selector.
     ProjectFlag,
-    /// `HARNESS_PROJECT` env selector.
+    /// `FIRM_PROJECT` Project Binding selector, with `HARNESS_PROJECT` alias.
     ProjectEnv,
     /// Registry `current_project_id` / `ACTIVE_PROJECT` marker.
     RegistryCurrent,
@@ -178,14 +180,15 @@ pub(crate) struct ResolvedStore {
 /// Resolve the Harness coordination store and Project Binding.
 ///
 /// Store precedence:
-/// 1. `--store` / workflow-child store / `HARNESS_ROOT` compatibility override.
+/// 1. `--store` / workflow-child store / `FIRM_ROOT` (`HARNESS_ROOT` alias).
 /// 2. Company Store selector for `harness company ...`.
-/// 3. `--space` / `HARNESS_SPACE` / active Execution Space.
+/// 3. `--space` / `FIRM_SPACE` (`HARNESS_SPACE` alias) / active Execution Space.
 /// 4. project-derived compatibility store only when no Execution Space exists.
 /// 5. legacy repo-local `.harness`, then active/global compatibility project.
 ///
 /// Project Binding precedence is independent:
-/// `--project` / `HARNESS_PROJECT`, then the selected space's default binding,
+/// `--project` / `FIRM_PROJECT` (`HARNESS_PROJECT` alias), then the selected
+/// space's default binding,
 /// then the active Project Binding. Selecting it never switches the store.
 ///
 /// `init` is special-cased so it never adopts an ancestor's `.harness` via the
@@ -218,17 +221,18 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             });
         }
     }
-    if let Ok(root) = env::var("HARNESS_ROOT") {
-        if !root.is_empty() {
-            warn_deprecated_override("HARNESS_ROOT", "harness space switch");
-            return Ok(ResolvedStore {
-                root: PathBuf::from(root),
-                source: StoreSource::HarnessRootEnv,
-                context: None,
-                company_context: None,
-                execution_space_context: None,
-            });
-        }
+    if let Some((root, used_legacy_alias)) = canonical_or_legacy_env("FIRM_ROOT", "HARNESS_ROOT") {
+        return Ok(ResolvedStore {
+            root: PathBuf::from(root),
+            source: if used_legacy_alias {
+                StoreSource::HarnessRootEnv
+            } else {
+                StoreSource::FirmRootEnv
+            },
+            context: None,
+            company_context: None,
+            execution_space_context: None,
+        });
     }
 
     let firm_home = match project::firm_home() {
@@ -248,8 +252,8 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
     if command == Some("company") {
         let (company_selector, selector_source) = match take_flag_value(args, "--company") {
             Some(v) => (Some(v), StoreSource::CompanyFlag),
-            None => match env::var("HARNESS_COMPANY").ok().filter(|s| !s.is_empty()) {
-                Some(v) => (Some(v), StoreSource::CompanyEnv),
+            None => match canonical_or_legacy_env("FIRM_COMPANY", "HARNESS_COMPANY") {
+                Some((v, _)) => (Some(v), StoreSource::CompanyEnv),
                 None => (None, StoreSource::CompanyFlag),
             },
         };
@@ -283,8 +287,8 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
     // picks the provider workspace/config/permission binding only.
     let (project_selector, selector_source) = match take_flag_value(args, "--project") {
         Some(v) => (Some(v), StoreSource::ProjectFlag),
-        None => match env::var("HARNESS_PROJECT").ok().filter(|s| !s.is_empty()) {
-            Some(v) => (Some(v), StoreSource::ProjectEnv),
+        None => match canonical_or_legacy_env("FIRM_PROJECT", "HARNESS_PROJECT") {
+            Some((v, _)) => (Some(v), StoreSource::ProjectEnv),
             None => (None, StoreSource::ProjectFlag),
         },
     };
@@ -330,11 +334,8 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
     // Selecting a Project Binding never changes this store.
     let (space_selector, space_source) = match take_flag_value(args, "--space") {
         Some(value) => (Some(value), StoreSource::SpaceFlag),
-        None => match env::var("HARNESS_SPACE")
-            .ok()
-            .filter(|value| !value.is_empty())
-        {
-            Some(value) => (Some(value), StoreSource::SpaceEnv),
+        None => match canonical_or_legacy_env("FIRM_SPACE", "HARNESS_SPACE") {
+            Some((value, _)) => (Some(value), StoreSource::SpaceEnv),
             None => (
                 execution_space::active_space_id(&firm_home).map_err(execution_space_err)?,
                 StoreSource::SpaceCurrent,
@@ -497,9 +498,10 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
     })
 }
 
-/// Resolve a `--project`/`HARNESS_PROJECT` selector that may be a registered id OR
-/// a path to a project root. Returns `None` if it cannot be resolved (caller then
-/// continues down the precedence chain).
+/// Resolve a `--project`/`FIRM_PROJECT` selector that may be a registered id OR
+/// a path to a project root. `HARNESS_PROJECT` remains a deprecated alias.
+/// Returns `None` if it cannot be resolved (caller then continues down the
+/// precedence chain).
 fn resolve_project_selector(
     firm_home: &Path,
     selector: &str,
@@ -533,6 +535,29 @@ fn resolve_project_selector(
 /// JSON stdout.
 fn warn_deprecated_override(what: &str, replacement: &str) {
     eprintln!("warning: {what} is deprecated for store selection; prefer `{replacement}`");
+}
+
+/// Read one canonical Firm selector with a deprecated Harness compatibility
+/// alias. Empty values are treated as absent. The boolean reports whether the
+/// legacy alias supplied the selected value, which lets callers retain precise
+/// debug provenance without duplicating precedence logic.
+fn canonical_or_legacy_env(canonical: &str, legacy: &str) -> Option<(String, bool)> {
+    if let Ok(value) = env::var(canonical) {
+        if !value.is_empty() {
+            return Some((value, false));
+        }
+    }
+    if let Ok(value) = env::var(legacy) {
+        if !value.is_empty() {
+            if legacy == "HARNESS_ROOT" {
+                warn_deprecated_override(legacy, "harness space switch");
+            } else {
+                eprintln!("warning: {legacy} is deprecated; prefer `{canonical}`");
+            }
+            return Some((value, true));
+        }
+    }
+    None
 }
 
 /// Back-compat shim: callers that only need the store root keep working. New code
@@ -611,7 +636,7 @@ fn command_name_for_resolution(args: &[String]) -> Option<String> {
 /// `ACTIVE_PROJECT` marker so subsequent commands converge.
 ///
 /// Which project is initialized:
-/// - `--store`/`HARNESS_ROOT` override → that raw path is materialized exactly as
+/// - `--store`/`FIRM_ROOT` (`HARNESS_ROOT` alias) → that raw path is materialized exactly as
 ///   before (no registry entry), so compatibility tests keep passing.
 /// - `--project <id|path>`             → the explicitly selected project root.
 /// - otherwise                         → the CURRENT DIRECTORY (the dir the user
@@ -621,10 +646,13 @@ fn command_name_for_resolution(args: &[String]) -> Option<String> {
 ///   `.harness` as the canonical store — holds because `resolve_store` skips the
 ///   cwd walk-up for `init`.
 fn init_routed(store: &HarnessStore, resolved: &ResolvedStore) -> CliResult<()> {
-    // Override path (`--store`/`HARNESS_ROOT`): historical raw-path behavior.
+    // Override path (`--store`/`FIRM_ROOT`/`HARNESS_ROOT`): raw-path behavior.
     if matches!(
         resolved.source,
-        StoreSource::StoreFlag | StoreSource::WorkflowChildEnv | StoreSource::HarnessRootEnv
+        StoreSource::StoreFlag
+            | StoreSource::WorkflowChildEnv
+            | StoreSource::FirmRootEnv
+            | StoreSource::HarnessRootEnv
     ) {
         store.init()?;
         println!("initialized {}", store.root().display());
@@ -632,7 +660,7 @@ fn init_routed(store: &HarnessStore, resolved: &ResolvedStore) -> CliResult<()> 
     }
 
     let firm_home = project::firm_home().map_err(project_err)?;
-    // An explicit `--project`/`HARNESS_PROJECT` selector pins the root via the
+    // An explicit `--project`/`FIRM_PROJECT` selector pins the root via the
     // resolved context; otherwise `init` materializes the CURRENT directory as a
     // project (never the GLOBAL default, never an ancestor's `.harness`).
     let project_root = match resolved.source {
@@ -14291,14 +14319,12 @@ fn selected_company_store_for_work_cutover(args: &[String]) -> CliResult<Harness
     let home = company_store::firm_home().map_err(company_store_err)?;
     let company_id = value(args, "--company")
         .or_else(|| {
-            env::var("HARNESS_COMPANY")
-                .ok()
-                .filter(|value| !value.is_empty())
+            canonical_or_legacy_env("FIRM_COMPANY", "HARNESS_COMPANY").map(|(value, _)| value)
         })
         .or_else(|| company_store::active_company_id(&home).ok().flatten())
         .ok_or_else(|| {
             CliError::Usage(
-                "Work cutover requires --company <id>, HARNESS_COMPANY, or an active Company"
+                "Work cutover requires --company <id>, FIRM_COMPANY, or an active Company"
                     .to_string(),
             )
         })?;
@@ -23874,7 +23900,7 @@ fn sse_post_snapshot_test_pause() -> Option<std::time::Duration> {
 #[derive(Clone)]
 struct ServeProjects {
     /// `~/.harness` — `None` only when serve was started with a raw
-    /// `--store`/`HARNESS_ROOT` override (no registry to consult).
+    /// `--store`/`FIRM_ROOT` override (no registry to consult).
     firm_home: Option<PathBuf>,
     /// The id of the project `serve` started for (the active/`_global` project, or a
     /// synthetic id in raw-override mode). Used as the default when no `?project`.
@@ -23886,7 +23912,7 @@ struct ServeProjects {
     /// Preserve the exact startup context even when it came from an
     /// unregistered Git worktree path. Reconstructing it from the synthetic id
     /// would otherwise collapse project_root into store_root, and provider
-    /// members would receive an unusable HARNESS_PROJECT selector.
+    /// members would receive an unusable FIRM_PROJECT selector.
     default_context: Option<ProjectContext>,
 }
 
@@ -23894,7 +23920,7 @@ impl ServeProjects {
     /// Build from the store resolved in `run()` plus its `ResolvedStore` record.
     fn from_resolved(store: &HarnessStore, resolved: &ResolvedStore) -> Self {
         // A project identity only exists when resolution went through the registry /
-        // global path (not a raw `--store`/`HARNESS_ROOT` override).
+        // global path (not a raw `--store`/`FIRM_ROOT` override).
         let registry_backed =
             resolved.context.is_some() || resolved.execution_space_context.is_some();
         let firm_home = registry_backed
@@ -24123,7 +24149,7 @@ impl ServeProjects {
         let Some(home) = &self.firm_home else {
             if company.is_some() {
                 return Err(CliError::Usage(
-                    "serve is running with a raw --store/HARNESS_ROOT override; Company Store selection is unavailable"
+                    "serve is running with a raw --store/FIRM_ROOT override; Company Store selection is unavailable"
                         .to_string(),
                 ));
             }
@@ -24181,7 +24207,7 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
         .display()
         .to_string();
     println!(
-        "coordination store: {store_display}  (select with --space/HARNESS_SPACE; raw --store/HARNESS_ROOT is deprecated)"
+        "coordination store: {store_display}  (select with --space/FIRM_SPACE; raw --store remains deprecated)"
     );
 
     let projects = ServeProjects::from_resolved(store, resolved);
@@ -24277,13 +24303,14 @@ fn daemon_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(resident::DEFAULT_MAX_IDLE.as_secs());
             // `--socket <path>` may only restate the default per-workspace
-            // socket. Discovery is HARNESS_ROOT-only: the delivery client and
-            // `daemon status`/`stop` all derive the socket from HARNESS_ROOT via
+            // socket. Discovery is FIRM_ROOT-first: the delivery client and
+            // `daemon status`/`stop` derive the socket from FIRM_ROOT (with the
+            // deprecated HARNESS_ROOT alias) via
             // `daemon_socket_path`, with no way to learn an overridden directory.
             // So a socket whose parent != the store root would start a live but
             // UNDISCOVERABLE daemon (deliveries silently degrade to inline,
             // `status` reports absent, `stop` finds no pidfile). We therefore
-            // accept the flag only when it names exactly `<HARNESS_ROOT>/resident.sock`
+            // accept the flag only when it names exactly `<FIRM_ROOT>/resident.sock`
             // and reject any other path with a clear error rather than spawning
             // an orphan daemon.
             if let Some(path) = value(args, "--socket") {
@@ -24291,7 +24318,7 @@ fn daemon_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 let expected = resident_daemon::daemon_socket_path(&harness_root);
                 if path != expected {
                     return Err(CliError::Usage(format!(
-                        "--socket must be {} (discovery is HARNESS_ROOT-only); got {}",
+                        "--socket must be {} (discovery is FIRM_ROOT-first); got {}",
                         expected.display(),
                         path.display()
                     )));
@@ -25276,7 +25303,7 @@ fn handle_project_switch(
         .ok_or_else(|| CliError::Usage("missing `project` id to switch to".to_string()))?;
     let home = projects.firm_home.as_ref().ok_or_else(|| {
         CliError::Usage(
-            "serve is running with a raw --store/HARNESS_ROOT override; project switch is unavailable"
+            "serve is running with a raw --store/FIRM_ROOT override; project switch is unavailable"
                 .to_string(),
         )
     })?;
@@ -25294,7 +25321,7 @@ fn handle_space_switch(
         .ok_or_else(|| CliError::Usage("missing `space` id to switch to".to_string()))?;
     let home = projects.firm_home.as_ref().ok_or_else(|| {
         CliError::Usage(
-            "serve is running with a raw --store/HARNESS_ROOT override; Execution Space switch is unavailable"
+            "serve is running with a raw --store/FIRM_ROOT override; Execution Space switch is unavailable"
                 .to_string(),
         )
     })?;
@@ -25316,7 +25343,7 @@ fn handle_company_switch(
         .ok_or_else(|| CliError::Usage("missing `company` id to switch to".to_string()))?;
     let home = projects.firm_home.as_ref().ok_or_else(|| {
         CliError::Usage(
-            "serve is running with a raw --store/HARNESS_ROOT override; Company Store switch is unavailable"
+            "serve is running with a raw --store/FIRM_ROOT override; Company Store switch is unavailable"
                 .to_string(),
         )
     })?;
@@ -27674,6 +27701,7 @@ fn apply_workflow_child_store_guard(
     )
     .env("HARNESS_HOME", workflow_child_firm_home(session_dir))
     .env("HARNESS_WORKFLOW_STORE_GUARD", "isolated")
+    .env_remove("FIRM_PROJECT")
     .env_remove("HARNESS_PROJECT");
 }
 
@@ -28082,7 +28110,7 @@ fn sanitize_worktree_slug(label: &str) -> String {
 /// fallback.
 ///
 /// BACK-COMPAT: a store with no `metadata.json` — a raw `--store <path>` /
-/// `HARNESS_ROOT` / legacy cwd-walk-up store — has no pinned project identity, so
+/// `FIRM_ROOT` / legacy cwd-walk-up store — has no pinned project identity, so
 /// we fall back to TODAY'S behavior exactly: `project_root` = the harness process
 /// cwd (what `workflow_repo_root()` returned before), `store_root` = the store
 /// root, git-ness probed live. This keeps existing serve + run-script flows
@@ -28170,7 +28198,7 @@ fn workflow_repo_root(project: &ProjectContext) -> PathBuf {
 ///      the right `CLAUDE.md` / `AGENTS.md` / `.claude/` even when a long-running
 ///      `serve` switched projects and never `cd`d.
 ///   3. `env::current_dir()` — last-resort compatibility fallback (a raw
-///      `--store`/`HARNESS_ROOT` store with no pinned identity degrades to today's
+///      `--store`/`FIRM_ROOT` store with no pinned identity degrades to today's
 ///      behavior; see `workflow_project_context`).
 ///
 /// Returns a display string (the `Command::current_dir` callers already pass a
@@ -35980,8 +36008,9 @@ fn run_claude_resident_delivery_real(
     // through to the inline single-turn path below (graceful degrade).
     #[cfg(unix)]
     {
-        let harness_root =
-            PathBuf::from(env::var("HARNESS_ROOT").unwrap_or_else(|_| ".harness".into()));
+        let harness_root = canonical_or_legacy_env("FIRM_ROOT", "HARNESS_ROOT")
+            .map(|(value, _)| PathBuf::from(value))
+            .unwrap_or_else(|| PathBuf::from(".harness"));
         if resident_daemon::daemon_is_available(&harness_root) {
             let request = resident_daemon::DaemonRequest {
                 member_id: member.id.clone(),
@@ -36584,8 +36613,9 @@ fn print_help() {
 Retired coordination commands fail explicitly. Historical rows are available only
 through legacy-goal-task export|verify.
 
-Execution selection is independent: --space/HARNESS_SPACE selects coordination
-storage; --project/HARNESS_PROJECT selects the provider cwd/config/Skill boundary.
+Execution selection is independent: --space/FIRM_SPACE selects coordination
+storage; --project/FIRM_PROJECT selects the provider cwd/config/Skill boundary.
+HARNESS_SPACE and HARNESS_PROJECT remain deprecated compatibility aliases.
 
 Agent Team creation uses --lead <host-agent-id>; --owner remains a compatibility
 alias. Mission create-team defaults the Lead to the current Host Agent (`host`)."#
@@ -39736,7 +39766,7 @@ new file mode 100644
 
     #[test]
     fn workflow_project_context_falls_back_to_cwd_without_metadata() {
-        // BACK-COMPAT: a store with no metadata.json (a raw --store / HARNESS_ROOT /
+        // BACK-COMPAT: a store with no metadata.json (a raw --store / FIRM_ROOT /
         // walk-up store) has no pinned identity, so the project_root degrades to the
         // harness process cwd exactly as before, and store_root is the store root.
         let store = temp_store("nometa");

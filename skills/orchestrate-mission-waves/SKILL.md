@@ -569,7 +569,7 @@ Before claiming completion, prove from durable state:
 - the Host records explicit Mission Log judgment and Mission closeout.
 
 When developing Star Harness itself and the product contract is in question,
-read canonical repository files `docs/product/agent-team-works.md`,
+read canonical repository files `docs/current/product/agent-team-works.md`,
 `docs/decisions/0050-agent-team-work-board-and-message-boundary.md`,
 `docs/decisions/0051-single-intent-spine.md`, and
-`docs/product/mission-wave-host-plan.md`.
+`docs/current/product/mission-wave-host-plan.md`.

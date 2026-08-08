@@ -193,6 +193,59 @@ fn active_company_routes_company_os_without_stealing_execution_store() {
 }
 
 #[test]
+fn firm_company_is_canonical_and_harness_company_is_a_fallback() {
+    let home = TempHome::new("company-env-precedence");
+    let repo = home.home().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+
+    for (id, name) in [("company-a", "Company A"), ("company-b", "Company B")] {
+        let out = run_firm(
+            &home,
+            &repo,
+            &["company", "init", "--id", id, "--name", name],
+        );
+        assert!(out.status.success(), "company init failed: {out:?}");
+    }
+
+    let canonical = run_firm_with_env(
+        &home,
+        &repo,
+        &["--store-source", "company", "docs", "health"],
+        &[
+            ("FIRM_COMPANY", "company-a"),
+            ("HARNESS_COMPANY", "company-b"),
+        ],
+    );
+    assert!(
+        canonical.status.success(),
+        "canonical selection failed: {canonical:?}"
+    );
+    let canonical_stderr = String::from_utf8_lossy(&canonical.stderr);
+    assert!(
+        canonical_stderr.contains("company-context: id=company-a"),
+        "stderr: {canonical_stderr}"
+    );
+    assert!(!canonical_stderr.contains("HARNESS_COMPANY is deprecated"));
+
+    let alias = run_firm_with_env(
+        &home,
+        &repo,
+        &["--store-source", "company", "docs", "health"],
+        &[("HARNESS_COMPANY", "company-a")],
+    );
+    assert!(alias.status.success(), "alias selection failed: {alias:?}");
+    let alias_stderr = String::from_utf8_lossy(&alias.stderr);
+    assert!(
+        alias_stderr.contains("company-context: id=company-a"),
+        "stderr: {alias_stderr}"
+    );
+    assert!(
+        alias_stderr.contains("HARNESS_COMPANY is deprecated; prefer `FIRM_COMPANY`"),
+        "stderr: {alias_stderr}"
+    );
+}
+
+#[test]
 fn stale_active_company_is_error_not_project_store_fallback() {
     let home = TempHome::new("company-stale-active");
     let repo = home.home().join("repo");

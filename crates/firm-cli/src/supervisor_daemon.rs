@@ -392,9 +392,10 @@ pub(crate) fn spawn_supervisor_daemon(
 
     // Inherit all parent environment variables so test harness vars
     // (FAKE_KIMI_RESULT, PATH with fake shims, etc.) flow through to
-    // the daemon child.  FIRM_ROOT is already overridden above.
+    // the daemon child. FIRM_ROOT is already overridden above; never re-inject
+    // a parent HARNESS_ROOT alias that could point at a different raw store.
     for (key, val) in std::env::vars() {
-        if key != "FIRM_ROOT" {
+        if key != "FIRM_ROOT" && key != "HARNESS_ROOT" {
             cmd.env(key, val);
         }
     }

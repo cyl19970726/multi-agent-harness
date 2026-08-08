@@ -15,9 +15,11 @@ import { defineConfig } from "vite";
  * `FIRM_BUILD_GIT_REV`.
  */
 function resolveDashboardGitRev(): string {
-  const supplied = process.env.FIRM_BUILD_GIT_REV?.trim();
-  if (supplied === "unknown") return "unknown";
-  if (supplied && /^[0-9a-f]{40}$/i.test(supplied)) return supplied.toLowerCase();
+  const suppliedRaw = process.env.FIRM_BUILD_GIT_REV;
+  if (suppliedRaw !== undefined) {
+    const supplied = suppliedRaw.trim();
+    return /^[0-9a-f]{40}$/i.test(supplied) ? supplied.toLowerCase() : "unknown";
+  }
   try {
     const rev = execFileSync("git", ["rev-parse", "--verify", "HEAD^{commit}"], {
       cwd: fileURLToPath(new URL(".", import.meta.url)),

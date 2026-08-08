@@ -395,5 +395,5 @@ historical read-only commands. Use lowercase `wave` as a batch noun; never use
 capitalized `Wave` as an object name in new work.
 
 When developing Star Harness itself and the product contract is in question,
-read canonical repository files `docs/product/agent-team-works.md` and
+read canonical repository files `docs/current/product/agent-team-works.md` and
 `docs/decisions/0050-agent-team-work-board-and-message-boundary.md`.

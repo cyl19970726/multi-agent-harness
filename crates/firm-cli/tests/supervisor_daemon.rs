@@ -35,12 +35,23 @@ fn run_with_fake_kimi_daemon(
     fake_result: &str,
     args: &[&str],
 ) -> std::process::Output {
+    run_with_fake_kimi_daemon_env(home, fake_bin, fake_result, args, &[])
+}
+
+fn run_with_fake_kimi_daemon_env(
+    home: &TempHome,
+    fake_bin: &Path,
+    fake_result: &str,
+    args: &[&str],
+    extra_env: &[(&str, &str)],
+) -> std::process::Output {
     let path = format!(
         "{}:{}",
         fake_bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    std::process::Command::new(env!("CARGO_BIN_EXE_firm"))
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_firm"));
+    command
         .args(args)
         .current_dir(home.base())
         .envs(home.envs())
@@ -74,9 +85,11 @@ fn run_with_fake_kimi_daemon(
             home.base().join("claude-collaboration.env"),
         )
         .env("FIRM_DAEMON_SPAWN_TIMEOUT_SECS", "15")
-        .env_remove("KIMI_CODE_BIN")
-        .output()
-        .expect("run harness")
+        .env_remove("KIMI_CODE_BIN");
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
+    command.output().expect("run harness")
 }
 
 /// Read a supervisor lease for a given team_run_id.  Supervisor leases use
@@ -106,7 +119,11 @@ fn read_supervisor_lease(
     None
 }
 fn store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::Value> {
-    let path = home.spaces_dir().join(project_id).join(file);
+    store_rows_at(&home.spaces_dir().join(project_id), file)
+}
+
+fn store_rows_at(store_root: &Path, file: &str) -> Vec<serde_json::Value> {
+    let path = store_root.join(file);
     let text =
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let mut ids: Vec<String> = Vec::new();
@@ -127,6 +144,96 @@ fn store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::
     ids.into_iter()
         .map(|id| by_id.remove(&id).unwrap())
         .collect()
+}
+
+#[test]
+fn raw_store_detached_supervisor_uses_the_exact_parent_store() {
+    let home = TempHome::new("daemon-raw-store");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let raw_store = home.base().join("raw-store");
+    let raw = raw_store.to_str().unwrap();
+
+    let init = run_with_fake_kimi_daemon(&home, &fake_bin, "done", &["--store", raw, "init"]);
+    assert!(init.status.success(), "raw init failed: {init:?}");
+    let create = run_with_fake_kimi_daemon(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--store",
+            raw,
+            "team-run",
+            "create",
+            "--objective",
+            "Prove detached raw-store routing",
+            "--member",
+            "worker:implementer:kimi@crates/a#Wait for status inspection",
+        ],
+    );
+    assert!(create.status.success(), "raw create failed: {create:?}");
+    let members = store_rows_at(&raw_store, "member_runs.jsonl");
+    let run_id = members[0]["team_run_id"].as_str().unwrap().to_string();
+
+    let start = run_with_fake_kimi_daemon_env(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            "--store",
+            raw,
+            "team-run",
+            "start",
+            "--id",
+            &run_id,
+            "--idle-timeout-s",
+            "15",
+        ],
+        &[("FAKE_KIMI_WAIT", "1")],
+    );
+    assert!(start.status.success(), "raw start failed: {start:?}");
+
+    let lease_path = raw_store.join("team_supervisor_leases.jsonl");
+    let leases = std::fs::read_to_string(&lease_path)
+        .unwrap_or_else(|error| panic!("read exact-store lease {}: {error}", lease_path.display()));
+    assert!(
+        leases.contains(&run_id),
+        "lease missing from exact parent store"
+    );
+
+    let status = run_firm(
+        &home,
+        home.base(),
+        &[
+            "--store",
+            raw,
+            "daemon",
+            "supervisor",
+            "status",
+            "--team-run-id",
+            &run_id,
+        ],
+    );
+    assert!(status.status.success(), "raw status failed: {status:?}");
+    assert!(
+        String::from_utf8_lossy(&status.stdout).contains("running"),
+        "raw status did not observe the child lease: {}",
+        String::from_utf8_lossy(&status.stdout)
+    );
+
+    let stop = run_firm(
+        &home,
+        home.base(),
+        &[
+            "--store",
+            raw,
+            "daemon",
+            "supervisor",
+            "stop",
+            "--team-run-id",
+            &run_id,
+        ],
+    );
+    assert!(stop.status.success(), "raw stop failed: {stop:?}");
 }
 
 /// Create a run with one kimi member and return (run_id, member_id).

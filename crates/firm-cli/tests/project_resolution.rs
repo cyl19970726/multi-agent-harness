@@ -135,6 +135,30 @@ fn harness_root_env_overrides_and_warns() {
 }
 
 #[test]
+fn firm_root_is_canonical_and_wins_over_harness_root() {
+    let home = TempHome::new("res-firm-root");
+    let proj = home.base().join("repo");
+    std::fs::create_dir_all(&proj).unwrap();
+    init(&home, &proj);
+
+    let (_o, e) = resolve(
+        &home,
+        &proj,
+        &[],
+        &[
+            ("FIRM_ROOT", "/tmp/firm-root-canonical"),
+            ("HARNESS_ROOT", "/tmp/harness-root-alias"),
+        ],
+    );
+    assert!(e.contains("FirmRootEnv"), "stderr: {e}");
+    assert!(
+        root_of(&e).contains("/tmp/firm-root-canonical"),
+        "stderr: {e}"
+    );
+    assert!(!e.contains("HARNESS_ROOT is deprecated"), "stderr: {e}");
+}
+
+#[test]
 fn project_flag_selects_binding_without_switching_execution_store() {
     let home = TempHome::new("res-project-flag");
     let proj = home.base().join("repo");
@@ -163,9 +187,94 @@ fn project_env_selects_binding_without_switching_execution_store() {
         serde_json::from_str(&std::fs::read_to_string(home.registry_path()).unwrap()).unwrap();
     let id = registry["current_project_id"].as_str().unwrap().to_string();
 
-    let (_o, e) = resolve(&home, home.base(), &[], &[("FIRM_PROJECT", &id)]);
+    let (_o, e) = resolve(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("FIRM_PROJECT", &id),
+            ("HARNESS_PROJECT", "missing-project-alias"),
+        ],
+    );
     assert!(e.contains("SpaceCurrent"), "stderr: {e}");
     assert!(root_of(&e).contains("/execution-spaces/"), "stderr: {e}");
+    assert!(!e.contains("HARNESS_PROJECT is deprecated"), "stderr: {e}");
+
+    let (_o, alias_stderr) = resolve(&home, home.base(), &[], &[("HARNESS_PROJECT", &id)]);
+    assert!(
+        alias_stderr.contains("SpaceCurrent"),
+        "stderr: {alias_stderr}"
+    );
+    assert!(
+        alias_stderr.contains("HARNESS_PROJECT is deprecated; prefer `FIRM_PROJECT`"),
+        "stderr: {alias_stderr}"
+    );
+}
+
+#[test]
+fn firm_space_is_canonical_and_harness_space_is_a_fallback() {
+    let home = TempHome::new("res-space-env-precedence");
+    let first = home.base().join("first");
+    let second = home.base().join("second");
+    std::fs::create_dir_all(&first).unwrap();
+    std::fs::create_dir_all(&second).unwrap();
+    init(&home, &first);
+    let mut spaces_after_first: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.space_registry_path()).unwrap())
+            .unwrap();
+    let first_space = spaces_after_first["current_space_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    spaces_after_first["current_space_id"] = serde_json::Value::Null;
+    std::fs::write(
+        home.space_registry_path(),
+        serde_json::to_vec_pretty(&spaces_after_first).unwrap(),
+    )
+    .unwrap();
+    match std::fs::remove_file(home.active_space_marker_path()) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => panic!("clear active space marker: {error}"),
+    }
+    init(&home, &second);
+    let spaces_after_second: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.space_registry_path()).unwrap())
+            .unwrap();
+    let second_space = spaces_after_second["current_space_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(first_space, second_space);
+
+    let (_o, canonical_stderr) = resolve(
+        &home,
+        home.base(),
+        &[],
+        &[
+            ("FIRM_SPACE", &first_space),
+            ("HARNESS_SPACE", &second_space),
+        ],
+    );
+    assert!(
+        canonical_stderr.contains("SpaceEnv"),
+        "stderr: {canonical_stderr}"
+    );
+    assert!(
+        root_of(&canonical_stderr).ends_with(&first_space),
+        "stderr: {canonical_stderr}"
+    );
+    assert!(!canonical_stderr.contains("HARNESS_SPACE is deprecated"));
+
+    let (_o, alias_stderr) = resolve(&home, home.base(), &[], &[("HARNESS_SPACE", &first_space)]);
+    assert!(
+        root_of(&alias_stderr).ends_with(&first_space),
+        "stderr: {alias_stderr}"
+    );
+    assert!(
+        alias_stderr.contains("HARNESS_SPACE is deprecated; prefer `FIRM_SPACE`"),
+        "stderr: {alias_stderr}"
+    );
 }
 
 #[test]
