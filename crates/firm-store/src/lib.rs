@@ -8,17 +8,17 @@ use std::time::{Duration, Instant};
 use firm_core::{
     validate_agent_team_topology, validate_work_cutover_with_fences, AgentEvent, AgentMember,
     AgentMemberStatus, AgentMessageRoute, AgentRuntime, AgentTeam, AgentTeamRun, Decision,
-    DelegationRun, DurableAgentMember, Evidence, Gap, GitHubLink, HostAttention,
-    HostAttentionInbox, HostAttentionKind, HostAttentionStatus, MemberAction, MemberRun, Message,
-    MessageDelivery, MessageDeliveryStatus, MessageTerminalSource, Mission, MissionLogEntry,
-    MissionStatus, PendingInteraction, Proposal, ProviderChildThread, ProviderExecutionStatus,
-    Review, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus,
-    TeamMessage, TeamMessageKind, TeamRunEvent, TeamRunStatus, TeamSupervisorLease,
-    TeamSupervisorLeaseStatus, Validate, Vision, Wave, WaveExecutorKind, WaveGateStatus,
-    WaveStatus, Work, WorkClaimMode, WorkCommandContext, WorkCutoverFence, WorkCutoverReport,
-    WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate, WorkEvent, WorkEventKind, WorkItem,
-    WorkItemStatus, WorkOperation, WorkStatus, WorkflowArtifactManifest, WorkflowPatch,
-    WorkflowRun, WorkflowStep,
+    DelegationRun, DurableAgentMember, Evidence, Gap, GateEngine, GateVerdict, GitHubLink,
+    HostAttention, HostAttentionInbox, HostAttentionKind, HostAttentionStatus, MemberAction,
+    MemberRun, Message, MessageDelivery, MessageDeliveryStatus, MessageTerminalSource, Mission,
+    MissionLogEntry, MissionStatus, PendingInteraction, Proposal, ProviderChildThread,
+    ProviderExecutionStatus, Review, TeamDeliveryPolicy, TeamDeliveryStatus,
+    TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage, TeamMessageKind, TeamRunEvent,
+    TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus, Validate, Vision, Wave,
+    WaveExecutorKind, WaveGateStatus, WaveStatus, Work, WorkClaimMode, WorkCommandContext,
+    WorkCutoverFence, WorkCutoverReport, WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate,
+    WorkEvent, WorkEventKind, WorkItem, WorkItemStatus, WorkOperation, WorkStatus,
+    WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -2478,6 +2478,7 @@ impl HarnessStore {
                 "work {work_id} must await Host acceptance"
             )));
         }
+        self.require_work_gates_pass_unlocked(&current)?;
         let mut next = current.clone();
         next.status = WorkStatus::Done;
         next.version += 1;
@@ -2492,6 +2493,34 @@ impl HarnessStore {
             context,
             payload,
         )
+    }
+
+    fn require_work_gates_pass_unlocked(&self, work: &Work) -> StoreResult<()> {
+        if work.gates.is_empty() {
+            return Ok(());
+        }
+        let reviews = self.read_jsonl::<Review>("reviews.jsonl")?;
+        let failed = GateEngine::evaluate_work_gates_with_reviews(work, &reviews)
+            .into_iter()
+            .filter(|result| !result.verdict.is_pass())
+            .map(|result| {
+                let reason = match result.verdict {
+                    GateVerdict::Fail { reason } => format!("FAIL: {reason}"),
+                    GateVerdict::Blocked { reason } => format!("BLOCKED: {reason}"),
+                    GateVerdict::Pass => unreachable!("passing gates were filtered out"),
+                };
+                format!("[{}] {reason}", result.gate.plugin)
+            })
+            .collect::<Vec<_>>();
+        if failed.is_empty() {
+            return Ok(());
+        }
+        Err(StoreError::Conflict(format!(
+            "WORK_GATES_NOT_PASSING: cannot accept work {}: {} gate(s) not passing: {}",
+            work.id,
+            failed.len(),
+            failed.join("; ")
+        )))
     }
 
     pub fn request_work_changes(
@@ -8333,6 +8362,64 @@ mod tests {
     }
 
     #[test]
+    fn legacy_raw_work_operation_replays_through_store_projections() {
+        let root = team_test_root("legacy-raw-work-operation");
+        let store = HarnessStore::new(&root);
+        store.init().expect("initialize legacy replay store");
+        let raw_operation = serde_json::json!({
+            "event": {
+                "id": "work-event-legacy-raw-1",
+                "team_run_id": "team-run-legacy-raw-1",
+                "work_id": "work-legacy-raw-1",
+                "sequence": 1,
+                "kind": "created",
+                "expected_version": 0,
+                "resulting_version": 1,
+                "performed_by_actor": { "kind": "host", "id": "host" },
+                "idempotency_key": "create-work-legacy-raw-1",
+                "created_at": "unix-ms:1"
+            },
+            "work": {
+                "id": "work-legacy-raw-1",
+                "team_run_id": "team-run-legacy-raw-1",
+                "title": "Replay a historical WorkOperation",
+                "context_markdown": "Raw JSONL compatibility row",
+                "completion_criteria_markdown": "Both Store projections remain readable",
+                "status": "open",
+                "claim_mode": "team_claim",
+                "priority": "normal",
+                "created_by_actor": { "kind": "host", "id": "host" },
+                "version": 1,
+                "created_at": "unix-ms:1",
+                "updated_at": "unix-ms:1"
+            }
+        });
+        std::fs::write(
+            root.join("work_operations.jsonl"),
+            format!("{raw_operation}\n"),
+        )
+        .expect("write historical WorkOperation bytes");
+
+        let operations = store.work_operations().expect("replay WorkOperations");
+        assert_eq!(operations.len(), 1);
+        assert!(operations[0].deliveries.is_empty());
+        assert!(operations[0].delivery_updates.is_empty());
+        assert!(operations[0].event.authority_actor.is_none());
+        assert!(operations[0].event.causation_ref.is_none());
+        assert_eq!(operations[0].event.payload, serde_json::Value::Null);
+
+        let works = store
+            .latest_works()
+            .expect("rebuild latest Work projection");
+        assert_eq!(works.len(), 1);
+        assert_eq!(works[0], operations[0].work);
+        assert!(works[0].team_id.is_none());
+        assert!(works[0].gates.is_empty());
+        assert!(works[0].workspace.is_none());
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
     fn team_run_completion_guard_is_store_authoritative() {
         let (root, store, run, _, _) = work_test_fixture("completion-guard");
         store
@@ -8595,6 +8682,62 @@ mod tests {
             !results.iter().all(|result| result.verdict.is_pass()),
             "declared evidence gates must prevent the acceptance seam from proceeding"
         );
+
+        let rejected = store
+            .accept_work(
+                &submitted.id,
+                submitted.version,
+                host_work_context("we-pdg-4", "accept-pdg-missing", "unix-ms:5"),
+            )
+            .expect_err("the Store acceptance seam must enforce declared gates");
+        assert!(rejected.to_string().contains("WORK_GATES_NOT_PASSING"));
+        let still_review = store
+            .latest_works()
+            .expect("latest Works after rejected acceptance")
+            .into_iter()
+            .find(|work| work.id == submitted.id)
+            .expect("submitted Work remains present");
+        assert_eq!(still_review.status, WorkStatus::Review);
+        assert_eq!(still_review.version, submitted.version);
+        assert!(
+            store
+                .work_events()
+                .expect("events after rejected acceptance")
+                .iter()
+                .all(|event| event.kind != WorkEventKind::Accepted),
+            "a rejected gate must not append an Accepted event"
+        );
+
+        let revision = store
+            .request_work_changes(
+                &still_review.id,
+                still_review.version,
+                "attach the declared evidence",
+                host_work_context("we-pdg-5", "revise-pdg", "unix-ms:6"),
+            )
+            .expect("request evidence revision");
+        let resubmitted = store
+            .submit_work(
+                &revision.id,
+                revision.version,
+                &member.id,
+                "Resubmitted with the declared evidence",
+                vec!["artifact://declared-output".into()],
+                vec!["check://declared-check".into()],
+                member_work_context(&member.id, "we-pdg-6", "resubmit-pdg", "unix-ms:7"),
+            )
+            .expect("resubmit with evidence");
+        assert!(GateEngine::evaluate_work_gates(&resubmitted)
+            .iter()
+            .all(|result| result.verdict.is_pass()));
+        let accepted = store
+            .accept_work(
+                &resubmitted.id,
+                resubmitted.version,
+                host_work_context("we-pdg-7", "accept-pdg-pass", "unix-ms:8"),
+            )
+            .expect("the same Store seam accepts after every declared gate passes");
+        assert_eq!(accepted.status, WorkStatus::Done);
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 

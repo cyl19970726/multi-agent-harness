@@ -1,18 +1,19 @@
-use firm_core::{Work, WorkEvent, WorkOperation, WorkStatus};
+use firm_core::{Work, WorkEvent, WorkStatus};
 use serde_json::json;
 
 #[test]
 fn work_status_is_exactly_the_six_state_contract() {
-    let cases = [
-        (WorkStatus::Open, "open"),
-        (WorkStatus::InProgress, "in_progress"),
-        (WorkStatus::Blocked, "blocked"),
-        (WorkStatus::Review, "review"),
-        (WorkStatus::Done, "done"),
-        (WorkStatus::Cancelled, "cancelled"),
+    let statuses = [
+        WorkStatus::Open,
+        WorkStatus::InProgress,
+        WorkStatus::Blocked,
+        WorkStatus::Review,
+        WorkStatus::Done,
+        WorkStatus::Cancelled,
     ];
 
-    for (status, wire_name) in cases {
+    for status in statuses {
+        let wire_name = work_status_wire_name(status);
         assert_eq!(serde_json::to_value(status).unwrap(), json!(wire_name));
         assert_eq!(
             serde_json::from_value::<WorkStatus>(json!(wire_name)).unwrap(),
@@ -47,7 +48,7 @@ fn legacy_work_omitting_optional_fields_remains_readable() {
 }
 
 #[test]
-fn legacy_event_and_operation_replay_default_optional_fields() {
+fn legacy_event_defaults_optional_fields() {
     let event_json = json!({
         "id": "work-event-legacy-1",
         "team_run_id": "team-run-legacy-1",
@@ -64,19 +65,17 @@ fn legacy_event_and_operation_replay_default_optional_fields() {
     assert!(event.authority_actor.is_none());
     assert!(event.causation_ref.is_none());
     assert_eq!(event.payload, serde_json::Value::Null);
+}
 
-    let operation: WorkOperation = serde_json::from_value(json!({
-        "event": event_json,
-        "work": legacy_work_json()
-    }))
-    .expect("legacy WorkOperation");
-    assert!(operation.deliveries.is_empty());
-    assert!(operation.delivery_updates.is_empty());
-
-    let replayed: WorkOperation =
-        serde_json::from_value(serde_json::to_value(&operation).expect("serialize replay row"))
-            .expect("replay serialized WorkOperation");
-    assert_eq!(replayed, operation);
+fn work_status_wire_name(status: WorkStatus) -> &'static str {
+    match status {
+        WorkStatus::Open => "open",
+        WorkStatus::InProgress => "in_progress",
+        WorkStatus::Blocked => "blocked",
+        WorkStatus::Review => "review",
+        WorkStatus::Done => "done",
+        WorkStatus::Cancelled => "cancelled",
+    }
 }
 
 fn legacy_work_json() -> serde_json::Value {

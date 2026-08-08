@@ -18,7 +18,7 @@ use harness_core::{
     AgentMemberStatus, AgentMessageRoute, AgentProviderConfig, AgentRuntime, AgentRuntimeHealth,
     AgentRuntimeStatus, AgentTeam, AgentTeamRun, AgentTeamStatus, DelegationRun,
     DurableAgentMember, DurableAgentMemberStatus, Evidence, ExecutionSpace, GateEngine, GateSpec,
-    GateVerdict, GitHubLink, GitHubLinkKind, HostAttention, HostAttentionStatus, HostControlMode,
+    GitHubLink, GitHubLinkKind, HostAttention, HostAttentionStatus, HostControlMode,
     HostDispatchConfig, LaunchMcp, LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus,
     MemberCoordinationStatus, MemberExecutionDriver, MemberRun, MemberRunStatus,
     MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus, MessageKind,
@@ -14205,39 +14205,11 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
         "accept" => {
             let work_id = required(args, "--work-id")?;
             let expected_version = required_work_version(args)?;
-            // Evaluate declared gates before accepting (unless --skip-gates).
-            if !has_flag(args, "--skip-gates") {
-                let work = store
-                    .latest_works()?
-                    .into_iter()
-                    .find(|w| w.id == work_id)
-                    .ok_or_else(|| CliError::Usage(format!("Work not found: {work_id}")))?;
-                if !work.gates.is_empty() {
-                    let reviews = store.reviews().unwrap_or_default();
-                    let results = GateEngine::evaluate_work_gates_with_reviews(&work, &reviews);
-                    let failed: Vec<_> = results
-                        .iter()
-                        .filter(|r| !r.verdict.is_pass())
-                        .collect();
-                    if !failed.is_empty() {
-                        let details: Vec<_> = failed
-                            .iter()
-                            .map(|r| {
-                                let reason = match &r.verdict {
-                                    GateVerdict::Fail { reason } => format!("FAIL: {reason}"),
-                                    GateVerdict::Blocked { reason } => format!("BLOCKED: {reason}"),
-                                    _ => unreachable!(),
-                                };
-                                format!("  [{}] {}", r.gate.plugin, reason)
-                            })
-                            .collect();
-                        return Err(CliError::Usage(format!(
-                            "cannot accept work {work_id}: {} gate(s) not passing:\n{}\nUse --skip-gates to bypass (requires explicit waiver).",
-                            failed.len(),
-                            details.join("\n"),
-                        )));
-                    }
-                }
+            if has_flag(args, "--skip-gates") {
+                return Err(CliError::Usage(
+                    "--skip-gates is retired: declared Work gates are a Store invariant and cannot be bypassed"
+                        .to_string(),
+                ));
             }
             let work = store.accept_work(
                 &work_id,
@@ -36487,7 +36459,7 @@ work list --team-run-id <id> [--brief] [--since <cursor>]
   [--status <status>] [--member-run-id <id>]
 work show --work-id <id>
 work assign --work-id <id> --expected-version <n> --member-run-id <id> [--idempotency-key <key>]
-work accept --work-id <id> --expected-version <n> [--skip-gates] [--idempotency-key <key>]
+work accept --work-id <id> --expected-version <n> [--idempotency-key <key>]
 work request-changes --work-id <id> --expected-version <n> --reason <text> [--idempotency-key <key>]
 work poll-github-ci --team-run-id <id>
 work check-gates --work-id <id>
@@ -36530,7 +36502,7 @@ work show --work-id <id>
 work assign --work-id <id> --expected-version <n> --member-run-id <id>
 work submit --team-run-id <id> --member-run-id <id> --work-id <id>
   --expected-version <n> --result <text> [--github-pr owner/repo#N]
-work accept --work-id <id> --expected-version <n> [--skip-gates]
+work accept --work-id <id> --expected-version <n>
 work request-changes --work-id <id> --expected-version <n> --reason <text>
 work poll-github-ci --team-run-id <id>
 work check-gates --work-id <id>
@@ -42255,6 +42227,152 @@ package:com.tencent.mm
     fn temp_store(label: &str) -> (HarnessStore, PathBuf) {
         let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id(label)));
         (HarnessStore::new(&root), root)
+    }
+
+    fn seed_missing_gate_evidence_review(store: &HarnessStore) -> (CreatedTeamRun, Work) {
+        let created = create_two_member_team_run(store);
+        let member = &created.member_runs[0];
+        let host_context = |event_id: &str, idempotency_key: &str| WorkCommandContext {
+            event_id: event_id.into(),
+            performed_by_actor: TeamActorRef {
+                kind: TeamActorKind::Operator,
+                id: "operator:test".into(),
+                display_name: None,
+                authn_source: Some("test".into()),
+            },
+            authority_actor: Some(TeamActorRef {
+                kind: TeamActorKind::Host,
+                id: "host".into(),
+                display_name: None,
+                authn_source: Some("test".into()),
+            }),
+            causation_ref: None,
+            idempotency_key: idempotency_key.into(),
+            created_at: "unix-ms:2".into(),
+            duplicate_ok: false,
+        };
+        let member_context = |event_id: &str, idempotency_key: &str| WorkCommandContext {
+            event_id: event_id.into(),
+            performed_by_actor: TeamActorRef {
+                kind: TeamActorKind::MemberRun,
+                id: member.id.clone(),
+                display_name: None,
+                authn_source: Some("bound-runtime:test".into()),
+            },
+            authority_actor: None,
+            causation_ref: None,
+            idempotency_key: idempotency_key.into(),
+            created_at: "unix-ms:3".into(),
+            duplicate_ok: false,
+        };
+        let work = store
+            .insert_work(
+                Work {
+                    id: "work-gate-entrypoint-contract".into(),
+                    team_run_id: created.team_run.id.clone(),
+                    team_id: None,
+                    created_by_member_id: None,
+                    parent_work_id: None,
+                    source_work_item_ref: None,
+                    title: "Enforce gates at every acceptance entrypoint".into(),
+                    context_markdown: String::new(),
+                    completion_criteria_markdown: "Declared artifact evidence exists".into(),
+                    status: WorkStatus::Open,
+                    owner_member_id: None,
+                    active_member_run_id: None,
+                    claim_mode: WorkClaimMode::TeamClaim,
+                    eligible_member_ids: Vec::new(),
+                    prerequisite_work_ids: Vec::new(),
+                    priority: WorkPriority::Normal,
+                    created_by_actor: host_context("ignored", "ignored").performed_by_actor,
+                    result_summary: None,
+                    blocker_reason: None,
+                    artifact_refs: Vec::new(),
+                    check_refs: Vec::new(),
+                    github_links: Vec::new(),
+                    gates: vec![GateSpec {
+                        plugin: "artifact-exists".into(),
+                        config: serde_json::json!({}),
+                    }],
+                    workspace: None,
+                    version: 0,
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                },
+                host_context("work-gate-create", "work-gate-create-command"),
+            )
+            .expect("create gated Work");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &member.id,
+                member_context("work-gate-claim", "work-gate-claim-command"),
+            )
+            .expect("claim gated Work");
+        let submitted = store
+            .submit_work(
+                &claimed.id,
+                claimed.version,
+                &member.id,
+                "submitted without declared artifact evidence",
+                Vec::new(),
+                Vec::new(),
+                member_context("work-gate-submit", "work-gate-submit-command"),
+            )
+            .expect("submit gated Work");
+        (created, submitted)
+    }
+
+    #[test]
+    fn cli_and_operator_work_accept_share_the_store_gate_invariant() {
+        let (store, root) = temp_store("work-gate-entrypoints");
+        let (created, submitted) = seed_missing_gate_evidence_review(&store);
+        let cli_error = team_run_work_command(
+            &store,
+            &[
+                "accept".into(),
+                "--work-id".into(),
+                submitted.id.clone(),
+                "--expected-version".into(),
+                submitted.version.to_string(),
+                "--idempotency-key".into(),
+                "cli-gate-reject".into(),
+            ],
+        )
+        .expect_err("ordinary CLI acceptance must not bypass Store gates");
+        assert!(cli_error.to_string().contains("WORK_GATES_NOT_PASSING"));
+
+        let skip_error = team_run_work_command(
+            &store,
+            &[
+                "accept".into(),
+                "--work-id".into(),
+                submitted.id.clone(),
+                "--expected-version".into(),
+                submitted.version.to_string(),
+                "--skip-gates".into(),
+            ],
+        )
+        .expect_err("the untyped boolean gate bypass is retired");
+        assert!(skip_error.to_string().contains("--skip-gates is retired"));
+
+        let operator_error = mutate_team_work_value(
+            &store,
+            &created.team_run.id,
+            &submitted.id,
+            "accept",
+            &serde_json::json!({
+                "expected_version": submitted.version,
+                "event_id": "operator-gate-reject",
+                "idempotency_key": "operator-gate-reject-command"
+            }),
+        )
+        .expect_err("HTTP/operator acceptance must not bypass Store gates");
+        assert!(operator_error
+            .to_string()
+            .contains("WORK_GATES_NOT_PASSING"));
+        std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
     fn create_two_member_team_run(store: &HarnessStore) -> CreatedTeamRun {

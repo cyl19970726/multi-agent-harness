@@ -300,7 +300,8 @@ Gate 模型在此基础上：
 - 现有 `completion_criteria_markdown` 保持自由文本，gate 可引用但不替代它。
 - 现有 `work accept` / `work request-changes` 命令继续工作。
 - 现有 `work poll-github-ci` 继续刷新 `github_links` 的 CI 快照。
-- 未来 `work accept` 内部先跑 gate 评估，全部 pass 才允许 accept。
+- Store 的 `accept_work` seam 强制评估 gate；CLI、MCP、HTTP/operator 和直接
+  Store 调用无法绕过。只有全部 pass 才允许 accept。
 
 ---
 
@@ -308,19 +309,19 @@ Gate 模型在此基础上：
 
 ### Phase 1：补 Work 契约 ← 当前阶段
 
-- [ ] 在 `firm-core` 中定义 `GateSpec`、`GateVerdict`
-- [ ] 在 `Work` struct 上加 `gates: Vec<GateSpec>`
-- [ ] 更新 `schemas/work.schema.json`
-- [ ] 在 `work create` CLI 支持 `--gate plugin=value` 参数
-- [ ] 更新 schema fixtures
-- [ ] 向后兼容：gates 为空时行为不变
+- [x] 在 `firm-core` 中定义 `GateSpec`、`GateVerdict`
+- [x] 在 `Work` struct 上加 `gates: Vec<GateSpec>`
+- [x] 更新 `schemas/work.schema.json`
+- [x] 在 `work create` CLI 支持 `--gate plugin=value` 参数
+- [x] 更新 schema fixtures
+- [x] 向后兼容：gates 为空时行为不变
 
 ### Phase 2：Gate trait + 执行引擎
 
-- [ ] 定义 `Gate` trait
-- [ ] 实现 `github-pr` gate（消费 `work.github_links`）
-- [ ] 实现 Gate 执行引擎（逐个 evaluate，汇总结果）
-- [ ] `work accept` 前置 gate 检查
+- [x] 定义可注册的 `GateRegistry` evaluator seam
+- [x] 实现 `github-pr` gate（消费 `work.github_links`）
+- [x] 实现 Gate 执行引擎（逐个 evaluate，汇总结果）
+- [x] Store `accept_work` 最终入口强制 gate 检查
 
 ### Phase 3：Agent 管线
 
