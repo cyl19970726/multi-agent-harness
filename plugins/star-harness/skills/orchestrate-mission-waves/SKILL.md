@@ -24,7 +24,7 @@ Member         = autonomous worker, one turn = one round, idles after each
 Host (Lead)    = decision-maker: review, accept, assign, close, re-plan
 ```
 
-**Work states**: `open → assigned → in_progress → review → done` (Host accepts) or `→ cancelled`
+**Work states**: `open → in_progress → review → done` (Host accepts) or `→ cancelled`; assignment/ownership is metadata, not a status
 **Message states**: `queued → claimed → delivered` (daemon handles)
 **Member states**: `queued → running → idle` (normal breathing) or `→ stopped` (Host closes)
 **Host receives**: hook auto-injects host-inbox at turn start — no polling needed
@@ -197,12 +197,14 @@ the first member starts and cleans it up on completion (when
 
 ```bash
 # Code work: isolated worktree (most common)
-firm work create --title "implement login" \
+firm team-run work create --title "implement login" \
+  --team-run-id <team-run-id> \
   --worktree ../repo-feat-login \
   --gate github-pr:require_merged=true
 
 # Exploration work: plain directory, keep after done
-firm work create --title "research async runtime" \
+firm team-run work create --title "research async runtime" \
+  --team-run-id <team-run-id> \
   --workspace-kind dir --workspace-path ../research-runtime \
   --workspace-no-cleanup
 
@@ -225,7 +227,7 @@ harness team-run work list --team-run-id <team-run-id>
 harness team-run work show --work-id <work-id>
 ```
 
-Create an assigned Work:
+Create a Work with host-assigned ownership:
 
 ```bash
 harness team-run work create \
@@ -375,15 +377,21 @@ identity. The only strategies are `peer`, `self`, and `host`; when no code
 review is required, omit the `code-review` gate rather than declaring `none`.
 
 Trusted Work Review writes preserve audit identity separately from authority:
-`performed_by_actor` records the authenticated submitter and `authority_actor`
-records the authority exercised when distinct. Peer/self reviews are written by
+`performed_by_actor` records the actor attribution supplied through the trusted
+caller context, and `authority_actor` records the authority exercised when
+distinct. These Store contexts are trusted caller inputs, not an authentication
+mechanism. Peer/self reviews are written by
 the bound MemberRun. Host reviews always use the fixed `Host/host` authority and
 persist `reviewer_agent_id=host`; CLI `--actor` and HTTP `actor_id` change only
 performer attribution and cannot impersonate Host authority or reviewer
 identity.
 
+Every bound Review names a positive Work version (`reviewed_work_version > 0`).
+The Review ledger is append-only and every `Review.id` is globally unique across
+its complete history; generic and Work-bound writers both reject id reuse.
+
 Treat project-derived Review ledgers as untrusted during Execution Space
-migration. Before creating or replacing any target ledger,
+migration. Before creating the target,
 `space migrate-from-project` preflights the complete source: every source row
 must deserialize as `Review` and pass validation, then every row with binding
 fields is stripped and must deserialize and validate again. A missing or
@@ -394,21 +402,37 @@ they cannot pass the gate. The migration manifest records their count as
 `downgraded_bound_reviews`. Inspect that count rather than trusting
 source-ledger binding claims.
 
-The whole migration publishes atomically at directory-identity granularity. It
-builds a transaction staging directory beside the target, completes conflict
-checks before staging, then re-reads source snapshots and verifies every staged
-ledger/directory before publish. An existing target is renamed to a scoped
-backup before the same-parent staging directory is renamed into place. The
-Execution Space registry and `ACTIVE_SPACE` share one lock throughout; registry
-and active-pointer snapshots plus the target backup are restored if activation
-fails. This lock protects cooperating registry/active operations, not arbitrary
-out-of-band filesystem writers.
+Migration is new-target only. Any existing target path is rejected, regardless
+of type, and the operator must choose a new `--id`; migration never replaces an
+existing target. `--force` is retired and fails before source, target, or
+registry mutation.
 
-If backup cleanup fails after publish and activation, the migration is already
-committed. Treat the success-with-warning as authoritative, inspect
-`cleanup_pending` and `cleanup_backup_path` in the manifest, and clean that
-backup separately after verifying the active target. Do not retry the whole
-migration merely because post-commit backup cleanup failed.
+The migration holds the source `HarnessStore` exclusive migration guard, which
+uses the same `.store.lock` as ordinary Store writers, from the first source
+preflight read through staging, verification, and publish. Ordinary cooperating
+Store writers therefore block until the consistent snapshot has been published.
+Do not call a source Store writer while the guard is held because that would
+attempt to re-enter the same lock.
+
+It builds and verifies a staging directory beside the absent target, rechecks
+that absence under the execution-space publish lock, and publishes with one
+same-parent rename. The manifest is published with
+`registration.status=pending` and a
+`registration.recovery_command` of `harness space switch <id>`. Successful
+registration and activation best-effort change the status to `complete`. If
+that later step fails, the fully verified target remains in place with `pending` status; follow
+the public switch command to recover registration and activation. Do not expect
+activation rollback, and do not describe target publication plus registry/
+`ACTIVE_SPACE` updates as one crash-atomic transaction.
+
+A successful initial registration or recovery switch best-effort reconciles the
+matching manifest from `pending` to `complete`. A manifest read, parse, or
+write-back failure emits a warning but does not undo or report failure for a
+registry/`ACTIVE_SPACE` update that already succeeded.
+
+This contract assumes a trusted local filesystem and cooperating writers that
+honor Store/registry locks. Path, type, and symlink checks are best effort; they
+do not claim protection against malicious out-of-band root or path replacement.
 
 **Gate-aware review.** If the Work has declared gates, run `work check-gates`
 to see which gates pass and which are blocked:

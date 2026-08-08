@@ -118,12 +118,16 @@ Verdict 不是 Work 状态。`Fail` / `Blocked` 会让 Store 拒绝 accept，
 旧的未绑定 `Review` 仍可读，但不能满足 Gate。Gate 匹配要求可信
 Work review 写入边界为当前候选派生的精确绑定，不接受任意 ledger 字段声明。
 重新 submit 会产生新 Work version，旧候选的 Review 不再匹配。
+绑定 Review 的 `reviewed_work_version` 必须大于 `0`；合法 Work 候选从
+version `1` 开始。Review ledger 是 append-only 审计历史，`Review.id`
+在完整历史中全局唯一；通用和 Work-bound 写入口都拒绝复用既有 id。
 
 ### Review 执行者与权限归因
 
 可信 Work review 写入会持久化两个不同概念：
 
-- `performed_by_actor`：实际提交 Review 的认证 actor。
+- `performed_by_actor`：可信调用边界提供的 actor 归因；这是 caller input，
+  不是 Store 自行完成的身份认证。
 - `authority_actor`：实际使用的权限 actor；与执行者相同时可为空。
 
 `peer` / `self` 由绑定 MemberRun 身份执行。`host` Review 的可信权限
@@ -134,7 +138,7 @@ CLI `--actor` 或 HTTP `actor_id` 只改变 `performed_by_actor` 的归因，不
 ### Execution Space 迁移的 Review 信任边界
 
 `space migrate-from-project` 不信任原项目 `reviews.jsonl` 中的 Work 绑定声明。
-在创建或替换任何 target ledger 前，迁移会先对完整 source 做预检：
+在创建 target 前，迁移会先对完整 source 做预检：
 
 1. 每个 source row 先必须成功 `Deserialize<Review>` 并通过 `Review::validate()`。
 2. 只要行中包含以下任一字段，就删除该行中实际存在的绑定字段。
@@ -151,22 +155,33 @@ CLI `--actor` 或 HTTP `actor_id` 只改变 `performed_by_actor` 的归因，不
 受影响的 Review 行数；运营者应检查此计数，而不应将原始 ledger
 视为 Gate 信任来源。
 
-整个 Execution Space 迁移使用与 target 同 parent 的 staging directory，
-以便通过 rename 发布同一文件系统上的目录身份。在创建 staging 前，
-它完成所有 source 读取、类型变换和 target conflict 检查；在发布前，
-它重读 source 快照并验证 staged ledger/directory，同时再检查 target
-的存在性和类型。已有 target 会先 rename 为 transaction-scoped backup，
-然后 staging 才发布到 target。
+迁移是 **new-target only**：目标 space id 对应的任何路径类型只要已存在，
+命令就拒绝并要求新的 `--id`，不会覆盖。`--force` 已退役；传入它会
+立即报错，不修改 source、target 或 registry。
 
-迁移在 Execution Space registry/`ACTIVE_SPACE` 的共享锁下执行。发布前会
-快照 registry 和 `ACTIVE_SPACE`；如果 activation 失败，则恢复 target backup
-与这两个指针。这保护了 CLI 共享 registry/active 路径，不声称能阻止
-锁外进程直接修改文件系统。
+迁移使用 source `HarnessStore` 的 exclusive migration guard，复用普通 Store
+writer 的 `.store.lock`。该 guard 从首次 source preflight read 持有到 staging、
+校验和发布完成，因此遵守 Store 写入协议的普通 writer 会被阻塞，
+快照与发布保持一致。guard 持有期间不得调用 source Store writer，
+避免对同一把锁重入。
 
-发布和 activation 成功后，backup cleanup 失败不回滚已提交迁移：
-命令仍是 committed success，输出 warning，并尽力在 manifest 写入
-`cleanup_pending: true` 和 `cleanup_backup_path`。此时不应重试整个迁移；
-应核对 manifest/active target 后单独清理该 backup。
+迁移在 target 同 parent 下构建 staging，验证 source 快照与 staged
+ledger/directory，再次确认 target 不存在后，用一次 rename 将 staging
+发布为 target。这是目录发布边界，不声称 target 与 registry/
+`ACTIVE_SPACE` 之间具有 crash-atomic transaction。
+
+manifest 先以 `registration.status: "pending"` 发布，并记录
+`registration.recovery_command: "harness space switch <id>"`。register/activate 成功后
+会 best-effort 将状态更新为 `complete`。如果 register/activate 失败，已完整验证的 target
+保留且 manifest 保持 `pending`；运营者应按错误提示执行公开的
+`harness space switch <id>` 恢复注册和激活，而不是期待迁移回滚。
+成功的初次注册或恢复 switch 都会 best-effort 调和与该 id 匹配的
+`pending` manifest；manifest 读取、解析或写回失败只输出 warning，
+不否定已成功的 registry/`ACTIVE_SPACE` 切换。
+
+这些保证以受信本地文件系统和合作方遵守 Store/registry 锁协议为
+边界。实现会尽力检查路径、类型和 symlink，但不声称能抵御绕过
+协议的 out-of-band root/path replacement 或恶意本地文件系统攻击。
 
 ```json
 { "plugin": "code-review", "config": { "strategy": "peer", "reviewer": "critic-1" } }
@@ -238,7 +253,8 @@ Store 已实现的精确绑定和接受不变量。
 - [x] Store `accept_work` 最终入口强制 Gate 检查
 - [x] CLI 拒绝已退役的 `--skip-gates`
 - [x] Execution Space 迁移降级原项目 ledger 的 Review 绑定并记录计数
-- [x] same-parent staging、backup publish、shared registry lock 与 activation rollback
+- [x] new-target-only、source Store exclusive guard、same-parent staged single-rename publish
+- [x] registration pending/complete manifest 与保留 target 的 switch recovery
 
 ### Phase 3：Agent 管线（部分完成）
 

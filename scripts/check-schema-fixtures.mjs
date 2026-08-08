@@ -43,7 +43,7 @@ function canonicalJson(value) {
 // checking duplicates. JSON Schema's uniqueItems compares the original wire
 // values, so supplement it here to keep schema-fixture acceptance aligned with
 // the runtime while retaining single old-wire declarations as valid.
-function semanticFixtureErrors(fixtureName, data) {
+function officialCompositeErrors(fixtureName, data) {
   if (fixtureName !== "work" || !Array.isArray(data?.gates)) return [];
 
   const seen = new Set();
@@ -82,7 +82,7 @@ for (const schemaFile of schemaFiles) {
     validCount += 1;
     const data = readJson(fixture);
     const schemaValid = validate(data);
-    const semanticErrors = semanticFixtureErrors(fixtureName, data);
+    const semanticErrors = officialCompositeErrors(fixtureName, data);
     if (!schemaValid || semanticErrors.length > 0) {
       failures.push(`${fixture}: expected valid but failed: ${formatErrors(validate.errors)}`);
       if (semanticErrors.length > 0) {
@@ -95,7 +95,7 @@ for (const schemaFile of schemaFiles) {
     invalidCount += 1;
     const data = readJson(fixture);
     const schemaValid = validate(data);
-    const semanticErrors = semanticFixtureErrors(fixtureName, data);
+    const semanticErrors = officialCompositeErrors(fixtureName, data);
     if (schemaValid && semanticErrors.length === 0) {
       failures.push(`${fixture}: expected invalid but passed ${schemaFile}`);
     }
@@ -107,4 +107,6 @@ if (failures.length) {
   process.exit(1);
 }
 
-console.log(`validated schema fixtures: ${validCount} valid, ${invalidCount} invalid`);
+console.log(
+  `validated official composite schema fixtures: ${validCount} valid, ${invalidCount} invalid`,
+);

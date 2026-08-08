@@ -1,0 +1,11 @@
+{
+  "id": "review-legacy-1",
+  "reviewer_agent_id": "evaluator-1",
+  "review_kind": "acceptance",
+  "verdict": "pass",
+  "summary": "Historical rows may omit optional target and risk fields.",
+  "blockers": [],
+  "missing_validation": [],
+  "evidence_ids": [],
+  "created_at": "2026-08-08T00:00:00Z"
+}

@@ -128,6 +128,20 @@ impl HarnessStore {
         Ok(())
     }
 
+    /// Hold the store's ordinary writer lock for the complete lifetime of a
+    /// migration snapshot.
+    ///
+    /// The guard intentionally exposes no store operations. Callers must not
+    /// invoke a write method on this same `HarnessStore` while it is alive:
+    /// those methods acquire `.store.lock` themselves and would be a
+    /// re-entrant lock attempt. Direct, read-only filesystem snapshots are the
+    /// intended use while the guard is held.
+    pub fn acquire_exclusive_migration_guard(&self) -> StoreResult<StoreExclusiveMigrationGuard> {
+        Ok(StoreExclusiveMigrationGuard {
+            _write_lock: self.acquire_write_lock()?,
+        })
+    }
+
     pub fn append_mission(&self, value: &Mission) -> StoreResult<()> {
         self.append_jsonl("missions.jsonl", value)
     }
@@ -730,7 +744,19 @@ impl HarnessStore {
                 "BOUND_REVIEW_REQUIRES_WORK_CONTEXT: use record_work_review".to_string(),
             ));
         }
-        self.append_jsonl("reviews.jsonl", value)
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        if self
+            .read_jsonl::<Review>("reviews.jsonl")?
+            .iter()
+            .any(|review| review.id == value.id)
+        {
+            return Err(StoreError::Conflict(format!(
+                "review already exists: {}",
+                value.id
+            )));
+        }
+        self.append_jsonl_unlocked("reviews.jsonl", value)
     }
 
     /// Record a Review bound to the exact current Work candidate. Identity and
@@ -792,13 +818,15 @@ impl HarnessStore {
             CodeReviewStrategy::Peer => {
                 let member_run_id = &context.performed_by_actor.id;
                 require_member_actor(&context.performed_by_actor, member_run_id)?;
-                let member = self.require_member_run_unlocked(member_run_id, &work.team_run_id)?;
+                let (team_run, member) =
+                    self.require_team_member_run_unlocked(member_run_id, &work.team_run_id)?;
                 if !member.coordination_is_active() {
                     return Err(StoreError::Conflict(
                         "only an active MemberRun may record a peer Work review".to_string(),
                     ));
                 }
-                let reviewer = stable_member_identity(&member);
+                let reviewer =
+                    self.require_unambiguous_stable_member_identity_unlocked(&team_run, &member)?;
                 if config.reviewer.as_deref() != Some(reviewer.as_str()) {
                     return Err(StoreError::Conflict(format!(
                         "WORK_REVIEWER_MISMATCH: expected peer reviewer {}, got {reviewer}",
@@ -815,13 +843,15 @@ impl HarnessStore {
             CodeReviewStrategy::SelfReview => {
                 let member_run_id = &context.performed_by_actor.id;
                 require_member_actor(&context.performed_by_actor, member_run_id)?;
-                let member = self.require_member_run_unlocked(member_run_id, &work.team_run_id)?;
+                let (team_run, member) =
+                    self.require_team_member_run_unlocked(member_run_id, &work.team_run_id)?;
                 if !member.coordination_is_active() {
                     return Err(StoreError::Conflict(
                         "only an active MemberRun may record a self Work review".to_string(),
                     ));
                 }
-                let reviewer = stable_member_identity(&member);
+                let reviewer =
+                    self.require_unambiguous_stable_member_identity_unlocked(&team_run, &member)?;
                 if work.owner_member_id.as_deref() != Some(reviewer.as_str()) {
                     return Err(StoreError::Conflict(
                         "WORK_SELF_REVIEW_REQUIRES_OWNER".to_string(),
@@ -3353,6 +3383,58 @@ impl HarnessStore {
         Ok(member)
     }
 
+    /// Resolve a runtime only when the latest TeamRun explicitly names it as a
+    /// member. A same-team MemberRun row is not membership authority: the
+    /// append-only ledger can contain stale or forged rows that were never
+    /// admitted to the TeamRun.
+    fn require_team_member_run_unlocked(
+        &self,
+        member_run_id: &str,
+        team_run_id: &str,
+    ) -> StoreResult<(AgentTeamRun, MemberRun)> {
+        let team_run = self.require_team_run_unlocked(team_run_id)?;
+        if !team_run
+            .member_run_ids
+            .iter()
+            .any(|candidate| candidate == member_run_id)
+        {
+            return Err(StoreError::Conflict(format!(
+                "WORK_REVIEWER_NOT_TEAM_MEMBER: MemberRun {member_run_id} is not registered in latest TeamRun {team_run_id}"
+            )));
+        }
+        let member = self.require_member_run_unlocked(member_run_id, team_run_id)?;
+        Ok((team_run, member))
+    }
+
+    /// A stable reviewer identity is trustworthy only when it resolves to one
+    /// exact runtime in the latest TeamRun membership. Reject duplicate stable
+    /// identities instead of choosing whichever MemberRun happened to be
+    /// loaded first.
+    fn require_unambiguous_stable_member_identity_unlocked(
+        &self,
+        team_run: &AgentTeamRun,
+        member: &MemberRun,
+    ) -> StoreResult<String> {
+        let identity = stable_member_identity(member);
+        let members = latest_by_id(self.read_jsonl::<MemberRun>("member_runs.jsonl")?, |row| {
+            row.id.clone()
+        });
+        let candidates = team_run
+            .member_run_ids
+            .iter()
+            .filter_map(|member_run_id| members.get(member_run_id))
+            .filter(|candidate| stable_member_identity(candidate) == identity)
+            .map(|candidate| candidate.id.as_str())
+            .collect::<Vec<_>>();
+        if candidates.len() != 1 || candidates[0] != member.id {
+            return Err(StoreError::Conflict(format!(
+                "WORK_REVIEWER_IDENTITY_AMBIGUOUS: stable identity {identity} resolves to TeamRun members [{}]",
+                candidates.join(", ")
+            )));
+        }
+        Ok(identity)
+    }
+
     fn validate_work_relations_unlocked(&self, work: &Work) -> StoreResult<()> {
         let works = self.latest_works_unlocked()?;
         for prerequisite_id in &work.prerequisite_work_ids {
@@ -5808,6 +5890,15 @@ impl Drop for StoreWriteLock {
     }
 }
 
+/// Scoped exclusive source-store guard used by migration code.
+///
+/// This is public so migration surfaces outside `firm-store` can serialize
+/// their snapshot with every normal [`HarnessStore`] writer while keeping the
+/// underlying lock implementation private.
+pub struct StoreExclusiveMigrationGuard {
+    _write_lock: StoreWriteLock,
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -5824,6 +5915,63 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn exclusive_migration_guard_blocks_normal_store_writers_until_drop() {
+        let root = std::env::temp_dir().join(format!(
+            "firm-store-migration-guard-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_millis()
+        ));
+        let store = HarnessStore::new(&root);
+        store.init().expect("init store");
+        let guard = store
+            .acquire_exclusive_migration_guard()
+            .expect("migration guard");
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let writer_store = store.clone();
+        let writer = std::thread::spawn(move || {
+            started_tx.send(()).expect("signal writer start");
+            let result = writer_store.append_mission(&Mission {
+                id: "mission-after-migration".into(),
+                title: "Blocked writer".into(),
+                objective: "Prove the migration guard shares the writer lock".into(),
+                context: String::new(),
+                desired_outcome: None,
+                status: MissionStatus::Planned,
+                wave_ids: Vec::new(),
+                agent_team_ids: Vec::new(),
+                outcome_summary: None,
+                completed_by: None,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+                completed_at: None,
+            });
+            done_tx.send(result).expect("signal writer completion");
+        });
+
+        started_rx.recv().expect("writer started");
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "normal writer must remain blocked while migration guard is alive"
+        );
+        assert!(
+            !root.join("missions.jsonl").exists(),
+            "blocked writer must not mutate the ledger"
+        );
+
+        drop(guard);
+        done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("writer unblocked after guard drop")
+            .expect("writer append succeeds");
+        writer.join().expect("writer thread");
+        assert_eq!(store.missions().expect("missions").len(), 1);
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
 
     #[test]
     fn mission_and_wave_ledgers_keep_history_and_project_latest_rows() {
@@ -8994,6 +9142,265 @@ mod tests {
             .to_string()
             .contains("BOUND_REVIEW_REQUIRES_WORK_CONTEXT"));
         assert!(store.reviews().expect("reviews").is_empty());
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn generic_review_append_rejects_duplicate_id_from_append_only_history() {
+        let root = team_test_root("duplicate-review-id");
+        let store = HarnessStore::new(&root);
+        store.init().expect("init store");
+        let review = Review {
+            id: "review-history-1".into(),
+            task_id: None,
+            goal_id: None,
+            reviewer_agent_id: "critic-a".into(),
+            review_kind: "design".into(),
+            verdict: ReviewVerdict::Pass,
+            summary: "original immutable review".into(),
+            blockers: Vec::new(),
+            residual_risk: None,
+            missing_validation: Vec::new(),
+            evidence_ids: Vec::new(),
+            created_at: "unix-ms:1".into(),
+            reviewed_work_id: None,
+            reviewed_work_version: None,
+            review_strategy: None,
+            performed_by_actor: None,
+            authority_actor: None,
+        };
+        store
+            .append_review(&review)
+            .expect("append original Review");
+        let mut trailing = review.clone();
+        trailing.id = "review-history-2".into();
+        trailing.summary = "later unrelated review".into();
+        store
+            .append_review(&trailing)
+            .expect("append later Review with a different id");
+
+        let mut duplicate = review.clone();
+        duplicate.summary = "attempted replacement".into();
+        let error = store
+            .append_review(&duplicate)
+            .expect_err("historical Review ids are immutable and cannot be reused");
+        assert!(error.to_string().contains("review already exists"));
+        let reviews = store.reviews().expect("read Review history");
+        assert_eq!(
+            reviews.len(),
+            2,
+            "duplicate rejection must not append a row"
+        );
+        assert_eq!(reviews[0], review, "original Review must remain unchanged");
+        assert_eq!(reviews[1], trailing);
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn concurrent_generic_review_append_allows_one_duplicate_id_winner() {
+        let root = team_test_root("concurrent-duplicate-review-id");
+        let store = Arc::new(HarnessStore::new(&root));
+        store.init().expect("init store");
+        let barrier = Arc::new(Barrier::new(2));
+        let handles = ["critic-a", "critic-b"].map(|reviewer| {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let review = Review {
+                    id: "review-concurrent-duplicate".into(),
+                    task_id: None,
+                    goal_id: None,
+                    reviewer_agent_id: reviewer.into(),
+                    review_kind: "design".into(),
+                    verdict: ReviewVerdict::Pass,
+                    summary: format!("candidate from {reviewer}"),
+                    blockers: Vec::new(),
+                    residual_risk: None,
+                    missing_validation: Vec::new(),
+                    evidence_ids: Vec::new(),
+                    created_at: "unix-ms:1".into(),
+                    reviewed_work_id: None,
+                    reviewed_work_version: None,
+                    review_strategy: None,
+                    performed_by_actor: None,
+                    authority_actor: None,
+                };
+                barrier.wait();
+                store.append_review(&review)
+            })
+        });
+        let results = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("review append thread"))
+            .collect::<Vec<_>>();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+        assert!(results
+            .iter()
+            .filter_map(|result| result.as_ref().err())
+            .all(|error| error.to_string().contains("review already exists")));
+        let reviews = store.reviews().expect("read Review history");
+        assert_eq!(
+            reviews.len(),
+            1,
+            "the duplicate id must append exactly once"
+        );
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn work_review_rejects_forged_member_run_outside_latest_team_membership() {
+        let (root, store, run, owner, peer) = work_test_fixture("forged-review-member");
+        let mut gated = unassigned_test_work(&run.id, "work-forged-review-member");
+        gated.gates = vec![GateSpec {
+            plugin: "code-review".into(),
+            config: serde_json::json!({"strategy": "peer", "reviewer": "agent-forged"}),
+        }];
+        let work = store
+            .insert_work(
+                gated,
+                host_work_context("we-forged-1", "create-forged", "unix-ms:2"),
+            )
+            .expect("create peer-reviewed Work");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &owner.id,
+                member_work_context(&owner.id, "we-forged-2", "claim-forged", "unix-ms:3"),
+            )
+            .expect("owner claims Work");
+        let submitted = store
+            .submit_work(
+                &claimed.id,
+                claimed.version,
+                &owner.id,
+                "candidate",
+                Vec::new(),
+                Vec::new(),
+                member_work_context(&owner.id, "we-forged-3", "submit-forged", "unix-ms:4"),
+            )
+            .expect("submit candidate");
+        let mut forged = peer.clone();
+        forged.id = "mr-forged-review-member".into();
+        forged.agent_member_id = Some("agent-forged".into());
+        store
+            .append_member_run(&forged)
+            .expect("append same-team row that latest TeamRun never admitted");
+
+        let before_reviews = store.reviews().expect("reviews before rejection");
+        let before_work = store
+            .latest_works()
+            .expect("works before rejection")
+            .into_iter()
+            .find(|work| work.id == submitted.id)
+            .expect("submitted Work");
+        let error = store
+            .record_work_review(
+                &submitted.id,
+                submitted.version,
+                work_review_payload("review-forged-member", ReviewVerdict::Pass),
+                member_work_context(&forged.id, "unused", "unused", "unix-ms:5"),
+            )
+            .expect_err("an arbitrary same-team MemberRun row is not TeamRun membership");
+        assert!(error.to_string().contains("WORK_REVIEWER_NOT_TEAM_MEMBER"));
+        assert_eq!(
+            store.reviews().expect("reviews after rejection"),
+            before_reviews
+        );
+        assert_eq!(
+            store
+                .latest_works()
+                .expect("works after rejection")
+                .into_iter()
+                .find(|work| work.id == submitted.id)
+                .expect("submitted Work after rejection"),
+            before_work,
+            "review rejection must not mutate Work"
+        );
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn work_review_rejects_ambiguous_stable_identity_in_latest_team_membership() {
+        let (root, store, run, owner, peer) = work_test_fixture("ambiguous-reviewer");
+        let mut gated = unassigned_test_work(&run.id, "work-ambiguous-reviewer");
+        gated.gates = vec![GateSpec {
+            plugin: "code-review".into(),
+            config: serde_json::json!({"strategy": "peer", "reviewer": "agent-b"}),
+        }];
+        let work = store
+            .insert_work(
+                gated,
+                host_work_context("we-ambiguous-1", "create-ambiguous", "unix-ms:2"),
+            )
+            .expect("create peer-reviewed Work");
+        let claimed = store
+            .claim_work(
+                &work.id,
+                work.version,
+                &owner.id,
+                member_work_context(&owner.id, "we-ambiguous-2", "claim-ambiguous", "unix-ms:3"),
+            )
+            .expect("owner claims Work");
+        let submitted = store
+            .submit_work(
+                &claimed.id,
+                claimed.version,
+                &owner.id,
+                "candidate",
+                Vec::new(),
+                Vec::new(),
+                member_work_context(&owner.id, "we-ambiguous-3", "submit-ambiguous", "unix-ms:4"),
+            )
+            .expect("submit candidate");
+
+        let mut duplicate_identity = peer.clone();
+        duplicate_identity.id = "mr-ambiguous-reviewer-duplicate".into();
+        store
+            .append_member_run(&duplicate_identity)
+            .expect("append second runtime with the same stable identity");
+        let mut ambiguous_run = run.clone();
+        ambiguous_run
+            .member_run_ids
+            .push(duplicate_identity.id.clone());
+        ambiguous_run.updated_at = "unix-ms:5".into();
+        store
+            .append_team_run(&ambiguous_run)
+            .expect("append latest TeamRun membership containing both candidates");
+
+        let before_reviews = store.reviews().expect("reviews before rejection");
+        let before_work = store
+            .latest_works()
+            .expect("works before rejection")
+            .into_iter()
+            .find(|work| work.id == submitted.id)
+            .expect("submitted Work");
+        let error = store
+            .record_work_review(
+                &submitted.id,
+                submitted.version,
+                work_review_payload("review-ambiguous-member", ReviewVerdict::Pass),
+                member_work_context(&peer.id, "unused", "unused", "unix-ms:6"),
+            )
+            .expect_err("stable reviewer identity must resolve uniquely");
+        assert!(error
+            .to_string()
+            .contains("WORK_REVIEWER_IDENTITY_AMBIGUOUS"));
+        assert_eq!(
+            store.reviews().expect("reviews after rejection"),
+            before_reviews
+        );
+        assert_eq!(
+            store
+                .latest_works()
+                .expect("works after rejection")
+                .into_iter()
+                .find(|work| work.id == submitted.id)
+                .expect("submitted Work after rejection"),
+            before_work,
+            "ambiguous reviewer rejection must not mutate Work"
+        );
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 

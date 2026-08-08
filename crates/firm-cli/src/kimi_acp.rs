@@ -492,13 +492,43 @@ impl KimiAcpClient {
             .session_id
             .clone()
             .ok_or_else(|| CliError::Usage("kimi acp session not established".to_string()))?;
-        let (prompt_id, response) = self.request(
+        let request = self.request(
             "session/prompt",
             serde_json::json!({
                 "sessionId": session_id,
                 "prompt": [{ "type": "text", "text": text }],
             }),
         )?;
+        self.drive_prompt(
+            request,
+            idle_timeout,
+            &mut on_accepted,
+            &mut on_update,
+            &mut on_request,
+            &mut control,
+        )
+    }
+
+    /// Drive the channel side of one already-written prompt request.
+    ///
+    /// Kept separate from [`Self::prompt`] so receipt ordering can be tested
+    /// deterministically against scripted response/update channels without a
+    /// timing-sensitive provider process. Production calls this immediately
+    /// after writing `session/prompt`; there is no alternate receipt path.
+    fn drive_prompt(
+        &mut self,
+        request: (u64, Receiver<serde_json::Value>),
+        idle_timeout: Duration,
+        on_accepted: &mut impl FnMut(&str) -> CliResult<()>,
+        on_update: &mut impl FnMut(&serde_json::Value),
+        on_request: &mut impl FnMut(&serde_json::Value) -> CliResult<serde_json::Value>,
+        control: &mut impl FnMut() -> CliResult<PromptControl>,
+    ) -> CliResult<PromptOutcome> {
+        let (prompt_id, response) = request;
+        let session_id = self
+            .session_id
+            .clone()
+            .ok_or_else(|| CliError::Usage("kimi acp session not established".to_string()))?;
         let idle_limit = if idle_timeout.is_zero() {
             Duration::from_secs(DEFAULT_PROMPT_IDLE_TIMEOUT_SECS)
         } else {
@@ -551,7 +581,9 @@ impl KimiAcpClient {
                     // it would complete the Assignment delivery and burn the
                     // assignment with no Handoff and nothing to replay.
                     if !accepted
-                        && (tail.iter().any(prompt_acceptance_evidence)
+                        && (tail
+                            .iter()
+                            .any(|frame| prompt_acceptance_evidence(frame, &session_id))
                             || outcome.provider_error.is_none())
                     {
                         // Publish the receipt before handling the tail so tools
@@ -560,7 +592,7 @@ impl KimiAcpClient {
                         on_accepted(&provider_receipt_id)?;
                     }
                     for update in &tail {
-                        self.handle_incoming(update, &mut on_update, &mut on_request)?;
+                        self.handle_incoming(update, on_update, on_request)?;
                     }
                     return Ok(outcome);
                 }
@@ -571,18 +603,19 @@ impl KimiAcpClient {
             }
             match self.updates.try_recv() {
                 Ok(frame) => {
-                    if !accepted && prompt_acceptance_evidence(&frame) {
+                    if !accepted && prompt_acceptance_evidence(&frame, &session_id) {
                         // ACP has no separate prompt-start acknowledgement.
-                        // Its first prompt-scoped update or reverse request is
-                        // the earliest honest evidence that the prompt was
-                        // accepted. Publish before handling the frame so tools
-                        // invoked by this turn can immediately send a
-                        // correlation-valid handoff or peer message.
+                        // Its first prompt-scoped update or matching-session
+                        // permission request is the earliest honest evidence
+                        // that the prompt was accepted. Publish before
+                        // handling the frame so tools invoked by this turn can
+                        // immediately send a correlation-valid handoff or peer
+                        // message.
                         on_accepted(&provider_receipt_id)?;
                         accepted = true;
                     }
                     last_activity = Instant::now();
-                    self.handle_incoming(&frame, &mut on_update, &mut on_request)?;
+                    self.handle_incoming(&frame, on_update, on_request)?;
                     continue;
                 }
                 Err(TryRecvError::Empty) => {}
@@ -622,6 +655,13 @@ impl KimiAcpClient {
         on_request: &mut impl FnMut(&serde_json::Value) -> CliResult<serde_json::Value>,
     ) -> CliResult<()> {
         if frame.get("method").and_then(|m| m.as_str()) == Some("session/update") {
+            if frame
+                .pointer("/params/sessionId")
+                .and_then(|id| id.as_str())
+                != self.session_id.as_deref()
+            {
+                return Ok(());
+            }
             let update = frame
                 .get("params")
                 .and_then(|params| params.get("update"))
@@ -635,17 +675,29 @@ impl KimiAcpClient {
                 .and_then(|m| m.as_str())
                 .unwrap_or("unknown");
             let response = if method == "session/request_permission" {
-                match on_request(frame) {
-                    Ok(result) => serde_json::json!({
+                if frame
+                    .pointer("/params/sessionId")
+                    .and_then(|id| id.as_str())
+                    != self.session_id.as_deref()
+                {
+                    serde_json::json!({
                         "jsonrpc": "2.0",
                         "id": id,
-                        "result": result,
-                    }),
-                    Err(error) => serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "error": {"code": -32000, "message": error.to_string()},
-                    }),
+                        "error": {"code": -32602, "message": "session/request_permission sessionId does not match the active session"},
+                    })
+                } else {
+                    match on_request(frame) {
+                        Ok(result) => serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": result,
+                        }),
+                        Err(error) => serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {"code": -32000, "message": error.to_string()},
+                        }),
+                    }
                 }
             } else {
                 serde_json::json!({
@@ -730,14 +782,28 @@ impl Drop for KimiAcpClient {
 /// asynchronous skill discovery, including immediately before an unrelated
 /// prompt rejection. Such session state must still be handled, but cannot be
 /// used as a provider receipt. Fail closed for unknown update kinds: only
-/// prompt output defined by ACP v1, or a reverse request that the agent could
-/// only make while serving this turn, is acceptance evidence.
-fn prompt_acceptance_evidence(frame: &serde_json::Value) -> bool {
+/// prompt output defined by ACP v1, or the exact `session/request_permission`
+/// reverse request for this session, is acceptance evidence. Unknown reverse
+/// methods and requests for another session fail closed.
+fn prompt_acceptance_evidence(frame: &serde_json::Value, session_id: &str) -> bool {
     let method = frame.get("method").and_then(|method| method.as_str());
-    if frame.get("id").is_some_and(|id| !id.is_null()) && method.is_some() {
+    if frame.get("id").is_some_and(|id| !id.is_null())
+        && method == Some("session/request_permission")
+        && frame
+            .pointer("/params/sessionId")
+            .and_then(|id| id.as_str())
+            == Some(session_id)
+    {
         return true;
     }
     if method != Some("session/update") {
+        return false;
+    }
+    if frame
+        .pointer("/params/sessionId")
+        .and_then(|id| id.as_str())
+        != Some(session_id)
+    {
         return false;
     }
     matches!(
@@ -751,6 +817,8 @@ fn prompt_acceptance_evidence(frame: &serde_json::Value) -> bool {
                 | "tool_call"
                 | "tool_call_update"
                 | "plan"
+                | "plan_update"
+                | "plan_removed"
         )
     )
 }
@@ -900,6 +968,89 @@ fn stop_reason_failure(stop_reason: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    fn scripted_client() -> (KimiAcpClient, Sender<serde_json::Value>) {
+        // The child is only a sink for the prompt/reverse-request response
+        // writes. Scripted frames enter through the exact channels populated
+        // by the production reader thread, making ordering deterministic
+        // without sleeps or scheduler guesses.
+        let mut child = Command::new("sh")
+            .args(["-c", "cat >/dev/null"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn scripted ACP sink");
+        let stdin = child.stdin.take().expect("scripted ACP stdin");
+        let (update_tx, updates) = channel();
+        (
+            KimiAcpClient {
+                child,
+                stdin,
+                next_request_id: 2,
+                pending: Arc::new(Mutex::new(HashMap::new())),
+                updates,
+                reader: None,
+                stderr_tail: Arc::new(Mutex::new(String::new())),
+                session_id: Some("scripted-session".to_string()),
+                model: None,
+                effort: None,
+                effective_model: None,
+                effective_effort: None,
+                config_options: Vec::new(),
+                provider_version: None,
+            },
+            update_tx,
+        )
+    }
+
+    fn session_update(kind: &str) -> serde_json::Value {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "scripted-session",
+                "update": {"sessionUpdate": kind}
+            }
+        })
+    }
+
+    fn provider_error_response() -> serde_json::Value {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {"code": -32000, "message": "scripted provider error"}
+        })
+    }
+
+    fn terminal_success_response() -> serde_json::Value {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {"stopReason": "end_turn"}
+        })
+    }
+
+    #[cfg(unix)]
+    fn drive_scripted_prompt(
+        client: &mut KimiAcpClient,
+        response: Receiver<serde_json::Value>,
+        on_accepted: &mut impl FnMut(&str) -> CliResult<()>,
+        on_update: &mut impl FnMut(&serde_json::Value),
+        on_request: &mut impl FnMut(&serde_json::Value) -> CliResult<serde_json::Value>,
+    ) -> PromptOutcome {
+        client
+            .drive_prompt(
+                (1, response),
+                Duration::from_secs(30),
+                on_accepted,
+                on_update,
+                on_request,
+                &mut || Ok(PromptControl::Continue),
+            )
+            .expect("scripted prompt completes")
+    }
+
     fn config_options() -> Vec<serde_json::Value> {
         serde_json::json!([
             {
@@ -1032,6 +1183,8 @@ mod tests {
             "tool_call",
             "tool_call_update",
             "plan",
+            "plan_update",
+            "plan_removed",
         ];
 
         // Exercise the exact predicate repeatedly without timing or sleeps so
@@ -1043,7 +1196,7 @@ mod tests {
                     "method": "session/update",
                     "params": {"sessionId": "s", "update": {"sessionUpdate": kind}}
                 });
-                assert!(!prompt_acceptance_evidence(&frame), "{kind}");
+                assert!(!prompt_acceptance_evidence(&frame, "s"), "{kind}");
             }
             for kind in prompt_scoped {
                 let frame = serde_json::json!({
@@ -1051,19 +1204,316 @@ mod tests {
                     "method": "session/update",
                     "params": {"sessionId": "s", "update": {"sessionUpdate": kind}}
                 });
-                assert!(prompt_acceptance_evidence(&frame), "{kind}");
+                assert!(prompt_acceptance_evidence(&frame, "s"), "{kind}");
+                let mut wrong_session = frame.clone();
+                wrong_session["params"]["sessionId"] = serde_json::json!("other");
+                assert!(
+                    !prompt_acceptance_evidence(&wrong_session, "s"),
+                    "wrong-session {kind}"
+                );
             }
-            assert!(prompt_acceptance_evidence(&serde_json::json!({
+            assert!(prompt_acceptance_evidence(
+                &serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 41,
+                    "method": "session/request_permission",
+                    "params": {"sessionId": "s"}
+                }),
+                "s"
+            ));
+            assert!(!prompt_acceptance_evidence(
+                &serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "session/cancel",
+                    "params": {"sessionId": "s"}
+                }),
+                "s"
+            ));
+            assert!(!prompt_acceptance_evidence(
+                &serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 42,
+                    "method": "session/request_permission",
+                    "params": {"sessionId": "other"}
+                }),
+                "s"
+            ));
+            assert!(!prompt_acceptance_evidence(
+                &serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 43,
+                    "method": "future/reverse_rpc",
+                    "params": {"sessionId": "s"}
+                }),
+                "s"
+            ));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scripted_session_only_update_then_provider_error_publishes_no_receipt() {
+        let (mut client, update_tx) = scripted_client();
+        let (response_tx, response) = channel();
+        update_tx
+            .send(session_update("available_commands_update"))
+            .expect("queue session update");
+        response_tx
+            .send(provider_error_response())
+            .expect("queue provider error");
+
+        let mut accepted = 0;
+        let outcome = drive_scripted_prompt(
+            &mut client,
+            response,
+            &mut |_| {
+                accepted += 1;
+                Ok(())
+            },
+            &mut |_| {},
+            &mut |_| Ok(serde_json::json!({"outcome": {"outcome": "cancelled"}})),
+        );
+
+        assert!(outcome.provider_error.is_some());
+        assert_eq!(accepted, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scripted_plan_update_in_response_tail_publishes_receipt_exactly_once() {
+        let (mut client, update_tx) = scripted_client();
+        let (response_tx, response) = channel();
+        update_tx
+            .send(session_update("plan_update"))
+            .expect("queue plan update");
+        response_tx
+            .send(provider_error_response())
+            .expect("queue provider error");
+
+        let events = std::cell::RefCell::new(Vec::new());
+        let outcome = drive_scripted_prompt(
+            &mut client,
+            response,
+            &mut |receipt| {
+                events.borrow_mut().push(format!("receipt:{receipt}"));
+                Ok(())
+            },
+            &mut |update| {
+                events.borrow_mut().push(format!(
+                    "update:{}",
+                    update["sessionUpdate"].as_str().unwrap_or("unknown")
+                ));
+            },
+            &mut |_| Ok(serde_json::json!({"outcome": {"outcome": "cancelled"}})),
+        );
+
+        assert!(outcome.provider_error.is_some());
+        assert_eq!(
+            events.into_inner(),
+            ["receipt:kimi-acp-prompt:1", "update:plan_update"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scripted_plan_removed_before_provider_error_publishes_receipt_exactly_once() {
+        let (mut client, update_tx) = scripted_client();
+        let (response_tx, response) = channel();
+        update_tx
+            .send(session_update("plan_removed"))
+            .expect("queue plan removal");
+        let mut response_tx = Some(response_tx);
+
+        let events = std::cell::RefCell::new(Vec::new());
+        let outcome = drive_scripted_prompt(
+            &mut client,
+            response,
+            &mut |receipt| {
+                events.borrow_mut().push(format!("receipt:{receipt}"));
+                Ok(())
+            },
+            &mut |update| {
+                events.borrow_mut().push(format!(
+                    "update:{}",
+                    update["sessionUpdate"].as_str().unwrap_or("unknown")
+                ));
+                response_tx
+                    .take()
+                    .expect("one terminal response")
+                    .send(provider_error_response())
+                    .expect("queue provider error after update");
+            },
+            &mut |_| Ok(serde_json::json!({"outcome": {"outcome": "cancelled"}})),
+        );
+
+        assert!(outcome.provider_error.is_some());
+        assert_eq!(
+            events.into_inner(),
+            ["receipt:kimi-acp-prompt:1", "update:plan_removed"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scripted_reverse_request_before_provider_error_publishes_receipt_exactly_once() {
+        let (mut client, update_tx) = scripted_client();
+        let (response_tx, response) = channel();
+        update_tx
+            .send(serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": 41,
                 "method": "session/request_permission",
-                "params": {"sessionId": "s"}
-            })));
-            assert!(!prompt_acceptance_evidence(&serde_json::json!({
+                "params": {"sessionId": "scripted-session"}
+            }))
+            .expect("queue reverse request");
+        let mut response_tx = Some(response_tx);
+
+        let mut receipts = Vec::new();
+        let outcome = drive_scripted_prompt(
+            &mut client,
+            response,
+            &mut |receipt| {
+                receipts.push(receipt.to_string());
+                Ok(())
+            },
+            &mut |_| {},
+            &mut |_| {
+                response_tx
+                    .take()
+                    .expect("one terminal response")
+                    .send(provider_error_response())
+                    .expect("queue provider error after reverse request");
+                Ok(serde_json::json!({"outcome": {"outcome": "cancelled"}}))
+            },
+        );
+
+        assert!(outcome.provider_error.is_some());
+        assert_eq!(receipts, ["kimi-acp-prompt:1"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scripted_permission_request_for_another_session_publishes_no_receipt() {
+        let (mut client, update_tx) = scripted_client();
+        let (response_tx, response) = channel();
+        update_tx
+            .send(serde_json::json!({
                 "jsonrpc": "2.0",
-                "method": "session/cancel",
-                "params": {"sessionId": "s"}
-            })));
-        }
+                "id": 42,
+                "method": "session/request_permission",
+                "params": {"sessionId": "another-session"}
+            }))
+            .expect("queue mismatched reverse request");
+        response_tx
+            .send(provider_error_response())
+            .expect("queue provider error");
+
+        let mut accepted = 0;
+        let mut permission_callbacks = 0;
+        let outcome = drive_scripted_prompt(
+            &mut client,
+            response,
+            &mut |_| {
+                accepted += 1;
+                Ok(())
+            },
+            &mut |_| {},
+            &mut |_| {
+                permission_callbacks += 1;
+                Ok(serde_json::json!({"outcome": {"outcome": "cancelled"}}))
+            },
+        );
+
+        assert!(outcome.provider_error.is_some());
+        assert_eq!(accepted, 0);
+        assert_eq!(permission_callbacks, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scripted_unknown_reverse_method_publishes_no_receipt() {
+        let (mut client, update_tx) = scripted_client();
+        let (response_tx, response) = channel();
+        update_tx
+            .send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 43,
+                "method": "future/reverse_rpc",
+                "params": {"sessionId": "scripted-session"}
+            }))
+            .expect("queue unknown reverse request");
+        response_tx
+            .send(provider_error_response())
+            .expect("queue provider error");
+
+        let mut accepted = 0;
+        let outcome = drive_scripted_prompt(
+            &mut client,
+            response,
+            &mut |_| {
+                accepted += 1;
+                Ok(())
+            },
+            &mut |_| {},
+            &mut |_| panic!("unknown reverse method must not reach permission callback"),
+        );
+
+        assert!(outcome.provider_error.is_some());
+        assert_eq!(accepted, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scripted_prompt_update_and_terminal_success_publish_receipt_exactly_once() {
+        let (mut client, update_tx) = scripted_client();
+        let (response_tx, response) = channel();
+        update_tx
+            .send(session_update("agent_message_chunk"))
+            .expect("queue prompt update");
+        response_tx
+            .send(terminal_success_response())
+            .expect("queue terminal success");
+
+        let mut receipts = Vec::new();
+        let outcome = drive_scripted_prompt(
+            &mut client,
+            response,
+            &mut |receipt| {
+                receipts.push(receipt.to_string());
+                Ok(())
+            },
+            &mut |_| {},
+            &mut |_| Ok(serde_json::json!({"outcome": {"outcome": "cancelled"}})),
+        );
+
+        assert_eq!(outcome.provider_error, None);
+        assert_eq!(outcome.stop_reason, "end_turn");
+        assert_eq!(receipts, ["kimi-acp-prompt:1"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scripted_terminal_success_without_updates_publishes_receipt_exactly_once() {
+        let (mut client, _update_tx) = scripted_client();
+        let (response_tx, response) = channel();
+        response_tx
+            .send(terminal_success_response())
+            .expect("queue terminal success");
+
+        let mut receipts = Vec::new();
+        let outcome = drive_scripted_prompt(
+            &mut client,
+            response,
+            &mut |receipt| {
+                receipts.push(receipt.to_string());
+                Ok(())
+            },
+            &mut |_| {},
+            &mut |_| Ok(serde_json::json!({"outcome": {"outcome": "cancelled"}})),
+        );
+
+        assert_eq!(outcome.provider_error, None);
+        assert_eq!(outcome.stop_reason, "end_turn");
+        assert_eq!(receipts, ["kimi-acp-prompt:1"]);
     }
 }

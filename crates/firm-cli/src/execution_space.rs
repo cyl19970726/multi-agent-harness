@@ -283,6 +283,7 @@ pub fn register_and_activate_locked(
     registry.current_space_id = Some(context.id.clone());
     registry.save(firm_home)?;
     write_active_space(firm_home, &context.id)?;
+    complete_pending_migration_registration(&context);
     Ok(context)
 }
 
@@ -324,7 +325,53 @@ pub fn switch_current_space_locked(
     registry.current_space_id = Some(context.id.clone());
     registry.save(firm_home)?;
     write_active_space(firm_home, &context.id)?;
+    complete_pending_migration_registration(&context);
     Ok(context)
+}
+
+/// Best-effort reconciliation for the independently published migration
+/// receipt. Registry/ACTIVE_SPACE have already been successfully written by
+/// this process when this runs, so a receipt write failure is warning-only and
+/// must not turn a successful register or switch into a reported failure.
+fn complete_pending_migration_registration(context: &ExecutionSpace) {
+    let path = context.store_root.join("execution_space_migration.json");
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => {
+            eprintln!(
+                "warning: execution space is active, but migration manifest could not be read at {}: {error}",
+                path.display()
+            );
+            return;
+        }
+    };
+    let mut manifest: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!(
+                "warning: execution space is active, but migration manifest is invalid at {}: {error}",
+                path.display()
+            );
+            return;
+        }
+    };
+    let expected_recovery = format!("harness space switch {}", context.id);
+    if manifest["registration"]["status"] != "pending"
+        || manifest["registration"]["recovery_command"] != expected_recovery
+    {
+        return;
+    }
+    manifest["registration"]["status"] = serde_json::Value::String("complete".into());
+    let result = serde_json::to_vec_pretty(&manifest)
+        .map_err(ExecutionSpaceError::from)
+        .and_then(|bytes| std::fs::write(&path, bytes).map_err(ExecutionSpaceError::from));
+    if let Err(error) = result {
+        eprintln!(
+            "warning: execution space is active, but migration manifest remains registration pending at {}: {error}",
+            path.display()
+        );
+    }
 }
 
 pub fn active_space_id(firm_home: &Path) -> ExecutionSpaceResult<Option<String>> {

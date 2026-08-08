@@ -241,16 +241,18 @@ separate layers; none may add `orphaned`, `failed`, or release states to the
 generic Work enum.
 
 Closing a Member runtime therefore does not mutate Work into a seventh state.
-The operator's **Released / needs reassignment** queue is a derived view over a
-closed or retired runtime and its non-terminal owned Works. Resolution remains
-an explicit, auditable Work operation: `Released` where the release preconditions
-hold, otherwise reassign/rebind, block, or cancel after reconciliation.
+Today, release is an explicit, auditable operation for an eligible owned `open`
+Work; it clears ownership and records a `Released` WorkEvent without adding a
+`Released` Work status. A **Released / needs reassignment** operator queue is a
+future derived-view design over runtime state, ownership, and non-terminal
+Works; it is not a currently implemented Dashboard/read-model claim.
 
 Evidence is proportional to the Work's declared risk. A **Verification
-Profile** selects the relevant clean-build, replay, daemon-safety, docs, or
-domain checks; it is not a universal field that forces every Work to provide
-the same artifact and check references. A Work with no declared gates retains
-manual Host-accept semantics, while any declared gate must pass.
+Profile** is a future design concept for selecting relevant clean-build,
+replay, daemon-safety, docs, or domain checks; it is not a current Work schema
+field or CLI surface. Current acceptance uses completion criteria and declared
+gates: a Work with no gates retains manual Host-accept semantics, while every
+declared gate must pass.
 
 Meanings:
 

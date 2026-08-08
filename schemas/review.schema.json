@@ -6,14 +6,11 @@
   "additionalProperties": false,
   "required": [
     "id",
-    "task_id",
-    "goal_id",
     "reviewer_agent_id",
     "review_kind",
     "verdict",
     "summary",
     "blockers",
-    "residual_risk",
     "missing_validation",
     "evidence_ids",
     "created_at"
@@ -21,7 +18,8 @@
   "properties": {
     "id": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "pattern": "\\S"
     },
     "task_id": {
       "type": ["string", "null"]
@@ -31,19 +29,23 @@
     },
     "reviewer_agent_id": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "pattern": "\\S"
     },
     "review_kind": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "pattern": "\\S"
     },
     "verdict": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "pattern": "\\S"
     },
     "summary": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "pattern": "\\S"
     },
     "blockers": {
       "type": "array",
@@ -71,11 +73,12 @@
     },
     "reviewed_work_id": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "pattern": "\\S"
     },
     "reviewed_work_version": {
       "type": "integer",
-      "minimum": 0
+      "minimum": 1
     },
     "review_strategy": {
       "type": "string",
@@ -89,7 +92,8 @@
     },
     "created_at": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "pattern": "\\S"
     }
   },
   "oneOf": [

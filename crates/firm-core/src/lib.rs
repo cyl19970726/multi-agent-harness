@@ -1676,11 +1676,34 @@ impl Validate for Review {
         require_non_empty(self.verdict.as_str(), "Review.verdict")?;
         require_non_empty(&self.summary, "Review.summary")?;
         require_non_empty(&self.created_at, "Review.created_at")?;
+        for blocker in &self.blockers {
+            if blocker.is_empty() {
+                return Err(ValidationError::Required {
+                    field: "Review.blockers[]",
+                });
+            }
+        }
+        for item in &self.missing_validation {
+            if item.is_empty() {
+                return Err(ValidationError::Required {
+                    field: "Review.missing_validation[]",
+                });
+            }
+        }
+        for evidence_id in &self.evidence_ids {
+            if evidence_id.is_empty() {
+                return Err(ValidationError::Required {
+                    field: "Review.evidence_ids[]",
+                });
+            }
+        }
         if let Some(actor) = &self.performed_by_actor {
             require_non_empty(&actor.id, "Review.performed_by_actor.id")?;
+            validate_actor_metadata(actor, "Review.performed_by_actor")?;
         }
         if let Some(actor) = &self.authority_actor {
             require_non_empty(&actor.id, "Review.authority_actor.id")?;
+            validate_actor_metadata(actor, "Review.authority_actor")?;
         }
         match (
             self.reviewed_work_id.as_deref(),
@@ -1688,8 +1711,15 @@ impl Validate for Review {
             self.review_strategy,
         ) {
             (None, None, None) => Ok(()),
-            (Some(work_id), Some(_), Some(_)) => {
-                require_non_empty(work_id, "Review.reviewed_work_id")
+            (Some(work_id), Some(version), Some(_)) => {
+                require_non_empty(work_id, "Review.reviewed_work_id")?;
+                if version == 0 {
+                    return Err(ValidationError::Invalid {
+                        field: "Review.reviewed_work_version",
+                        reason: "must be greater than zero",
+                    });
+                }
+                Ok(())
             }
             _ => Err(ValidationError::Invalid {
                 field: "Review.work_binding",
@@ -1697,6 +1727,21 @@ impl Validate for Review {
             }),
         }
     }
+}
+
+fn validate_actor_metadata(
+    actor: &TeamActorRef,
+    field: &'static str,
+) -> Result<(), ValidationError> {
+    if actor.display_name.as_deref().is_some_and(str::is_empty)
+        || actor.authn_source.as_deref().is_some_and(str::is_empty)
+    {
+        return Err(ValidationError::Invalid {
+            field,
+            reason: "display_name and authn_source must not be empty when present",
+        });
+    }
+    Ok(())
 }
 
 impl Validate for Gap {
@@ -4175,6 +4220,114 @@ impl Work {
     pub fn is_unassigned(&self) -> bool {
         self.owner_member_id.is_none()
     }
+}
+
+impl Validate for Work {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "Work.id")?;
+        require_non_empty(&self.team_run_id, "Work.team_run_id")?;
+        require_non_empty(&self.title, "Work.title")?;
+        require_non_empty(
+            &self.completion_criteria_markdown,
+            "Work.completion_criteria_markdown",
+        )?;
+        require_non_empty(&self.created_by_actor.id, "Work.created_by_actor.id")?;
+        validate_actor_metadata(&self.created_by_actor, "Work.created_by_actor")?;
+        require_non_empty(&self.created_at, "Work.created_at")?;
+        require_non_empty(&self.updated_at, "Work.updated_at")?;
+
+        for (value, field) in [
+            (self.team_id.as_deref(), "Work.team_id"),
+            (self.parent_work_id.as_deref(), "Work.parent_work_id"),
+            (
+                self.source_work_item_ref.as_deref(),
+                "Work.source_work_item_ref",
+            ),
+            (self.owner_member_id.as_deref(), "Work.owner_member_id"),
+            (
+                self.active_member_run_id.as_deref(),
+                "Work.active_member_run_id",
+            ),
+            (
+                self.created_by_member_id.as_deref(),
+                "Work.created_by_member_id",
+            ),
+            (self.blocker_reason.as_deref(), "Work.blocker_reason"),
+        ] {
+            if let Some(value) = value {
+                require_non_empty(value, field)?;
+            }
+        }
+
+        validate_non_empty_unique_strings(
+            &self.eligible_member_ids,
+            "Work.eligible_member_ids",
+            true,
+        )?;
+        validate_non_empty_unique_strings(
+            &self.prerequisite_work_ids,
+            "Work.prerequisite_work_ids",
+            true,
+        )?;
+        validate_non_empty_unique_strings(&self.artifact_refs, "Work.artifact_refs", false)?;
+        validate_non_empty_unique_strings(&self.check_refs, "Work.check_refs", false)?;
+
+        for link in &self.github_links {
+            for (value, field) in [
+                (link.owner.as_str(), "Work.github_links[].owner"),
+                (link.repo.as_str(), "Work.github_links[].repo"),
+                (link.url.as_str(), "Work.github_links[].url"),
+            ] {
+                if value.is_empty() {
+                    return Err(ValidationError::Required { field });
+                }
+            }
+            if link.number == 0 {
+                return Err(ValidationError::Invalid {
+                    field: "Work.github_links[].number",
+                    reason: "must be greater than zero",
+                });
+            }
+        }
+        if let Some(workspace) = &self.workspace {
+            if workspace.path.is_empty() {
+                return Err(ValidationError::Required {
+                    field: "Work.workspace.path",
+                });
+            }
+        }
+
+        if self.version == 0 {
+            return Err(ValidationError::Invalid {
+                field: "Work.version",
+                reason: "must be greater than zero",
+            });
+        }
+        self.validate_gates().map_err(|_| ValidationError::Invalid {
+            field: "Work.gates",
+            reason: "gate declarations are invalid",
+        })
+    }
+}
+
+fn validate_non_empty_unique_strings(
+    values: &[String],
+    field: &'static str,
+    unique: bool,
+) -> Result<(), ValidationError> {
+    let mut seen = BTreeSet::new();
+    for value in values {
+        if value.is_empty() {
+            return Err(ValidationError::Required { field });
+        }
+        if unique && !seen.insert(value) {
+            return Err(ValidationError::Invalid {
+                field,
+                reason: "must not contain duplicate values",
+            });
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
