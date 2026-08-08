@@ -18822,6 +18822,42 @@ enum PreSpawnWorkspacePreparation {
     Retry,
 }
 
+/// Whether the current Supervisor may adopt an active provider lifecycle left
+/// by an older lease. The member transition must predate this lease: an active
+/// row written at or after acquisition belongs to the current Supervisor and
+/// must never be started a second time.
+fn successor_may_take_over_active_member(
+    ledger: &TeamRunLedger,
+    takeover_anchor: &MemberRun,
+    latest: &MemberRun,
+) -> CliResult<bool> {
+    if ledger.supervisor_generation <= 1
+        || takeover_anchor.status != latest.status
+        || !matches!(
+            latest.status,
+            MemberRunStatus::Starting | MemberRunStatus::Running
+        )
+    {
+        return Ok(false);
+    }
+    let Some(last_event_ms) = takeover_anchor
+        .last_event_at
+        .as_deref()
+        .and_then(parse_unix_ms)
+    else {
+        return Ok(false);
+    };
+    let Some(lease) = ledger.store.latest_team_supervisor_lease(&ledger.run_id)? else {
+        return Ok(false);
+    };
+    Ok(
+        lease.status == harness_core::TeamSupervisorLeaseStatus::Active
+            && lease.supervisor_id == ledger.supervisor_id
+            && lease.generation == ledger.supervisor_generation
+            && last_event_ms < u128::from(lease.acquired_unix_ms),
+    )
+}
+
 fn prepare_member_workspace_for_spawn_with_hook(
     ledger: &TeamRunLedger,
     prepared: &MemberRun,
@@ -18849,15 +18885,16 @@ fn prepare_member_workspace_for_spawn_with_hook(
                 Err(error) => return Err(error),
             }
         }
+        let successor_takeover = successor_may_take_over_active_member(ledger, prepared, &latest)?;
         if !latest.coordination_is_active()
             || matches!(
                 latest.status,
-                MemberRunStatus::Starting
-                    | MemberRunStatus::Running
-                    | MemberRunStatus::Completed
-                    | MemberRunStatus::Failed
-                    | MemberRunStatus::Stopped
+                MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
             )
+            || (matches!(
+                latest.status,
+                MemberRunStatus::Starting | MemberRunStatus::Running
+            ) && !successor_takeover)
         {
             return Ok(PreSpawnWorkspacePreparation::Superseded);
         }
@@ -19341,12 +19378,32 @@ fn claim_member_provider_start(
     ledger: &TeamRunLedger,
     scheduled: &MemberRun,
 ) -> CliResult<MemberProviderStartClaim> {
-    claim_member_provider_start_with_hook(ledger, scheduled, |_, _| Ok(()))
+    claim_member_provider_start_with_takeover_anchor_and_hook(
+        ledger,
+        scheduled,
+        scheduled,
+        |_, _| Ok(()),
+    )
 }
 
+#[cfg(test)]
 fn claim_member_provider_start_with_hook(
     ledger: &TeamRunLedger,
     scheduled: &MemberRun,
+    mut before_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
+) -> CliResult<MemberProviderStartClaim> {
+    claim_member_provider_start_with_takeover_anchor_and_hook(
+        ledger,
+        scheduled,
+        scheduled,
+        &mut before_cas,
+    )
+}
+
+fn claim_member_provider_start_with_takeover_anchor_and_hook(
+    ledger: &TeamRunLedger,
+    scheduled: &MemberRun,
+    takeover_anchor: &MemberRun,
     mut before_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
 ) -> CliResult<MemberProviderStartClaim> {
     for attempt in 0..PROVIDER_MEMBER_CAS_RETRIES {
@@ -19368,6 +19425,8 @@ fn claim_member_provider_start_with_hook(
                 Err(error) => return Err(error),
             }
         }
+        let successor_takeover =
+            successor_may_take_over_active_member(ledger, takeover_anchor, &latest)?;
         if !latest.coordination_is_active()
             || latest.runtime_generation != scheduled.runtime_generation
             || latest.native_session != scheduled.native_session
@@ -19381,10 +19440,10 @@ fn claim_member_provider_start_with_hook(
             || latest.provider_controls != scheduled.provider_controls
             || latest.worktree_ref != scheduled.worktree_ref
             || latest.owned_paths != scheduled.owned_paths
-            || !matches!(
+            || (!matches!(
                 latest.status,
                 MemberRunStatus::Queued | MemberRunStatus::Idle | MemberRunStatus::Disconnected
-            )
+            ) && !successor_takeover)
         {
             return Ok(MemberProviderStartClaim::Superseded(latest));
         }
@@ -19574,7 +19633,18 @@ fn run_member_orchestration(
                 }
             }
         }
-        current = match claim_member_provider_start(ledger, &current) {
+        let start_claim =
+            match successor_may_take_over_active_member(ledger, &hard_anchor, &current) {
+                Ok(true) => claim_member_provider_start_with_takeover_anchor_and_hook(
+                    ledger,
+                    &current,
+                    &hard_anchor,
+                    |_, _| Ok(()),
+                ),
+                Ok(false) => claim_member_provider_start(ledger, &current),
+                Err(error) => Err(error),
+            };
+        current = match start_claim {
             Ok(MemberProviderStartClaim::Claimed(starting)) => starting,
             Ok(MemberProviderStartClaim::Superseded(latest)) => {
                 return MemberOutcome::new(
@@ -46981,6 +47051,81 @@ package:com.tencent.mm
             .expect("member exists");
         assert_eq!(latest.name, "conflict-3");
         assert!(latest.workspace_snapshot.is_none());
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn successor_lease_takes_over_stale_running_member_once() {
+        let (store, root) = temp_store("successor-takes-over-stale-running-member");
+        let created = create_two_member_team_run(&store);
+        let initial = created.member_runs[0].clone();
+        let first_lease = store
+            .acquire_team_supervisor_lease(
+                &created.team_run.id,
+                "stale-supervisor",
+                std::process::id(),
+                "test://stale-supervisor",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire stale Supervisor lease");
+        let mut stale_running = initial.clone();
+        stale_running.status = MemberRunStatus::Running;
+        stale_running.native_session = Some(capacity_test_session());
+        stale_running.last_event_at = Some("unix-ms:1".into());
+        store
+            .compare_and_append_member_run(&initial, &stale_running)
+            .expect("seed Running row owned by stale Supervisor");
+        store
+            .release_team_supervisor_lease(
+                &created.team_run.id,
+                &first_lease.supervisor_id,
+                first_lease.generation,
+                current_unix_ms_u64(),
+            )
+            .expect("release stale Supervisor lease");
+        let successor_lease = store
+            .acquire_team_supervisor_lease(
+                &created.team_run.id,
+                "successor-supervisor",
+                std::process::id(),
+                "test://successor-supervisor",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire successor Supervisor lease");
+        assert!(successor_lease.generation > first_lease.generation);
+        let ledger = TeamRunLedger::new(
+            &store,
+            &created.team_run.id,
+            &successor_lease.supervisor_id,
+            successor_lease.generation,
+            Arc::new(AtomicBool::new(true)),
+        );
+        let snapshot = test_workspace_snapshot(&root);
+
+        let published = match prepare_member_workspace_for_spawn(&ledger, &stale_running, &snapshot)
+            .expect("successor publishes workspace before attaching stale runtime")
+        {
+            PreSpawnWorkspacePreparation::Ready(member) => *member,
+            _ => panic!("stale Running member must remain spawnable by its successor"),
+        };
+        assert_eq!(published.status, MemberRunStatus::Running);
+        assert_eq!(published.native_session, stale_running.native_session);
+
+        let claimed = claim_member_provider_start(&ledger, &published)
+            .expect("successor claims stale provider lifecycle");
+        let MemberProviderStartClaim::Claimed(starting) = claimed else {
+            panic!("successor must move stale Running member back to Starting");
+        };
+        assert_eq!(starting.status, MemberRunStatus::Starting);
+        assert_eq!(starting.native_session, stale_running.native_session);
+
+        assert!(matches!(
+            claim_member_provider_start(&ledger, &starting)
+                .expect("current-owner duplicate start is a local supersession"),
+            MemberProviderStartClaim::Superseded(_)
+        ));
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
