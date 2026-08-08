@@ -104,13 +104,16 @@ harness team-run release-host-lease --id <run> \
 ```
 
 `bind-host` accepts the same optional lease TTL (30 seconds by default), but it
-creates an active Interactive lease only when a trusted runtime discovery path
-proves the requested exact native identity. The current implementation trusts
-only an exact Codex `CODEX_THREAD_ID` match. Claude, Kimi, other unsupported
-surfaces, a missing or mismatched Codex runtime id, and manually entered native
-ids remain bound but unleased and return an actionable warning telling the
-operator to bind from the exact provider-native Host task. There is no
-free-form “verified” switch and no guessed lease.
+creates an active Interactive lease only when the canonical Codex rollout store
+under `<HOME>/.codex/sessions` contains a JSONL `session_meta` row whose
+`payload.id` exactly matches the requested native identity. A matching filename
+or `CODEX_THREAD_ID` value is not evidence. Production validation deliberately
+uses the canonical default root rather than caller-controlled `CODEX_HOME`.
+This is same-user filesystem evidence that a rollout exists; it is not proof of
+live attachment, exclusive ownership, or authentication. Claude, Kimi, other
+unsupported surfaces, missing/mismatched metadata, and manually entered native
+ids remain bound but unleased with an actionable warning. There is no free-form
+“verified” switch and no guessed lease.
 
 ### Busy, idle, and offline are delivery capabilities
 
@@ -215,8 +218,9 @@ process.
 6. CLI, HTTP, and MCP expose the same exact-binding aggregate read.
 7. Documentation never claims an unowned Codex Desktop or Claude Code session
    can be woken in the background.
-8. Binding without trusted exact runtime discovery remains bound but unleased
-   and emits an actionable warning.
+8. Binding without exact canonical rollout `session_meta` evidence remains
+   bound but unleased and emits an actionable warning; rollout existence does
+   not claim live attachment or exclusive ownership.
 9. Lease renew/release and dispatcher claims reject stale owner, lease id, or
    generation; a live Interactive lease suppresses dispatcher claims.
 10. Foreground scheduling may report `DispatchReady` and materialize

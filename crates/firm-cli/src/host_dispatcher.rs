@@ -173,20 +173,32 @@ pub fn schedule_team_run(
 /// Atomically claim a batch only for an exact, live Dispatcher lease and hand
 /// it immediately to an execution consumer. If the consumer rejects the batch,
 /// every claim is returned to `Actionable`, preventing stranded rows.
+pub struct DispatcherBatchRequest<'a> {
+    pub lease: &'a HostBindingLease,
+    pub older_than_unix_ms: u64,
+    pub limit: usize,
+    pub claim_id: &'a str,
+    pub now_unix_ms: u64,
+    pub updated_at: &'a str,
+}
+
 #[allow(dead_code)] // Kernel seam for the future headless driver (#415).
 pub fn claim_dispatcher_batch_with_consumer<T, F>(
     store: &HarnessStore,
-    lease: &HostBindingLease,
-    older_than_unix_ms: u64,
-    limit: usize,
-    claim_id: &str,
-    now_unix_ms: u64,
-    updated_at: &str,
+    request: DispatcherBatchRequest<'_>,
     consumer: F,
 ) -> Result<T, StoreError>
 where
     F: FnOnce(&[HostAttention]) -> Result<T, StoreError>,
 {
+    let DispatcherBatchRequest {
+        lease,
+        older_than_unix_ms,
+        limit,
+        claim_id,
+        now_unix_ms,
+        updated_at,
+    } = request;
     if lease.owner_kind != HostBindingLeaseOwnerKind::Dispatcher {
         return Err(StoreError::Conflict(format!(
             "HOST_BINDING_INTERACTIVE_SUPPRESSES_DISPATCH: TeamRun {} lease is not Dispatcher-owned",
@@ -369,12 +381,14 @@ mod tests {
             .expect("takeover");
         let stale = claim_dispatcher_batch_with_consumer(
             &store,
-            &old,
-            100,
-            10,
-            "claim-old",
-            112,
-            "unix-ms:112",
+            DispatcherBatchRequest {
+                lease: &old,
+                older_than_unix_ms: 100,
+                limit: 10,
+                claim_id: "claim-old",
+                now_unix_ms: 112,
+                updated_at: "unix-ms:112",
+            },
             |_| Ok(()),
         )
         .expect_err("old lease fenced");
@@ -382,12 +396,14 @@ mod tests {
 
         let error = claim_dispatcher_batch_with_consumer(
             &store,
-            &current,
-            100,
-            10,
-            "claim-current",
-            112,
-            "unix-ms:112",
+            DispatcherBatchRequest {
+                lease: &current,
+                older_than_unix_ms: 100,
+                limit: 10,
+                claim_id: "claim-current",
+                now_unix_ms: 112,
+                updated_at: "unix-ms:112",
+            },
             |batch| {
                 assert!(!batch.is_empty());
                 Err::<(), _>(StoreError::Conflict("consumer unavailable".into()))

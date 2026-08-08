@@ -15164,8 +15164,9 @@ struct HostSessionValidationRequest<'a> {
     host_thread_id: &'a str,
 }
 
-/// Exact provider-native identity returned by a trusted runtime discovery
-/// path. There is intentionally no CLI boolean or free-form receipt parser.
+/// Exact provider-native identity returned from canonical provider metadata.
+/// There is intentionally no CLI boolean or free-form receipt parser. This is
+/// same-user filesystem evidence, not live attachment or authentication.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HostSessionValidationReceipt {
     host_surface: String,
@@ -15181,7 +15182,22 @@ trait HostSessionValidator {
     ) -> Result<HostSessionValidationReceipt, String>;
 }
 
-struct RuntimeHostSessionValidator;
+#[derive(Default)]
+struct RuntimeHostSessionValidator {
+    /// Tests may supply an isolated provider root. Production always resolves
+    /// the canonical default `<HOME>/.codex` root and does not trust
+    /// caller-controlled `CODEX_HOME` as validation evidence.
+    codex_home: Option<PathBuf>,
+}
+
+#[cfg(test)]
+impl RuntimeHostSessionValidator {
+    fn for_codex_home(codex_home: PathBuf) -> Self {
+        Self {
+            codex_home: Some(codex_home),
+        }
+    }
+}
 
 impl HostSessionValidator for RuntimeHostSessionValidator {
     fn validate(
@@ -15195,24 +15211,25 @@ impl HostSessionValidator for RuntimeHostSessionValidator {
                 request.host_surface
             ));
         }
-        let runtime_thread = std::env::var("CODEX_THREAD_ID")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
+        let codex_home = match self.codex_home.as_ref() {
+            Some(root) => root.clone(),
+            None => project::home_dir()
+                .map_err(|error| format!("canonical HOME resolution failed: {error}"))?
+                .join(".codex"),
+        };
+        native_session::discover_codex_rollout(&codex_home, request.host_thread_id)
+            .map_err(|error| format!("Codex rollout discovery failed: {error}"))?
             .ok_or_else(|| {
-                "Codex runtime did not expose CODEX_THREAD_ID; exact Host session cannot be proven"
-                    .to_string()
+                format!(
+                    "canonical Codex rollout metadata does not contain exact session `{}`",
+                    request.host_thread_id
+                )
             })?;
-        if runtime_thread != request.host_thread_id {
-            return Err(format!(
-                "Codex runtime session `{runtime_thread}` does not match requested Host thread `{}`",
-                request.host_thread_id
-            ));
-        }
         Ok(HostSessionValidationReceipt {
             host_surface: surface.to_string(),
-            host_thread_id: runtime_thread.clone(),
-            owner_id: format!("interactive:codex:{runtime_thread}"),
-            discovery_source: "codex_runtime_thread_id",
+            host_thread_id: request.host_thread_id.to_string(),
+            owner_id: format!("interactive:codex:{}", request.host_thread_id),
+            discovery_source: "codex_rollout_session_meta",
         })
     }
 }
@@ -15263,7 +15280,7 @@ fn acquire_validated_interactive_host_lease<V: HostSessionValidator>(
             return Ok((
                 None,
                 Some(format!(
-                    "Host binding remains unleased: {reason}. Run bind-host from the exact provider-native Host task whose runtime exposes a trusted session identity"
+                    "Host binding remains unleased: {reason}. Codex requires exact session_meta evidence under canonical <HOME>/.codex/sessions; this proves rollout existence only, not live attachment or exclusive ownership"
                 )),
             ));
         }
@@ -15543,7 +15560,7 @@ fn team_run_command(
                     store,
                     &created.team_run,
                     checked_host_binding_lease_ttl_ms(args)?,
-                    &RuntimeHostSessionValidator,
+                    &RuntimeHostSessionValidator::default(),
                     current_unix_ms_u64(),
                 )?;
                 host_lease = lease;
@@ -15850,7 +15867,7 @@ fn team_run_command(
                 &surface,
                 &thread_id,
                 checked_host_binding_lease_ttl_ms(args)?,
-                &RuntimeHostSessionValidator,
+                &RuntimeHostSessionValidator::default(),
                 current_unix_ms_u64(),
             )?;
             if let Some(warning) = result.validation_warning.as_deref() {
@@ -16262,7 +16279,7 @@ fn team_run_command(
                     store,
                     &current,
                     checked_host_binding_lease_ttl_ms(args)?,
-                    &RuntimeHostSessionValidator,
+                    &RuntimeHostSessionValidator::default(),
                     current_unix_ms_u64(),
                 )?;
                 if let Some(warning) = warning {
@@ -49142,6 +49159,68 @@ package:com.tencent.mm
         assert_eq!(lease.host_surface, "codex");
         assert_eq!(lease.host_thread_id, "native-thread-1");
         assert!(lease.is_effective_at(101));
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn codex_rollout_metadata_validator_creates_interactive_lease() {
+        let (store, root) = temp_store("rollout-metadata-bind-lease");
+        let created = create_two_member_team_run(&store);
+        let codex_home = root.join("codex-home");
+        let sessions = codex_home.join("sessions/2026/08/09");
+        std::fs::create_dir_all(&sessions).expect("sessions");
+        let session_id = "019f-rollout-bind";
+        std::fs::write(
+            sessions.join(format!("rollout-2026-08-09-{session_id}.jsonl")),
+            format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{session_id}\"}}}}\n"),
+        )
+        .expect("rollout");
+        let validator = RuntimeHostSessionValidator::for_codex_home(codex_home);
+        let result = bind_host_with_validator(
+            &store,
+            &created.team_run.id,
+            "codex",
+            session_id,
+            30_000,
+            &validator,
+            100,
+        )
+        .expect("validated bind");
+        let lease = result.lease.expect("lease");
+        assert_eq!(lease.owner_id, format!("interactive:codex:{session_id}"));
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn codex_thread_id_spoof_without_rollout_stays_unleased() {
+        let (store, root) = temp_store("codex-thread-id-spoof");
+        let created = create_two_member_team_run(&store);
+        let codex_home = root.join("empty-codex-home");
+        std::fs::create_dir_all(codex_home.join("sessions")).expect("sessions");
+        let spoofed = "019f-spoofed-session";
+        // This environment hint formerly created evidence. The validator no
+        // longer reads it; only parsed rollout session_meta can do so.
+        std::env::set_var("CODEX_THREAD_ID", spoofed);
+        let result = bind_host_with_validator(
+            &store,
+            &created.team_run.id,
+            "codex",
+            spoofed,
+            30_000,
+            &RuntimeHostSessionValidator::for_codex_home(codex_home),
+            100,
+        )
+        .expect("observable unleased bind");
+        std::env::remove_var("CODEX_THREAD_ID");
+        assert!(result.lease.is_none());
+        assert!(result
+            .validation_warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("rollout metadata")));
+        assert!(store
+            .latest_host_binding_lease(&created.team_run.id)
+            .expect("lease read")
+            .is_none());
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
