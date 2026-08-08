@@ -19,28 +19,29 @@ use harness_core::{
     AgentProviderConfig, AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam,
     AgentTeamRun, AgentTeamStatus, DelegationRun, DurableAgentMember, DurableAgentMemberStatus,
     Evidence, ExecutionSpace, GateEngine, GateSpec, GitHubLink, GitHubLinkKind, HostAttention,
-    HostAttentionStatus, HostControlMode, HostDispatchConfig, LaunchMcp, LaunchPermission,
-    LaunchSpec, MemberAction, MemberActionStatus, MemberCoordinationStatus, MemberExecutionDriver,
-    MemberRun, MemberRunStatus, MemberWorkspaceSnapshot, Message, MessageDelivery,
-    MessageDeliveryStatus, MessageKind, MessageTerminalSource, Mission, MissionLogEntry,
-    MissionLogEntryKind, MissionStatus, NativeSessionAvailability, NativeSessionRef,
-    OrdinaryMessageBoundary, PendingInteraction, PendingInteractionKind, PendingInteractionRoute,
-    PendingInteractionStatus, ProjectContext, ProjectKind, ProviderAccountRef,
-    ProviderCapabilities, ProviderCapacityConfidence, ProviderCapacityEvidence,
-    ProviderCapacitySnapshot, ProviderCapacityState, ProviderCompatibilityStatus,
-    ProviderControlValue, ProviderEventFidelity, ProviderExecutionControls,
-    ProviderExecutionStatus, ProviderFeatureMode, ProviderIntegrationProfile,
-    ProviderInteractionMessageOption, ProviderInteractionMode, ProviderInteractionRequestBody,
-    ProviderInteractionResponseBody, ProviderInteractionType, ProviderRuntimeContextFact, Review,
-    ReviewVerdict, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus,
-    TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery,
-    TeamMessageKind, TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
-    TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Validate, Wave, WaveExecutorKind,
-    WaveStatus, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkDelivery,
-    WorkDeliveryStatus, WorkPriority, WorkStatus, WorkWorkspace, WorkWorkspaceKind,
-    WorkflowArtifactFile, WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch,
-    WorkflowPatchStatus, WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
-    WorkflowTerminalReason, EXECUTION_MODE_EXTERNAL_INTERACTIVE,
+    HostAttentionStatus, HostBindingLease, HostBindingLeaseOwnerKind, HostControlMode,
+    HostDispatchConfig, LaunchMcp, LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus,
+    MemberCoordinationStatus, MemberExecutionDriver, MemberRun, MemberRunStatus,
+    MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus, MessageKind,
+    MessageTerminalSource, Mission, MissionLogEntry, MissionLogEntryKind, MissionStatus,
+    NativeSessionAvailability, NativeSessionRef, OrdinaryMessageBoundary, PendingInteraction,
+    PendingInteractionKind, PendingInteractionRoute, PendingInteractionStatus, ProjectContext,
+    ProjectKind, ProviderAccountRef, ProviderCapabilities, ProviderCapacityConfidence,
+    ProviderCapacityEvidence, ProviderCapacitySnapshot, ProviderCapacityState,
+    ProviderCompatibilityStatus, ProviderControlValue, ProviderEventFidelity,
+    ProviderExecutionControls, ProviderExecutionStatus, ProviderFeatureMode,
+    ProviderIntegrationProfile, ProviderInteractionMessageOption, ProviderInteractionMode,
+    ProviderInteractionRequestBody, ProviderInteractionResponseBody, ProviderInteractionType,
+    ProviderRuntimeContextFact, Review, ReviewVerdict, SenderKind, TeamActorKind, TeamActorRef,
+    TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus,
+    TeamMessage, TeamMessageDelivery, TeamMessageKind, TeamMessageResponseIntent,
+    TeamRecipientKind, TeamRecipientRef, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus,
+    TeamSupervisorLease, Validate, Wave, WaveExecutorKind, WaveStatus, Work, WorkCausationRef,
+    WorkClaimMode, WorkCommandContext, WorkDelivery, WorkDeliveryStatus, WorkPriority, WorkStatus,
+    WorkWorkspace, WorkWorkspaceKind, WorkflowArtifactFile, WorkflowArtifactManifest,
+    WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
+    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
+    EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
     canonical_surface, HarnessStore, HostAttentionClaimResult, MessageDeliveryClaimResult,
@@ -15153,6 +15154,240 @@ fn selected_company_store_for_work_cutover(args: &[String]) -> CliResult<Harness
     Ok(HarnessStore::new(context.store_root))
 }
 
+const HOST_BINDING_LEASE_DEFAULT_TTL_MS: u64 = 30_000;
+const HOST_BINDING_LEASE_MIN_TTL_MS: u64 = 5_000;
+const HOST_BINDING_LEASE_MAX_TTL_MS: u64 = 300_000;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HostSessionValidationRequest<'a> {
+    host_surface: &'a str,
+    host_thread_id: &'a str,
+}
+
+/// Exact provider-native identity returned by a trusted runtime discovery
+/// path. There is intentionally no CLI boolean or free-form receipt parser.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HostSessionValidationReceipt {
+    host_surface: String,
+    host_thread_id: String,
+    owner_id: String,
+    discovery_source: &'static str,
+}
+
+trait HostSessionValidator {
+    fn validate(
+        &self,
+        request: &HostSessionValidationRequest<'_>,
+    ) -> Result<HostSessionValidationReceipt, String>;
+}
+
+struct RuntimeHostSessionValidator;
+
+impl HostSessionValidator for RuntimeHostSessionValidator {
+    fn validate(
+        &self,
+        request: &HostSessionValidationRequest<'_>,
+    ) -> Result<HostSessionValidationReceipt, String> {
+        let surface = canonical_surface(request.host_surface);
+        if surface != "codex" {
+            return Err(format!(
+                "surface `{}` exposes no trusted native Host-session discovery API",
+                request.host_surface
+            ));
+        }
+        let runtime_thread = std::env::var("CODEX_THREAD_ID")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                "Codex runtime did not expose CODEX_THREAD_ID; exact Host session cannot be proven"
+                    .to_string()
+            })?;
+        if runtime_thread != request.host_thread_id {
+            return Err(format!(
+                "Codex runtime session `{runtime_thread}` does not match requested Host thread `{}`",
+                request.host_thread_id
+            ));
+        }
+        Ok(HostSessionValidationReceipt {
+            host_surface: surface.to_string(),
+            host_thread_id: runtime_thread.clone(),
+            owner_id: format!("interactive:codex:{runtime_thread}"),
+            discovery_source: "codex_runtime_thread_id",
+        })
+    }
+}
+
+#[derive(Debug)]
+struct HostBindLeaseResult {
+    run: AgentTeamRun,
+    lease: Option<HostBindingLease>,
+    validation_warning: Option<String>,
+}
+
+fn checked_host_binding_lease_ttl_ms(args: &[String]) -> CliResult<u64> {
+    let ttl = value(args, "--lease-ttl-ms")
+        .map(|raw| {
+            raw.parse::<u64>()
+                .map_err(|_| CliError::Usage("--lease-ttl-ms must be an integer".to_string()))
+        })
+        .transpose()?
+        .unwrap_or(HOST_BINDING_LEASE_DEFAULT_TTL_MS);
+    if !(HOST_BINDING_LEASE_MIN_TTL_MS..=HOST_BINDING_LEASE_MAX_TTL_MS).contains(&ttl) {
+        return Err(CliError::Usage(format!(
+            "--lease-ttl-ms must be between {HOST_BINDING_LEASE_MIN_TTL_MS} and {HOST_BINDING_LEASE_MAX_TTL_MS}"
+        )));
+    }
+    Ok(ttl)
+}
+
+fn acquire_validated_interactive_host_lease<V: HostSessionValidator>(
+    store: &HarnessStore,
+    run: &AgentTeamRun,
+    ttl_ms: u64,
+    validator: &V,
+    now_unix_ms: u64,
+) -> CliResult<(Option<HostBindingLease>, Option<String>)> {
+    let Some(thread_id) = run.host_thread_id.as_deref() else {
+        return Ok((
+            None,
+            Some("TeamRun has no exact Host thread id".to_string()),
+        ));
+    };
+    let request = HostSessionValidationRequest {
+        host_surface: &run.host_surface,
+        host_thread_id: thread_id,
+    };
+    let receipt = match validator.validate(&request) {
+        Ok(receipt) => receipt,
+        Err(reason) => {
+            return Ok((
+                None,
+                Some(format!(
+                    "Host binding remains unleased: {reason}. Run bind-host from the exact provider-native Host task whose runtime exposes a trusted session identity"
+                )),
+            ));
+        }
+    };
+    if canonical_surface(&receipt.host_surface) != canonical_surface(&run.host_surface)
+        || receipt.host_thread_id != thread_id
+    {
+        return Err(CliError::Usage(
+            "trusted Host-session validator returned a receipt for a different binding".to_string(),
+        ));
+    }
+    if let Some(current) = store.effective_host_binding_lease_at(&run.id, now_unix_ms)? {
+        if current.owner_kind == HostBindingLeaseOwnerKind::Interactive
+            && current.owner_id == receipt.owner_id
+        {
+            return Ok((Some(current), None));
+        }
+    }
+    let lease = store_conflict_as_usage(store.acquire_host_binding_lease(
+        &run.id,
+        &run.host_surface,
+        thread_id,
+        HostBindingLeaseOwnerKind::Interactive,
+        &receipt.owner_id,
+        &generated_id("host-binding-lease"),
+        now_unix_ms,
+        ttl_ms,
+    ))?;
+    Ok((Some(lease), None))
+}
+
+fn bind_host_with_validator<V: HostSessionValidator>(
+    store: &HarnessStore,
+    team_run_id: &str,
+    surface: &str,
+    thread_id: &str,
+    ttl_ms: u64,
+    validator: &V,
+    now_unix_ms: u64,
+) -> CliResult<HostBindLeaseResult> {
+    if surface.trim().is_empty() || thread_id.trim().is_empty() {
+        return Err(CliError::Usage(
+            "--surface and --thread-id must not be empty".to_string(),
+        ));
+    }
+    let current = latest_team_run(store, team_run_id)?;
+    let canonical = canonical_surface(surface).to_string();
+    let run = if current.host_surface == canonical
+        && current.host_thread_id.as_deref() == Some(thread_id)
+    {
+        current
+    } else {
+        let mut next = current.clone();
+        next.host_surface = canonical;
+        next.host_thread_id = Some(thread_id.to_string());
+        next.updated_at = now_string();
+        store_conflict_as_usage(store.compare_and_append_team_run(&current, &next))?;
+        append_team_run_event(
+            store,
+            team_run_id,
+            next_team_run_seq(store, team_run_id)?,
+            TeamRunEventSourceKind::Host,
+            None,
+            "host_binding",
+            team_run_id,
+            "updated",
+            &format!("Host binding set to {}:{thread_id}", next.host_surface),
+        )?;
+        next
+    };
+    let (lease, validation_warning) =
+        acquire_validated_interactive_host_lease(store, &run, ttl_ms, validator, now_unix_ms)?;
+    Ok(HostBindLeaseResult {
+        run,
+        lease,
+        validation_warning,
+    })
+}
+
+fn parse_host_binding_lease_owner_kind(raw: &str) -> CliResult<HostBindingLeaseOwnerKind> {
+    match raw {
+        "interactive" => Ok(HostBindingLeaseOwnerKind::Interactive),
+        "dispatcher" => Ok(HostBindingLeaseOwnerKind::Dispatcher),
+        _ => Err(CliError::Usage(
+            "--owner-kind must be interactive or dispatcher".to_string(),
+        )),
+    }
+}
+
+fn exact_host_binding_lease_from_args(
+    store: &HarnessStore,
+    args: &[String],
+) -> CliResult<HostBindingLease> {
+    let team_run_id = required(args, "--id")?;
+    let latest = store
+        .latest_host_binding_lease(&team_run_id)?
+        .ok_or_else(|| {
+            CliError::Usage(format!("TeamRun {team_run_id} has no Host binding lease"))
+        })?;
+    let generation = required(args, "--generation")?
+        .parse::<u64>()
+        .map_err(|_| CliError::Usage("--generation must be an integer".to_string()))?;
+    let supplied = (
+        canonical_surface(&required(args, "--surface")?).to_string(),
+        required(args, "--thread-id")?,
+        parse_host_binding_lease_owner_kind(&required(args, "--owner-kind")?)?,
+        required(args, "--owner-id")?,
+        required(args, "--lease-id")?,
+        generation,
+    );
+    if canonical_surface(&latest.host_surface) != supplied.0
+        || latest.host_thread_id != supplied.1
+        || latest.owner_kind != supplied.2
+        || latest.owner_id != supplied.3
+        || latest.lease_id != supplied.4
+        || latest.generation != supplied.5
+    {
+        return Err(CliError::Usage(format!(
+            "HOST_BINDING_LEASE_FENCED: supplied Host lease identity is not the latest exact lease for TeamRun {team_run_id}"
+        )));
+    }
+    Ok(latest)
+}
+
 fn team_run_command(
     store: &HarnessStore,
     resolved: &ResolvedStore,
@@ -15160,7 +15395,7 @@ fn team_run_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run create|list|status|board-summary|work|recover|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|wait|complete|cancel",
+        "team-run create|list|status|board-summary|work|recover|host-inbox|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|wait|complete|cancel",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
@@ -15302,6 +15537,20 @@ fn team_run_command(
                 value(args, "--wave-id"),
                 &members,
             )?;
+            let mut host_lease = None;
+            if created.team_run.host_thread_id.is_some() {
+                let (lease, warning) = acquire_validated_interactive_host_lease(
+                    store,
+                    &created.team_run,
+                    checked_host_binding_lease_ttl_ms(args)?,
+                    &RuntimeHostSessionValidator,
+                    current_unix_ms_u64(),
+                )?;
+                host_lease = lease;
+                if let Some(warning) = warning {
+                    eprintln!("[WARNING] {warning}");
+                }
+            }
             if host_thread_id.is_none() {
                 eprintln!(
                     "[WARNING] Team run {} created without host binding — member messages will queue silently.\n\
@@ -15310,7 +15559,14 @@ fn team_run_command(
                 );
             }
             if json {
-                print_json(&created_team_run_json(&created))?;
+                let mut output = created_team_run_json(&created);
+                if let Some(object) = output.as_object_mut() {
+                    object.insert(
+                        "host_binding_lease".to_string(),
+                        serde_json::json!(host_lease),
+                    );
+                }
+                print_json(&output)?;
             } else {
                 println!("{}", created.team_run.id);
             }
@@ -15588,40 +15844,95 @@ fn team_run_command(
             let id = required(args, "--id")?;
             let surface = required(args, "--surface")?;
             let thread_id = required(args, "--thread-id")?;
-            if surface.trim().is_empty() || thread_id.trim().is_empty() {
-                return Err(CliError::Usage(
-                    "--surface and --thread-id must not be empty".to_string(),
-                ));
-            }
-            let current = latest_team_run(store, &id)?;
-            let mut next = current.clone();
-            next.host_surface = canonical_surface(&surface).to_string();
-            next.host_thread_id = Some(thread_id);
-            next.updated_at = now_string();
-            store_conflict_as_usage(store.compare_and_append_team_run(&current, &next))?;
-            append_team_run_event(
+            let result = bind_host_with_validator(
                 store,
                 &id,
-                next_team_run_seq(store, &id)?,
-                TeamRunEventSourceKind::Host,
-                None,
-                "host_binding",
-                &id,
-                "updated",
-                &format!(
-                    "Host binding set to {}:{}",
-                    next.host_surface,
-                    next.host_thread_id.as_deref().unwrap_or("?")
-                ),
+                &surface,
+                &thread_id,
+                checked_host_binding_lease_ttl_ms(args)?,
+                &RuntimeHostSessionValidator,
+                current_unix_ms_u64(),
             )?;
+            if let Some(warning) = result.validation_warning.as_deref() {
+                eprintln!("[WARNING] {warning}");
+            }
             if json {
-                print_json(&next)?;
+                print_json(&serde_json::json!({
+                    "team_run": result.run,
+                    "host_binding_lease": result.lease,
+                    "validation_warning": result.validation_warning,
+                }))?;
             } else {
                 println!(
-                    "{}\t{}:{}",
-                    next.id,
-                    next.host_surface,
-                    next.host_thread_id.as_deref().unwrap_or("?")
+                    "{}\t{}:{}\tlease={}",
+                    result.run.id,
+                    result.run.host_surface,
+                    result.run.host_thread_id.as_deref().unwrap_or("?"),
+                    result
+                        .lease
+                        .as_ref()
+                        .map(|lease| lease.lease_id.as_str())
+                        .unwrap_or("unleased")
+                );
+            }
+        }
+        "host-lease-status" => {
+            let id = required(args, "--id")?;
+            latest_team_run(store, &id)?;
+            let now = current_unix_ms_u64();
+            let latest = store.latest_host_binding_lease(&id)?;
+            let effective = store.effective_host_binding_lease_at(&id, now)?;
+            if json {
+                print_json(&serde_json::json!({
+                    "team_run_id": id,
+                    "observed_unix_ms": now,
+                    "latest": latest,
+                    "effective": effective,
+                }))?;
+            } else if let Some(lease) = latest {
+                println!(
+                    "{}\t{:?}\towner={}\tlease={}\tgeneration={}\teffective={}",
+                    lease.team_run_id,
+                    lease.owner_kind,
+                    lease.owner_id,
+                    lease.lease_id,
+                    lease.generation,
+                    effective.is_some()
+                );
+            } else {
+                println!("{id}\tunleased");
+            }
+        }
+        "renew-host-lease" => {
+            let expected = exact_host_binding_lease_from_args(store, args)?;
+            let renewed = store_conflict_as_usage(store.renew_host_binding_lease(
+                &expected,
+                current_unix_ms_u64(),
+                checked_host_binding_lease_ttl_ms(args)?,
+            ))?;
+            if json {
+                print_json(&renewed)?;
+            } else {
+                println!(
+                    "{}\tlease={}\tgeneration={}\texpires_unix_ms={}",
+                    renewed.team_run_id,
+                    renewed.lease_id,
+                    renewed.generation,
+                    renewed.expires_unix_ms
+                );
+            }
+        }
+        "release-host-lease" => {
+            let expected = exact_host_binding_lease_from_args(store, args)?;
+            let released = store_conflict_as_usage(
+                store.release_host_binding_lease(&expected, current_unix_ms_u64()),
+            )?;
+            if json {
+                print_json(&released)?;
+            } else {
+                println!(
+                    "{}\tlease={}\tgeneration={}\treleased",
+                    released.team_run_id, released.lease_id, released.generation
                 );
             }
         }
@@ -15946,6 +16257,17 @@ fn team_run_command(
                     "[WARNING] Team run {id} has no host binding — member messages will queue silently.\n\
                      Bind with: harness team-run bind-host --id {id} --surface <surface> --thread-id <thread-id>"
                 );
+            } else {
+                let (_lease, warning) = acquire_validated_interactive_host_lease(
+                    store,
+                    &current,
+                    checked_host_binding_lease_ttl_ms(args)?,
+                    &RuntimeHostSessionValidator,
+                    current_unix_ms_u64(),
+                )?;
+                if let Some(warning) = warning {
+                    eprintln!("[WARNING] {warning}");
+                }
             }
             let max_concurrency = value(args, "--max-concurrency")
                 .and_then(|raw| raw.parse::<usize>().ok())
@@ -19266,8 +19588,10 @@ pub(crate) fn drive_prepared_team_run(
                         &run_id,
                         "host_dispatcher",
                         &format!(
-                            "host dispatcher poll: inspected={}, handled={}, escalated={}, failed={}",
+                            "host scheduler poll: inspected={}, ready={}, stale={}, handled={}, escalated={}, failed={}; no Host wake or attention claim was attempted",
                             outcome.inspected,
+                            outcome.ready.len(),
+                            outcome.stale.len(),
                             outcome.handled.len(),
                             outcome.escalated.len(),
                             outcome.failed.len(),
@@ -38556,7 +38880,7 @@ fn print_help() {
   mission log append --mission-id <id> --kind judgment|replan|recovery|closeout_evidence --body <md>
   mission log show --mission-id <id> [--tail <n>]
   wave list|show|history (historical reads only; create|update|advance|gate retired by ADR 0051 -- use `mission log append`)
-  team-run create|list|status|recover|host-inbox|bind-host|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|complete|cancel
+  team-run create|list|status|recover|host-inbox|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|complete|cancel
   team-run board-summary --id <team-run-id>
       <=500-char plain-text board digest: counts by status, assigned/unassigned,
       ready, and one idle|working|awaiting-review line per active member.
@@ -48776,6 +49100,122 @@ package:com.tencent.mm
         assert_eq!(bound.host_surface, "codex-app");
         assert_eq!(bound.host_thread_id.as_deref(), Some("explicit-thread"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    struct FakeHostSessionValidator {
+        receipt: Result<HostSessionValidationReceipt, String>,
+    }
+
+    impl HostSessionValidator for FakeHostSessionValidator {
+        fn validate(
+            &self,
+            _request: &HostSessionValidationRequest<'_>,
+        ) -> Result<HostSessionValidationReceipt, String> {
+            self.receipt.clone()
+        }
+    }
+
+    #[test]
+    fn host_session_validator_valid_receipt_creates_exact_interactive_lease() {
+        let (store, root) = temp_store("validated-bind-lease");
+        let created = create_two_member_team_run(&store);
+        let validator = FakeHostSessionValidator {
+            receipt: Ok(HostSessionValidationReceipt {
+                host_surface: "codex".into(),
+                host_thread_id: "native-thread-1".into(),
+                owner_id: "interactive:test-session".into(),
+                discovery_source: "deterministic_test_fake",
+            }),
+        };
+        let result = bind_host_with_validator(
+            &store,
+            &created.team_run.id,
+            "codex-app",
+            "native-thread-1",
+            30_000,
+            &validator,
+            100,
+        )
+        .expect("validated bind");
+        let lease = result.lease.expect("active lease");
+        assert_eq!(lease.owner_kind, HostBindingLeaseOwnerKind::Interactive);
+        assert_eq!(lease.host_surface, "codex");
+        assert_eq!(lease.host_thread_id, "native-thread-1");
+        assert!(lease.is_effective_at(101));
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn invalid_host_session_validation_preserves_observable_unleased_binding() {
+        let (store, root) = temp_store("invalid-bind-lease");
+        let created = create_two_member_team_run(&store);
+        let validator = FakeHostSessionValidator {
+            receipt: Err("native session not discoverable".into()),
+        };
+        let result = bind_host_with_validator(
+            &store,
+            &created.team_run.id,
+            "claude-code",
+            "manual-thread",
+            30_000,
+            &validator,
+            100,
+        )
+        .expect("binding remains observable");
+        assert_eq!(result.run.host_surface, "claude");
+        assert_eq!(result.run.host_thread_id.as_deref(), Some("manual-thread"));
+        assert!(result.lease.is_none());
+        assert!(result
+            .validation_warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("remains unleased")));
+        assert!(store
+            .latest_host_binding_lease(&created.team_run.id)
+            .expect("lease read")
+            .is_none());
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn host_lease_renew_and_release_reject_stale_exact_fence() {
+        let (store, root) = temp_store("host-lease-stale-fence");
+        let created = create_two_member_team_run(&store);
+        let current = latest_team_run(&store, &created.team_run.id).expect("run");
+        let mut bound = current.clone();
+        bound.host_surface = "codex".into();
+        bound.host_thread_id = Some("thread-1".into());
+        bound.updated_at = "unix-ms:2".into();
+        store
+            .compare_and_append_team_run(&current, &bound)
+            .expect("bind");
+        let stale = store
+            .acquire_host_binding_lease(
+                &bound.id,
+                "codex",
+                "thread-1",
+                HostBindingLeaseOwnerKind::Interactive,
+                "owner-1",
+                "lease-1",
+                100,
+                10,
+            )
+            .expect("first lease");
+        let current = store
+            .acquire_host_binding_lease(
+                &bound.id,
+                "codex",
+                "thread-1",
+                HostBindingLeaseOwnerKind::Interactive,
+                "owner-2",
+                "lease-2",
+                111,
+                100,
+            )
+            .expect("takeover");
+        assert!(store.renew_host_binding_lease(&stale, 112, 100).is_err());
+        assert!(store.release_host_binding_lease(&stale, 112).is_err());
+        assert!(store.renew_host_binding_lease(&current, 112, 100).is_ok());
+        std::fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]

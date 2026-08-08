@@ -11,7 +11,8 @@ use firm_core::{
     AgentMessageRoute, AgentRuntime, AgentTeam, AgentTeamRun, BuiltinGateConfig,
     CodeReviewStrategy, Decision, DelegationRun, DurableAgentMember, Evidence, Gap, GateEngine,
     GateVerdict, GitHubLink, HostAttention, HostAttentionInbox, HostAttentionKind,
-    HostAttentionStatus, MemberAction, MemberRun, Message, MessageDelivery, MessageDeliveryStatus,
+    HostAttentionStatus, HostBindingLease, HostBindingLeaseOwnerKind, HostBindingLeaseStatus,
+    MemberAction, MemberRun, Message, MessageDelivery, MessageDeliveryStatus,
     MessageTerminalSource, Mission, MissionLogEntry, MissionStatus, PendingInteraction, Proposal,
     ProviderChildThread, ProviderExecutionStatus, ProviderInteractionRequestBody,
     ProviderInteractionResponseBody, Review, ReviewVerdict, TeamActorKind, TeamDeliveryPolicy,
@@ -1143,6 +1144,177 @@ impl HarnessStore {
         self.append_jsonl_unlocked("team_runs.jsonl", next)
     }
 
+    /// Acquire exclusive ownership of a TeamRun's current exact Host binding.
+    /// A live owner is never preempted. Expiry, release, or a TeamRun rebind
+    /// permits takeover and advances the durable generation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn acquire_host_binding_lease(
+        &self,
+        team_run_id: &str,
+        host_surface: &str,
+        host_thread_id: &str,
+        owner_kind: HostBindingLeaseOwnerKind,
+        owner_id: &str,
+        lease_id: &str,
+        now_unix_ms: u64,
+        ttl_ms: u64,
+    ) -> StoreResult<HostBindingLease> {
+        require_non_empty_store(owner_id, "Host binding lease owner id")?;
+        require_non_empty_store(lease_id, "Host binding lease id")?;
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let run =
+            self.require_exact_host_binding_unlocked(team_run_id, host_surface, host_thread_id)?;
+        let current = self.latest_host_binding_lease_unlocked(team_run_id)?;
+        if let Some(current) = current.as_ref() {
+            let current_matches_binding = canonical_surface(&current.host_surface)
+                == canonical_surface(&run.host_surface)
+                && current.host_thread_id == host_thread_id;
+            if current.is_effective_at(now_unix_ms) && current_matches_binding {
+                if current.owner_kind == owner_kind
+                    && current.owner_id == owner_id
+                    && current.lease_id == lease_id
+                {
+                    return Ok(current.clone());
+                }
+                return Err(StoreError::Conflict(format!(
+                    "HOST_BINDING_LEASE_HELD: TeamRun {team_run_id} binding is owned by {:?} {} generation {} until unix-ms:{}",
+                    current.owner_kind, current.owner_id, current.generation, current.expires_unix_ms
+                )));
+            }
+        }
+        let generation = match current.as_ref() {
+            Some(current) => current.generation.checked_add(1).ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "HOST_BINDING_LEASE_GENERATION_EXHAUSTED: TeamRun {team_run_id}"
+                ))
+            })?,
+            None => 1,
+        };
+        let lease = HostBindingLease {
+            team_run_id: team_run_id.to_string(),
+            host_surface: run.host_surface,
+            host_thread_id: host_thread_id.to_string(),
+            owner_kind,
+            owner_id: owner_id.to_string(),
+            generation,
+            lease_id: lease_id.to_string(),
+            acquired_unix_ms: now_unix_ms,
+            heartbeat_unix_ms: now_unix_ms,
+            expires_unix_ms: now_unix_ms.saturating_add(ttl_ms.max(1)),
+            status: HostBindingLeaseStatus::Active,
+            released_unix_ms: None,
+        };
+        lease
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        self.append_jsonl_unlocked("host_binding_leases.jsonl", &lease)?;
+        Ok(lease)
+    }
+
+    /// Renew an exact current lease. Every identity component is a CAS fence.
+    pub fn renew_host_binding_lease(
+        &self,
+        expected: &HostBindingLease,
+        now_unix_ms: u64,
+        ttl_ms: u64,
+    ) -> StoreResult<HostBindingLease> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.require_exact_host_binding_unlocked(
+            &expected.team_run_id,
+            &expected.host_surface,
+            &expected.host_thread_id,
+        )?;
+        let mut current =
+            self.require_current_host_binding_lease_owner_unlocked(expected, now_unix_ms)?;
+        current.heartbeat_unix_ms = now_unix_ms;
+        current.expires_unix_ms = now_unix_ms.saturating_add(ttl_ms.max(1));
+        current
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        self.append_jsonl_unlocked("host_binding_leases.jsonl", &current)?;
+        Ok(current)
+    }
+
+    /// Release an exact current lease. An exact retry is idempotent; every
+    /// stale generation, lease id, or owner is rejected.
+    pub fn release_host_binding_lease(
+        &self,
+        expected: &HostBindingLease,
+        now_unix_ms: u64,
+    ) -> StoreResult<HostBindingLease> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.require_exact_host_binding_unlocked(
+            &expected.team_run_id,
+            &expected.host_surface,
+            &expected.host_thread_id,
+        )?;
+        let mut current = self
+            .latest_host_binding_lease_unlocked(&expected.team_run_id)?
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "TeamRun {} has no Host binding lease",
+                    expected.team_run_id
+                ))
+            })?;
+        self.require_same_host_binding_lease_owner(&current, expected)?;
+        if current.status == HostBindingLeaseStatus::Released {
+            return Ok(current);
+        }
+        current.status = HostBindingLeaseStatus::Released;
+        current.heartbeat_unix_ms = now_unix_ms;
+        current.expires_unix_ms = now_unix_ms;
+        current.released_unix_ms = Some(now_unix_ms);
+        current
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        self.append_jsonl_unlocked("host_binding_leases.jsonl", &current)?;
+        Ok(current)
+    }
+
+    /// Latest persisted row, including released and expired rows. `None` is
+    /// the explicit legacy/unleased state.
+    pub fn latest_host_binding_lease(
+        &self,
+        team_run_id: &str,
+    ) -> StoreResult<Option<HostBindingLease>> {
+        self.latest_host_binding_lease_unlocked(team_run_id)
+    }
+
+    /// Return the active lease only when it is live and still matches the
+    /// TeamRun's current exact Host binding.
+    pub fn effective_host_binding_lease_at(
+        &self,
+        team_run_id: &str,
+        now_unix_ms: u64,
+    ) -> StoreResult<Option<HostBindingLease>> {
+        let run = self.require_team_run_unlocked(team_run_id)?;
+        Ok(self
+            .latest_host_binding_lease_unlocked(team_run_id)?
+            .filter(|lease| {
+                lease.is_effective_at(now_unix_ms)
+                    && canonical_surface(&lease.host_surface)
+                        == canonical_surface(&run.host_surface)
+                    && run.host_thread_id.as_deref() == Some(lease.host_thread_id.as_str())
+            }))
+    }
+
+    /// Materialize one deterministic HostBindingStale attention for every
+    /// bound TeamRun whose current binding has no effective lease. Repeated
+    /// scans of the same binding/generation are idempotent.
+    pub fn reconcile_host_binding_stale_attentions(
+        &self,
+        now_unix_ms: u64,
+        observed_at: &str,
+    ) -> StoreResult<Vec<HostAttention>> {
+        require_non_empty_store(observed_at, "Host binding stale observed_at")?;
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.reconcile_host_binding_stale_attentions_unlocked(now_unix_ms, observed_at)
+    }
+
     /// Idempotently append one durable Host-attention fact.
     ///
     /// Runtime integration must derive `attention.id` from the causal event
@@ -1256,6 +1428,9 @@ impl HarnessStore {
         attention.claim_id = Some(claim_id.to_string());
         attention.claimed_host_surface = Some(host_surface.to_string());
         attention.claimed_host_thread_id = Some(host_thread_id.to_string());
+        attention.claimed_host_lease_id = None;
+        attention.claimed_host_lease_generation = None;
+        attention.claimed_host_lease_owner_id = None;
         attention.provider_receipt_id = None;
         attention.last_failure_reason = None;
         attention.updated_at = updated_at.to_string();
@@ -1296,6 +1471,14 @@ impl HarnessStore {
             StoreError::Conflict("claimed HostAttention has no Host thread id".to_string())
         })?;
         self.require_exact_host_binding_unlocked(&attention.team_run_id, &surface, &thread_id)?;
+        if attention.claimed_host_lease_id.is_some() {
+            let now_unix_ms = parse_iso8601_to_unix_ms(updated_at).ok_or_else(|| {
+                StoreError::Conflict(
+                    "leased HostAttention completion requires unix-ms updated_at".to_string(),
+                )
+            })?;
+            self.require_host_attention_lease_fence_unlocked(&attention, now_unix_ms)?;
+        }
         attention.status = HostAttentionStatus::Delivered;
         attention.provider_receipt_id = Some(provider_receipt_id.to_string());
         attention.updated_at = updated_at.to_string();
@@ -1323,10 +1506,21 @@ impl HarnessStore {
                 "HostAttention claim {claim_id} no longer owns {attention_id}"
             )));
         }
+        if attention.claimed_host_lease_id.is_some() {
+            let now_unix_ms = parse_iso8601_to_unix_ms(updated_at).ok_or_else(|| {
+                StoreError::Conflict(
+                    "leased HostAttention failure requires unix-ms updated_at".to_string(),
+                )
+            })?;
+            self.require_host_attention_lease_fence_unlocked(&attention, now_unix_ms)?;
+        }
         attention.status = HostAttentionStatus::Actionable;
         attention.claim_id = None;
         attention.claimed_host_surface = None;
         attention.claimed_host_thread_id = None;
+        attention.claimed_host_lease_id = None;
+        attention.claimed_host_lease_generation = None;
+        attention.claimed_host_lease_owner_id = None;
         attention.provider_receipt_id = None;
         attention.last_failure_reason = Some(reason.to_string());
         attention.updated_at = updated_at.to_string();
@@ -1406,6 +1600,9 @@ impl HarnessStore {
         attention.claim_id = None;
         attention.claimed_host_surface = None;
         attention.claimed_host_thread_id = None;
+        attention.claimed_host_lease_id = None;
+        attention.claimed_host_lease_generation = None;
+        attention.claimed_host_lease_owner_id = None;
         attention.provider_receipt_id = None;
         attention.last_failure_reason = Some(reason.to_string());
         attention.updated_at = updated_at.to_string();
@@ -1438,6 +1635,73 @@ impl HarnessStore {
             })
             .collect();
         Ok(all)
+    }
+
+    /// Atomically claim an aged actionable batch under the exact current
+    /// Dispatcher lease. A live Interactive lease cannot satisfy this fence,
+    /// and the store lock gives concurrent dispatchers one winner.
+    #[allow(clippy::too_many_arguments)]
+    pub fn claim_dispatcher_host_attention_batch(
+        &self,
+        expected_lease: &HostBindingLease,
+        older_than_unix_ms: u64,
+        limit: usize,
+        claim_id: &str,
+        now_unix_ms: u64,
+        updated_at: &str,
+    ) -> StoreResult<Vec<HostAttention>> {
+        require_non_empty_store(claim_id, "Host attention batch claim id")?;
+        require_non_empty_store(updated_at, "Host attention batch updated_at")?;
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.reconcile_work_host_attentions_unlocked()?;
+        self.reconcile_host_binding_stale_attentions_unlocked(now_unix_ms, updated_at)?;
+        let current =
+            self.require_current_host_binding_lease_owner_unlocked(expected_lease, now_unix_ms)?;
+        if current.owner_kind != HostBindingLeaseOwnerKind::Dispatcher {
+            return Err(StoreError::Conflict(format!(
+                "HOST_BINDING_INTERACTIVE_SUPPRESSES_DISPATCH: TeamRun {} is owned by Interactive Host {}",
+                current.team_run_id, current.owner_id
+            )));
+        }
+        self.require_exact_host_binding_unlocked(
+            &current.team_run_id,
+            &current.host_surface,
+            &current.host_thread_id,
+        )?;
+        self.requeue_fenced_host_attention_claims_unlocked(&current, updated_at)?;
+
+        let mut eligible = self
+            .latest_host_attentions_unlocked()?
+            .into_values()
+            .filter(|attention| {
+                attention.team_run_id == current.team_run_id
+                    && attention.status == HostAttentionStatus::Actionable
+                    && parse_iso8601_to_unix_ms(&attention.created_at)
+                        .map(|created| created < older_than_unix_ms)
+                        .unwrap_or(true)
+            })
+            .collect::<Vec<_>>();
+        eligible.sort_by(|left, right| {
+            compare_store_timestamps(&left.created_at, &right.created_at)
+                .then(left.id.cmp(&right.id))
+        });
+        eligible.truncate(limit);
+        for attention in &mut eligible {
+            attention.status = HostAttentionStatus::Claimed;
+            attention.attempt = attention.attempt.saturating_add(1);
+            attention.claim_id = Some(claim_id.to_string());
+            attention.claimed_host_surface = Some(current.host_surface.clone());
+            attention.claimed_host_thread_id = Some(current.host_thread_id.clone());
+            attention.claimed_host_lease_id = Some(current.lease_id.clone());
+            attention.claimed_host_lease_generation = Some(current.generation);
+            attention.claimed_host_lease_owner_id = Some(current.owner_id.clone());
+            attention.provider_receipt_id = None;
+            attention.last_failure_reason = None;
+            attention.updated_at = updated_at.to_string();
+            self.append_jsonl_unlocked("host_attentions.jsonl", attention)?;
+        }
+        Ok(eligible)
     }
 
     /// Atomically append a newly-created TeamRun. Mission-scoped runs are the
@@ -3411,6 +3675,9 @@ impl HarnessStore {
                                     claim_id: None,
                                     claimed_host_surface: None,
                                     claimed_host_thread_id: None,
+                                    claimed_host_lease_id: None,
+                                    claimed_host_lease_generation: None,
+                                    claimed_host_lease_owner_id: None,
                                     provider_receipt_id: None,
                                     last_failure_reason: None,
                                     created_at: prereq_created_at.clone(),
@@ -3449,10 +3716,204 @@ impl HarnessStore {
         .ok_or_else(|| StoreError::Conflict(format!("team run not found: {team_run_id}")))
     }
 
+    fn latest_host_binding_lease_unlocked(
+        &self,
+        team_run_id: &str,
+    ) -> StoreResult<Option<HostBindingLease>> {
+        Ok(latest_by_id(
+            self.read_jsonl::<HostBindingLease>("host_binding_leases.jsonl")?,
+            |lease| lease.team_run_id.clone(),
+        )
+        .remove(team_run_id))
+    }
+
+    fn require_same_host_binding_lease_owner(
+        &self,
+        current: &HostBindingLease,
+        expected: &HostBindingLease,
+    ) -> StoreResult<()> {
+        if current.team_run_id != expected.team_run_id
+            || canonical_surface(&current.host_surface) != canonical_surface(&expected.host_surface)
+            || current.host_thread_id != expected.host_thread_id
+            || current.owner_kind != expected.owner_kind
+            || current.owner_id != expected.owner_id
+            || current.generation != expected.generation
+            || current.lease_id != expected.lease_id
+        {
+            return Err(StoreError::Conflict(format!(
+                "HOST_BINDING_LEASE_FENCED: stale lease owner/generation/id for TeamRun {}",
+                expected.team_run_id
+            )));
+        }
+        Ok(())
+    }
+
+    fn require_current_host_binding_lease_owner_unlocked(
+        &self,
+        expected: &HostBindingLease,
+        now_unix_ms: u64,
+    ) -> StoreResult<HostBindingLease> {
+        let current = self
+            .latest_host_binding_lease_unlocked(&expected.team_run_id)?
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "TeamRun {} has no Host binding lease",
+                    expected.team_run_id
+                ))
+            })?;
+        self.require_same_host_binding_lease_owner(&current, expected)?;
+        if !current.is_effective_at(now_unix_ms) {
+            return Err(StoreError::Conflict(format!(
+                "HOST_BINDING_LEASE_FENCED: lease for TeamRun {} is released or expired",
+                expected.team_run_id
+            )));
+        }
+        Ok(current)
+    }
+
+    fn require_host_attention_lease_fence_unlocked(
+        &self,
+        attention: &HostAttention,
+        now_unix_ms: u64,
+    ) -> StoreResult<HostBindingLease> {
+        let current = self
+            .latest_host_binding_lease_unlocked(&attention.team_run_id)?
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "HOST_ATTENTION_LEASE_FENCED: TeamRun {} has no Host binding lease",
+                    attention.team_run_id
+                ))
+            })?;
+        let matches = current.owner_kind == HostBindingLeaseOwnerKind::Dispatcher
+            && attention.claimed_host_lease_id.as_deref() == Some(current.lease_id.as_str())
+            && attention.claimed_host_lease_generation == Some(current.generation)
+            && attention.claimed_host_lease_owner_id.as_deref() == Some(current.owner_id.as_str())
+            && attention
+                .claimed_host_surface
+                .as_deref()
+                .is_some_and(|surface| {
+                    canonical_surface(surface) == canonical_surface(&current.host_surface)
+                })
+            && attention.claimed_host_thread_id.as_deref() == Some(current.host_thread_id.as_str())
+            && current.is_effective_at(now_unix_ms);
+        if !matches {
+            return Err(StoreError::Conflict(format!(
+                "HOST_ATTENTION_LEASE_FENCED: claim {} no longer owns attention {}",
+                attention.claim_id.as_deref().unwrap_or("<missing>"),
+                attention.id
+            )));
+        }
+        Ok(current)
+    }
+
+    fn requeue_fenced_host_attention_claims_unlocked(
+        &self,
+        current: &HostBindingLease,
+        updated_at: &str,
+    ) -> StoreResult<()> {
+        let attentions = self.latest_host_attentions_unlocked()?;
+        for mut attention in attentions.into_values().filter(|attention| {
+            attention.team_run_id == current.team_run_id
+                && attention.status == HostAttentionStatus::Claimed
+                && attention.claimed_host_lease_id.is_some()
+                && (attention.claimed_host_lease_id.as_deref() != Some(current.lease_id.as_str())
+                    || attention.claimed_host_lease_generation != Some(current.generation)
+                    || attention.claimed_host_lease_owner_id.as_deref()
+                        != Some(current.owner_id.as_str()))
+        }) {
+            attention.status = HostAttentionStatus::Actionable;
+            attention.claim_id = None;
+            attention.claimed_host_surface = None;
+            attention.claimed_host_thread_id = None;
+            attention.claimed_host_lease_id = None;
+            attention.claimed_host_lease_generation = None;
+            attention.claimed_host_lease_owner_id = None;
+            attention.provider_receipt_id = None;
+            attention.last_failure_reason =
+                Some("previous Host binding lease no longer owns this attention".to_string());
+            attention.updated_at = updated_at.to_string();
+            self.append_jsonl_unlocked("host_attentions.jsonl", &attention)?;
+        }
+        Ok(())
+    }
+
+    fn reconcile_host_binding_stale_attentions_unlocked(
+        &self,
+        now_unix_ms: u64,
+        observed_at: &str,
+    ) -> StoreResult<Vec<HostAttention>> {
+        let runs = latest_by_id(self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?, |run| {
+            run.id.clone()
+        });
+        let leases = latest_by_id(
+            self.read_jsonl::<HostBindingLease>("host_binding_leases.jsonl")?,
+            |lease| lease.team_run_id.clone(),
+        );
+        let mut projected = self.latest_host_attentions_unlocked()?;
+        let mut stale = Vec::new();
+        for run in runs.into_values() {
+            let Some(thread_id) = run.host_thread_id.as_deref() else {
+                continue;
+            };
+            let lease = leases.get(&run.id);
+            let effective = lease.is_some_and(|lease| {
+                lease.is_effective_at(now_unix_ms)
+                    && canonical_surface(&lease.host_surface)
+                        == canonical_surface(&run.host_surface)
+                    && lease.host_thread_id == thread_id
+            });
+            if effective {
+                continue;
+            }
+            let generation = lease.map(|lease| lease.generation).unwrap_or(0);
+            let source_event_ref = format!(
+                "host-binding-stale:{}:{}:{}:generation:{}",
+                run.id, run.host_surface, thread_id, generation
+            );
+            let attention = HostAttention {
+                id: format!("host-attention-{source_event_ref}"),
+                team_run_id: run.id,
+                kind: HostAttentionKind::HostBindingStale,
+                work_id: String::new(),
+                work_version: 0,
+                source_event_ref,
+                member_run_id: None,
+                status: HostAttentionStatus::Actionable,
+                attempt: 0,
+                claim_id: None,
+                claimed_host_surface: None,
+                claimed_host_thread_id: None,
+                claimed_host_lease_id: None,
+                claimed_host_lease_generation: None,
+                claimed_host_lease_owner_id: None,
+                provider_receipt_id: None,
+                last_failure_reason: None,
+                created_at: observed_at.to_string(),
+                updated_at: observed_at.to_string(),
+            };
+            if let Some(existing) = projected.get(&attention.id) {
+                stale.push(existing.clone());
+                continue;
+            }
+            attention
+                .validate()
+                .map_err(|error| StoreError::Conflict(error.to_string()))?;
+            self.append_jsonl_unlocked("host_attentions.jsonl", &attention)?;
+            projected.insert(attention.id.clone(), attention.clone());
+            stale.push(attention);
+        }
+        Ok(stale)
+    }
+
     fn ensure_host_attention_unlocked(
         &self,
         attention: &HostAttention,
     ) -> StoreResult<HostAttention> {
+        if attention.kind == HostAttentionKind::HostBindingStale {
+            return Err(StoreError::Conflict(
+                "HostBindingStale attention is derived by lease reconciliation".to_string(),
+            ));
+        }
         attention
             .validate()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
@@ -3461,6 +3922,9 @@ impl HarnessStore {
             || attention.claim_id.is_some()
             || attention.claimed_host_surface.is_some()
             || attention.claimed_host_thread_id.is_some()
+            || attention.claimed_host_lease_id.is_some()
+            || attention.claimed_host_lease_generation.is_some()
+            || attention.claimed_host_lease_owner_id.is_some()
             || attention.provider_receipt_id.is_some()
         {
             return Err(StoreError::Conflict(
@@ -3557,6 +4021,9 @@ impl HarnessStore {
             claim_id: None,
             claimed_host_surface: None,
             claimed_host_thread_id: None,
+            claimed_host_lease_id: None,
+            claimed_host_lease_generation: None,
+            claimed_host_lease_owner_id: None,
             provider_receipt_id: None,
             last_failure_reason: None,
             created_at: operation.event.created_at.clone(),
@@ -6084,6 +6551,9 @@ impl HarnessStore {
             claim_id: None,
             claimed_host_surface: None,
             claimed_host_thread_id: None,
+            claimed_host_lease_id: None,
+            claimed_host_lease_generation: None,
+            claimed_host_lease_owner_id: None,
             provider_receipt_id: None,
             last_failure_reason: None,
             created_at: delivery.updated_at.clone(),
@@ -7806,6 +8276,254 @@ mod tests {
         (run, member, work)
     }
 
+    fn seed_test_host_attention(
+        store: &HarnessStore,
+        run: &AgentTeamRun,
+        member: &MemberRun,
+        work: &Work,
+        id: &str,
+        created_at: &str,
+    ) -> HostAttention {
+        let attention = HostAttention {
+            id: id.into(),
+            team_run_id: run.id.clone(),
+            kind: HostAttentionKind::WorkReviewRequested,
+            work_id: work.id.clone(),
+            work_version: work.version,
+            source_event_ref: format!("source-{id}"),
+            member_run_id: Some(member.id.clone()),
+            status: HostAttentionStatus::Actionable,
+            attempt: 0,
+            claim_id: None,
+            claimed_host_surface: None,
+            claimed_host_thread_id: None,
+            claimed_host_lease_id: None,
+            claimed_host_lease_generation: None,
+            claimed_host_lease_owner_id: None,
+            provider_receipt_id: None,
+            last_failure_reason: None,
+            created_at: created_at.into(),
+            updated_at: created_at.into(),
+        };
+        store
+            .ensure_host_attention(&attention)
+            .expect("seed Host attention");
+        attention
+    }
+
+    #[test]
+    fn host_binding_lease_acquire_renew_release_takeover_and_stale_fence() {
+        let root = team_test_root("host-binding-lease-lifecycle");
+        let store = HarnessStore::new(&root);
+        let (run, _, _) = seed_host_attention_fixture(&store, "lease-lifecycle", Some("thread-a"));
+
+        assert_eq!(
+            store.latest_host_binding_lease(&run.id).unwrap(),
+            None,
+            "legacy binding is explicitly unleased"
+        );
+        let first = store
+            .acquire_host_binding_lease(
+                &run.id,
+                "codex-app",
+                "thread-a",
+                HostBindingLeaseOwnerKind::Interactive,
+                "human-a",
+                "lease-a",
+                100,
+                50,
+            )
+            .expect("acquire interactive lease");
+        assert_eq!(first.generation, 1);
+        assert_eq!(
+            store.effective_host_binding_lease_at(&run.id, 149).unwrap(),
+            Some(first.clone())
+        );
+        assert!(store
+            .effective_host_binding_lease_at(&run.id, 150)
+            .unwrap()
+            .is_none());
+
+        let second = store
+            .acquire_host_binding_lease(
+                &run.id,
+                "codex-app",
+                "thread-a",
+                HostBindingLeaseOwnerKind::Dispatcher,
+                "dispatcher-b",
+                "lease-b",
+                150,
+                100,
+            )
+            .expect("expired takeover");
+        assert_eq!(second.generation, 2);
+        assert!(store.renew_host_binding_lease(&first, 151, 100).is_err());
+        let renewed = store
+            .renew_host_binding_lease(&second, 175, 100)
+            .expect("renew exact lease");
+        assert_eq!(renewed.expires_unix_ms, 275);
+        let released = store
+            .release_host_binding_lease(&renewed, 180)
+            .expect("release exact lease");
+        assert_eq!(released.status, HostBindingLeaseStatus::Released);
+        assert!(store.renew_host_binding_lease(&renewed, 181, 100).is_err());
+        assert_eq!(
+            store
+                .release_host_binding_lease(&released, 999)
+                .expect("release retry")
+                .released_unix_ms,
+            Some(180)
+        );
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn host_binding_stale_attention_is_derived_and_idempotent() {
+        let root = team_test_root("host-binding-stale-attention");
+        let store = HarnessStore::new(&root);
+        let (run, _, _) = seed_host_attention_fixture(&store, "lease-stale", Some("thread-a"));
+
+        let first = store
+            .reconcile_host_binding_stale_attentions(100, "unix-ms:100")
+            .expect("derive unleased attention");
+        let retry = store
+            .reconcile_host_binding_stale_attentions(101, "unix-ms:101")
+            .expect("repeat scan");
+        assert_eq!(first.len(), 1);
+        assert_eq!(retry.len(), 1);
+        assert_eq!(first[0].id, retry[0].id);
+        assert_eq!(first[0].kind, HostAttentionKind::HostBindingStale);
+        assert_eq!(
+            store
+                .host_attentions()
+                .unwrap()
+                .into_iter()
+                .filter(|attention| attention.kind == HostAttentionKind::HostBindingStale)
+                .count(),
+            1
+        );
+
+        let lease = store
+            .acquire_host_binding_lease(
+                &run.id,
+                "codex",
+                "thread-a",
+                HostBindingLeaseOwnerKind::Interactive,
+                "human",
+                "lease-live",
+                110,
+                10,
+            )
+            .unwrap();
+        assert!(store
+            .reconcile_host_binding_stale_attentions(119, "unix-ms:119")
+            .unwrap()
+            .is_empty());
+        let expired = store
+            .reconcile_host_binding_stale_attentions(120, "unix-ms:120")
+            .unwrap();
+        assert_eq!(expired.len(), 1);
+        assert_ne!(expired[0].id, first[0].id);
+        assert_eq!(lease.generation, 1);
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn host_binding_interactive_suppresses_dispatch_and_atomic_batch_has_one_winner() {
+        let root = team_test_root("host-binding-dispatch-race");
+        let store = HarnessStore::new(&root);
+        let (run, member, work) =
+            seed_host_attention_fixture(&store, "lease-dispatch", Some("thread-a"));
+        seed_test_host_attention(
+            &store,
+            &run,
+            &member,
+            &work,
+            "attention-dispatch-race",
+            "unix-ms:10",
+        );
+        let interactive = store
+            .acquire_host_binding_lease(
+                &run.id,
+                "codex-app",
+                "thread-a",
+                HostBindingLeaseOwnerKind::Interactive,
+                "human",
+                "lease-human",
+                100,
+                10,
+            )
+            .unwrap();
+        let suppressed = store.claim_dispatcher_host_attention_batch(
+            &interactive,
+            100,
+            10,
+            "suppressed",
+            101,
+            "unix-ms:101",
+        );
+        assert!(suppressed
+            .unwrap_err()
+            .to_string()
+            .contains("INTERACTIVE_SUPPRESSES_DISPATCH"));
+
+        let dispatcher = store
+            .acquire_host_binding_lease(
+                &run.id,
+                "codex-app",
+                "thread-a",
+                HostBindingLeaseOwnerKind::Dispatcher,
+                "dispatcher",
+                "lease-dispatcher",
+                110,
+                100,
+            )
+            .expect("take over expired interactive lease");
+        let store = std::sync::Arc::new(store);
+        let handles = (0..2)
+            .map(|index| {
+                let store = std::sync::Arc::clone(&store);
+                let dispatcher = dispatcher.clone();
+                std::thread::spawn(move || {
+                    store
+                        .claim_dispatcher_host_attention_batch(
+                            &dispatcher,
+                            100,
+                            10,
+                            &format!("batch-{index}"),
+                            111,
+                            "unix-ms:111",
+                        )
+                        .expect("batch claim")
+                })
+            })
+            .collect::<Vec<_>>();
+        let results = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("claim thread"))
+            .collect::<Vec<_>>();
+        assert_eq!(results.iter().filter(|batch| !batch.is_empty()).count(), 1);
+        assert_eq!(results.iter().map(Vec::len).sum::<usize>(), 1);
+        let claimed = results.into_iter().flatten().next().unwrap();
+        assert_eq!(claimed.claimed_host_lease_generation, Some(2));
+
+        let released = store
+            .release_host_binding_lease(&dispatcher, 112)
+            .expect("release dispatcher");
+        assert!(store
+            .complete_host_attention_claim(
+                &claimed.id,
+                claimed.claim_id.as_deref().unwrap(),
+                "receipt",
+                "unix-ms:113",
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("LEASE_FENCED"));
+        assert_eq!(released.status, HostBindingLeaseStatus::Released);
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
     #[test]
     fn host_attention_is_durable_exact_bound_and_semantically_separate() {
         let root = team_test_root("host-attention");
@@ -7824,6 +8542,9 @@ mod tests {
             claim_id: None,
             claimed_host_surface: None,
             claimed_host_thread_id: None,
+            claimed_host_lease_id: None,
+            claimed_host_lease_generation: None,
+            claimed_host_lease_owner_id: None,
             provider_receipt_id: None,
             last_failure_reason: None,
             created_at: "unix-ms:3".into(),
@@ -13801,6 +14522,9 @@ mod tests {
             claim_id: None,
             claimed_host_surface: None,
             claimed_host_thread_id: None,
+            claimed_host_lease_id: None,
+            claimed_host_lease_generation: None,
+            claimed_host_lease_owner_id: None,
             provider_receipt_id: None,
             last_failure_reason: None,
             created_at: "unix-ms:5".into(),

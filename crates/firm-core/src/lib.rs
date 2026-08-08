@@ -2296,6 +2296,54 @@ pub struct TeamSupervisorLease {
     pub released_unix_ms: Option<u64>,
 }
 
+/// Kind of Host actor holding the exclusive lease for a TeamRun's exact
+/// provider-native Host binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostBindingLeaseOwnerKind {
+    Interactive,
+    Dispatcher,
+}
+
+/// Persisted lifecycle of a [`HostBindingLease`]. Expiry is deliberately not
+/// a third status: an `Active` row is effective only while `expires_unix_ms`
+/// is strictly greater than the observation time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostBindingLeaseStatus {
+    Active,
+    Released,
+}
+
+/// Exclusive, provider-neutral ownership of one TeamRun's exact Host task.
+///
+/// Rows are append-only and latest-wins by `team_run_id`. Every successful
+/// takeover advances `generation`; renew/release operations must present the
+/// complete generation + lease id + owner fence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostBindingLease {
+    pub team_run_id: String,
+    pub host_surface: String,
+    pub host_thread_id: String,
+    pub owner_kind: HostBindingLeaseOwnerKind,
+    pub owner_id: String,
+    pub generation: u64,
+    pub lease_id: String,
+    pub acquired_unix_ms: u64,
+    pub heartbeat_unix_ms: u64,
+    pub expires_unix_ms: u64,
+    pub status: HostBindingLeaseStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub released_unix_ms: Option<u64>,
+}
+
+impl HostBindingLease {
+    pub fn is_effective_at(&self, now_unix_ms: u64) -> bool {
+        self.status == HostBindingLeaseStatus::Active && self.expires_unix_ms > now_unix_ms
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TeamMemberCloseStatus {
@@ -2919,6 +2967,44 @@ impl Validate for TeamSupervisorLease {
         require_non_empty(&self.team_run_id, "TeamSupervisorLease.team_run_id")?;
         require_non_empty(&self.supervisor_id, "TeamSupervisorLease.supervisor_id")?;
         require_non_empty(&self.owner_locator, "TeamSupervisorLease.owner_locator")
+    }
+}
+
+impl Validate for HostBindingLease {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.team_run_id, "HostBindingLease.team_run_id")?;
+        require_non_empty(&self.host_surface, "HostBindingLease.host_surface")?;
+        require_non_empty(&self.host_thread_id, "HostBindingLease.host_thread_id")?;
+        require_non_empty(&self.owner_id, "HostBindingLease.owner_id")?;
+        require_non_empty(&self.lease_id, "HostBindingLease.lease_id")?;
+        if self.generation == 0 {
+            return Err(ValidationError::Invalid {
+                field: "HostBindingLease.generation",
+                reason: "must be greater than zero",
+            });
+        }
+        if self.heartbeat_unix_ms < self.acquired_unix_ms
+            || self.expires_unix_ms < self.heartbeat_unix_ms
+        {
+            return Err(ValidationError::Invalid {
+                field: "HostBindingLease.timestamps",
+                reason: "must be monotonic",
+            });
+        }
+        match (self.status, self.released_unix_ms) {
+            (HostBindingLeaseStatus::Active, None) => {}
+            (HostBindingLeaseStatus::Released, Some(released))
+                if released >= self.acquired_unix_ms
+                    && self.expires_unix_ms == released
+                    && self.heartbeat_unix_ms == released => {}
+            _ => {
+                return Err(ValidationError::Invalid {
+                    field: "HostBindingLease.status",
+                    reason: "release fields do not match status",
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -5113,6 +5199,7 @@ pub struct WorkDeliveryUpdate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HostAttentionKind {
+    HostBindingStale,
     WorkReviewRequested,
     WorkBlocked,
     WorkAccepted,
@@ -5170,6 +5257,14 @@ pub struct HostAttention {
     pub claimed_host_surface: Option<String>,
     #[serde(default)]
     pub claimed_host_thread_id: Option<String>,
+    /// Present only for claims made under a durable Host binding lease. These
+    /// fields fence completion after lease expiry, release, or takeover.
+    #[serde(default)]
+    pub claimed_host_lease_id: Option<String>,
+    #[serde(default)]
+    pub claimed_host_lease_generation: Option<u64>,
+    #[serde(default)]
+    pub claimed_host_lease_owner_id: Option<String>,
     #[serde(default)]
     pub provider_receipt_id: Option<String>,
     #[serde(default)]
@@ -5192,7 +5287,16 @@ impl Validate for HostAttention {
     fn validate(&self) -> Result<(), ValidationError> {
         require_non_empty(&self.id, "HostAttention.id")?;
         require_non_empty(&self.team_run_id, "HostAttention.team_run_id")?;
-        require_non_empty(&self.work_id, "HostAttention.work_id")?;
+        if self.kind == HostAttentionKind::HostBindingStale {
+            if !self.work_id.is_empty() || self.work_version != 0 || self.member_run_id.is_some() {
+                return Err(ValidationError::Invalid {
+                    field: "HostAttention.host_binding_stale",
+                    reason: "must not name Work or MemberRun state",
+                });
+            }
+        } else {
+            require_non_empty(&self.work_id, "HostAttention.work_id")?;
+        }
         require_non_empty(&self.source_event_ref, "HostAttention.source_event_ref")?;
         require_non_empty(&self.created_at, "HostAttention.created_at")?;
         require_non_empty(&self.updated_at, "HostAttention.updated_at")?;
@@ -5207,6 +5311,12 @@ impl Validate for HostAttention {
         }
         if let Some(thread_id) = &self.claimed_host_thread_id {
             require_non_empty(thread_id, "HostAttention.claimed_host_thread_id")?;
+        }
+        if let Some(lease_id) = &self.claimed_host_lease_id {
+            require_non_empty(lease_id, "HostAttention.claimed_host_lease_id")?;
+        }
+        if let Some(owner_id) = &self.claimed_host_lease_owner_id {
+            require_non_empty(owner_id, "HostAttention.claimed_host_lease_owner_id")?;
         }
         if let Some(receipt_id) = &self.provider_receipt_id {
             require_non_empty(receipt_id, "HostAttention.provider_receipt_id")?;
@@ -7171,6 +7281,9 @@ mod tests {
             claim_id: None,
             claimed_host_surface: None,
             claimed_host_thread_id: None,
+            claimed_host_lease_id: None,
+            claimed_host_lease_generation: None,
+            claimed_host_lease_owner_id: None,
             provider_receipt_id: None,
             last_failure_reason: None,
             created_at: "unix-ms:1".into(),
