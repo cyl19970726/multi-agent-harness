@@ -127,6 +127,11 @@ harness provider admit \
   [--policy strict|advisory] [--actor <id>] [--json]
 ```
 
+`provider admit` only records an observed tuple whose refreshed compatibility
+status is `review_required`. A source-reviewed `current` tuple needs no
+operational admission and the command refuses it without writing a record;
+unavailable, incompatible, and failed probes remain non-admittable.
+
 The command independently probes the installed version and verifies the
 registered mode and adapter contract before appending. It does not install,
 build, upgrade, downgrade, or edit provider/adapter source. The default policy

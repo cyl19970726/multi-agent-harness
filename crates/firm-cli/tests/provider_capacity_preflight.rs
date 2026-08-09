@@ -66,6 +66,10 @@ impl<'a> FakeCodex<'a> {
             .env("PATH", path)
             .env("FAKE_KIMI_RESULT", "done")
             .env("FAKE_CODEX_AUTO_COMPLETE", "1")
+            .env(
+                "FIRM_CLAUDE_MEMBER_RUNNER",
+                home.base().join("definitely-missing-claude-member-runner"),
+            )
             .env("FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS", "100");
         if let Some(account) = &self.account_json {
             command.env("FAKE_CODEX_ACCOUNT_JSON", account);
@@ -459,6 +463,10 @@ fn missing_proxy_is_diagnosed_as_runtime_context_not_an_account_limit() {
         .env_remove("http_proxy")
         .env_remove("ALL_PROXY")
         .env_remove("all_proxy")
+        .env(
+            "FIRM_CLAUDE_MEMBER_RUNNER",
+            home.base().join("definitely-missing-claude-member-runner"),
+        )
         .env("PATH", path)
         .output()
         .expect("run harness");

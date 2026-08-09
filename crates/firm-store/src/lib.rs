@@ -2342,6 +2342,20 @@ impl HarnessStore {
         current
             .validate()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        if !current.coordination_is_active()
+            || current.finished_at.is_some()
+            || !matches!(
+                current.status,
+                firm_core::MemberRunStatus::Idle
+                    | firm_core::MemberRunStatus::Queued
+                    | firm_core::MemberRunStatus::Disconnected
+            )
+        {
+            return Err(StoreError::Conflict(format!(
+                "PROVIDER_COMPATIBILITY_BLOCK_LIFECYCLE_INVALID: MemberRun {} must have active coordination, unfinished runtime, and idle, queued, or disconnected status",
+                current.id
+            )));
+        }
         if current.provider_compatibility_block_cause.is_some() {
             return Err(StoreError::Conflict(format!(
                 "PROVIDER_COMPATIBILITY_BLOCK_ALREADY_OWNED: MemberRun {} already has a typed cause",
@@ -2393,6 +2407,12 @@ impl HarnessStore {
         current
             .validate()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        if !current.coordination_is_active() || current.finished_at.is_some() {
+            return Err(StoreError::Conflict(format!(
+                "PROVIDER_COMPATIBILITY_RECOVERY_LIFECYCLE_INVALID: MemberRun {} must have active coordination and unfinished runtime",
+                current.id
+            )));
+        }
         let cause = current
             .provider_compatibility_block_cause
             .as_ref()
@@ -2408,7 +2428,13 @@ impl HarnessStore {
                 current.id
             )));
         }
-        ensure_compatibility_cause_matches_profile(&current, profile, cause)?;
+        let blocked_profile = current.provider_profile.as_ref().ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "PROVIDER_COMPATIBILITY_BLOCK_PROFILE_REQUIRED: MemberRun {} has no durable blocked provider profile",
+                current.id
+            ))
+        })?;
+        ensure_compatibility_cause_matches_profile(&current, blocked_profile, cause)?;
         if cause.boundary != boundary {
             return Err(StoreError::Conflict(format!(
                 "PROVIDER_COMPATIBILITY_RECOVERY_BOUNDARY_MISMATCH: typed cause boundary {:?} does not match current {:?} boundary",
@@ -8141,9 +8167,9 @@ mod tests {
                 MemberRunStatus::Idle,
                 "unix-ms:3"
             )
-            .expect_err("wrong tuple cannot recover")
+            .expect_err("an unadmitted new tuple cannot recover")
             .to_string()
-            .contains("TUPLE_MISMATCH"));
+            .contains("NOT_AUTHORIZED"));
 
         let mut admission =
             provider_compatibility_admission("typed-recovery", "kimi_acp", "kimi-acp-v1");
@@ -8230,8 +8256,9 @@ mod tests {
             )
             .expect("block pending source review");
         let mut source_reviewed = review_pending;
+        source_reviewed.provider_version = Some("3.3.4".into());
         source_reviewed.compatibility_status = ProviderCompatibilityStatus::Current;
-        source_reviewed.reviewed_provider_versions = vec!["3.3.3".into()];
+        source_reviewed.reviewed_provider_versions = vec!["3.3.4".into()];
         assert!(store
             .recover_member_run_from_provider_compatibility_block(
                 &source_blocked,
@@ -8255,7 +8282,300 @@ mod tests {
         assert!(source_recovered
             .provider_compatibility_block_cause
             .is_none());
+        assert_eq!(
+            source_recovered
+                .provider_profile
+                .as_ref()
+                .and_then(|profile| profile.provider_version.as_deref()),
+            Some("3.3.4"),
+            "recovery atomically replaces the durable blocked profile with the authorized refreshed tuple"
+        );
         std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn provider_compatibility_block_lifecycle_rejects_hostile_member_history() {
+        use firm_core::MemberCoordinationStatus;
+
+        for (index, mutate) in [
+            (
+                0,
+                (
+                    MemberRunStatus::Completed,
+                    MemberCoordinationStatus::Active,
+                    Some("done"),
+                ),
+            ),
+            (
+                1,
+                (
+                    MemberRunStatus::Failed,
+                    MemberCoordinationStatus::Active,
+                    Some("done"),
+                ),
+            ),
+            (
+                2,
+                (
+                    MemberRunStatus::Stopped,
+                    MemberCoordinationStatus::Active,
+                    Some("done"),
+                ),
+            ),
+            (
+                3,
+                (
+                    MemberRunStatus::Idle,
+                    MemberCoordinationStatus::Closed,
+                    None,
+                ),
+            ),
+            (
+                4,
+                (
+                    MemberRunStatus::Idle,
+                    MemberCoordinationStatus::Retired,
+                    None,
+                ),
+            ),
+            (
+                5,
+                (
+                    MemberRunStatus::Idle,
+                    MemberCoordinationStatus::Active,
+                    Some("hostile"),
+                ),
+            ),
+        ] {
+            let root = provider_admission_test_root(&format!("hostile-lifecycle-{index}"));
+            let store =
+                HarnessStore::new(&root).with_provider_compatibility_scope("project-1", "store-1");
+            let (_run, initial, _work) =
+                seed_host_attention_fixture(&store, &format!("hostile-{index}"), None);
+            let mut hostile = initial.clone();
+            hostile.status = mutate.0;
+            hostile.coordination_status = mutate.1;
+            hostile.finished_at = mutate.2.map(str::to_string);
+            store
+                .compare_and_append_member_run(&initial, &hostile)
+                .expect("seed hostile but structurally valid history");
+            let profile = provider_compatibility_test_profile();
+            let cause = ProviderCompatibilityBlockCause {
+                schema_version: ProviderCompatibilityBlockCause::SCHEMA_VERSION,
+                id: format!("hostile-cause-{index}"),
+                member_run_id: hostile.id.clone(),
+                provider: "kimi".into(),
+                execution_mode: "kimi_acp".into(),
+                provider_version: "2.1.220".into(),
+                adapter_contract_version: "kimi-acp-v1".into(),
+                boundary: ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+                compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
+                source: ProviderCompatibilityBlockSource::AdapterCompatibility,
+                probe_error: None,
+                caused_at: "unix-ms:2".into(),
+            };
+            assert!(store
+                .block_member_run_for_provider_compatibility(&hostile, &profile, cause, "unix-ms:3")
+                .expect_err("terminal/closed/retired/finished history cannot be blocked")
+                .to_string()
+                .contains("LIFECYCLE_INVALID"));
+            std::fs::remove_dir_all(root).expect("cleanup");
+        }
+    }
+
+    #[test]
+    fn provider_compatibility_recovery_authorizes_refreshed_tuple_and_preserves_refusals() {
+        let root = provider_admission_test_root("refreshed-recovery");
+        let store =
+            HarnessStore::new(&root).with_provider_compatibility_scope("project-1", "store-1");
+
+        let (_run, initial, _work) =
+            seed_host_attention_fixture(&store, "unavailable-to-current", None);
+        let mut unavailable = provider_compatibility_test_profile();
+        unavailable.provider_version = None;
+        unavailable.compatibility_status = ProviderCompatibilityStatus::Unavailable;
+        let unavailable_cause = ProviderCompatibilityBlockCause {
+            schema_version: ProviderCompatibilityBlockCause::SCHEMA_VERSION,
+            id: "unavailable-cause".into(),
+            member_run_id: initial.id.clone(),
+            provider: "kimi".into(),
+            execution_mode: "kimi_acp".into(),
+            provider_version: "unavailable".into(),
+            adapter_contract_version: "kimi-acp-v1".into(),
+            boundary: ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+            compatibility_status: ProviderCompatibilityStatus::Unavailable,
+            source: ProviderCompatibilityBlockSource::ProbeFailure,
+            probe_error: Some("runner missing".into()),
+            caused_at: "unix-ms:2".into(),
+        };
+        let unavailable_blocked = store
+            .block_member_run_for_provider_compatibility(
+                &initial,
+                &unavailable,
+                unavailable_cause,
+                "unix-ms:2",
+            )
+            .expect("durably block unavailable tuple");
+        let mut current = provider_compatibility_test_profile();
+        current.compatibility_status = ProviderCompatibilityStatus::Current;
+        current.reviewed_provider_versions = vec!["2.1.220".into()];
+        let current_recovered = store
+            .recover_member_run_from_provider_compatibility_block(
+                &unavailable_blocked,
+                &current,
+                ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+                MemberRunStatus::Idle,
+                "unix-ms:3",
+            )
+            .expect("source-reviewed refreshed tuple recovers old unavailable cause");
+        assert_eq!(current_recovered.provider_profile.as_ref(), Some(&current));
+
+        let (_run2, initial2, _work2) =
+            seed_host_attention_fixture(&store, "drift-to-admitted", None);
+        let old_drift = provider_compatibility_test_profile();
+        let old_cause = ProviderCompatibilityBlockCause {
+            schema_version: ProviderCompatibilityBlockCause::SCHEMA_VERSION,
+            id: "old-drift-cause".into(),
+            member_run_id: initial2.id.clone(),
+            provider: "kimi".into(),
+            execution_mode: "kimi_acp".into(),
+            provider_version: "2.1.220".into(),
+            adapter_contract_version: "kimi-acp-v1".into(),
+            boundary: ProviderCompatibilityBlockBoundary::ResumePersistentExecution,
+            compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
+            source: ProviderCompatibilityBlockSource::AdapterCompatibility,
+            probe_error: None,
+            caused_at: "unix-ms:4".into(),
+        };
+        let drift_blocked = store
+            .block_member_run_for_provider_compatibility(
+                &initial2,
+                &old_drift,
+                old_cause,
+                "unix-ms:4",
+            )
+            .expect("durably block old drift tuple");
+        let mut new_drift = old_drift.clone();
+        new_drift.provider_version = Some("2.1.221".into());
+
+        let mut wrong_scope =
+            provider_compatibility_admission("wrong-scope", "kimi_acp", "kimi-acp-v1");
+        wrong_scope.project_id = "other-project".into();
+        wrong_scope.provider = "kimi".into();
+        wrong_scope.provider_version = "2.1.221".into();
+        store
+            .append_jsonl(PROVIDER_COMPATIBILITY_ADMISSIONS_LEDGER, &wrong_scope)
+            .expect("seed a valid admission belonging to another scope");
+        assert!(store
+            .recover_member_run_from_provider_compatibility_block(
+                &drift_blocked,
+                &new_drift,
+                ProviderCompatibilityBlockBoundary::ResumePersistentExecution,
+                MemberRunStatus::Idle,
+                "unix-ms:5",
+            )
+            .expect_err("wrong-scope admission cannot recover")
+            .to_string()
+            .contains("NOT_AUTHORIZED"));
+        assert_eq!(
+            store
+                .member_runs()
+                .expect("read durable member")
+                .into_iter()
+                .rfind(|row| row.id == drift_blocked.id),
+            Some(drift_blocked.clone()),
+            "refused recovery leaves the durable blocked row unchanged"
+        );
+
+        let mut exact = provider_compatibility_admission("new-exact", "kimi_acp", "kimi-acp-v1");
+        exact.provider = "kimi".into();
+        exact.provider_version = "2.1.221".into();
+        store
+            .admit_provider_compatibility_admission(&exact)
+            .expect("append exact admission");
+        let admitted_recovered = store
+            .recover_member_run_from_provider_compatibility_block(
+                &drift_blocked,
+                &new_drift,
+                ProviderCompatibilityBlockBoundary::ResumePersistentExecution,
+                MemberRunStatus::Idle,
+                "unix-ms:6",
+            )
+            .expect("new exact admission authorizes atomic recovery");
+        assert_eq!(
+            admitted_recovered.provider_profile.as_ref(),
+            Some(&new_drift)
+        );
+        assert!(admitted_recovered
+            .provider_compatibility_block_cause
+            .is_none());
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn provider_compatibility_recovery_rejects_closed_retired_or_finished_block() {
+        use firm_core::MemberCoordinationStatus;
+
+        for (index, coordination, finished_at) in [
+            (0, MemberCoordinationStatus::Closed, None),
+            (1, MemberCoordinationStatus::Retired, None),
+            (
+                2,
+                MemberCoordinationStatus::Active,
+                Some("hostile-finished"),
+            ),
+        ] {
+            let root = provider_admission_test_root(&format!("hostile-recovery-{index}"));
+            let store =
+                HarnessStore::new(&root).with_provider_compatibility_scope("project-1", "store-1");
+            let (_run, initial, _work) =
+                seed_host_attention_fixture(&store, &format!("hostile-recovery-{index}"), None);
+            let profile = provider_compatibility_test_profile();
+            let cause = ProviderCompatibilityBlockCause {
+                schema_version: ProviderCompatibilityBlockCause::SCHEMA_VERSION,
+                id: format!("recovery-cause-{index}"),
+                member_run_id: initial.id.clone(),
+                provider: "kimi".into(),
+                execution_mode: "kimi_acp".into(),
+                provider_version: "2.1.220".into(),
+                adapter_contract_version: "kimi-acp-v1".into(),
+                boundary: ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+                compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
+                source: ProviderCompatibilityBlockSource::AdapterCompatibility,
+                probe_error: None,
+                caused_at: "unix-ms:2".into(),
+            };
+            let blocked = store
+                .block_member_run_for_provider_compatibility(&initial, &profile, cause, "unix-ms:2")
+                .expect("seed typed block");
+            let mut hostile = blocked.clone();
+            hostile.coordination_status = coordination;
+            hostile.finished_at = finished_at.map(str::to_string);
+            store
+                .compare_and_append_member_run(&blocked, &hostile)
+                .expect("seed hostile blocked history without changing typed cause");
+            let mut admission = provider_compatibility_admission(
+                &format!("hostile-recovery-admission-{index}"),
+                "kimi_acp",
+                "kimi-acp-v1",
+            );
+            admission.provider = "kimi".into();
+            store
+                .admit_provider_compatibility_admission(&admission)
+                .expect("admit tuple");
+            assert!(store
+                .recover_member_run_from_provider_compatibility_block(
+                    &hostile,
+                    &profile,
+                    ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+                    MemberRunStatus::Idle,
+                    "unix-ms:3",
+                )
+                .expect_err("closed/retired/finished block cannot recover")
+                .to_string()
+                .contains("LIFECYCLE_INVALID"));
+            std::fs::remove_dir_all(root).expect("cleanup");
+        }
     }
 
     #[test]
