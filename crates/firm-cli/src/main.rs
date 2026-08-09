@@ -28,20 +28,22 @@ use harness_core::{
     PendingInteractionKind, PendingInteractionRoute, PendingInteractionStatus, ProjectContext,
     ProjectKind, ProviderAccountRef, ProviderCapabilities, ProviderCapacityConfidence,
     ProviderCapacityEvidence, ProviderCapacitySnapshot, ProviderCapacityState,
-    ProviderCompatibilityStatus, ProviderControlValue, ProviderEventFidelity,
-    ProviderExecutionControls, ProviderExecutionStatus, ProviderFeatureMode,
-    ProviderIntegrationProfile, ProviderInteractionMessageOption, ProviderInteractionMode,
-    ProviderInteractionRequestBody, ProviderInteractionResponseBody, ProviderInteractionType,
-    ProviderRuntimeContextFact, Review, ReviewVerdict, SenderKind, TeamActorKind, TeamActorRef,
-    TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus,
-    TeamMessage, TeamMessageDelivery, TeamMessageKind, TeamMessageResponseIntent,
-    TeamRecipientKind, TeamRecipientRef, TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus,
-    TeamSupervisorLease, Validate, Wave, WaveExecutorKind, WaveStatus, Work, WorkCausationRef,
-    WorkClaimMode, WorkCommandContext, WorkDelivery, WorkDeliveryStatus, WorkPriority, WorkStatus,
-    WorkWorkspace, WorkWorkspaceKind, WorkflowArtifactFile, WorkflowArtifactManifest,
-    WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
-    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
-    EXECUTION_MODE_EXTERNAL_INTERACTIVE,
+    ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
+    ProviderCompatibilityAdmissionPolicy, ProviderCompatibilityBlockBoundary,
+    ProviderCompatibilityBlockCause, ProviderCompatibilityBlockSource, ProviderCompatibilityStatus,
+    ProviderControlValue, ProviderEventFidelity, ProviderExecutionControls,
+    ProviderExecutionStatus, ProviderFeatureMode, ProviderIntegrationProfile,
+    ProviderInteractionMessageOption, ProviderInteractionMode, ProviderInteractionRequestBody,
+    ProviderInteractionResponseBody, ProviderInteractionType, ProviderRuntimeContextFact, Review,
+    ReviewVerdict, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus,
+    TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery,
+    TeamMessageKind, TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
+    TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Validate, Wave, WaveExecutorKind,
+    WaveStatus, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkDelivery,
+    WorkDeliveryStatus, WorkPriority, WorkStatus, WorkWorkspace, WorkWorkspaceKind,
+    WorkflowArtifactFile, WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch,
+    WorkflowPatchStatus, WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
+    WorkflowTerminalReason, EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
     canonical_surface, HarnessStore, HostAttentionClaimResult, MessageDeliveryClaimResult,
@@ -174,9 +176,40 @@ enum StoreSource {
 pub(crate) struct ResolvedStore {
     root: PathBuf,
     source: StoreSource,
+    /// True only when this invocation selected its Project Binding with the
+    /// global `--project` flag. Environment/current/default selections remain
+    /// ambient context and are not operator authorization for scoped writes.
+    project_selection_explicit: bool,
     pub(crate) context: Option<harness_core::ProjectContext>,
     pub(crate) company_context: Option<company_store::CompanyContext>,
     pub(crate) execution_space_context: Option<ExecutionSpace>,
+}
+
+impl ResolvedStore {
+    /// Stable authority scope for operational provider admissions. Identity is
+    /// taken from the selected Project Binding / Execution Space metadata,
+    /// never from a path hash. Unbound raw/legacy stores intentionally have no
+    /// scope and therefore cannot grant or consume admissions.
+    fn provider_compatibility_scope(&self) -> Option<(String, String)> {
+        let project_id = self
+            .context
+            .as_ref()
+            .map(|context| context.id.clone())
+            .or_else(|| {
+                self.execution_space_context.is_none().then(|| {
+                    project::read_metadata(&self.root)
+                        .ok()
+                        .flatten()
+                        .map(|metadata| metadata.project_id)
+                })?
+            })?;
+        let store_id = self
+            .execution_space_context
+            .as_ref()
+            .map(|space| format!("execution-space:{}", space.id))
+            .unwrap_or_else(|| format!("project-store:{project_id}"));
+        Some((project_id, store_id))
+    }
 }
 
 /// Resolve the Harness coordination store and Project Binding.
@@ -207,6 +240,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
         return Ok(ResolvedStore {
             root: PathBuf::from(path),
             source: StoreSource::StoreFlag,
+            project_selection_explicit: false,
             context: None,
             company_context: None,
             execution_space_context: None,
@@ -217,6 +251,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             return Ok(ResolvedStore {
                 root: PathBuf::from(root),
                 source: StoreSource::WorkflowChildEnv,
+                project_selection_explicit: false,
                 context: None,
                 company_context: None,
                 execution_space_context: None,
@@ -231,6 +266,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             } else {
                 StoreSource::FirmRootEnv
             },
+            project_selection_explicit: false,
             context: None,
             company_context: None,
             execution_space_context: None,
@@ -244,6 +280,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             return Ok(ResolvedStore {
                 root: PathBuf::from(".harness"),
                 source: StoreSource::CwdWalkUp,
+                project_selection_explicit: false,
                 context: None,
                 company_context: None,
                 execution_space_context: None,
@@ -266,6 +303,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             return Ok(ResolvedStore {
                 root: ctx.store_root.clone(),
                 source: selector_source,
+                project_selection_explicit: false,
                 context: None,
                 company_context: Some(ctx),
                 execution_space_context: None,
@@ -278,6 +316,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             return Ok(ResolvedStore {
                 root: ctx.store_root.clone(),
                 source: StoreSource::CompanyCurrent,
+                project_selection_explicit: false,
                 context: None,
                 company_context: Some(ctx),
                 execution_space_context: None,
@@ -294,6 +333,12 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             None => (None, StoreSource::ProjectFlag),
         },
     };
+    // Only a command-line flag is an explicit authorization for an admission
+    // scoped into an Execution Space. FIRM_PROJECT/HARNESS_PROJECT remain useful
+    // ambient selectors for ordinary commands, but are intentionally insufficient
+    // for this append-only trust decision.
+    let project_selection_explicit =
+        project_selector.is_some() && selector_source == StoreSource::ProjectFlag;
     let explicit_project_context = match project_selector.as_deref() {
         Some(selector) => Some(
             resolve_project_selector(&firm_home, selector)
@@ -326,6 +371,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
         return Ok(ResolvedStore {
             root: context.store_root.clone(),
             source,
+            project_selection_explicit,
             context: Some(context),
             company_context: None,
             execution_space_context: None,
@@ -362,6 +408,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
         return Ok(ResolvedStore {
             root: space.store_root.clone(),
             source: space_source,
+            project_selection_explicit,
             context: project_context,
             company_context: None,
             execution_space_context: Some(space),
@@ -374,6 +421,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
         return Ok(ResolvedStore {
             root: context.store_root.clone(),
             source: selector_source,
+            project_selection_explicit,
             context: Some(context),
             company_context: None,
             execution_space_context: None,
@@ -424,6 +472,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
                         return Ok(ResolvedStore {
                             root: target,
                             source: StoreSource::RegistryCurrent,
+                            project_selection_explicit: false,
                             context,
                             company_context: None,
                             execution_space_context: None,
@@ -454,6 +503,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
                         return Ok(ResolvedStore {
                             root: found,
                             source: StoreSource::CwdWalkUp,
+                            project_selection_explicit: false,
                             context: None,
                             company_context: None,
                             execution_space_context: None,
@@ -472,6 +522,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             return Ok(ResolvedStore {
                 root: ctx.store_root.clone(),
                 source: StoreSource::RegistryCurrent,
+                project_selection_explicit: false,
                 context: Some(ctx),
                 company_context: None,
                 execution_space_context: None,
@@ -484,6 +535,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
         return Ok(ResolvedStore {
             root: ctx.store_root.clone(),
             source: StoreSource::GlobalDefault,
+            project_selection_explicit: false,
             context: Some(ctx),
             company_context: None,
             execution_space_context: None,
@@ -494,6 +546,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
     Ok(ResolvedStore {
         root: PathBuf::from(".harness"),
         source: StoreSource::CwdWalkUp,
+        project_selection_explicit: false,
         context: None,
         company_context: None,
         execution_space_context: None,
@@ -904,6 +957,7 @@ const EXECUTION_LEDGER_NAMES: &[&str] = &[
     "workflow_steps.jsonl",
     "workflow_patches.jsonl",
     "workflow_artifact_manifests.jsonl",
+    "provider_compatibility_admissions.jsonl",
 ];
 
 fn execution_space_migrate_from_project(firm_home: &Path, args: &[String]) -> CliResult<()> {
@@ -1916,7 +1970,11 @@ fn run() -> CliResult<()> {
         return Ok(());
     }
 
-    let store = HarnessStore::new(resolved.root.clone());
+    let store = match resolved.provider_compatibility_scope() {
+        Some((project_id, store_id)) => HarnessStore::new(resolved.root.clone())
+            .with_provider_compatibility_scope(project_id, store_id),
+        None => HarnessStore::new(resolved.root.clone()),
+    };
     match args[0].as_str() {
         "init" => {
             init_routed(&store, &resolved)?;
@@ -1931,6 +1989,7 @@ fn run() -> CliResult<()> {
         "team-run" => team_run_command(&store, &resolved, &args[1..])?,
         "member-run" => member_run_command(&store, &args[1..])?,
         "member" => member_command(&store, &args[1..])?,
+        "provider" => provider_command(&store, &resolved, &args[1..])?,
         "company" => company_command(&store, &args[1..])?,
         "dashboard" => dashboard_command(&store, &resolved, &args[1..])?,
         "workflow" => workflow_command(&store, resolved.context.as_ref(), &args[1..])?,
@@ -8114,12 +8173,167 @@ fn print_governance_report(report: &harness_governance::GovernanceReport, json: 
     }
 }
 
+/// Record an operator-authorized compatibility decision for one exact adapter
+/// tuple. This command probes and writes metadata only: it never installs,
+/// builds, upgrades, or edits a provider or its adapter source.
+fn provider_command(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    args: &[String],
+) -> CliResult<()> {
+    if matches!(args.first().map(String::as_str), Some("help" | "--help")) {
+        println!("harness [--project <id|path>] provider admit --provider <name> --execution-mode <mode> --provider-version <version> --adapter-contract-version <version> --evidence <ref> [--evidence <ref>...] [--policy strict|advisory] [--actor <id>] [--json]\n\nWhen an Execution Space is resolved, the global --project flag is required; FIRM_PROJECT and ambient defaults are not explicit admission authorization.");
+        return Ok(());
+    }
+    require_subcommand(args, "provider admit")?;
+    match args[0].as_str() {
+        "admit" => provider_admit_command(store, resolved, &args[1..]),
+        other => Err(CliError::Usage(format!(
+            "unknown provider command: {other}; usage: harness [--project <id|path>] provider admit --provider <name> --execution-mode <mode> --provider-version <version> --adapter-contract-version <version> --evidence <ref> [--policy strict|advisory] [--actor <id>] [--json]"
+        ))),
+    }
+}
+
+fn provider_admit_command(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    args: &[String],
+) -> CliResult<()> {
+    provider_admit_command_with_probe(store, resolved, args, team_member_provider_version_output)
+}
+
+fn provider_admit_command_with_probe<F>(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    args: &[String],
+    probe_provider_version: F,
+) -> CliResult<()>
+where
+    F: Fn(&str) -> Result<String, String>,
+{
+    let provider = required(args, "--provider")?;
+    let execution_mode = required(args, "--execution-mode")?;
+    let provider_version = value(args, "--provider-version")
+        .or_else(|| value(args, "--version"))
+        .ok_or_else(|| CliError::Usage("--provider-version (or --version) is required".into()))?;
+    let adapter_contract_version = required(args, "--adapter-contract-version")?;
+    let evidence_refs = many(args, "--evidence");
+    if evidence_refs.is_empty() || evidence_refs.iter().any(|value| value.trim().is_empty()) {
+        return Err(CliError::Usage(
+            "at least one non-empty --evidence reference is required".into(),
+        ));
+    }
+    let policy = match value(args, "--policy").as_deref().unwrap_or("strict") {
+        "strict" => ProviderCompatibilityAdmissionPolicy::Strict,
+        "advisory" => ProviderCompatibilityAdmissionPolicy::Advisory,
+        other => {
+            return Err(CliError::Usage(format!(
+                "unknown provider admission policy {other}; expected strict or advisory"
+            )))
+        }
+    };
+
+    if resolved.execution_space_context.is_some() && !resolved.project_selection_explicit {
+        return Err(CliError::Usage(
+            "provider admission into an Execution Space requires an explicit global `--project <id|path>` flag; FIRM_PROJECT, ACTIVE_PROJECT, and the space default binding are ambient selectors and cannot authorize this scoped write; no admission was written"
+                .to_string(),
+        ));
+    }
+
+    let mut profile = team_member_provider_profile_for_mode(&provider, Some(&execution_mode));
+    if profile.execution_mode != execution_mode {
+        return Err(CliError::Usage(format!(
+            "execution mode {execution_mode} is not registered for provider {provider}"
+        )));
+    }
+    let registered_contract = profile.adapter_contract_version.as_deref().ok_or_else(|| {
+        CliError::Usage(format!(
+            "provider {provider} mode {execution_mode} has no adapter contract to admit"
+        ))
+    })?;
+    if registered_contract != adapter_contract_version {
+        return Err(CliError::Usage(format!(
+            "adapter contract mismatch: requested {adapter_contract_version}, registered {registered_contract}"
+        )));
+    }
+    let detected = probe_provider_version(&provider).map_err(|error| {
+        CliError::Usage(format!(
+            "provider version probe failed; no admission was written: {error}"
+        ))
+    })?;
+    if detected != provider_version {
+        return Err(CliError::Usage(format!(
+            "provider version mismatch: requested {provider_version}, installed {detected}; no admission was written"
+        )));
+    }
+    apply_provider_version(&mut profile, Some(detected));
+    if profile.compatibility_status != ProviderCompatibilityStatus::ReviewRequired {
+        return Err(CliError::Usage(format!(
+            "provider tuple is {}; only an actually observed review-required tuple may be admitted; no admission was written",
+            serde_snake_label(&profile.compatibility_status)
+        )));
+    }
+
+    let (project_id, store_id) = resolved.provider_compatibility_scope().ok_or_else(|| {
+        CliError::Usage(
+            "provider admission requires an explicitly resolved Project Binding and canonical store identity"
+                .to_string(),
+        )
+    })?;
+    let admission = ProviderCompatibilityAdmission {
+        id: generated_id("provider-admission"),
+        project_id,
+        store_id,
+        provider,
+        execution_mode,
+        provider_version,
+        adapter_contract_version,
+        policy,
+        actor: value(args, "--actor").unwrap_or_else(|| "operator".to_string()),
+        evidence_refs,
+        admitted_at: now_string(),
+        lifecycle: ProviderCompatibilityAdmissionLifecycle::Active,
+        predecessor_admission_id: None,
+        reason: None,
+    };
+    let ensured = store.ensure_provider_compatibility_admission(&admission)?;
+    let admission = ensured.admission;
+    if has_flag(args, "--json") {
+        print_json(&serde_json::json!({
+            "command": "harness provider admit",
+            "ok": true,
+            "created": ensured.created,
+            "reused": !ensured.created,
+            "source": "operational_admission",
+            "source_review_modified": false,
+            "provider_source_modified": false,
+            "admission": admission,
+        }))
+    } else {
+        println!(
+            "{} {} {} {} {} (policy={}, record={}); adapter source review remains unchanged",
+            if ensured.created {
+                "admitted"
+            } else {
+                "reused"
+            },
+            admission.provider,
+            admission.execution_mode,
+            admission.provider_version,
+            admission.adapter_contract_version,
+            serde_snake_label(&admission.policy),
+            admission.id,
+        );
+        Ok(())
+    }
+}
+
 fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(args, "member register|list|providers|preflight")?;
     match args[0].as_str() {
         // Runtime availability of each provider ACCOUNT, reported separately
         // from adapter compatibility. See `member providers` for the latter.
-        "preflight" => member_preflight_command(&args[1..])?,
+        "preflight" => member_preflight_command(store, &args[1..])?,
         "register" => {
             let member = build_member_from_args(args, AgentMemberStatus::Idle)?;
             store.append_member(&member)?;
@@ -8139,16 +8353,19 @@ fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                     let detected = team_member_provider_version_output(adapter.name());
                     let mut profile = team_member_provider_profile(adapter.name());
                     apply_provider_version(&mut profile, detected.as_ref().ok().cloned());
-                    needs_review |= matches!(
-                        profile.compatibility_status,
-                        ProviderCompatibilityStatus::ReviewRequired
-                            | ProviderCompatibilityStatus::Incompatible
-                            | ProviderCompatibilityStatus::Unavailable
+                    let resolution = resolve_provider_compatibility(
+                        store,
+                        &profile,
+                        detected.as_ref().err().map(String::as_str),
                     );
+                    needs_review |= resolution
+                        .as_ref()
+                        .map_or(true, |value| !value.allowed || value.needs_review);
                     serde_json::json!({
                         "provider": adapter.name(),
                         "capabilities": adapter.capabilities(),
                         "team_member_profile": profile,
+                        "operational_compatibility": resolution.ok(),
                         "version_probe_error": detected.err(),
                     })
                 })
@@ -9610,11 +9827,8 @@ fn refreshed_team_member_provider_profile(
     // Base the refresh on the CURRENT adapter registry, not the stored
     // profile. The stored profile's reviewed_provider_versions is frozen at
     // member-creation time, so a registry update could never unblock an
-    // existing durable MemberRun — contradicting the remediation contract in
-    // PROVIDER_COMPATIBILITY_BLOCKED itself ("add the exact version to the
-    // adapter's reviewed_provider_versions before retrying the same durable
-    // MemberRun and Work"). The gate persists the refreshed profile back, so
-    // existing members self-heal on the next boundary.
+    // existing durable MemberRun. The gate persists the refreshed profile
+    // back, so existing members can self-heal on the next boundary.
     let stored_mode = member
         .provider_profile
         .as_ref()
@@ -9641,31 +9855,239 @@ fn apply_refreshed_provider_profile(
     true
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderCompatibilityBlockProvenance {
+    schema: String,
+    member_run_id: String,
+    provider: String,
+    execution_mode: String,
+    provider_version: String,
+    adapter_contract_version: String,
+    boundary: String,
+    compatibility_status: String,
+    source: String,
+    probe_error: Option<String>,
+    no_provider_side_effects: bool,
+    remediation: String,
+}
+
+const PROVIDER_COMPATIBILITY_BLOCK_PREFIX: &str = "PROVIDER_COMPATIBILITY_BLOCKED: ";
+const PROVIDER_COMPATIBILITY_BLOCK_SCHEMA: &str = "provider_compatibility_block/v1";
+
+impl ProviderCompatibilityBlockProvenance {
+    fn for_refusal(
+        member: &MemberRun,
+        profile: &ProviderIntegrationProfile,
+        resolution: &ProviderCompatibilityResolution,
+        boundary: &str,
+    ) -> Self {
+        Self {
+            schema: PROVIDER_COMPATIBILITY_BLOCK_SCHEMA.to_string(),
+            member_run_id: member.id.clone(),
+            provider: profile.provider.clone(),
+            execution_mode: profile.execution_mode.clone(),
+            provider_version: profile
+                .provider_version
+                .clone()
+                .unwrap_or_else(|| "unavailable".to_string()),
+            adapter_contract_version: profile
+                .adapter_contract_version
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
+            boundary: boundary.to_string(),
+            compatibility_status: serde_snake_label(&resolution.status),
+            source: resolution.source.to_string(),
+            probe_error: resolution.probe_error.clone(),
+            no_provider_side_effects: true,
+            remediation: "complete source review or record an exact operational admission with `harness provider admit`; admissions do not change source-review status".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ProviderCompatibilityResolution {
+    allowed: bool,
+    needs_review: bool,
+    status: ProviderCompatibilityStatus,
+    source: &'static str,
+    policy: Option<ProviderCompatibilityAdmissionPolicy>,
+    admission: Option<ProviderCompatibilityAdmission>,
+    probe_error: Option<String>,
+    warning: Option<String>,
+}
+
+/// The single operational resolver shared by preflight, start, resume,
+/// recovery, reopen, rebind, and capability reporting. Adapter source review
+/// and operational admission remain separate facts in the returned value.
+fn resolve_provider_compatibility(
+    store: &HarnessStore,
+    profile: &ProviderIntegrationProfile,
+    probe_error: Option<&str>,
+) -> CliResult<ProviderCompatibilityResolution> {
+    if probe_error.is_some() {
+        return Ok(ProviderCompatibilityResolution {
+            allowed: false,
+            needs_review: false,
+            status: ProviderCompatibilityStatus::Unavailable,
+            source: "version_probe",
+            policy: None,
+            admission: None,
+            probe_error: probe_error.map(str::to_string),
+            warning: None,
+        });
+    }
+    if profile.compatibility_status == ProviderCompatibilityStatus::Current {
+        return Ok(ProviderCompatibilityResolution {
+            allowed: true,
+            needs_review: false,
+            status: profile.compatibility_status,
+            source: "adapter_source_review",
+            policy: None,
+            admission: None,
+            probe_error: None,
+            warning: None,
+        });
+    }
+    let admission = match (
+        store.provider_compatibility_scope(),
+        profile.provider_version.as_deref(),
+        profile.adapter_contract_version.as_deref(),
+    ) {
+        (Some(_), Some(provider_version), Some(adapter_contract_version)) => store
+            .effective_provider_compatibility_admission(
+                &profile.provider,
+                &profile.execution_mode,
+                provider_version,
+                adapter_contract_version,
+            )?,
+        _ => None,
+    };
+    // An operational admission may bridge only the explicitly review-required
+    // state. Neither policy can excuse an unavailable probe, a known
+    // incompatibility, or a mode with no adapter contract.
+    let allowed = profile.compatibility_status == ProviderCompatibilityStatus::ReviewRequired
+        && admission.is_some();
+    let needs_review = profile.compatibility_status == ProviderCompatibilityStatus::ReviewRequired
+        && !matches!(
+            admission.as_ref().map(|value| value.policy),
+            Some(ProviderCompatibilityAdmissionPolicy::Strict)
+        );
+    Ok(ProviderCompatibilityResolution {
+        allowed,
+        needs_review,
+        status: profile.compatibility_status,
+        source: if admission.is_some() {
+            "operational_admission"
+        } else {
+            "adapter_compatibility"
+        },
+        policy: admission.as_ref().map(|value| value.policy),
+        admission,
+        probe_error: None,
+        warning: needs_review.then(|| {
+            "advisory operational admission permits execution but source review remains required"
+                .to_string()
+        }),
+    })
+}
+
 fn provider_compatibility_block_reason(
     member: &MemberRun,
     profile: &ProviderIntegrationProfile,
+    resolution: &ProviderCompatibilityResolution,
     boundary: &str,
-    probe_error: Option<&str>,
 ) -> Option<String> {
-    if member.is_external_interactive()
-        || profile.compatibility_status == ProviderCompatibilityStatus::Current
-    {
+    if member.is_external_interactive() || resolution.allowed {
         return None;
     }
-    let version = profile.provider_version.as_deref().unwrap_or("unavailable");
-    let status = serde_snake_label(&profile.compatibility_status);
-    let probe = probe_error
-        .map(|error| format!(" Version probe failed: {error}."))
-        .unwrap_or_default();
+    let provenance =
+        ProviderCompatibilityBlockProvenance::for_refusal(member, profile, resolution, boundary);
     Some(format!(
-        "PROVIDER_COMPATIBILITY_BLOCKED: member run {} cannot {boundary}; provider {} version {} in {} is {}. No provider process, native session start/resume, delivery claim, or Work rebound was performed.{} Run `harness member providers --fail-on-review`, regenerate protocol schemas, run deterministic provider acceptance and a live canary, then add the exact version to the adapter's reviewed_provider_versions before retrying the same durable MemberRun and Work.",
-        member.id,
-        profile.provider,
-        version,
-        profile.execution_mode,
-        status,
-        probe,
+        "{PROVIDER_COMPATIBILITY_BLOCK_PREFIX}{}",
+        serde_json::to_string(&provenance).expect("compatibility provenance serializes")
     ))
+}
+
+fn provider_compatibility_block_cause(
+    member: &MemberRun,
+    profile: &ProviderIntegrationProfile,
+    resolution: &ProviderCompatibilityResolution,
+    boundary: ProviderCompatibilityBlockBoundary,
+) -> Option<ProviderCompatibilityBlockCause> {
+    if member.is_external_interactive() || resolution.allowed {
+        return None;
+    }
+    Some(ProviderCompatibilityBlockCause {
+        schema_version: ProviderCompatibilityBlockCause::SCHEMA_VERSION,
+        id: generated_id("provider-compatibility-block"),
+        member_run_id: member.id.clone(),
+        provider: profile.provider.clone(),
+        execution_mode: profile.execution_mode.clone(),
+        provider_version: profile
+            .provider_version
+            .clone()
+            .unwrap_or_else(|| "unavailable".to_string()),
+        adapter_contract_version: profile
+            .adapter_contract_version
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string()),
+        boundary,
+        compatibility_status: resolution.status,
+        source: if resolution.probe_error.is_some() {
+            ProviderCompatibilityBlockSource::ProbeFailure
+        } else {
+            ProviderCompatibilityBlockSource::AdapterCompatibility
+        },
+        probe_error: resolution.probe_error.clone(),
+        caused_at: now_string(),
+    })
+}
+
+fn compatibility_recovery_status(
+    store: &HarnessStore,
+    member: &MemberRun,
+) -> CliResult<MemberRunStatus> {
+    if member.native_session.is_some() {
+        return Ok(MemberRunStatus::Disconnected);
+    }
+    let has_assigned_work = store.latest_works()?.into_iter().any(|work| {
+        !work.is_terminal()
+            && (work.active_member_run_id.as_deref() == Some(member.id.as_str())
+                || member.agent_member_id.is_some()
+                    && work.owner_member_id.as_deref() == member.agent_member_id.as_deref())
+    });
+    Ok(
+        if member.workspace_snapshot.is_some() || has_assigned_work {
+            MemberRunStatus::Queued
+        } else {
+            MemberRunStatus::Idle
+        },
+    )
+}
+
+#[cfg(test)]
+fn compatibility_block_matches_current_tuple(
+    member: &MemberRun,
+    profile: &ProviderIntegrationProfile,
+) -> bool {
+    member.status == MemberRunStatus::Blocked
+        && member
+            .provider_compatibility_block_cause
+            .as_ref()
+            .is_some_and(|cause| {
+                cause.member_run_id == member.id
+                    && cause.exact_key()
+                        == (
+                            profile.provider.as_str(),
+                            profile.execution_mode.as_str(),
+                            profile.provider_version.as_deref().unwrap_or("unavailable"),
+                            profile
+                                .adapter_contract_version
+                                .as_deref()
+                                .unwrap_or("unknown"),
+                        )
+            })
 }
 
 /// Last pre-dispatch compatibility fence. It runs before provider capacity,
@@ -9674,27 +10096,63 @@ fn provider_compatibility_block_reason(
 fn provider_compatibility_start_gate(
     ledger: &TeamRunLedger,
     member: &mut MemberRun,
-    boundary: &str,
+    boundary: ProviderCompatibilityBlockBoundary,
 ) -> CliResult<Option<MemberOutcome>> {
     if member.is_external_interactive() {
         return Ok(None);
     }
     let expected = member.clone();
     let (profile, probe_error) = refreshed_team_member_provider_profile(member)?;
-    let reason =
-        provider_compatibility_block_reason(member, &profile, boundary, probe_error.as_deref());
+    let resolution =
+        resolve_provider_compatibility(&ledger.store, &profile, probe_error.as_deref())?;
+    let boundary_label = match boundary {
+        ProviderCompatibilityBlockBoundary::StartPersistentExecution => {
+            "start persistent Agent Team execution"
+        }
+        ProviderCompatibilityBlockBoundary::ResumePersistentExecution => {
+            "resume persistent Agent Team execution"
+        }
+    };
+    let reason = provider_compatibility_block_reason(member, &profile, &resolution, boundary_label);
     if reason.is_none() {
-        if apply_refreshed_provider_profile(member, profile) {
+        let compatibility_owned_block = member.status == MemberRunStatus::Blocked
+            && member.provider_compatibility_block_cause.is_some();
+        if compatibility_owned_block {
+            let recovery_status = compatibility_recovery_status(&ledger.store, member)?;
+            let recovered = ledger
+                .store
+                .recover_member_run_from_provider_compatibility_block(
+                    &expected,
+                    &profile,
+                    boundary,
+                    recovery_status,
+                    &now_string(),
+                )?;
+            *member = recovered;
+        } else if apply_refreshed_provider_profile(member, profile) {
             ledger.save_member_run(&expected, member)?;
         }
         return Ok(None);
     }
 
     let reason = reason.expect("non-current compatibility has a refusal reason");
-    apply_refreshed_provider_profile(member, profile);
-    member.status = MemberRunStatus::Blocked;
-    member.last_event_at = Some(now_string());
-    ledger.save_member_run(&expected, member)?;
+    if member.status == MemberRunStatus::Blocked
+        && member.provider_compatibility_block_cause.is_some()
+    {
+        return Ok(Some(MemberOutcome::new(
+            member,
+            MemberRunStatus::Blocked,
+            reason,
+        )));
+    }
+    let cause = provider_compatibility_block_cause(member, &profile, &resolution, boundary)
+        .expect("a blocked persistent boundary has a typed compatibility cause");
+    *member = ledger.store.block_member_run_for_provider_compatibility(
+        &expected,
+        &profile,
+        cause,
+        &now_string(),
+    )?;
     let action = ledger.append_action(
         &member.id,
         "provider_compatibility_blocked",
@@ -11081,6 +11539,7 @@ fn persist_capacity_block_with_hook(
 /// reviewed-current adapter with an exhausted account is a normal, expressible
 /// state and the Dashboard must be able to show both.
 fn provider_preflight_row(
+    store: &HarnessStore,
     provider: &str,
     requested_mode: Option<&str>,
     cwd: &Path,
@@ -11091,29 +11550,56 @@ fn provider_preflight_row(
     let mut profile = team_member_provider_profile_for_mode(provider, Some(&execution_mode));
     let detected = team_member_provider_version_output(provider);
     apply_provider_version(&mut profile, detected.as_ref().ok().cloned());
+    let compatibility = resolve_provider_compatibility(
+        store,
+        &profile,
+        detected.as_ref().err().map(String::as_str),
+    )?;
     let capacity = provider_capacity_probe(provider, &execution_mode, cwd, options);
     // Read the clock AFTER the probe: a probe that takes seconds must not make
     // its own answer look future-dated, which would report it as stale.
     let now_unix_ms = current_unix_ms_u64();
-    let decision =
+    let capacity_decision =
         harness_core::provider_capacity_start_decision(Some(&capacity), now_unix_ms, ttl_ms);
+    let start_decision = provider_preflight_start_decision(&capacity_decision, &compatibility);
     Ok(serde_json::json!({
         "provider": provider,
         "execution_mode": execution_mode,
         "capacity": capacity,
         "capacity_freshness": capacity.freshness(now_unix_ms, ttl_ms),
-        "start_decision": decision,
+        "blocked": start_decision.get("decision") == Some(&serde_json::json!("block")),
+        "start_decision": start_decision,
         "compatibility": {
             "status": profile.compatibility_status,
             "provider_version": profile.provider_version,
             "reviewed_provider_versions": profile.reviewed_provider_versions,
             "adapter_contract_version": profile.adapter_contract_version,
             "version_probe_error": detected.err(),
+            "operational": compatibility,
         },
     }))
 }
 
-fn member_preflight_command(args: &[String]) -> CliResult<()> {
+fn provider_preflight_start_decision(
+    capacity_decision: &harness_core::ProviderCapacityStartDecision,
+    compatibility: &ProviderCompatibilityResolution,
+) -> serde_json::Value {
+    if compatibility.allowed {
+        serde_json::to_value(capacity_decision).unwrap_or_default()
+    } else {
+        serde_json::json!({
+            "decision": "block",
+            "gate": "provider_compatibility",
+            "reason": format!(
+                "provider compatibility is {} (source={})",
+                serde_snake_label(&compatibility.status),
+                compatibility.source,
+            ),
+        })
+    }
+}
+
+fn member_preflight_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     let providers = {
         let requested = many(args, "--provider");
         if requested.is_empty() {
@@ -11142,12 +11628,25 @@ fn member_preflight_command(args: &[String]) -> CliResult<()> {
     let rows = providers
         .iter()
         .map(|provider| {
-            provider_preflight_row(provider, requested_mode.as_deref(), &cwd, options, ttl_ms)
+            provider_preflight_row(
+                store,
+                provider,
+                requested_mode.as_deref(),
+                &cwd,
+                options,
+                ttl_ms,
+            )
         })
         .collect::<CliResult<Vec<_>>>()?;
     let blocked = rows
         .iter()
         .filter(|row| row.pointer("/start_decision/decision") == Some(&serde_json::json!("block")))
+        .count();
+    let needs_review = rows
+        .iter()
+        .filter(|row| {
+            row.pointer("/compatibility/operational/needs_review") == Some(&serde_json::json!(true))
+        })
         .count();
     if has_flag(args, "--json") {
         print_json(&serde_json::json!({
@@ -11185,7 +11684,12 @@ fn member_preflight_command(args: &[String]) -> CliResult<()> {
     }
     if has_flag(args, "--fail-on-unavailable") && blocked > 0 {
         return Err(CliError::Usage(format!(
-            "{blocked} provider(s) reported a fresh known-unavailable capacity state; inspect the JSON report"
+            "{blocked} provider(s) are blocked by capacity or compatibility; inspect the JSON report"
+        )));
+    }
+    if has_flag(args, "--fail-on-review") && needs_review > 0 {
+        return Err(CliError::Usage(format!(
+            "{needs_review} provider(s) still require source review; inspect the JSON report"
         )));
     }
     Ok(())
@@ -11410,6 +11914,7 @@ fn build_member_run_for_team(
         // Capacity is observed at start, never assumed at creation. An absent
         // snapshot is honestly unknown, not available.
         provider_capacity: None,
+        provider_compatibility_block_cause: None,
         coordination_status: MemberCoordinationStatus::Active,
         runtime_generation: 1,
         status: MemberRunStatus::Idle,
@@ -13041,11 +13546,12 @@ fn team_run_recover(
         }
         let expected = member.clone();
         let (profile, probe_error) = refreshed_team_member_provider_profile(member)?;
+        let resolution = resolve_provider_compatibility(store, &profile, probe_error.as_deref())?;
         let refusal = provider_compatibility_block_reason(
             member,
             &profile,
+            &resolution,
             "recover, reopen, or rebound durable Work",
-            probe_error.as_deref(),
         );
         if apply_refreshed_provider_profile(member, profile) {
             store_conflict_as_usage(store.compare_and_append_member_run(&expected, member))?;
@@ -16926,7 +17432,7 @@ impl TeamSupervisorRegistration {
             })?;
         let heartbeat_stop = Arc::new(AtomicBool::new(false));
         let heartbeat_valid = Arc::new(AtomicBool::new(true));
-        let heartbeat_store = HarnessStore::new(store.root().to_path_buf());
+        let heartbeat_store = store.clone();
         let heartbeat_team_run_id = team_run_id.to_string();
         let heartbeat_supervisor_id = supervisor_id.clone();
         let heartbeat_stop_thread = Arc::clone(&heartbeat_stop);
@@ -16970,7 +17476,7 @@ impl TeamSupervisorRegistration {
             }
         });
         let control_stop = Arc::new(AtomicBool::new(false));
-        let control_store = HarnessStore::new(store.root().to_path_buf());
+        let control_store = store.clone();
         let control_team_run_id = team_run_id.to_string();
         let control_supervisor_id = supervisor_id.clone();
         let control_generation = lease.generation;
@@ -17000,7 +17506,7 @@ impl TeamSupervisorRegistration {
             team_run_id: team_run_id.to_string(),
             supervisor_id,
             generation: lease.generation,
-            store: HarnessStore::new(store.root().to_path_buf()),
+            store: store.clone(),
             heartbeat_stop,
             heartbeat_valid,
             heartbeat_thread: Some(heartbeat_thread),
@@ -17521,7 +18027,7 @@ impl TeamRunLedger {
         supervisor_valid: Arc<AtomicBool>,
     ) -> Self {
         Self {
-            store: HarnessStore::new(store.root().to_path_buf()),
+            store: store.clone(),
             run_id: run_id.to_string(),
             supervisor_id: supervisor_id.to_string(),
             supervisor_generation,
@@ -17534,7 +18040,7 @@ impl TeamRunLedger {
     /// side effects. Any attempt to claim mail through this view fails.
     fn without_supervisor(store: &HarnessStore, run_id: &str) -> Self {
         Self {
-            store: HarnessStore::new(store.root().to_path_buf()),
+            store: store.clone(),
             run_id: run_id.to_string(),
             supervisor_id: "none".to_string(),
             supervisor_generation: 0,
@@ -19008,11 +19514,12 @@ pub(crate) fn prepare_team_run_start_body(
         }
         let expected = member.clone();
         let (profile, probe_error) = refreshed_team_member_provider_profile(member)?;
+        let resolution = resolve_provider_compatibility(store, &profile, probe_error.as_deref())?;
         let refusal = provider_compatibility_block_reason(
             member,
             &profile,
+            &resolution,
             "start or resume persistent Agent Team execution",
-            probe_error.as_deref(),
         );
         if apply_refreshed_provider_profile(member, profile) {
             store_conflict_as_usage(store.compare_and_append_member_run(&expected, member))?;
@@ -19945,9 +20452,9 @@ fn run_member_orchestration(
         // attach, so a binary upgraded to an unreviewed version cannot fall
         // into the reconnect loop or replay a rebound Work.
         let compatibility_boundary = if current.native_session.is_some() {
-            "resume persistent Agent Team execution"
+            ProviderCompatibilityBlockBoundary::ResumePersistentExecution
         } else {
-            "start persistent Agent Team execution"
+            ProviderCompatibilityBlockBoundary::StartPersistentExecution
         };
         match provider_compatibility_start_gate(ledger, &mut current, compatibility_boundary) {
             Ok(Some(outcome)) => return outcome,
@@ -28319,11 +28826,13 @@ pub(crate) fn reopen_team_member_value(
                     | ProviderCompatibilityStatus::Unavailable
             )
         {
+            let resolution =
+                resolve_provider_compatibility(store, profile, probe_error.as_deref())?;
             if let Some(reason) = provider_compatibility_block_reason(
                 &member,
                 profile,
+                &resolution,
                 "reopen or resume its provider-native session",
-                probe_error.as_deref(),
             ) {
                 return Err(CliError::Usage(reason));
             }
@@ -29185,11 +29694,12 @@ fn require_reviewed_member_before_work_rebind(
     }
     let expected = member.clone();
     let (profile, probe_error) = refreshed_team_member_provider_profile(&member)?;
+    let resolution = resolve_provider_compatibility(store, &profile, probe_error.as_deref())?;
     let refusal = provider_compatibility_block_reason(
         &member,
         &profile,
+        &resolution,
         "receive rebound durable Work",
-        probe_error.as_deref(),
     );
     if apply_refreshed_provider_profile(&mut member, profile) {
         store_conflict_as_usage(store.compare_and_append_member_run(&expected, &member))?;
@@ -38925,9 +39435,14 @@ fn print_help() {
   team create|list|show|rename|add-member|remove-member|close|archive
   org member create|converge|list|show
   org bootstrap-lead|host|cutover-audit
-  member register|list|providers
+  member register|list|providers [--fail-on-review]
   member preflight [--provider <name>] [--execution-mode <mode>] [--canary]
-                   [--timeout-s <n>] [--fail-on-unavailable] [--json]
+                   [--timeout-s <n>] [--fail-on-unavailable] [--fail-on-review] [--json]
+  [--project <id|path>] provider admit --provider <name> --execution-mode <mode> --provider-version <version>
+                 --adapter-contract-version <version> --evidence <ref>
+                 [--policy strict|advisory] [--actor <id>] [--json]
+      An active/selected Execution Space requires the global --project flag;
+      FIRM_PROJECT and ambient Project Binding defaults do not authorize admission.
   company init --id <company-id> [--name <name>]
   company list | company current | company switch <company-id> | company show [company-id]
   company migrate-from-project --from-project <project-id|path> --id <company-id> [--name <name>] [--force]
@@ -42973,6 +43488,7 @@ agent("a NEW second leaf that changes the ordinal alignment")
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
 
     #[test]
     fn heartbeat_failure_marker_is_published_after_local_lease_loss_latch() {
@@ -43931,6 +44447,7 @@ mod tests {
             provider_controls: Default::default(),
             provider_profile: None,
             provider_capacity: None,
+            provider_compatibility_block_cause: None,
             coordination_status: MemberCoordinationStatus::Active,
             runtime_generation: 1,
             status: MemberRunStatus::Idle,
@@ -44652,6 +45169,560 @@ package:com.tencent.mm
             .compatibility_note
             .as_deref()
             .is_some_and(|note| note.contains("regenerate protocol schemas")));
+    }
+
+    #[test]
+    fn provider_operational_admission_is_exact_and_separate_from_source_review() {
+        let root = std::env::temp_dir().join(format!(
+            "harness-provider-admission-cli-test-{}",
+            generated_id("exact")
+        ));
+        let store =
+            HarnessStore::new(&root).with_provider_compatibility_scope("project-a", "space-a");
+        let mut profile = team_member_provider_profile_for_mode("codex", Some("codex_app_server"));
+        apply_provider_version(&mut profile, Some("9.9.9".into()));
+        assert_eq!(
+            profile.compatibility_status,
+            ProviderCompatibilityStatus::ReviewRequired
+        );
+        let admission = ProviderCompatibilityAdmission {
+            id: "admission-exact".into(),
+            project_id: "project-a".into(),
+            store_id: "space-a".into(),
+            provider: "codex".into(),
+            execution_mode: "codex_app_server".into(),
+            provider_version: "9.9.9".into(),
+            adapter_contract_version: "codex-app-server-v1".into(),
+            policy: ProviderCompatibilityAdmissionPolicy::Strict,
+            actor: "operator".into(),
+            evidence_refs: vec!["evidence:test".into()],
+            admitted_at: "unix-ms:1".into(),
+            lifecycle: ProviderCompatibilityAdmissionLifecycle::Active,
+            predecessor_admission_id: None,
+            reason: None,
+        };
+        store
+            .admit_provider_compatibility_admission(&admission)
+            .unwrap();
+        let allowed = resolve_provider_compatibility(&store, &profile, None).unwrap();
+        assert!(allowed.allowed);
+        assert!(!allowed.needs_review);
+        assert_eq!(allowed.source, "operational_admission");
+        assert_eq!(
+            profile.compatibility_status,
+            ProviderCompatibilityStatus::ReviewRequired
+        );
+
+        profile.execution_mode = "codex_exec".into();
+        assert!(
+            !resolve_provider_compatibility(&store, &profile, None)
+                .unwrap()
+                .allowed
+        );
+        profile.execution_mode = "codex_app_server".into();
+        let isolated = HarnessStore::new(root.join("other-store"));
+        assert!(
+            !resolve_provider_compatibility(&isolated, &profile, None)
+                .unwrap()
+                .allowed
+        );
+        let same_store_other_project =
+            HarnessStore::new(&root).with_provider_compatibility_scope("project-b", "space-a");
+        assert!(
+            !resolve_provider_compatibility(&same_store_other_project, &profile, None)
+                .unwrap()
+                .allowed
+        );
+        let migrated_scope =
+            HarnessStore::new(&root).with_provider_compatibility_scope("project-a", "space-b");
+        assert!(
+            !resolve_provider_compatibility(&migrated_scope, &profile, None)
+                .unwrap()
+                .allowed
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn provider_admit_command_exact_replay_exits_zero_and_reuses_record() {
+        let root = std::env::temp_dir().join(format!(
+            "harness-provider-admit-command-replay-{}",
+            generated_id("cli")
+        ));
+        let project_id = "provider-admit-replay-project";
+        let store_id = format!("project-store:{project_id}");
+        let store =
+            HarnessStore::new(&root).with_provider_compatibility_scope(project_id, &store_id);
+        let resolved = ResolvedStore {
+            root: root.clone(),
+            source: StoreSource::StoreFlag,
+            project_selection_explicit: false,
+            context: Some(ProjectContext {
+                id: project_id.into(),
+                project_root: root.clone(),
+                store_root: root.clone(),
+                kind: ProjectKind::Repo,
+                is_git_repo: true,
+            }),
+            company_context: None,
+            execution_space_context: None,
+        };
+        let args = |evidence: &[&str]| {
+            let mut args = vec![
+                "--provider".into(),
+                "codex".into(),
+                "--execution-mode".into(),
+                "codex_app_server".into(),
+                "--provider-version".into(),
+                "9.9.9".into(),
+                "--adapter-contract-version".into(),
+                "codex-app-server-v1".into(),
+                "--actor".into(),
+                "operator:test".into(),
+                "--json".into(),
+            ];
+            for evidence_ref in evidence {
+                args.push("--evidence".into());
+                args.push((*evidence_ref).into());
+            }
+            args
+        };
+        let probe = |_: &str| Ok("9.9.9".to_string());
+        provider_admit_command_with_probe(
+            &store,
+            &resolved,
+            &args(&["evidence:b", "evidence:a", "evidence:b"]),
+            probe,
+        )
+        .expect("first command exits zero");
+        provider_admit_command_with_probe(
+            &store,
+            &resolved,
+            &args(&["evidence:a", "evidence:b"]),
+            probe,
+        )
+        .expect("replayed command exits zero");
+
+        let rows = store.provider_compatibility_admissions().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].evidence_refs, ["evidence:a", "evidence:b"]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn provider_admit_command_refuses_source_reviewed_current_tuple_without_writing() {
+        let root = std::env::temp_dir().join(format!(
+            "harness-provider-admit-current-test-{}",
+            generated_id("cli")
+        ));
+        let project_id = "provider-admit-current-project";
+        let store_id = format!("project-store:{project_id}");
+        let store =
+            HarnessStore::new(&root).with_provider_compatibility_scope(project_id, &store_id);
+        let resolved = ResolvedStore {
+            root: root.clone(),
+            source: StoreSource::StoreFlag,
+            project_selection_explicit: false,
+            context: Some(ProjectContext {
+                id: project_id.into(),
+                project_root: root.clone(),
+                store_root: root.clone(),
+                kind: ProjectKind::Repo,
+                is_git_repo: true,
+            }),
+            company_context: None,
+            execution_space_context: None,
+        };
+        let version = "0.145.0-alpha.18";
+        let args = vec![
+            "--provider".into(),
+            "codex".into(),
+            "--execution-mode".into(),
+            "codex_app_server".into(),
+            "--provider-version".into(),
+            version.into(),
+            "--adapter-contract-version".into(),
+            "codex-app-server-v1".into(),
+            "--evidence".into(),
+            "evidence:unneeded".into(),
+        ];
+        let error =
+            provider_admit_command_with_probe(
+                &store,
+                &resolved,
+                &args,
+                |_| Ok(version.to_string()),
+            )
+            .expect_err("source-reviewed current tuple needs no operational admission");
+        assert!(error
+            .to_string()
+            .contains("only an actually observed review-required"));
+        assert!(store
+            .provider_compatibility_admissions()
+            .unwrap()
+            .is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn provider_admit_execution_space_omission_fails_before_probe_or_write() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let root = std::env::temp_dir().join(format!(
+            "harness-provider-admit-explicit-project-test-{}",
+            generated_id("cli")
+        ));
+        let project_id = "ambient-project";
+        let store_id = "execution-space:space-a";
+        let store =
+            HarnessStore::new(&root).with_provider_compatibility_scope(project_id, store_id);
+        let resolved = ResolvedStore {
+            root: root.clone(),
+            source: StoreSource::SpaceCurrent,
+            project_selection_explicit: false,
+            context: Some(ProjectContext {
+                id: project_id.into(),
+                project_root: root.clone(),
+                store_root: root.clone(),
+                kind: ProjectKind::Repo,
+                is_git_repo: true,
+            }),
+            company_context: None,
+            execution_space_context: Some(ExecutionSpace {
+                id: "space-a".into(),
+                name: "Space A".into(),
+                store_root: root.clone(),
+                default_project_binding_id: Some(project_id.into()),
+                company_id: None,
+            }),
+        };
+        let args = vec![
+            "--provider".into(),
+            "codex".into(),
+            "--execution-mode".into(),
+            "codex_app_server".into(),
+            "--provider-version".into(),
+            "9.9.9".into(),
+            "--adapter-contract-version".into(),
+            "codex-app-server-v1".into(),
+            "--evidence".into(),
+            "evidence:explicit-project".into(),
+        ];
+        let probed = AtomicBool::new(false);
+        let error = provider_admit_command_with_probe(&store, &resolved, &args, |_| {
+            probed.store(true, Ordering::SeqCst);
+            Ok("9.9.9".to_string())
+        })
+        .expect_err("ambient Project Binding must not authorize a space admission");
+        assert!(error.to_string().contains("explicit global `--project"));
+        assert!(!probed.load(Ordering::SeqCst));
+        assert!(store
+            .provider_compatibility_admissions()
+            .unwrap()
+            .is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn compatibility_block_action(
+        member: &MemberRun,
+        profile: &ProviderIntegrationProfile,
+        seq: u64,
+    ) -> MemberAction {
+        let resolution = ProviderCompatibilityResolution {
+            allowed: false,
+            needs_review: true,
+            status: ProviderCompatibilityStatus::ReviewRequired,
+            source: "adapter_compatibility",
+            policy: None,
+            admission: None,
+            probe_error: None,
+            warning: None,
+        };
+        MemberAction {
+            id: format!("compatibility-block-{seq}"),
+            seq,
+            team_run_id: member.team_run_id.clone(),
+            member_run_id: member.id.clone(),
+            task_id: None,
+            provider_call_id: None,
+            action_type: "provider_compatibility_blocked".into(),
+            status: MemberActionStatus::Failed,
+            provider_status: None,
+            semantic_status: None,
+            title: "provider compatibility gate blocked persistent execution".into(),
+            summary: provider_compatibility_block_reason(
+                member,
+                profile,
+                &resolution,
+                "start persistent execution",
+            )
+            .expect("review-required profile blocks"),
+            evidence_refs: Vec::new(),
+            started_at: "unix-ms:1".into(),
+            completed_at: Some("unix-ms:1".into()),
+        }
+    }
+
+    fn compatibility_test_cause(
+        member: &MemberRun,
+        profile: &ProviderIntegrationProfile,
+    ) -> ProviderCompatibilityBlockCause {
+        ProviderCompatibilityBlockCause {
+            schema_version: ProviderCompatibilityBlockCause::SCHEMA_VERSION,
+            id: "typed-compatibility-cause".into(),
+            member_run_id: member.id.clone(),
+            provider: profile.provider.clone(),
+            execution_mode: profile.execution_mode.clone(),
+            provider_version: profile.provider_version.clone().unwrap(),
+            adapter_contract_version: profile.adapter_contract_version.clone().unwrap(),
+            boundary: ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+            compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
+            source: ProviderCompatibilityBlockSource::AdapterCompatibility,
+            probe_error: None,
+            caused_at: "unix-ms:1".into(),
+        }
+    }
+
+    #[test]
+    fn compatibility_block_provenance_is_exact_and_foreign_blocks_never_recover() {
+        let (store, root) = temp_store("compatibility-block-provenance");
+        let created = create_two_member_team_run(&store);
+        let mut member = created.member_runs[0].clone();
+        member.status = MemberRunStatus::Blocked;
+        let mut profile = team_member_provider_profile_for_mode("codex", Some("codex_app_server"));
+        apply_provider_version(&mut profile, Some("9.9.9".into()));
+        let exact = compatibility_block_action(&member, &profile, 1);
+        store
+            .append_member_action(&exact)
+            .expect("append hostile exact-looking audit action");
+        assert!(
+            !compatibility_block_matches_current_tuple(&member, &profile),
+            "a forged exact-looking MemberAction cannot authorize recovery"
+        );
+        member.provider_profile = Some(profile.clone());
+        member.provider_compatibility_block_cause =
+            Some(compatibility_test_cause(&member, &profile));
+        assert!(compatibility_block_matches_current_tuple(&member, &profile));
+        assert_eq!(
+            compatibility_recovery_status(&store, &member).expect("unbound recovery status"),
+            MemberRunStatus::Idle
+        );
+        let mut native = member.clone();
+        native.native_session = Some(capacity_test_session());
+        assert_eq!(
+            compatibility_recovery_status(&store, &native).expect("native recovery status"),
+            MemberRunStatus::Disconnected
+        );
+
+        let mut wrong_tuple = profile.clone();
+        wrong_tuple.provider_version = Some("9.9.10".into());
+        assert!(!compatibility_block_matches_current_tuple(
+            &member,
+            &wrong_tuple
+        ));
+
+        for (index, (action_type, summary)) in [
+            ("operator_blocked", exact.summary.clone()),
+            ("provider_capacity_blocked", exact.summary.clone()),
+            ("provider_compatibility_blocked", "not parseable".into()),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut foreign = exact.clone();
+            foreign.id = format!("hostile-action-{index}");
+            foreign.seq = index as u64 + 2;
+            foreign.action_type = action_type.into();
+            foreign.summary = summary;
+            store
+                .append_member_action(&foreign)
+                .expect("append hostile audit action");
+            assert!(
+                compatibility_block_matches_current_tuple(&member, &profile),
+                "MemberAction prose is audit-only and cannot alter typed authority"
+            );
+        }
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn admitted_compatibility_block_recovers_into_start_machine_once() {
+        let (unscoped, root) = temp_store("compatibility-block-start-recovery");
+        let store = unscoped.with_provider_compatibility_scope("project-test", "store-test");
+        let created = create_two_member_team_run(&store);
+        let initial = created.member_runs[0].clone();
+        let mut profile = team_member_provider_profile_for_mode("codex", Some("codex_app_server"));
+        apply_provider_version(&mut profile, Some("9.9.9".into()));
+        let mut blocked = store
+            .block_member_run_for_provider_compatibility(
+                &initial,
+                &profile,
+                compatibility_test_cause(&initial, &profile),
+                "unix-ms:1",
+            )
+            .expect("seed compatibility-owned Blocked member");
+        blocked.workspace_snapshot = Some(test_workspace_snapshot(&root));
+        let before_workspace = store.member_runs().unwrap().last().unwrap().clone();
+        store
+            .compare_and_append_member_run(&before_workspace, &blocked)
+            .expect("record workspace without changing typed cause");
+        let action = compatibility_block_action(&blocked, &profile, 1);
+        store
+            .append_member_action(&action)
+            .expect("record exact compatibility provenance");
+        let (project_id, store_id) = store.provider_compatibility_scope().unwrap();
+        store
+            .admit_provider_compatibility_admission(&ProviderCompatibilityAdmission {
+                id: "recovery-admission".into(),
+                project_id: project_id.into(),
+                store_id: store_id.into(),
+                provider: profile.provider.clone(),
+                execution_mode: profile.execution_mode.clone(),
+                provider_version: profile.provider_version.clone().unwrap(),
+                adapter_contract_version: profile.adapter_contract_version.clone().unwrap(),
+                policy: ProviderCompatibilityAdmissionPolicy::Strict,
+                actor: "operator".into(),
+                evidence_refs: vec!["evidence:test".into()],
+                admitted_at: "unix-ms:2".into(),
+                lifecycle: ProviderCompatibilityAdmissionLifecycle::Active,
+                predecessor_admission_id: None,
+                reason: None,
+            })
+            .expect("admit exact tuple");
+
+        let lease = store
+            .acquire_team_supervisor_lease(
+                &created.team_run.id,
+                "compatibility-recovery-supervisor",
+                std::process::id(),
+                "test://compatibility-recovery",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire supervisor lease");
+        let ledger = TeamRunLedger::new(
+            &store,
+            &created.team_run.id,
+            &lease.supervisor_id,
+            lease.generation,
+            Arc::new(AtomicBool::new(true)),
+        );
+        let callbacks = AtomicUsize::new(0);
+        assert!(matches!(
+            claim_member_provider_start_with_hook(&ledger, &blocked, |_, _| {
+                callbacks.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .expect("blocked member is fenced before provider start"),
+            MemberProviderStartClaim::Superseded(_)
+        ));
+        assert_eq!(callbacks.load(Ordering::SeqCst), 0);
+
+        assert!(compatibility_block_matches_current_tuple(
+            &blocked, &profile
+        ));
+        let recovery_status = compatibility_recovery_status(&store, &blocked).expect("status");
+        let recovered = store
+            .recover_member_run_from_provider_compatibility_block(
+                &blocked,
+                &profile,
+                ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+                recovery_status,
+                "unix-ms:2",
+            )
+            .expect("typed Store recovery");
+        assert_eq!(recovered.status, MemberRunStatus::Queued);
+        assert!(
+            !compatibility_block_matches_current_tuple(&recovered, &profile),
+            "recovery is idempotent because only Blocked rows are eligible"
+        );
+
+        let first = claim_member_provider_start_with_hook(&ledger, &recovered, |_, _| {
+            callbacks.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .expect("admitted member starts");
+        let MemberProviderStartClaim::Claimed(starting) = first else {
+            panic!("recovered member must enter Starting");
+        };
+        assert_eq!(callbacks.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            claim_member_provider_start_with_hook(&ledger, &starting, |_, _| {
+                callbacks.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .expect("duplicate start is superseded"),
+            MemberProviderStartClaim::Superseded(_)
+        ));
+        assert_eq!(callbacks.load(Ordering::SeqCst), 1);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn advisory_admission_never_overrides_probe_failure_and_migrates() {
+        let root = std::env::temp_dir().join(format!(
+            "harness-provider-admission-cli-test-{}",
+            generated_id("advisory")
+        ));
+        let store =
+            HarnessStore::new(&root).with_provider_compatibility_scope("project-a", "space-a");
+        let mut profile = team_member_provider_profile_for_mode("kimi", Some("kimi_acp"));
+        apply_provider_version(&mut profile, Some("99.0.0".into()));
+        let admission = ProviderCompatibilityAdmission {
+            id: "admission-advisory".into(),
+            project_id: "project-a".into(),
+            store_id: "space-a".into(),
+            provider: "kimi".into(),
+            execution_mode: "kimi_acp".into(),
+            provider_version: "99.0.0".into(),
+            adapter_contract_version: "kimi-acp-v1".into(),
+            policy: ProviderCompatibilityAdmissionPolicy::Advisory,
+            actor: "operator".into(),
+            evidence_refs: vec!["evidence:test".into()],
+            admitted_at: "unix-ms:1".into(),
+            lifecycle: ProviderCompatibilityAdmissionLifecycle::Active,
+            predecessor_admission_id: None,
+            reason: None,
+        };
+        store
+            .admit_provider_compatibility_admission(&admission)
+            .unwrap();
+        let advisory = resolve_provider_compatibility(&store, &profile, None).unwrap();
+        assert!(advisory.allowed);
+        assert!(advisory.needs_review);
+        assert!(
+            !resolve_provider_compatibility(&store, &profile, Some("probe failed"))
+                .unwrap()
+                .allowed
+        );
+        profile.compatibility_status = ProviderCompatibilityStatus::Incompatible;
+        assert!(
+            !resolve_provider_compatibility(&store, &profile, None)
+                .unwrap()
+                .allowed
+        );
+        assert!(EXECUTION_LEDGER_NAMES.contains(&"provider_compatibility_admissions.jsonl"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preflight_compatibility_block_overrides_capacity_proceed() {
+        let capacity = harness_core::ProviderCapacityStartDecision::Proceed {
+            reason: "capacity available".to_string(),
+        };
+        let compatibility = ProviderCompatibilityResolution {
+            allowed: false,
+            needs_review: true,
+            status: ProviderCompatibilityStatus::ReviewRequired,
+            source: "adapter_compatibility",
+            policy: None,
+            admission: None,
+            probe_error: None,
+            warning: None,
+        };
+        let decision = provider_preflight_start_decision(&capacity, &compatibility);
+        assert_eq!(decision["decision"], "block");
+        assert_eq!(decision["gate"], "provider_compatibility");
     }
 
     #[test]
@@ -46101,6 +47172,7 @@ package:com.tencent.mm
         let resolved = ResolvedStore {
             root: root.clone(),
             source: StoreSource::StoreFlag,
+            project_selection_explicit: false,
             context: None,
             company_context: None,
             execution_space_context: None,
@@ -51006,6 +52078,7 @@ mod sse_tests {
             provider_controls: Default::default(),
             provider_profile: None,
             provider_capacity: None,
+            provider_compatibility_block_cause: None,
             coordination_status: MemberCoordinationStatus::Active,
             runtime_generation: 1,
             status: MemberRunStatus::Idle,
@@ -51361,6 +52434,7 @@ mod tests_team_run_recover {
                 None
             },
             provider_capacity: None,
+            provider_compatibility_block_cause: None,
             coordination_status,
             runtime_generation: 1,
             status,

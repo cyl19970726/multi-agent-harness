@@ -92,6 +92,7 @@ fn team_fixture(label: &str) -> (TestStore, AgentTeamRun, MemberRun, MemberRun) 
         provider_controls: Default::default(),
         provider_profile: None,
         provider_capacity: None,
+        provider_compatibility_block_cause: None,
         coordination_status: MemberCoordinationStatus::Active,
         runtime_generation: 1,
         status: MemberRunStatus::Idle,

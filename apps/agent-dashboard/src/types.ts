@@ -436,6 +436,22 @@ export interface ProviderExecutionControls {
   service_tier: ProviderControlValue;
 }
 
+/** Store-owned typed authority for a provider-compatibility Blocked state. */
+export interface ProviderCompatibilityBlockCause {
+  schema_version: 1;
+  id: string;
+  member_run_id: string;
+  provider: string;
+  execution_mode: string;
+  provider_version: string;
+  adapter_contract_version: string;
+  boundary: "start_persistent_execution" | "resume_persistent_execution";
+  compatibility_status: "review_required" | "incompatible" | "unavailable" | "unknown";
+  source: "adapter_compatibility" | "probe_failure";
+  probe_error?: string | null;
+  caused_at: string;
+}
+
 /** One member's participation in a {@link TeamRun}. */
 export interface MemberRun {
   id: string;
@@ -456,6 +472,7 @@ export interface MemberRun {
    * it is independent of provider_profile.compatibility_status.
    */
   provider_capacity?: ProviderCapacitySnapshot | null;
+  provider_compatibility_block_cause?: ProviderCompatibilityBlockCause | null;
   coordination_status?: MemberCoordinationStatus | string;
   runtime_generation?: number;
   status?: MemberRunStatus | string;

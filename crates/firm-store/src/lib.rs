@@ -14,14 +14,17 @@ use firm_core::{
     HostAttentionStatus, HostBindingLease, HostBindingLeaseOwnerKind, HostBindingLeaseStatus,
     MemberAction, MemberRun, Message, MessageDelivery, MessageDeliveryStatus,
     MessageTerminalSource, Mission, MissionLogEntry, MissionStatus, PendingInteraction, Proposal,
-    ProviderChildThread, ProviderExecutionStatus, ProviderInteractionRequestBody,
-    ProviderInteractionResponseBody, Review, ReviewVerdict, TeamActorKind, TeamDeliveryPolicy,
-    TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage,
-    TeamMessageKind, TeamRunEvent, TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus,
-    Validate, Vision, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, Work, WorkClaimMode,
-    WorkCommandContext, WorkCutoverFence, WorkCutoverReport, WorkDelivery, WorkDeliveryStatus,
-    WorkDeliveryUpdate, WorkEvent, WorkEventKind, WorkItem, WorkItemStatus, WorkOperation,
-    WorkStatus, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
+    ProviderChildThread, ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
+    ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
+    ProviderCompatibilityStatus, ProviderExecutionStatus, ProviderIntegrationProfile,
+    ProviderInteractionRequestBody, ProviderInteractionResponseBody, Review, ReviewVerdict,
+    TeamActorKind, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
+    TeamMemberCloseStatus, TeamMessage, TeamMessageKind, TeamRunEvent, TeamRunStatus,
+    TeamSupervisorLease, TeamSupervisorLeaseStatus, Validate, Vision, Wave, WaveExecutorKind,
+    WaveGateStatus, WaveStatus, Work, WorkClaimMode, WorkCommandContext, WorkCutoverFence,
+    WorkCutoverReport, WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate, WorkEvent,
+    WorkEventKind, WorkItem, WorkItemStatus, WorkOperation, WorkStatus, WorkflowArtifactManifest,
+    WorkflowPatch, WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -41,7 +44,105 @@ const LOCK_NB: i32 = 4;
 const LOCK_UN: i32 = 8;
 const COMPANY_WORK_ITEMS_LEDGER: &str = "company_os_work_items.jsonl";
 const WORK_CUTOVER_FENCES_LEDGER: &str = "company_os_work_cutover_fences.jsonl";
+pub const PROVIDER_COMPATIBILITY_ADMISSIONS_LEDGER: &str =
+    "provider_compatibility_admissions.jsonl";
 const TRUSTED_HOST_REVIEWER_ID: &str = "host";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnsureProviderCompatibilityAdmissionResult {
+    pub admission: ProviderCompatibilityAdmission,
+    pub created: bool,
+}
+
+fn canonical_provider_admission_evidence_refs(values: &[String]) -> Vec<String> {
+    let mut canonical = values.to_vec();
+    canonical.sort();
+    canonical.dedup();
+    canonical
+}
+
+fn provider_admission_replay_matches(
+    existing: &ProviderCompatibilityAdmission,
+    candidate: &ProviderCompatibilityAdmission,
+) -> bool {
+    existing.project_id == candidate.project_id
+        && existing.store_id == candidate.store_id
+        && existing.exact_key() == candidate.exact_key()
+        && existing.policy == candidate.policy
+        && existing.actor == candidate.actor
+        && canonical_provider_admission_evidence_refs(&existing.evidence_refs)
+            == canonical_provider_admission_evidence_refs(&candidate.evidence_refs)
+        && existing.lifecycle == ProviderCompatibilityAdmissionLifecycle::Active
+        && candidate.lifecycle == ProviderCompatibilityAdmissionLifecycle::Active
+        && existing.predecessor_admission_id.is_none()
+        && candidate.predecessor_admission_id.is_none()
+        && existing.reason.is_none()
+        && candidate.reason.is_none()
+}
+
+fn validate_provider_compatibility_admission_ledger(
+    rows: &[ProviderCompatibilityAdmission],
+) -> StoreResult<()> {
+    type ScopedKey = (String, String, String, String, String, String);
+    let mut ids = std::collections::BTreeSet::new();
+    let mut active: std::collections::BTreeMap<ScopedKey, &ProviderCompatibilityAdmission> =
+        std::collections::BTreeMap::new();
+
+    for row in rows {
+        if !ids.insert(row.id.clone()) {
+            return Err(StoreError::Conflict(format!(
+                "provider compatibility ledger contains duplicate admission id {}",
+                row.id
+            )));
+        }
+        let key = (
+            row.project_id.clone(),
+            row.store_id.clone(),
+            row.provider.clone(),
+            row.execution_mode.clone(),
+            row.provider_version.clone(),
+            row.adapter_contract_version.clone(),
+        );
+        match row.lifecycle {
+            ProviderCompatibilityAdmissionLifecycle::Active => {
+                if let Some(current) = active.get(&key) {
+                    return Err(StoreError::Conflict(format!(
+                        "provider compatibility ledger forks active tuple at {} and {}",
+                        current.id, row.id
+                    )));
+                }
+                active.insert(key, row);
+            }
+            ProviderCompatibilityAdmissionLifecycle::Revoked
+            | ProviderCompatibilityAdmissionLifecycle::Superseded => {
+                let predecessor_id = row
+                    .predecessor_admission_id
+                    .as_deref()
+                    .expect("validated terminal admission has predecessor");
+                let predecessor = active.get(&key).ok_or_else(|| {
+                    StoreError::Conflict(format!(
+                        "provider compatibility terminal {} has no current active predecessor",
+                        row.id
+                    ))
+                })?;
+                if predecessor.id != predecessor_id {
+                    return Err(StoreError::Conflict(format!(
+                        "provider compatibility terminal {} names non-current predecessor {}; expected {}",
+                        row.id, predecessor_id, predecessor.id
+                    )));
+                }
+                if predecessor.policy != row.policy {
+                    return Err(StoreError::Conflict(format!(
+                        "provider compatibility terminal {} changes predecessor policy",
+                        row.id
+                    )));
+                }
+                active.remove(&key);
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Normalize surface identifiers into their canonical form.
 /// All surface comparisons and storage MUST route through this.
@@ -204,11 +305,43 @@ pub enum HostAttentionClaimResult {
 #[derive(Debug, Clone)]
 pub struct HarnessStore {
     root: PathBuf,
+    provider_compatibility_scope: Option<(String, String)>,
 }
 
 impl HarnessStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            provider_compatibility_scope: None,
+        }
+    }
+
+    /// Bind compatibility admissions to the Project Binding and execution
+    /// store selected by the caller. The scope is deliberately explicit and
+    /// is never inferred from a path hash: moving/migrating a store must not
+    /// silently transfer operational authority.
+    pub fn with_provider_compatibility_scope(
+        mut self,
+        project_id: impl Into<String>,
+        store_id: impl Into<String>,
+    ) -> Self {
+        self.provider_compatibility_scope = Some((project_id.into(), store_id.into()));
+        self
+    }
+
+    pub fn provider_compatibility_scope(&self) -> Option<(&str, &str)> {
+        self.provider_compatibility_scope
+            .as_ref()
+            .map(|(project_id, store_id)| (project_id.as_str(), store_id.as_str()))
+    }
+
+    fn require_provider_compatibility_scope(&self) -> StoreResult<(&str, &str)> {
+        self.provider_compatibility_scope().ok_or_else(|| {
+            StoreError::Conflict(
+                "PROVIDER_COMPATIBILITY_SCOPE_REQUIRED: provider compatibility authority requires an explicitly configured project/store scope"
+                    .to_string(),
+            )
+        })
     }
 
     pub fn root(&self) -> &Path {
@@ -574,6 +707,223 @@ impl HarnessStore {
             )));
         }
         self.append_jsonl_unlocked("durable_agent_members.jsonl", value)
+    }
+
+    /// Append a new active operational admission for one exact provider tuple.
+    ///
+    /// Admission ids are stable command ids: replaying an identical record is
+    /// idempotent, while reusing an id for different content is a conflict.
+    /// Only one row for an exact tuple may be active at a time.
+    pub fn append_provider_compatibility_admission(
+        &self,
+        value: &ProviderCompatibilityAdmission,
+    ) -> StoreResult<()> {
+        self.admit_provider_compatibility_admission(value)
+    }
+
+    pub fn admit_provider_compatibility_admission(
+        &self,
+        value: &ProviderCompatibilityAdmission,
+    ) -> StoreResult<()> {
+        if value.lifecycle != ProviderCompatibilityAdmissionLifecycle::Active {
+            return Err(StoreError::Conflict(
+                "provider compatibility admission must have active lifecycle".to_string(),
+            ));
+        }
+        self.append_provider_compatibility_admission_checked(value)
+    }
+
+    /// Atomically create or reuse the active admission represented by a
+    /// command request.
+    ///
+    /// Generated ids and timestamps are deliberately excluded from replay
+    /// identity. Evidence references are a set: ordering and duplicates do
+    /// not change command semantics, and newly appended rows store them in
+    /// sorted, deduplicated order. Any other difference remains a conflict.
+    pub fn ensure_provider_compatibility_admission(
+        &self,
+        value: &ProviderCompatibilityAdmission,
+    ) -> StoreResult<EnsureProviderCompatibilityAdmissionResult> {
+        if value.lifecycle != ProviderCompatibilityAdmissionLifecycle::Active {
+            return Err(StoreError::Conflict(
+                "provider compatibility admission must have active lifecycle".to_string(),
+            ));
+        }
+        let (project_id, store_id) = self.require_provider_compatibility_scope()?;
+        if value.project_id != project_id || value.store_id != store_id {
+            return Err(StoreError::Conflict(format!(
+                "provider compatibility admission scope mismatch: current project/store is {project_id}/{store_id}, record is {}/{}",
+                value.project_id, value.store_id
+            )));
+        }
+        let mut candidate = value.clone();
+        candidate.evidence_refs =
+            canonical_provider_admission_evidence_refs(&candidate.evidence_refs);
+        candidate
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let rows = self.provider_compatibility_admissions()?;
+
+        if let Some(existing) = rows.iter().find(|row| row.id == candidate.id) {
+            if existing == &candidate {
+                return Ok(EnsureProviderCompatibilityAdmissionResult {
+                    admission: existing.clone(),
+                    created: false,
+                });
+            }
+            return Err(StoreError::Conflict(format!(
+                "provider compatibility admission id {} already has different content",
+                candidate.id
+            )));
+        }
+
+        let current = rows.iter().rev().find(|row| {
+            row.project_id == candidate.project_id
+                && row.store_id == candidate.store_id
+                && row.exact_key() == candidate.exact_key()
+        });
+        if let Some(active) = current.filter(|row| row.is_active()) {
+            if provider_admission_replay_matches(active, &candidate) {
+                return Ok(EnsureProviderCompatibilityAdmissionResult {
+                    admission: active.clone(),
+                    created: false,
+                });
+            }
+            return Err(StoreError::Conflict(format!(
+                "provider compatibility tuple already has semantically different active admission {}",
+                active.id
+            )));
+        }
+
+        self.append_jsonl_unlocked(PROVIDER_COMPATIBILITY_ADMISSIONS_LEDGER, &candidate)?;
+        Ok(EnsureProviderCompatibilityAdmissionResult {
+            admission: candidate,
+            created: true,
+        })
+    }
+
+    /// Compatibility alias for callers that name the operation, rather than
+    /// the ledger record.
+    pub fn admit_provider_compatibility(
+        &self,
+        value: &ProviderCompatibilityAdmission,
+    ) -> StoreResult<()> {
+        self.admit_provider_compatibility_admission(value)
+    }
+
+    pub fn revoke_provider_compatibility_admission(
+        &self,
+        value: &ProviderCompatibilityAdmission,
+    ) -> StoreResult<()> {
+        if value.lifecycle != ProviderCompatibilityAdmissionLifecycle::Revoked {
+            return Err(StoreError::Conflict(
+                "provider compatibility revocation must have revoked lifecycle".to_string(),
+            ));
+        }
+        self.append_provider_compatibility_admission_checked(value)
+    }
+
+    pub fn revoke_provider_compatibility(
+        &self,
+        value: &ProviderCompatibilityAdmission,
+    ) -> StoreResult<()> {
+        self.revoke_provider_compatibility_admission(value)
+    }
+
+    pub fn supersede_provider_compatibility_admission(
+        &self,
+        value: &ProviderCompatibilityAdmission,
+    ) -> StoreResult<()> {
+        if value.lifecycle != ProviderCompatibilityAdmissionLifecycle::Superseded {
+            return Err(StoreError::Conflict(
+                "provider compatibility supersession must have superseded lifecycle".to_string(),
+            ));
+        }
+        self.append_provider_compatibility_admission_checked(value)
+    }
+
+    pub fn supersede_provider_compatibility(
+        &self,
+        value: &ProviderCompatibilityAdmission,
+    ) -> StoreResult<()> {
+        self.supersede_provider_compatibility_admission(value)
+    }
+
+    fn append_provider_compatibility_admission_checked(
+        &self,
+        value: &ProviderCompatibilityAdmission,
+    ) -> StoreResult<()> {
+        let (project_id, store_id) = self.require_provider_compatibility_scope()?;
+        if value.project_id != project_id || value.store_id != store_id {
+            return Err(StoreError::Conflict(format!(
+                "provider compatibility admission scope mismatch: current project/store is {project_id}/{store_id}, record is {}/{}",
+                value.project_id, value.store_id
+            )));
+        }
+        value
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let rows = self.provider_compatibility_admissions()?;
+
+        if let Some(existing) = rows.iter().find(|row| row.id == value.id) {
+            if existing == value {
+                return Ok(());
+            }
+            return Err(StoreError::Conflict(format!(
+                "provider compatibility admission id {} already has different content",
+                value.id
+            )));
+        }
+
+        let current = rows.iter().rev().find(|row| {
+            row.project_id == value.project_id
+                && row.store_id == value.store_id
+                && row.exact_key() == value.exact_key()
+        });
+        match value.lifecycle {
+            ProviderCompatibilityAdmissionLifecycle::Active => {
+                if let Some(active) = current.filter(|row| row.is_active()) {
+                    return Err(StoreError::Conflict(format!(
+                        "provider compatibility tuple already has active admission {}",
+                        active.id
+                    )));
+                }
+            }
+            ProviderCompatibilityAdmissionLifecycle::Revoked
+            | ProviderCompatibilityAdmissionLifecycle::Superseded => {
+                let predecessor_id = value
+                    .predecessor_admission_id
+                    .as_deref()
+                    .expect("validated terminal admission has predecessor");
+                let predecessor = current.filter(|row| row.is_active()).ok_or_else(|| {
+                    StoreError::Conflict(
+                        "provider compatibility transition has no current active predecessor"
+                            .to_string(),
+                    )
+                })?;
+                if predecessor.id != predecessor_id {
+                    return Err(StoreError::Conflict(format!(
+                        "provider compatibility predecessor is stale: expected {}, got {}",
+                        predecessor.id, predecessor_id
+                    )));
+                }
+                if predecessor.project_id != value.project_id
+                    || predecessor.store_id != value.store_id
+                    || predecessor.policy != value.policy
+                {
+                    return Err(StoreError::Conflict(
+                        "provider compatibility transition must preserve predecessor scope and policy"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+        self.append_jsonl_unlocked(PROVIDER_COMPATIBILITY_ADMISSIONS_LEDGER, value)
     }
 
     /// Explicitly converge one row from the legacy runtime-heavy AgentMember
@@ -1890,6 +2240,15 @@ impl HarnessStore {
     }
 
     pub fn append_member_run(&self, value: &MemberRun) -> StoreResult<()> {
+        value
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        if value.provider_compatibility_block_cause.is_some() {
+            return Err(StoreError::Conflict(
+                "PROVIDER_COMPATIBILITY_BLOCK_AUTHORITY_REQUIRED: initial MemberRun append cannot set a typed compatibility cause"
+                    .to_string(),
+            ));
+        }
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let rows = self.read_jsonl::<MemberRun>("member_runs.jsonl")?;
@@ -1949,13 +2308,220 @@ impl HarnessStore {
         }
         ensure_member_provenance_unchanged(&current, next)?;
         ensure_member_lifecycle_revision(&current, next)?;
+        ensure_provider_compatibility_cause_unchanged(&current, next)?;
+        next.validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
         self.append_jsonl_unlocked("member_runs.jsonl", next)
+    }
+
+    /// Atomically enter a compatibility-owned Blocked state. This is the only
+    /// Store API allowed to introduce a typed compatibility cause.
+    pub fn block_member_run_for_provider_compatibility(
+        &self,
+        expected: &MemberRun,
+        profile: &ProviderIntegrationProfile,
+        cause: ProviderCompatibilityBlockCause,
+        last_event_at: &str,
+    ) -> StoreResult<MemberRun> {
+        cause
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let current = latest_by_id(self.read_jsonl::<MemberRun>("member_runs.jsonl")?, |row| {
+            row.id.clone()
+        })
+        .remove(&expected.id)
+        .ok_or_else(|| StoreError::Conflict(format!("member run not found: {}", expected.id)))?;
+        if current != *expected {
+            return Err(StoreError::Conflict(format!(
+                "MemberRun {} changed concurrently; retry the operation",
+                expected.id
+            )));
+        }
+        current
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        if !current.coordination_is_active()
+            || current.finished_at.is_some()
+            || !matches!(
+                current.status,
+                firm_core::MemberRunStatus::Idle
+                    | firm_core::MemberRunStatus::Queued
+                    | firm_core::MemberRunStatus::Disconnected
+            )
+        {
+            return Err(StoreError::Conflict(format!(
+                "PROVIDER_COMPATIBILITY_BLOCK_LIFECYCLE_INVALID: MemberRun {} must have active coordination, unfinished runtime, and idle, queued, or disconnected status",
+                current.id
+            )));
+        }
+        if current.provider_compatibility_block_cause.is_some() {
+            return Err(StoreError::Conflict(format!(
+                "PROVIDER_COMPATIBILITY_BLOCK_ALREADY_OWNED: MemberRun {} already has a typed cause",
+                current.id
+            )));
+        }
+        ensure_compatibility_cause_matches_profile(&current, profile, &cause)?;
+        if cause.compatibility_status != profile.compatibility_status {
+            return Err(StoreError::Conflict(
+                "PROVIDER_COMPATIBILITY_BLOCK_STATUS_MISMATCH: typed cause status does not match the observed provider profile"
+                    .to_string(),
+            ));
+        }
+        require_non_empty_store(last_event_at, "compatibility block last_event_at")?;
+        let mut next = current.clone();
+        next.provider_profile = Some(profile.clone());
+        next.status = firm_core::MemberRunStatus::Blocked;
+        next.provider_compatibility_block_cause = Some(cause);
+        next.last_event_at = Some(last_event_at.to_string());
+        next.validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        self.append_jsonl_unlocked("member_runs.jsonl", &next)?;
+        Ok(next)
+    }
+
+    /// Atomically clear a compatibility-owned block after the current exact
+    /// tuple is either source-reviewed or covered by an active admission.
+    pub fn recover_member_run_from_provider_compatibility_block(
+        &self,
+        expected: &MemberRun,
+        profile: &ProviderIntegrationProfile,
+        boundary: ProviderCompatibilityBlockBoundary,
+        recovery_status: firm_core::MemberRunStatus,
+        last_event_at: &str,
+    ) -> StoreResult<MemberRun> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let current = latest_by_id(self.read_jsonl::<MemberRun>("member_runs.jsonl")?, |row| {
+            row.id.clone()
+        })
+        .remove(&expected.id)
+        .ok_or_else(|| StoreError::Conflict(format!("member run not found: {}", expected.id)))?;
+        if current != *expected {
+            return Err(StoreError::Conflict(format!(
+                "MemberRun {} changed concurrently; retry the operation",
+                expected.id
+            )));
+        }
+        current
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        if !current.coordination_is_active() || current.finished_at.is_some() {
+            return Err(StoreError::Conflict(format!(
+                "PROVIDER_COMPATIBILITY_RECOVERY_LIFECYCLE_INVALID: MemberRun {} must have active coordination and unfinished runtime",
+                current.id
+            )));
+        }
+        let cause = current
+            .provider_compatibility_block_cause
+            .as_ref()
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "PROVIDER_COMPATIBILITY_BLOCK_CAUSE_REQUIRED: MemberRun {} has no typed compatibility cause",
+                    current.id
+                ))
+            })?;
+        if current.status != firm_core::MemberRunStatus::Blocked {
+            return Err(StoreError::Conflict(format!(
+                "PROVIDER_COMPATIBILITY_BLOCK_STATE_MISMATCH: MemberRun {} is not Blocked",
+                current.id
+            )));
+        }
+        let blocked_profile = current.provider_profile.as_ref().ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "PROVIDER_COMPATIBILITY_BLOCK_PROFILE_REQUIRED: MemberRun {} has no durable blocked provider profile",
+                current.id
+            ))
+        })?;
+        ensure_compatibility_cause_matches_profile(&current, blocked_profile, cause)?;
+        if cause.boundary != boundary {
+            return Err(StoreError::Conflict(format!(
+                "PROVIDER_COMPATIBILITY_RECOVERY_BOUNDARY_MISMATCH: typed cause boundary {:?} does not match current {:?} boundary",
+                cause.boundary, boundary
+            )));
+        }
+        if !matches!(
+            recovery_status,
+            firm_core::MemberRunStatus::Disconnected
+                | firm_core::MemberRunStatus::Queued
+                | firm_core::MemberRunStatus::Idle
+        ) {
+            return Err(StoreError::Conflict(
+                "PROVIDER_COMPATIBILITY_RECOVERY_STATUS_INVALID: recovery target must be disconnected, queued, or idle"
+                    .to_string(),
+            ));
+        }
+        let authorized = if profile.compatibility_status == ProviderCompatibilityStatus::Current {
+            profile.provider_version.as_ref().is_some_and(|version| {
+                profile
+                    .reviewed_provider_versions
+                    .iter()
+                    .any(|reviewed| reviewed == version)
+            })
+        } else if profile.compatibility_status == ProviderCompatibilityStatus::ReviewRequired {
+            let (project_id, store_id) = self.provider_compatibility_scope().ok_or_else(|| {
+                StoreError::Conflict(
+                    "PROVIDER_COMPATIBILITY_SCOPE_REQUIRED: recovery requires an exact project/store scope"
+                        .to_string(),
+                )
+            })?;
+            let rows: Vec<ProviderCompatibilityAdmission> =
+                self.read_jsonl(PROVIDER_COMPATIBILITY_ADMISSIONS_LEDGER)?;
+            for row in &rows {
+                row.validate()
+                    .map_err(|error| StoreError::Conflict(error.to_string()))?;
+            }
+            validate_provider_compatibility_admission_ledger(&rows)?;
+            rows.into_iter()
+                .rev()
+                .find(|row| {
+                    row.project_id == project_id
+                        && row.store_id == store_id
+                        && row.exact_key()
+                            == (
+                                profile.provider.as_str(),
+                                profile.execution_mode.as_str(),
+                                profile.provider_version.as_deref().unwrap_or(""),
+                                profile.adapter_contract_version.as_deref().unwrap_or(""),
+                            )
+                })
+                .is_some_and(|row| row.is_active())
+        } else {
+            false
+        };
+        if !authorized {
+            return Err(StoreError::Conflict(format!(
+                "PROVIDER_COMPATIBILITY_RECOVERY_NOT_AUTHORIZED: exact tuple for MemberRun {} is not source-reviewed or actively admitted",
+                current.id
+            )));
+        }
+        require_non_empty_store(last_event_at, "compatibility recovery last_event_at")?;
+        let mut next = current.clone();
+        next.provider_profile = Some(profile.clone());
+        next.status = recovery_status;
+        next.provider_compatibility_block_cause = None;
+        next.finished_at = None;
+        next.last_event_at = Some(last_event_at.to_string());
+        next.validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        self.append_jsonl_unlocked("member_runs.jsonl", &next)?;
+        Ok(next)
     }
 
     /// Materialize one MemberRun already declared by the immutable first
     /// TeamRun row. This is the compatibility path for initial team creation;
     /// later membership changes must use [`Self::admit_member_run`].
     pub fn materialize_initial_member_run(&self, value: &MemberRun) -> StoreResult<()> {
+        value
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        if value.provider_compatibility_block_cause.is_some() {
+            return Err(StoreError::Conflict(
+                "PROVIDER_COMPATIBILITY_BLOCK_AUTHORITY_REQUIRED: materialization cannot set a typed compatibility cause"
+                    .to_string(),
+            ));
+        }
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         if self
@@ -1996,6 +2562,15 @@ impl HarnessStore {
         next: &AgentTeamRun,
         member: &MemberRun,
     ) -> StoreResult<()> {
+        member
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        if member.provider_compatibility_block_cause.is_some() {
+            return Err(StoreError::Conflict(
+                "PROVIDER_COMPATIBILITY_BLOCK_AUTHORITY_REQUIRED: member admission cannot set a typed compatibility cause"
+                    .to_string(),
+            ));
+        }
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let current = latest_by_id(self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?, |run| {
@@ -6049,6 +6624,70 @@ impl HarnessStore {
         self.read_jsonl("durable_agent_members.jsonl")
     }
 
+    /// Raw append-only compatibility admission rows in causal order.
+    /// Invalid JSON or semantically invalid rows fail the entire read closed.
+    pub fn provider_compatibility_admissions(
+        &self,
+    ) -> StoreResult<Vec<ProviderCompatibilityAdmission>> {
+        let rows: Vec<ProviderCompatibilityAdmission> =
+            self.read_jsonl(PROVIDER_COMPATIBILITY_ADMISSIONS_LEDGER)?;
+        for row in &rows {
+            row.validate()
+                .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        }
+        validate_provider_compatibility_admission_ledger(&rows)?;
+        Ok(rows)
+    }
+
+    /// Latest-row-wins projection by the exact four-part compatibility key.
+    pub fn latest_provider_compatibility_admissions(
+        &self,
+    ) -> StoreResult<Vec<ProviderCompatibilityAdmission>> {
+        let mut latest = std::collections::BTreeMap::new();
+        for row in self.provider_compatibility_admissions()? {
+            latest.insert(
+                (
+                    row.project_id.clone(),
+                    row.store_id.clone(),
+                    row.provider.clone(),
+                    row.execution_mode.clone(),
+                    row.provider_version.clone(),
+                    row.adapter_contract_version.clone(),
+                ),
+                row,
+            );
+        }
+        Ok(latest.into_values().collect())
+    }
+
+    /// Return the active admission for one exact tuple. Terminal latest rows,
+    /// other execution modes, and other contract versions never authorize it.
+    pub fn effective_provider_compatibility_admission(
+        &self,
+        provider: &str,
+        execution_mode: &str,
+        provider_version: &str,
+        adapter_contract_version: &str,
+    ) -> StoreResult<Option<ProviderCompatibilityAdmission>> {
+        let (project_id, store_id) = self.require_provider_compatibility_scope()?;
+        Ok(self
+            .provider_compatibility_admissions()?
+            .into_iter()
+            .rev()
+            .find(|row| {
+                row.project_id == project_id
+                    && row.store_id == store_id
+                    && row.exact_key()
+                        == (
+                            provider,
+                            execution_mode,
+                            provider_version,
+                            adapter_contract_version,
+                        )
+            })
+            .filter(ProviderCompatibilityAdmission::is_active))
+    }
+
     /// Latest-row-wins durable AgentMember projection, ordered by id.
     pub fn latest_durable_members(
         &self,
@@ -6133,7 +6772,12 @@ impl HarnessStore {
     }
 
     pub fn member_runs(&self) -> StoreResult<Vec<MemberRun>> {
-        self.read_jsonl("member_runs.jsonl")
+        let rows: Vec<MemberRun> = self.read_jsonl("member_runs.jsonl")?;
+        for row in &rows {
+            row.validate()
+                .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        }
+        Ok(rows)
     }
 
     pub fn team_messages(&self) -> StoreResult<Vec<TeamMessage>> {
@@ -7103,6 +7747,50 @@ fn ensure_member_lifecycle_revision(current: &MemberRun, next: &MemberRun) -> St
     Ok(())
 }
 
+fn ensure_provider_compatibility_cause_unchanged(
+    current: &MemberRun,
+    next: &MemberRun,
+) -> StoreResult<()> {
+    if current.provider_compatibility_block_cause != next.provider_compatibility_block_cause {
+        return Err(StoreError::Conflict(format!(
+            "PROVIDER_COMPATIBILITY_BLOCK_AUTHORITY_REQUIRED: generic MemberRun CAS cannot set, replace, or clear the typed compatibility cause for {}",
+            current.id
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_compatibility_cause_matches_profile(
+    member: &MemberRun,
+    profile: &ProviderIntegrationProfile,
+    cause: &ProviderCompatibilityBlockCause,
+) -> StoreResult<()> {
+    cause
+        .validate()
+        .map_err(|error| StoreError::Conflict(error.to_string()))?;
+    let provider_version = profile.provider_version.as_deref().unwrap_or("unavailable");
+    let adapter_contract_version = profile
+        .adapter_contract_version
+        .as_deref()
+        .unwrap_or("unknown");
+    if cause.member_run_id != member.id
+        || profile.provider != member.provider
+        || cause.exact_key()
+            != (
+                profile.provider.as_str(),
+                profile.execution_mode.as_str(),
+                provider_version,
+                adapter_contract_version,
+            )
+    {
+        return Err(StoreError::Conflict(format!(
+            "PROVIDER_COMPATIBILITY_BLOCK_TUPLE_MISMATCH: typed cause does not match MemberRun {} and its observed provider profile",
+            member.id
+        )));
+    }
+    Ok(())
+}
+
 fn ensure_team_run_admission_revision(
     current: &AgentTeamRun,
     next: &AgentTeamRun,
@@ -7310,16 +7998,993 @@ mod tests {
 
     use firm_core::{
         DelegationMode, DelegationStatus, GateEngine, GateSpec, GateVerdict, HostAttentionKind,
-        MemberActionStatus, MemberRunStatus, MemberWorkspaceSnapshot, MessageKind, Mission,
-        MissionLogEntry, MissionLogEntryKind, MissionStatus, NativeSessionAvailability,
-        NativeSessionRef, ProviderInteractionMessageOption, ProviderInteractionRequestBody,
-        ProviderInteractionResponseBody, ProviderInteractionType, SenderKind, TeamActorKind,
-        TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessageDelivery, TeamMessageKind,
-        TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEventSourceKind,
-        TeamRunStatus, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, WorkPriority,
+        MemberActionStatus, MemberExecutionDriver, MemberRunStatus, MemberWorkspaceSnapshot,
+        MessageKind, Mission, MissionLogEntry, MissionLogEntryKind, MissionStatus,
+        NativeSessionAvailability, NativeSessionRef, OrdinaryMessageBoundary,
+        ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockSource,
+        ProviderEventFidelity, ProviderFeatureMode, ProviderInteractionMessageOption,
+        ProviderInteractionMode, ProviderInteractionRequestBody, ProviderInteractionResponseBody,
+        ProviderInteractionType, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy,
+        TeamDeliveryStatus, TeamMessageDelivery, TeamMessageKind, TeamMessageResponseIntent,
+        TeamRecipientKind, TeamRecipientRef, TeamRunEventSourceKind, TeamRunStatus, Wave,
+        WaveExecutorKind, WaveGateStatus, WaveStatus, WorkPriority,
     };
 
     use super::*;
+
+    fn provider_compatibility_admission(
+        id: &str,
+        execution_mode: &str,
+        adapter_contract_version: &str,
+    ) -> ProviderCompatibilityAdmission {
+        ProviderCompatibilityAdmission {
+            id: id.to_string(),
+            project_id: "project-1".to_string(),
+            store_id: "store-1".to_string(),
+            provider: "claude".to_string(),
+            execution_mode: execution_mode.to_string(),
+            provider_version: "2.1.220".to_string(),
+            adapter_contract_version: adapter_contract_version.to_string(),
+            policy: firm_core::ProviderCompatibilityAdmissionPolicy::Strict,
+            actor: "operator-1".to_string(),
+            evidence_refs: vec!["evidence-1".to_string()],
+            admitted_at: "unix-ms:1".to_string(),
+            lifecycle: ProviderCompatibilityAdmissionLifecycle::Active,
+            predecessor_admission_id: None,
+            reason: None,
+        }
+    }
+
+    fn provider_compatibility_test_profile() -> ProviderIntegrationProfile {
+        ProviderIntegrationProfile {
+            provider: "kimi".into(),
+            execution_mode: "kimi_acp".into(),
+            execution_driver: MemberExecutionDriver::HostDriven,
+            provider_version: Some("2.1.220".into()),
+            adapter_contract_version: Some("kimi-acp-v1".into()),
+            reviewed_provider_versions: Vec::new(),
+            compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
+            adapter_reviewed_at: None,
+            compatibility_note: None,
+            interaction_mode: ProviderInteractionMode::EndRoundAndFollowUp,
+            ordinary_message_boundary: OrdinaryMessageBoundary::InTurn,
+            plan_mode: ProviderFeatureMode::Emulated,
+            goal_mode: ProviderFeatureMode::Emulated,
+            tool_event_fidelity: ProviderEventFidelity::Structured,
+            artifact_event_fidelity: ProviderEventFidelity::Structured,
+            supports_cancel: true,
+            supports_resume: true,
+            observes_native_subagents: false,
+            observes_background_tasks: false,
+            thinking_transient_only: true,
+        }
+    }
+
+    fn provider_admission_test_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "firm-store-provider-admission-{label}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ))
+    }
+
+    fn provider_admission_test_store(label: &str) -> HarnessStore {
+        HarnessStore::new(provider_admission_test_root(label))
+            .with_provider_compatibility_scope("project-1", "store-1")
+    }
+
+    #[test]
+    fn provider_compatibility_admission_is_exact_and_preserves_policy() {
+        let store = provider_admission_test_store("exact");
+        let strict = provider_compatibility_admission("strict", "sdk", "contract-v1");
+        let mut advisory =
+            provider_compatibility_admission("advisory", "interactive", "contract-v2");
+        advisory.policy = firm_core::ProviderCompatibilityAdmissionPolicy::Advisory;
+        store.admit_provider_compatibility(&strict).expect("strict");
+        store
+            .admit_provider_compatibility(&advisory)
+            .expect("advisory");
+
+        assert_eq!(
+            store
+                .effective_provider_compatibility_admission(
+                    "claude",
+                    "sdk",
+                    "2.1.220",
+                    "contract-v1"
+                )
+                .expect("lookup"),
+            Some(strict)
+        );
+        assert!(store
+            .effective_provider_compatibility_admission("claude", "sdk", "2.1.220", "contract-v2")
+            .expect("contract isolation")
+            .is_none());
+        assert_eq!(
+            store
+                .latest_provider_compatibility_admissions()
+                .unwrap()
+                .into_iter()
+                .find(|row| row.id == "advisory")
+                .expect("advisory projection")
+                .policy,
+            firm_core::ProviderCompatibilityAdmissionPolicy::Advisory
+        );
+    }
+
+    #[test]
+    fn typed_provider_block_is_store_owned_and_recovery_is_exact() {
+        let root = provider_admission_test_root("typed-block");
+        let store =
+            HarnessStore::new(&root).with_provider_compatibility_scope("project-1", "store-1");
+        let (_run, initial, _work) = seed_host_attention_fixture(&store, "typed-block", None);
+        let profile = provider_compatibility_test_profile();
+        let cause = ProviderCompatibilityBlockCause {
+            schema_version: ProviderCompatibilityBlockCause::SCHEMA_VERSION,
+            id: "cause-1".into(),
+            member_run_id: initial.id.clone(),
+            provider: "kimi".into(),
+            execution_mode: "kimi_acp".into(),
+            provider_version: "2.1.220".into(),
+            adapter_contract_version: "kimi-acp-v1".into(),
+            boundary: ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+            compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
+            source: ProviderCompatibilityBlockSource::AdapterCompatibility,
+            probe_error: None,
+            caused_at: "unix-ms:2".into(),
+        };
+
+        let mut forged = initial.clone();
+        forged.status = MemberRunStatus::Blocked;
+        forged.provider_compatibility_block_cause = Some(cause.clone());
+        assert!(store
+            .compare_and_append_member_run(&initial, &forged)
+            .expect_err("generic CAS cannot forge typed cause")
+            .to_string()
+            .contains("AUTHORITY_REQUIRED"));
+
+        let blocked = store
+            .block_member_run_for_provider_compatibility(&initial, &profile, cause, "unix-ms:2")
+            .expect("dedicated typed block");
+        let mut cleared = blocked.clone();
+        cleared.status = MemberRunStatus::Idle;
+        cleared.provider_compatibility_block_cause = None;
+        assert!(store
+            .compare_and_append_member_run(&blocked, &cleared)
+            .expect_err("generic CAS cannot clear typed cause")
+            .to_string()
+            .contains("AUTHORITY_REQUIRED"));
+
+        let mut wrong = profile.clone();
+        wrong.provider_version = Some("2.1.221".into());
+        assert!(store
+            .recover_member_run_from_provider_compatibility_block(
+                &blocked,
+                &wrong,
+                ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+                MemberRunStatus::Idle,
+                "unix-ms:3"
+            )
+            .expect_err("an unadmitted new tuple cannot recover")
+            .to_string()
+            .contains("NOT_AUTHORIZED"));
+
+        let mut admission =
+            provider_compatibility_admission("typed-recovery", "kimi_acp", "kimi-acp-v1");
+        admission.provider = "kimi".into();
+        store
+            .admit_provider_compatibility_admission(&admission)
+            .expect("exact admission");
+        assert!(store
+            .recover_member_run_from_provider_compatibility_block(
+                &blocked,
+                &profile,
+                ProviderCompatibilityBlockBoundary::ResumePersistentExecution,
+                MemberRunStatus::Idle,
+                "unix-ms:3",
+            )
+            .expect_err("a Start cause cannot recover at Resume")
+            .to_string()
+            .contains("BOUNDARY_MISMATCH"));
+        let recovered = store
+            .recover_member_run_from_provider_compatibility_block(
+                &blocked,
+                &profile,
+                ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+                MemberRunStatus::Idle,
+                "unix-ms:3",
+            )
+            .expect("exact typed recovery");
+        assert_eq!(recovered.id, initial.id);
+        assert_eq!(recovered.status, MemberRunStatus::Idle);
+        assert!(recovered.provider_compatibility_block_cause.is_none());
+        assert!(store
+            .recover_member_run_from_provider_compatibility_block(
+                &blocked,
+                &profile,
+                ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+                MemberRunStatus::Idle,
+                "unix-ms:4"
+            )
+            .expect_err("stale recovery loses CAS")
+            .to_string()
+            .contains("changed concurrently"));
+
+        let mut operator_blocked = recovered.clone();
+        operator_blocked.status = MemberRunStatus::Blocked;
+        store
+            .compare_and_append_member_run(&recovered, &operator_blocked)
+            .expect("ordinary operator block remains representable");
+        assert!(store
+            .recover_member_run_from_provider_compatibility_block(
+                &operator_blocked,
+                &profile,
+                ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+                MemberRunStatus::Idle,
+                "unix-ms:5"
+            )
+            .expect_err("operator block has no typed cause")
+            .to_string()
+            .contains("CAUSE_REQUIRED"));
+
+        let (_run2, initial2, _work2) =
+            seed_host_attention_fixture(&store, "typed-source-reviewed", None);
+        let mut review_pending = provider_compatibility_test_profile();
+        review_pending.provider_version = Some("3.3.3".into());
+        let source_cause = ProviderCompatibilityBlockCause {
+            schema_version: ProviderCompatibilityBlockCause::SCHEMA_VERSION,
+            id: "cause-source-review".into(),
+            member_run_id: initial2.id.clone(),
+            provider: "kimi".into(),
+            execution_mode: "kimi_acp".into(),
+            provider_version: "3.3.3".into(),
+            adapter_contract_version: "kimi-acp-v1".into(),
+            boundary: ProviderCompatibilityBlockBoundary::ResumePersistentExecution,
+            compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
+            source: ProviderCompatibilityBlockSource::AdapterCompatibility,
+            probe_error: None,
+            caused_at: "unix-ms:6".into(),
+        };
+        let source_blocked = store
+            .block_member_run_for_provider_compatibility(
+                &initial2,
+                &review_pending,
+                source_cause,
+                "unix-ms:6",
+            )
+            .expect("block pending source review");
+        let mut source_reviewed = review_pending;
+        source_reviewed.provider_version = Some("3.3.4".into());
+        source_reviewed.compatibility_status = ProviderCompatibilityStatus::Current;
+        source_reviewed.reviewed_provider_versions = vec!["3.3.4".into()];
+        assert!(store
+            .recover_member_run_from_provider_compatibility_block(
+                &source_blocked,
+                &source_reviewed,
+                ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+                MemberRunStatus::Idle,
+                "unix-ms:7",
+            )
+            .expect_err("a Resume cause cannot recover at Start")
+            .to_string()
+            .contains("BOUNDARY_MISMATCH"));
+        let source_recovered = store
+            .recover_member_run_from_provider_compatibility_block(
+                &source_blocked,
+                &source_reviewed,
+                ProviderCompatibilityBlockBoundary::ResumePersistentExecution,
+                MemberRunStatus::Idle,
+                "unix-ms:7",
+            )
+            .expect("exact source review authorizes recovery without an admission");
+        assert!(source_recovered
+            .provider_compatibility_block_cause
+            .is_none());
+        assert_eq!(
+            source_recovered
+                .provider_profile
+                .as_ref()
+                .and_then(|profile| profile.provider_version.as_deref()),
+            Some("3.3.4"),
+            "recovery atomically replaces the durable blocked profile with the authorized refreshed tuple"
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn provider_compatibility_block_lifecycle_rejects_hostile_member_history() {
+        use firm_core::MemberCoordinationStatus;
+
+        for (index, mutate) in [
+            (
+                0,
+                (
+                    MemberRunStatus::Completed,
+                    MemberCoordinationStatus::Active,
+                    Some("done"),
+                ),
+            ),
+            (
+                1,
+                (
+                    MemberRunStatus::Failed,
+                    MemberCoordinationStatus::Active,
+                    Some("done"),
+                ),
+            ),
+            (
+                2,
+                (
+                    MemberRunStatus::Stopped,
+                    MemberCoordinationStatus::Active,
+                    Some("done"),
+                ),
+            ),
+            (
+                3,
+                (
+                    MemberRunStatus::Idle,
+                    MemberCoordinationStatus::Closed,
+                    None,
+                ),
+            ),
+            (
+                4,
+                (
+                    MemberRunStatus::Idle,
+                    MemberCoordinationStatus::Retired,
+                    None,
+                ),
+            ),
+            (
+                5,
+                (
+                    MemberRunStatus::Idle,
+                    MemberCoordinationStatus::Active,
+                    Some("hostile"),
+                ),
+            ),
+        ] {
+            let root = provider_admission_test_root(&format!("hostile-lifecycle-{index}"));
+            let store =
+                HarnessStore::new(&root).with_provider_compatibility_scope("project-1", "store-1");
+            let (_run, initial, _work) =
+                seed_host_attention_fixture(&store, &format!("hostile-{index}"), None);
+            let mut hostile = initial.clone();
+            hostile.status = mutate.0;
+            hostile.coordination_status = mutate.1;
+            hostile.finished_at = mutate.2.map(str::to_string);
+            store
+                .compare_and_append_member_run(&initial, &hostile)
+                .expect("seed hostile but structurally valid history");
+            let profile = provider_compatibility_test_profile();
+            let cause = ProviderCompatibilityBlockCause {
+                schema_version: ProviderCompatibilityBlockCause::SCHEMA_VERSION,
+                id: format!("hostile-cause-{index}"),
+                member_run_id: hostile.id.clone(),
+                provider: "kimi".into(),
+                execution_mode: "kimi_acp".into(),
+                provider_version: "2.1.220".into(),
+                adapter_contract_version: "kimi-acp-v1".into(),
+                boundary: ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+                compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
+                source: ProviderCompatibilityBlockSource::AdapterCompatibility,
+                probe_error: None,
+                caused_at: "unix-ms:2".into(),
+            };
+            assert!(store
+                .block_member_run_for_provider_compatibility(&hostile, &profile, cause, "unix-ms:3")
+                .expect_err("terminal/closed/retired/finished history cannot be blocked")
+                .to_string()
+                .contains("LIFECYCLE_INVALID"));
+            std::fs::remove_dir_all(root).expect("cleanup");
+        }
+    }
+
+    #[test]
+    fn provider_compatibility_recovery_authorizes_refreshed_tuple_and_preserves_refusals() {
+        let root = provider_admission_test_root("refreshed-recovery");
+        let store =
+            HarnessStore::new(&root).with_provider_compatibility_scope("project-1", "store-1");
+
+        let (_run, initial, _work) =
+            seed_host_attention_fixture(&store, "unavailable-to-current", None);
+        let mut unavailable = provider_compatibility_test_profile();
+        unavailable.provider_version = None;
+        unavailable.compatibility_status = ProviderCompatibilityStatus::Unavailable;
+        let unavailable_cause = ProviderCompatibilityBlockCause {
+            schema_version: ProviderCompatibilityBlockCause::SCHEMA_VERSION,
+            id: "unavailable-cause".into(),
+            member_run_id: initial.id.clone(),
+            provider: "kimi".into(),
+            execution_mode: "kimi_acp".into(),
+            provider_version: "unavailable".into(),
+            adapter_contract_version: "kimi-acp-v1".into(),
+            boundary: ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+            compatibility_status: ProviderCompatibilityStatus::Unavailable,
+            source: ProviderCompatibilityBlockSource::ProbeFailure,
+            probe_error: Some("runner missing".into()),
+            caused_at: "unix-ms:2".into(),
+        };
+        let unavailable_blocked = store
+            .block_member_run_for_provider_compatibility(
+                &initial,
+                &unavailable,
+                unavailable_cause,
+                "unix-ms:2",
+            )
+            .expect("durably block unavailable tuple");
+        let mut current = provider_compatibility_test_profile();
+        current.compatibility_status = ProviderCompatibilityStatus::Current;
+        current.reviewed_provider_versions = vec!["2.1.220".into()];
+        let current_recovered = store
+            .recover_member_run_from_provider_compatibility_block(
+                &unavailable_blocked,
+                &current,
+                ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+                MemberRunStatus::Idle,
+                "unix-ms:3",
+            )
+            .expect("source-reviewed refreshed tuple recovers old unavailable cause");
+        assert_eq!(current_recovered.provider_profile.as_ref(), Some(&current));
+
+        let (_run2, initial2, _work2) =
+            seed_host_attention_fixture(&store, "drift-to-admitted", None);
+        let old_drift = provider_compatibility_test_profile();
+        let old_cause = ProviderCompatibilityBlockCause {
+            schema_version: ProviderCompatibilityBlockCause::SCHEMA_VERSION,
+            id: "old-drift-cause".into(),
+            member_run_id: initial2.id.clone(),
+            provider: "kimi".into(),
+            execution_mode: "kimi_acp".into(),
+            provider_version: "2.1.220".into(),
+            adapter_contract_version: "kimi-acp-v1".into(),
+            boundary: ProviderCompatibilityBlockBoundary::ResumePersistentExecution,
+            compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
+            source: ProviderCompatibilityBlockSource::AdapterCompatibility,
+            probe_error: None,
+            caused_at: "unix-ms:4".into(),
+        };
+        let drift_blocked = store
+            .block_member_run_for_provider_compatibility(
+                &initial2,
+                &old_drift,
+                old_cause,
+                "unix-ms:4",
+            )
+            .expect("durably block old drift tuple");
+        let mut new_drift = old_drift.clone();
+        new_drift.provider_version = Some("2.1.221".into());
+
+        let mut wrong_scope =
+            provider_compatibility_admission("wrong-scope", "kimi_acp", "kimi-acp-v1");
+        wrong_scope.project_id = "other-project".into();
+        wrong_scope.provider = "kimi".into();
+        wrong_scope.provider_version = "2.1.221".into();
+        store
+            .append_jsonl(PROVIDER_COMPATIBILITY_ADMISSIONS_LEDGER, &wrong_scope)
+            .expect("seed a valid admission belonging to another scope");
+        assert!(store
+            .recover_member_run_from_provider_compatibility_block(
+                &drift_blocked,
+                &new_drift,
+                ProviderCompatibilityBlockBoundary::ResumePersistentExecution,
+                MemberRunStatus::Idle,
+                "unix-ms:5",
+            )
+            .expect_err("wrong-scope admission cannot recover")
+            .to_string()
+            .contains("NOT_AUTHORIZED"));
+        assert_eq!(
+            store
+                .member_runs()
+                .expect("read durable member")
+                .into_iter()
+                .rfind(|row| row.id == drift_blocked.id),
+            Some(drift_blocked.clone()),
+            "refused recovery leaves the durable blocked row unchanged"
+        );
+
+        let mut exact = provider_compatibility_admission("new-exact", "kimi_acp", "kimi-acp-v1");
+        exact.provider = "kimi".into();
+        exact.provider_version = "2.1.221".into();
+        store
+            .admit_provider_compatibility_admission(&exact)
+            .expect("append exact admission");
+        let admitted_recovered = store
+            .recover_member_run_from_provider_compatibility_block(
+                &drift_blocked,
+                &new_drift,
+                ProviderCompatibilityBlockBoundary::ResumePersistentExecution,
+                MemberRunStatus::Idle,
+                "unix-ms:6",
+            )
+            .expect("new exact admission authorizes atomic recovery");
+        assert_eq!(
+            admitted_recovered.provider_profile.as_ref(),
+            Some(&new_drift)
+        );
+        assert!(admitted_recovered
+            .provider_compatibility_block_cause
+            .is_none());
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn provider_compatibility_recovery_rejects_closed_retired_or_finished_block() {
+        use firm_core::MemberCoordinationStatus;
+
+        for (index, coordination, finished_at) in [
+            (0, MemberCoordinationStatus::Closed, None),
+            (1, MemberCoordinationStatus::Retired, None),
+            (
+                2,
+                MemberCoordinationStatus::Active,
+                Some("hostile-finished"),
+            ),
+        ] {
+            let root = provider_admission_test_root(&format!("hostile-recovery-{index}"));
+            let store =
+                HarnessStore::new(&root).with_provider_compatibility_scope("project-1", "store-1");
+            let (_run, initial, _work) =
+                seed_host_attention_fixture(&store, &format!("hostile-recovery-{index}"), None);
+            let profile = provider_compatibility_test_profile();
+            let cause = ProviderCompatibilityBlockCause {
+                schema_version: ProviderCompatibilityBlockCause::SCHEMA_VERSION,
+                id: format!("recovery-cause-{index}"),
+                member_run_id: initial.id.clone(),
+                provider: "kimi".into(),
+                execution_mode: "kimi_acp".into(),
+                provider_version: "2.1.220".into(),
+                adapter_contract_version: "kimi-acp-v1".into(),
+                boundary: ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+                compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
+                source: ProviderCompatibilityBlockSource::AdapterCompatibility,
+                probe_error: None,
+                caused_at: "unix-ms:2".into(),
+            };
+            let blocked = store
+                .block_member_run_for_provider_compatibility(&initial, &profile, cause, "unix-ms:2")
+                .expect("seed typed block");
+            let mut hostile = blocked.clone();
+            hostile.coordination_status = coordination;
+            hostile.finished_at = finished_at.map(str::to_string);
+            store
+                .compare_and_append_member_run(&blocked, &hostile)
+                .expect("seed hostile blocked history without changing typed cause");
+            let mut admission = provider_compatibility_admission(
+                &format!("hostile-recovery-admission-{index}"),
+                "kimi_acp",
+                "kimi-acp-v1",
+            );
+            admission.provider = "kimi".into();
+            store
+                .admit_provider_compatibility_admission(&admission)
+                .expect("admit tuple");
+            assert!(store
+                .recover_member_run_from_provider_compatibility_block(
+                    &hostile,
+                    &profile,
+                    ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+                    MemberRunStatus::Idle,
+                    "unix-ms:3",
+                )
+                .expect_err("closed/retired/finished block cannot recover")
+                .to_string()
+                .contains("LIFECYCLE_INVALID"));
+            std::fs::remove_dir_all(root).expect("cleanup");
+        }
+    }
+
+    #[test]
+    fn provider_compatibility_admission_replay_is_idempotent_and_id_conflict_fails() {
+        let store = provider_admission_test_store("replay");
+        let admission = provider_compatibility_admission("stable", "sdk", "contract-v1");
+        store
+            .append_provider_compatibility_admission(&admission)
+            .expect("first append");
+        store
+            .append_provider_compatibility_admission(&admission)
+            .expect("identical replay");
+        assert_eq!(store.provider_compatibility_admissions().unwrap().len(), 1);
+
+        let mut conflict = admission;
+        conflict.actor = "another-operator".to_string();
+        assert!(matches!(
+            store.append_provider_compatibility_admission(&conflict),
+            Err(StoreError::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn provider_compatibility_command_replay_reuses_canonical_active_record() {
+        let store = provider_admission_test_store("command-replay");
+        let mut first = provider_compatibility_admission("generated-one", "sdk", "contract-v1");
+        first.evidence_refs = vec![
+            "evidence-b".into(),
+            "evidence-a".into(),
+            "evidence-b".into(),
+        ];
+        let created = store
+            .ensure_provider_compatibility_admission(&first)
+            .expect("create admission");
+        assert!(created.created);
+        assert_eq!(
+            created.admission.evidence_refs,
+            ["evidence-a", "evidence-b"]
+        );
+
+        let mut replay = first;
+        replay.id = "generated-two".into();
+        replay.admitted_at = "unix-ms:999".into();
+        replay.evidence_refs = vec!["evidence-a".into(), "evidence-b".into()];
+        let reused = store
+            .ensure_provider_compatibility_admission(&replay)
+            .expect("reuse admission");
+        assert!(!reused.created);
+        assert_eq!(reused.admission.id, created.admission.id);
+        assert_eq!(store.provider_compatibility_admissions().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn concurrent_provider_compatibility_command_replay_appends_once() {
+        let store = Arc::new(provider_admission_test_store("concurrent-command-replay"));
+        let barrier = Arc::new(Barrier::new(3));
+        let mut workers = Vec::new();
+        for (id, admitted_at, evidence_refs) in [
+            ("generated-one", "unix-ms:10", vec!["b", "a", "b"]),
+            ("generated-two", "unix-ms:20", vec!["a", "b"]),
+        ] {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            workers.push(std::thread::spawn(move || {
+                let mut admission = provider_compatibility_admission(id, "sdk", "contract-v1");
+                admission.admitted_at = admitted_at.into();
+                admission.evidence_refs = evidence_refs.into_iter().map(String::from).collect();
+                barrier.wait();
+                store.ensure_provider_compatibility_admission(&admission)
+            }));
+        }
+        barrier.wait();
+        let results = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("join").expect("ensure"))
+            .collect::<Vec<_>>();
+        assert_eq!(results.iter().filter(|result| result.created).count(), 1);
+        assert_eq!(results[0].admission.id, results[1].admission.id);
+        assert_eq!(store.provider_compatibility_admissions().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn provider_compatibility_command_replay_rejects_semantic_drift() {
+        for (tag, mutate) in [
+            (
+                "policy",
+                (|row: &mut ProviderCompatibilityAdmission| {
+                    row.policy = firm_core::ProviderCompatibilityAdmissionPolicy::Advisory;
+                }) as fn(&mut ProviderCompatibilityAdmission),
+            ),
+            ("actor", |row: &mut ProviderCompatibilityAdmission| {
+                row.actor = "another-operator".into();
+            }),
+            ("evidence", |row: &mut ProviderCompatibilityAdmission| {
+                row.evidence_refs = vec!["different-evidence".into()];
+            }),
+        ] {
+            let store = provider_admission_test_store(tag);
+            let first = provider_compatibility_admission("first", "sdk", "contract-v1");
+            store
+                .ensure_provider_compatibility_admission(&first)
+                .expect("seed admission");
+            let mut drifted = first;
+            drifted.id = "second".into();
+            drifted.admitted_at = "unix-ms:2".into();
+            mutate(&mut drifted);
+            assert!(matches!(
+                store.ensure_provider_compatibility_admission(&drifted),
+                Err(StoreError::Conflict(_))
+            ));
+            assert_eq!(store.provider_compatibility_admissions().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn provider_compatibility_command_replay_creates_after_terminal_row() {
+        let store = provider_admission_test_store("command-after-terminal");
+        let active = provider_compatibility_admission("active", "sdk", "contract-v1");
+        store
+            .ensure_provider_compatibility_admission(&active)
+            .expect("seed active");
+        let mut revoked = active.clone();
+        revoked.id = "revoked".into();
+        revoked.lifecycle = ProviderCompatibilityAdmissionLifecycle::Revoked;
+        revoked.predecessor_admission_id = Some(active.id.clone());
+        revoked.reason = Some("operator revoked".into());
+        store
+            .revoke_provider_compatibility_admission(&revoked)
+            .expect("revoke active");
+
+        let mut replacement = active;
+        replacement.id = "replacement".into();
+        replacement.admitted_at = "unix-ms:3".into();
+        let result = store
+            .ensure_provider_compatibility_admission(&replacement)
+            .expect("create replacement");
+        assert!(result.created);
+        assert_eq!(result.admission.id, "replacement");
+        assert_eq!(store.provider_compatibility_admissions().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn provider_compatibility_revoke_and_supersede_fence_stale_predecessors() {
+        for lifecycle in [
+            ProviderCompatibilityAdmissionLifecycle::Revoked,
+            ProviderCompatibilityAdmissionLifecycle::Superseded,
+        ] {
+            let store = provider_admission_test_store("transition");
+            let active = provider_compatibility_admission("active", "sdk", "contract-v1");
+            store.admit_provider_compatibility(&active).unwrap();
+            let mut transition = active.clone();
+            transition.id = "transition".to_string();
+            transition.lifecycle = lifecycle;
+            transition.predecessor_admission_id = Some(active.id.clone());
+            transition.reason = Some("contract changed".to_string());
+            let mut wrong_predecessor = transition.clone();
+            wrong_predecessor.id = "wrong-predecessor".to_string();
+            wrong_predecessor.predecessor_admission_id = Some("another-active".to_string());
+            assert!(matches!(
+                store.append_provider_compatibility_admission_checked(&wrong_predecessor),
+                Err(StoreError::Conflict(_))
+            ));
+            match lifecycle {
+                ProviderCompatibilityAdmissionLifecycle::Revoked => store
+                    .revoke_provider_compatibility(&transition)
+                    .expect("revoke"),
+                ProviderCompatibilityAdmissionLifecycle::Superseded => store
+                    .supersede_provider_compatibility(&transition)
+                    .expect("supersede"),
+                ProviderCompatibilityAdmissionLifecycle::Active => unreachable!(),
+            }
+            store
+                .append_provider_compatibility_admission_checked(&transition)
+                .expect("terminal replay is idempotent");
+            assert_eq!(store.provider_compatibility_admissions().unwrap().len(), 2);
+            assert!(store
+                .effective_provider_compatibility_admission(
+                    "claude",
+                    "sdk",
+                    "2.1.220",
+                    "contract-v1"
+                )
+                .unwrap()
+                .is_none());
+
+            let mut stale = transition;
+            stale.id = "stale".to_string();
+            assert!(matches!(
+                store.append_provider_compatibility_admission_checked(&stale),
+                Err(StoreError::Conflict(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn concurrent_distinct_provider_compatibility_admissions_do_not_lose_rows() {
+        let store = Arc::new(provider_admission_test_store("concurrent"));
+        let barrier = Arc::new(Barrier::new(3));
+        let mut workers = Vec::new();
+        for (id, mode) in [("one", "sdk"), ("two", "interactive")] {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            workers.push(std::thread::spawn(move || {
+                let admission = provider_compatibility_admission(id, mode, "contract-v1");
+                barrier.wait();
+                store.admit_provider_compatibility(&admission)
+            }));
+        }
+        barrier.wait();
+        for worker in workers {
+            worker.join().expect("join").expect("append");
+        }
+        assert_eq!(store.provider_compatibility_admissions().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn malformed_provider_compatibility_ledger_fails_closed_and_roots_are_isolated() {
+        let first_root = provider_admission_test_root("first-root");
+        let second_root = provider_admission_test_root("second-root");
+        let first = HarnessStore::new(&first_root)
+            .with_provider_compatibility_scope("project-1", "store-1");
+        let second = HarnessStore::new(second_root)
+            .with_provider_compatibility_scope("project-1", "store-1");
+        let admission = provider_compatibility_admission("one", "sdk", "contract-v1");
+        first.admit_provider_compatibility(&admission).unwrap();
+        assert!(second
+            .provider_compatibility_admissions()
+            .unwrap()
+            .is_empty());
+
+        std::fs::write(
+            first_root.join(PROVIDER_COMPATIBILITY_ADMISSIONS_LEDGER),
+            b"{not-json}\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            first.provider_compatibility_admissions(),
+            Err(StoreError::Json(_))
+        ));
+        assert!(first
+            .effective_provider_compatibility_admission("claude", "sdk", "2.1.220", "contract-v1")
+            .is_err());
+        let mut replay = admission;
+        replay.id = "two".into();
+        replay.admitted_at = "unix-ms:2".into();
+        assert!(matches!(
+            first.ensure_provider_compatibility_admission(&replay),
+            Err(StoreError::Json(_))
+        ));
+    }
+
+    #[test]
+    fn provider_compatibility_scope_is_exact_on_the_same_physical_store() {
+        let root = provider_admission_test_root("scope");
+        let writer =
+            HarnessStore::new(&root).with_provider_compatibility_scope("project-1", "store-1");
+        let admission = provider_compatibility_admission("scoped", "sdk", "contract-v1");
+        writer.admit_provider_compatibility(&admission).unwrap();
+
+        let other_project =
+            HarnessStore::new(&root).with_provider_compatibility_scope("project-2", "store-1");
+        assert!(other_project
+            .effective_provider_compatibility_admission("claude", "sdk", "2.1.220", "contract-v1",)
+            .unwrap()
+            .is_none());
+        let migrated_store =
+            HarnessStore::new(&root).with_provider_compatibility_scope("project-1", "store-2");
+        assert!(migrated_store
+            .effective_provider_compatibility_admission("claude", "sdk", "2.1.220", "contract-v1",)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn provider_compatibility_authority_requires_configured_exact_scope() {
+        let root = provider_admission_test_root("scope-required");
+        let unscoped = HarnessStore::new(&root);
+        let active = provider_compatibility_admission("unscoped-active", "sdk", "contract-v1");
+        assert!(unscoped
+            .admit_provider_compatibility(&active)
+            .expect_err("unscoped Store cannot mint an admission")
+            .to_string()
+            .contains("SCOPE_REQUIRED"));
+        assert!(unscoped
+            .append_provider_compatibility_admission_checked(&active)
+            .expect_err("the internal checked seam is also scope-fenced")
+            .to_string()
+            .contains("SCOPE_REQUIRED"));
+
+        let mut revoked = active.clone();
+        revoked.id = "unscoped-revoked".into();
+        revoked.lifecycle = ProviderCompatibilityAdmissionLifecycle::Revoked;
+        revoked.predecessor_admission_id = Some(active.id.clone());
+        revoked.reason = Some("operator revoke".into());
+        assert!(unscoped
+            .revoke_provider_compatibility(&revoked)
+            .expect_err("unscoped Store cannot revoke an admission")
+            .to_string()
+            .contains("SCOPE_REQUIRED"));
+
+        let mut superseded = revoked.clone();
+        superseded.id = "unscoped-superseded".into();
+        superseded.lifecycle = ProviderCompatibilityAdmissionLifecycle::Superseded;
+        assert!(unscoped
+            .supersede_provider_compatibility(&superseded)
+            .expect_err("unscoped Store cannot supersede an admission")
+            .to_string()
+            .contains("SCOPE_REQUIRED"));
+        assert!(unscoped
+            .effective_provider_compatibility_admission("claude", "sdk", "2.1.220", "contract-v1",)
+            .expect_err("unscoped Store cannot return effective authority")
+            .to_string()
+            .contains("SCOPE_REQUIRED"));
+
+        let wrong_scope =
+            HarnessStore::new(&root).with_provider_compatibility_scope("project-2", "store-1");
+        assert!(wrong_scope
+            .admit_provider_compatibility(&active)
+            .expect_err("configured scope must exactly match the row")
+            .to_string()
+            .contains("scope mismatch"));
+
+        unscoped.init().unwrap();
+        let mut hostile_row = active.clone();
+        hostile_row.id = "manually-seeded-foreign-scope".into();
+        hostile_row.project_id = "foreign-project".into();
+        std::fs::write(
+            root.join(PROVIDER_COMPATIBILITY_ADMISSIONS_LEDGER),
+            format!("{}\n", serde_json::to_string(&hostile_row).unwrap()),
+        )
+        .unwrap();
+        let scoped =
+            HarnessStore::new(&root).with_provider_compatibility_scope("project-1", "store-1");
+        assert!(scoped
+            .effective_provider_compatibility_admission("claude", "sdk", "2.1.220", "contract-v1",)
+            .expect("foreign ledger rows remain readable audit data")
+            .is_none());
+
+        let exact_root = provider_admission_test_root("scope-exact");
+        let exact = HarnessStore::new(&exact_root)
+            .with_provider_compatibility_scope("project-1", "store-1");
+        exact
+            .admit_provider_compatibility(&active)
+            .expect("exact configured scope can mint authority");
+        assert_eq!(
+            exact
+                .effective_provider_compatibility_admission(
+                    "claude",
+                    "sdk",
+                    "2.1.220",
+                    "contract-v1",
+                )
+                .unwrap()
+                .as_ref()
+                .map(|row| row.id.as_str()),
+            Some("unscoped-active")
+        );
+    }
+
+    #[test]
+    fn provider_compatibility_ledger_semantic_corruption_fails_closed() {
+        let root = provider_admission_test_root("semantic-corruption");
+        let store = HarnessStore::new(&root);
+        store.init().unwrap();
+        let active = provider_compatibility_admission("active", "sdk", "contract-v1");
+        let mut terminal = active.clone();
+        terminal.id = "terminal".to_string();
+        terminal.lifecycle = ProviderCompatibilityAdmissionLifecycle::Revoked;
+        terminal.predecessor_admission_id = Some(active.id.clone());
+        terminal.reason = Some("operator revoke".to_string());
+
+        let cases = [
+            vec![active.clone(), active.clone()],
+            {
+                let mut unknown = terminal.clone();
+                unknown.predecessor_admission_id = Some("unknown".to_string());
+                vec![active.clone(), unknown]
+            },
+            {
+                let mut drift = terminal.clone();
+                drift.policy = firm_core::ProviderCompatibilityAdmissionPolicy::Advisory;
+                vec![active.clone(), drift]
+            },
+            {
+                let mut drift = terminal.clone();
+                drift.store_id = "store-2".to_string();
+                vec![active.clone(), drift]
+            },
+            vec![active.clone(), terminal.clone(), {
+                let mut fork = terminal.clone();
+                fork.id = "fork".to_string();
+                fork
+            }],
+        ];
+
+        for rows in cases {
+            let text = rows
+                .iter()
+                .map(|row| serde_json::to_string(row).unwrap())
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n";
+            std::fs::write(root.join(PROVIDER_COMPATIBILITY_ADMISSIONS_LEDGER), text).unwrap();
+            assert!(matches!(
+                store.provider_compatibility_admissions(),
+                Err(StoreError::Conflict(_))
+            ));
+        }
+    }
 
     #[test]
     fn exclusive_migration_guard_blocks_normal_store_writers_until_drop() {
@@ -8271,6 +9936,7 @@ mod tests {
             provider_controls: Default::default(),
             provider_profile: None,
             provider_capacity: None,
+            provider_compatibility_block_cause: None,
             coordination_status: Default::default(),
             runtime_generation: 1,
             status: MemberRunStatus::Idle,
@@ -9160,6 +10826,7 @@ mod tests {
             provider_controls: Default::default(),
             provider_profile: None,
             provider_capacity: None,
+            provider_compatibility_block_cause: None,
             coordination_status: Default::default(),
             runtime_generation: 1,
             status: MemberRunStatus::Running,
@@ -9339,6 +11006,7 @@ mod tests {
                 provider_controls: Default::default(),
                 provider_profile: None,
                 provider_capacity: None,
+                provider_compatibility_block_cause: None,
                 coordination_status: Default::default(),
                 runtime_generation: 2,
                 status: MemberRunStatus::Waiting,
@@ -10755,6 +12423,7 @@ mod tests {
             provider_controls: Default::default(),
             provider_profile: None,
             provider_capacity: None,
+            provider_compatibility_block_cause: None,
             coordination_status: Default::default(),
             runtime_generation: 1,
             status: MemberRunStatus::Running,
@@ -11013,6 +12682,7 @@ mod tests {
             provider_controls: Default::default(),
             provider_profile: None,
             provider_capacity: None,
+            provider_compatibility_block_cause: None,
             coordination_status: Default::default(),
             runtime_generation: 1,
             status: MemberRunStatus::Idle,
@@ -15607,6 +17277,7 @@ mod tests {
             provider_controls: Default::default(),
             provider_profile: None,
             provider_capacity: None,
+            provider_compatibility_block_cause: None,
             coordination_status: Default::default(),
             runtime_generation: 1,
             status: MemberRunStatus::Idle,

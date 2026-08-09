@@ -114,6 +114,26 @@
         "detail": { "type": ["string", "null"] }
       }
     },
+    "provider_compatibility_block_cause": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "description": "Typed Store-owned authority for a provider-compatibility Blocked state. MemberAction prose is audit-only and cannot authorize recovery.",
+      "required": ["schema_version", "id", "member_run_id", "provider", "execution_mode", "provider_version", "adapter_contract_version", "boundary", "compatibility_status", "source", "caused_at"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "id": { "type": "string", "minLength": 1 },
+        "member_run_id": { "type": "string", "minLength": 1 },
+        "provider": { "type": "string", "minLength": 1 },
+        "execution_mode": { "type": "string", "minLength": 1 },
+        "provider_version": { "type": "string", "minLength": 1 },
+        "adapter_contract_version": { "type": "string", "minLength": 1 },
+        "boundary": { "type": "string", "enum": ["start_persistent_execution", "resume_persistent_execution"] },
+        "compatibility_status": { "type": "string", "enum": ["review_required", "incompatible", "unavailable", "unknown"] },
+        "source": { "type": "string", "enum": ["adapter_compatibility", "probe_failure"] },
+        "probe_error": { "type": ["string", "null"], "minLength": 1 },
+        "caused_at": { "type": "string", "minLength": 1 }
+      }
+    },
     "coordination_status": {
       "type": "string",
       "enum": ["active", "closed", "retired"],

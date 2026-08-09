@@ -90,9 +90,76 @@ does not silently become compatible or incompatible. Review must regenerate
 provider schemas/capability snapshots and run mode-specific deterministic and
 live acceptance before adding the new version to the reviewed set.
 
-Dashboard exposes the same compatibility state on MemberRun. A later strict
-production policy may block `review_required`; default development mode warns
-so provider releases do not unexpectedly make local development unusable.
+Dashboard exposes the same source-review compatibility state on MemberRun.
+Provider execution is fail-closed at every start, resume, reopen, recovery,
+rebind, preflight, and provider-list boundary. An installed version that is
+`review_required` can run only when the selected project/execution store has an
+active operational admission for the exact scoped key:
+
+```text
+(project_id, store_id,
+ provider, execution_mode, provider_version, adapter_contract_version)
+```
+
+The admission is append-only and records canonical Project Binding / Execution
+Space identity, actor, evidence, time, and `strict | advisory` policy. Scope is
+never derived from a path hash. Moving or migrating ledger bytes does not move
+authority: the destination scope needs its own admission. Both policies are
+exact-key decisions and may bridge only `review_required`. `strict` records
+explicit operational authorization and clears the operational review flag.
+`advisory` permits execution but preserves `needs_review=true`, emits its policy
+and admission source, and continues to fail `member providers --fail-on-review`.
+Neither policy can excuse an unavailable
+or failed version probe, a known incompatible version, an unknown adapter
+contract, or a different mode/version/contract. Source-reviewed versions and
+operational admissions remain separate fields and outputs: admission never
+adds a version to `reviewed_provider_versions` and never claims source review.
+
+Operators create an admission with:
+
+```text
+harness --project <project-binding-id-or-path> provider admit \
+  --provider <name> \
+  --execution-mode <mode> \
+  --provider-version <installed-version> \
+  --adapter-contract-version <contract> \
+  --evidence <ref> \
+  [--policy strict|advisory] [--actor <id>] [--json]
+```
+
+`--project` is a global flag and must appear before `provider`. Whenever store
+resolution selects an Execution Space (through `--space`, `FIRM_SPACE`, or the
+active-space marker), this command requires that flag on the current invocation.
+`FIRM_PROJECT`, `ACTIVE_PROJECT`, and the space's default Project Binding are
+ambient execution context, not explicit authorization for an append-only trust
+decision. Omitting the flag fails before probing or writing. The resulting scope
+is exactly the flag-selected Project Binding id plus the canonical selected
+Execution Space id; the command never silently substitutes the space default.
+When no Execution Space exists and resolution lands unambiguously on a legacy
+Project Store, the existing Project Binding default remains accepted and the
+scope is `project-store:<project-id>`.
+
+`provider admit` only records an observed tuple whose refreshed compatibility
+status is `review_required`. A source-reviewed `current` tuple needs no
+operational admission and the command refuses it without writing a record;
+unavailable, incompatible, and failed probes remain non-admittable.
+
+The command independently probes the installed version and verifies the
+registered mode and adapter contract before appending. It does not install,
+build, upgrade, downgrade, or edit provider/adapter source. The default policy
+is `strict`.
+
+Revocation and supersession append terminal rows that name the one current
+active predecessor and a reason. Replay validates the full causal ledger and
+fails closed on duplicate ids, unknown/non-current predecessors, policy/scope
+drift, forks, or invalid ordering. An idempotent command replay does not append
+a duplicate row: evidence refs are treated as a sorted, deduplicated set, while
+policy, actor, scope, and the exact four-part tuple must still match. The
+command reports whether it created or reused the durable record. A revoked or
+superseded key no longer authorizes execution;
+historical evidence remains readable. Execution-space migration copies and
+verifies the admission ledger bytes, but stale source scope grants no authority
+in the destination.
 
 ### Agent-managed update cadence
 
@@ -104,6 +171,8 @@ Provider discovery and provider installation are separate operations:
 - Discovery never installs, upgrades, downgrades, or changes the reviewed
   version set. It only reports `current | review_required | incompatible |
   unavailable`.
+- Compatibility admission is also not installation: it records an operator
+  decision in the selected store and has no provider source/build side effect.
 - When several releases appear during one day, propose one selected candidate
   per provider rather than chasing every intermediate release.
 - Provider maintenance is Agent-managed and does not require per-version Human
@@ -141,12 +210,18 @@ prompts or treating an unreviewed binary as compatible.
 - Provider protocol vocabulary alone never proves Harness lifecycle control.
 - Version review also covers native-store discovery/read/resume compatibility;
   a stream parser passing is not enough.
+- Operational admission is a scoped exception, not a shortcut for promoting a
+  provider version into source-reviewed compatibility.
 
 ## Acceptance
 
 - installed Codex and Kimi versions probe as `current` when they match reviewed
   versions;
 - a fake/new version produces `review_required` and `--fail-on-review` fails;
+- an exact active admission can authorize only that `review_required` tuple;
+  version, execution-mode, adapter-contract, and store mismatches still block;
+- an advisory admission never authorizes unavailable, incompatible, unknown,
+  or probe-failed compatibility;
 - MemberRun snapshots and Dashboard expose compatibility state;
 - deterministic acceptance proves Codex `turn/steer`/`turn/interrupt`,
   streamed activity, and each Kimi operation that the exact reviewed version

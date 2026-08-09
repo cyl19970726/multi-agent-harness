@@ -2415,6 +2415,110 @@ pub enum MemberRunStatus {
     Stopped,
 }
 
+/// The provider execution boundary fenced before any provider-native side
+/// effect. This enum is deliberately closed: free-form boundary prose must
+/// never become recovery authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCompatibilityBlockBoundary {
+    StartPersistentExecution,
+    ResumePersistentExecution,
+}
+
+/// The compatibility resolver branch that caused a durable provider block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCompatibilityBlockSource {
+    AdapterCompatibility,
+    ProbeFailure,
+}
+
+/// Typed, replay-validatable authority for a compatibility-owned block.
+///
+/// `MemberAction` remains an audit projection. Neither action type nor action
+/// summary can create or clear this authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderCompatibilityBlockCause {
+    pub schema_version: u32,
+    pub id: String,
+    pub member_run_id: String,
+    pub provider: String,
+    pub execution_mode: String,
+    pub provider_version: String,
+    pub adapter_contract_version: String,
+    pub boundary: ProviderCompatibilityBlockBoundary,
+    pub compatibility_status: ProviderCompatibilityStatus,
+    pub source: ProviderCompatibilityBlockSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_error: Option<String>,
+    pub caused_at: String,
+}
+
+impl ProviderCompatibilityBlockCause {
+    pub const SCHEMA_VERSION: u32 = 1;
+
+    pub fn exact_key(&self) -> (&str, &str, &str, &str) {
+        (
+            &self.provider,
+            &self.execution_mode,
+            &self.provider_version,
+            &self.adapter_contract_version,
+        )
+    }
+}
+
+impl Validate for ProviderCompatibilityBlockCause {
+    fn validate(&self) -> Result<(), ValidationError> {
+        if self.schema_version != Self::SCHEMA_VERSION {
+            return Err(ValidationError::Invalid {
+                field: "ProviderCompatibilityBlockCause.schema_version",
+                reason: "unsupported schema version",
+            });
+        }
+        require_non_empty(&self.id, "ProviderCompatibilityBlockCause.id")?;
+        require_non_empty(
+            &self.member_run_id,
+            "ProviderCompatibilityBlockCause.member_run_id",
+        )?;
+        require_non_empty(&self.provider, "ProviderCompatibilityBlockCause.provider")?;
+        require_non_empty(
+            &self.execution_mode,
+            "ProviderCompatibilityBlockCause.execution_mode",
+        )?;
+        require_non_empty(
+            &self.provider_version,
+            "ProviderCompatibilityBlockCause.provider_version",
+        )?;
+        require_non_empty(
+            &self.adapter_contract_version,
+            "ProviderCompatibilityBlockCause.adapter_contract_version",
+        )?;
+        require_non_empty(&self.caused_at, "ProviderCompatibilityBlockCause.caused_at")?;
+        match (self.compatibility_status, self.source, &self.probe_error) {
+            (
+                ProviderCompatibilityStatus::Unavailable,
+                ProviderCompatibilityBlockSource::ProbeFailure,
+                Some(error),
+            ) => require_non_empty(error, "ProviderCompatibilityBlockCause.probe_error")?,
+            (
+                ProviderCompatibilityStatus::ReviewRequired
+                | ProviderCompatibilityStatus::Incompatible
+                | ProviderCompatibilityStatus::Unknown,
+                ProviderCompatibilityBlockSource::AdapterCompatibility,
+                None,
+            ) => {}
+            _ => {
+                return Err(ValidationError::Invalid {
+                    field: "ProviderCompatibilityBlockCause.compatibility_status",
+                    reason: "status, source, and probe_error are inconsistent",
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Durable coordination lifecycle of one MemberRun, separate from its
 /// provider runtime/work status. Close is reversible; Retire is permanent.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -2881,6 +2985,11 @@ pub struct MemberRun {
     /// independent of `provider_profile.compatibility_status`.
     #[serde(default)]
     pub provider_capacity: Option<ProviderCapacitySnapshot>,
+    /// Present only while the Store's provider-compatibility transition owns
+    /// this MemberRun's Blocked state. Generic MemberRun CAS cannot set or
+    /// clear it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_compatibility_block_cause: Option<ProviderCompatibilityBlockCause>,
     /// Durable mailbox/participation state, independent of the process state
     /// represented by `status`.
     #[serde(default)]
@@ -3067,6 +3176,45 @@ impl Validate for MemberRun {
         if let Some(snapshot) = &self.workspace_snapshot {
             snapshot.validate()?;
         }
+        if let Some(cause) = &self.provider_compatibility_block_cause {
+            cause.validate()?;
+            if self.status != MemberRunStatus::Blocked {
+                return Err(ValidationError::Invalid {
+                    field: "MemberRun.provider_compatibility_block_cause",
+                    reason: "typed compatibility cause requires Blocked status",
+                });
+            }
+            if cause.member_run_id != self.id || cause.provider != self.provider {
+                return Err(ValidationError::Invalid {
+                    field: "MemberRun.provider_compatibility_block_cause",
+                    reason: "typed compatibility cause does not match MemberRun identity",
+                });
+            }
+            let profile = self
+                .provider_profile
+                .as_ref()
+                .ok_or(ValidationError::Invalid {
+                    field: "MemberRun.provider_compatibility_block_cause",
+                    reason: "typed compatibility cause requires the observed provider profile",
+                })?;
+            if cause.compatibility_status != profile.compatibility_status
+                || cause.exact_key()
+                    != (
+                        profile.provider.as_str(),
+                        profile.execution_mode.as_str(),
+                        profile.provider_version.as_deref().unwrap_or("unavailable"),
+                        profile
+                            .adapter_contract_version
+                            .as_deref()
+                            .unwrap_or("unknown"),
+                    )
+            {
+                return Err(ValidationError::Invalid {
+                    field: "MemberRun.provider_compatibility_block_cause",
+                    reason: "typed compatibility cause does not match the observed provider tuple",
+                });
+            }
+        }
         Ok(())
     }
 }
@@ -3168,6 +3316,139 @@ pub enum ProviderCompatibilityStatus {
     Unavailable,
     #[default]
     Unknown,
+}
+
+/// Policy attached to one explicit provider compatibility admission.
+///
+/// An admission is operational authorization, not evidence that an adapter
+/// was source-reviewed. In particular, callers must not copy admissions into
+/// [`ProviderIntegrationProfile::reviewed_provider_versions`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCompatibilityAdmissionPolicy {
+    Strict,
+    Advisory,
+}
+
+/// Append-only lifecycle of a provider compatibility admission key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCompatibilityAdmissionLifecycle {
+    Active,
+    Revoked,
+    Superseded,
+}
+
+/// Store-scoped operational admission for one exact provider adapter tuple.
+///
+/// The compatibility key is exactly `(provider, execution_mode,
+/// provider_version, adapter_contract_version)`. `project_id` and `store_id`
+/// preserve the authority scope in exported or migrated evidence; the Store
+/// root remains the physical isolation boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderCompatibilityAdmission {
+    pub id: String,
+    pub project_id: String,
+    pub store_id: String,
+    pub provider: String,
+    pub execution_mode: String,
+    pub provider_version: String,
+    pub adapter_contract_version: String,
+    pub policy: ProviderCompatibilityAdmissionPolicy,
+    pub actor: String,
+    pub evidence_refs: Vec<String>,
+    pub admitted_at: String,
+    pub lifecycle: ProviderCompatibilityAdmissionLifecycle,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predecessor_admission_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl ProviderCompatibilityAdmission {
+    /// Returns the exact adapter tuple authorized by this admission.
+    pub fn exact_key(&self) -> (&str, &str, &str, &str) {
+        (
+            &self.provider,
+            &self.execution_mode,
+            &self.provider_version,
+            &self.adapter_contract_version,
+        )
+    }
+
+    /// Only an active lifecycle row grants operational compatibility.
+    pub fn is_active(&self) -> bool {
+        self.lifecycle == ProviderCompatibilityAdmissionLifecycle::Active
+    }
+}
+
+impl Validate for ProviderCompatibilityAdmission {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "ProviderCompatibilityAdmission.id")?;
+        require_non_empty(
+            &self.project_id,
+            "ProviderCompatibilityAdmission.project_id",
+        )?;
+        require_non_empty(&self.store_id, "ProviderCompatibilityAdmission.store_id")?;
+        require_non_empty(&self.provider, "ProviderCompatibilityAdmission.provider")?;
+        require_non_empty(
+            &self.execution_mode,
+            "ProviderCompatibilityAdmission.execution_mode",
+        )?;
+        require_non_empty(
+            &self.provider_version,
+            "ProviderCompatibilityAdmission.provider_version",
+        )?;
+        require_non_empty(
+            &self.adapter_contract_version,
+            "ProviderCompatibilityAdmission.adapter_contract_version",
+        )?;
+        require_non_empty(&self.actor, "ProviderCompatibilityAdmission.actor")?;
+        require_non_empty(
+            &self.admitted_at,
+            "ProviderCompatibilityAdmission.admitted_at",
+        )?;
+        if self.evidence_refs.is_empty() {
+            return Err(ValidationError::Invalid {
+                field: "ProviderCompatibilityAdmission.evidence_refs",
+                reason: "must contain at least one evidence reference",
+            });
+        }
+        for evidence_ref in &self.evidence_refs {
+            require_non_empty(evidence_ref, "ProviderCompatibilityAdmission.evidence_refs")?;
+        }
+        match self.lifecycle {
+            ProviderCompatibilityAdmissionLifecycle::Active => {
+                if self.predecessor_admission_id.is_some() || self.reason.is_some() {
+                    return Err(ValidationError::Invalid {
+                        field: "ProviderCompatibilityAdmission.lifecycle",
+                        reason: "active admission cannot name a predecessor or transition reason",
+                    });
+                }
+            }
+            ProviderCompatibilityAdmissionLifecycle::Revoked
+            | ProviderCompatibilityAdmissionLifecycle::Superseded => {
+                let predecessor =
+                    self.predecessor_admission_id
+                        .as_deref()
+                        .ok_or(ValidationError::Invalid {
+                            field: "ProviderCompatibilityAdmission.predecessor_admission_id",
+                            reason: "terminal transition must name its active predecessor",
+                        })?;
+                require_non_empty(
+                    predecessor,
+                    "ProviderCompatibilityAdmission.predecessor_admission_id",
+                )?;
+                let reason = self.reason.as_deref().ok_or(ValidationError::Invalid {
+                    field: "ProviderCompatibilityAdmission.reason",
+                    reason: "terminal transition must include a reason",
+                })?;
+                require_non_empty(reason, "ProviderCompatibilityAdmission.reason")?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -6959,6 +7240,134 @@ mod tests {
         );
     }
 
+    fn provider_compatibility_admission(
+        policy: ProviderCompatibilityAdmissionPolicy,
+    ) -> ProviderCompatibilityAdmission {
+        ProviderCompatibilityAdmission {
+            id: "admission-1".to_string(),
+            project_id: "project-1".to_string(),
+            store_id: "store-1".to_string(),
+            provider: "claude".to_string(),
+            execution_mode: "claude_agent_sdk".to_string(),
+            provider_version: "2.1.220".to_string(),
+            adapter_contract_version: "claude-agent-sdk-v1".to_string(),
+            policy,
+            actor: "operator-1".to_string(),
+            evidence_refs: vec!["evidence-1".to_string()],
+            admitted_at: "unix-ms:1".to_string(),
+            lifecycle: ProviderCompatibilityAdmissionLifecycle::Active,
+            predecessor_admission_id: None,
+            reason: None,
+        }
+    }
+
+    #[test]
+    fn provider_compatibility_admission_accepts_strict_and_advisory_exact_keys() {
+        for policy in [
+            ProviderCompatibilityAdmissionPolicy::Strict,
+            ProviderCompatibilityAdmissionPolicy::Advisory,
+        ] {
+            let admission = provider_compatibility_admission(policy);
+            assert!(admission.validate().is_ok());
+            assert!(admission.is_active());
+            assert_eq!(
+                admission.exact_key(),
+                (
+                    "claude",
+                    "claude_agent_sdk",
+                    "2.1.220",
+                    "claude-agent-sdk-v1"
+                )
+            );
+
+            let encoded = serde_json::to_value(&admission).expect("serialize admission");
+            let decoded: ProviderCompatibilityAdmission =
+                serde_json::from_value(encoded).expect("deserialize admission");
+            assert_eq!(decoded, admission);
+        }
+    }
+
+    #[test]
+    fn provider_compatibility_admission_rejects_empty_evidence() {
+        let mut admission =
+            provider_compatibility_admission(ProviderCompatibilityAdmissionPolicy::Strict);
+        admission.evidence_refs.clear();
+        assert!(admission.validate().is_err());
+
+        admission.evidence_refs.push("  ".to_string());
+        assert!(admission.validate().is_err());
+    }
+
+    #[test]
+    fn provider_compatibility_admission_rejects_invalid_lifecycle_metadata() {
+        let mut active =
+            provider_compatibility_admission(ProviderCompatibilityAdmissionPolicy::Advisory);
+        active.reason = Some("not valid on an active row".to_string());
+        assert!(active.validate().is_err());
+
+        for lifecycle in [
+            ProviderCompatibilityAdmissionLifecycle::Revoked,
+            ProviderCompatibilityAdmissionLifecycle::Superseded,
+        ] {
+            let mut terminal =
+                provider_compatibility_admission(ProviderCompatibilityAdmissionPolicy::Strict);
+            terminal.lifecycle = lifecycle;
+            assert!(!terminal.is_active());
+            assert!(terminal.validate().is_err());
+
+            terminal.predecessor_admission_id = Some(" ".to_string());
+            terminal.reason = Some("provider contract changed".to_string());
+            assert!(terminal.validate().is_err());
+
+            terminal.predecessor_admission_id = Some("admission-1".to_string());
+            terminal.reason = Some(String::new());
+            assert!(terminal.validate().is_err());
+
+            terminal.reason = Some("provider contract changed".to_string());
+            assert!(terminal.validate().is_ok());
+        }
+    }
+
+    #[test]
+    fn provider_compatibility_admission_rejects_unknown_fields() {
+        let admission =
+            provider_compatibility_admission(ProviderCompatibilityAdmissionPolicy::Strict);
+        let mut value = serde_json::to_value(admission).expect("serialize admission");
+        value["source_reviewed"] = serde_json::json!(true);
+        let error = serde_json::from_value::<ProviderCompatibilityAdmission>(value)
+            .expect_err("admission wire format must reject unknown fields");
+        assert!(error.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn provider_compatibility_block_cause_is_typed_and_rejects_unknown_fields() {
+        let cause = ProviderCompatibilityBlockCause {
+            schema_version: ProviderCompatibilityBlockCause::SCHEMA_VERSION,
+            id: "cause-1".into(),
+            member_run_id: "member-1".into(),
+            provider: "codex".into(),
+            execution_mode: "codex_app_server".into(),
+            provider_version: "9.9.9".into(),
+            adapter_contract_version: "codex-app-server-v1".into(),
+            boundary: ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+            compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
+            source: ProviderCompatibilityBlockSource::AdapterCompatibility,
+            probe_error: None,
+            caused_at: "unix-ms:1".into(),
+        };
+        cause.validate().expect("valid typed cause");
+        let mut value = serde_json::to_value(&cause).unwrap();
+        value["forged_authority"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<ProviderCompatibilityBlockCause>(value).is_err());
+
+        let mut inconsistent = cause;
+        inconsistent.compatibility_status = ProviderCompatibilityStatus::Unavailable;
+        assert!(inconsistent.validate().is_err());
+        inconsistent.source = ProviderCompatibilityBlockSource::ProbeFailure;
+        inconsistent.probe_error = Some("probe failed".into());
+        inconsistent.validate().expect("typed probe failure");
+    }
+
     #[test]
     fn member_run_rows_without_capacity_stay_readable_and_absent_is_not_available() {
         let row = serde_json::json!({
@@ -7044,6 +7453,43 @@ mod tests {
         });
         let mut member: MemberRun = serde_json::from_value(row).expect("member run");
         member.provider_capacity = Some(snapshot.clone());
+        member.status = MemberRunStatus::Blocked;
+        member.provider_profile = Some(ProviderIntegrationProfile {
+            provider: "claude".into(),
+            execution_mode: "sdk".into(),
+            execution_driver: MemberExecutionDriver::HostDriven,
+            provider_version: Some("2.1.220".into()),
+            adapter_contract_version: Some("claude-sdk-v1".into()),
+            reviewed_provider_versions: Vec::new(),
+            compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
+            adapter_reviewed_at: None,
+            compatibility_note: None,
+            interaction_mode: ProviderInteractionMode::EndRoundAndFollowUp,
+            ordinary_message_boundary: OrdinaryMessageBoundary::InTurn,
+            plan_mode: ProviderFeatureMode::Emulated,
+            goal_mode: ProviderFeatureMode::Emulated,
+            tool_event_fidelity: ProviderEventFidelity::Structured,
+            artifact_event_fidelity: ProviderEventFidelity::Structured,
+            supports_cancel: true,
+            supports_resume: true,
+            observes_native_subagents: false,
+            observes_background_tasks: false,
+            thinking_transient_only: true,
+        });
+        member.provider_compatibility_block_cause = Some(ProviderCompatibilityBlockCause {
+            schema_version: ProviderCompatibilityBlockCause::SCHEMA_VERSION,
+            id: "cause-schema-1".into(),
+            member_run_id: member.id.clone(),
+            provider: "claude".into(),
+            execution_mode: "sdk".into(),
+            provider_version: "2.1.220".into(),
+            adapter_contract_version: "claude-sdk-v1".into(),
+            boundary: ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+            compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
+            source: ProviderCompatibilityBlockSource::AdapterCompatibility,
+            probe_error: None,
+            caused_at: "unix-ms:1785591600000".into(),
+        });
 
         let encoded = serde_json::to_value(&member).expect("encode member run");
         let declared = schema["properties"].as_object().expect("schema properties");
@@ -7074,10 +7520,28 @@ mod tests {
             "emitted provider_capacity fields are not declared in member-run.schema.json:              {undeclared_capacity:?}"
         );
 
+        let declared_cause = declared["provider_compatibility_block_cause"]["properties"]
+            .as_object()
+            .expect("schema must declare typed compatibility cause properties");
+        let undeclared_cause = encoded["provider_compatibility_block_cause"]
+            .as_object()
+            .expect("typed cause serialises when present")
+            .keys()
+            .filter(|key| !declared_cause.contains_key(key.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(
+            undeclared_cause.is_empty(),
+            "emitted typed compatibility cause fields are not declared: {undeclared_cause:?}"
+        );
+
         // Round-trip: the snapshot survives encode/decode unchanged, so the
         // schema is describing the shape the runtime actually persists.
         let decoded: MemberRun = serde_json::from_value(encoded).expect("decode member run");
         assert_eq!(decoded.provider_capacity, Some(snapshot));
+        decoded
+            .validate()
+            .expect("typed blocked MemberRun round-trips");
     }
 
     #[test]
