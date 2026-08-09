@@ -50,7 +50,7 @@ if [ "$(git rev-parse HEAD)" != "$candidate_sha" ] || [ -n "$(git status --porce
 fi
 
 export FIRM_BUILD_GIT_REV="$candidate_sha"
-export CARGO_TARGET_DIR="$archive_root/.target"
+export CARGO_TARGET_DIR="$archive_root/target"
 
 echo "clean-archive candidate: $candidate_sha"
 pnpm install --frozen-lockfile
