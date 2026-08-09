@@ -6625,7 +6625,21 @@ fn kimi_quota_like_failures_stop_without_fabricating_capacity() {
                         .as_str()
                         .is_some_and(|summary| summary.contains("quota-like provider failure"))
             });
-        if opened {
+        // `/v1/snapshot` folds the append-only ledgers independently. The
+        // runtime persists the terminal MemberRun revision before publishing
+        // the circuit-breaker action, but a snapshot can begin reading the
+        // member ledger before that revision and finish reading the action
+        // ledger after the action is appended. Treat the transition as
+        // observed only when both projections have converged in one snapshot;
+        // waiting on the action alone permits a legitimate old-member/new-
+        // action fractured read and makes this assertion timing-dependent.
+        let member_failed = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|member| member["id"].as_str() == Some(member_id.as_str()))
+            .is_some_and(|member| member["status"].as_str() == Some("failed"));
+        if opened && member_failed {
             final_snapshot = Some(snapshot);
             break;
         }

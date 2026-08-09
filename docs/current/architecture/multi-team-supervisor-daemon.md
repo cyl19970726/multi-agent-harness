@@ -35,6 +35,10 @@ unreachable daemon is an explicit `NODE_DAEMON_UNAVAILABLE` failure.
   generation, Execution Space, and project binding.
 - A stale child cannot heartbeat or write after its parent generation changes.
 
+`NodeDaemonLease` is machine-scoped authority for all local Teams across
+registered Execution Spaces; each machine has one machine-scoped NodeDaemon and
+the lease is never scoped to one Execution Space.
+
 The daemon scans every registered Execution Space independently. A corrupt or
 busy store is reported and isolated; it does not stop supervision in another
 space. On restart the new daemon generation recovers eligible non-terminal

@@ -6950,6 +6950,90 @@ impl HarnessStore {
         Ok(value.clone())
     }
 
+    /// Persist a Host Close only while the named Supervisor generation and
+    /// its parent NodeDaemon generation still hold current durable authority.
+    ///
+    /// The child/parent lease checks and the Close append share the Store
+    /// writer lock with lease renewal, release, and successor acquisition.
+    /// This is the live-control admission linearization point: a stale
+    /// generation can never pass an optimistic lease read and append a Close
+    /// after another generation has taken over.
+    pub fn latch_team_member_close_for_supervisor(
+        &self,
+        value: &TeamMemberCloseRequest,
+        supervisor_id: &str,
+        supervisor_generation: u64,
+        now_unix_ms: u64,
+    ) -> StoreResult<TeamMemberCloseRequest> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let lease = self
+            .latest_lease_for_run_unlocked(&value.team_run_id)?
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "TEAM_SUPERVISOR_LEASE_LOST: TeamRun {} has no Supervisor lease",
+                    value.team_run_id
+                ))
+            })?;
+        if lease.status != TeamSupervisorLeaseStatus::Active
+            || lease.supervisor_id != supervisor_id
+            || lease.generation != supervisor_generation
+            || lease.expires_unix_ms <= now_unix_ms
+        {
+            return Err(StoreError::Conflict(format!(
+                "TEAM_SUPERVISOR_LEASE_LOST: TeamRun {} is not owned by {supervisor_id} generation {supervisor_generation}",
+                value.team_run_id
+            )));
+        }
+        let parent = latest_by_id(
+            self.read_jsonl::<NodeDaemonLease>("node_daemon_leases.jsonl")?,
+            |parent| parent.node_id.clone(),
+        )
+        .remove(&lease.node_id)
+        .ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "TEAM_SUPERVISOR_PARENT_FENCED: Node {} has no active parent",
+                lease.node_id
+            ))
+        })?;
+        if parent.status != NodeDaemonLeaseStatus::Active
+            || parent.daemon_id != lease.node_daemon_id
+            || parent.generation != lease.node_daemon_generation
+            || parent.expires_unix_ms <= now_unix_ms
+        {
+            return Err(StoreError::Conflict(format!(
+                "TEAM_SUPERVISOR_PARENT_FENCED: parent NodeDaemon generation is no longer active for TeamRun {}",
+                value.team_run_id
+            )));
+        }
+        let member = latest_by_id(
+            self.read_jsonl::<MemberRun>("member_runs.jsonl")?,
+            |member| member.id.clone(),
+        )
+        .remove(&value.member_run_id)
+        .ok_or_else(|| {
+            StoreError::Conflict(format!("MemberRun not found: {}", value.member_run_id))
+        })?;
+        if member.team_run_id != value.team_run_id {
+            return Err(StoreError::Conflict(format!(
+                "MemberRun {} belongs to {}, not {}",
+                value.member_run_id, member.team_run_id, value.team_run_id
+            )));
+        }
+        if let Some(current) = latest_by_id(
+            self.read_jsonl::<TeamMemberCloseRequest>("team_member_close_requests.jsonl")?,
+            |request| request.member_run_id.clone(),
+        )
+        .remove(&value.member_run_id)
+        {
+            if current.status == TeamMemberCloseStatus::Pending {
+                return Ok(current);
+            }
+        }
+        self.append_jsonl_unlocked("team_member_close_requests.jsonl", value)?;
+        Ok(value.clone())
+    }
+
     /// Persist a Host Close only when no current Supervisor generation owns
     /// the TeamRun. The absence check and Close latch share the Store write
     /// lock with Supervisor acquisition, closing the race where a successor

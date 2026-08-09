@@ -17815,6 +17815,10 @@ struct TeamSupervisorRegistration {
     store: HarnessStore,
     heartbeat_stop: Arc<AtomicBool>,
     heartbeat_valid: Arc<AtomicBool>,
+    /// Serializes the process-local lease-loss latch with live Close
+    /// admission. Durable generation changes are serialized separately by the
+    /// Store writer lock.
+    authority_gate: Arc<Mutex<()>>,
     heartbeat_thread: Option<std::thread::JoinHandle<()>>,
     control_stop: Arc<AtomicBool>,
     control_thread: Option<std::thread::JoinHandle<()>>,
@@ -17897,11 +17901,13 @@ impl TeamSupervisorRegistration {
             })?;
         let heartbeat_stop = Arc::new(AtomicBool::new(false));
         let heartbeat_valid = Arc::new(AtomicBool::new(true));
+        let authority_gate = Arc::new(Mutex::new(()));
         let heartbeat_store = store.clone();
         let heartbeat_team_run_id = team_run_id.to_string();
         let heartbeat_supervisor_id = supervisor_id.clone();
         let heartbeat_stop_thread = Arc::clone(&heartbeat_stop);
         let heartbeat_valid_thread = Arc::clone(&heartbeat_valid);
+        let heartbeat_authority_gate = Arc::clone(&authority_gate);
         let generation = lease.generation;
         let heartbeat_interval_ms = (ttl_ms / 3).clamp(50, 1_000);
         let heartbeat_thread = std::thread::spawn(move || {
@@ -17910,6 +17916,13 @@ impl TeamSupervisorRegistration {
                 if heartbeat_stop_thread.load(Ordering::Acquire) {
                     break;
                 }
+                // Serialize the complete renewal-or-loss decision with live
+                // Close admission. If renewal fails, loss is latched before a
+                // Close can claim the old generation; if Close won the gate,
+                // its Store transaction is the earlier linearization point.
+                let _authority_guard = heartbeat_authority_gate
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
                 if let Some(marker) = supervisor_test_heartbeat_failure_marker() {
                     let _ = latch_supervisor_lease_lost_and_mark(
                         &heartbeat_valid_thread,
@@ -17947,6 +17960,7 @@ impl TeamSupervisorRegistration {
         let control_generation = lease.generation;
         let control_stop_thread = Arc::clone(&control_stop);
         let control_valid_thread = Arc::clone(&heartbeat_valid);
+        let control_authority_gate = Arc::clone(&authority_gate);
         let control_thread = std::thread::spawn(move || {
             while !control_stop_thread.load(Ordering::Acquire) {
                 match control_listener.accept() {
@@ -17958,6 +17972,7 @@ impl TeamSupervisorRegistration {
                             &control_supervisor_id,
                             control_generation,
                             &control_valid_thread,
+                            &control_authority_gate,
                         );
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -17974,6 +17989,7 @@ impl TeamSupervisorRegistration {
             store: store.clone(),
             heartbeat_stop,
             heartbeat_valid,
+            authority_gate,
             heartbeat_thread: Some(heartbeat_thread),
             control_stop,
             control_thread: Some(control_thread),
@@ -17997,6 +18013,10 @@ impl Drop for TeamSupervisorRegistration {
             self.generation,
             current_unix_ms_u64(),
         );
+        let _authority_guard = self
+            .authority_gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         self.heartbeat_valid.store(false, Ordering::Release);
         LIVE_TEAM_SUPERVISORS
             .get_or_init(|| Mutex::new(HashSet::new()))
@@ -18163,6 +18183,33 @@ fn latch_member_close(
     }))
 }
 
+fn latch_member_close_for_supervisor(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member_run_id: &str,
+    requested_by: &str,
+    reason: &str,
+    supervisor_id: &str,
+    generation: u64,
+) -> CliResult<TeamMemberCloseRequest> {
+    let close = pending_close_request(team_run_id, member_run_id, requested_by, reason);
+    match store.latch_team_member_close_for_supervisor(
+        &close,
+        supervisor_id,
+        generation,
+        current_unix_ms_u64(),
+    ) {
+        Ok(close) => Ok(close),
+        Err(StoreError::Conflict(message))
+            if message.starts_with("TEAM_SUPERVISOR_LEASE_LOST:")
+                || message.starts_with("TEAM_SUPERVISOR_PARENT_FENCED:") =>
+        {
+            Err(CliError::SupervisorLeaseLost(message))
+        }
+        Err(error) => store_conflict_as_usage(Err(error)),
+    }
+}
+
 fn pending_close_request(
     team_run_id: &str,
     member_run_id: &str,
@@ -18209,11 +18256,45 @@ fn dispatch_local_live_member_control(
     supervisor_id: &str,
     generation: u64,
     supervisor_valid: &AtomicBool,
+    authority_gate: &Mutex<()>,
     request: LiveMemberControlRequest,
 ) -> CliResult<serde_json::Value> {
+    dispatch_local_live_member_control_with_close_admission_hook(
+        store,
+        supervisor_id,
+        generation,
+        supervisor_valid,
+        authority_gate,
+        request,
+        || {},
+    )
+}
+
+fn dispatch_local_live_member_control_with_close_admission_hook<F>(
+    store: &HarnessStore,
+    supervisor_id: &str,
+    generation: u64,
+    supervisor_valid: &AtomicBool,
+    authority_gate: &Mutex<()>,
+    request: LiveMemberControlRequest,
+    before_close_latch: F,
+) -> CliResult<serde_json::Value>
+where
+    F: FnOnce(),
+{
     let team_run_id = request.team_run_id().to_string();
     let member_run_id = request.member_run_id().to_string();
     let is_close = matches!(&request, LiveMemberControlRequest::Close { .. });
+    // A Close is linearized against process-local heartbeat loss by this gate.
+    // If Close acquires it first, the exact Store generation fence below is
+    // its authority point; if heartbeat loss acquires it first, the local
+    // latch rejects before any durable or provider side effect.
+    let authority_guard = is_close.then(|| {
+        authority_gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    });
+    let mut before_close_latch = Some(before_close_latch);
     // Fence immediately before touching the process-local provider handle.
     if !supervisor_valid.load(Ordering::Acquire) {
         return Err(supervisor_lease_lost_error(&team_run_id));
@@ -18236,7 +18317,19 @@ fn dispatch_local_live_member_control(
                 // Authority has been fenced above and no capability check can
                 // still reject this request. Persist the admitted Close before
                 // any provider-interaction or lifecycle side effect.
-                latch_member_close(store, &team_run_id, &member_run_id, requested_by, reason)?;
+                before_close_latch
+                    .take()
+                    .expect("Close admission hook is called once")();
+                latch_member_close_for_supervisor(
+                    store,
+                    &team_run_id,
+                    &member_run_id,
+                    requested_by,
+                    reason,
+                    supervisor_id,
+                    generation,
+                )?;
+                drop(authority_guard);
                 cancel_pending_member_interactions(
                     store,
                     &team_run_id,
@@ -18289,10 +18382,23 @@ fn dispatch_local_live_member_control(
     } = &request
     {
         // Every authority, ownership, and capability rejection is complete.
-        // Persist the admitted Close before provider-interaction cancellation
-        // or lifecycle writes. A rejected Close therefore has zero durable or
-        // provider side effect.
-        latch_member_close(store, &team_run_id, &member_run_id, requested_by, reason)?;
+        // Atomically re-fence the exact durable generation and persist the
+        // admitted Close before provider-interaction cancellation or lifecycle
+        // writes. A rejected Close therefore has zero durable or provider side
+        // effect under every successor/expiry interleaving.
+        before_close_latch
+            .take()
+            .expect("Close admission hook is called once")();
+        latch_member_close_for_supervisor(
+            store,
+            &team_run_id,
+            &member_run_id,
+            requested_by,
+            reason,
+            supervisor_id,
+            generation,
+        )?;
+        drop(authority_guard);
         cancel_pending_member_interactions(
             store,
             &team_run_id,
@@ -18364,6 +18470,7 @@ fn handle_live_member_control_connection(
     supervisor_id: &str,
     generation: u64,
     supervisor_valid: &AtomicBool,
+    authority_gate: &Mutex<()>,
 ) {
     let response = (|| -> CliResult<serde_json::Value> {
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -18389,6 +18496,7 @@ fn handle_live_member_control_connection(
             supervisor_id,
             generation,
             supervisor_valid,
+            authority_gate,
             request,
         )
     })();
@@ -44315,6 +44423,7 @@ mod tests {
             &lease.supervisor_id,
             lease.generation,
             &AtomicBool::new(false),
+            &Mutex::new(()),
             LiveMemberControlRequest::Close {
                 team_run_id: created.team_run.id.clone(),
                 member_run_id: member.id.clone(),
@@ -44349,6 +44458,132 @@ mod tests {
             events_before,
             "authority-rejected Close emitted a lifecycle side effect"
         );
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn successor_generation_between_live_close_precheck_and_latch_has_zero_side_effects() {
+        let (store, root) = temp_store("live-close-generation-toctou");
+        let created = create_two_member_team_run(&store);
+        let member = created.member_runs[0].clone();
+        let first = store
+            .acquire_test_supervisor_lease(
+                &created.team_run.id,
+                "supervisor-close-precheck",
+                std::process::id(),
+                "tcp://127.0.0.1:1",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire first Supervisor lease");
+        let interaction = PendingInteraction {
+            id: "pending-close-toctou".into(),
+            team_run_id: created.team_run.id.clone(),
+            member_run_id: member.id.clone(),
+            provider: "codex".into(),
+            provider_request_id: "provider-close-toctou".into(),
+            method: "item/tool/requestUserInput".into(),
+            kind: PendingInteractionKind::Question,
+            route: PendingInteractionRoute::Lead,
+            status: PendingInteractionStatus::Pending,
+            title: "Pending across stale-generation Close".into(),
+            prompt: "Must remain pending".into(),
+            options: Vec::new(),
+            tool_call_id: None,
+            response_option_id: None,
+            response_text: None,
+            created_at: "unix-ms:close-toctou".into(),
+            resolved_at: None,
+            resolved_by: None,
+        };
+        store
+            .append_pending_interaction(&interaction)
+            .expect("seed pending provider interaction");
+        let interactions_before = store
+            .pending_interactions()
+            .expect("pending interactions before stale Close");
+        let events_before = store.team_run_events().expect("events before stale Close");
+        let (control_rx, _control_registration) = register_live_member_control(&member, 1);
+        let supervisor_valid = AtomicBool::new(true);
+        let authority_gate = Mutex::new(());
+        let successor_generation = std::cell::Cell::new(0);
+
+        let error = dispatch_local_live_member_control_with_close_admission_hook(
+            &store,
+            &first.supervisor_id,
+            first.generation,
+            &supervisor_valid,
+            &authority_gate,
+            LiveMemberControlRequest::Close {
+                team_run_id: created.team_run.id.clone(),
+                member_run_id: member.id.clone(),
+                reason: "must be rejected after takeover".into(),
+                requested_by: "host".into(),
+            },
+            || {
+                // Deterministic interleaving: the optimistic precheck and all
+                // capability checks have passed, then a successor takes the
+                // Store lease before the atomic Close admission point.
+                store
+                    .release_team_supervisor_lease(
+                        &created.team_run.id,
+                        &first.supervisor_id,
+                        first.generation,
+                        current_unix_ms_u64(),
+                    )
+                    .expect("release prechecked generation");
+                let successor = store
+                    .acquire_test_supervisor_lease(
+                        &created.team_run.id,
+                        "supervisor-close-successor",
+                        std::process::id(),
+                        "tcp://127.0.0.1:2",
+                        current_unix_ms_u64(),
+                        60_000,
+                    )
+                    .expect("acquire successor generation");
+                successor_generation.set(successor.generation);
+            },
+        )
+        .expect_err("stale generation must lose atomic Close admission");
+
+        assert!(
+            error.is_supervisor_lease_lost(),
+            "unexpected stale-generation error: {error}"
+        );
+        assert!(successor_generation.get() > first.generation);
+        assert!(
+            store
+                .team_member_close_requests()
+                .expect("close requests")
+                .is_empty(),
+            "stale generation persisted Close"
+        );
+        assert_eq!(
+            store
+                .pending_interactions()
+                .expect("pending interactions after stale Close"),
+            interactions_before,
+            "stale generation cancelled a provider interaction"
+        );
+        assert_eq!(
+            store.team_run_events().expect("events after stale Close"),
+            events_before,
+            "stale generation emitted a lifecycle event"
+        );
+        assert!(
+            matches!(
+                control_rx.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ),
+            "stale generation sent a provider control command"
+        );
+        let latest = latest_member_runs_in_append_order(&store)
+            .expect("latest members")
+            .into_iter()
+            .find(|candidate| candidate.id == member.id)
+            .expect("member");
+        assert!(latest.coordination_is_active());
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 

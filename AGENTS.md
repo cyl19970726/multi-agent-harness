@@ -36,6 +36,8 @@ of the Host's current plan and judgment — not an executor container or
 synchronization barrier. An AgentTeamRun may span multiple Waves while its
 MemberRuns and native sessions continue. Every Team belongs to exactly one Mission,
 one Mission owns exactly one Team, and a Team never spans machines.
+No two AgentTeams may reference the same Mission. `NodeDaemonLease` is machine-scoped authority for all local Teams across registered Execution Spaces;
+each machine has one machine-scoped NodeDaemon and the lease is never scoped to one Execution Space.
 Cross-Team responsibility uses explicit WorkDelegation rather than parent/child
 Team topology. Docs plus flat AgentTeam Organization is the accepted product
 direction; ADR 0052 is superseded historical evidence. Current StandingAgent

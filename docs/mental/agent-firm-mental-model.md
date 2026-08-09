@@ -25,7 +25,7 @@ Company has three facets: Organization (who), Execution (what's being done), Kno
 
 Organization answers "who exists and how are they organized."
 
-**Agent Teams**: An independent unit of execution with a Host Agent and Members. The Organization contains flat AgentTeams — no nesting or parent/child Team authority. Every Team belongs to exactly one Mission and has immutable `node_id` placement on one machine. A Team's Members never cross machines. `labels` are optional filtering metadata; placement identity is not optional metadata.
+**Agent Teams**: An independent unit of execution with a Host Agent and Members. The Organization contains flat AgentTeams — no nesting or parent/child Team authority. Every Team belongs to exactly one Mission and has immutable `node_id` placement on one machine. No two AgentTeams may reference the same Mission. A Team's Members never cross machines. `labels` are optional filtering metadata; placement identity is not optional metadata.
 
 **Standing Agents**: Durable agent identities that persist across Team Runs. Not tied to any single execution. Examples: governance Agent auditing docs/works periodically, scheduled-task Agent running on a timer.
 
@@ -63,7 +63,7 @@ Documents are Company memory — structured content, typed records, views. Agent
 
 ## Cross-Machine Communication
 
-One logical Firm may place different AgentTeams on different ExecutionNodes. Each machine runs one machine-scoped NodeDaemon that supervises all local Teams across registered Execution Spaces. A single Team never spans machines. Cross-Team responsibility uses explicit `WorkDelegation`; future cross-machine transport must preserve the source and target Team identities instead of introducing nested Teams or optional placement.
+One logical Firm may place different AgentTeams on different ExecutionNodes. Each machine runs one machine-scoped NodeDaemon that supervises all local Teams across registered Execution Spaces. `NodeDaemonLease` is machine-scoped authority for all local Teams across registered Execution Spaces; it is never scoped to one Execution Space. A single Team never spans machines. Cross-Team responsibility uses explicit `WorkDelegation`; future cross-machine transport must preserve the source and target Team identities instead of introducing nested Teams or optional placement.
 
 ---
 

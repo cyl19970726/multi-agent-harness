@@ -112,6 +112,12 @@ Wave owns versioned Host judgment and material re-plan. Works own current
 execution demand, ownership, and state. Cross-Team or cross-machine cooperation
 uses WorkDelegation without merging Mission or Team identity.
 
+The Organization contains flat AgentTeams.
+Every Team belongs to exactly one Mission, and every Team has immutable `node_id`
+placement on one machine.
+No two AgentTeams may reference the same Mission. This is a one-to-one relation
+in both directions, not merely a required foreign key from Team to Mission.
+
 Works remove task enumeration from Wave and replace Assignment-message
 ownership. They do not replace Mission closeout or Wave decision history.
 

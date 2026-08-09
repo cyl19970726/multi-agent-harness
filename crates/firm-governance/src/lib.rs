@@ -1633,6 +1633,81 @@ mod tests {
     }
 
     #[test]
+    fn self_host_document_invariants_cover_mission_team_and_node_authorities() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("repo root from crate manifest")
+            .to_path_buf();
+        let config = GovernanceConfig::load(&repo).expect("load .governance.toml");
+        let by_name = config
+            .document_invariants
+            .iter()
+            .map(|invariant| (invariant.name.as_str(), invariant))
+            .collect::<BTreeMap<_, _>>();
+
+        let mission_team = by_name
+            .get("mission-team-bijection")
+            .expect("Mission-Team bijection must be governed");
+        for path in [
+            "AGENTS.md",
+            "docs/mental/agent-firm-mental-model.md",
+            "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
+        ] {
+            assert!(
+                mission_team.paths.iter().any(|candidate| candidate == path),
+                "Mission-Team governance omitted {path}"
+            );
+        }
+        for term in [
+            "Every Team belongs to exactly one Mission",
+            "No two AgentTeams may reference the same Mission",
+            "immutable `node_id`",
+        ] {
+            assert!(
+                mission_team
+                    .required_terms
+                    .iter()
+                    .any(|candidate| candidate == term),
+                "Mission-Team governance omitted `{term}`"
+            );
+        }
+
+        let node_daemon = by_name
+            .get("machine-node-daemon-authority")
+            .expect("machine NodeDaemon authority must be governed");
+        for path in [
+            "AGENTS.md",
+            "docs/mental/agent-firm-mental-model.md",
+            "docs/current/architecture/multi-team-supervisor-daemon.md",
+        ] {
+            assert!(
+                node_daemon.paths.iter().any(|candidate| candidate == path),
+                "NodeDaemon governance omitted {path}"
+            );
+        }
+        for term in [
+            "one machine-scoped NodeDaemon",
+            "`NodeDaemonLease` is machine-scoped",
+            "all local Teams",
+            "registered Execution Spaces",
+            "never scoped to one Execution Space",
+        ] {
+            assert!(
+                node_daemon
+                    .required_terms
+                    .iter()
+                    .any(|candidate| candidate == term),
+                "NodeDaemon governance omitted `{term}`"
+            );
+        }
+
+        let report = check_document_invariants(&repo, &config.document_invariants);
+        assert!(report.failures.is_empty(), "got {:?}", report.failures);
+        assert!(report.summary.contains("checked 6 authoritative documents"));
+    }
+
+    #[test]
     fn skills_validates_frontmatter_and_metadata() {
         let root = tmp("skills-ok");
         write(&root, "skills/good/SKILL.md", "---\nname: good\ndescription: a sufficiently long and specific description of the skill\n---\nbody");
