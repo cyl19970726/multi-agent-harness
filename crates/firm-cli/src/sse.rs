@@ -1715,7 +1715,7 @@ mod tests {
         let b_x = manager.subscribe_scoped("space-b", Some("company-x"));
         let b_y = manager.subscribe_scoped("space-b", Some("company-y"));
 
-        manager.invalidate_company("company-x", "company_os_work_items.jsonl", "append");
+        manager.invalidate_company("company-x", "company_os_milestones.jsonl", "append");
         for rx in [&a_x, &b_x] {
             match rx.try_recv() {
                 Ok(SseEventFrame::ProjectionInvalidated(frame)) => {

@@ -89,7 +89,7 @@ function StandardViewConfiguration({ view }: { view: CompanyOsStructuredViewData
           </div>
         ))}
       </dl>
-      <p className="mt-2 text-[11px] leading-5 text-muted-foreground">This controls presentation over the same source records. It does not copy, mutate, or approve TypedRecords, WorkItems, Approvals, or FinancialRecords.</p>
+      <p className="mt-2 text-[11px] leading-5 text-muted-foreground">This controls presentation over the same source records. It does not copy, mutate, or approve TypedRecords, TeamWorks, Approvals, or FinancialRecords.</p>
     </section>
   );
 }

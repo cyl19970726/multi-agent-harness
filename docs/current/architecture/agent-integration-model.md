@@ -9,7 +9,7 @@ It sits above the provider runtime implementation reference in
 provider implementations in [integration/codex.md](../integration/codex.md),
 [integration/claude.md](../integration/claude.md), and
 [integration/kimi.md](../integration/kimi.md). It does not redefine Mission/Wave,
-executor-native records, WorkItems, Approvals, or organization authority.
+executor-native records, TeamWorks, Approvals, or organization authority.
 Continuous Member execution follows the separate
 [Member Continuation Model](member-continuation-model.md).
 
@@ -124,7 +124,7 @@ harness base system prompt          (Mission/Wave, honest execution records, dec
   -> repository / adapter rules      (project constraints, commands, safety)
   -> role-specific prompt            (prompt_ref → this member's responsibility)
   -> execution context               (Mission, current Host-plan Wave, run and Works)
-  -> optional company context        (WorkItem, source Document, Actors, approval policy)
+  -> optional company context        (TeamWork, source Document, Actors, approval policy)
   -> delivery envelope               (current Work version or Host/peer conversation)
   -> permission and evidence policy   (allowed tools, approval, report format)
 ```
@@ -543,7 +543,7 @@ abstraction remains additive future work under ADR 0017.
 
 ## Non-Goals
 
-- Do not redefine Mission/Wave, executor-native records, WorkItem, Approval or
+- Do not redefine Mission/Wave, executor-native records, TeamWork, Approval or
   organization authority here; those stay in their owning contracts.
 - Do not let one platform's wire vocabulary become the neutral spec.
 - Do not treat provider-native subagents as durable members unless promoted.

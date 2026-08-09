@@ -2,8 +2,8 @@
 //!
 //! These records are deliberately independent from executor-native Mission,
 //! Wave, Agent Team, Workflow, and provider records. In particular, a
-//! [`WorkItem`] is not an executor task and no legacy task is converted into
-//! one by this module.
+//! Company Work is a read-only aggregate of authoritative TeamWorks; this
+//! module does not define or persist a second task object.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -456,7 +456,7 @@ pub enum EntityKind {
     TypedRecord,
     BusinessModule,
     Milestone,
-    WorkItem,
+    Work,
     Approval,
     FinancialRecord,
     Evidence,
@@ -551,7 +551,7 @@ pub enum BlockKind {
     EmbeddedView,
     Metric,
     Decision,
-    WorkItem,
+    Work,
     RelationSummary,
 }
 
@@ -748,39 +748,6 @@ impl ValidateCompanyOs for BusinessModule {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkItemStatus {
-    Draft,
-    Submitted,
-    Triaged,
-    Accepted,
-    InProgress,
-    WaitingForApproval,
-    Blocked,
-    InReview,
-    Completed,
-    Cancelled,
-    Archived,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkType {
-    Development,
-    Design,
-    Research,
-    Content,
-    Legal,
-    Procurement,
-    Finance,
-    Operations,
-    Governance,
-    HumanAction,
-    #[default]
-    General,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MilestoneStatus {
@@ -806,73 +773,11 @@ pub struct Milestone {
     #[serde(default)]
     pub target_at: Option<String>,
     pub acceptance_criteria: Vec<String>,
-    pub work_item_refs: Vec<String>,
+    pub work_refs: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
     #[serde(default)]
     pub achieved_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkQuery {
-    #[serde(default)]
-    pub statuses: Vec<WorkItemStatus>,
-    #[serde(default)]
-    pub work_types: Vec<WorkType>,
-    #[serde(default)]
-    pub business_module_refs: Vec<String>,
-    #[serde(default)]
-    pub milestone_refs: Vec<String>,
-    #[serde(default)]
-    pub accountable_owner: Option<ActorRef>,
-    #[serde(default)]
-    pub assignee: Option<ActorRef>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkSummary {
-    pub total: u64,
-    pub active: u64,
-    pub completed: u64,
-    pub blocked: u64,
-    pub waiting_for_approval: u64,
-    pub unassigned: u64,
-    pub without_milestone: u64,
-    pub without_business_line: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MilestoneProgress {
-    pub milestone: Milestone,
-    pub total_work_items: u64,
-    pub completed_work_items: u64,
-    pub blocked_work_items: u64,
-    pub waiting_for_approval_work_items: u64,
-    pub progress_percent: u8,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ActorWorkload {
-    pub actor: ActorRef,
-    pub accountable_count: u64,
-    pub assigned_count: u64,
-    pub active_count: u64,
-    pub work_item_refs: Vec<String>,
-}
-
-/// One derived read model shared by Overview, Board, All Work, Milestones,
-/// Timeline, and Workload. It owns no facts; every id points back to a native
-/// WorkItem or Milestone row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkProjection {
-    pub query: WorkQuery,
-    pub summary: WorkSummary,
-    pub work_items: Vec<WorkItem>,
-    pub milestones: Vec<MilestoneProgress>,
-    pub board: std::collections::BTreeMap<String, Vec<String>>,
-    pub business_lines: std::collections::BTreeMap<String, Vec<String>>,
-    pub work_types: std::collections::BTreeMap<String, Vec<String>>,
-    pub workload: Vec<ActorWorkload>,
 }
 
 impl ValidateCompanyOs for Milestone {
@@ -891,7 +796,7 @@ impl ValidateCompanyOs for Milestone {
             required(target_at, "Milestone.target_at")?;
         }
         required_strings(&self.acceptance_criteria, "Milestone.acceptance_criteria")?;
-        required_strings(&self.work_item_refs, "Milestone.work_item_refs")?;
+        required_strings(&self.work_refs, "Milestone.work_refs")?;
         if self.status == MilestoneStatus::Achieved
             && self
                 .achieved_at
@@ -944,217 +849,6 @@ pub struct ExecutionRef {
     pub status: Option<String>,
     pub started_at: Option<String>,
     pub ended_at: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkItem {
-    pub id: String,
-    pub title: String,
-    pub objective: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub acceptance_criteria: Vec<String>,
-    #[serde(default)]
-    pub context_refs: Vec<EntityRef>,
-    #[serde(default)]
-    pub deliverable_refs: Vec<EntityRef>,
-    pub status: WorkItemStatus,
-    pub source_document_ref: String,
-    pub source_record_refs: Vec<String>,
-    /// Optional company checkpoint. This is never a Mission Wave.
-    #[serde(default)]
-    pub milestone_ref: Option<String>,
-    /// Stable company-work classification used by every Work projection.
-    #[serde(default)]
-    pub work_type: WorkType,
-    /// Explicit business-line relation. Absence means unclassified, not inferred.
-    #[serde(default)]
-    pub business_module_ref: Option<String>,
-    pub result_document_ref: Option<String>,
-    pub result_record_refs: Vec<String>,
-    pub submitted_by: ActorRef,
-    pub requested_by: Option<ActorRef>,
-    pub accountable_owner: ActorRef,
-    pub assignees: Vec<ActorRef>,
-    pub contributors: Vec<ActorRef>,
-    pub reviewer: Option<ActorRef>,
-    pub approver: Option<ActorRef>,
-    pub execution_mode: ExecutionMode,
-    pub execution_refs: Vec<ExecutionRef>,
-    pub approval_refs: Vec<String>,
-    pub evidence_refs: Vec<String>,
-    pub artifact_refs: Vec<String>,
-    pub outcome_summary: Option<String>,
-    pub due_at: Option<String>,
-    pub priority: Option<String>,
-    pub risk_level: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-    pub completed_at: Option<String>,
-}
-
-impl ValidateCompanyOs for WorkItem {
-    fn validate(&self) -> Result<(), CompanyOsValidationError> {
-        required(&self.id, "WorkItem.id")?;
-        required(&self.title, "WorkItem.title")?;
-        required(&self.objective, "WorkItem.objective")?;
-        if let Some(description) = &self.description {
-            required(description, "WorkItem.description")?;
-        }
-        required_strings(&self.acceptance_criteria, "WorkItem.acceptance_criteria")?;
-        for reference in &self.context_refs {
-            reference.validate()?;
-        }
-        for reference in &self.deliverable_refs {
-            reference.validate()?;
-        }
-        required(&self.source_document_ref, "WorkItem.source_document_ref")?;
-        if let Some(reference) = &self.milestone_ref {
-            required(reference, "WorkItem.milestone_ref")?;
-        }
-        if let Some(reference) = &self.business_module_ref {
-            required(reference, "WorkItem.business_module_ref")?;
-        }
-        self.submitted_by.validate()?;
-        if let Some(requester) = &self.requested_by {
-            requester.validate()?;
-        }
-        self.accountable_owner.validate()?;
-        for actor in self.assignees.iter().chain(&self.contributors) {
-            actor.validate()?;
-        }
-        if let Some(reviewer) = &self.reviewer {
-            reviewer.validate()?;
-        }
-        if let Some(approver) = &self.approver {
-            approver.validate()?;
-        }
-        for execution in &self.execution_refs {
-            required(&execution.reference, "WorkItem.execution_refs.reference")?;
-        }
-        required_strings(&self.source_record_refs, "WorkItem.source_record_refs")?;
-        required_strings(&self.result_record_refs, "WorkItem.result_record_refs")?;
-        required_strings(&self.approval_refs, "WorkItem.approval_refs")?;
-        required_strings(&self.evidence_refs, "WorkItem.evidence_refs")?;
-        required_strings(&self.artifact_refs, "WorkItem.artifact_refs")?;
-        if self.status == WorkItemStatus::Completed {
-            if self
-                .completed_at
-                .as_deref()
-                .unwrap_or_default()
-                .trim()
-                .is_empty()
-            {
-                return Err(CompanyOsValidationError::Required {
-                    field: "WorkItem.completed_at",
-                });
-            }
-            if self
-                .outcome_summary
-                .as_deref()
-                .unwrap_or_default()
-                .trim()
-                .is_empty()
-            {
-                return Err(CompanyOsValidationError::Required {
-                    field: "WorkItem.outcome_summary",
-                });
-            }
-            if self.result_document_ref.is_none() && self.result_record_refs.is_empty() {
-                return Err(CompanyOsValidationError::Invalid {
-                    field: "WorkItem.result_document_ref",
-                    reason: "completed work requires a durable result destination".into(),
-                });
-            }
-        }
-        required(&self.created_at, "WorkItem.created_at")?;
-        required(&self.updated_at, "WorkItem.updated_at")
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AssignmentDeliveryState {
-    Pending,
-    Delivered,
-    Acknowledged,
-    Declined,
-    Failed,
-    Cancelled,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Assignment {
-    pub id: String,
-    pub work_item_id: String,
-    pub recipient: ActorRef,
-    pub sender: ActorRef,
-    pub assigned_role: String,
-    pub scope: Option<String>,
-    pub delivery_state: AssignmentDeliveryState,
-    pub delivery_policy_ref: String,
-    pub correlation_id: String,
-    pub delivery_evidence_ref: Option<String>,
-    pub assigned_at: String,
-    pub delivered_at: Option<String>,
-    pub acknowledged_at: Option<String>,
-}
-
-impl ValidateCompanyOs for Assignment {
-    fn validate(&self) -> Result<(), CompanyOsValidationError> {
-        required(&self.id, "Assignment.id")?;
-        required(&self.work_item_id, "Assignment.work_item_id")?;
-        self.recipient.validate()?;
-        self.sender.validate()?;
-        required(&self.assigned_role, "Assignment.assigned_role")?;
-        required(&self.delivery_policy_ref, "Assignment.delivery_policy_ref")?;
-        required(&self.correlation_id, "Assignment.correlation_id")?;
-        required(&self.assigned_at, "Assignment.assigned_at")?;
-        if matches!(
-            self.delivery_state,
-            AssignmentDeliveryState::Delivered | AssignmentDeliveryState::Acknowledged
-        ) && self
-            .delivered_at
-            .as_deref()
-            .unwrap_or_default()
-            .trim()
-            .is_empty()
-        {
-            return Err(CompanyOsValidationError::Required {
-                field: "Assignment.delivered_at",
-            });
-        }
-        if self.delivery_state == AssignmentDeliveryState::Acknowledged
-            && self
-                .acknowledged_at
-                .as_deref()
-                .unwrap_or_default()
-                .trim()
-                .is_empty()
-        {
-            return Err(CompanyOsValidationError::Required {
-                field: "Assignment.acknowledged_at",
-            });
-        }
-        if self.recipient.actor_type == ActorType::Agent
-            && matches!(
-                self.delivery_state,
-                AssignmentDeliveryState::Delivered | AssignmentDeliveryState::Acknowledged
-            )
-            && self
-                .delivery_evidence_ref
-                .as_deref()
-                .unwrap_or_default()
-                .trim()
-                .is_empty()
-        {
-            return Err(CompanyOsValidationError::Required {
-                field: "Assignment.delivery_evidence_ref",
-            });
-        }
-        Ok(())
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

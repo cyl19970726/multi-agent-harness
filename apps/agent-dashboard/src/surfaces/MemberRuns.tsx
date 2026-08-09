@@ -50,6 +50,7 @@ import { cn } from "@/lib/utils";
 import { liveSteerCapability, memberModelLabel, providerStackLine } from "@/lib/provider";
 import { selectMemberRunContext, type MemberRunContext, type StableTeamActivity } from "@/model/teamSelectors";
 import type { WorkbenchModel } from "@/model/readModel";
+import { workLifecycleLabel } from "@/types";
 import type {
   NativeActivityItem,
   NativeActivityProjection,
@@ -609,7 +610,7 @@ function MemberGoalPanel({ context, snapshotWorks, onOpenWork }: { context: Memb
           <div className="flex flex-wrap items-center gap-2">
             <ShieldCheck className="size-4 text-primary" />
             <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-primary">Current Work · Member Goal</p>
-            <Badge tone={workStatusTone(work?.status)}>{work?.status ?? "unassigned"}</Badge>
+            <Badge tone={workStatusTone(workLifecycleLabel(work))}>{workLifecycleLabel(work)}</Badge>
           </div>
           <p className="mt-2 text-sm font-semibold text-foreground">{work?.title ?? "No Work currently owned"}</p>
           <div className="mt-1 line-clamp-3 text-[12px] leading-relaxed text-muted-foreground">
@@ -665,16 +666,16 @@ function MemberGoalPanel({ context, snapshotWorks, onOpenWork }: { context: Memb
 
 function memberWorkNextAction(context: MemberRunContext): string {
   const work = context.currentWork;
-  if (work?.status === "open") {
+  if (work?.phase === "open") {
     return "Start this owned Work from the member's native runtime. This operator view does not impersonate the member.";
   }
-  if (work?.status === "in_progress") {
+  if (work?.phase === "active" && work.condition === "normal") {
     return "Continue the current Work in the provider-native session, then submit its result and evidence for Host review.";
   }
-  if (work?.status === "blocked") {
+  if (work?.condition === "blocked") {
     return "Wait for the Host to resolve and resume this Work; keep the blocker conversation linked to this Work.";
   }
-  if (work?.status === "review") {
+  if (work?.phase === "review") {
     return "Host review is pending. Changes requested return this same Work and ownership to the member.";
   }
   if (context.eligibleReadyWorks.length > 0) {
@@ -712,7 +713,7 @@ function MemberWorkQueue({
                 <p className="truncate text-[11px] font-medium text-foreground" title={work.title}>{work.title}</p>
                 <p className="mt-0.5 truncate font-mono text-[9px] text-muted-foreground" title={work.id}>{work.id}</p>
               </div>
-              <Badge tone={workStatusTone(work.status)}>{work.status}</Badge>
+              <Badge tone={workStatusTone(workLifecycleLabel(work))}>{workLifecycleLabel(work)}</Badge>
               </button>
             </li>
           ))}
@@ -865,14 +866,14 @@ function MemberContextRail({
       <ContextModule
         title="Current Work · Member Goal"
         icon={<ShieldCheck className="size-3.5" />}
-        tone={work ? workStatusTone(work.status) : "warn"}
+        tone={work ? workStatusTone(workLifecycleLabel(work)) : "warn"}
         className="order-2 rounded-xl bg-card shadow-[0_14px_34px_-32px_rgba(15,23,42,.65)]"
       >
         {work ? (
           <div className="space-y-2.5 text-[12px]">
             <p className="font-semibold text-foreground">{work.title}</p>
             {work.context_markdown && <div className="line-clamp-5 text-muted-foreground"><Markdown source={work.context_markdown} compact /></div>}
-            <RailKeyValue label="Status" value={work.status} />
+            <RailKeyValue label="Lifecycle" value={workLifecycleLabel(work)} />
             <RailKeyValue label="Priority" value={work.priority} />
             <RailKeyValue label="Updated" value={formatTime(work.updated_at)} />
             <RailKeyValue label="Version" value={String(work.version)} mono />
@@ -1599,10 +1600,10 @@ function messageTone(kind?: string | null): StatusTone {
 }
 
 function workStatusTone(status?: string | null): StatusTone {
-  if (status === "done") return "good";
+  if (status === "accepted") return "good";
   if (status === "cancelled") return "bad";
   if (status === "blocked") return "warn";
-  if (status === "in_progress") return "running";
+  if (status === "active") return "running";
   if (status === "review") return "info";
   return "idle";
 }

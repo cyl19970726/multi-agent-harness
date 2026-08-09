@@ -1,6 +1,5 @@
 import type {
   CompanyOsActorRef,
-  CompanyOsCorrectiveWorkContext,
   CompanyOsDocumentHealthData,
   CompanyOsHomeData,
   CompanyOsHealthFinding,
@@ -130,10 +129,6 @@ function entityRefs(value: unknown): Array<{ kind: string; id: string }> {
     : [];
 }
 
-/**
- * WorkItem.context_refs is written either as `{ kind, id }` entity refs or as bare id
- * strings depending on the writer, so both shapes have to resolve to the same ids.
- */
 function docsDocumentHref(id: string): string | undefined {
   return id ? `?surface=docs&document=${encodeURIComponent(id)}` : undefined;
 }
@@ -158,7 +153,7 @@ function typedRecordLink(entry: JsonRecord | undefined): CompanyOsLink | undefin
     : undefined;
 }
 
-function workItemLink(entry: JsonRecord | undefined): CompanyOsLink | undefined {
+function workLink(entry: JsonRecord | undefined): CompanyOsLink | undefined {
   return entry ? { id: text(entry.id), label: text(entry.title, "Untitled work"), kind: "work" } : undefined;
 }
 
@@ -291,7 +286,6 @@ function buildDocumentHealthData({
   typedRecords,
   relations,
   modules,
-  workItems,
   structureLinks,
   pageDefinitions,
 }: {
@@ -304,27 +298,19 @@ function buildDocumentHealthData({
   typedRecords: JsonRecord[];
   relations: JsonRecord[];
   modules: JsonRecord[];
-  workItems: JsonRecord[];
   structureLinks: CompanyOsLink[];
   pageDefinitions: JsonRecord[];
 }): CompanyOsDocumentHealthData {
   const findings: CompanyOsHealthFinding[] = [];
   const documentIds = new Set(documents.map((entry) => text(entry.id)).filter(Boolean));
-  const workDefinition = pageDefinitions.find((definition) => Array.isArray(definition.action_command_refs)
-    && definition.action_command_refs.map((value) => text(value)).includes("work_item.append"));
   const relationDefinition = pageDefinitions.find((definition) => Array.isArray(definition.action_command_refs)
     && definition.action_command_refs.map((value) => text(value)).includes("relation.append"));
-  const module = modules.find((entry) => text(entry.id) === text(workDefinition?.module_id, text(relationDefinition?.module_id))) ?? modules[0];
-  const workActionPolicyRef = Array.isArray(workDefinition?.policy_refs)
-    ? workDefinition.policy_refs.map((value) => text(value)).find((value) => value.endsWith(":work_item.append"))
-    : undefined;
+  const module = modules.find((entry) => text(entry.id) === text(relationDefinition?.module_id)) ?? modules[0];
   const relationActionPolicyRef = Array.isArray(relationDefinition?.policy_refs)
     ? relationDefinition.policy_refs.map((value) => text(value)).find((value) => value.endsWith(":relation.append"))
     : undefined;
   const governanceActor = actors.find((actor) => /docs|document/i.test(text(actor.display_name)) && /agent/i.test(text(actor.actor_type)));
-  const humanOwner = actors.find((actor) => kindForActor(actor) === "Human");
   const governanceActorRef = actorRef(governanceActor);
-  const humanOwnerRef = actorRef(humanOwner);
   const blockCounts = new Map<string, number>();
   blocks.forEach((block) => {
     const documentId = text(block.document_ref, text(block.document_id));
@@ -364,24 +350,6 @@ function buildDocumentHealthData({
     return false;
   }
 
-  function correctiveContext(sourceDocument: JsonRecord | undefined, sourceRecordRefs: string[] = [], sourceRecords: JsonRecord[] = []): CompanyOsCorrectiveWorkContext | undefined {
-    const sourceDocumentLink = documentLink(sourceDocument);
-    if (!sourceDocumentLink || !workDefinition || !workActionPolicyRef || !governanceActorRef) return undefined;
-    if (!documentBelongsToWorkDefinition(sourceDocument, sourceRecords)) return undefined;
-    return {
-      definitionId: text(workDefinition.id),
-      actionPolicyRef: workActionPolicyRef,
-      sourceDocument: sourceDocumentLink,
-      businessModuleRef: text(module?.id) || undefined,
-      sourceRecordRefs,
-      requestedBy: governanceActorRef,
-      submittedBy: governanceActorRef,
-      accountableOwner: governanceActorRef,
-      assignees: [governanceActorRef],
-      reviewer: humanOwnerRef,
-    };
-  }
-
   function relationRepairContext(sourceDocument: JsonRecord | undefined, sourceRecord: JsonRecord | undefined): CompanyOsRelationRepairContext | undefined {
     const sourceDocumentId = text(sourceDocument?.id);
     const sourceRecordId = text(sourceRecord?.id);
@@ -410,10 +378,8 @@ function buildDocumentHealthData({
         title: "Document parent is missing",
         detail: `${text(document.title, documentId)} references parent ${parentId}, but that document is not present in the projection.`,
         subject: documentLink(document),
-        recommendedAction: "Create a corrective WorkItem for Docs Governance, or run a governed Docs action to attach the document to a valid parent.",
-        correctiveWorkLabel: "Create corrective WorkItem",
+        recommendedAction: "Route a native TeamWork to Docs Governance, or run a governed Docs action to attach the document to a valid parent.",
         directActionLabel: "Relink parent",
-        correctiveWorkContext: correctiveContext(document),
       });
     }
     const blockCount = blockCounts.get(documentId) ?? 0;
@@ -425,8 +391,7 @@ function buildDocumentHealthData({
         title: "Document is becoming oversized",
         detail: `${text(document.title, documentId)} has ${blockCount} blocks. Consider extracting typed records or sub-documents before it becomes hard for agents to maintain.`,
         subject: documentLink(document),
-        recommendedAction: "Ask Docs Governance to split this document through a planned WorkItem and preserve source/result relations.",
-        correctiveWorkContext: correctiveContext(document),
+        recommendedAction: "Ask Docs Governance to split this document through native TeamWork and preserve source/result relations.",
       });
     }
   });
@@ -441,10 +406,8 @@ function buildDocumentHealthData({
       detail: `${entries.length} documents share the title “${text(entries[0].title, "Untitled document")}”. Agents need a stable naming convention to route work correctly.`,
       subject: documentLink(entries[0]),
       affected: linkEntries(entries.map(documentLink)),
-      recommendedAction: "Create a Docs Governance cleanup WorkItem to rename or merge duplicates; do not delete historical documents without a governed action.",
-      correctiveWorkLabel: "Create cleanup WorkItem",
+      recommendedAction: "Route cleanup through native TeamWork to rename or merge duplicates; do not delete historical documents without a governed action.",
       directActionLabel: "Rename document",
-      correctiveWorkContext: correctiveContext(entries[0]),
     });
   });
 
@@ -475,7 +438,6 @@ function buildDocumentHealthData({
         subject: typedRecordLink(entry),
         related: { id: sourceDocumentId, label: sourceDocumentId, kind: "document" },
         recommendedAction: "Restore the source Document or create a governed relation migration that moves this record to a valid source.",
-        correctiveWorkLabel: "Create corrective WorkItem",
       });
       return;
     }
@@ -503,51 +465,7 @@ function buildDocumentHealthData({
         related: documentLink(sourceDocument),
         recommendedAction: "Run the Docs relation link command or dispatch a governed Docs action to create the explicit Document ↔ TypedRecord relation.",
         directActionLabel: "Link relation",
-        correctiveWorkContext: correctiveContext(sourceDocument, [recordId], [entry]),
         relationRepairContext: relationRepairContext(sourceDocument, entry),
-      });
-    }
-  });
-
-  // Work source provenance: every visible active WorkItem must resolve to an
-  // active Document or explicit archived-source history with title and
-  // lifecycle. Finding kinds and severities mirror the Store API and CLI.
-  workItems.forEach((entry) => {
-    const workId = text(entry.id);
-    if (!workId) return;
-    const workStatus = text(entry.status, "submitted").toLowerCase();
-    if (workStatus === "archived") return;
-    const workIsActive = !["completed", "cancelled", "draft"].includes(workStatus);
-    const sourceDocumentId = text(entry.source_document_ref, text(entry.source_document_id));
-    if (!sourceDocumentId) return;
-    const sourceDocument = record(sourceDocuments, sourceDocumentId);
-    if (!sourceDocument) {
-      findings.push({
-        id: `missing-source-document-work:${workId}`,
-        kind: "work_item_source_document_missing",
-        severity: "critical",
-        title: "WorkItem source Document is missing",
-        detail: `${text(entry.title, workId)} points to ${sourceDocumentId}, but that Document is not present. Active Work provenance cannot degrade to a bare id.`,
-        subject: workItemLink(entry),
-        related: { id: sourceDocumentId, label: sourceDocumentId, kind: "document" },
-        recommendedAction: "Restore the source Document or migrate this WorkItem to a valid source through a governed Work action.",
-        correctiveWorkLabel: "Create corrective WorkItem",
-      });
-      return;
-    }
-    if (workIsActive && isArchived(sourceDocument)) {
-      findings.push({
-        id: `archived-source-document-work:${workId}`,
-        kind: "work_item_source_document_archived",
-        severity: "warning",
-        title: "WorkItem source Document is archived history",
-        detail: `${text(entry.title, workId)} is sourced from ${text(sourceDocument.title, sourceDocumentId)} (archived). The source stays readable and navigable for provenance but is no longer active company memory.`,
-        subject: workItemLink(entry),
-        related: (() => {
-          const archivedWorkSourceLink = documentLink(sourceDocument);
-          return archivedWorkSourceLink ? { ...archivedWorkSourceLink, meta: "archived" } : undefined;
-        })(),
-        recommendedAction: "The source Document is explicit archived history; keep it read-only for provenance or route a successor source through a governed Docs action.",
       });
     }
   });
@@ -566,9 +484,7 @@ function buildDocumentHealthData({
       subject: moduleLink(entry),
       related: rootDocumentId ? { id: rootDocumentId, label: rootDocumentId, kind: "document" } : undefined,
       recommendedAction: "Create or attach a root Document before agents add new records into this module.",
-      correctiveWorkLabel: "Create module-structure WorkItem",
       directActionLabel: "Attach root Document",
-      correctiveWorkContext: correctiveContext(documents[0]),
     });
   });
 
@@ -590,11 +506,10 @@ function buildDocumentHealthData({
           : operation === "split"
             ? "Plan document split"
             : "Plan structure migration",
-        detail: `${finding.title}. Route through a corrective WorkItem so affected owners can preserve provenance and rollback context.`,
+        detail: `${finding.title}. Route through native TeamWork so affected owners can preserve provenance and rollback context.`,
         findingId: finding.id,
         subject: finding.subject,
-        route: "corrective_work_item" as const,
-        disabledReason: finding.correctiveWorkContext ? undefined : "This finding lacks a complete work_item.append policy context in the projection.",
+        route: "team_work" as const,
       };
     });
 
@@ -620,7 +535,7 @@ function buildDocumentHealthData({
     actionHints: [
       { id: "health-cli", label: "Run health audit", command: "harness company docs health", tone: "primary" },
       { id: "relation-cli", label: "Link durable truth", command: "harness company docs relation link", tone: "neutral" },
-      { id: "corrective-work", label: "Create corrective work", command: "Browser Action: work_item.append", tone: "warning", disabledReason: workDefinition && workActionPolicyRef ? undefined : "Store-live WorkItem action declaration is not present in this projection." },
+      { id: "corrective-work", label: "Route corrective work", command: "harness team-run work create --team-run-id <id> --title <text> --completion-criteria <text>", tone: "warning" },
       { id: "docs-action", label: "Dispatch Docs action", command: "Browser Action: relation.append", disabledReason: relationDefinition && relationActionPolicyRef ? undefined : "Direct mutation requires Docs action policy and idempotency." },
     ],
   };
@@ -725,7 +640,8 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
   const documents = allDocuments.filter((entry) => !isArchived(entry));
   const activeDocumentIds = new Set(documents.map((entry) => text(entry.id)).filter(Boolean));
   const typedRecords = items(root.typed_records);
-  const workItems = items(root.work_items);
+  const workAggregate = root.work && typeof root.work === "object" && !Array.isArray(root.work) ? root.work as JsonRecord : {};
+  const works = items(workAggregate.works).length ? items(workAggregate.works) : items(root.works);
   const financialRecords = items(root.financial_records);
   const approvals = items(root.approvals);
   const allModules = items(root.business_modules);
@@ -758,15 +674,13 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     ?? documents[0];
   const templateDocuments = documents.filter((entry) => text(entry.kind).toLowerCase() === "template");
   const templateLinks = templateDocuments.map((document) => templateOption(document, blocks));
-  const work = workItems.find((entry) => text(entry.source_document_ref) === text(workspaceDocument?.id))
-    ?? firstReferenced(workItems, distinct([...focusRefs, ...moduleRefs]))
-    ?? workItems[0];
-  const workSourceDocument = record(allDocuments, work?.source_document_ref);
+  const work = firstReferenced(works, distinct([...focusRefs, ...moduleRefs])) ?? works[0];
+  const workSourceDocument = workspaceDocument;
   const application = typedRecords.find((entry) => ["trademarkapplication", "trademark_application"].includes(text(entry.record_type).toLowerCase()))
     ?? typedRecords.find((entry) => text(entry.source_document_ref) === text(workSourceDocument?.id ?? workspaceDocument?.id))
     ?? firstReferenced(typedRecords, distinct([...workspaceRefs, ...focusRefs, ...moduleRefs]))
     ?? typedRecords[0];
-  const financial = financialRecords.find((entry) => text(entry.work_item_ref) === text(work?.id))
+  const financial = financialRecords.find((entry) => text(entry.work_ref) === text(work?.id))
     ?? financialRecords.find((entry) => text(entry.business_record_ref) === text(application?.id))
     ?? firstReferenced(financialRecords, distinct([...workspaceRefs, ...focusRefs, ...moduleRefs]))
     ?? financialRecords[0];
@@ -789,7 +703,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
   const applicationLink = application
     ? { id: text(application.id), label: text(field(application, "display_id"), text(application.display_name, text(application.title, "Untitled record"))), kind: "record" as const }
     : undefined;
-  const workLink = workItemLink(work);
+  const selectedWorkLink = workLink(work);
   const financialType = text(financial?.type);
   const financeLink = financialRecordLink(financial);
   const decisionTitle = approvalTitle(approval, financial, work);
@@ -802,31 +716,14 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     ? typedRecords.filter((entry) => text(entry.source_document_ref, text(entry.source_document_id)) === focusDocumentId
       || hasRelationBetween(relations, focusDocumentId, text(entry.id)))
     : [];
-  const focusTypedRecordIds = new Set(focusTypedRecords.map((entry) => text(entry.id)).filter(Boolean));
-  const focusWorkItems = focusDocumentId
-    ? workItems.filter((entry) => text(entry.source_document_ref, text(entry.source_document_id)) === focusDocumentId
-      || focusTypedRecordIds.has(text(entry.business_record_ref, text(entry.source_record_ref))))
-    : [];
   const focusActorRefs = refs(root, "document-focus");
   const moduleActorRefs = refs(root, "business-module-focus");
   const homeActorRefs = refs(root, "home");
-  const workActorRefs = [
-    work?.requested_by_ref ?? work?.requested_by, work?.submitted_by_ref ?? work?.submitted_by, work?.accountable_owner_ref ?? work?.accountable_owner,
-    ...(Array.isArray(work?.assignee_refs) ? work.assignee_refs : Array.isArray(work?.assignees) ? work.assignees : []),
-    ...(Array.isArray(work?.contributor_refs) ? work.contributor_refs : Array.isArray(work?.contributors) ? work.contributors : []),
-    work?.reviewer_ref ?? work?.reviewer, work?.legal_reviewer_ref, work?.approver_ref ?? work?.approver,
-  ].map(refId).filter(Boolean);
   const referencedActorIds = items(focusDocument?.reference_refs)
     .filter((reference) => text(reference.kind) === "actor")
     .map((reference) => text(reference.id));
-  const focusWorkActorRefs = focusWorkItems.flatMap((entry) => [
-    entry.requested_by_ref ?? entry.requested_by, entry.submitted_by_ref ?? entry.submitted_by, entry.accountable_owner_ref ?? entry.accountable_owner,
-    ...(Array.isArray(entry.assignee_refs) ? entry.assignee_refs : Array.isArray(entry.assignees) ? entry.assignees : []),
-    ...(Array.isArray(entry.contributor_refs) ? entry.contributor_refs : Array.isArray(entry.contributors) ? entry.contributors : []),
-    entry.reviewer_ref ?? entry.reviewer, entry.legal_reviewer_ref, entry.approver_ref ?? entry.approver,
-  ].map(refId).filter(Boolean));
-  const focusActors = linkEntries(distinct([...focusActorRefs, refId(focusDocument?.owner_ref), ...referencedActorIds, ...focusWorkActorRefs]).map((id) => actorLink(actors, id)));
-  const moduleActors = linkEntries(distinct([...moduleActorRefs, ...workActorRefs]).map((id) => actorLink(actors, id)));
+  const focusActors = linkEntries(distinct([...focusActorRefs, refId(focusDocument?.owner_ref), ...referencedActorIds]).map((id) => actorLink(actors, id)));
+  const moduleActors = linkEntries(distinct(moduleActorRefs).map((id) => actorLink(actors, id)));
   const decisionActor = actorLink(actors, approval?.accountable_owner_ref ?? work?.approver_ref ?? work?.approver);
   const decisionRequester = actorLink(actors, approval?.requested_by_ref ?? approval?.requested_by ?? work?.requested_by_ref ?? work?.requested_by);
   const decisionCollaborators = linkEntries(distinct([
@@ -940,7 +837,6 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     typedRecords,
     relations,
     modules,
-    workItems,
     structureLinks,
     pageDefinitions,
   });
@@ -1041,11 +937,12 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
   const moduleRecords: CompanyOsStructuredViewData["records"] = moduleTypedRecords.length
     ? moduleTypedRecords.map((entry) => {
         const sourceDocument = record(documents, entry.source_document_ref);
-        const relatedWork = workItems.find((candidate) => text(candidate.business_record_ref) === text(entry.id))
-          ?? workItems.find((candidate) => strings(candidate.source_record_refs).includes(text(entry.id)) || strings(candidate.result_record_refs).includes(text(entry.id)))
-          ?? workItems.find((candidate) => text(candidate.source_document_ref) === text(sourceDocument?.id));
+        const relatedWork = works.find((candidate) => relations.some((relation) => {
+          const endpointIds = relationEndpointIds(relation);
+          return endpointIds.includes(text(candidate.id)) && endpointIds.includes(text(entry.id));
+        }));
         const relatedFinancial = financialRecords.find((candidate) => text(candidate.business_record_ref) === text(entry.id))
-          ?? financialRecords.find((candidate) => text(candidate.work_item_ref) === text(relatedWork?.id));
+          ?? financialRecords.find((candidate) => text(candidate.work_ref) === text(relatedWork?.id));
         const relatedApproval = approvals.find((candidate) => strings(candidate.subject_refs).some((ref) => ref === text(relatedWork?.id) || ref === text(relatedFinancial?.id)))
           ?? approvals.find((candidate) => text(candidate.subject_ref) === text(relatedWork?.id) || text(candidate.subject_ref) === text(relatedFinancial?.id));
         return {
@@ -1073,9 +970,9 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     : work ? [{
         id: text(work.id),
         title: text(work.title, "Untitled work"),
-        type: "WorkItem",
-        status: text(work.status) || undefined,
-        group: text(work.status) || undefined,
+        type: "TeamWork",
+        status: text(work.phase) || undefined,
+        group: text(work.condition) || undefined,
         date: text(work.updated_at) || undefined,
         links: linkEntries([sourceLink, applicationLink, approvalLink, financeLink]),
       }] : [];
@@ -1127,7 +1024,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
         { label: "Docs health", value: health.status === "pass" ? "Passing" : `${health.counts.findings} findings`, tone: health.status === "pass" ? "neutral" as const : "warning" as const },
       ],
       structureLinks,
-      suggestions: linkEntries([sourceLink, applicationLink, workLink, approvalLink, financeLink]),
+      suggestions: linkEntries([sourceLink, applicationLink, selectedWorkLink, approvalLink, financeLink]),
       proposal: proposalLink,
       authoringCommands: governanceCommands,
     },
@@ -1161,7 +1058,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
       ],
       availableViews: ["table", "board", "timeline"],
       sourceLinks: linkEntries([sourceLink, applicationLink, proposalLink, ...moduleActors]),
-      resultLinks: linkEntries([workLink, financeLink, ...moduleConnectedLinks.filter((link) => ["work", "approval", "finance"].includes(link.kind ?? ""))]),
+      resultLinks: linkEntries([selectedWorkLink, financeLink, ...moduleConnectedLinks.filter((link) => ["work", "approval", "finance"].includes(link.kind ?? ""))]),
       authoring: moduleAuthoring,
       fallback: { label: "Open standard record view", description: "The standard record view remains available if a custom module page is unavailable." },
     },
@@ -1174,7 +1071,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
       decisionActor: decisionActor ? { id: decisionActor.id, name: decisionActor.label, kind: decisionActor.actorType === "Human" ? "human" : decisionActor.actorType === "Standing Agent" ? "agent" : decisionActor.actorType === "External" ? "external" : "service" } : undefined,
       decisionRequester,
       decisionCollaborators,
-      changes: linkEntries([sourceLink, applicationLink, workLink, financeLink]),
+      changes: linkEntries([sourceLink, applicationLink, selectedWorkLink, financeLink]),
       workSummary: work ? [{ id: text(work.id), label: "Open work", value: "1", detail: text(work.title) }] : [],
       financeSummary: financeLink ? [{ id: financeLink.id, label: text(financial?.display_name, "Financial record"), value: text(financial?.display_amount, "—"), detail: financialType ? `Record type: ${financialType}` : undefined, financialRecordType: financeLink.financialRecordType }] : [],
     },

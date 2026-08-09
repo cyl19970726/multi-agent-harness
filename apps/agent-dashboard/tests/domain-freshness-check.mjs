@@ -29,8 +29,8 @@ try {
     scope, ledger, scope_id: "scope", revision: 1, reason: "append", stream_epoch: "epoch",
   });
   check(
-    freshnessDomainsForInvalidation(invalidation("company", "company_os_work_items.jsonl")).join(",") === "works,runtime",
-    "Work ledger invalidation affects Works plus read-model convergence only",
+    freshnessDomainsForInvalidation(invalidation("execution_space", "work_operations.jsonl")).join(",") === "works,runtime",
+    "authoritative Work operation invalidation affects Works plus read-model convergence only",
   );
   check(
     freshnessDomainsForInvalidation(invalidation("company", "company_os_documents.jsonl")).join(",") === "docs,runtime",

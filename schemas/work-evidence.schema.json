@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/work-evidence.schema.json",
+  "title": "AgentTeamWorkEvidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "work_id", "work_report_id", "work_version", "candidate_revision", "source_type", "source_ref", "summary", "created_at"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "work_id": { "type": "string", "minLength": 1 },
+    "work_report_id": { "type": "string", "minLength": 1 },
+    "work_version": { "type": "integer", "minimum": 1 },
+    "candidate_revision": { "type": "string", "minLength": 1 },
+    "source_type": { "const": "work_candidate_revision" },
+    "source_ref": { "type": "string", "minLength": 1 },
+    "summary": { "type": "string", "minLength": 1 },
+    "created_at": { "type": "string", "minLength": 1 }
+  }
+}

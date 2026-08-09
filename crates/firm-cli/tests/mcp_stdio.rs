@@ -481,7 +481,9 @@ fn mcp_stdio_host_only_typed_work_review_boundary() {
             }
         }),
     ));
-    assert_eq!(accepted["status"].as_str(), Some("done"));
+    assert_eq!(accepted["phase"].as_str(), Some("closed"));
+    assert_eq!(accepted["condition"].as_str(), Some("normal"));
+    assert_eq!(accepted["resolution"].as_str(), Some("accepted"));
     let accepted_operation = store
         .work_operations()
         .expect("Work operations")

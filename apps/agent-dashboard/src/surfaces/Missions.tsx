@@ -409,8 +409,8 @@ function MissionDetail({
   const pendingMembers = selectedMembers.filter((member) =>
     ["waiting", "reviewing"].includes(member.status ?? ""),
   );
-  const blockedWork = missionWorks.find((work) => work.status === "blocked");
-  const reviewWorkCount = missionWorks.filter((work) => work.status === "review").length;
+  const blockedWork = missionWorks.find((work) => work.condition === "blocked");
+  const reviewWorkCount = missionWorks.filter((work) => work.phase === "review").length;
   const blockedMember = blockedWork
     ? selectedMembers.find((member) =>
       member.id === blockedWork.active_member_run_id

@@ -40,11 +40,12 @@ use harness_core::{
     TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery,
     TeamMessageKind, TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
     TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Validate, Wave, WaveExecutorKind,
-    WaveStatus, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkDelivery,
-    WorkDeliveryStatus, WorkPriority, WorkStatus, WorkWorkspace, WorkWorkspaceKind,
-    WorkflowArtifactFile, WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch,
-    WorkflowPatchStatus, WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus,
-    WorkflowTerminalReason, EXECUTION_MODE_EXTERNAL_INTERACTIVE,
+    WaveStatus, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkCondition,
+    WorkDelivery, WorkDeliveryStatus, WorkPhase, WorkPriority, WorkResolution, WorkWorkspace,
+    WorkWorkspaceKind, WorkflowArtifactFile, WorkflowArtifactManifest,
+    WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus, WorkflowRun,
+    WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
+    EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
     canonical_surface, HarnessStore, HostAttentionClaimResult, MessageDeliveryClaimResult,
@@ -2033,7 +2034,7 @@ fn retired_surface_error(command: &str) -> CliError {
 }
 
 fn company_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "company <init|list|current|switch|show|migrate-from-project|migrations> | company docs ... | company work list|query|create|update|assign|transition|close|milestone | company org ... | company approval ... | company finance ... | company gateway social readiness")?;
+    require_subcommand(args, "company <init|list|current|switch|show|migrate-from-project|migrations> | company docs ... | company work list|query|milestone | company org ... | company approval ... | company finance ... | company gateway social readiness")?;
     match args[0].as_str() {
         "init" => company_store_init_command(args.get(1..).unwrap_or(&[])),
         "list" => company_store_list_command(),
@@ -2267,7 +2268,7 @@ fn social_gateway_readiness_boundaries() -> serde_json::Value {
         "payment_side_effects": false,
         "deletion_side_effects": false,
         "credential_export": false,
-        "output_role": "observation_for_social_platform_account_typed_records_and_WorkItems"
+        "output_role": "observation_for_social_platform_account_typed_records_and_Work"
     })
 }
 
@@ -2397,7 +2398,8 @@ fn company_store_migrate_from_project_command(args: &[String]) -> CliResult<()> 
         "verified_at": verified_at,
         "verification": verification,
         "boundary": {
-            "copied": "company_os_*.jsonl only",
+            "copied": "active Company OS ledger allowlist only",
+            "retired_workitem_history_migrated": false,
             "execution_space_migration": false,
             "project_binding_migration": false,
             "dual_write": false,
@@ -2440,8 +2442,9 @@ fn company_store_migrate_from_project_command(args: &[String]) -> CliResult<()> 
         "migration_record": migration_record,
         "source_marker": source_marker,
         "boundary": {
-            "copied": "company_os_*.jsonl only",
-            "not_copied": ["missions.jsonl", "waves.jsonl", "agent_teams.jsonl", "team_runs.jsonl", "member_runs.jsonl", "team_messages.jsonl", "provider_sessions.jsonl", "runtimes", "prompts"],
+            "copied": "active Company OS ledger allowlist only",
+            "not_copied": ["retired WorkItem/Assignment/cutover ledgers", "missions.jsonl", "waves.jsonl", "agent_teams.jsonl", "team_runs.jsonl", "member_runs.jsonl", "team_messages.jsonl", "provider_sessions.jsonl", "runtimes", "prompts"],
+            "retired_workitem_history_migrated": false,
             "execution_space_migration": false,
             "project_binding_migration": false,
             "dual_write": false,
@@ -2479,21 +2482,51 @@ struct CompanyLedgerCopyOutcome {
     skipped_identical_files: u64,
 }
 
+/// Current Company Store ledgers only. Retired WorkItem, Assignment and
+/// cutover ledgers are intentionally absent: historical Company task data is
+/// disposable and is neither copied nor verified.
+const ACTIVE_COMPANY_OS_LEDGER_FILES: &[&str] = &[
+    "company_os_documents.jsonl",
+    "company_os_blocks.jsonl",
+    "company_os_typed_records.jsonl",
+    "company_os_relations.jsonl",
+    "company_os_views.jsonl",
+    "company_os_business_modules.jsonl",
+    "company_os_human_members.jsonl",
+    "company_os_standing_agents.jsonl",
+    "company_os_external_participants.jsonl",
+    "company_os_service_actors.jsonl",
+    "company_os_org_units.jsonl",
+    "company_os_organization_memberships.jsonl",
+    "company_os_milestones.jsonl",
+    "company_os_approvals.jsonl",
+    "company_os_commitments.jsonl",
+    "company_os_payments.jsonl",
+    "company_os_custom_page_definitions.jsonl",
+    "company_os_custom_page_packages.jsonl",
+    "company_os_action_commands.jsonl",
+    "company_os_action_policy_definitions.jsonl",
+    "company_os_audit_events.jsonl",
+    "company_os_action_audit_reservations.jsonl",
+    "company_os_blocks_v2.jsonl",
+    "company_os_document_revisions.jsonl",
+    "company_os_document_change_ops.jsonl",
+];
+
+fn active_company_os_ledger_paths(root: &Path) -> Vec<PathBuf> {
+    ACTIVE_COMPANY_OS_LEDGER_FILES
+        .iter()
+        .map(|file_name| root.join(file_name))
+        .filter(|path| path.is_file())
+        .collect()
+}
+
 fn verify_company_os_ledger_migration(src: &Path, dst: &Path) -> Result<serde_json::Value, String> {
-    let mut source_ledgers = fs::read_dir(src)
-        .map_err(|error| error.to_string())?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("company_os_") && name.ends_with(".jsonl"))
-        })
-        .collect::<Vec<_>>();
+    let mut source_ledgers = active_company_os_ledger_paths(src);
     source_ledgers.sort();
     if source_ledgers.is_empty() {
         return Err(format!(
-            "source store has no company_os_*.jsonl ledgers: {}",
+            "source store has no active Company OS ledgers: {}",
             src.display()
         ));
     }
@@ -2594,15 +2627,10 @@ fn copy_company_os_ledgers(
     fs::create_dir_all(dst).map_err(|err| err.to_string())?;
     let mut outcome = CompanyLedgerCopyOutcome::default();
     let mut saw_company_ledger = false;
-    for entry in fs::read_dir(src).map_err(|err| err.to_string())? {
-        let entry = entry.map_err(|err| err.to_string())?;
-        let path = entry.path();
+    for path in active_company_os_ledger_paths(src) {
         let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        if !file_name.starts_with("company_os_") || !file_name.ends_with(".jsonl") {
-            continue;
-        }
         saw_company_ledger = true;
         let target = dst.join(file_name);
         if target.exists() {
@@ -2627,7 +2655,7 @@ fn copy_company_os_ledgers(
     }
     if !saw_company_ledger {
         return Err(format!(
-            "source store has no company_os_*.jsonl ledgers: {}",
+            "source store has no active Company OS ledgers: {}",
             src.display()
         ));
     }
@@ -3578,21 +3606,13 @@ fn company_finance_transition_payment_command(
 }
 
 fn company_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(
-        args,
-        "company work list|query|create|update|assign|transition|close|milestone",
-    )?;
+    require_subcommand(args, "company work list|query|milestone")?;
     match args[0].as_str() {
         "list" => company_work_list_command(store, &args[1..]),
         "query" => company_work_query_command(store, &args[1..]),
-        "create" => company_work_create_command(store, &args[1..]),
-        "update" => company_work_update_command(store, &args[1..]),
-        "assign" => company_work_assign_command(store, &args[1..]),
-        "transition" => company_work_transition_command(store, &args[1..]),
-        "close" => company_work_close_command(store, &args[1..]),
         "milestone" => company_work_milestone_command(store, &args[1..]),
         other => Err(CliError::Usage(format!(
-            "unknown company work command: {other}; usage: harness company work list|query|create|update|assign|transition|close|milestone"
+            "unknown company work command: {other}; Company Work is read-only; use team-run work for mutations"
         ))),
     }
 }
@@ -3609,338 +3629,44 @@ fn company_work_list_command(store: &HarnessStore, args: &[String]) -> CliResult
 }
 
 fn company_work_query_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let work_item_id = required(args, "--work-item")?;
-    let item = store
-        .latest_work_items()?
+    let work_id = required(args, "--work")?;
+    let projection = company_work_projection_value(store, &serde_json::json!({}))?;
+    let conflicts = projection["conflicts"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if let Some(conflict) = conflicts.iter().find(|conflict| {
+        conflict.get("work_id").and_then(serde_json::Value::as_str) == Some(work_id.as_str())
+    }) {
+        return Err(CliError::Usage(format!(
+            "Work {work_id} is ambiguous across Execution Spaces: {}",
+            serde_json::to_string(conflict)?
+        )));
+    }
+    let work = projection["works"]
+        .as_array()
         .into_iter()
-        .find(|candidate| candidate.id == work_item_id)
-        .ok_or_else(|| CliError::Usage(format!("WorkItem not found: {work_item_id}")))?;
-    let assignments = store
-        .latest_assignments()?
+        .flatten()
+        .find(|candidate| {
+            candidate.get("id").and_then(serde_json::Value::as_str) == Some(work_id.as_str())
+        })
+        .cloned()
+        .ok_or_else(|| CliError::Usage(format!("Work not found: {work_id}")))?;
+    let milestones = store
+        .latest_milestones()?
         .into_iter()
-        .filter(|assignment| assignment.work_item_id == work_item_id)
+        .filter(|milestone| milestone.work_refs.contains(&work_id))
         .collect::<Vec<_>>();
-    let approvals = store
-        .latest_approvals()?
-        .into_iter()
-        .filter(|approval| item.approval_refs.contains(&approval.id))
-        .collect::<Vec<_>>();
-    let milestone = if let Some(milestone_id) = &item.milestone_ref {
-        store
-            .latest_milestones()?
-            .into_iter()
-            .find(|candidate| candidate.id == *milestone_id)
-            .map(serde_json::to_value)
-            .transpose()?
-    } else {
-        None
-    };
     print_json(&serde_json::json!({
         "ok": true,
         "result": {
-            "work_item": item,
-            "assignments": assignments,
-            "approvals": approvals,
-            "milestone": milestone,
+            "work": work,
+            "route": projection["routes"].get(&work_id),
+            "milestones": milestones,
             "boundaries": company_work_read_boundaries()
         },
         "command": "harness company work query"
     }))
-}
-
-fn company_work_create_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let source_document = required(args, "--source-document")?;
-    let title = required(args, "--title")?;
-    let objective = required(args, "--objective")?;
-    let submitted_by = required(args, "--submitted-by")?;
-    let accountable_owner = required(args, "--accountable-owner")?;
-    let actor_id = value(args, "--actor").unwrap_or_else(|| submitted_by.clone());
-    let actor_kind = value(args, "--actor-kind")
-        .or_else(|| value(args, "--submitted-by-kind"))
-        .unwrap_or_else(|| "agent".to_string());
-    let now = now_string();
-    let work_item_id = value(args, "--id").unwrap_or_else(|| generated_id("workitem-cli"));
-    let status = value(args, "--status").unwrap_or_else(|| "submitted".to_string());
-    let record = serde_json::json!({
-        "id": work_item_id,
-        "title": title,
-        "objective": objective,
-        "description": value(args, "--description"),
-        "acceptance_criteria": many(args, "--acceptance-criterion"),
-        "context_refs": many_json(args, "--context-ref-json")?,
-        "deliverable_refs": many_json(args, "--deliverable-ref-json")?,
-        "status": status,
-        "source_document_ref": source_document,
-        "source_record_refs": many(args, "--source-record"),
-        "milestone_ref": value(args, "--milestone"),
-        "work_type": value(args, "--work-type").unwrap_or_else(|| "general".to_string()),
-        "business_module_ref": value(args, "--module"),
-        "result_document_ref": null,
-        "result_record_refs": [],
-        "submitted_by": company_actor_ref_json(
-            &value(args, "--submitted-by-kind").unwrap_or_else(|| "agent".to_string()),
-            &submitted_by,
-        )?,
-        "requested_by": optional_company_actor_ref_json(args, "--requested-by", "--requested-by-kind")?,
-        "accountable_owner": company_actor_ref_json(
-            &value(args, "--accountable-owner-kind").unwrap_or_else(|| "agent".to_string()),
-            &accountable_owner,
-        )?,
-        "assignees": company_actor_refs_json(&many(args, "--assignee"), &value(args, "--assignee-kind").unwrap_or_else(|| "agent".to_string()))?,
-        "contributors": company_actor_refs_json(&many(args, "--contributor"), &value(args, "--contributor-kind").unwrap_or_else(|| "agent".to_string()))?,
-        "reviewer": optional_company_actor_ref_json(args, "--reviewer", "--reviewer-kind")?,
-        "approver": optional_company_actor_ref_json(args, "--approver", "--approver-kind")?,
-        "execution_mode": value(args, "--execution-mode").unwrap_or_else(|| "direct".to_string()),
-        "execution_refs": many_json(args, "--execution-ref-json")?,
-        "approval_refs": many(args, "--approval"),
-        "evidence_refs": many(args, "--evidence"),
-        "artifact_refs": many(args, "--artifact"),
-        "outcome_summary": value(args, "--outcome-summary"),
-        "due_at": value(args, "--due-at"),
-        "priority": value(args, "--priority"),
-        "risk_level": value(args, "--risk-level"),
-        "created_at": now,
-        "updated_at": now,
-        "completed_at": null
-    });
-    let body = company_work_action_body(
-        &definition_id,
-        value(args, "--policy-ref").unwrap_or_else(|| format!("{definition_id}:work_item.append")),
-        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-work-create")),
-        "work_item.append",
-        serde_json::json!({"kind": "document", "id": source_document}),
-        company_actor_ref_json(&actor_kind, &actor_id)?,
-        record,
-        "company.records.write",
-        "r1",
-        false,
-    );
-    dispatch_company_work_action(store, &body)
-}
-
-fn company_work_update_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let work_item_id = required(args, "--work-item")?;
-    let actor_id = required(args, "--actor")?;
-    let actor_kind = value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string());
-    let mut record = latest_work_item_value(store, &work_item_id)?;
-    if let Some(title) = value(args, "--title") {
-        record["title"] = serde_json::json!(title);
-    }
-    if let Some(objective) = value(args, "--objective") {
-        record["objective"] = serde_json::json!(objective);
-    }
-    if let Some(description) = value(args, "--description") {
-        record["description"] = serde_json::json!(description);
-    }
-    if has_flag(args, "--clear-description") {
-        record["description"] = serde_json::json!(null);
-    }
-    if !many(args, "--acceptance-criterion").is_empty() {
-        record["acceptance_criteria"] = serde_json::json!(many(args, "--acceptance-criterion"));
-    }
-    if !many(args, "--context-ref-json").is_empty() {
-        record["context_refs"] = serde_json::json!(many_json(args, "--context-ref-json")?);
-    }
-    if !many(args, "--deliverable-ref-json").is_empty() {
-        record["deliverable_refs"] = serde_json::json!(many_json(args, "--deliverable-ref-json")?);
-    }
-    if let Some(source_document) = value(args, "--source-document") {
-        record["source_document_ref"] = serde_json::json!(source_document);
-    }
-    if has_flag(args, "--clear-source-records") || !many(args, "--source-record").is_empty() {
-        record["source_record_refs"] = serde_json::json!(many(args, "--source-record"));
-    }
-    if let Some(milestone) = value(args, "--milestone") {
-        record["milestone_ref"] = serde_json::json!(milestone);
-    }
-    if has_flag(args, "--clear-milestone") {
-        record["milestone_ref"] = serde_json::json!(null);
-    }
-    if let Some(work_type) = value(args, "--work-type") {
-        record["work_type"] = serde_json::json!(work_type);
-    }
-    if let Some(module) = value(args, "--module") {
-        record["business_module_ref"] = serde_json::json!(module);
-    }
-    if has_flag(args, "--clear-module") {
-        record["business_module_ref"] = serde_json::json!(null);
-    }
-    if let Some(requested_by) = value(args, "--requested-by") {
-        record["requested_by"] = company_actor_ref_json(
-            &value(args, "--requested-by-kind").unwrap_or_else(|| "agent".to_string()),
-            &requested_by,
-        )?;
-    }
-    if has_flag(args, "--clear-requested-by") {
-        record["requested_by"] = serde_json::json!(null);
-    }
-    if let Some(accountable_owner) = value(args, "--accountable-owner") {
-        record["accountable_owner"] = company_actor_ref_json(
-            &value(args, "--accountable-owner-kind").unwrap_or_else(|| "agent".to_string()),
-            &accountable_owner,
-        )?;
-    }
-    if has_flag(args, "--clear-assignees") || !many(args, "--assignee").is_empty() {
-        record["assignees"] = serde_json::Value::Array(company_actor_refs_json(
-            &many(args, "--assignee"),
-            &value(args, "--assignee-kind").unwrap_or_else(|| "agent".to_string()),
-        )?);
-    }
-    if has_flag(args, "--clear-contributors") || !many(args, "--contributor").is_empty() {
-        record["contributors"] = serde_json::Value::Array(company_actor_refs_json(
-            &many(args, "--contributor"),
-            &value(args, "--contributor-kind").unwrap_or_else(|| "agent".to_string()),
-        )?);
-    }
-    if let Some(reviewer) = value(args, "--reviewer") {
-        record["reviewer"] = company_actor_ref_json(
-            &value(args, "--reviewer-kind").unwrap_or_else(|| "agent".to_string()),
-            &reviewer,
-        )?;
-    }
-    if has_flag(args, "--clear-reviewer") {
-        record["reviewer"] = serde_json::json!(null);
-    }
-    if let Some(approver) = value(args, "--approver") {
-        record["approver"] = company_actor_ref_json(
-            &value(args, "--approver-kind").unwrap_or_else(|| "agent".to_string()),
-            &approver,
-        )?;
-    }
-    if has_flag(args, "--clear-approver") {
-        record["approver"] = serde_json::json!(null);
-    }
-    if let Some(execution_mode) = value(args, "--execution-mode") {
-        record["execution_mode"] = serde_json::json!(execution_mode);
-    }
-    if let Some(due_at) = value(args, "--due-at") {
-        record["due_at"] = serde_json::json!(due_at);
-    }
-    if has_flag(args, "--clear-due-at") {
-        record["due_at"] = serde_json::json!(null);
-    }
-    if let Some(priority) = value(args, "--priority") {
-        record["priority"] = serde_json::json!(priority);
-    }
-    if has_flag(args, "--clear-priority") {
-        record["priority"] = serde_json::json!(null);
-    }
-    if let Some(risk_level) = value(args, "--risk-level") {
-        record["risk_level"] = serde_json::json!(risk_level);
-    }
-    if has_flag(args, "--clear-risk-level") {
-        record["risk_level"] = serde_json::json!(null);
-    }
-    record["updated_at"] = serde_json::json!(now_string());
-    let body = company_work_action_body(
-        &definition_id,
-        value(args, "--policy-ref").unwrap_or_else(|| format!("{definition_id}:work_item.update")),
-        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-work-update")),
-        "work_item.update",
-        serde_json::json!({"kind": "work_item", "id": work_item_id}),
-        company_actor_ref_json(&actor_kind, &actor_id)?,
-        record,
-        "company.records.write",
-        "r2",
-        false,
-    );
-    dispatch_company_work_action(store, &body)
-}
-
-fn company_work_assign_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let work_item_id = required(args, "--work-item")?;
-    let recipient_id = required(args, "--assignee")?;
-    let sender_id = required(args, "--assigned-by")?;
-    let now = now_string();
-    let assignment_id = value(args, "--id").unwrap_or_else(|| generated_id("assignment-cli"));
-    let delivery_state = value(args, "--delivery-state").unwrap_or_else(|| "pending".to_string());
-    let delivered_at = if matches!(delivery_state.as_str(), "delivered" | "acknowledged") {
-        Some(now.clone())
-    } else {
-        value(args, "--delivered-at")
-    };
-    let acknowledged_at = if delivery_state == "acknowledged" {
-        Some(now.clone())
-    } else {
-        value(args, "--acknowledged-at")
-    };
-    let record = serde_json::json!({
-        "id": assignment_id,
-        "work_item_id": work_item_id,
-        "recipient": company_actor_ref_json(
-            &value(args, "--assignee-kind").unwrap_or_else(|| "agent".to_string()),
-            &recipient_id,
-        )?,
-        "sender": company_actor_ref_json(
-            &value(args, "--assigned-by-kind").unwrap_or_else(|| "agent".to_string()),
-            &sender_id,
-        )?,
-        "assigned_role": value(args, "--role").unwrap_or_else(|| "assignee".to_string()),
-        "scope": value(args, "--scope"),
-        "delivery_state": delivery_state,
-        "delivery_policy_ref": value(args, "--delivery-policy").unwrap_or_else(|| "work.assignment.default".to_string()),
-        "correlation_id": value(args, "--correlation-id").unwrap_or_else(|| generated_id("work-assignment")),
-        "delivery_evidence_ref": value(args, "--delivery-evidence"),
-        "assigned_at": value(args, "--assigned-at").unwrap_or_else(|| now.clone()),
-        "delivered_at": delivered_at,
-        "acknowledged_at": acknowledged_at
-    });
-    let actor_kind = value(args, "--actor-kind")
-        .or_else(|| value(args, "--assigned-by-kind"))
-        .unwrap_or_else(|| "agent".to_string());
-    let body = company_work_action_body(
-        &definition_id,
-        value(args, "--policy-ref").unwrap_or_else(|| format!("{definition_id}:assignment.append")),
-        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-work-assign")),
-        "assignment.append",
-        serde_json::json!({"kind": "work_item", "id": work_item_id}),
-        company_actor_ref_json(&actor_kind, &sender_id)?,
-        record,
-        "company.records.write",
-        "r1",
-        false,
-    );
-    dispatch_company_work_action(store, &body)
-}
-
-fn company_work_transition_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let definition_id = required(args, "--definition")?;
-    let work_item_id = required(args, "--work-item")?;
-    let status = required(args, "--status")?;
-    let actor_id = required(args, "--actor")?;
-    let mut record = latest_work_item_value(store, &work_item_id)?;
-    company_work_apply_transition_fields(args, &mut record, &status)?;
-    let body = company_work_action_body(
-        &definition_id,
-        value(args, "--policy-ref")
-            .unwrap_or_else(|| format!("{definition_id}:work_item.transition")),
-        value(args, "--command-id").unwrap_or_else(|| generated_id("action-cli-work-transition")),
-        "work_item.transition",
-        serde_json::json!({"kind": "work_item", "id": work_item_id}),
-        company_actor_ref_json(
-            &value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string()),
-            &actor_id,
-        )?,
-        record,
-        "company.work.execute",
-        "r2",
-        false,
-    );
-    dispatch_company_work_action(store, &body)
-}
-
-fn company_work_close_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let mut forwarded = args.to_vec();
-    forwarded.push("--status".to_string());
-    forwarded.push("completed".to_string());
-    if value(args, "--completed-at").is_none() {
-        forwarded.push("--completed-at".to_string());
-        forwarded.push(now_string());
-    }
-    company_work_transition_command(store, &forwarded)
 }
 
 fn company_work_milestone_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
@@ -3997,7 +3723,7 @@ fn company_work_milestone_create_command(store: &HarnessStore, args: &[String]) 
         "business_module_ref": value(args, "--module"),
         "target_at": value(args, "--target-at"),
         "acceptance_criteria": many(args, "--acceptance-criterion"),
-        "work_item_refs": many(args, "--work-item"),
+        "work_refs": many(args, "--work"),
         "created_at": now,
         "updated_at": now,
         "achieved_at": null
@@ -4048,7 +3774,7 @@ fn company_work_milestone_update_command(store: &HarnessStore, args: &[String]) 
         "acceptance_criteria",
         many(args, "--acceptance-criterion"),
     );
-    append_string_values(&mut record, "work_item_refs", many(args, "--work-item"));
+    append_string_values(&mut record, "work_refs", many(args, "--work"));
     record["updated_at"] = serde_json::json!(now_string());
     if record.get("status").and_then(|value| value.as_str()) == Some("achieved")
         && record
@@ -4550,7 +4276,7 @@ fn company_finance_commitment_propose_command(
             .unwrap_or_else(|| format!("{definition_id}:commitment.propose")),
         command_id,
         "commitment.propose",
-        serde_json::json!({"kind": "work_item", "id": required(args, "--work-item")?}),
+        serde_json::json!({"kind": "work", "id": required(args, "--work")?}),
         company_actor_ref_json(&submitted_by_kind, &submitted_by)?,
         record,
         "finance.commitment.write",
@@ -5252,7 +4978,7 @@ fn company_docs_health_command(store: &HarnessStore, _args: &[String]) -> CliRes
             {"command": "harness company docs source sync --definition <id> --module <module-id> --source-document <doc-id> --actor <agent-or-human-id> --repo-path <path> --repo <owner/repo> --branch <branch> --path docs/prd --dry-run"},
             {"command": "harness company docs view create --definition <id> --module <module-id> --title <title> --source-kind typed_record --actor <agent-or-human-id>"},
             {"command": "harness company docs relation link --definition <id> --from-document <doc-id> --to-record <typed-record-id> --actor <agent-or-human-id>"},
-            {"capability": "WorkItem intake from a source Document", "state": "planned_cli"}
+            {"capability": "TeamWork intake routed from a source Document", "state": "planned_cli"}
         ]
     }))
 }
@@ -6915,14 +6641,14 @@ fn company_entity_ref_json(kind: &str, id: &str) -> CliResult<serde_json::Value>
             | "typed_record"
             | "business_module"
             | "milestone"
-            | "work_item"
+            | "work"
             | "approval"
             | "financial_record"
             | "evidence"
             | "execution"
     ) {
         return Err(CliError::Usage(format!(
-            "entity kind must be actor|document|typed_record|business_module|milestone|work_item|approval|financial_record|evidence|execution, got {kind}"
+            "entity kind must be actor|document|typed_record|business_module|milestone|work|approval|financial_record|evidence|execution, got {kind}"
         )));
     }
     Ok(serde_json::json!({"kind": kind, "id": id}))
@@ -6943,57 +6669,20 @@ fn optional_human_authority(args: &[String]) -> CliResult<Option<serde_json::Val
         .transpose()
 }
 
-fn optional_company_actor_ref_json(
-    args: &[String],
-    id_flag: &str,
-    kind_flag: &str,
-) -> CliResult<Option<serde_json::Value>> {
-    value(args, id_flag)
-        .map(|id| {
-            company_actor_ref_json(
-                &value(args, kind_flag).unwrap_or_else(|| "agent".to_string()),
-                &id,
-            )
-        })
-        .transpose()
-}
-
 fn company_actor_refs_json(ids: &[String], kind: &str) -> CliResult<Vec<serde_json::Value>> {
     ids.iter()
         .map(|id| company_actor_ref_json(kind, id))
         .collect()
 }
 
-fn many_json(args: &[String], name: &str) -> CliResult<Vec<serde_json::Value>> {
-    many(args, name)
-        .into_iter()
-        .map(|raw| {
-            let value = serde_json::from_str::<serde_json::Value>(&raw)?;
-            if value.is_object() {
-                Ok(value)
-            } else {
-                Err(CliError::Usage(format!(
-                    "{name} must parse to a JSON object"
-                )))
-            }
-        })
-        .collect()
-}
-
 fn company_work_query_body(args: &[String]) -> serde_json::Value {
     serde_json::json!({
-        "statuses": many(args, "--status"),
-        "work_types": many(args, "--work-type"),
-        "business_module_refs": many(args, "--module"),
-        "milestone_refs": many(args, "--milestone"),
-        "accountable_owner": value(args, "--accountable").map(|id| serde_json::json!({
-            "actor_type": value(args, "--accountable-kind").unwrap_or_else(|| "agent".to_string()),
-            "actor_id": id
-        })),
-        "assignee": value(args, "--assignee").map(|id| serde_json::json!({
-            "actor_type": value(args, "--assignee-kind").unwrap_or_else(|| "agent".to_string()),
-            "actor_id": id
-        }))
+        "team_ids": many(args, "--team-id"),
+        "team_run_ids": many(args, "--team-run-id"),
+        "phases": many(args, "--phase"),
+        "conditions": many(args, "--condition"),
+        "resolutions": many(args, "--resolution"),
+        "owner_member_ids": many(args, "--owner-member-id"),
     })
 }
 
@@ -7001,8 +6690,23 @@ fn company_work_projection_value(
     store: &HarnessStore,
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
-    let response = company_os_api::handle_post(store, "/v1/company-os/work-query", body, None)
-        .ok_or_else(|| CliError::Usage("Company OS work query is unavailable".into()))?;
+    let execution_spaces = execution_space::firm_home()
+        .ok()
+        .and_then(|firm_home| execution_space::list_spaces(&firm_home).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|space| (space.id, HarnessStore::new(space.store_root)))
+        .collect::<Vec<_>>();
+    let selected_execution_store = execution_spaces.first().map(|(_, store)| store);
+    let response = company_os_api::handle_post_with_execution(
+        store,
+        selected_execution_store,
+        (!execution_spaces.is_empty()).then_some(execution_spaces.as_slice()),
+        "/v1/company-os/work-query",
+        body,
+        None,
+    )
+    .ok_or_else(|| CliError::Usage("Company OS work query is unavailable".into()))?;
     if response.body.get("ok").and_then(|value| value.as_bool()) != Some(true) {
         let detail = response
             .body
@@ -7016,7 +6720,10 @@ fn company_work_projection_value(
 
 fn company_work_read_boundaries() -> serde_json::Value {
     serde_json::json!({
-        "work_owned_objects": ["WorkItem", "Milestone", "Assignment", "Approval link", "ExecutionRef"],
+        "authority": "TeamWork",
+        "company_work_kind": "cross_execution_space_read_projection",
+        "company_work_creates_second_object": false,
+        "milestones_reference_work_ids": true,
         "docs_side_effects": false,
         "finance_side_effects": false,
         "organization_side_effects": false,
@@ -7024,7 +6731,7 @@ fn company_work_read_boundaries() -> serde_json::Value {
         "project_object": false,
         "task_graph": false,
         "goal_phase": false,
-        "assignment_note": "work assign appends an Assignment delivery record; it does not rewrite WorkItem.assignees in v1"
+        "mutation_route": "team-run work"
     })
 }
 
@@ -7169,19 +6876,6 @@ fn dispatch_company_work_action_value(
     dispatch_company_action_value(store, body)
 }
 
-fn latest_work_item_value(
-    store: &HarnessStore,
-    work_item_id: &str,
-) -> CliResult<serde_json::Value> {
-    store
-        .latest_work_items()?
-        .into_iter()
-        .find(|candidate| candidate.id == work_item_id)
-        .map(serde_json::to_value)
-        .transpose()?
-        .ok_or_else(|| CliError::Usage(format!("WorkItem not found: {work_item_id}")))
-}
-
 fn latest_company_actor_value(
     store: &HarnessStore,
     actor_kind: &str,
@@ -7286,42 +6980,6 @@ fn company_finance_boundaries() -> serde_json::Value {
     })
 }
 
-fn company_work_apply_transition_fields(
-    args: &[String],
-    record: &mut serde_json::Value,
-    status: &str,
-) -> CliResult<()> {
-    record["status"] = serde_json::json!(status);
-    record["updated_at"] = serde_json::json!(now_string());
-    if let Some(result_document) = value(args, "--result-document") {
-        record["result_document_ref"] = serde_json::json!(result_document);
-    }
-    append_string_values(record, "result_record_refs", many(args, "--result-record"));
-    append_string_values(record, "evidence_refs", many(args, "--evidence"));
-    append_string_values(record, "artifact_refs", many(args, "--artifact"));
-    append_json_values(
-        record,
-        "deliverable_refs",
-        many_json(args, "--deliverable-ref-json")?,
-    );
-    append_json_values(
-        record,
-        "execution_refs",
-        many_json(args, "--execution-ref-json")?,
-    );
-    if let Some(summary) = value(args, "--outcome-summary") {
-        record["outcome_summary"] = serde_json::json!(summary);
-    }
-    if let Some(completed_at) = value(args, "--completed-at") {
-        record["completed_at"] = serde_json::json!(completed_at);
-    } else if status == "completed" {
-        record["completed_at"] = serde_json::json!(now_string());
-    } else {
-        record["completed_at"] = serde_json::json!(null);
-    }
-    Ok(())
-}
-
 fn append_string_values(record: &mut serde_json::Value, field: &str, values: Vec<String>) {
     let mut existing = record
         .get(field)
@@ -7336,16 +6994,6 @@ fn append_string_values(record: &mut serde_json::Value, field: &str, values: Vec
             existing.push(serde_json::json!(value));
         }
     }
-    record[field] = serde_json::json!(existing);
-}
-
-fn append_json_values(record: &mut serde_json::Value, field: &str, values: Vec<serde_json::Value>) {
-    let mut existing = record
-        .get(field)
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    existing.extend(values);
     record[field] = serde_json::json!(existing);
 }
 
@@ -7478,7 +7126,6 @@ fn company_docs_health_findings(snapshot: &serde_json::Value) -> Vec<serde_json:
     let documents = json_array(snapshot, "documents");
     let typed_records = json_array(snapshot, "typed_records");
     let relations = json_array(snapshot, "relations");
-    let work_items = json_array(snapshot, "work_items");
     let document_ids = documents
         .iter()
         .filter_map(|entry| json_str(entry, "id"))
@@ -7548,47 +7195,6 @@ fn company_docs_health_findings(snapshot: &serde_json::Value) -> Vec<serde_json:
                     }));
                 }
             }
-        }
-    }
-    // Work source provenance: a visible active WorkItem must resolve to an
-    // active Document or explicit archived-source history with title and
-    // lifecycle; a missing source is a critical integrity break.
-    for item in work_items {
-        let Some(work_id) = json_str(item, "id") else {
-            continue;
-        };
-        let status = json_str(item, "status").unwrap_or_default();
-        if status == "archived" {
-            continue;
-        }
-        let work_is_active = !matches!(status.as_str(), "completed" | "cancelled" | "draft");
-        let Some(document_id) = json_str(item, "source_document_ref") else {
-            continue;
-        };
-        match document_lifecycle.get(&document_id) {
-            None => findings.push(serde_json::json!({
-                "id": format!("missing-source-document-work:{work_id}"),
-                "kind": "work_item_source_document_missing",
-                "severity": "critical",
-                "subject": {"kind": "work_item", "id": work_id},
-                "related": {"kind": "document", "id": document_id},
-                "recommended_action": "Restore the source Document or migrate this WorkItem to a valid source through a governed Work action."
-            })),
-            Some((title, lifecycle)) if lifecycle == "archived" && work_is_active => {
-                findings.push(serde_json::json!({
-                    "id": format!("archived-source-document-work:{work_id}"),
-                    "kind": "work_item_source_document_archived",
-                    "severity": "warning",
-                    "subject": {"kind": "work_item", "id": work_id},
-                    "related": {
-                        "kind": "document", "id": document_id,
-                        "title": title,
-                        "lifecycle_status": "archived",
-                    },
-                    "recommended_action": "The source Document is explicit archived history; keep it read-only for provenance or route a successor source through a governed Docs action."
-                }));
-            }
-            Some(_) => {}
         }
     }
     findings
@@ -7776,7 +7382,7 @@ fn company_docs_find_ref(
         "relation" => "relations",
         "custom_page_definition" => "custom_page_definitions",
         "custom_page_package" => "custom_page_packages",
-        "work_item" => "work_items",
+        "work" => "works",
         "approval" => "approvals",
         "financial_record" => "financial_records",
         _ => return None,
@@ -7836,15 +7442,6 @@ fn company_docs_refs_for(
     } else {
         Vec::new()
     };
-    let work_items = json_array(snapshot, "work_items")
-        .iter()
-        .filter(|item| {
-            (kind == "document" && json_str(item, "source_document_ref").as_deref() == Some(id))
-                || (kind == "business_module"
-                    && json_str(item, "business_module_ref").as_deref() == Some(id))
-        })
-        .cloned()
-        .collect::<Vec<_>>();
     let approvals = json_array(snapshot, "approvals")
         .iter()
         .filter(|approval| serde_json::to_string(approval).is_ok_and(|text| text.contains(id)))
@@ -7859,7 +7456,6 @@ fn company_docs_refs_for(
         "relations": relations,
         "child_documents": children,
         "source_records": source_records,
-        "work_items": work_items,
         "approvals": approvals,
         "financial_records": financial_records
     })
@@ -10954,7 +10550,7 @@ fn capacity_preflight_enabled() -> bool {
 /// Replacing the probe wholesale threw that away and turned the exact Wave 2
 /// scenario — no `HTTP(S)_PROXY`, blocked egress, provider answers `403` —
 /// into `unauthorized`, gating a healthy account behind a missing env var.
-/// That is precisely the misdiagnosis this WorkItem exists to prevent, and it
+/// That is precisely the misdiagnosis this Work exists to prevent, and it
 /// contradicted the canary path, which returns `unknown` for the same failure.
 ///
 /// So: for a mode whose failure is known to be proxy-shaped, a missing proxy
@@ -12158,11 +11754,12 @@ fn create_team_run(
                     team_id: None,
                     created_by_member_id: None,
                     parent_work_id: None,
-                    source_work_item_ref: None,
                     title: format!("{}: {}", member_run.name, member_run.role),
                     context_markdown: format!("Team objective:\n\n{objective}"),
                     completion_criteria_markdown: brief.to_string(),
-                    status: WorkStatus::Open,
+                    phase: WorkPhase::Open,
+                    condition: WorkCondition::Normal,
+                    resolution: None,
                     owner_member_id: None,
                     active_member_run_id: Some(member_run.id.clone()),
                     claim_mode: WorkClaimMode::HostAssign,
@@ -12277,14 +11874,15 @@ fn add_team_run_member(
                         team_id: None,
                         created_by_member_id: None,
                         parent_work_id: None,
-                        source_work_item_ref: None,
                         title: format!("{}: {}", member_run.name, member_run.role),
                         context_markdown: origin_wave_id
                             .as_deref()
                             .map(|wave| format!("Origin Wave: `{wave}`"))
                             .unwrap_or_default(),
                         completion_criteria_markdown: brief.trim().to_string(),
-                        status: WorkStatus::Open,
+                        phase: WorkPhase::Open,
+                        condition: WorkCondition::Normal,
+                        resolution: None,
                         owner_member_id: None,
                         active_member_run_id: Some(member_run.id.clone()),
                         claim_mode: WorkClaimMode::HostAssign,
@@ -13594,13 +13192,10 @@ fn team_run_recover(
         }
         let (open, done, cancelled) = (
             works.iter().filter(|w| !w.is_terminal()).count(),
+            works.iter().filter(|w| w.is_accepted()).count(),
             works
                 .iter()
-                .filter(|w| w.status == WorkStatus::Done)
-                .count(),
-            works
-                .iter()
-                .filter(|w| w.status == WorkStatus::Cancelled)
+                .filter(|w| w.resolution == Some(WorkResolution::Cancelled))
                 .count(),
         );
         println!(
@@ -14183,12 +13778,37 @@ fn parse_gate_specs(args: &[String]) -> CliResult<Vec<GateSpec>> {
     Ok(specs)
 }
 
-fn parse_work_status(value: &str) -> CliResult<WorkStatus> {
+fn parse_work_phase(value: &str) -> CliResult<WorkPhase> {
     serde_json::from_value(serde_json::Value::String(value.to_string())).map_err(|_| {
         CliError::Usage(format!(
-            "unknown Work status `{value}` (open|in_progress|blocked|review|done|cancelled)"
+            "unknown Work phase `{value}` (open|active|review|closed)"
         ))
     })
+}
+
+fn parse_work_condition(value: &str) -> CliResult<WorkCondition> {
+    serde_json::from_value(serde_json::Value::String(value.to_string())).map_err(|_| {
+        CliError::Usage(format!(
+            "unknown Work condition `{value}` (normal|blocked|on_hold)"
+        ))
+    })
+}
+
+fn parse_work_resolution(value: &str) -> CliResult<WorkResolution> {
+    serde_json::from_value(serde_json::Value::String(value.to_string())).map_err(|_| {
+        CliError::Usage(format!(
+            "unknown Work resolution `{value}` (accepted|cancelled|failed)"
+        ))
+    })
+}
+
+fn work_lifecycle_label(work: &Work) -> String {
+    match (work.phase, work.condition, work.resolution) {
+        (_, WorkCondition::Blocked, _) => "blocked".to_string(),
+        (_, WorkCondition::OnHold, _) => "on_hold".to_string(),
+        (WorkPhase::Closed, _, Some(resolution)) => serde_snake_label(&resolution),
+        (phase, _, _) => serde_snake_label(&phase),
+    }
 }
 
 fn parse_workspace(args: &[String]) -> CliResult<Option<WorkWorkspace>> {
@@ -14416,7 +14036,7 @@ fn format_work_brief_line(work: &Work) -> String {
     format!(
         "{}  {}  {}  v{}  {}",
         work.id,
-        serde_snake_label(&work.status),
+        work_lifecycle_label(work),
         owner,
         work.version,
         title
@@ -14474,11 +14094,8 @@ fn member_board_state<'a>(
     let mut awaiting_review = false;
     let mut owns_in_progress = false;
     for work in owned_works {
-        match work.status {
-            WorkStatus::Review => awaiting_review = true,
-            WorkStatus::InProgress => owns_in_progress = true,
-            _ => {}
-        }
+        awaiting_review |= work.phase == WorkPhase::Review;
+        owns_in_progress |= work.phase == WorkPhase::Active;
     }
     if awaiting_review {
         "awaiting-review"
@@ -14496,7 +14113,7 @@ fn member_board_state<'a>(
 
 /// `team-run board-summary` -- a single plain-text projection built from one
 /// `latest_works` read and one `latest_member_runs_in_append_order` read:
-/// counts by status, assigned vs unassigned, claim-ready count (reusing
+/// counts by lifecycle axis, assigned vs unassigned, claim-ready count (reusing
 /// [`Work::is_claim_ready`], the same readiness rule the claim path
 /// enforces), and one `member_board_state` line per active member. Contract:
 /// the whole string stays under 500 chars for an ordinary run so a Host can
@@ -14513,22 +14130,23 @@ fn team_run_board_summary_text(store: &HarnessStore, team_run_id: &str) -> CliRe
         .collect();
 
     let mut open = 0u64;
-    let mut in_progress = 0u64;
+    let mut active = 0u64;
     let mut blocked = 0u64;
     let mut review = 0u64;
-    let mut done = 0u64;
+    let mut accepted = 0u64;
     let mut cancelled = 0u64;
     let mut assigned = 0u64;
     let mut unassigned = 0u64;
     for work in &works {
-        match work.status {
-            WorkStatus::Open => open += 1,
-            WorkStatus::InProgress => in_progress += 1,
-            WorkStatus::Blocked => blocked += 1,
-            WorkStatus::Review => review += 1,
-            WorkStatus::Done => done += 1,
-            WorkStatus::Cancelled => cancelled += 1,
+        match work.phase {
+            WorkPhase::Open => open += 1,
+            WorkPhase::Active => active += 1,
+            WorkPhase::Review => review += 1,
+            WorkPhase::Closed => {}
         }
+        blocked += u64::from(work.condition == WorkCondition::Blocked);
+        accepted += u64::from(work.resolution == Some(WorkResolution::Accepted));
+        cancelled += u64::from(work.resolution == Some(WorkResolution::Cancelled));
         if work.active_member_run_id.is_some() {
             assigned += 1;
         } else {
@@ -14547,7 +14165,7 @@ fn team_run_board_summary_text(store: &HarnessStore, team_run_id: &str) -> CliRe
 
     let mut lines = vec![
         format!(
-            "open={open} in_progress={in_progress} blocked={blocked} review={review} done={done} cancelled={cancelled}"
+            "open={open} active={active} blocked={blocked} review={review} accepted={accepted} cancelled={cancelled}"
         ),
         format!("assigned={assigned} unassigned={unassigned} ready={ready}"),
     ];
@@ -14869,7 +14487,7 @@ pub(crate) fn poll_team_run_github_linkages(
             // themselves changed, so evaluate against the fresh link.
             let merged_and_green = fresh.status.as_deref() == Some("MERGED")
                 && fresh.ci_status.as_deref() != Some("failure");
-            if merged_and_green && work.status == WorkStatus::InProgress {
+            if merged_and_green && work.phase == WorkPhase::Active {
                 let context = github_poll_host_context(run_id, &work.id);
                 let result = format!(
                     "auto-submitted by GitHub merge observation: PR {}/{}#{} merged; CI: {}",
@@ -14895,7 +14513,7 @@ pub(crate) fn poll_team_run_github_linkages(
             }
             if fresh.status.as_deref() == Some("MERGED")
                 && fresh.ci_status.as_deref() == Some("failure")
-                && work.status == WorkStatus::InProgress
+                && work.phase == WorkPhase::Active
                 && !summary.blocked_on_failure.contains(&work.id)
             {
                 summary.blocked_on_failure.push(work.id.clone());
@@ -14964,7 +14582,7 @@ fn github_poll_host_context(run_id: &str, work_id: &str) -> WorkCommandContext {
 fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run work list|show|create|assign|claim|start|block|resume|release|submit|review|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery|poll-github-ci|check-gates|workspace",
+        "team-run work list|show|create|assign|claim|start|block|resume|release|submit|review|request-changes|accept|cancel|retarget|reconcile-projection|reconcile-delivery|poll-github-ci|check-gates|workspace",
     )?;
     match args[0].as_str() {
         "list" => {
@@ -14976,8 +14594,14 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                         .to_string(),
                 ));
             }
-            let status = value(args, "--status")
-                .map(|raw| parse_work_status(&raw))
+            let phase = value(args, "--phase")
+                .map(|raw| parse_work_phase(&raw))
+                .transpose()?;
+            let condition = value(args, "--condition")
+                .map(|raw| parse_work_condition(&raw))
+                .transpose()?;
+            let resolution = value(args, "--resolution")
+                .map(|raw| parse_work_resolution(&raw))
                 .transpose()?;
             let member_run_id = value(args, "--member-run-id");
             // `--since <cursor>`: delta read against the WorkOperation append
@@ -15022,7 +14646,11 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                             .as_deref()
                             .is_some_and(|id| work.team_id.as_deref() == Some(id))
                 })
-                .filter(|work| status.is_none_or(|status| work.status == status))
+                .filter(|work| phase.is_none_or(|phase| work.phase == phase))
+                .filter(|work| condition.is_none_or(|condition| work.condition == condition))
+                .filter(|work| {
+                    resolution.is_none_or(|resolution| work.resolution == Some(resolution))
+                })
                 .filter(|work| {
                     member_run_id.as_deref().is_none_or(|member| {
                         work.active_member_run_id.as_deref() == Some(member)
@@ -15190,11 +14818,12 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 team_id: None,
                 created_by_member_id: None,
                 parent_work_id: value(args, "--parent-work-id"),
-                source_work_item_ref: value(args, "--source-work-item-ref"),
                 title: required(args, "--title")?,
                 context_markdown,
                 completion_criteria_markdown: required(args, "--completion-criteria")?,
-                status: WorkStatus::Open,
+                phase: WorkPhase::Open,
+        condition: WorkCondition::Normal,
+        resolution: None,
                 owner_member_id: None,
                 active_member_run_id: owner_member_run_id,
                 claim_mode,
@@ -15413,7 +15042,7 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 }
                 github_links.push(link);
             }
-            let work = store.submit_work_with_links(
+            let work = store.submit_work_with_revision_and_links(
                 &required(args, "--work-id")?,
                 required_work_version(args)?,
                 &member_run_id,
@@ -15421,6 +15050,8 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 artifact_refs,
                 check_refs,
                 github_links,
+                value(args, "--base-revision"),
+                value(args, "--candidate-revision"),
                 member_work_context(args, &team_run_id, &member_run_id)?,
             )?;
             append_work_event(
@@ -15599,15 +15230,6 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             )?;
             print_json(&work)
         }
-        "promote" => {
-            let company_store = selected_company_store_for_work_cutover(args)?;
-            print_json(&store.promote_work_to_team_scope(
-                &company_store,
-                &required(args, "--work-id")?,
-                required_work_version(args)?,
-                host_work_context(args),
-            )?)
-        }
         "retarget" => print_json(&store.retarget_work_execution(
             &required(args, "--work-id")?,
             required_work_version(args)?,
@@ -15620,10 +15242,6 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             required_work_version(args)?,
             host_work_context(args),
         )?),
-        "validate-cutover" => {
-            let company_store = selected_company_store_for_work_cutover(args)?;
-            print_json(&store.work_cutover_report(&company_store)?)
-        }
         "reconcile-delivery" => print_json(&store.reconcile_stale_work_delivery_claim(
             &required(args, "--team-run-id")?,
             &required(args, "--delivery-id")?,
@@ -15637,28 +15255,9 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             &now_string(),
         )?),
         other => Err(CliError::Usage(format!(
-            "unknown team-run work command: {other}; usage: team-run work list|show|create|assign|claim|start|block|resume|release|submit|review|request-changes|accept|cancel|promote|retarget|reconcile-projection|validate-cutover|reconcile-delivery"
+            "unknown team-run work command: {other}; usage: team-run work list|show|create|assign|claim|start|block|resume|release|submit|review|request-changes|accept|cancel|retarget|reconcile-projection|reconcile-delivery"
         ))),
     }
-}
-
-fn selected_company_store_for_work_cutover(args: &[String]) -> CliResult<HarnessStore> {
-    let home = company_store::firm_home().map_err(company_store_err)?;
-    let company_id = value(args, "--company")
-        .or_else(|| {
-            canonical_or_legacy_env("FIRM_COMPANY", "HARNESS_COMPANY").map(|(value, _)| value)
-        })
-        .or_else(|| company_store::active_company_id(&home).ok().flatten())
-        .ok_or_else(|| {
-            CliError::Usage(
-                "Work cutover requires --company <id>, FIRM_COMPANY, or an active Company"
-                    .to_string(),
-            )
-        })?;
-    let context = company_store::context_for_id(&home, &company_id)
-        .map_err(company_store_err)?
-        .ok_or_else(|| CliError::Usage(format!("unknown company: {company_id}")))?;
-    Ok(HarnessStore::new(context.store_root))
 }
 
 const HOST_BINDING_LEASE_DEFAULT_TTL_MS: u64 = 30_000;
@@ -18417,7 +18016,8 @@ struct ClaimedWork {
 
 fn is_active_work_continuation_candidate(work: &Work, member_id: &str, all_works: &[Work]) -> bool {
     work.active_member_run_id.as_deref() == Some(member_id)
-        && work.status == WorkStatus::InProgress
+        && work.phase == WorkPhase::Active
+        && work.condition == WorkCondition::Normal
         && work.prerequisites_satisfied(all_works.iter())
 }
 
@@ -18827,7 +18427,7 @@ impl TeamRunLedger {
             .iter()
             .filter(|work| {
                 work.team_run_id == self.run_id
-                    && work.status == WorkStatus::Open
+                    && work.phase == WorkPhase::Open
                     && work.owner_member_id.is_none()
                     && work.claim_mode == WorkClaimMode::TeamClaim
                     && work.prerequisites_satisfied(all_works.iter())
@@ -19155,7 +18755,7 @@ impl TeamRunLedger {
             };
 
             let work = works.get(&claimed.work_id).unwrap();
-            let status_label = serde_snake_label(&work.status);
+            let status_label = work_lifecycle_label(work);
             let body = format!(
                 "NOTIFICATION: Work \"{}\" has been {}. This Work is now terminal; no further action is required.",
                 work.title, status_label
@@ -19747,7 +19347,7 @@ fn build_board_wake_view(
         .iter()
         .filter(|work| {
             work.team_run_id == ledger.run_id
-                && work.status == harness_core::WorkStatus::Open
+                && work.phase == WorkPhase::Open
                 && work.owner_member_id.is_none()
                 && work.claim_mode == harness_core::WorkClaimMode::TeamClaim
                 && work.prerequisites_satisfied(all_works.iter())
@@ -26140,7 +25740,10 @@ fn active_work_continuation_prompt(
     work: &Work,
     envelope: &MemberCollaborationEnvelope,
 ) -> String {
-    if work.status == WorkStatus::Open && work.owner_member_id.is_none() {
+    if work.phase == WorkPhase::Open
+        && work.condition == WorkCondition::Normal
+        && work.owner_member_id.is_none()
+    {
         return format!(
             "SHARED WORK AVAILABLE\n\
              Work {work_id} version {work_version} is ready on the Team Works board and this Member is eligible to claim it. No WorkDelivery or Assignment Message was created. Inspect the latest board, then use the bound member CLI to claim it atomically before doing any work; if the claim loses a race, refresh the board and do not duplicate effects.\n\n{}",
@@ -27638,7 +27241,17 @@ fn handle_http_connection(
     }
 
     if method == "GET" {
-        if let Some(response) = company_os_api::handle_get(store, Some(&store_owned), &path_only) {
+        let execution_space_stores = projects
+            .list_spaces()
+            .into_iter()
+            .map(|space| (space.id, HarnessStore::new(space.store_root)))
+            .collect::<Vec<_>>();
+        if let Some(response) = company_os_api::handle_get(
+            store,
+            Some(&store_owned),
+            Some(&execution_space_stores),
+            &path_only,
+        ) {
             write_http_json(&mut stream, response.status, &response.body)?;
             return Ok(());
         }
@@ -27762,11 +27375,12 @@ fn handle_http_connection(
             "/v1/snapshot" | "/v1/dashboard/snapshot" => write_http_json(
                 &mut stream,
                 "200 OK",
-                &dashboard_snapshot_with_company(
+                &dashboard_snapshot_with_company_spaces(
                     &store_owned,
                     company_store_owned
                         .as_ref()
                         .map(|(_, company_store)| company_store),
+                    &execution_space_stores,
                 )?,
             )?,
             // GET /v1/meta — server build/data provenance (issue #307). Always
@@ -28032,9 +27646,19 @@ fn handle_http_connection(
             }
         }
     };
-    if let Some(response) =
-        company_os_api::handle_post(store, &path_only, &body_json, company_os_token.as_deref())
-    {
+    let execution_space_stores = projects
+        .list_spaces()
+        .into_iter()
+        .map(|space| (space.id, HarnessStore::new(space.store_root)))
+        .collect::<Vec<_>>();
+    if let Some(response) = company_os_api::handle_post_with_execution(
+        store,
+        Some(&store_owned),
+        Some(&execution_space_stores),
+        &path_only,
+        &body_json,
+        company_os_token.as_deref(),
+    ) {
         write_http_json(&mut stream, response.status, &response.body)?;
         return Ok(());
     }
@@ -30219,11 +29843,12 @@ fn create_team_work_value(
         team_id: None,
         created_by_member_id: None,
         parent_work_id: optional_json_string(body, "parent_work_id")?,
-        source_work_item_ref: optional_json_string(body, "source_work_item_ref")?,
         title: required_json_string(body, "title")?,
         context_markdown: json_string(body, "context_markdown").unwrap_or_default(),
         completion_criteria_markdown: required_json_string(body, "completion_criteria_markdown")?,
-        status: WorkStatus::Open,
+        phase: WorkPhase::Open,
+        condition: WorkCondition::Normal,
+        resolution: None,
         owner_member_id: None,
         active_member_run_id: owner_member_run_id,
         claim_mode,
@@ -36409,12 +36034,24 @@ fn dashboard_snapshot_with_company(
     execution_store: &HarnessStore,
     company_store: Option<&HarnessStore>,
 ) -> CliResult<serde_json::Value> {
+    dashboard_snapshot_with_company_spaces(execution_store, company_store, &[])
+}
+
+fn dashboard_snapshot_with_company_spaces(
+    execution_store: &HarnessStore,
+    company_store: Option<&HarnessStore>,
+    execution_spaces: &[(String, HarnessStore)],
+) -> CliResult<serde_json::Value> {
     let mut snapshot = dashboard_snapshot(execution_store)?;
     if let Some(company_store) = company_store {
         if let Some(object) = snapshot.as_object_mut() {
             object.insert(
                 "company_os".to_string(),
-                company_os_api::snapshot_with_execution(company_store, execution_store)?,
+                company_os_api::snapshot_with_execution_spaces(
+                    company_store,
+                    execution_store,
+                    execution_spaces,
+                )?,
             );
         }
     }
@@ -39929,7 +39566,7 @@ fn print_help() {
   company docs query|search|traverse|refs|related|health|source sync|snapshot|diff|change-report
   company docs module create | page create|read|write|append|search|rename|move|archive|scaffold|verify|publish | page-definition create
   company docs typed-record append|update|validate | view create|update | relation link|unlink|relink
-  company work list|query|create|update|assign|transition|close
+  company work list|query
   company work milestone list|show|create|update|close
   company finance list|query|propose-commitment|request-approval|decide-approval|transition-commitment|record-payment|transition-payment
   company finance commitment list|show|propose|transition
@@ -44786,16 +44423,21 @@ mod tests {
         assert!(hidden_migration_paths(&firm_home, "source-linked-space").is_empty());
         fs::remove_dir_all(root).expect("cleanup");
     }
-    fn continuation_test_work(status: &str) -> Work {
+    fn continuation_test_work(
+        phase: WorkPhase,
+        condition: WorkCondition,
+        resolution: Option<WorkResolution>,
+    ) -> Work {
         serde_json::from_value(serde_json::json!({
-            "id": format!("work-{status}"),
+            "id": format!("work-{phase:?}-{condition:?}"),
             "team_run_id": "team-run-test",
             "parent_work_id": null,
-            "source_work_item_ref": null,
             "title": "continuation gate",
             "context_markdown": "",
             "completion_criteria_markdown": "prove the gate",
-            "status": status,
+            "phase": phase,
+            "condition": condition,
+            "resolution": resolution,
             "owner_member_id": "agent-member-test",
             "active_member_run_id": "member-run-test",
             "claim_mode": "host_assign",
@@ -44821,22 +44463,39 @@ mod tests {
 
     #[test]
     fn continuation_is_emitted_only_for_in_progress_work() {
-        let in_progress = continuation_test_work("in_progress");
+        let in_progress = continuation_test_work(WorkPhase::Active, WorkCondition::Normal, None);
         assert!(is_active_work_continuation_candidate(
             &in_progress,
             "member-run-test",
             std::slice::from_ref(&in_progress),
         ));
 
-        for status in ["open", "blocked", "review", "done", "cancelled"] {
-            let work = continuation_test_work(status);
+        for (label, phase, condition, resolution) in [
+            ("open", WorkPhase::Open, WorkCondition::Normal, None),
+            ("blocked", WorkPhase::Active, WorkCondition::Blocked, None),
+            ("on_hold", WorkPhase::Active, WorkCondition::OnHold, None),
+            ("review", WorkPhase::Review, WorkCondition::Normal, None),
+            (
+                "accepted",
+                WorkPhase::Closed,
+                WorkCondition::Normal,
+                Some(WorkResolution::Accepted),
+            ),
+            (
+                "cancelled",
+                WorkPhase::Closed,
+                WorkCondition::Normal,
+                Some(WorkResolution::Cancelled),
+            ),
+        ] {
+            let work = continuation_test_work(phase, condition, resolution);
             assert!(
                 !is_active_work_continuation_candidate(
                     &work,
                     "member-run-test",
                     std::slice::from_ref(&work),
                 ),
-                "{status} Work must not receive active continuation",
+                "{label} Work must not receive active continuation",
             );
         }
     }
@@ -47338,11 +46997,12 @@ package:com.tencent.mm
                     team_id: None,
                     created_by_member_id: None,
                     parent_work_id: None,
-                    source_work_item_ref: None,
                     title: "Enforce gates at every acceptance entrypoint".into(),
                     context_markdown: String::new(),
                     completion_criteria_markdown: "Declared artifact evidence exists".into(),
-                    status: WorkStatus::Open,
+                    phase: WorkPhase::Open,
+                    condition: WorkCondition::Normal,
+                    resolution: None,
                     owner_member_id: None,
                     active_member_run_id: None,
                     claim_mode: WorkClaimMode::TeamClaim,
@@ -50413,11 +50073,12 @@ package:com.tencent.mm
                     team_id: None,
                     created_by_member_id: None,
                     parent_work_id: None,
-                    source_work_item_ref: None,
                     title: "Test attention flow".into(),
                     context_markdown: "Context for attention test".into(),
                     completion_criteria_markdown: "Attention appears in host-inbox".into(),
-                    status: WorkStatus::Open,
+                    phase: WorkPhase::Open,
+                    condition: WorkCondition::Normal,
+                    resolution: None,
                     owner_member_id: None,
                     active_member_run_id: Some(member.id.clone()),
                     claim_mode: WorkClaimMode::HostAssign,

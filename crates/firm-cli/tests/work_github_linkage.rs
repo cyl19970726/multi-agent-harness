@@ -164,7 +164,7 @@ fn github_issue_and_pr_linkage_roundtrip() {
             &github_issue,
         ],
     );
-    assert_eq!(created["status"].as_str(), Some("open"));
+    assert_eq!(created["phase"].as_str(), Some("open"));
     let issue_url = format!("https://github.com/{GH_REPO}/issues/{GH_ISSUE_NUMBER}");
     assert_eq!(
         created["artifact_refs"][0].as_str(),
@@ -230,7 +230,7 @@ fn github_issue_and_pr_linkage_roundtrip() {
             &pr_ref,
         ],
     );
-    assert_eq!(submitted["status"].as_str(), Some("review"));
+    assert_eq!(submitted["phase"].as_str(), Some("review"));
     let links = submitted["github_links"]
         .as_array()
         .expect("github_links array");
@@ -337,7 +337,7 @@ fn github_pr_merge_auto_submits_in_progress_work() {
             &pr_ref,
         ],
     );
-    assert_eq!(created["status"].as_str(), Some("open"));
+    assert_eq!(created["phase"].as_str(), Some("open"));
     assert_eq!(
         created["github_links"][0]["kind"].as_str(),
         Some("pull_request")
@@ -395,7 +395,7 @@ fn github_pr_merge_auto_submits_in_progress_work() {
         &project_id,
         &["team-run", "work", "show", "--work-id", &work_id],
     );
-    assert_eq!(submitted["work"]["status"].as_str(), Some("review"));
+    assert_eq!(submitted["work"]["phase"].as_str(), Some("review"));
     let result = submitted["work"]["result_summary"]
         .as_str()
         .expect("result");
@@ -485,9 +485,9 @@ fn github_pr_merge_on_red_ci_is_held_for_host() {
         &["team-run", "work", "show", "--work-id", &work_id],
     );
     assert_eq!(
-        held["work"]["status"].as_str(),
-        Some("in_progress"),
-        "work stays in_progress on red CI"
+        held["work"]["phase"].as_str(),
+        Some("active"),
+        "Work stays active on red CI"
     );
 }
 

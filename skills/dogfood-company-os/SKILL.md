@@ -1,6 +1,6 @@
 ---
 name: dogfood-company-os
-description: Run Company OS as its own operating system through repeated, evidence-backed Docs, Work, Organization, external-delivery, and execution cycles. Use when a Company Lead runs a self-hosting cycle or when Human intent has been faithfully routed to the Company Lead to discover gaps, create or prioritize WorkItems, route them to Standing Agents or humans, execute through an appropriate runtime, return results to company memory, inspect the UI, and repeat until the chosen acceptance boundary is healthy. Do not use for initial business bootstrap, one isolated Docs/Work/Org mutation, or Mission/Wave execution alone.
+description: Run Company OS as its own operating system through repeated, evidence-backed Docs, Work, Organization, external-delivery, and execution cycles. Use when a Company Lead runs a self-hosting cycle or when Human intent has been faithfully routed to the Company Lead to discover gaps, create or prioritize Work records, route them to Standing Agents or humans, execute through an appropriate runtime, return results to company memory, inspect the UI, and repeat until the chosen acceptance boundary is healthy. Do not use for initial business bootstrap, one isolated Docs/Work/Org mutation, or Mission/Wave execution alone.
 ---
 
 # Dogfood Company OS
@@ -68,7 +68,7 @@ Before mutation, inspect:
 - the active Company root, document hierarchy, and relevant module;
 - the Human Principal / Constitution Owner and exact current constitutional
   subject/version/digest when one has actually been activated;
-- open, blocked, in-review, and stale WorkItems;
+- open, blocked, in-review, and stale Work records;
 - Company Lead and Domain Lead ownership, capacity, and escalation policy;
 - Standing Agents, memberships, permissions, and execution bindings;
 - external source/delivery freshness;
@@ -87,8 +87,8 @@ Human Principal intent + Company/connector observations
   -> Supervisor preserves provenance and routes/delivers once
   -> durable source context
   -> Company Lead triage, priority, capacity, and replan
-  -> Domain Lead accountable Work
-  -> one Company Assignment, attenuated delegation, and truthful execution
+  -> Domain Lead creates or selects authoritative TeamWork
+  -> Work owner + WorkDelivery, attenuated delegation, and truthful execution
   -> evidence, acceptance, and result return
   -> Store projections and UI readback
   -> next observation cycle
@@ -100,11 +100,11 @@ set Company priority, issue grants, or approve Work. The Company Lead
 deduplicates or rejects intake, chooses Company priority, balances explicit
 capacity across domains, and replans when evidence or constraints change. A
 Domain Lead decomposes and delegates operational work autonomously only within
-currently implemented policy plus its responsibility, accepted WorkTypes,
+currently implemented policy plus its responsibility, accepted Work classifications,
 tools, data, budget, permissions, and capacity.
 
 Delegation always attenuates authority. The receiving actor gets the minimum
-subset needed for the WorkItem and cannot expand its own access, spending,
+subset needed for the Work and cannot expand its own access, spending,
 approval, legal, organization-change, or external-commitment authority.
 Provider-native subagents and Agent Team members remain execution details, not
 new Organization actors.
@@ -125,9 +125,9 @@ evidence.
 
 ## Current Versus Target Authority Truth
 
-Current implemented truth includes native Docs/Work/Org records and Actions,
-Company Assignment delivery, explicit StandingAgent ↔ AgentMember execution
-links, and provider/runtime evidence. A reviewed local or unmerged broker/grant
+Current implemented truth includes native Docs/Org records and Actions,
+authoritative TeamWork plus its Company-wide read projection, explicit
+StandingAgent ↔ AgentMember execution links, and provider/runtime evidence. A reviewed local or unmerged broker/grant
 candidate is exact-commit evidence only and must remain labelled `candidate`,
 never `implemented`. `Implemented` requires the exact generation to be present
 in the selected merged repository and verified through the active installed
@@ -158,7 +158,7 @@ affected company object, source, expected behavior, and current behavior.
 Examples:
 
 - a Document tree exposes archived or duplicate context;
-- a WorkItem has no result, evidence, or execution relation;
+- a Work has no result, evidence, or execution relation;
 - a Standing Agent cannot see or accept its assigned work;
 - an Agent/runtime upgrade left a mailbox or native Session unreconciled;
 - GitHub Issue/PR/check state is not linked to the Company commitment; or
@@ -166,16 +166,16 @@ Examples:
 
 ### 2. Decide And Commit
 
-Reuse an existing WorkItem when it already owns the gap. Create a new one only
+Reuse an existing Work when it already owns the gap. Create a new one only
 when no current commitment has the same source, objective, and acceptance
 boundary.
 
-The WorkItem must preserve:
+The Work plus explicit related Company records must preserve:
 
-- source Document/record or external observation;
+- source Document/record or external observation through explicit refs;
 - objective, description, acceptance criteria, and return location;
-- accountable owner, assignee, reviewer, and approver when applicable;
-- WorkType/module/Milestone grouping;
+- accountable Work owner and exact reviewer/approver records when applicable;
+- Team/TeamRun scope, parent Work, and Milestone grouping;
 - required execution and delivery evidence; and
 - protected effects that require Human, Policy, Finance, Legal, or Org review.
 
@@ -191,11 +191,11 @@ runtime is needed.
 Route Company-wide priority/capacity conflicts to the Company Lead. Route
 domain delivery to the accountable Domain Lead, which may delegate to lower
 actors only within the narrower intersection of its own authority, the child's
-authority, and the WorkItem's need. Preserve the Company Assignment separately
-from the linked Agent Team Work, ordinary TeamMessage conversation, and
-provider-native execution history.
+authority, and the Work's need. Work ownership and WorkDelivery are native
+TeamWork state; ordinary TeamMessage conversation and provider-native execution
+history remain separate planes.
 
-If no actor can own the work, create a capability-gap WorkItem. Do not silently
+If no actor can own the work, create a capability-gap Work. Do not silently
 create a Standing Agent, expand permissions, or infer authority from a
 MemberRun, provider session, avatar, Skill, or logged-in external account.
 
@@ -207,21 +207,21 @@ membership remain distinct.
 
 When Mission/Wave and Agent Team are used:
 
-- WorkItem remains the company commitment;
-- Agent Team Work remains execution-lane ownership and WorkDelivery wakes the
-  selected MemberRun;
+- the same authoritative TeamWork is both the commitment and execution-lane
+  responsibility; Company Work only aggregates it;
+- WorkDelivery wakes the selected MemberRun;
 - Mission/Wave records Host intent and judgment;
 - MemberRun/native Session remains execution continuity; and
-- Work receives an `ExecutionRef`, delivery evidence, and final result only
-  after the execution actually exists.
+- Work receives delivery evidence and a final report only after execution
+  actually exists.
 
 Mission/Wave and Agent Team are optional execution capabilities selected for
-the WorkItem, not Company planning or Organization primitives. Do not make
+the Work, not Company planning or Organization primitives. Do not make
 Wave completion equal Work acceptance.
 
 ### 5. Accept And Return
 
-Review against the WorkItem acceptance criteria. A provider completion,
+Review against the Work acceptance criteria. A provider completion,
 Handoff, green CI run, merged PR, Document edit, or pretty UI is evidence, not
 by itself Company acceptance.
 
@@ -229,7 +229,7 @@ On acceptance:
 
 1. attach delivery/evidence/execution refs;
 2. record the result summary and result Document/record;
-3. transition or close the WorkItem through Work;
+3. submit and accept the Work through `team-run work`;
 4. update the originating Docs/module with the durable result;
 5. update Organization only if responsibility or capability truly changed; and
 6. verify CLI and UI reconstruct the same relations.
@@ -247,7 +247,7 @@ Stop when:
 - acceptance is met and only explicitly deferred work remains;
 - a protected decision needs Human input;
 - external credentials/service availability block honest progress; or
-- a new problem belongs to a different WorkItem and risk boundary.
+- a new problem belongs to a different Work and risk boundary.
 
 Dogfood is iterative; one `Docs -> Work -> Docs` example is not proof of the
 Company operating model.
@@ -269,7 +269,7 @@ installed:
   Workflow; do not create new Codex Team lanes or use them as fallbacks.
 
 Every member runs under a strict research budget. One evidence pass — the
-Assignment, owned paths, and directly linked records — is enough to start.
+Work ownership, owned paths, and directly linked records — is enough to start.
 After that pass the member must either produce its deliverables or report a
 blocked verdict with the exact missing fact and a recommendation. The Host
 steers or interrupts a member that keeps exploring past the checkpoint;
@@ -303,7 +303,7 @@ rolling Supervisor reconciliation of every live dogfood runtime:
 Rolling means lane by lane: reconcile one member, probe it, then move to the
 next. The reconciliation itself is Company Work — link the merge commit, the
 Supervisor generations, and each resume-or-new-session decision to the
-governing WorkItem.
+governing Work.
 
 ## Truthful Store Projections And UI Acceptance
 
@@ -328,7 +328,7 @@ Verify the Store-live product, not a static fixture:
   and
 - UI never upgrades a partial/planned object into an implemented claim.
 
-Record UI defects as WorkItems and keep the loop running.
+Record UI defects as Work records and keep the loop running.
 
 ## Handoff
 
@@ -340,7 +340,7 @@ Report:
   Human-exception decisions proven;
 - Docs, Work, Org, external-delivery, and execution relations proven;
 - CLI checks and Store-live UI evidence;
-- accepted results and explicitly deferred WorkItems;
+- accepted results and explicitly deferred Work records;
 - projection freshness and any canonical-vs-derived mismatch;
 - the execution roster used (provider, mode, model/effort receipt) and any
   research-budget breaches the Host had to steer;

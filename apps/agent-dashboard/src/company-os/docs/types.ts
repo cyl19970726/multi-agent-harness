@@ -56,39 +56,6 @@ export interface CompanyOsEntityRef {
   id: string;
 }
 
-export interface CompanyOsCorrectiveWorkContext {
-  definitionId: string;
-  actionPolicyRef: string;
-  sourceDocument: CompanyOsLink;
-  businessModuleRef?: string;
-  sourceRecordRefs: string[];
-  requestedBy: CompanyOsActorRef;
-  submittedBy: CompanyOsActorRef;
-  accountableOwner: CompanyOsActorRef;
-  assignees: CompanyOsActorRef[];
-  reviewer?: CompanyOsActorRef;
-}
-
-export interface CompanyOsCorrectiveWorkCommand {
-  id: string;
-  command_name: "work_item.append";
-  subject_ref: CompanyOsEntityRef;
-  requested_by: CompanyOsActorRef;
-  payload: {
-    definition_id: string;
-    record: Record<string, unknown>;
-  };
-  required_permission: "company.records.write";
-  policy_ref: string;
-  risk_tier: "r1";
-  requires_human_approval: false;
-  approval_refs: [];
-  status: "requested";
-  audit_event_refs: string[];
-  requested_at: string;
-  completed_at: null;
-}
-
 export interface CompanyOsRelationRepairContext {
   definitionId: string;
   actionPolicyRef: string;
@@ -289,8 +256,6 @@ export interface CompanyOsHealthFinding {
   affected?: CompanyOsLink[];
   recommendedAction: string;
   directActionLabel?: string;
-  correctiveWorkLabel?: string;
-  correctiveWorkContext?: CompanyOsCorrectiveWorkContext;
   relationRepairContext?: CompanyOsRelationRepairContext;
 }
 
@@ -317,7 +282,7 @@ export interface CompanyOsDocumentHealthData {
     detail: string;
     findingId: string;
     subject?: CompanyOsLink;
-    route: "corrective_work_item";
+    route: "team_work";
     disabledReason?: string;
   }>;
   governanceAgent?: CompanyOsLink;

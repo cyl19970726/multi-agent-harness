@@ -299,7 +299,6 @@ async function main() {
       product_doc_snapshot_count: productDocSnapshots.length,
       synced_paths: productDocSnapshots.map((record) => record.fields.path).sort(),
       side_effects: {
-        work_items: (snapshot.work_items ?? []).length,
         approvals: (snapshot.approvals ?? []).length,
         financial_records: (snapshot.financial_records ?? []).length,
       },

@@ -213,7 +213,7 @@ function TeamDetail({ node, snapshot, compact = false, onOpenTeam, onOpenMember,
         <div className="flex flex-wrap gap-2">
           <Button onClick={onOpenTeam} disabled={!node.latestRunId} title={node.latestRunId ? "Open newest TeamRun" : "No TeamRun exists for this Team"}>Open War Room</Button>
           {node.team.id && (
-            <Button variant="secondary" onClick={() => onSelectionChange?.({ surface: "work", workView: "team-works", workTeamId: node.team.id, workItemId: undefined, workHostId: undefined, workMemberId: undefined, workStatus: undefined, workPriority: undefined, workSource: undefined, workDemand: undefined })} title="Filter Company Work by this Team">
+            <Button variant="secondary" onClick={() => onSelectionChange?.({ surface: "work", workView: "team-works", workTeamId: node.team.id, workHostId: undefined, workMemberId: undefined, workStatus: undefined, workPriority: undefined, workSource: undefined, workDemand: undefined })} title="Filter Company Work by this Team">
               <BriefcaseBusiness className="size-3.5" /> View Works
             </Button>
           )}

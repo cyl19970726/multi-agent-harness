@@ -1,0 +1,11 @@
+{
+  "id": "work-evidence-1",
+  "work_id": "work-1",
+  "work_report_id": "report-1",
+  "work_version": 3,
+  "candidate_revision": "candidate-sha",
+  "source_type": "work_candidate_revision",
+  "source_ref": "candidate-sha",
+  "summary": "exact candidate",
+  "created_at": "unix-ms:3"
+}

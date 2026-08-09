@@ -1,0 +1,11 @@
+{
+  "id": "decision-1",
+  "work_id": "work-1",
+  "expected_work_version": 3,
+  "kind": "accept",
+  "decided_by_actor": { "kind": "host", "id": "host" },
+  "rationale": "all declared gates passed",
+  "work_report_id": "report-1",
+  "evidence_refs": ["gate-evaluation-1"],
+  "created_at": "unix-ms:4"
+}

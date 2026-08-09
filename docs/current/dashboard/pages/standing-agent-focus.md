@@ -181,7 +181,7 @@ fixed composer; context remains a disclosure rather than disappearing.
 The Store-live Organization chart routes Human and Standing Agent cards to
 their profile. A Standing Agent profile now shows:
 
-- WorkItems linked through Company OS Actor references;
+- TeamWorks linked through Company OS Actor references;
 - Agent Team Works linked through `MemberRun.agent_member_id`;
 - the exact TeamRun, MemberRun, Work id/version/status, and optional
   provider-native session locator;
@@ -197,7 +197,7 @@ an offline runtime does not retire a Standing Agent.
 `available-multi-work` proves:
 
 - one healthy durable AgentMember with explicit `available` state;
-- multiple non-exclusive Works or WorkItems from at least two source kinds;
+- multiple non-exclusive Works or TeamWorks from at least two source kinds;
 - capacity remains available;
 - provider-native session history reached through explicit native-session refs;
 - a delivered artifact and durable message history;

@@ -28,7 +28,7 @@ Canonical objects:
 - DashboardSnapshot;
 - raw Missions, Waves, AgentTeamRuns, MemberRuns, TeamSupervisorLeases,
   typed messages, AgentMessageRoutes, actions, sessions,
-  documents, actors, WorkItems, Approvals, finance records, and evidence;
+  documents, actors, TeamWorks, Approvals, finance records, and evidence;
 - source labels;
 - live/offline load state.
 

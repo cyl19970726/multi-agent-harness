@@ -117,7 +117,7 @@ export const trademarkModuleDefinition: CustomPageDefinition = Object.freeze({
   package: { id: "company-os.trademark.module-home.react", version: "1.0.0" },
   queries: [
     { name: "trademark.applications", viewId: "view:trademark-applications", recordTypes: ["TrademarkApplication"] },
-    { name: "trademark.work", viewId: "view:trademark-work", recordTypes: ["WorkItem"] },
+    { name: "trademark.work", viewId: "view:trademark-work", recordTypes: ["TeamWork"] },
     { name: "trademark.approvals", viewId: "view:trademark-approvals", recordTypes: ["Approval"] },
     { name: "trademark.finance", viewId: "view:trademark-finance", recordTypes: ["FinancialRecord"] },
     { name: "trademark.participants", viewId: "view:trademark-participants", recordTypes: ["ActorRef"] },

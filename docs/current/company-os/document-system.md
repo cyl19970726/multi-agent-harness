@@ -90,7 +90,7 @@ authorize a write by itself. The governing decision is
 flowchart LR
   U["Human reviews UI"] --> C["Agent reads via CLI/API"]
   C --> D["Document / typed record"]
-  D --> W["WorkItem and, when required, Approval"]
+  D --> W["TeamWork and, when required, Approval"]
   W --> A["Actors: human, Standing Agent, external participant"]
   A --> E["Execution reference\nMission/Mission Log, Agent Team, Workflow, direct work"]
   E --> R["Outcome, artifact, evidence, decision, metric"]
@@ -104,7 +104,7 @@ Every action that matters begins from a document or a typed record with enough
 business context to explain *why* it exists. Results return to that source and
 to every related record; a result is not complete merely because an executor
 reported success. The execution reference establishes how bounded work ran; it
-does not replace the WorkItem's accountable owner or its source context.
+does not replace the TeamWork's accountable owner or its source context.
 
 The normal operating cycle is:
 
@@ -122,9 +122,9 @@ Human reviews UI
 | --- | --- | --- |
 | `Document` | A durable rich page and contextual container. | Company home, brand strategy, trademark application brief. |
 | `DocumentSpace` | A navigable business area with ownership, policy, and a page hierarchy. | Brand & IP, Finance, Content Operations. |
-| `Block` | A composable unit within a document. Blocks may be rich text, list, checklist, callout, code, media, attachment, simple table, embed, metric, decision, WorkItem, or relation summary. | A decision callout, meeting notes table, KPI chart, embedded payment table. |
-| `TypedRecord` | A strongly typed business fact with a stable identity, fields, lifecycle, and audit trail. | `TrademarkApplication`, `FinancialRecord`, `WorkItem`, `Approval`. |
-| `Relation` | A typed, directional or bidirectional link between durable objects. It avoids copied facts and lets one change be visible in all relevant contexts. | Application `incurs` payment; WorkItem `originates_from` document. |
+| `Block` | A composable unit within a document. Blocks may be rich text, list, checklist, callout, code, media, attachment, simple table, embed, metric, decision, TeamWork, or relation summary. | A decision callout, meeting notes table, KPI chart, embedded payment table. |
+| `TypedRecord` | A strongly typed business fact with a stable identity, fields, lifecycle, and audit trail. | `TrademarkApplication`, `FinancialRecord`, `TeamWork`, `Approval`. |
+| `Relation` | A typed, directional or bidirectional link between durable objects. It avoids copied facts and lets one change be visible in all relevant contexts. | Application `incurs` payment; TeamWork `originates_from` document. |
 | `View` | A filtered, sorted, grouped, or visual presentation of documents or records. A view never creates a second source of truth. | Board, timeline, finance roll-up, milestone dashboard. |
 | `BusinessModule` | A governed package of a recurring domain's record types, relations, policies, standard views, and optional custom pages. | Trademark Management, Content Operations. |
 
@@ -168,7 +168,7 @@ maintained by an Agent, but its code is a constrained presentation package:
   standard Document and View experience without losing data.
 
 For example, a Trademark Management home may place application metrics, a
-filing table, deadlines, related WorkItems, required Approvals, and Finance in
+filing table, deadlines, related TeamWorks, required Approvals, and Finance in
 one layout. Its "submit filing" button requests a governed Action; it never
 directly changes application status or moves money.
 
@@ -192,7 +192,7 @@ implemented product claim.
 ## Documents are company memory, not a log dump
 
 Company knowledge includes reviewed documents and typed records, explicit
-WorkItems and Assignments, Approvals, decisions, final outputs, evidence, and
+TeamWorks and Assignments, Approvals, decisions, final outputs, evidence, and
 meaningful metrics. A document should preserve the rationale and outcome of
 work, not every transient event that occurred while producing it.
 
@@ -209,8 +209,8 @@ cannot be evidence, approval, accountability, or a document update.
 
 ## Work and result contract
 
-A Document or TypedRecord may create a `WorkItem`, but it does not make every
-paragraph a task. A WorkItem must retain its `source_document` or source record
+A Document or TypedRecord may create a `TeamWork`, but it does not make every
+paragraph a task. A TeamWork must retain its `source_document` or source record
 and identify the business question, desired outcome, accountable owner,
 participants, status, result location, and supporting evidence. Assignments,
 reviews, and approvals remain explicit and may refer to humans, Standing
@@ -219,7 +219,7 @@ Agents, constrained external participants, or an execution reference.
 The executor may be direct human or Agent work, or a reference to a
 Mission, Agent Team, Dynamic Workflow, or host execution. Mission keeps its own
 lifecycle semantics through its append-only Mission Log; other executor objects
-keep their independent semantics. A completed run updates the WorkItem and
+keep their independent semantics. A completed run updates the TeamWork and
 its source document only through an explicit result/update action; it must not
 silently become the company's final decision or record.
 
@@ -230,9 +230,9 @@ such as:
 
 ```text
 Document --describes--> TypedRecord
-WorkItem --originates_from--> Document
-WorkItem --accountable_to--> Actor
-WorkItem --executed_by--> execution reference
+TeamWork --originates_from--> Document
+TeamWork --accountable_to--> Actor
+TeamWork --executed_by--> execution reference
 TypedRecord --requires--> Approval
 FinancialRecord --allocated_to--> BusinessModule / Milestone / Brand / legal matter
 MetricObservation --measures--> release / campaign / Milestone
@@ -321,13 +321,13 @@ records, not that the module or source records were deleted. They also expose
 the first saved configuration slice from native `View.query`: mode, filters,
 grouping, and sorting for table/board/timeline presentation. That configuration
 changes how records are viewed; it does not copy, mutate, approve, or settle the
-underlying TypedRecords, WorkItems, Approvals, or FinancialRecords. The canonical module
+underlying TypedRecords, TeamWorks, Approvals, or FinancialRecords. The canonical module
 route is `?surface=docs&module=<business-module-id>`; it renders the Docs-owned
 standard module page over native BusinessModule TypedRecords and shows Work,
 Approval, Finance, and actor facts only as references. Store-live browser
 acceptance for the trademark scenario proves the standard module page can
 create a TypedRecord, create a View, and link a Document ↔ TypedRecord Relation
-through governed Actions with no WorkItem, Approval, Commitment, or Payment side
+through governed Actions with no TeamWork, Approval, Commitment, or Payment side
 effects; the View action can persist table/board/timeline mode plus simple
 filter/group/sort query configuration. Fixture and read-only projections must show the contract or disabled
 state rather than pretending to write. A collaborative Notion-like rich editor,
@@ -365,12 +365,10 @@ Document, Block, TypedRecord, Relation, View, and BusinessModule projections,
 not a cleanup script. The page may show findings such as orphaned parents,
 duplicate document titles, missing TypedRecord source Documents, missing
 Document ↔ TypedRecord Relations, invalid module roots, and oversized
-documents. For Store-live projections that expose a scoped
-`work_item.append` Action declaration, it can create an in-module corrective
-WorkItem for Docs Governance while keeping Work truth in the Work ledger. It
-also surfaces a cleanup queue for high-judgment operations such as rename,
-split, merge, archive, and migration; those candidates route to corrective
-WorkItems and are not executed directly by Health Review. When the same
+documents. It surfaces a cleanup queue for high-judgment operations such as
+rename, split, merge, archive, and migration; those candidates recommend a
+native TeamWork created through `team-run work` and are not executed directly
+by Health Review. Docs Health never creates a second Company task object. When the same
 Store-live projection also exposes a scoped `relation.append` declaration and
 policy, it may directly repair the narrow missing
 Document ↔ TypedRecord Relation case. The server still validates source
@@ -396,7 +394,7 @@ require the appropriate explicit Approval, often including a human approver.
 - Documents and record relations obey permission and retention policy even when
   they are embedded in another page.
 - Docs Health is a review and routing surface. It can identify structural
-  issues, point to CLI/Skill commands, and create scoped corrective WorkItems
+  issues, point to CLI/Skill commands, and create scoped corrective TeamWorks
   when a Store-live Action contract proves that authority. It can also apply
   the narrow scoped `relation.append` repair for missing Document ↔ TypedRecord
   links. Other document changes still belong to governed Docs, Work,

@@ -11,7 +11,7 @@ REQUIRED = {
     "non_goals",
     "documents", "page_contracts", "record_types", "relations", "views",
     "actors_and_roles",
-    "work_items", "approvals", "financial_relations", "actions", "permissions",
+    "works", "approvals", "financial_relations", "actions", "permissions",
     "automations",
     "custom_page_candidates", "frontend_surfaces", "fallback_views", "migration", "archive_policy",
     "unknowns", "required_human_approver",

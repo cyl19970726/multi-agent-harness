@@ -66,7 +66,7 @@ import { buildAgentTeamOrgModel, orgTeamPath } from "../model/orgSelectors";
 import type { WorkbenchModel } from "../model/readModel";
 import { acknowledgeHostAttention, acknowledgeTeamMessage, addTeamMember, resolvePendingInteraction, sendTeamMessage, startTeamRun, transitionTeamRun, type ActionDescriptor } from "../api/actions";
 import { fetchHostAttentions } from "../api";
-import type { HostAttention, MemberRun, TeamMessage, TeamMessageResponseIntent, Wave, Work } from "../types";
+import { workIsTerminal, type HostAttention, type MemberRun, type TeamMessage, type TeamMessageResponseIntent, type Wave, type Work } from "../types";
 import type { SelectionState } from "../app/selection";
 
 export interface TeamWarRoomProps {
@@ -285,7 +285,7 @@ export function TeamWarRoom({
     : primaryActivity;
   const shownActivity = filter === "all" && !showFullActivity ? keyActivity : filteredActivity;
   const selectedMemberWork = selectedMember
-    ? works.find((work) => work.active_member_run_id === selectedMember.id && !["done", "cancelled"].includes(work.status))
+    ? works.find((work) => work.active_member_run_id === selectedMember.id && !workIsTerminal(work))
     : undefined;
   const explicitRecipients = composerTarget === "team" ? members.map((member) => member.id) : [composerTarget];
   const canSend = actionsEnabled
@@ -318,7 +318,7 @@ export function TeamWarRoom({
     if (member) {
       setSelectedMemberId(member.id);
       setComposerTarget(member.id);
-      const memberWork = works.find((work) => work.active_member_run_id === member.id && !["done", "cancelled"].includes(work.status));
+      const memberWork = works.find((work) => work.active_member_run_id === member.id && !workIsTerminal(work));
       setComposerWorkId(memberWork?.id ?? "");
     } else {
       setComposerTarget("team");
@@ -668,7 +668,7 @@ export function TeamWarRoom({
             {TEAM_VIEWS.map((entry) => {
               const Icon = entry.icon;
               const count = entry.id === "works"
-                ? works.filter((item) => !["done", "cancelled"].includes(item.status)).length
+                ? works.filter((item) => !workIsTerminal(item)).length
                 : entry.id === "activity"
                   ? activityItems.length
                   : members.length;

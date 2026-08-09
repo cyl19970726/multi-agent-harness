@@ -24,7 +24,7 @@ The suite currently expands to:
 | --- | --- | --- |
 | [`company-business-project-bootstrap`](../../../skills/company-business-project-bootstrap/SKILL.md) | High-level commercial-project bootstrap across Docs IA/page contracts, Work, Org, Finance, external software/social sources, and custom pages | procedural orchestration skill |
 | [`company-docs-operator`](../../../skills/company-docs-operator/SKILL.md) | Docs: Document, Block, page contract, TypedRecord, Relation, View, BusinessModule, custom page metadata | dedicated `firm company docs ...` CLI implemented |
-| [`company-work-operator`](../../../skills/company-work-operator/SKILL.md) | Work: WorkItem, Milestone, Assignment, lifecycle, Approval links, execution/result refs shown through Docs page contracts | dedicated `firm company work ...` CLI implemented for list/query/create/update/assign/transition/close plus `work milestone ...` baseline lifecycle |
+| [`company-work-operator`](../../../skills/company-work-operator/SKILL.md) | Unified Work: read-only Company aggregate, native TeamWork lifecycle, reports, gates, decisions, and Milestone refs | `firm company work list/query/milestone` for Company views; `firm team-run work ...` for all mutations |
 | [`company-org-operator`](../../../skills/company-org-operator/SKILL.md) | Organization: Human, Standing Agent, OrgUnit, role, permission, lifecycle and actor refs for Docs page context | dedicated flat `firm company org ...` plus nested `actor/unit/membership ...` baseline CLI implemented; proposal/promotion/grant-revoke workflows remain planned |
 | [`company-module-designer`](../../../skills/company-module-designer/SKILL.md) | Business module design, page contracts, frontend surface intent, and governance proposal | procedural design skill |
 | [`company-page-builder`](../../../skills/company-page-builder/SKILL.md) | Code-declared custom page design/implementation from approved page contracts, visual expected images, and actual verification | procedural page-building skill |
@@ -64,7 +64,7 @@ Work, Organization, Finance, source-sync records, and custom page definitions.
 Social/content platforms follow the same rule. Xiaohongshu, WeChat Channels,
 Douyin, WeCom, ecommerce, logistics, and future channels enter through
 gateway observations, platform-account TypedRecords, content campaign/post
-records, WorkItems, and evidence refs. Platform-specific operations should be
+records, TeamWorks, and evidence refs. Platform-specific operations should be
 packaged as plugins that provide:
 
 - a Skill for Agent operating procedure and policy boundaries;
@@ -84,7 +84,7 @@ publication submit, comment/private-message sync, profile management, paid
 promotion preparation, and analytics sync belong in platform plugins. They may
 be invoked through MCP or through plugin-owned CLI commands, but their durable
 effects must return as governed Company OS Actions, typed records, relations,
-WorkItems, metrics, and evidence.
+TeamWorks, metrics, and evidence.
 
 ## Company Store selection
 
@@ -104,11 +104,13 @@ HARNESS_COMPANY=<company-id> firm company work list
 If no Company is selected, current commands still fall back to the
 project-derived compatibility Store. That fallback is allowed for legacy reads
 and migration work, but new dogfood/company operations should prefer an
-explicit Company Store. `migrate-from-project` copies only `company_os_*.jsonl`
-ledgers and must not be treated as Execution Space, Project Binding, provider
+explicit Company Store. `migrate-from-project` copies and verifies only the
+explicit active Company Store ledger allowlist. Retired WorkItem, Assignment,
+and cutover ledgers are disposable history and are not migration inputs. The
+command must not be treated as Execution Space, Project Binding, provider
 session, prompt, or runtime migration. A successful copy or `--verify-only`
-run proves every exact source row remains present in the destination, appends
-an audit record to `company_store_migrations.jsonl`, and writes an advisory
+run proves every exact active source row remains present in the destination,
+appends an audit record to `company_store_migrations.jsonl`, and writes an advisory
 source marker. The marker recommends read-only audit use but does not falsely
 claim filesystem write enforcement.
 
@@ -205,10 +207,10 @@ These skills must:
 - treat CLI/API as the primary Agent interface and UI as Human review context;
 - identify assumptions, unknowns, owners, risk, and permissions before
   proposing a durable change;
-- treat Documents, TypedRecords, Relations, Views, WorkItems, Approvals,
+- treat Documents, TypedRecords, Relations, Views, TeamWorks, Approvals,
   FinancialRecords, and ActorRefs as canonical objects;
 - use [Module Design](module-design.md), [Document System](document-system.md),
-  [WorkItems and Approvals](work-items-and-approvals.md), and
+  [TeamWorks and Approvals](work-items-and-approvals.md), and
   [Governance](governance.md) as constraints;
 - preserve provenance with a rollback or safe non-destructive path;
 - keep chat, transcripts, and private reasoning out of durable output; and
@@ -291,43 +293,42 @@ fixture is not sufficient evidence by itself.
 
 ### Job
 
-Use this skill when an Agent needs to inspect, create, assign, transition, or
-close native WorkItems and Milestones through the governed CLI/API path. Work
-owns durable commitments, accountability, lifecycle, assignment, approval
-links, execution refs, result provenance, and WorkItem detail fields. It does
-not own Docs structure, Organization membership, Finance state, or
-Mission/Wave execution lifecycle.
+Use this skill when an Agent needs to inspect Company Work, route to the
+owning execution space, mutate native TeamWork, or manage Milestone refs.
+Native Work owns identity, revision, lifecycle, reports, gates, evidence, and
+operational decisions. Company Work owns no executable row or assignment
+ledger. The skill does not own Docs structure, Organization membership,
+Finance state, or Mission/Wave execution lifecycle.
 
 ### Required input
 
 | Input | Requirement |
 | --- | --- |
-| Source context | Source Document or TypedRecord that explains why the WorkItem exists. |
-| Work detail | Title, objective, description when needed, acceptance criteria, context refs, WorkType, business line, and Milestone when known. |
-| Responsibility | Submitter, requester when known, accountable owner, assignees, contributors, reviewer, and approver as distinct ActorRefs. |
-| Side-effect boundary | Whether the work is direct, execution-linked, finance-linked, approval-gated, external, or mixed. |
+| Execution scope | Explicit execution space, Team, and TeamRun for every mutation. |
+| Work detail | Title, context Markdown, completion criteria, priority, gates, and prerequisites. |
+| Responsibility | Native owner Member and reviewer/gate separation. |
+| Revision | Latest expected Work revision for every transition. |
 
 ### Required output
 
-The skill reports the created or updated native Work refs, assignment refs,
-source/result refs, approval refs, finance refs if any, execution refs if any,
-and remaining gaps. New WorkItems should preserve enough machine-operable
-detail for an Agent to execute without scraping prose:
+The skill reports exact Work ids/revisions, mutation routes, immutable report
+refs, evidence/check refs, gate evaluations, decisions, and remaining gaps.
+New TeamWorks preserve enough machine-operable detail for execution:
 
 ```text
-description
-acceptance_criteria
-context_refs
-deliverable_refs
+context_markdown
+completion_criteria_markdown
+gates
+artifact_refs / check_refs
 ```
 
 ### Completion rule
 
-The skill is complete only when `firm company work query` and/or
-`firm company work list` can reconstruct the WorkItem, its role chain,
-detail fields, source/result provenance, and linked assignment/approval
-context. A document paragraph, chat message, fixture, or visual page alone is
-not a completed WorkItem.
+The skill is complete only when `firm company work query` can rediscover the
+same native Work id/revision and the authoritative `firm team-run work show`
+record explains its lifecycle, report, evidence, gates, and decision. A
+document paragraph, chat message, fixture, or visual page alone is not a
+completed TeamWork.
 
 ## `company-module-designer`
 
@@ -363,7 +364,7 @@ documents, templates, TypedRecord types, lifecycle states, and retention
 Relations with direction/cardinality and canonical source rules
 Views, metrics, and reporting definitions
 Actors, organization, responsibility, capacity, and escalation
-WorkItem templates with source/result provenance
+TeamWork templates with source/result provenance
 Finance record types, reconciliation, and approval rules
 permissions, automation limits, audit/failure handling
 migration, rollback, acceptance checks, owners, and required reviews
@@ -467,7 +468,7 @@ acceptance.
 
 This is a **team coordination skill**, not a Company OS operator skill. It
 operates on execution-plane objects (Mission, AgentTeam, AgentTeamRun, Work,
-TeamMessage) rather than company-plane objects (Document, WorkItem,
+TeamMessage) rather than company-plane objects (Document, TeamWork,
 Organization, Finance). Do not use it to operate Docs, manage Organization
 membership, approve spending, or create governed Company OS records.
 
@@ -505,8 +506,8 @@ survives review and runtime restart.
 
 This is a **team coordination skill**, not a Company OS operator skill. It
 operates on execution-plane objects (Works board, TeamMessage, native session)
-rather than company-plane objects (Document, WorkItem, Organization, Finance).
-A Member may create follow-up Work but does not create Company OS WorkItems,
+rather than company-plane objects (Document, TeamWork, Organization, Finance).
+A Member may create follow-up Work but does not create Company OS TeamWorks,
 manage Organization membership, or approve spending.
 
 ### Required input
@@ -552,15 +553,15 @@ excellent design does not itself justify custom code.
 ## Trademark Management walkthrough
 
 For `CN-2026-018`, `company-module-designer` receives the brand request and
-proposes `TrademarkApplication` records, relations, WorkItems, Approvals, and
+proposes `TrademarkApplication` records, relations, TeamWorks, Approvals, and
 `FinancialRecord`s with named actors (Brand Owner, Trademark Agent, External
 Lawyer). Finance and legal approval remain decisions outside the skill.
 
 After review, `company-page-builder` receives a page brief: "What applications
 require a decision or legal action, and what costs are committed or awaiting
-approval?" Scoped reads include status, deadlines, WorkItems, Approval state,
+approval?" Scoped reads include status, deadlines, TeamWorks, Approval state,
 and finance Views. Allowed commands include create application, link materials,
-create WorkItem, request approval — not file a mark, approve ¥3,000, or settle
+create TeamWork, request approval — not file a mark, approve ¥3,000, or settle
 a payment.
 
 The builder produces the expected image, implements the registered view against

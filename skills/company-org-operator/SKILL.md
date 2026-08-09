@@ -63,7 +63,7 @@ Organization owns who exists and who may act:
 
 Organization does not own:
 
-- WorkItem lifecycle or milestone status.
+- Work lifecycle or milestone status.
 - Docs content and module structure.
 - Finance commitments or payments.
 - Mission/Wave, AgentTeamRun, MemberRun, provider-native sessions, or workflow
@@ -127,11 +127,11 @@ a durable Organization actor, not a MemberRun.
 Business-facing Standing Agents may receive input through external gateways
 such as WeCom, GitHub, email, social platforms, ecommerce/logistics systems, or
 future plugins. Organization owns the durable Agent identity, role,
-permissions, tools, skill refs, maintained Docs, accepted WorkTypes, and
+permissions, tools, skill refs, maintained Docs, accepted Work classifications, and
 escalation policy. The gateway service is an intake adapter or service actor;
 it does not grant authority to the Agent.
 
-An Agent detail workspace should show Org identity, current WorkItems, maintained
+An Agent detail workspace should show Org identity, current Work records, maintained
 Docs, permission/capability refs, plugin capabilities, account/message/order
 or metric summaries, and recent gateway events. Agent-specific knowledge such
 as merchant FAQ, reply policy, content guidelines, customer requests, or
@@ -141,7 +141,7 @@ as a different Agent-specific database.
 Plugin view extensions may add an Agent detail panel such as "merchant inbox",
 "social account status", "content performance", or "logistics blockers". The
 panel must render Company OS records or scoped connector projections and link
-back to source Documents, WorkItems, and evidence. It must not infer authority
+back to source Documents, Work records, and evidence. It must not infer authority
 from a logged-in platform account, phone session, profile card, or plugin
 installation.
 
@@ -324,7 +324,7 @@ The first Company OS layer is governance:
   constitutional envelope, and required Human gates.
 - Lead Agent manages Governance Agents.
 - Docs Governance Agent owns company memory structure.
-- Work Governance Agent owns WorkItem routing and commitment visibility.
+- Work Governance Agent owns Work routing and commitment visibility.
 - Finance Governance Agent owns money state and finance controls.
 - Org / HR Governance Agent owns actors, roles, authority, capability, and
   lifecycle.
@@ -355,17 +355,17 @@ changes.
 
 A Domain Lead may autonomously delegate operational work only inside the
 currently implemented policy and its declared responsibility, accepted
-WorkTypes, data/tool scope, budget/permission ceiling, and capacity. Recursive
+Work classifications, data/tool scope, budget/permission ceiling, and capacity. Recursive
 child-grant issuance and approved-template Standing Agent creation are target
 capabilities until the hierarchical grant lifecycle and authenticated
 transport are implemented and accepted.
 
 Every delegation attenuates authority: the recipient gets only the subset
-needed for the WorkItem, never broader access, spending, approval, legal,
+needed for the Work, never broader access, spending, approval, legal,
 organization-change, or external-commitment authority than the delegator
 holds, and a child grant must be strictly narrower in at least one
 authority-bearing dimension. Delegated work keeps one accountable owner and an
-explicit Company Assignment in Work; provider subagents and MemberRuns do not
+explicit Work ownership and delivery in Work; provider subagents and MemberRuns do not
 become durable reports.
 
 Current truth is the Human-admin Organization CLI v1 plus explicit
@@ -393,7 +393,7 @@ record unimplemented controls as `partial` or `planned`.
 1. Inspect the actor, org unit, role, and permission context before proposing a
    change.
    If the request comes from a Docs page, inspect its page contract and related
-   WorkItems so the actor is linked to the intended business responsibility.
+   Work records so the actor is linked to the intended business responsibility.
 2. Classify the request: view current org, route work to existing actor, propose
    new business agent, update permission, pause/retire actor, or review
    capability.
@@ -408,8 +408,8 @@ record unimplemented controls as `partial` or `planned`.
    authority from a prompt, profile, avatar, or UI card.
 6. For delegation, prove the parent relation and calculate the recipient's
    effective ceiling as an explicit subset of both Organization policy and the
-   WorkItem's needs. Escalate instead of silently widening either boundary.
-7. Link initial WorkItems and maintained Docs so the actor's purpose is
+   Work's needs. Escalate instead of silently widening either boundary.
+7. Link initial Work records and maintained Docs so the actor's purpose is
    observable.
 8. Record evaluation and lifecycle changes as durable Organization records.
 
@@ -420,7 +420,7 @@ record unimplemented controls as `partial` or `planned`.
 - Reporting line and OrgUnit are explicit.
 - Role and permission set are bounded.
 - Required approval exists for adding actors or expanding authority.
-- Related WorkItems and maintained Docs are linked.
+- Related Work records and maintained Docs are linked.
 - Skill/tool list is treated as capability, not authority.
 - AgentTeam MemberRun/provider session is not mistaken for a durable Agent.
 - Docs pages show actor refs from Organization, not copied names or inferred
@@ -435,6 +435,6 @@ When handing off, state:
 - actor/org-unit ids;
 - role and permission changes;
 - approval refs;
-- linked WorkItems and Docs;
+- linked Work records and Docs;
 - capability/evaluation evidence;
 - remaining system gaps.

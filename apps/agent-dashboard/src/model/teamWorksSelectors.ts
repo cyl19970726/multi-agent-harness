@@ -4,7 +4,7 @@ import { organizationMembersById } from "./orgSelectors";
 /**
  * Global "Team Works" aggregate: one cross-TeamRun projection over native
  * Team Work rows, derived only from real snapshot fields (`works`,
- * `team_runs`, `teams`, `members`). It never mixes Company WorkItems with
+ * `team_runs`, `teams`, `members`). It never mixes a second Company task ledger with
  * Team Work and never fabricates an owner, source, or milestone.
  *
  * Demand classes follow the recursive-Work discovery contract
@@ -33,10 +33,9 @@ export interface TeamWorkRow {
   hostLabel?: string;
   /** Responsible member label from `owner_member_id` → members; id fallback. */
   ownerLabel?: string;
-  /** Source observation: source WorkItem ref or the creator actor kind. */
+  /** Source observation from the canonical creator actor. */
   sourceLabel: string;
   parentWorkId?: string | null;
-  sourceWorkItemRef?: string | null;
   /** Durable team scope from Work.team_id, falling back to run.agent_team_id. */
   durableTeamId?: string;
 }
@@ -73,8 +72,14 @@ export interface TeamWorksFilters {
   demand?: TeamWorkDemandClass;
 }
 
-const STATUS_ORDER = ["open", "in_progress", "blocked", "review", "done", "cancelled"];
+const STATUS_ORDER = ["open", "active", "blocked", "on_hold", "review", "accepted", "failed", "cancelled"];
 const PRIORITY_ORDER = ["urgent", "high", "normal", "low"];
+
+function workLifecycleLabel(work: Work): string {
+  if (work.condition !== "normal") return work.condition;
+  if (work.phase === "closed") return work.resolution ?? "closed";
+  return work.phase;
+}
 
 export function buildTeamWorksModel(snapshot: DashboardSnapshot): TeamWorksModel {
   const works = snapshot.works ?? [];
@@ -98,7 +103,7 @@ export function buildTeamWorksModel(snapshot: DashboardSnapshot): TeamWorksModel
     const run = runsById.get(work.team_run_id);
     const team = run?.agent_team_id ? teamsById.get(run.agent_team_id) : undefined;
     const demandClass: TeamWorkDemandClass =
-      work.status === "open" && !work.owner_member_id
+      work.phase === "open" && work.condition === "normal" && !work.owner_member_id
         ? "unassigned"
         : work.parent_work_id
           ? "follow-up"
@@ -121,11 +126,8 @@ export function buildTeamWorksModel(snapshot: DashboardSnapshot): TeamWorksModel
         ? (membersById.get(team.host_member_id)?.name ?? team.host_member_id)
         : (run?.host_actor?.display_name ?? run?.host_actor?.id ?? undefined),
       ownerLabel,
-      sourceLabel: work.source_work_item_ref
-        ? `WorkItem ${work.source_work_item_ref}`
-        : `${work.created_by_actor?.kind ?? "unknown"} intake`,
+      sourceLabel: `${work.created_by_actor?.kind ?? "unknown"} intake`,
       parentWorkId: work.parent_work_id ?? null,
-      sourceWorkItemRef: work.source_work_item_ref ?? null,
       durableTeamId: work.team_id ?? team?.id,
     };
   });
@@ -160,11 +162,11 @@ export function buildTeamWorksModel(snapshot: DashboardSnapshot): TeamWorksModel
           label: row.ownerLabel ?? (row.work.owner_member_id as string),
         })),
     ),
-    statuses: STATUS_ORDER.filter((status) => rows.some((row) => row.work.status === status)),
+    statuses: STATUS_ORDER.filter((status) => rows.some((row) => workLifecycleLabel(row.work) === status)),
     priorities: PRIORITY_ORDER.filter((p) => rows.some((row) => row.work.priority === p)),
     sources: uniq(
       rows.map((row) => ({
-        id: row.sourceWorkItemRef ? "work-item" : (row.work.created_by_actor?.kind ?? "unknown"),
+        id: row.work.created_by_actor?.kind ?? "unknown",
         label: row.sourceLabel,
       })),
     ),
@@ -190,12 +192,10 @@ export function filterTeamWorks(rows: TeamWorkRow[], filters: TeamWorksFilters):
     if (filters.teamId && row.teamId !== filters.teamId) return false;
     if (filters.hostId && row.hostId !== filters.hostId) return false;
     if (filters.memberId && row.work.owner_member_id !== filters.memberId) return false;
-    if (filters.status && row.work.status !== filters.status) return false;
+    if (filters.status && workLifecycleLabel(row.work) !== filters.status) return false;
     if (filters.priority && row.work.priority !== filters.priority) return false;
     if (filters.source) {
-      const sourceId = row.sourceWorkItemRef
-        ? "work-item"
-        : (row.work.created_by_actor?.kind ?? "unknown");
+      const sourceId = row.work.created_by_actor?.kind ?? "unknown";
       if (sourceId !== filters.source) return false;
     }
     if (filters.demand && row.demandClass !== filters.demand) return false;

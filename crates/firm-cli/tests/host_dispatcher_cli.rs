@@ -5,7 +5,7 @@ use std::process::Command;
 use harness_core::{
     AgentTeamRun, HostAttention, HostAttentionKind, HostAttentionStatus, HostBindingLeaseStatus,
     HostControlMode, TeamActorKind, TeamActorRef, TeamRunStatus, Work, WorkClaimMode,
-    WorkCommandContext, WorkPriority, WorkStatus,
+    WorkCommandContext, WorkCondition, WorkPhase, WorkPriority,
 };
 use harness_store::HarnessStore;
 
@@ -61,11 +61,12 @@ fn dispatch_host_resumes_exact_kimi_session_and_releases_lease() {
                 team_run_id: run.id.clone(),
                 team_id: None,
                 parent_work_id: None,
-                source_work_item_ref: None,
                 title: "Review exact Host dispatch".into(),
                 context_markdown: String::new(),
                 completion_criteria_markdown: "exact bound Host receives triage".into(),
-                status: WorkStatus::Open,
+                phase: WorkPhase::Open,
+                condition: WorkCondition::Normal,
+                resolution: None,
                 owner_member_id: None,
                 active_member_run_id: None,
                 claim_mode: WorkClaimMode::HostAssign,

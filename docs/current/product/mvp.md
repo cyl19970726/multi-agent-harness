@@ -118,4 +118,4 @@ the new model.
 - Wave-owned TeamRun lifecycle;
 - automatic team deletion at Mission closeout;
 - mandatory MCP or plugin installation;
-- treating Company OS WorkItem approval as equivalent to Wave advance.
+- treating Company OS TeamWork approval as equivalent to Wave advance.

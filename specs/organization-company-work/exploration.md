@@ -1,13 +1,16 @@
 # Organization + Company Work — 技术探索报告
 
 ```text
-status: complete
+status: superseded-by-issue-420
 produced_by: member-run-1786038758973-p66721-0 (x-explorer2)
 references:
   - specs/organization-company-work/design.md (org-designer, merged PR #379)
   - docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md
   - docs/current/company-os/nested-agent-team-organization.md
 ```
+
+> Historical exploration only. It predates the implemented Unified Work
+> cutover and must not be used as a migration or compatibility plan.
 
 ## 1. 范围
 

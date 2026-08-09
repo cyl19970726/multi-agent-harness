@@ -18,7 +18,6 @@ export function CompanyOsPageRoot({
   page:
     | "home"
     | "workboard"
-    | "work-item-focus"
     | "finance"
     | "agents-organization"
     | "standing-agent-focus"

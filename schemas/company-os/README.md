@@ -7,7 +7,7 @@ They intentionally do not import, project, or convert legacy Goal/Task records.
 | --- | --- |
 | `actors.schema.json` | ActorRef, HumanMember, StandingAgent, ExternalParticipant, ServiceActor, OrgUnit, OrganizationMembership |
 | `knowledge.schema.json` | Document, Block, TypedRecord, Relation, View, BusinessModule |
-| `work.schema.json` | Milestone, WorkType-bearing WorkItem, Assignment, Approval |
+| `work.schema.json` | Milestone and Approval references to authoritative TeamWork |
 | `finance.schema.json` | Commitment, Payment |
 | `programmable-page.schema.json` | CustomPageDefinition, CustomPagePackage, ActionPolicyDefinition, ActionCommand, AuditEvent |
 | `docs-v2.schema.json` | AI-first Docs slice (ADR 0054): closed block kind set, DocumentRevision, DocumentChangeOperation, CommentThread, BlobMeta |

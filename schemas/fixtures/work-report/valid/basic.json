@@ -1,0 +1,14 @@
+{
+  "id": "report-1",
+  "work_id": "work-1",
+  "work_version": 3,
+  "report_revision": 1,
+  "submitted_by_actor": { "kind": "member_run", "id": "member-run-1" },
+  "candidate_revision": "candidate-sha",
+  "result_summary": "implemented",
+  "artifact_refs": ["artifact://patch"],
+  "check_refs": ["check://unit"],
+  "evidence_refs": ["work-evidence-1"],
+  "known_risks": [],
+  "created_at": "unix-ms:3"
+}

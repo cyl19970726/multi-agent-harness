@@ -144,7 +144,7 @@ function buildModel(source: unknown, pageId: string): CommandCenterModel {
   const modules = objects(root.business_modules).map(unbox).filter((entry) => text(entry.id).startsWith("module-wcw-"));
   const records = objects(root.typed_records).map(unbox).filter((entry) => text(entry.id).startsWith("record-wcw-"));
   const workRoot = root.work && typeof root.work === "object" && !Array.isArray(root.work) ? root.work as Json : {};
-  const workItems = (objects(workRoot.work_items).length ? objects(workRoot.work_items) : objects(root.work_items)).map(unbox).filter((entry) => text(entry.id).startsWith("work-wcw-"));
+  const works = (objects(workRoot.works).length ? objects(workRoot.works) : objects(root.works)).map(unbox).filter((entry) => text(entry.id).startsWith("work-wcw-"));
   const commitments = [...objects(root.commitments), ...objects(root.financial_records).filter((entry) => text(unbox(entry).type) === "commitment")]
     .map(unbox)
     .filter((entry, index, entries) => entries.findIndex((candidate) => text(candidate.id) === text(entry.id)) === index);
@@ -161,7 +161,7 @@ function buildModel(source: unknown, pageId: string): CommandCenterModel {
   const physical = byId.get("record-wcw-bracelet-physical-nfc");
   const virtual = byId.get("record-wcw-bracelet-virtual");
   const site = byId.get("record-wcw-site-jieyang-ancient-city");
-  const active = workItems.filter((item) => !["completed", "cancelled", "archived"].includes(text(item.status, text(item.lifecycle_status))));
+  const active = works.filter((item) => text(item.phase) !== "closed");
   const moduleRecordCounts = new Map<string, number>();
   for (const record of records) {
     const moduleId = text(record.module_id);
@@ -226,11 +226,11 @@ function buildModel(source: unknown, pageId: string): CommandCenterModel {
       customCount: Array.isArray(entry.custom_page_definition_refs) ? entry.custom_page_definition_refs.length : 0,
     })),
     work: {
-      total: workItems.length,
+      total: works.length,
       active: active.length,
-      completed: workItems.filter((item) => text(item.status, text(item.lifecycle_status)) === "completed").length,
-      waiting: workItems.filter((item) => text(item.status, text(item.lifecycle_status)) === "waiting_for_approval").length,
-      commandCenter: workItems.find((item) => text(item.id) === "work-wcw-custom-command-center"),
+      completed: works.filter((item) => text(item.phase) === "closed" && text(item.resolution) === "accepted").length,
+      waiting: works.filter((item) => text(item.phase) === "review").length,
+      commandCenter: works.find((item) => text(item.id) === "work-wcw-custom-command-center"),
       next: active.slice(0, 5),
     },
     finance: {
@@ -337,7 +337,7 @@ export function WanchengwanlingCommandCenter({ source, pageId = "page-wcw-comman
 
         <section className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <Metric label="Docs usable" value={`${readiness}%`} detail={`${model.docs.withBlocks}/${model.docs.total} Wanchengwanling docs contain visible Blocks`} />
-          <Metric label="WorkItems" value={model.work.total} detail={`${model.work.active} active · ${model.work.completed} completed · ${model.work.waiting} waiting`} />
+          <Metric label="TeamWorks" value={model.work.total} detail={`${model.work.active} active · ${model.work.completed} accepted · ${model.work.waiting} in review`} />
           <Metric label="Product price" value={`¥${model.business.physicalPrice || "—"} / ¥${model.business.virtualPrice || "—"}`} detail={`Physical / virtual bracelet`} />
           <Metric label="Check-in rules" value={`${model.business.magnetUnlock || "—"} / ${model.business.lotteryUnlock || "—"}`} detail={`${model.business.spotCount || "—"} MVP spots · magnet / lottery`} />
         </section>
@@ -384,14 +384,14 @@ export function WanchengwanlingCommandCenter({ source, pageId = "page-wcw-comman
               </div>
               <div className="mt-4 space-y-2">
                 {model.work.next.length ? model.work.next.map((item) => (
-                  <a key={text(item.id)} href={href(`?surface=work&workItem=${encodeURIComponent(text(item.id))}`)} data-company-os-ref={text(item.id)} className="grid gap-2 rounded-xl border border-border bg-background/70 p-3 text-sm hover:bg-accent/40 md:grid-cols-[minmax(0,1fr)_8rem]">
+                  <a key={text(item.id)} href={href(`?surface=work&teamWork=${encodeURIComponent(text(item.id))}`)} data-company-os-ref={text(item.id)} className="grid gap-2 rounded-xl border border-border bg-background/70 p-3 text-sm hover:bg-accent/40 md:grid-cols-[minmax(0,1fr)_8rem]">
                     <span className="min-w-0">
                       <span className="block truncate font-semibold">{text(item.title, text(item.id))}</span>
-                      <span className="mt-1 block text-xs text-muted-foreground">{text(item.work_type, "work")} · {text(item.source_document_ref, "no source document")}</span>
+                      <span className="mt-1 block text-xs text-muted-foreground">{text(item.team_id, "team unavailable")} · run {text(item.team_run_id, "unavailable")}</span>
                     </span>
-                    <span className="text-xs capitalize text-muted-foreground">{statusLabel(item.status ?? item.lifecycle_status)}</span>
+                    <span className="text-xs capitalize text-muted-foreground">{statusLabel(`${text(item.phase)} · ${text(item.condition)}`)}</span>
                   </a>
-                )) : <p className="rounded-xl border border-dashed border-border p-3 text-sm text-muted-foreground">No active Wanchengwanling WorkItems are supplied.</p>}
+                )) : <p className="rounded-xl border border-dashed border-border p-3 text-sm text-muted-foreground">No active Wanchengwanling TeamWorks are supplied.</p>}
               </div>
             </section>
           </div>
@@ -449,7 +449,7 @@ export function WanchengwanlingCommandCenter({ source, pageId = "page-wcw-comman
 
         <section className="mt-6 grid gap-3 md:grid-cols-4">
           <LinkCard href="?surface=organization" title="Organization" detail={`${model.actors.governance.length + model.actors.business.length} Wanchengwanling actors`} icon={<UsersRound className="size-4" />} />
-          <LinkCard href="?surface=work" title="Work board" detail="Milestones, WorkItems, owners, status" icon={<Flag className="size-4" />} />
+          <LinkCard href="?surface=work" title="Work board" detail="Milestones and read-only TeamWork aggregation" icon={<Flag className="size-4" />} />
           <LinkCard href="?surface=finance" title="Finance" detail="Commitments, payments, and money effects" icon={<CircleDollarSign className="size-4" />} />
           <LinkCard href="?surface=docs&document=document-wcw-route-ar-experience" title="Route rules" detail="8/12 check-in rules and AR experience" icon={<MapPinned className="size-4" />} />
         </section>
@@ -459,8 +459,8 @@ export function WanchengwanlingCommandCenter({ source, pageId = "page-wcw-comman
             <div className="flex items-start gap-3">
               <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-status-good" />
               <div>
-                <p className="font-semibold">Implementation WorkItem is linked</p>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">{text(model.work.commandCenter.title)} · {statusLabel(model.work.commandCenter.status ?? model.work.commandCenter.lifecycle_status)}</p>
+                <p className="font-semibold">Implementation TeamWork is linked</p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">{text(model.work.commandCenter.title)} · {statusLabel(`${text(model.work.commandCenter.phase)} · ${text(model.work.commandCenter.condition)}`)}</p>
               </div>
             </div>
           </section>

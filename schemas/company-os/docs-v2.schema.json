@@ -23,7 +23,7 @@
     },
     "entityKind": {
       "enum": [
-        "actor", "document", "typed_record", "business_module", "work_item",
+        "actor", "document", "typed_record", "business_module", "work",
         "approval", "financial_record", "evidence", "execution", "view", "relation"
       ]
     },

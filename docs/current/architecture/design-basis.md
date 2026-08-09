@@ -31,7 +31,7 @@ company; they are not the company information model.
 
 ```text
 durable company context
-  -> explicit WorkItem and responsibility
+  -> explicit TeamWork and responsibility
   -> required Approval and effect policy
   -> selected human or execution capability
   -> observable outcome, artifacts and evidence
@@ -72,14 +72,14 @@ flowchart TD
 | Module | Owns | Refuses | Invariant |
 | --- | --- | --- | --- |
 | Docs | Documents, Blocks, TypedRecords, Relations, Views and BusinessModules | task lifecycle, actor authority or monetary state | company context and accepted results have a durable home |
-| Organization | humans, Standing Agents, external/services, OrgUnits, reporting, permission and authority | WorkItem state, document content or payment state | durable identity is distinct from runtime/session identity |
-| Work | WorkItems, Milestones, responsibility, Assignment, lifecycle, evidence and result routing | source knowledge, organization identity or finance ledger truth | every commitment says who owns it and where its result returns |
+| Organization | humans, Standing Agents, external/services, OrgUnits, reporting, permission and authority | TeamWork state, document content or payment state | durable identity is distinct from runtime/session identity |
+| Work | TeamWorks, Milestones, responsibility, Assignment, lifecycle, evidence and result routing | source knowledge, organization identity or finance ledger truth | every commitment says who owns it and where its result returns |
 | Finance | budgets, Commitments, invoices, Payments, refunds and financial evidence | general task or document truth | requested, authorized and actual monetary effects remain distinct |
 | Governance | module/organization evolution, policy, Approval and audit | hidden prompt authority or silent structural mutation | high-risk effects stop at the required Human boundary |
 | Mission/Wave | durable intent/context and ordered versioned Host plans, changed facts, judgments and advance outcomes | business ownership, payment approval, task graph, or runtime containment | Wave stays small; Host plan history remains reconstructable |
 | Agent Team | independent reusable Team identity, Mission relations, long-lived TeamRuns, run-scoped members, durable Supervisor generations, Works, WorkDelivery and typed conversation | Standing Organization membership, Wave ownership, or copied provider history | responsibility is proven by Work/WorkEvent; live control by the current Supervisor; execution detail by native-session bindings |
 | Dynamic Workflow | WorkflowRun, steps, outputs and artifacts | universal company coordination | workflow truth stays inside its executor contract |
-| Provider/runtime | sessions, processes, events, workspace and capability observation | WorkItem or Organization truth | optional hooks may observe only what the provider actually exposes |
+| Provider/runtime | sessions, processes, events, workspace and capability observation | TeamWork or Organization truth | optional hooks may observe only what the provider actually exposes |
 | Company Store / Execution Space / Project Binding | company truth, execution coordination, and repository/worktree selection as distinct identities | repo path as Company Store owner, Company as mandatory execution dependency, or store directory as provider cwd | Company linkage is optional for execution; Project Binding never reroutes company writes |
 | Skills/adapters | repeatable usage guidance and domain capability access | product authority or domain truth in generic core | capabilities reduce variance but never grant permission |
 
@@ -90,7 +90,7 @@ compatibility, research or archive contexts governed by ADR 0028.
 ## Why Documents and Agents are connected
 
 Docs without accountable Actors becomes a passive wiki. Agents without durable
-Docs repeat context and leave chat as the only memory. WorkItem links the two:
+Docs repeat context and leave chat as the only memory. TeamWork links the two:
 the source Document explains why work exists; Organization supplies who may act;
 Work owns the commitment; Finance owns any monetary effect; the selected
 executor proves how work ran; the result returns to Docs.
@@ -98,7 +98,7 @@ executor proves how work ran; the result returns to Docs.
 ## Why modules are linked structures
 
 A business domain such as Trademark Management is not just a folder. Its
-BusinessModule relates documents, typed records, views, WorkItems, Actors,
+BusinessModule relates documents, typed records, views, TeamWorks, Actors,
 Approvals, Finance records, policies and evidence. Creating a new module
 therefore requires document and relation design, responsibility placement,
 financial impact analysis and governance—not merely a new navigation item.

@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, ClipboardList, FileSearch2, Hammer, ShieldCheck } from "lucide-react";
+import { AlertTriangle, CheckCircle2, FileSearch2, Hammer, ShieldCheck } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -7,10 +7,9 @@ import { cn } from "@/lib/utils";
 import { ArtField, EditorialTitle, ObjectEmblem } from "../visuals";
 
 import { RelationChips } from "./RelationChips";
-import { buildDocsHealthCorrectiveWorkCommand, buildDocsHealthRelationRepairCommand } from "./healthAction";
+import { buildDocsHealthRelationRepairCommand } from "./healthAction";
 import { preserveCompanyOsWorkbenchContext } from "./url";
 import type {
-  CompanyOsCorrectiveWorkCommand,
   CompanyOsDocumentHealthData,
   CompanyOsHealthFinding,
   CompanyOsLink,
@@ -40,58 +39,23 @@ const unavailableAction = "Connect a Store-live project and provide a session ca
 export function DocumentHealthReview({
   health,
   actionEnabled = false,
-  onCreateCorrectiveWork,
   onRepairRelation,
 }: {
   health: CompanyOsDocumentHealthData;
   actionEnabled?: boolean;
-  onCreateCorrectiveWork?: (command: CompanyOsCorrectiveWorkCommand, capabilityToken: string) => Promise<boolean>;
   onRepairRelation?: (command: CompanyOsRelationRepairCommand, capabilityToken: string) => Promise<boolean>;
 }) {
   const selected = health.findings.find((finding) => finding.id === health.selectedFindingId)
     ?? health.findings.find((finding) => finding.relationRepairContext)
-    ?? health.findings.find((finding) => finding.correctiveWorkContext)
     ?? health.findings[0];
   const isPassing = health.status === "pass";
   const [capabilityToken, setCapabilityToken] = useState("");
   const [correctiveNote, setCorrectiveNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
-  const intents = useRef<Record<string, { id: string; createdAt: string }>>({});
   const relationIntents = useRef<Record<string, { id: string; createdAt: string }>>({});
-  const canCreateCorrectiveWork = Boolean(actionEnabled && onCreateCorrectiveWork && selected?.correctiveWorkContext);
   const canRepairRelation = Boolean(actionEnabled && onRepairRelation && selected?.relationRepairContext);
-  const correctiveReady = canCreateCorrectiveWork && Boolean(capabilityToken.trim()) && Boolean(correctiveNote.trim()) && !submitting;
   const relationReady = canRepairRelation && Boolean(capabilityToken.trim()) && Boolean(correctiveNote.trim()) && !submitting;
-
-  async function createCorrectiveWork() {
-    if (!selected || !correctiveReady || !onCreateCorrectiveWork) return;
-    const intent = intents.current[selected.id] ?? {
-      id: `action-browser-docs-health-${crypto.randomUUID()}`,
-      createdAt: new Date().toISOString(),
-    };
-    intents.current[selected.id] = intent;
-    setSubmitting(true);
-    setFeedback(null);
-    try {
-      const command = buildDocsHealthCorrectiveWorkCommand({
-        finding: selected,
-        note: correctiveNote,
-        commandId: intent.id,
-        createdAt: intent.createdAt,
-      });
-      const accepted = await onCreateCorrectiveWork(command, capabilityToken.trim());
-      if (accepted) {
-        setCapabilityToken("");
-        setCorrectiveNote("");
-      }
-      setFeedback(accepted ? "Corrective WorkItem created in Store truth." : "Corrective WorkItem was not created. Review the action error and retry with the same intent.");
-    } catch (error) {
-      setFeedback(error instanceof Error ? error.message : String(error));
-    } finally {
-      setSubmitting(false);
-    }
-  }
 
   async function repairRelation() {
     if (!selected || !relationReady || !onRepairRelation) return;
@@ -122,13 +86,6 @@ export function DocumentHealthReview({
     }
   }
 
-  const correctiveUnavailableReason = !actionEnabled
-    ? unavailableAction
-    : !selected?.correctiveWorkContext
-      ? "The selected finding does not expose a complete work_item.append contract."
-      : !capabilityToken.trim() || !correctiveNote.trim()
-        ? "Enter the session capability and a durable corrective note."
-        : undefined;
   const relationUnavailableReason = !actionEnabled
     ? unavailableAction
     : !selected?.relationRepairContext
@@ -136,12 +93,8 @@ export function DocumentHealthReview({
       : !capabilityToken.trim() || !correctiveNote.trim()
         ? "Enter the session capability and a durable Docs action note."
         : undefined;
-  const anyGovernedAction = canCreateCorrectiveWork || canRepairRelation;
-  const primaryUnavailableReason = canRepairRelation
-    ? relationUnavailableReason
-    : canCreateCorrectiveWork
-      ? correctiveUnavailableReason
-      : correctiveUnavailableReason ?? relationUnavailableReason;
+  const anyGovernedAction = canRepairRelation;
+  const primaryUnavailableReason = relationUnavailableReason;
 
   return (
     <main
@@ -266,15 +219,6 @@ export function DocumentHealthReview({
                   </div>
                   <div className="mt-5 flex flex-wrap gap-2">
                     <Button
-                      disabled={!correctiveReady}
-                      title={correctiveUnavailableReason}
-                      onClick={() => void createCorrectiveWork()}
-                      data-company-os-action-state={canCreateCorrectiveWork ? "available" : "unavailable"}
-                    >
-                      <ClipboardList />
-                      {submitting ? "Creating…" : selected.correctiveWorkLabel ?? "Create corrective WorkItem"}
-                    </Button>
-                    <Button
                       disabled={!relationReady}
                       variant="outline"
                       title={relationUnavailableReason}
@@ -333,12 +277,12 @@ export function DocumentHealthReview({
               <h2 className="company-editorial-title text-xl">Policy boundary</h2>
             </div>
             <p className="mt-3 text-xs leading-5 text-muted-foreground">
-              No deletion without governed action. Health can flag stale or duplicate records; cleanup needs an explicit Docs Action or corrective WorkItem.
+              No deletion without governed action. Health can flag stale or duplicate records; cleanup needs an explicit Docs Action or a native TeamWork routed to the responsible team.
             </p>
           </section>
           <section className="mt-6 space-y-2" aria-label="Governed cleanup queue" data-docs-cleanup-queue="true">
             <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Cleanup queue</p>
-            <p className="text-xs leading-5 text-muted-foreground">Rename, split, merge, archive, and migration are high-judgment operations. Health routes them to WorkItems; it does not execute them directly.</p>
+            <p className="text-xs leading-5 text-muted-foreground">Rename, split, merge, archive, and migration are high-judgment operations. Health recommends native TeamWork; it does not create a second Company work object or execute cleanup directly.</p>
             {health.cleanupQueue?.length ? (
               <div className="space-y-2">
                 {health.cleanupQueue.map((item) => (
@@ -351,7 +295,7 @@ export function DocumentHealthReview({
                   >
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-medium text-foreground">{item.label}</span>
-                      <Badge tone={item.disabledReason ? "info" : "warn"}>{item.route === "corrective_work_item" ? "WorkItem" : "gated"}</Badge>
+                      <Badge tone={item.disabledReason ? "info" : "warn"}>{item.route === "team_work" ? "TeamWork" : "gated"}</Badge>
                     </div>
                     <p className="mt-1 leading-5 text-muted-foreground">{item.detail}</p>
                     {item.disabledReason && <p className="mt-2 leading-4 text-muted-foreground">{item.disabledReason}</p>}

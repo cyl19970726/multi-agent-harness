@@ -1,13 +1,13 @@
 use firm_core::{
     ActionCommand, ActionCommandStatus, ActionEffect, ActionPolicyDefinition, ActorRef, ActorType,
-    Approval, ApprovalStatus, Assignment, AssignmentDeliveryState, AuditEvent, AuditEventKind,
-    Block, BlockKind, BusinessModule, Commitment, CommitmentStatus, CompanyOsValidationError,
-    CustomPageDefinition, CustomPagePackage, CustomPagePackageKind, DataQueryDeclaration, Document,
-    DocumentKind, EntityKind, EntityRef, ExecutionMode, ExternalParticipant, HumanMember,
-    LifecycleStatus, MemberStatus, Milestone, MilestoneStatus, Money, OrgUnit, OrgUnitStatus,
-    OrganizationMembership, OrganizationMembershipRole, OrganizationMembershipStatus, Payment,
-    PaymentStatus, Relation, RelationRule, RiskTier, ServiceActor, StandingAgent, TypedRecord,
-    ValidateCompanyOs, View, ViewMode, WorkItem, WorkItemStatus, WorkType,
+    Approval, ApprovalStatus, AuditEvent, AuditEventKind, Block, BlockKind, BusinessModule,
+    Commitment, CommitmentStatus, CompanyOsValidationError, CustomPageDefinition,
+    CustomPagePackage, CustomPagePackageKind, DataQueryDeclaration, Document, DocumentKind,
+    EntityKind, EntityRef, ExternalParticipant, HumanMember, LifecycleStatus, MemberStatus,
+    Milestone, MilestoneStatus, Money, OrgUnit, OrgUnitStatus, OrganizationMembership,
+    OrganizationMembershipRole, OrganizationMembershipStatus, Payment, PaymentStatus, Relation,
+    RelationRule, RiskTier, ServiceActor, StandingAgent, TypedRecord, ValidateCompanyOs, View,
+    ViewMode,
 };
 use serde_json::json;
 
@@ -272,62 +272,6 @@ fn document_record_relation_and_view_are_one_substrate() {
     assert_eq!(serde_json::to_value(&view).unwrap()["mode"], "table");
 }
 
-fn trademark_work_item() -> WorkItem {
-    WorkItem {
-        id: "work-trademark-filing".into(),
-        title: "Trademark filing for Brand A".into(),
-        objective: "Prepare and submit application CN-2026-018 after approval.".into(),
-        description: Some(
-            "Coordinate legal preparation, approval, and durable filing evidence.".into(),
-        ),
-        acceptance_criteria: vec![
-            "Human approval is recorded before filing.".into(),
-            "Filing evidence is linked to the source document.".into(),
-        ],
-        context_refs: vec![],
-        deliverable_refs: vec![],
-        status: WorkItemStatus::WaitingForApproval,
-        source_document_ref: "doc-trademark-cn-2026-018".into(),
-        source_record_refs: vec!["record-cn-2026-018".into()],
-        milestone_ref: Some("milestone-trademark-filed".into()),
-        work_type: WorkType::Legal,
-        business_module_ref: Some("module-trademark".into()),
-        result_document_ref: Some("doc-trademark-cn-2026-018".into()),
-        result_record_refs: vec![],
-        submitted_by: agent(),
-        requested_by: Some(human()),
-        accountable_owner: human(),
-        assignees: vec![agent()],
-        contributors: vec![actor(ActorType::External, "external-lawyer")],
-        reviewer: Some(actor(ActorType::Agent, "agent-finance")),
-        approver: Some(human()),
-        execution_mode: ExecutionMode::Direct,
-        execution_refs: vec![],
-        approval_refs: vec!["approval-filing".into()],
-        evidence_refs: vec![],
-        artifact_refs: vec![],
-        outcome_summary: None,
-        due_at: Some("2026-07-31T00:00:00Z".into()),
-        priority: Some("high".into()),
-        risk_level: Some("r3".into()),
-        created_at: NOW.into(),
-        updated_at: NOW.into(),
-        completed_at: None,
-    }
-}
-
-#[test]
-fn work_item_has_business_provenance_without_requiring_an_executor() {
-    let work = trademark_work_item();
-    work.validate().unwrap();
-    assert!(work.execution_refs.is_empty());
-    assert_eq!(work.accountable_owner.actor_type, ActorType::Human);
-    assert_ne!(work.submitted_by, work.accountable_owner);
-    assert!(serde_json::to_string(&work)
-        .unwrap()
-        .contains("waiting_for_approval"));
-}
-
 #[test]
 fn milestone_is_a_company_checkpoint_not_an_execution_wave() {
     let milestone = Milestone {
@@ -340,7 +284,7 @@ fn milestone_is_a_company_checkpoint_not_an_execution_wave() {
         business_module_ref: Some("module-trademark".into()),
         target_at: Some("2026-07-31T00:00:00Z".into()),
         acceptance_criteria: vec!["Receipt evidence is linked".into()],
-        work_item_refs: vec!["work-trademark-filing".into()],
+        work_refs: vec!["work-trademark-filing".into()],
         created_at: NOW.into(),
         updated_at: NOW.into(),
         achieved_at: None,
@@ -352,51 +296,11 @@ fn milestone_is_a_company_checkpoint_not_an_execution_wave() {
 }
 
 #[test]
-fn historical_work_rows_default_to_general_without_inventing_relations() {
-    let mut wire = serde_json::to_value(trademark_work_item()).unwrap();
-    let object = wire.as_object_mut().unwrap();
-    object.remove("work_type");
-    object.remove("milestone_ref");
-    object.remove("business_module_ref");
-    let decoded: WorkItem = serde_json::from_value(wire).unwrap();
-    assert_eq!(decoded.work_type, WorkType::General);
-    assert_eq!(decoded.milestone_ref, None);
-    assert_eq!(decoded.business_module_ref, None);
-}
-
-#[test]
-fn agent_assignment_needs_durable_delivery_evidence() {
-    let mut assignment = Assignment {
-        id: "assignment-trademark-agent".into(),
-        work_item_id: "work-trademark-filing".into(),
-        recipient: agent(),
-        sender: human(),
-        assigned_role: "assignee".into(),
-        scope: Some("Prepare filing package".into()),
-        delivery_state: AssignmentDeliveryState::Delivered,
-        delivery_policy_ref: "policy-agent-message".into(),
-        correlation_id: "corr-filing-001".into(),
-        delivery_evidence_ref: None,
-        assigned_at: NOW.into(),
-        delivered_at: Some(NOW.into()),
-        acknowledged_at: None,
-    };
-    assert_eq!(
-        assignment.validate(),
-        Err(CompanyOsValidationError::Required {
-            field: "Assignment.delivery_evidence_ref"
-        })
-    );
-    assignment.delivery_evidence_ref = Some("team-message-assignment-001".into());
-    assignment.validate().unwrap();
-}
-
-#[test]
 fn required_human_approval_cannot_be_satisfied_by_an_agent() {
     let mut approval = Approval {
         id: "approval-filing".into(),
         subject_ref: EntityRef {
-            kind: EntityKind::WorkItem,
+            kind: EntityKind::Work,
             id: "work-trademark-filing".into(),
         },
         action_summary: "Authorize legal filing and ¥3,000 commitment".into(),

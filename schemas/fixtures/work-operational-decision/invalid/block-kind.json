@@ -1,0 +1,10 @@
+{
+  "id": "decision-1",
+  "work_id": "work-1",
+  "expected_work_version": 3,
+  "kind": "block",
+  "decided_by_actor": { "kind": "host", "id": "host" },
+  "rationale": "unsupported decision kind",
+  "evidence_refs": [],
+  "created_at": "unix-ms:4"
+}

@@ -23,14 +23,14 @@ not seven independent sources of product truth.
 | Execution | `docs/current/dashboard/`, `docs/current/integration/`, runtime/workflow docs | Mission/Wave, executors, providers, operator surfaces and runbooks | only for execution work |
 | Design evidence | `design/<workstream>/` (git history) | versioned Expected, Actual, prompts, specs, overlays, comparisons and reviews | only for the selected workstream |
 | Operations | `docs/current/operations/getting-started.md`, `docs/current/operations/operations.md`, `docs/current/architecture/schemas.md`, `docs/current/operations/governance-engine.md` | commands, release and governance gates | only for implementation/operations |
-| Research | `research/` (git history) | unresolved evidence, comparisons and bounded proposals attached to an active decision or WorkItem | never default context |
+| Research | `research/` (git history) | unresolved evidence, comparisons and bounded proposals attached to an active decision or TeamWork | never default context |
 | Historical evidence | verified external archives and Git history | provenance needed to interpret still-existing records or decisions | never default context |
 
 Within Company OS, product contracts divide by truth-owning system:
 
 - **Docs**: Document, Block, TypedRecord, Relation, View and BusinessModule;
 - **Organization**: Actors, OrgUnits, reporting, permissions and authority;
-- **Work**: WorkItem, Milestone, Assignment, lifecycle and result routing;
+- **Work**: TeamWork, Milestone, Assignment, lifecycle and result routing;
 - **Finance**: monetary records, controls and evidence;
 - **cross-system governance**: Approval, module/organization evolution and the
   optional role-agent decision contracts;
@@ -88,7 +88,7 @@ answer the current decision.
 
 Old visual candidates, completion audits and historical evidence are loaded
 only to answer a historical or comparative question. Unresolved research must
-be attached to an active WorkItem or decision; abandoned standalone studies are
+be attached to an active TeamWork or decision; abandoned standalone studies are
 deleted and remain recoverable from Git history.
 
 ## Creating or changing documentation
@@ -100,12 +100,12 @@ For every new request, Docs Governance follows this sequence:
 2. **Search the authority.** Extend the existing canonical document when its
    scope already owns the fact. A new file is not a substitute for editing the
    authority.
-3. **Design relations.** Name linked WorkItems, Actors, Approvals, Finance
+3. **Design relations.** Name linked TeamWorks, Actors, Approvals, Finance
    records, schemas, Actions and result Documents without copying their truth.
 4. **Choose lifecycle.** Record owner, status, canonical scope, review trigger,
    replacement and retirement policy.
 5. **Create governed Work when needed.** Material restructuring, new product
-   authority or cross-system changes require a WorkItem and proportional review.
+   authority or cross-system changes require a TeamWork and proportional review.
 6. **Update entry points and registry.** One new authority must have one visible
    route and machine-readable governance metadata.
 7. **Validate and return the result.** Run governance checks, record evidence,
@@ -141,7 +141,7 @@ retention test:
    acceptance;
 4. it is required to reproduce a current compliance, migration or acceptance
    claim;
-5. it is unresolved research attached to an active decision or WorkItem;
+5. it is unresolved research attached to an active decision or TeamWork;
 6. a live record or supported compatibility path still references it and cannot
    be migrated safely.
 
@@ -164,7 +164,7 @@ The Docs Governance audit combines machine signals with an ownership review:
 
 Run the audit after a product-model change, a large feature lands, a design
 workstream closes, or the active document count grows materially. The result is
-a bounded cleanup WorkItem, not a permanent record-keeping activity.
+a bounded cleanup TeamWork, not a permanent record-keeping activity.
 
 ## Governance roles
 
@@ -194,7 +194,7 @@ maintains four visible Work queues:
 | Structural maintenance | a document becomes too large, a module gains new readers, or navigation no longer reveals the business shape | split/merge proposal, updated module/index/views and migration notes |
 | Retirement | a schema, product model, design or runbook is superseded | preserved evidence where required, forwarding note where old references exist, retired registry status and removal plan |
 
-Each queue item is a `WorkItem`, with the Docs Governance Agent assigned for
+Each queue item is a `TeamWork`, with the Docs Governance Agent assigned for
 information architecture. The Governance Agent of the affected system remains
 accountable for meaning. The Lead resolves cross-system ownership; the Human
 Owner approves protected policy or authority changes. Docs Governance may move
@@ -208,7 +208,7 @@ is:
 new request / source Document
   -> Docs Governance proposes BusinessModule, document tree and TypedRecords
   -> Org/HR Governance assigns accountable Actors and authority
-  -> Work Governance creates WorkItems, Milestones and result routing
+  -> Work Governance creates TeamWorks, Milestones and result routing
   -> Finance Governance links commitments/payments when money is affected
   -> owning System Governance Agents approve their records
   -> Lead or Human handles the cross-system gate when required
@@ -224,7 +224,7 @@ does not create a private database hidden inside HTML.
 Docs Governance should publish a small health view rather than a second task
 system: unowned canonical documents, conflicting scopes, broken relations,
 stale reviews, archival candidates, unresolved placement requests and recent
-structural decisions. All remediation remains normal WorkItems.
+structural decisions. All remediation remains normal TeamWorks.
 
 ## Required metadata and review
 

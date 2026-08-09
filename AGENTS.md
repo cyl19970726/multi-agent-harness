@@ -35,9 +35,10 @@ of the Host's current plan and judgment — not an executor container or
 synchronization barrier. An AgentTeamRun may span multiple Waves while its
 MemberRuns and native sessions continue. Docs plus recursive AgentTeam
 Organization is the accepted target product direction (ADR 0052); current
-StandingAgent and Company WorkItem stores remain compatibility implementation
-truth until an explicit verified cutover. Repository self-hosting remains the
-first execution-foundation scenario.
+StandingAgent remains compatibility implementation truth. Company Work is a
+read-only aggregate over authoritative TeamWork and must never regain a second
+task ledger or mutation path. Repository self-hosting remains the first
+execution-foundation scenario.
 
 ## Hard Invariants
 
@@ -120,10 +121,10 @@ doc carries the contract behind each rule.
     being implemented; do not claim planned objects or fields exist until
     schemas, stores, APIs, and acceptance checks prove them. Keep the
     design-contract vs implemented-schema distinction explicit. In particular,
-    ADR 0052's AgentMember identity, recursive AgentTeam Organization, and
-    unified Work kernel are accepted target contracts, not shipped Store/API/UI
-    claims. Do not extend the compatibility StandingAgent-to-AgentMember join or
-    create a dual-write Company WorkItem/Team Work path.
+    ADR 0052's AgentMember identity and recursive AgentTeam Organization remain
+    staged contracts. The unified Work kernel is the shipped authority: do not
+    extend the compatibility StandingAgent-to-AgentMember join or recreate a
+    Company task ledger, migration fallback, or dual-write Work path.
 11. **Skill optionality.** Skills are optional capabilities, never the
     authority for product architecture or Lead behavior. Do not load a skill
     merely because you are working in this repository; canonical docs, schemas,
@@ -269,7 +270,7 @@ and an explicit
 Host Wave advance decision — with execution claims resolvable to the
 provider-native session.
 
-Company-level acceptance is separate: a WorkItem must preserve source/result
+Company-level acceptance is separate: a Work must preserve source/result
 provenance and responsibility, sensitive actions must satisfy their Approval
 policy, and durable effects must update their related document and typed
 records. An accepted Wave alone does not approve a payment, legal submission,

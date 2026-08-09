@@ -65,8 +65,10 @@ The current implementation now has the first explicit Company Store slice:
 `--company <id>`, and `HARNESS_COMPANY` route `firm company ...` commands to
 `<HARNESS_HOME>/companies/<id>/`. If no Company is selected, the older
 project-derived Company OS compatibility path still works. The migration command
-copies only `company_os_*.jsonl` ledgers; it does not move Mission/Wave, Agent
-Team, Workflow, provider sessions, prompts, or runtimes. ADR 0042 defines the
+copies only the explicit active Company Store ledger allowlist. Retired
+WorkItem, Assignment, and cutover ledgers are neither copied nor verified; it
+also does not move Mission/Wave, Agent Team, Workflow, provider sessions,
+prompts, or runtimes. ADR 0042 defines the
 implemented identity split: Company Store owns Agent Company Workspace truth,
 Execution Space owns Mission/Wave, Agent Team, Workflow, and Host coordination,
 and Project Binding owns repo / worktree / provider-cwd selection. Company is
@@ -83,12 +85,10 @@ Document / business record
   -> improve the document architecture and organization
 ```
 
-`Work` is the shared responsibility kernel. It may be owned by an AgentMember,
-performed by a human or external participant, or linked to an execution
-substrate such as Mission/Wave, Agent Team, or Dynamic Workflow. Existing
-Company `WorkItem` rows are compatibility implementation truth until the
-explicit Work-kernel migration; new architecture must not create a second
-independent responsibility model.
+`Work` is the shared responsibility kernel. Native TeamWork owns identity,
+revision, lifecycle, evidence, gates, and acceptance. Company Work is now only
+the read-only cross-execution-space aggregate; it never creates a second
+responsibility object or lifecycle.
 
 For AgentOS itself, this is a continuous self-hosting loop rather than one
 mandatory sequence. Docs, Work, and Organization may each reveal the next gap
@@ -146,7 +146,7 @@ rules live in [Documentation Governance](../documentation-governance.md).
 | Docs and business modules | [Document system](document-system.md), Docs operating surface matrix, [Module design](module-design.md) |
 | Organization and collaboration | [Organization and actors](organization-and-actors.md), [Agent Firm Mental Model](../../mental/agent-firm-mental-model.md) |
 | AgentOS self-hosting | AgentOS self-hosting dogfood loop, [ADR 0046](../../decisions/0046-supervised-agentos-self-hosting-loop.md) |
-| Work and Approval | [WorkItems and approvals](work-items-and-approvals.md), [Work Operating System](work-operating-system.md) |
+| Work and Approval | [Unified Work and approvals](work-items-and-approvals.md), [Work Operating System](work-operating-system.md) |
 | Finance | Financial relations |
 | Cross-system ownership | Four-system collaboration |
 | Governance and internal management | [Governance](governance.md), Governance Agent workspaces |
@@ -172,9 +172,8 @@ rules live in [Documentation Governance](../documentation-governance.md).
   revisions, content-addressed blobs); design intent accepted by
   [ADR 0054](../../decisions/0054-ai-first-docs-page-model-and-storage.md), not
   yet implementation authority.
-- Browser Action transport and
-  WorkItem lifecycle actions: implemented
-  technical slices.
+- Browser Action transport remains for independent governed Company actions;
+  TeamWork lifecycle mutations route exclusively through `team-run work`.
 - [Core page matrix](core-page-matrix.md) and
   Company OS V2 visual inventory:
   page/design scope and visual evidence.

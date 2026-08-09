@@ -109,10 +109,10 @@ copied into Mission/Wave IA.
 | [Mission/Wave Canvas](pages/mission-wave-canvas.md) | One Mission's durable context, linked Teams, ordered Host-plan Wave revisions, decisions, and closeout. |
 | [Agent Team War Room](pages/team-run-war-room.md) | One independent or Mission-scoped AgentTeamRun: shared Works ownership/status, Work-linked conversation, member presence, unified activity, artifacts, and selected Host-plan context. |
 | [MemberRun Focus](pages/member-run-focus.md) | One run-scoped Agent Team member: owned/eligible Works, WorkDelivery, native activity/evidence, runtime, and direct Team messages. |
-| [Standing Agent Focus](pages/standing-agent-focus.md) | One durable organization Agent: responsibilities, WorkItems, documents, availability, and subject-linked collaboration. |
+| [Standing Agent Focus](pages/standing-agent-focus.md) | One durable organization Agent: responsibilities, TeamWorks, documents, availability, and subject-linked collaboration. |
 | [Debug](pages/debug.md) | Raw snapshot, import/export, and low-level object views outside the primary work surface. |
 
-Approval decisions and WorkItem lifecycle actions belong to their Company OS
+Approval decisions and TeamWork lifecycle actions belong to their Company OS
 focus pages. Execution pressure belongs to the Mission, TeamRun, or MemberRun
 record that produced it. There is no replacement global Goal-era decision or
 warnings page.

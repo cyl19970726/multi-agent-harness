@@ -8,7 +8,7 @@ Harness runtime:
 
 ```text
 Document / TypedRecord
-  -> WorkItem
+  -> TeamWork
   -> choose execution method when work is ready
   -> outcome, artifacts, evidence, metrics, and record/document updates
 ```
@@ -27,7 +27,7 @@ Company Store       Execution Space       Project Binding
       \------ explicit, optional relations ---/
 ```
 
-Company WorkItems may reference execution. Execution must not require a
+Company TeamWorks may reference execution. Execution must not require a
 Company. Project/repository selection is a runtime binding, not Company truth.
 Company Store, Execution Space, and Project Binding registries and selectors
 are implemented independently. Project-derived execution/Company stores remain
@@ -43,8 +43,8 @@ independent Agent Teams. Its ordered Waves are lightweight, versioned Markdown
 records of the Host's plan and judgment. A Wave is not a task graph, executor
 container, synchronization barrier, or provider-session boundary.
 
-In the Company OS, a WorkItem may initiate or reference a Mission/Wave when its
-business outcome needs staged execution. The WorkItem remains the document- and
+In the Company OS, a TeamWork may initiate or reference a Mission/Wave when its
+business outcome needs staged execution. The TeamWork remains the document- and
 responsibility-facing record; Mission/Wave remains the execution-facing record.
 Outside Company OS, the same Mission/Wave objects remain usable in a standalone
 Execution Space with `company_id = null`.
@@ -67,7 +67,7 @@ Work assignment/claim -> WorkOperation(WorkEvent + resulting Work + deliveries)
 ```
 
 Neither object is an OrgUnit, a standing organization member, or a business
-WorkItem. A durable AgentMember can only appear in a standing Agent projection
+TeamWork. A durable AgentMember can only appear in a standing Agent projection
 when an explicit stable link exists (for example,
 `MemberRun.agent_member_id`). A temporary MemberRun remains temporary even if
 its displayed name, provider, model, role, or timestamps resemble a standing
@@ -143,7 +143,7 @@ not acquire organizational identity. `WorkflowRun.project_binding_id` pins the
 provider cwd, instruction/Skill boundary, and patch/artifact root independently
 from the Execution Space that owns the run rows.
 
-A WorkItem may reference the WorkflowRun that fulfilled it. An Agent-centric
+A TeamWork may reference the WorkflowRun that fulfilled it. An Agent-centric
 projection may cite workflow participation only when a step has an explicit
 durable Agent/session link.
 
@@ -173,21 +173,21 @@ a Claude Desktop conversation and Harness must not claim that it appears
 there. The same rule applies to every provider: native session truth does not
 imply visibility in an unrelated consumer UI.
 
-## Selection from a WorkItem
+## Selection from a TeamWork
 
-The product does not force every WorkItem to become a Mission/Wave. The
+The product does not force every TeamWork to become a Mission/Wave. The
 accountable owner chooses proportionate execution:
 
 | Work shape | Appropriate execution |
 | --- | --- |
-| Small document update or human follow-up | direct human/Agent action recorded on the WorkItem |
+| Small document update or human follow-up | direct human/Agent action recorded on the TeamWork |
 | One-shot, structured, bounded work | Dynamic Workflow |
 | Collaborative work needing shared responsibility, messages, or review | standalone or Mission-linked Agent Team |
 | Durable, staged outcome with several gates | Mission with ordered Waves |
 | Direct resident-agent operation | Host action, with observable outcome |
 
-The chosen run is recorded as `WorkItem.execution_ref`; the result must update
-the WorkItem's result document/records and attach useful evidence. This closes
+The chosen run is recorded as `TeamWork.execution_ref`; the result must update
+the TeamWork's result document/records and attach useful evidence. This closes
 the document-to-action-to-document loop without making execution logs the
 company knowledge base.
 
@@ -213,8 +213,8 @@ The Company OS model changes their placement, not their execution semantics:
 
 ```text
 Company OS business layer
-  Documents / Modules / Records / Relations / Org / WorkItems / Approvals
-    -> execution foundation selected by WorkItem
+  Documents / Modules / Records / Relations / Org / TeamWorks / Approvals
+    -> execution foundation selected by TeamWork
       Mission -> ordered Host-plan Wave
       Mission <-> Agent Team -> TeamRun -> MemberRun
       Dynamic Workflow | Host action
@@ -224,16 +224,16 @@ Company OS business layer
 
 The superseded coordination stack is not an execution option. ADR 0028 freezes,
 exports, verifies, and deletes it without coercing its historical rows into
-Mission, WorkItem, Approval, or organization membership.
+Mission, TeamWork, Approval, or organization membership.
 
 ## Execution invariants
 
-1. A WorkItem can exist before an executor is selected; execution selection is
+1. A TeamWork can exist before an executor is selected; execution selection is
    not business intake.
 2. Execution can exist without a Company Store; Company linkage is optional for
    every Mission, Wave, TeamRun, MemberRun, WorkflowRun, and provider session.
 3. A selected executor cannot overwrite accountable ownership, approval
-   authority, or document provenance held by the WorkItem.
+   authority, or document provenance held by the TeamWork.
 4. Agent Team responsibility is proved by Work owner/version and WorkEvents;
    TeamMessage correlation explains conversation only.
 5. A TeamRun/MemberRun never becomes a standing Agent or OrgUnit by inference.

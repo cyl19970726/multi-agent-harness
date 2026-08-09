@@ -3,14 +3,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use firm_core::{
     ActionCommand, ActionCommandStatus, ActionEffect, ActionPolicyDefinition, ActorRef, ActorType,
-    Approval, ApprovalStatus, Assignment, AssignmentDeliveryState, AuditEvent, AuditEventKind,
-    Block, BlockKind, BusinessModule, Commitment, CommitmentStatus, CustomPageDefinition,
-    CustomPagePackage, CustomPagePackageKind, DataQueryDeclaration, DeclaredAvailability, Document,
-    DocumentKind, EntityKind, EntityRef, ExecutionMode, ExternalParticipant, HumanMember,
-    LifecycleStatus, MemberStatus, Milestone, MilestoneStatus, Money, OrgUnit, OrgUnitStatus,
+    Approval, ApprovalStatus, AuditEvent, AuditEventKind, Block, BlockKind, BusinessModule,
+    Commitment, CommitmentStatus, CustomPageDefinition, CustomPagePackage, CustomPagePackageKind,
+    DataQueryDeclaration, DeclaredAvailability, Document, DocumentKind, EntityKind, EntityRef,
+    ExternalParticipant, HumanMember, LifecycleStatus, MemberStatus, Money, OrgUnit, OrgUnitStatus,
     OrganizationMembership, OrganizationMembershipRole, OrganizationMembershipStatus, Payment,
-    PaymentStatus, Relation, RiskTier, StandingAgent, TypedRecord, View, ViewMode, WorkItem,
-    WorkItemStatus, WorkQuery, WorkType,
+    PaymentStatus, Relation, RiskTier, StandingAgent, TypedRecord, View, ViewMode,
 };
 use firm_store::{
     ActionCommandClaimResult, CompanyActor, FinancialRecord, HarnessStore, StoreError,
@@ -202,47 +200,6 @@ fn business_module(id: &str, document_id: &str, owner: &ActorRef) -> BusinessMod
     }
 }
 
-fn work_item(id: &str, document_id: &str, human: &ActorRef, agent: &ActorRef) -> WorkItem {
-    WorkItem {
-        id: id.into(),
-        title: "Trademark filing for Brand A".into(),
-        objective: "Prepare and submit a governed filing package".into(),
-        description: Some(
-            "Prepare the package, preserve approval context, and return evidence.".into(),
-        ),
-        acceptance_criteria: vec!["Filing evidence is linked".into()],
-        context_refs: vec![],
-        deliverable_refs: vec![],
-        status: WorkItemStatus::Submitted,
-        source_document_ref: document_id.into(),
-        source_record_refs: vec![],
-        milestone_ref: None,
-        work_type: WorkType::Legal,
-        business_module_ref: None,
-        result_document_ref: None,
-        result_record_refs: vec![],
-        submitted_by: agent.clone(),
-        requested_by: Some(human.clone()),
-        accountable_owner: human.clone(),
-        assignees: vec![agent.clone()],
-        contributors: vec![],
-        reviewer: None,
-        approver: Some(human.clone()),
-        execution_mode: ExecutionMode::Direct,
-        execution_refs: vec![],
-        approval_refs: vec![],
-        evidence_refs: vec![],
-        artifact_refs: vec![],
-        outcome_summary: None,
-        due_at: None,
-        priority: Some("high".into()),
-        risk_level: Some("legal".into()),
-        created_at: NOW.into(),
-        updated_at: NOW.into(),
-        completed_at: None,
-    }
-}
-
 fn seed_people_and_document(store: &HarnessStore) -> (ActorRef, ActorRef, String) {
     store
         .append_human_member(&human("human-brand-owner"))
@@ -257,83 +214,6 @@ fn seed_people_and_document(store: &HarnessStore) -> (ActorRef, ActorRef, String
         .append_document(&document(&document_id, &human_ref))
         .unwrap();
     (human_ref, agent_ref, document_id)
-}
-
-#[test]
-fn native_work_projection_preserves_milestone_type_and_business_line_truth() {
-    let test = TestStore::new("work-projection");
-    let (human_ref, agent_ref, document_id) = seed_people_and_document(&test.store);
-    let module = business_module("module-trademark", &document_id, &human_ref);
-    test.store.append_business_module(&module).unwrap();
-    let milestone = Milestone {
-        id: "milestone-trademark-submitted".into(),
-        title: "Trademark application submitted".into(),
-        outcome: "A governed CN filing has durable receipt evidence".into(),
-        status: MilestoneStatus::Active,
-        accountable_owner: human_ref.clone(),
-        source_document_ref: Some(document_id.clone()),
-        business_module_ref: Some(module.id.clone()),
-        target_at: Some("2026-07-31T00:00:00+08:00".into()),
-        acceptance_criteria: vec!["Filing receipt is linked".into()],
-        work_item_refs: vec![],
-        created_at: NOW.into(),
-        updated_at: NOW.into(),
-        achieved_at: None,
-    };
-    test.store.append_milestone(&milestone).unwrap();
-    let mut work = work_item(
-        "work-trademark-filing",
-        &document_id,
-        &human_ref,
-        &agent_ref,
-    );
-    work.milestone_ref = Some(milestone.id.clone());
-    work.business_module_ref = Some(module.id.clone());
-    work.work_type = WorkType::Legal;
-    work.status = WorkItemStatus::Blocked;
-    test.store.append_work_item(&work).unwrap();
-
-    let projection = test.store.work_projection(&WorkQuery::default()).unwrap();
-    assert_eq!(projection.summary.total, 1);
-    assert_eq!(projection.summary.blocked, 1);
-    assert_eq!(projection.summary.without_milestone, 0);
-    assert_eq!(projection.board["blocked"], vec![work.id.clone()]);
-    assert_eq!(projection.business_lines[&module.id], vec![work.id.clone()]);
-    assert_eq!(projection.work_types["legal"], vec![work.id.clone()]);
-    assert_eq!(projection.milestones[0].total_work_items, 1);
-    assert_eq!(projection.milestones[0].blocked_work_items, 1);
-    assert_eq!(projection.workload.len(), 2);
-
-    let content_module = business_module("module-content", &document_id, &human_ref);
-    test.store.append_business_module(&content_module).unwrap();
-    let mut content_work = work_item("work-publish-video", &document_id, &human_ref, &agent_ref);
-    content_work.title = "Publish launch video".into();
-    content_work.work_type = WorkType::Content;
-    content_work.business_module_ref = Some(content_module.id.clone());
-    content_work.status = WorkItemStatus::InProgress;
-    test.store.append_work_item(&content_work).unwrap();
-    let content_projection = test
-        .store
-        .work_projection(&WorkQuery {
-            business_module_refs: vec![content_module.id.clone()],
-            ..WorkQuery::default()
-        })
-        .unwrap();
-    assert_eq!(content_projection.summary.total, 1);
-    assert_eq!(content_projection.work_items[0].id, content_work.id);
-    assert_eq!(
-        content_projection.work_types["content"],
-        vec![content_work.id]
-    );
-
-    let filtered = test
-        .store
-        .work_projection(&WorkQuery {
-            work_types: vec![WorkType::Development],
-            ..WorkQuery::default()
-        })
-        .unwrap();
-    assert_eq!(filtered.summary.total, 0);
 }
 
 fn requested_approval(
@@ -545,31 +425,6 @@ fn append_only_ledgers_project_latest_rows_and_preserve_company_links() {
         })
         .unwrap();
 
-    let work = work_item(
-        "work-trademark-filing",
-        &document_id,
-        &human_ref,
-        &agent_ref,
-    );
-    test.store.append_work_item(&work).unwrap();
-    test.store
-        .append_assignment(&Assignment {
-            id: "assignment-trademark-agent".into(),
-            work_item_id: work.id,
-            recipient: agent_ref,
-            sender: human_ref,
-            assigned_role: "preparer".into(),
-            scope: Some("Prepare filing package".into()),
-            delivery_state: AssignmentDeliveryState::Pending,
-            delivery_policy_ref: "policy-assignment".into(),
-            correlation_id: "corr-cn-2026-018".into(),
-            delivery_evidence_ref: None,
-            assigned_at: NOW.into(),
-            delivered_at: None,
-            acknowledged_at: None,
-        })
-        .unwrap();
-
     assert_eq!(test.store.documents().unwrap().len(), 2);
     assert_eq!(
         test.store.latest_documents().unwrap(),
@@ -587,7 +442,6 @@ fn append_only_ledgers_project_latest_rows_and_preserve_company_links() {
         test.store.latest_organization_memberships().unwrap().len(),
         1
     );
-    assert_eq!(test.store.latest_assignments().unwrap().len(), 1);
     assert_eq!(test.store.actors().unwrap().len(), 2);
     assert!(matches!(
         test.store.latest_actors().unwrap()[0],

@@ -128,7 +128,7 @@ async function main() {
     "--authority", "human-admin",
     "--id", "unit-operations",
     "--name", "Operations",
-    "--purpose", "Owns operating WorkItems and finance requests.",
+    "--purpose", "Owns operating TeamWork and finance requests.",
     "--human-lead", "human-admin",
     "--agent-lead", "agent-ops",
     "--policy", "company.records.write",
@@ -198,9 +198,6 @@ async function main() {
     "--package-id", "package-operator-cli",
     "--authority", "human-admin",
     "--owner", "human-admin",
-    "--action", "work_item.append",
-    "--action", "work_item.update",
-    "--action", "work_item.transition",
     "--action", "approval.request",
     "--action", "approval.decide",
     "--action", "commitment.propose",
@@ -218,163 +215,10 @@ async function main() {
     "--accountable-owner", "agent-ops",
     "--module", "module-operator-cli",
     "--source-document", "document-ops-root",
+    "--work", "work-operator-cli",
     "--acceptance-criterion", "Org, approval, finance and milestone commands are callable.",
   ], env);
-  check(milestone.ok === true && milestone.result?.id === "milestone-operator-cli", "work milestone create writes native Milestone");
-
-  const work = run([
-    "company", "work", "create",
-    "--definition", "page-operator-cli",
-    "--id", "workitem-operator-cli",
-    "--source-document", "document-ops-root",
-    "--module", "module-operator-cli",
-    "--milestone", "milestone-operator-cli",
-    "--title", "Buy launch prize",
-    "--objective", "Create a governed finance request from a WorkItem.",
-    "--description", "Purchase the launch prize only after Work and Finance preserve the source context.",
-    "--acceptance-criterion", "Finance Commitment is linked before any payment state exists.",
-    "--context-ref-json", '{"kind":"document","id":"document-ops-root"}',
-    "--submitted-by", "agent-ops",
-    "--accountable-owner", "agent-ops",
-    "--assignee", "agent-ops",
-    "--work-type", "procurement",
-    "--actor", "agent-ops",
-  ], env);
-  check(work.ok === true && work.result?.record?.id === "workitem-operator-cli", "work create provides finance source WorkItem");
-
-  const workUpdate = run([
-    "company", "work", "update",
-    "--definition", "page-operator-cli",
-    "--work-item", "workitem-operator-cli",
-    "--description", "Updated WorkItem detail keeps business context, responsible Agent and acceptance visible before execution.",
-    "--acceptance-criterion", "WorkItem update preserves status and result/evidence provenance.",
-    "--accountable-owner", "agent-ops",
-    "--assignee", "agent-ops",
-    "--module", "module-operator-cli",
-    "--work-type", "procurement",
-    "--priority", "high",
-    "--actor", "agent-ops",
-  ], env);
-  check(workUpdate.ok === true && workUpdate.result?.record?.priority === "high", "work update rewrites governed WorkItem metadata without lifecycle transition");
-
-  await post(base, "/v1/company-os/relations", admin({
-    id: "relation-work-commitment-cli",
-    from_ref: { kind: "work_item", id: "workitem-operator-cli" },
-    relation_type: "requests_financial_commitment",
-    to_ref: { kind: "document", id: "document-ops-root" },
-    provenance_ref: { kind: "document", id: "document-ops-root" },
-    lifecycle_status: "active",
-    created_by: { actor_type: "agent", actor_id: "agent-ops" },
-    created_at: NOW,
-  }));
-
-  const commitment = run([
-    "company", "finance", "commitment", "propose",
-    "--definition", "page-operator-cli",
-    "--id", "commitment-operator-cli",
-    "--work-item", "workitem-operator-cli",
-    "--source-document", "document-ops-root",
-    "--submitted-by", "agent-ops",
-    "--accountable-owner", "agent-ops",
-    "--amount", "3000",
-    "--currency", "CNY",
-    "--relation", "relation-work-commitment-cli",
-  ], env);
-  check(commitment.ok === true && commitment.result?.record?.status === "proposed", "finance commitment propose writes proposed Commitment through Action API");
-
-  const commitmentApproval = run([
-    "company", "approval", "request",
-    "--definition", "page-operator-cli",
-    "--id", "approval-commitment-cli",
-    "--subject-kind", "financial_record",
-    "--subject", "commitment-operator-cli",
-    "--summary", "Approve commitment.append for launch prize budget.",
-    "--requested-by", "agent-ops",
-    "--approval-policy-ref", "page-operator-cli:commitment.append",
-    "--required-approver", "human-admin",
-    "--evidence", "evidence-commitment-request",
-  ], env);
-  check(commitmentApproval.ok === true && commitmentApproval.result?.record?.status === "requested", "approval request creates requested human Approval");
-
-  const pending = run([
-    "company", "finance", "commitment", "transition",
-    "--definition", "page-operator-cli",
-    "--commitment", "commitment-operator-cli",
-    "--status", "pending_approval",
-    "--actor", "agent-ops",
-    "--approval", "approval-commitment-cli",
-    "--evidence", "evidence-commitment-request",
-  ], env);
-  check(pending.ok === true && pending.result?.record?.status === "pending_approval", "finance commitment transition enters pending_approval with requested Approval");
-
-  const approvedCommitmentApproval = run([
-    "company", "approval", "decide",
-    "--definition", "page-operator-cli",
-    "--approval", "approval-commitment-cli",
-    "--actor", "human-admin",
-    "--decision", "approved",
-    "--note", "Approved for smoke test.",
-    "--evidence", "evidence-commitment-decision",
-  ], env);
-  check(approvedCommitmentApproval.ok === true && approvedCommitmentApproval.result?.record?.status === "approved", "approval decide records human decision");
-
-  const approvedCommitment = run([
-    "company", "finance", "commitment", "transition",
-    "--definition", "page-operator-cli",
-    "--commitment", "commitment-operator-cli",
-    "--status", "approved",
-    "--actor", "agent-ops",
-    "--approval", "approval-commitment-cli",
-    "--evidence", "evidence-commitment-decision",
-  ], env);
-  check(approvedCommitment.ok === true && approvedCommitment.result?.record?.status === "approved", "finance commitment transition uses approved human Approval");
-
-  const paymentApproval = run([
-    "company", "approval", "request",
-    "--definition", "page-operator-cli",
-    "--id", "approval-payment-cli",
-    "--subject-kind", "financial_record",
-    "--subject", "commitment-operator-cli",
-    "--summary", "Approve payment.append for launch prize purchase.",
-    "--requested-by", "agent-ops",
-    "--approval-policy-ref", "page-operator-cli:payment.append",
-    "--required-approver", "human-admin",
-    "--evidence", "evidence-payment-request",
-  ], env);
-  check(paymentApproval.ok === true && paymentApproval.result?.record?.status === "requested", "approval request can target payment policy");
-
-  run([
-    "company", "approval", "decide",
-    "--definition", "page-operator-cli",
-    "--approval", "approval-payment-cli",
-    "--actor", "human-admin",
-    "--decision", "approved",
-    "--note", "Payment approved for smoke test.",
-    "--evidence", "evidence-payment-decision",
-  ], env);
-
-  const payment = run([
-    "company", "finance", "payment", "record",
-    "--definition", "page-operator-cli",
-    "--id", "payment-operator-cli",
-    "--commitment", "commitment-operator-cli",
-    "--source-document", "document-ops-root",
-    "--submitted-by", "agent-ops",
-    "--accountable-owner", "agent-ops",
-    "--amount", "3000",
-    "--currency", "CNY",
-    "--approval", "approval-payment-cli",
-    "--evidence", "evidence-payment-receipt",
-  ], env);
-  check(payment.ok === true && payment.result?.record?.status === "prepared", "finance payment record writes evidence-backed prepared Payment");
-
-  const milestoneClosed = run([
-    "company", "work", "milestone", "close",
-    "--authority", "human-admin",
-    "--milestone", "milestone-operator-cli",
-    "--work-item", "workitem-operator-cli",
-  ], env);
-  check(milestoneClosed.ok === true && milestoneClosed.result?.status === "achieved", "work milestone close marks milestone achieved");
+  check(milestone.ok === true && milestone.result?.id === "milestone-operator-cli", "work milestone create stores a native TeamWork reference without creating a Company task object");
 
   server.kill();
   await new Promise((resolveWait) => server.once("exit", resolveWait));

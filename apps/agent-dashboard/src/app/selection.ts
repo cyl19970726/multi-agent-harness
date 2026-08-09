@@ -24,8 +24,6 @@ export interface SelectionState {
   surface: SurfaceId;
   /** Company OS document focus. Distinct from the legacy repository-doc path. */
   documentId?: string;
-  /** Company OS WorkItem focus. */
-  workItemId?: string;
   /** Durable Standing Agent organization identity, never a MemberRun. */
   standingAgentId?: string;
   /** First-class Human organization member identity. */
@@ -69,7 +67,7 @@ export interface SelectionState {
   workflowRunId?: string;
   /**
    * View inside the Work surface, addressed as `?workView=<id>`. The native
-   * Team Work aggregate is `team-works`; absent means the WorkItem views.
+   * Team Work execution view is `team-works`; absent means the Company Work aggregate.
    */
   workView?: string;
   /**
@@ -172,11 +170,6 @@ function selectionFromSearch(search: string, pathname = "/"): SelectionState {
   if (documentId) {
     next.documentId = documentId;
     if (!surface) next.surface = "docs";
-  }
-  const workItemId = params.get("workItem");
-  if (workItemId) {
-    next.workItemId = workItemId;
-    if (!surface) next.surface = "work";
   }
   const personId = params.get("person");
   if (personId) {
@@ -296,11 +289,7 @@ function selectionFromSearch(search: string, pathname = "/"): SelectionState {
  * keeps the static `base: "./"` Vite build working from any path. The default
  * surface is omitted from the URL so a bare link round-trips to the same
  * default, while an explicit non-default surface (including `?surface=home`)
- * stays addressable. One exception: a selected WorkItem always keeps
- * `surface=work` explicit, because capture runs, standing-agent interaction
- * links, and Back/Forward entries rely on the canonical
- * `?surface=work&workItem=<id>` form rather than re-deriving the surface from
- * the default. A location that already resolves to the same selection (such
+ * stays addressable. A location that already resolves to the same selection (such
  * as bare `?surface=work`) is canonicalized in place via replaceState, never
  * pushed, so browser Back is never trapped. Company Store, Execution Space,
  * Project Binding, and API params are owned by App-level sync and are never
@@ -312,7 +301,7 @@ export function syncSelectionToLocation(selection: SelectionState): void {
   // Mutate in place instead of delete-all-then-set: URLSearchParams.set keeps
   // an existing key's position, so an already-canonical location serializes
   // byte-identically and no spurious history entry is pushed. That is what
-  // makes browser Back return from a WorkItem focus to the previous entry in
+  // makes browser Back return from a focused Company OS object to the previous entry in
   // one step.
   const setOrDelete = (key: string, value: string | undefined): void => {
     if (value) params.set(key, value);
@@ -320,12 +309,11 @@ export function syncSelectionToLocation(selection: SelectionState): void {
   };
   setOrDelete(
     "surface",
-    selection.surface && (selection.surface !== defaultSelection.surface || selection.workItemId)
+    selection.surface && selection.surface !== defaultSelection.surface
       ? selection.surface
       : undefined,
   );
   setOrDelete("document", selection.documentId);
-  setOrDelete("workItem", selection.workItemId);
   // `agent` is contextual: a durable Standing Agent on Organization, otherwise
   // the selected AgentMember (never on the organization surface).
   setOrDelete(
@@ -371,8 +359,8 @@ export function syncSelectionToLocation(selection: SelectionState): void {
   const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
   if (url === current) return;
   // A location that already resolves to this selection (for example explicit
-  // `?surface=work` for the default Work surface, or `?workItem=<id>` with the
-  // surface implied) is semantically canonical. Canonicalize it in place with
+  // `?surface=work` for the default Work surface) is semantically canonical.
+  // Canonicalize it in place with
   // replaceState — never pushState — so loading such a link adds no history
   // entry and browser Back can never be trapped in a canonicalization loop.
   // Genuine selection changes still pushState to preserve the Back/Forward
@@ -389,7 +377,6 @@ export function syncSelectionToLocation(selection: SelectionState): void {
 const selectionCompareKeys = [
   "surface",
   "documentId",
-  "workItemId",
   "standingAgentId",
   "personId",
   "proposalId",

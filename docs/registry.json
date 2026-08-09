@@ -1934,7 +1934,7 @@
       "status": "stable",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "document-originated WorkItems",
+        "document-related native TeamWorks",
         "responsibility, execution references, review, and approvals"
       ],
       "dependsOn": [
@@ -1951,7 +1951,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "WorkItem provenance, responsibility roles, approval semantics, or execution-reference rules change.",
+      "reorgTrigger": "Unified Work provenance, lifecycle axes, approval semantics, or evidence-chain rules change.",
       "authorityClass": "canonical_contract",
       "implementationState": "partial",
       "truthRefs": []
@@ -2200,7 +2200,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "The primary Company OS model, product center, WorkItem bridge, or ADR 0026 supersession boundary changes.",
+      "reorgTrigger": "The primary Company OS model, product center, Unified Work boundary, or ADR 0026 supersession boundary changes.",
       "authorityClass": "canonical_contract",
       "implementationState": "partial",
       "truthRefs": [
@@ -3126,7 +3126,7 @@
         "official Claude Code Agent Teams documentation",
         "npx pnpm@9.15.4 check:docs-governance"
       ],
-      "reorgTrigger": "Work schema, status, claim, delivery, creation authority, child delegation, Team Workbench, Company WorkItem relation, or Mission boundary changes.",
+      "reorgTrigger": "Work schema, lifecycle axes, claim, delivery, creation authority, child delegation, Team Workbench, Company aggregation, or Mission boundary changes.",
       "authorityClass": "canonical_contract",
       "implementationState": "design_only",
       "truthRefs": [
@@ -3167,7 +3167,7 @@
         "native TeamRun forensic snapshot 2026-08-02",
         "npx pnpm@9.15.4 check:docs-governance"
       ],
-      "reorgTrigger": "Work/Message ownership, Assignment compatibility, claim, delivery, child delegation, Company WorkItem relation, or Mission boundary changes.",
+      "reorgTrigger": "Work/Message ownership, claim, delivery, child delegation, Company aggregation, or Mission boundary changes.",
       "authorityClass": "canonical_contract",
       "implementationState": "design_only",
       "truthRefs": [

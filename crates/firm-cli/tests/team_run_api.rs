@@ -708,7 +708,7 @@ fn team_run_cli_create_list_status_send_events() {
     );
     let works = created["works"].as_array().expect("Works");
     assert_eq!(works.len(), 1);
-    assert_eq!(works[0]["status"].as_str(), Some("open"));
+    assert_eq!(works[0]["phase"].as_str(), Some("open"));
     assert!(works[0]["active_member_run_id"].as_str().is_some());
 }
 
@@ -1533,7 +1533,7 @@ fn post_team_run_creates_entities_and_get_snapshot_projects_them() {
     assert!(
         works
             .iter()
-            .all(|work| work["status"].as_str() == Some("open")
+            .all(|work| work["phase"].as_str() == Some("open")
                 && work["claim_mode"].as_str() == Some("host_assign")
                 && work["active_member_run_id"].as_str().is_some()),
         "host-assigned initial Works: {works:?}"
@@ -1948,13 +1948,13 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
                     .expect("owned Work member")
                     .to_string(),
                 work["version"].as_u64().expect("Work version"),
-                work["status"].as_str().expect("Work status").to_string(),
+                work["phase"].as_str().expect("Work phase").to_string(),
             )
         })
         .collect::<Vec<_>>();
     assert_eq!(owned_works.len(), 2, "expected one Work per member");
-    for (work_id, member_run_id, version, status) in owned_works {
-        let active_version = if status == "open" {
+    for (work_id, member_run_id, version, phase) in owned_works {
+        let active_version = if phase == "open" {
             let started = member_team_run_json(
                 &home,
                 &project_id,
@@ -1976,7 +1976,7 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
             );
             started["version"].as_u64().expect("started version")
         } else {
-            assert_eq!(status, "in_progress", "unexpected Work state before submit");
+            assert_eq!(phase, "active", "unexpected Work phase before submit");
             version
         };
         let submitted = member_team_run_json(
@@ -2018,7 +2018,8 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
                 "--json",
             ],
         );
-        assert_eq!(accepted["status"].as_str(), Some("done"));
+        assert_eq!(accepted["phase"].as_str(), Some("closed"));
+        assert_eq!(accepted["resolution"].as_str(), Some("accepted"));
     }
 
     // The TeamRun decision remains independent of persistent Member runtime
@@ -2107,10 +2108,11 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
         .find(|work| work["id"].as_str() == Some(builder_work_id.as_str()))
         .expect("Builder Work in snapshot");
     assert_eq!(
-        builder_work["status"].as_str(),
-        Some("done"),
+        builder_work["phase"].as_str(),
+        Some("closed"),
         "the provider RESULT alone did not close Work; the explicit member submit and Host accept above did: {builder_work}"
     );
+    assert_eq!(builder_work["resolution"].as_str(), Some("accepted"));
 
     let native_names = std::fs::read_to_string(&name_marker).expect("thread/name/set requests");
     assert!(
@@ -3193,7 +3195,7 @@ fn codex_app_server_post_handoff_steer_is_independent_and_converges_before_follo
         .find(|work| work["id"].as_str() == Some(work_id.as_str()))
         .expect("Work in snapshot");
     assert_eq!(
-        work["status"].as_str(),
+        work["phase"].as_str(),
         Some("open"),
         "provider receipt, conversation Handoff, and provider RESULT must not infer Work start/submission/completion: {work}"
     );
@@ -6360,6 +6362,7 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
     let mut stopped = None;
     let mut last_snapshot = serde_json::Value::Null;
     let mut post_reset_nudge_sent = false;
+    let mut circuit_converged = false;
     for _ in 0..500 {
         // Predicate-gated wake intentionally sleeps after round 3 produces a
         // real report without changing Work. One explicit Host nudge starts
@@ -6395,14 +6398,23 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
             })
             .cloned();
         if stopped.is_some() {
-            assert!(snapshot["member_runs"]
+            let member_failed = snapshot["member_runs"]
                 .as_array()
                 .into_iter()
                 .flatten()
                 .any(|member| {
                     member["id"].as_str() == Some(member_id.as_str())
                         && member["status"].as_str() == Some("failed")
-                }));
+                });
+            // The breaker audit action and MemberRun transition live in
+            // separate append-only ledgers. A snapshot may briefly observe
+            // the action before the failed MemberRun revision; require both
+            // facts to converge instead of treating that split read as a
+            // product failure.
+            if !member_failed {
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
+            }
             let empty_rounds = snapshot["member_actions"]
                 .as_array()
                 .into_iter()
@@ -6416,6 +6428,7 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
             assert!(empty_rounds
                 .iter()
                 .all(|action| action["status"].as_str() == Some("failed")));
+            circuit_converged = true;
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -6426,6 +6439,10 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
             std::fs::read_to_string(&prompts).ok()
         )
     });
+    assert!(
+        circuit_converged,
+        "breaker action and failed MemberRun did not converge: {last_snapshot}"
+    );
     let summary = stopped["summary"].as_str().unwrap_or_default();
     assert!(
         summary.contains("3 consecutive unproductive rounds"),
@@ -6441,8 +6458,8 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
         .find(|work| work["active_member_run_id"].as_str() == Some(member_id.as_str()))
         .expect("the circuit must preserve the member's active Work");
     assert_eq!(
-        active_work["status"].as_str(),
-        Some("in_progress"),
+        active_work["phase"].as_str(),
+        Some("active"),
         "the provider circuit must not rewrite active Work: {active_work}"
     );
     let work_id = active_work["id"].as_str().expect("active Work id");
@@ -6477,7 +6494,7 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
         .into_iter()
         .find(|work| work.id == work_id)
         .expect("stored active Work");
-    assert_eq!(stored_work.status, harness_core::WorkStatus::InProgress);
+    assert_eq!(stored_work.phase, harness_core::WorkPhase::Active);
     let stored_delivery = store
         .latest_work_deliveries()
         .expect("latest Work deliveries")
@@ -7403,7 +7420,7 @@ fn external_interactive_member_joins_and_exchanges_mail() {
 // ---------------------------------------------------------------------------
 
 /// A TeamRun with three members -- alice and bob each own Work, charlie stays
-/// idle -- and six Works, one in each `WorkStatus`. Every board-read test
+/// idle -- and six Works spanning the Work lifecycle axes. Every board-read test
 /// seeds its own fixture so the three read paths stay independent.
 struct BoardReadFixture {
     home: TempHome,
@@ -7756,7 +7773,7 @@ fn work_list_brief_prints_one_stable_line_per_work_with_truncated_title() {
     );
 
     let in_progress_fields = field_of(&fixture.work_in_progress_id);
-    assert_eq!(in_progress_fields[1], "in_progress");
+    assert_eq!(in_progress_fields[1], "active");
     assert_eq!(in_progress_fields[2], fixture.alice_id);
     assert_eq!(in_progress_fields[3], "v2");
     assert_eq!(in_progress_fields[4], "In-progress Work");
@@ -7772,7 +7789,7 @@ fn work_list_brief_prints_one_stable_line_per_work_with_truncated_title() {
     assert_eq!(blocked_fields[3], "v3");
 
     let done_fields = field_of(&fixture.work_done_id);
-    assert_eq!(done_fields[1], "done");
+    assert_eq!(done_fields[1], "accepted");
     assert_eq!(done_fields[2], fixture.bob_id);
     assert_eq!(done_fields[3], "v4");
 
@@ -7823,7 +7840,8 @@ fn work_list_since_returns_only_works_changed_after_cursor() {
             "dependency resolved",
         ],
     );
-    assert_eq!(resumed["status"].as_str(), Some("in_progress"));
+    assert_eq!(resumed["phase"].as_str(), Some("active"));
+    assert_eq!(resumed["condition"].as_str(), Some("normal"));
     assert_eq!(resumed["version"].as_u64(), Some(4));
 
     let delta = team_run_json(
@@ -7848,7 +7866,8 @@ fn work_list_since_returns_only_works_changed_after_cursor() {
         delta_works[0]["id"].as_str(),
         Some(fixture.work_blocked_id.as_str())
     );
-    assert_eq!(delta_works[0]["status"].as_str(), Some("in_progress"));
+    assert_eq!(delta_works[0]["phase"].as_str(), Some("active"));
+    assert_eq!(delta_works[0]["condition"].as_str(), Some("normal"));
     assert_eq!(delta_works[0]["version"].as_u64(), Some(4));
     let next_since = delta["next_since"].as_u64().expect("next_since");
     assert_eq!(
@@ -7934,10 +7953,10 @@ fn team_run_board_summary_is_bounded_and_reports_counts_and_member_state() {
     );
     for expected in [
         "open=1",
-        "in_progress=1",
+        "active=2",
         "blocked=1",
         "review=1",
-        "done=1",
+        "accepted=1",
         "cancelled=1",
         "assigned=4",
         "unassigned=2",

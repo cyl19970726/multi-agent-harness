@@ -1,6 +1,6 @@
 ---
 name: company-module-designer
-description: Design or revise a governed Company OS business module from a new operating need. Use when a user introduces a new domain such as trademark registration, procurement, hiring, or content operations and needs its documents, typed records, relations, organization roles, WorkItems, approvals, finance links, permissions, views, automations, and archive policy defined before implementation.
+description: Design or revise a governed Company OS business module from a new operating need. Use when a user introduces a new domain such as trademark registration, procurement, hiring, or content operations and needs its documents, typed records, relations, organization roles, Work records, approvals, finance links, permissions, views, automations, and archive policy defined before implementation.
 ---
 
 # Company Module Designer
@@ -30,7 +30,7 @@ use `$company-docs-operator` `references/page-contract.md` and
 1. Identify the business event, accountable outcome, non-goals, and source
    documents. Mark unknown legal, financial, permission, and retention facts.
 2. Reuse existing Documents, TypedRecords, Relations, Views, OrgUnits, Actors,
-   WorkItems, and policies where their meaning is identical. Do not create a
+   Work records, and policies where their meaning is identical. Do not create a
    parallel record merely to simplify one page.
 3. Define new record types and relations. Give every authoritative fact exactly
    one source of truth and name the standard fallback views.

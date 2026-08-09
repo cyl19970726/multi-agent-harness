@@ -48,7 +48,7 @@ Store identity introduced by ADR 0042.
 | --- | --- | --- | --- |
 | Registry | `company init --id <company-id> [--name <name>]`, `company list`, `company current`, `company show [company-id]`, `company switch <company-id>` | Implemented | Stores live under `<HARNESS_HOME>/companies/<id>/`; `ACTIVE_COMPANY` and `companies/registry.json` track the current Company. |
 | Company OS routing | `harness --company <id> company ...`, `HARNESS_COMPANY=<id> firm company ...`, or active Company from `company switch/init` | Implemented | Applies only to `firm company ...`; Mission/Wave, Agent Team, Workflow, provider cwd, and Project selection remain separate. |
-| Migration from project-derived stores | `company migrate-from-project --from-project <project-id\|path> --id <company-id> [--name <name>] [--force]`, `company migrate-from-project ... --verify-only`, `company migrations` | Implemented | Copies only `company_os_*.jsonl`, verifies every exact source row exists in the destination, appends a Company Store migration record, and writes an advisory source marker. `--verify-only` rechecks an existing destination without copying. The source remains audit evidence; no Mission/Wave, Agent Team, Workflow, provider session, prompt, or runtime ledger is copied. |
+| Migration from project-derived stores | `company migrate-from-project --from-project <project-id\|path> --id <company-id> [--name <name>] [--force]`, `company migrate-from-project ... --verify-only`, `company migrations` | Implemented | Copies and verifies only the explicit active Company Store ledger allowlist, appends a Company Store migration record, and writes an advisory source marker. Retired WorkItem, Assignment, and cutover ledgers are disposable history: they are not copied and are not verification inputs. `--verify-only` applies the same allowlist to an existing destination. No Mission/Wave, Agent Team, Workflow, provider session, prompt, or runtime ledger is copied. |
 
 ### Docs
 
@@ -70,17 +70,17 @@ stage R3; the AI-first Docs v2 page surface is current for page/document work.
 
 ### Work
 
-`firm company work ...` exists and is the second real Company OS CLI surface.
+`firm company work ...` is a read-only aggregate and Milestone surface. Native
+Work mutations belong to `firm team-run work ...`.
 
 | Capability | Commands | Status | Notes |
 | --- | --- | --- | --- |
-| Work read | `work list`, `work query` | Implemented | Supports filtered WorkItem projections. |
-| Intake | `work create` | Implemented | Creates WorkItem through governed Action dispatch. Requires source document, definition, owner, submitter and objective. |
-| Metadata / responsibility correction | `work update` | Implemented | Governed `work_item.update` for description, acceptance, context, source, module/business line, WorkType, owner, assignees, reviewer/approver, priority, due date and risk. It cannot change lifecycle status, request provenance (`submitted_by`/`requested_by`), or result/evidence/execution provenance. **Responsibility fields are authority, not metadata:** changing `accountable_owner`, `assignees`, `contributors`, `reviewer` or `approver` requires the caller to already be the WorkItem's `accountable_owner`, an assignee, or its reviewer, or to hold explicit policy-named update authority (the `<definition>:work_item.update` policy id, or `company_os.admin`). Blanket `company.records.write` is no longer sufficient. No caller — not even one with policy-named authority — may grant *itself* an executor (owner/assignee) or closer (owner/reviewer) role class it did not already hold, so `work update` can never manufacture the ownership `work transition` checks. That policy-named authority is **per-definition/module, not per-record**: it covers every WorkItem whose source document sits in that module. Refusals are durable: the attempt is recorded as a `rejected` ActionCommand with a `<command-id>:rejected` denial AuditEvent naming the actor, WorkItem, refused fields and missing authority. |
-| Assignment delivery | `work assign` | Implemented | Appends Assignment delivery record. It proves routing/delivery but does not rewrite `WorkItem.assignees`; use `work update` when the Work projection itself must show a changed responsibility chain. |
-| Lifecycle | `work transition`, `work close` | Implemented | Updates WorkItem status/provenance through governed Action dispatch. |
-| Milestone management | `work milestone list`, `show`, `create`, `update`, `close` | Implemented | Uses native Milestone rows. Writes currently use Human-admin administrative governance because global Work milestone Actions are not yet modeled. |
-| WorkType/business-line management | `work update --work-type ... --module ...` | Partial | WorkItems can now be reclassified against native WorkType/module fields. Dedicated catalogs for WorkType/business-line governance remain planned. |
+| Company Work read | `company work list`, `company work query` | Implemented | Filters native Work by Team, TeamRun, phase, condition, resolution, and owner; preserves exact ids and revisions. |
+| Native Work intake | `team-run work create` | Implemented | Creates the only executable Work object inside an explicit TeamRun. |
+| Native responsibility | `team-run work assign`, `claim`, `release`, `retarget` | Implemented | Mutates native Work with optimistic revision checks. |
+| Native lifecycle | `team-run work start`, `block`, `resume`, `submit`, `review`, `request-changes`, `accept`, `cancel` | Implemented | Uses phase/condition/resolution and immutable report/gate/decision evidence. |
+| Milestone management | `company work milestone list`, `show`, `create`, `update`, `close` | Implemented | Stores native Work ids in `work_refs`; Milestones never own Work lifecycle. |
+| Retired Company task mutations | `company work create`, `update`, `assign`, `transition`, `close` | Removed | Rejected with an actionable route to `team-run work`. |
 | Approval request/decision | `firm company approval request`, `decide`, `list`, `show` | Implemented | Approval is a shared Company OS CLI group, not nested under Work. Requests/decisions dispatch governed Actions. |
 
 ### Organization
@@ -109,10 +109,10 @@ stage R3; the AI-first Docs v2 page surface is current for page/document work.
 | --- | --- | --- | --- |
 | Social platform readiness | `company gateway social readiness [--platform xiaohongshu|douyin|wechat_channels] [--adb adb] [--device <serial>]` | Implemented / read-only core bootstrap | Observes Android package/focus readiness for Xiaohongshu, Douyin, and WeChat Channels slots. It returns data suitable for `social_platform_account` records but does not write Store truth, log in, publish, delete, pay, or export messages. |
 | GitHub source observation | `company docs source sync` | Implemented for local worktree observation | Writes external software source TypedRecords. First GitHub connector should be sync/projection-first and may call existing `gh`/Git rather than adding GitHub-specific core CLI. GitHub webhook/API delivery remains next. |
-| GitHub issue/PR/check connector | connector sync using existing `gh`/GitHub API/webhook; Company OS receives delivery refs and views | Planned / first connector priority | Sync issues, PRs, reviews, checks, branches, and source snapshots into WorkItem delivery panels, Agent detail development queues, and Docs source mapping views. No new MCP/plugin CLI is required for the first slice. |
-| WeCom merchant gateway | docs/WorkItems only | Planned | Needs schema/API/CLI/Agent inbox implementation. |
-| Social plugin actions/connectors/views | plugin Skill + MCP or plugin-owned CLI adapter; Company OS receives governed Actions/TypedRecords/Relations/WorkItems/evidence | Planned | Upload, title/body/topic fill, publish submit, comment/private-message sync, profile management, paid-promotion preparation, account sync, metrics sync, and view extensions should live in platform plugins rather than `firm-cli` core. |
-| Social publication / metric evidence | Docs TypedRecords + WorkItems now; plugin connector commands next | Partial | Current Store can model accounts, campaigns, post plans, publications, external message threads, and metric snapshots. Dedicated publish/message/metrics/plugin commands must remain policy-gated and write back through Company OS records. |
+| GitHub issue/PR/check connector | connector sync using existing `gh`/GitHub API/webhook; Company OS receives delivery refs and views | Planned / first connector priority | Sync issues, PRs, reviews, checks, branches, and source snapshots into TeamWork delivery panels, Agent detail development queues, and Docs source mapping views. No new MCP/plugin CLI is required for the first slice. |
+| WeCom merchant gateway | docs/TeamWorks only | Planned | Needs schema/API/CLI/Agent inbox implementation. |
+| Social plugin actions/connectors/views | plugin Skill + MCP or plugin-owned CLI adapter; Company OS receives governed Actions/TypedRecords/Relations/TeamWorks/evidence | Planned | Upload, title/body/topic fill, publish submit, comment/private-message sync, profile management, paid-promotion preparation, account sync, metrics sync, and view extensions should live in platform plugins rather than `firm-cli` core. |
+| Social publication / metric evidence | Docs TypedRecords + TeamWorks now; plugin connector commands next | Partial | Current Store can model accounts, campaigns, post plans, publications, external message threads, and metric snapshots. Dedicated publish/message/metrics/plugin commands must remain policy-gated and write back through Company OS records. |
 
 ### Company OS API resources with no equivalent dedicated CLI
 
@@ -151,7 +151,7 @@ store/API, CLI routing, UI, tests and ADRs.
 | --- | --- |
 | `pnpm check:company-os` | Docs CLI smoke, Work CLI smoke, skill suite, Company OS UI/runtime/navigation/trademark checks and docs governance. |
 | `pnpm check:docs-v2-live` | Store-live Docs v2 API and page store contracts (revision writes, scoped reads, legacy projection). |
-| `node scripts/check-company-os-work-cli-smoke.mjs` | Store-live Work CLI can create/assign/transition/close WorkItems. |
+| `node scripts/check-company-os-work-cli-smoke.mjs` | Store-live Work CLI can create/assign/transition/close TeamWorks. |
 | `node scripts/check-company-os-operator-cli-smoke.mjs` | Store-live Org, Milestone, Approval, Commitment and Payment operator CLI commands work together. |
 | `pnpm acceptance:mission-wave` | Deterministic Mission/Wave, TeamRun, MCP and dashboard contracts. |
 | `firm governance check` | Documentation registry/link/retired-surface governance. |

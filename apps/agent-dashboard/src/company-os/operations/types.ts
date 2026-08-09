@@ -84,113 +84,6 @@ export interface OrganizationIntegrityFinding {
   actorIds: string[];
 }
 
-export interface WorkAggregateView {
-  provenance: "company_os.work" | "legacy_raw_records";
-  summary: {
-    total: number;
-    active: number;
-    completed: number;
-    blocked: number;
-    waitingForApproval: number;
-    unassigned: number;
-    withoutMilestone: number;
-    withoutBusinessLine: number;
-  };
-  board: Record<string, string[]>;
-  businessLines: Record<string, string[]>;
-  workTypes: Record<string, string[]>;
-  milestones: Array<{
-    id: string;
-    title: string;
-    status: string;
-    total: number;
-    completed: number;
-    blocked: number;
-    waitingForApproval: number;
-    progressPercent: number;
-  }>;
-  workload: Array<{
-    actorId: string;
-    accountableCount: number;
-    assignedCount: number;
-    activeCount: number;
-    workItemIds: string[];
-  }>;
-  selection: {
-    requestedId?: string;
-    status: "resolved" | "not_requested" | "not_found" | "empty";
-  };
-}
-
-export interface WorkItemView {
-  id: string;
-  title: string;
-  objective?: string;
-  description?: string;
-  acceptanceCriteria?: string[];
-  contextRefs?: RelatedLink[];
-  deliverableRefs?: RelatedLink[];
-  status: "draft" | "submitted" | "triaged" | "accepted" | "waiting_for_approval" | "in_progress" | "in_review" | "completed" | "blocked" | "cancelled" | "archived";
-  sourceDocument: RelatedLink;
-  requestedBy?: ActorSummary;
-  submittedBy: ActorSummary;
-  accountableOwner: ActorSummary;
-  assignees: ActorSummary[];
-  contributors: ActorSummary[];
-  reviewer?: ActorSummary;
-  legalReviewer?: ActorSummary;
-  approver?: ActorSummary;
-  outcomeSummary?: string;
-  updatedAt: string;
-  /** Present only when Store truth declares the governed lifecycle Action. */
-  transitionContext?: WorkItemTransitionContext;
-}
-
-export interface AssignmentView {
-  id: string;
-  workItemId: string;
-  recipient: ActorSummary;
-  sender: ActorSummary;
-  assignedRole: string;
-  scope: string;
-  deliveryState: "pending" | "delivered" | "acknowledged" | "failed" | "cancelled";
-  correlationId: string;
-  deliveryEvidenceRef?: string;
-  assignedAt: string;
-}
-
-export type EvidenceFreshness = "fresh" | "stale" | "unavailable";
-
-export interface WorkExecutionChain {
-  assignmentId: string;
-  workItemId: string;
-  workId?: string;
-  assignmentState: string;
-  workState?: string;
-  linkStatus: "linked" | "mismatch" | "unavailable";
-  detail: string;
-  workDelivery?: { id: string; status: string; attempt: number; providerReceiptId?: string };
-  memberRun?: { id: string; status: string; nativeSessionId?: string; nativeSessionAvailability: string };
-  conversations: Array<{ id: string; kind: string; fromMemberId: string; body: string; createdAt: string }>;
-  handoffs: Array<{ id: string; result?: string; body: string; createdAt: string; evidenceRefs: string[] }>;
-  externalObservations: Array<{
-    id: string;
-    kind: "pull_request" | "check";
-    label: string;
-    repository?: string;
-    pullRequestNumber?: string;
-    headRef?: string;
-    url?: string;
-    headSha?: string;
-    baseRef?: string;
-    state?: string;
-    observedAt?: string;
-    sourceUpdatedAt?: string;
-    sourceCompletedAt?: string;
-    freshness: EvidenceFreshness;
-  }>;
-}
-
 /** Read-only execution participation joined by explicit MemberRun.agent_member_id. */
 export interface StandingExecutionAssignment {
   id: string;
@@ -230,34 +123,6 @@ export interface StandingLinkConflict {
   affectedMemberRunIds: string[];
   detail: string;
   resolutionHint?: string;
-}
-
-export type WorkItemTransitionStatus = "in_progress" | "blocked" | "in_review" | "completed";
-
-export interface WorkItemTransitionContext {
-  definitionId: string;
-  actionPolicyRef: string;
-  record: Record<string, unknown>;
-  accountableOwner: CanonicalActorRef;
-  assignees: CanonicalActorRef[];
-  reviewer?: CanonicalActorRef;
-}
-
-export interface WorkItemTransitionCommand {
-  id: string;
-  command_name: "work_item.transition";
-  subject_ref: CanonicalEntityRef;
-  requested_by: CanonicalActorRef;
-  payload: { definition_id: string; record: Record<string, unknown> };
-  required_permission: "company.work.execute";
-  policy_ref: string;
-  risk_tier: "r2";
-  requires_human_approval: false;
-  approval_refs: [];
-  status: "requested";
-  audit_event_refs: string[];
-  requested_at: string;
-  completed_at: null;
 }
 
 export interface FinancialRecordView {
@@ -352,16 +217,15 @@ export interface TrademarkOperationsProjection {
   sourceDocument: RelatedLink;
   contentPlanDocument: RelatedLink;
   typedApplication: RelatedLink;
-  /** Selected WorkItem relations. Empty means Store truth supplies no link. */
+  linkedWork?: RelatedLink & {
+    phase?: "open" | "active" | "review" | "closed";
+    condition?: "normal" | "blocked" | "on_hold";
+    resolution?: "accepted" | "cancelled" | "failed";
+  };
+  /** Relations explicitly recorded against the selected TeamWork. */
   linkedTypedRecords?: RelatedLink[];
   linkedApproval?: ApprovalView;
   linkedCommitment?: FinancialRecordView;
-  workItem: WorkItemView;
-  workItems?: WorkItemView[];
-  work: WorkAggregateView;
-  assignments?: AssignmentView[];
-  /** Computed read projection. It never changes or accepts durable Work truth. */
-  workExecutionChains?: WorkExecutionChain[];
   standingAssignments?: StandingExecutionAssignment[];
   /** Empty/absent means no conflict; a healthy snapshot renders nothing extra. */
   standingAssignmentConflicts?: StandingLinkConflict[];
