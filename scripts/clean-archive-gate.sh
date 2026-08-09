@@ -37,6 +37,18 @@ trap cleanup EXIT
 git -C "$repo_root" archive "$candidate_sha" | tar -x -C "$archive_root"
 cd "$archive_root"
 
+# Runtime acceptance exercises project discovery and therefore needs Git
+# identity even though the source payload comes from `git archive`. Attach the
+# exact candidate commit without inheriting the caller's working tree.
+git init -q
+git remote add clean-archive-source "$repo_root"
+git fetch -q --depth=1 clean-archive-source "$candidate_sha"
+git checkout -q --detach FETCH_HEAD
+if [ "$(git rev-parse HEAD)" != "$candidate_sha" ] || [ -n "$(git status --porcelain)" ]; then
+  echo "clean-archive checkout does not match candidate $candidate_sha" >&2
+  exit 1
+fi
+
 export FIRM_BUILD_GIT_REV="$candidate_sha"
 export CARGO_TARGET_DIR="$archive_root/.target"
 
