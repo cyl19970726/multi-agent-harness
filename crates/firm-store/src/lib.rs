@@ -15,15 +15,16 @@ use firm_core::{
     MemberAction, MemberRun, Message, MessageDelivery, MessageDeliveryStatus,
     MessageTerminalSource, Mission, MissionLogEntry, MissionStatus, PendingInteraction, Proposal,
     ProviderChildThread, ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
-    ProviderCompatibilityBlockCause, ProviderCompatibilityStatus, ProviderExecutionStatus,
-    ProviderIntegrationProfile, ProviderInteractionRequestBody, ProviderInteractionResponseBody,
-    Review, ReviewVerdict, TeamActorKind, TeamDeliveryPolicy, TeamDeliveryStatus,
-    TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage, TeamMessageKind, TeamRunEvent,
-    TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus, Validate, Vision, Wave,
-    WaveExecutorKind, WaveGateStatus, WaveStatus, Work, WorkClaimMode, WorkCommandContext,
-    WorkCutoverFence, WorkCutoverReport, WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate,
-    WorkEvent, WorkEventKind, WorkItem, WorkItemStatus, WorkOperation, WorkStatus,
-    WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
+    ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
+    ProviderCompatibilityStatus, ProviderExecutionStatus, ProviderIntegrationProfile,
+    ProviderInteractionRequestBody, ProviderInteractionResponseBody, Review, ReviewVerdict,
+    TeamActorKind, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
+    TeamMemberCloseStatus, TeamMessage, TeamMessageKind, TeamRunEvent, TeamRunStatus,
+    TeamSupervisorLease, TeamSupervisorLeaseStatus, Validate, Vision, Wave, WaveExecutorKind,
+    WaveGateStatus, WaveStatus, Work, WorkClaimMode, WorkCommandContext, WorkCutoverFence,
+    WorkCutoverReport, WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate, WorkEvent,
+    WorkEventKind, WorkItem, WorkItemStatus, WorkOperation, WorkStatus, WorkflowArtifactManifest,
+    WorkflowPatch, WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -300,6 +301,15 @@ impl HarnessStore {
         self.provider_compatibility_scope
             .as_ref()
             .map(|(project_id, store_id)| (project_id.as_str(), store_id.as_str()))
+    }
+
+    fn require_provider_compatibility_scope(&self) -> StoreResult<(&str, &str)> {
+        self.provider_compatibility_scope().ok_or_else(|| {
+            StoreError::Conflict(
+                "PROVIDER_COMPATIBILITY_SCOPE_REQUIRED: provider compatibility authority requires an explicitly configured project/store scope"
+                    .to_string(),
+            )
+        })
     }
 
     pub fn root(&self) -> &Path {
@@ -742,21 +752,19 @@ impl HarnessStore {
         &self,
         value: &ProviderCompatibilityAdmission,
     ) -> StoreResult<()> {
+        let (project_id, store_id) = self.require_provider_compatibility_scope()?;
+        if value.project_id != project_id || value.store_id != store_id {
+            return Err(StoreError::Conflict(format!(
+                "provider compatibility admission scope mismatch: current project/store is {project_id}/{store_id}, record is {}/{}",
+                value.project_id, value.store_id
+            )));
+        }
         value
             .validate()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let rows = self.provider_compatibility_admissions()?;
-
-        if let Some((project_id, store_id)) = self.provider_compatibility_scope() {
-            if value.project_id != project_id || value.store_id != store_id {
-                return Err(StoreError::Conflict(format!(
-                    "provider compatibility admission scope mismatch: current project/store is {project_id}/{store_id}, record is {}/{}",
-                    value.project_id, value.store_id
-                )));
-            }
-        }
 
         if let Some(existing) = rows.iter().find(|row| row.id == value.id) {
             if existing == value {
@@ -2261,6 +2269,7 @@ impl HarnessStore {
         &self,
         expected: &MemberRun,
         profile: &ProviderIntegrationProfile,
+        boundary: ProviderCompatibilityBlockBoundary,
         recovery_status: firm_core::MemberRunStatus,
         last_event_at: &str,
     ) -> StoreResult<MemberRun> {
@@ -2296,6 +2305,12 @@ impl HarnessStore {
             )));
         }
         ensure_compatibility_cause_matches_profile(&current, profile, cause)?;
+        if cause.boundary != boundary {
+            return Err(StoreError::Conflict(format!(
+                "PROVIDER_COMPATIBILITY_RECOVERY_BOUNDARY_MISMATCH: typed cause boundary {:?} does not match current {:?} boundary",
+                cause.boundary, boundary
+            )));
+        }
         if !matches!(
             recovery_status,
             firm_core::MemberRunStatus::Disconnected
@@ -6519,13 +6534,12 @@ impl HarnessStore {
     /// other execution modes, and other contract versions never authorize it.
     pub fn effective_provider_compatibility_admission(
         &self,
-        project_id: &str,
-        store_id: &str,
         provider: &str,
         execution_mode: &str,
         provider_version: &str,
         adapter_contract_version: &str,
     ) -> StoreResult<Option<ProviderCompatibilityAdmission>> {
+        let (project_id, store_id) = self.require_provider_compatibility_scope()?;
         Ok(self
             .provider_compatibility_admissions()?
             .into_iter()
@@ -7926,9 +7940,14 @@ mod tests {
         ))
     }
 
+    fn provider_admission_test_store(label: &str) -> HarnessStore {
+        HarnessStore::new(provider_admission_test_root(label))
+            .with_provider_compatibility_scope("project-1", "store-1")
+    }
+
     #[test]
     fn provider_compatibility_admission_is_exact_and_preserves_policy() {
-        let store = HarnessStore::new(provider_admission_test_root("exact"));
+        let store = provider_admission_test_store("exact");
         let strict = provider_compatibility_admission("strict", "sdk", "contract-v1");
         let mut advisory =
             provider_compatibility_admission("advisory", "interactive", "contract-v2");
@@ -7941,8 +7960,6 @@ mod tests {
         assert_eq!(
             store
                 .effective_provider_compatibility_admission(
-                    "project-1",
-                    "store-1",
                     "claude",
                     "sdk",
                     "2.1.220",
@@ -7952,14 +7969,7 @@ mod tests {
             Some(strict)
         );
         assert!(store
-            .effective_provider_compatibility_admission(
-                "project-1",
-                "store-1",
-                "claude",
-                "sdk",
-                "2.1.220",
-                "contract-v2"
-            )
+            .effective_provider_compatibility_admission("claude", "sdk", "2.1.220", "contract-v2")
             .expect("contract isolation")
             .is_none());
         assert_eq!(
@@ -8023,6 +8033,7 @@ mod tests {
             .recover_member_run_from_provider_compatibility_block(
                 &blocked,
                 &wrong,
+                ProviderCompatibilityBlockBoundary::StartPersistentExecution,
                 MemberRunStatus::Idle,
                 "unix-ms:3"
             )
@@ -8036,10 +8047,22 @@ mod tests {
         store
             .admit_provider_compatibility_admission(&admission)
             .expect("exact admission");
+        assert!(store
+            .recover_member_run_from_provider_compatibility_block(
+                &blocked,
+                &profile,
+                ProviderCompatibilityBlockBoundary::ResumePersistentExecution,
+                MemberRunStatus::Idle,
+                "unix-ms:3",
+            )
+            .expect_err("a Start cause cannot recover at Resume")
+            .to_string()
+            .contains("BOUNDARY_MISMATCH"));
         let recovered = store
             .recover_member_run_from_provider_compatibility_block(
                 &blocked,
                 &profile,
+                ProviderCompatibilityBlockBoundary::StartPersistentExecution,
                 MemberRunStatus::Idle,
                 "unix-ms:3",
             )
@@ -8051,6 +8074,7 @@ mod tests {
             .recover_member_run_from_provider_compatibility_block(
                 &blocked,
                 &profile,
+                ProviderCompatibilityBlockBoundary::StartPersistentExecution,
                 MemberRunStatus::Idle,
                 "unix-ms:4"
             )
@@ -8067,6 +8091,7 @@ mod tests {
             .recover_member_run_from_provider_compatibility_block(
                 &operator_blocked,
                 &profile,
+                ProviderCompatibilityBlockBoundary::StartPersistentExecution,
                 MemberRunStatus::Idle,
                 "unix-ms:5"
             )
@@ -8103,10 +8128,22 @@ mod tests {
         let mut source_reviewed = review_pending;
         source_reviewed.compatibility_status = ProviderCompatibilityStatus::Current;
         source_reviewed.reviewed_provider_versions = vec!["3.3.3".into()];
+        assert!(store
+            .recover_member_run_from_provider_compatibility_block(
+                &source_blocked,
+                &source_reviewed,
+                ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+                MemberRunStatus::Idle,
+                "unix-ms:7",
+            )
+            .expect_err("a Resume cause cannot recover at Start")
+            .to_string()
+            .contains("BOUNDARY_MISMATCH"));
         let source_recovered = store
             .recover_member_run_from_provider_compatibility_block(
                 &source_blocked,
                 &source_reviewed,
+                ProviderCompatibilityBlockBoundary::ResumePersistentExecution,
                 MemberRunStatus::Idle,
                 "unix-ms:7",
             )
@@ -8119,7 +8156,7 @@ mod tests {
 
     #[test]
     fn provider_compatibility_admission_replay_is_idempotent_and_id_conflict_fails() {
-        let store = HarnessStore::new(provider_admission_test_root("replay"));
+        let store = provider_admission_test_store("replay");
         let admission = provider_compatibility_admission("stable", "sdk", "contract-v1");
         store
             .append_provider_compatibility_admission(&admission)
@@ -8143,7 +8180,7 @@ mod tests {
             ProviderCompatibilityAdmissionLifecycle::Revoked,
             ProviderCompatibilityAdmissionLifecycle::Superseded,
         ] {
-            let store = HarnessStore::new(provider_admission_test_root("transition"));
+            let store = provider_admission_test_store("transition");
             let active = provider_compatibility_admission("active", "sdk", "contract-v1");
             store.admit_provider_compatibility(&active).unwrap();
             let mut transition = active.clone();
@@ -8173,8 +8210,6 @@ mod tests {
             assert_eq!(store.provider_compatibility_admissions().unwrap().len(), 2);
             assert!(store
                 .effective_provider_compatibility_admission(
-                    "project-1",
-                    "store-1",
                     "claude",
                     "sdk",
                     "2.1.220",
@@ -8194,9 +8229,7 @@ mod tests {
 
     #[test]
     fn concurrent_distinct_provider_compatibility_admissions_do_not_lose_rows() {
-        let store = Arc::new(HarnessStore::new(provider_admission_test_root(
-            "concurrent",
-        )));
+        let store = Arc::new(provider_admission_test_store("concurrent"));
         let barrier = Arc::new(Barrier::new(3));
         let mut workers = Vec::new();
         for (id, mode) in [("one", "sdk"), ("two", "interactive")] {
@@ -8219,8 +8252,10 @@ mod tests {
     fn malformed_provider_compatibility_ledger_fails_closed_and_roots_are_isolated() {
         let first_root = provider_admission_test_root("first-root");
         let second_root = provider_admission_test_root("second-root");
-        let first = HarnessStore::new(&first_root);
-        let second = HarnessStore::new(second_root);
+        let first = HarnessStore::new(&first_root)
+            .with_provider_compatibility_scope("project-1", "store-1");
+        let second = HarnessStore::new(second_root)
+            .with_provider_compatibility_scope("project-1", "store-1");
         let admission = provider_compatibility_admission("one", "sdk", "contract-v1");
         first.admit_provider_compatibility(&admission).unwrap();
         assert!(second
@@ -8238,14 +8273,7 @@ mod tests {
             Err(StoreError::Json(_))
         ));
         assert!(first
-            .effective_provider_compatibility_admission(
-                "project-1",
-                "store-1",
-                "claude",
-                "sdk",
-                "2.1.220",
-                "contract-v1"
-            )
+            .effective_provider_compatibility_admission("claude", "sdk", "2.1.220", "contract-v1")
             .is_err());
     }
 
@@ -8260,29 +8288,101 @@ mod tests {
         let other_project =
             HarnessStore::new(&root).with_provider_compatibility_scope("project-2", "store-1");
         assert!(other_project
-            .effective_provider_compatibility_admission(
-                "project-2",
-                "store-1",
-                "claude",
-                "sdk",
-                "2.1.220",
-                "contract-v1",
-            )
+            .effective_provider_compatibility_admission("claude", "sdk", "2.1.220", "contract-v1",)
             .unwrap()
             .is_none());
         let migrated_store =
             HarnessStore::new(&root).with_provider_compatibility_scope("project-1", "store-2");
         assert!(migrated_store
-            .effective_provider_compatibility_admission(
-                "project-1",
-                "store-2",
-                "claude",
-                "sdk",
-                "2.1.220",
-                "contract-v1",
-            )
+            .effective_provider_compatibility_admission("claude", "sdk", "2.1.220", "contract-v1",)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn provider_compatibility_authority_requires_configured_exact_scope() {
+        let root = provider_admission_test_root("scope-required");
+        let unscoped = HarnessStore::new(&root);
+        let active = provider_compatibility_admission("unscoped-active", "sdk", "contract-v1");
+        assert!(unscoped
+            .admit_provider_compatibility(&active)
+            .expect_err("unscoped Store cannot mint an admission")
+            .to_string()
+            .contains("SCOPE_REQUIRED"));
+        assert!(unscoped
+            .append_provider_compatibility_admission_checked(&active)
+            .expect_err("the internal checked seam is also scope-fenced")
+            .to_string()
+            .contains("SCOPE_REQUIRED"));
+
+        let mut revoked = active.clone();
+        revoked.id = "unscoped-revoked".into();
+        revoked.lifecycle = ProviderCompatibilityAdmissionLifecycle::Revoked;
+        revoked.predecessor_admission_id = Some(active.id.clone());
+        revoked.reason = Some("operator revoke".into());
+        assert!(unscoped
+            .revoke_provider_compatibility(&revoked)
+            .expect_err("unscoped Store cannot revoke an admission")
+            .to_string()
+            .contains("SCOPE_REQUIRED"));
+
+        let mut superseded = revoked.clone();
+        superseded.id = "unscoped-superseded".into();
+        superseded.lifecycle = ProviderCompatibilityAdmissionLifecycle::Superseded;
+        assert!(unscoped
+            .supersede_provider_compatibility(&superseded)
+            .expect_err("unscoped Store cannot supersede an admission")
+            .to_string()
+            .contains("SCOPE_REQUIRED"));
+        assert!(unscoped
+            .effective_provider_compatibility_admission("claude", "sdk", "2.1.220", "contract-v1",)
+            .expect_err("unscoped Store cannot return effective authority")
+            .to_string()
+            .contains("SCOPE_REQUIRED"));
+
+        let wrong_scope =
+            HarnessStore::new(&root).with_provider_compatibility_scope("project-2", "store-1");
+        assert!(wrong_scope
+            .admit_provider_compatibility(&active)
+            .expect_err("configured scope must exactly match the row")
+            .to_string()
+            .contains("scope mismatch"));
+
+        unscoped.init().unwrap();
+        let mut hostile_row = active.clone();
+        hostile_row.id = "manually-seeded-foreign-scope".into();
+        hostile_row.project_id = "foreign-project".into();
+        std::fs::write(
+            root.join(PROVIDER_COMPATIBILITY_ADMISSIONS_LEDGER),
+            format!("{}\n", serde_json::to_string(&hostile_row).unwrap()),
+        )
+        .unwrap();
+        let scoped =
+            HarnessStore::new(&root).with_provider_compatibility_scope("project-1", "store-1");
+        assert!(scoped
+            .effective_provider_compatibility_admission("claude", "sdk", "2.1.220", "contract-v1",)
+            .expect("foreign ledger rows remain readable audit data")
+            .is_none());
+
+        let exact_root = provider_admission_test_root("scope-exact");
+        let exact = HarnessStore::new(&exact_root)
+            .with_provider_compatibility_scope("project-1", "store-1");
+        exact
+            .admit_provider_compatibility(&active)
+            .expect("exact configured scope can mint authority");
+        assert_eq!(
+            exact
+                .effective_provider_compatibility_admission(
+                    "claude",
+                    "sdk",
+                    "2.1.220",
+                    "contract-v1",
+                )
+                .unwrap()
+                .as_ref()
+                .map(|row| row.id.as_str()),
+            Some("unscoped-active")
+        );
     }
 
     #[test]

@@ -9894,22 +9894,18 @@ fn resolve_provider_compatibility(
             warning: None,
         });
     }
-    let scope = store.provider_compatibility_scope();
     let admission = match (
-        scope,
+        store.provider_compatibility_scope(),
         profile.provider_version.as_deref(),
         profile.adapter_contract_version.as_deref(),
     ) {
-        (Some((project_id, store_id)), Some(provider_version), Some(adapter_contract_version)) => {
-            store.effective_provider_compatibility_admission(
-                project_id,
-                store_id,
+        (Some(_), Some(provider_version), Some(adapter_contract_version)) => store
+            .effective_provider_compatibility_admission(
                 &profile.provider,
                 &profile.execution_mode,
                 provider_version,
                 adapter_contract_version,
-            )?
-        }
+            )?,
         _ => None,
     };
     // An operational admission may bridge only the explicitly review-required
@@ -9962,20 +9958,11 @@ fn provider_compatibility_block_cause(
     member: &MemberRun,
     profile: &ProviderIntegrationProfile,
     resolution: &ProviderCompatibilityResolution,
-    boundary: &str,
+    boundary: ProviderCompatibilityBlockBoundary,
 ) -> Option<ProviderCompatibilityBlockCause> {
     if member.is_external_interactive() || resolution.allowed {
         return None;
     }
-    let boundary = match boundary {
-        "start persistent Agent Team execution" => {
-            ProviderCompatibilityBlockBoundary::StartPersistentExecution
-        }
-        "resume persistent Agent Team execution" => {
-            ProviderCompatibilityBlockBoundary::ResumePersistentExecution
-        }
-        _ => return None,
-    };
     Some(ProviderCompatibilityBlockCause {
         schema_version: ProviderCompatibilityBlockCause::SCHEMA_VERSION,
         id: generated_id("provider-compatibility-block"),
@@ -10053,7 +10040,7 @@ fn compatibility_block_matches_current_tuple(
 fn provider_compatibility_start_gate(
     ledger: &TeamRunLedger,
     member: &mut MemberRun,
-    boundary: &str,
+    boundary: ProviderCompatibilityBlockBoundary,
 ) -> CliResult<Option<MemberOutcome>> {
     if member.is_external_interactive() {
         return Ok(None);
@@ -10062,7 +10049,15 @@ fn provider_compatibility_start_gate(
     let (profile, probe_error) = refreshed_team_member_provider_profile(member)?;
     let resolution =
         resolve_provider_compatibility(&ledger.store, &profile, probe_error.as_deref())?;
-    let reason = provider_compatibility_block_reason(member, &profile, &resolution, boundary);
+    let boundary_label = match boundary {
+        ProviderCompatibilityBlockBoundary::StartPersistentExecution => {
+            "start persistent Agent Team execution"
+        }
+        ProviderCompatibilityBlockBoundary::ResumePersistentExecution => {
+            "resume persistent Agent Team execution"
+        }
+    };
+    let reason = provider_compatibility_block_reason(member, &profile, &resolution, boundary_label);
     if reason.is_none() {
         let compatibility_owned_block = member.status == MemberRunStatus::Blocked
             && compatibility_block_matches_current_tuple(member, &profile);
@@ -10077,6 +10072,7 @@ fn provider_compatibility_start_gate(
                         .provider_profile
                         .as_ref()
                         .expect("refreshed profile is present"),
+                    boundary,
                     recovery_status,
                     &now_string(),
                 )?;
@@ -10096,7 +10092,7 @@ fn provider_compatibility_start_gate(
         )));
     }
     let cause = provider_compatibility_block_cause(member, &profile, &resolution, boundary)
-        .ok_or_else(|| CliError::Usage("unknown provider compatibility boundary".to_string()))?;
+        .expect("a blocked persistent boundary has a typed compatibility cause");
     *member = ledger.store.block_member_run_for_provider_compatibility(
         &expected,
         &profile,
@@ -20402,9 +20398,9 @@ fn run_member_orchestration(
         // attach, so a binary upgraded to an unreviewed version cannot fall
         // into the reconnect loop or replay a rebound Work.
         let compatibility_boundary = if current.native_session.is_some() {
-            "resume persistent Agent Team execution"
+            ProviderCompatibilityBlockBoundary::ResumePersistentExecution
         } else {
-            "start persistent Agent Team execution"
+            ProviderCompatibilityBlockBoundary::StartPersistentExecution
         };
         match provider_compatibility_start_gate(ledger, &mut current, compatibility_boundary) {
             Ok(Some(outcome)) => return outcome,
@@ -45394,6 +45390,7 @@ package:com.tencent.mm
             .recover_member_run_from_provider_compatibility_block(
                 &blocked,
                 &profile,
+                ProviderCompatibilityBlockBoundary::StartPersistentExecution,
                 recovery_status,
                 "unix-ms:2",
             )
