@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/work-delegation-event.schema.json",
+  "title": "WorkDelegationEvent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "delegation_id",
+    "sequence",
+    "transition",
+    "expected_version",
+    "resulting_version",
+    "performed_by_actor",
+    "idempotency_key",
+    "payload",
+    "created_at"
+  ],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "delegation_id": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "transition": { "type": "string", "enum": ["created", "blocked", "resumed", "completed", "failed", "cancelled"] },
+    "expected_version": { "type": "integer", "minimum": 0 },
+    "resulting_version": { "type": "integer", "minimum": 1 },
+    "performed_by_actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["host", "member_run", "agent_member", "operator", "service"] },
+        "id": { "type": "string", "minLength": 1 },
+        "display_name": { "type": ["string", "null"], "minLength": 1 },
+        "authn_source": { "type": ["string", "null"], "minLength": 1 }
+      }
+    },
+    "causation_ref": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1 },
+        "id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "idempotency_key": { "type": "string", "minLength": 1 },
+    "payload": {},
+    "created_at": { "type": "string", "minLength": 1 }
+  }
+}

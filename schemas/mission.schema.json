@@ -4,14 +4,7 @@
   "title": "Mission",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "id",
-    "title",
-    "objective",
-    "status",
-    "created_at",
-    "updated_at"
-  ],
+  "required": ["id", "title", "objective", "status", "created_at", "updated_at"],
   "properties": {
     "id": { "type": "string", "minLength": 1 },
     "title": { "type": "string", "minLength": 1 },
@@ -23,11 +16,6 @@
       "enum": ["planned", "running", "blocked", "completed", "cancelled"]
     },
     "wave_ids": {
-      "type": "array",
-      "uniqueItems": true,
-      "items": { "type": "string", "minLength": 1 }
-    },
-    "agent_team_ids": {
       "type": "array",
       "uniqueItems": true,
       "items": { "type": "string", "minLength": 1 }

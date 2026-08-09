@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use thiserror::Error;
 
 pub mod company_os;
@@ -452,30 +452,22 @@ fn default_agent_team_status() -> AgentTeamStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentTeam {
     pub id: String,
     pub name: String,
     pub description: String,
-    /// Stable identity of the Host Agent that created and coordinates this
-    /// team. The wire name is retained for compatibility; product surfaces
-    /// call this actor the Team Lead. A Lead is not a MemberRun unless it
-    /// explicitly joins the team as an executing member.
-    pub owner_agent_id: String,
+    /// The one Mission this Team exists to execute. A Team is not a reusable
+    /// definition detached from Mission intent: one Team equals one Mission.
+    pub mission_id: String,
+    /// Durable identity of the Host Agent that coordinates the Team.
+    pub host_agent_id: String,
+    /// Immutable placement fence. Every MemberRun of this Team executes on
+    /// this Node; cross-machine collaboration is cross-Team delegation.
+    pub node_id: String,
     #[serde(default = "default_agent_team_status")]
     pub status: AgentTeamStatus,
     pub member_ids: Vec<String>,
-    /// Recursive Organization relation (ADR 0052): parent AgentTeam id.
-    /// `None` means a root team. Rows written before the recursive-topology
-    /// slice predate this field and read as roots.
-    #[serde(default)]
-    pub parent_team_id: Option<String>,
-    /// Recursive Organization relation (ADR 0052): durable AgentMember that
-    /// Hosts this team. A non-root team must name one and it must be a direct
-    /// member of the parent team; a member hosts at most one team in V1.
-    /// Optional only so compatibility rows carrying `owner_agent_id` alone
-    /// remain readable.
-    #[serde(default)]
-    pub host_member_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -514,249 +506,6 @@ pub enum DurableAgentMemberStatus {
     Active,
     Paused,
     Retired,
-}
-
-/// A compatibility or target Team row does not resolve to one durable Host.
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum HostAuthorityError {
-    #[error("AgentTeam {team_id} has no durable Host identity; set host_member_id explicitly")]
-    Missing { team_id: String },
-    #[error(
-        "AgentTeam {team_id} has conflicting Host authorities: owner_agent_id={owner_agent_id}, host_member_id={host_member_id}"
-    )]
-    Conflicting {
-        team_id: String,
-        owner_agent_id: String,
-        host_member_id: String,
-    },
-    #[error("AgentTeam {team_id} Host references missing durable AgentMember: {host_member_id}")]
-    UnknownMember {
-        team_id: String,
-        host_member_id: String,
-    },
-    #[error(
-        "AgentTeam {team_id} has not completed Host cutover: owner_agent_id must equal host_member_id {host_member_id}"
-    )]
-    CompatibilityAuthorityStillActive {
-        team_id: String,
-        host_member_id: String,
-    },
-}
-
-/// Deterministically map the legacy `owner_agent_id` wire field onto the
-/// target durable Host identity.
-///
-/// An explicit `host_member_id` wins only when the legacy field is the neutral
-/// `host` placeholder or the same identity. Two different concrete identities
-/// are refused instead of choosing one silently. A compatibility-only row can
-/// map a concrete legacy owner; the neutral placeholder cannot manufacture an
-/// identity and therefore maps to `None`.
-pub fn compat_host_member_id(team: &AgentTeam) -> Result<Option<&str>, HostAuthorityError> {
-    let owner = team.owner_agent_id.trim();
-    match team.host_member_id.as_deref().map(str::trim) {
-        Some("") => Err(HostAuthorityError::Missing {
-            team_id: team.id.clone(),
-        }),
-        Some(host) if owner == "host" || owner == host => Ok(Some(host)),
-        Some(host) => Err(HostAuthorityError::Conflicting {
-            team_id: team.id.clone(),
-            owner_agent_id: owner.to_string(),
-            host_member_id: host.to_string(),
-        }),
-        None if !owner.is_empty() && owner != "host" => Ok(Some(owner)),
-        None => Ok(None),
-    }
-}
-
-/// Resolve exactly one Host identity for a Team, including deterministic
-/// compatibility mapping. Use [`validate_host_authority_cutover`] before
-/// switching product authority to ensure every row is explicitly migrated.
-pub fn resolve_team_host_authority(team: &AgentTeam) -> Result<&str, HostAuthorityError> {
-    compat_host_member_id(team)?.ok_or_else(|| HostAuthorityError::Missing {
-        team_id: team.id.clone(),
-    })
-}
-
-/// Refuse Organization authority cutover unless every Team names an explicit,
-/// existing durable Host and the legacy wire field aliases that same identity.
-/// This makes the migration boundary visible and prevents dual Host authority.
-pub fn validate_host_authority_cutover(
-    teams: &BTreeMap<String, AgentTeam>,
-    members: &BTreeMap<String, DurableAgentMember>,
-) -> Result<(), HostAuthorityError> {
-    for team in teams.values() {
-        let Some(explicit_host) = team.host_member_id.as_deref().map(str::trim) else {
-            return Err(HostAuthorityError::CompatibilityAuthorityStillActive {
-                team_id: team.id.clone(),
-                host_member_id: team.owner_agent_id.clone(),
-            });
-        };
-        let resolved = resolve_team_host_authority(team)?;
-        if team.owner_agent_id.trim() != explicit_host {
-            return Err(HostAuthorityError::CompatibilityAuthorityStillActive {
-                team_id: team.id.clone(),
-                host_member_id: explicit_host.to_string(),
-            });
-        }
-        if !members.contains_key(resolved) {
-            return Err(HostAuthorityError::UnknownMember {
-                team_id: team.id.clone(),
-                host_member_id: resolved.to_string(),
-            });
-        }
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Recursive AgentTeam topology (ADR 0052, target contract slice).
-//
-// Organization is the persistent recursive projection of Agent Teams: every
-// non-root team names its `parent_team_id` and the durable `host_member_id`
-// that created and coordinates it. These pure functions validate the graph
-// invariants and answer recursive reads; they perform no I/O so the store,
-// CLI, and future API/UI surfaces share one authority.
-// ---------------------------------------------------------------------------
-
-/// Graph invariant violation in the recursive AgentTeam topology.
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum TeamTopologyError {
-    #[error("AgentTeam {team_id} references missing parent AgentTeam: {parent_team_id}")]
-    UnknownParent {
-        team_id: String,
-        parent_team_id: String,
-    },
-    #[error("non-root AgentTeam {team_id} must name a durable host_member_id")]
-    MissingHost { team_id: String },
-    #[error(
-        "AgentTeam {team_id} host {host_member_id} is not a direct member of parent AgentTeam {parent_team_id}"
-    )]
-    HostNotParentMember {
-        team_id: String,
-        host_member_id: String,
-        parent_team_id: String,
-    },
-    #[error("AgentMember {host_member_id} hosts more than one AgentTeam: {first_team_id}, {second_team_id}")]
-    MultipleHostedTeams {
-        host_member_id: String,
-        first_team_id: String,
-        second_team_id: String,
-    },
-    #[error("AgentTeam topology cycle detected at AgentTeam {team_id}")]
-    Cycle { team_id: String },
-}
-
-/// Validate the recursive AgentTeam graph invariants over the latest-row-wins
-/// team projection (ADR 0052):
-///
-/// 1. every `parent_team_id` resolves to an existing team;
-/// 2. every non-root team names a durable `host_member_id` that is a direct
-///    member of its parent team;
-/// 3. a member hosts at most one team (V1 primary-child-team rule, enforced
-///    across teams of any status);
-/// 4. the parent graph is acyclic.
-///
-/// Teams predating the topology slice carry neither field, read as roots, and
-/// never trip an invariant.
-pub fn validate_agent_team_topology(
-    teams: &BTreeMap<String, AgentTeam>,
-) -> Result<(), TeamTopologyError> {
-    for team in teams.values() {
-        let Some(parent_team_id) = team.parent_team_id.as_deref() else {
-            continue;
-        };
-        let parent = teams
-            .get(parent_team_id)
-            .ok_or_else(|| TeamTopologyError::UnknownParent {
-                team_id: team.id.clone(),
-                parent_team_id: parent_team_id.to_string(),
-            })?;
-        let host_member_id =
-            team.host_member_id
-                .as_deref()
-                .ok_or_else(|| TeamTopologyError::MissingHost {
-                    team_id: team.id.clone(),
-                })?;
-        if !parent.member_ids.iter().any(|id| id == host_member_id) {
-            return Err(TeamTopologyError::HostNotParentMember {
-                team_id: team.id.clone(),
-                host_member_id: host_member_id.to_string(),
-                parent_team_id: parent_team_id.to_string(),
-            });
-        }
-    }
-    let mut host_claims: BTreeMap<&str, &str> = BTreeMap::new();
-    for team in teams.values() {
-        let Some(host_member_id) = team.host_member_id.as_deref() else {
-            continue;
-        };
-        if let Some(first_team_id) = host_claims.insert(host_member_id, team.id.as_str()) {
-            return Err(TeamTopologyError::MultipleHostedTeams {
-                host_member_id: host_member_id.to_string(),
-                first_team_id: first_team_id.to_string(),
-                second_team_id: team.id.clone(),
-            });
-        }
-    }
-    for team in teams.values() {
-        let mut visited = BTreeSet::new();
-        let mut cursor = team.id.as_str();
-        while let Some(parent_team_id) = teams
-            .get(cursor)
-            .and_then(|current| current.parent_team_id.as_deref())
-        {
-            if !visited.insert(cursor) {
-                return Err(TeamTopologyError::Cycle {
-                    team_id: cursor.to_string(),
-                });
-            }
-            cursor = parent_team_id;
-        }
-    }
-    Ok(())
-}
-
-/// Direct child AgentTeam ids of `team_id`, sorted for deterministic reads.
-pub fn child_team_ids(teams: &BTreeMap<String, AgentTeam>, team_id: &str) -> Vec<String> {
-    teams
-        .values()
-        .filter(|team| team.parent_team_id.as_deref() == Some(team_id))
-        .map(|team| team.id.clone())
-        .collect()
-}
-
-/// `root_team_id` plus every descendant team id, depth-first with sorted
-/// children, so Organization tree renders share one deterministic order.
-/// Returns an empty vec when `root_team_id` does not resolve.
-pub fn team_subtree_ids(teams: &BTreeMap<String, AgentTeam>, root_team_id: &str) -> Vec<String> {
-    if !teams.contains_key(root_team_id) {
-        return Vec::new();
-    }
-    let mut ordered = Vec::new();
-    let mut stack = vec![root_team_id.to_string()];
-    while let Some(team_id) = stack.pop() {
-        ordered.push(team_id.clone());
-        let mut children = child_team_ids(teams, &team_id);
-        children.reverse();
-        stack.extend(children);
-    }
-    ordered
-}
-
-/// Ancestor chain of `team_id`, parent first up to the root. Stops before an
-/// unresolved parent so partial compatibility graphs still read; cycle-free
-/// input is guaranteed by [`validate_agent_team_topology`].
-pub fn team_ancestor_ids(teams: &BTreeMap<String, AgentTeam>, team_id: &str) -> Vec<String> {
-    let mut ancestors = Vec::new();
-    let mut cursor = team_id;
-    while let Some(parent_team_id) = teams
-        .get(cursor)
-        .and_then(|current| current.parent_team_id.as_deref())
-    {
-        ancestors.push(parent_team_id.to_string());
-        cursor = parent_team_id;
-    }
-    ancestors
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1422,6 +1171,7 @@ pub enum MissionStatus {
 /// `outcome_summary` is filled only after execution has produced one. A Mission
 /// does not contain a task graph or executor-specific state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Mission {
     pub id: String,
     pub title: String,
@@ -1439,11 +1189,6 @@ pub struct Mission {
     /// for reading the Wave ledger by `mission_id`.
     #[serde(default)]
     pub wave_ids: Vec<String>,
-    /// Independent reusable AgentTeam definitions available to this Mission.
-    /// Linking does not transfer ownership or couple team lifecycle to Mission
-    /// closeout.
-    #[serde(default)]
-    pub agent_team_ids: Vec<String>,
     #[serde(default)]
     pub outcome_summary: Option<String>,
     /// Actor that explicitly performed Mission closeout. Wave acceptance does
@@ -1569,6 +1314,24 @@ fn require_non_empty(value: &str, field: &'static str) -> Result<(), ValidationE
     }
 }
 
+fn require_uuid(value: &str, field: &'static str) -> Result<(), ValidationError> {
+    require_non_empty(value, field)?;
+    let bytes = value.as_bytes();
+    let canonical = bytes.len() == 36
+        && bytes.iter().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => *byte == b'-',
+            _ => byte.is_ascii_hexdigit(),
+        });
+    if canonical {
+        Ok(())
+    } else {
+        Err(ValidationError::Invalid {
+            field,
+            reason: "must be a canonical UUID string",
+        })
+    }
+}
+
 impl Validate for AgentMember {
     fn validate(&self) -> Result<(), ValidationError> {
         require_non_empty(&self.id, "AgentMember.id")?;
@@ -1596,7 +1359,10 @@ impl Validate for AgentTeam {
         require_non_empty(&self.id, "AgentTeam.id")?;
         require_non_empty(&self.name, "AgentTeam.name")?;
         require_non_empty(&self.description, "AgentTeam.description")?;
-        require_non_empty(&self.owner_agent_id, "AgentTeam.owner_agent_id")?;
+        require_non_empty(&self.mission_id, "AgentTeam.mission_id")?;
+        require_non_empty(&self.host_agent_id, "AgentTeam.host_agent_id")?;
+        require_uuid(&self.node_id, "AgentTeam.node_id")?;
+        validate_non_empty_unique_strings(&self.member_ids, "AgentTeam.member_ids", true)?;
         require_non_empty(&self.created_at, "AgentTeam.created_at")?;
         require_non_empty(&self.updated_at, "AgentTeam.updated_at")
     }
@@ -1786,6 +1552,17 @@ impl Validate for Mission {
         require_non_empty(&self.id, "Mission.id")?;
         require_non_empty(&self.title, "Mission.title")?;
         require_non_empty(&self.objective, "Mission.objective")?;
+        validate_non_empty_unique_strings(&self.wave_ids, "Mission.wave_ids", true)?;
+        for (value, field) in [
+            (self.desired_outcome.as_deref(), "Mission.desired_outcome"),
+            (self.outcome_summary.as_deref(), "Mission.outcome_summary"),
+            (self.completed_by.as_deref(), "Mission.completed_by"),
+            (self.completed_at.as_deref(), "Mission.completed_at"),
+        ] {
+            if let Some(value) = value {
+                require_non_empty(value, field)?;
+            }
+        }
         require_non_empty(&self.created_at, "Mission.created_at")?;
         require_non_empty(&self.updated_at, "Mission.updated_at")
     }
@@ -2207,35 +1984,21 @@ pub enum TeamRunStatus {
     Cancelled,
 }
 
-/// One execution of an agent team against `objective`. `definition_id` links
-/// back to a TeamDefinition when one exists (v0 runs may be ad-hoc, so it is
-/// nullable). `host_surface` names the hosting surface ("codex-app" /
-/// "kimi-cli" / "claude-cli") and `host_thread_id` its native thread.
-/// `previous_run_id` records retry/replacement lineage. For native Mission/Wave
-/// execution it points to an earlier attempt of the same Wave; legacy unlinked
-/// runs may retain older ad-hoc lineage semantics.
+/// One execution attempt of one durable AgentTeam. Team identity, Node
+/// placement, and project binding are required fences; Mission identity is
+/// reached through the Team rather than copied onto the run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentTeamRun {
     pub id: String,
-    #[serde(default)]
-    pub definition_id: Option<String>,
-    /// Stable independent AgentTeam definition used by this run. New writes
-    /// use this field; `definition_id` remains a transitional alias for older
-    /// rows.
-    #[serde(default)]
-    pub agent_team_id: Option<String>,
+    pub agent_team_id: String,
+    /// Node that owns execution for this TeamRun. It must match the parent
+    /// AgentTeam's immutable `node_id` at the Store boundary.
+    pub execution_node_id: String,
+    /// Project registration selected on `execution_node_id`.
+    pub project_binding_id: String,
     #[serde(default)]
     pub previous_run_id: Option<String>,
-    /// Optional outer product identity (ADR 0026). Existing v0 team-run rows
-    /// remain readable without these joins during the staged migration.
-    #[serde(default)]
-    pub mission_id: Option<String>,
-    #[serde(default)]
-    pub wave_id: Option<String>,
-    /// Optional execution-resource binding selected for this run. This relation
-    /// does not transfer Mission/Team ownership to the project.
-    #[serde(default)]
-    pub project_binding_id: Option<String>,
     pub host_surface: String,
     #[serde(default)]
     pub host_thread_id: Option<String>,
@@ -2279,11 +2042,87 @@ pub enum TeamSupervisorLeaseStatus {
     Released,
 }
 
+/// Lifecycle of a machine-scoped execution Node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionNodeStatus {
+    Active,
+    Draining,
+    Retired,
+}
+
+/// Durable machine identity. `id` is a stable UUID generated once when the
+/// Node is enrolled; a daemon restart never changes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionNode {
+    pub id: String,
+    pub display_name: String,
+    pub status: ExecutionNodeStatus,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeProjectRegistrationStatus {
+    Active,
+    Disabled,
+}
+
+/// One project binding made available on one Node inside one Execution Space.
+/// Latest-row identity is the `(node_id, execution_space_id,
+/// project_binding_id)` composite key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeProjectRegistration {
+    pub node_id: String,
+    pub execution_space_id: String,
+    pub project_binding_id: String,
+    pub status: NodeProjectRegistrationStatus,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeDaemonLeaseStatus {
+    Active,
+    Draining,
+    Released,
+    Expired,
+}
+
+/// Exclusive machine-scoped authority for the one NodeDaemon allowed to
+/// manage all AgentTeams placed on a Node. Latest row wins by `node_id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeDaemonLease {
+    pub node_id: String,
+    pub daemon_id: String,
+    pub generation: u64,
+    pub instance_id: String,
+    pub status: NodeDaemonLeaseStatus,
+    pub acquired_unix_ms: u64,
+    pub renewed_unix_ms: u64,
+    pub expires_unix_ms: u64,
+    #[serde(default)]
+    pub released_unix_ms: Option<u64>,
+}
+
 /// Durable ownership record for the one process/service allowed to control a
 /// TeamRun's provider-native sessions. Latest row wins by `team_run_id`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TeamSupervisorLease {
     pub team_run_id: String,
+    /// Parent NodeDaemon fence. A Team supervisor cannot outlive or move
+    /// independently from the daemon generation that created it.
+    pub node_id: String,
+    pub node_daemon_id: String,
+    pub node_daemon_generation: u64,
+    pub execution_space_id: String,
+    pub project_binding_id: String,
     pub supervisor_id: String,
     pub generation: u64,
     pub owner_process_id: u32,
@@ -3054,6 +2893,9 @@ impl MemberRun {
 impl Validate for AgentTeamRun {
     fn validate(&self) -> Result<(), ValidationError> {
         require_non_empty(&self.id, "AgentTeamRun.id")?;
+        require_non_empty(&self.agent_team_id, "AgentTeamRun.agent_team_id")?;
+        require_uuid(&self.execution_node_id, "AgentTeamRun.execution_node_id")?;
+        require_non_empty(&self.project_binding_id, "AgentTeamRun.project_binding_id")?;
         require_non_empty(&self.host_surface, "AgentTeamRun.host_surface")?;
         require_non_empty(&self.objective, "AgentTeamRun.objective")?;
         require_non_empty(&self.created_at, "AgentTeamRun.created_at")?;
@@ -3061,21 +2903,139 @@ impl Validate for AgentTeamRun {
         if let Some(execution_root) = &self.execution_root {
             require_non_empty(execution_root, "AgentTeamRun.execution_root")?;
         }
-        if let Some(binding) = &self.project_binding_id {
-            require_non_empty(binding, "AgentTeamRun.project_binding_id")?;
-        }
         if let Some(actor) = &self.host_actor {
             require_non_empty(&actor.id, "AgentTeamRun.host_actor.id")?;
+            validate_actor_metadata(actor, "AgentTeamRun.host_actor")?;
         }
+        validate_non_empty_unique_strings(
+            &self.member_run_ids,
+            "AgentTeamRun.member_run_ids",
+            true,
+        )?;
         Ok(())
+    }
+}
+
+impl Validate for ExecutionNode {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_uuid(&self.id, "ExecutionNode.id")?;
+        require_non_empty(&self.display_name, "ExecutionNode.display_name")?;
+        require_non_empty(&self.created_at, "ExecutionNode.created_at")?;
+        require_non_empty(&self.updated_at, "ExecutionNode.updated_at")
+    }
+}
+
+impl Validate for NodeProjectRegistration {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_uuid(&self.node_id, "NodeProjectRegistration.node_id")?;
+        require_non_empty(
+            &self.execution_space_id,
+            "NodeProjectRegistration.execution_space_id",
+        )?;
+        require_non_empty(
+            &self.project_binding_id,
+            "NodeProjectRegistration.project_binding_id",
+        )?;
+        require_non_empty(&self.created_at, "NodeProjectRegistration.created_at")?;
+        require_non_empty(&self.updated_at, "NodeProjectRegistration.updated_at")
+    }
+}
+
+impl Validate for NodeDaemonLease {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_uuid(&self.node_id, "NodeDaemonLease.node_id")?;
+        require_non_empty(&self.daemon_id, "NodeDaemonLease.daemon_id")?;
+        require_non_empty(&self.instance_id, "NodeDaemonLease.instance_id")?;
+        if self.generation == 0 {
+            return Err(ValidationError::Invalid {
+                field: "NodeDaemonLease.generation",
+                reason: "must be greater than zero",
+            });
+        }
+        if self.renewed_unix_ms < self.acquired_unix_ms
+            || self.expires_unix_ms < self.renewed_unix_ms
+        {
+            return Err(ValidationError::Invalid {
+                field: "NodeDaemonLease.timestamps",
+                reason: "must be monotonic",
+            });
+        }
+        match (self.status, self.released_unix_ms) {
+            (NodeDaemonLeaseStatus::Released, Some(released))
+                if released >= self.acquired_unix_ms =>
+            {
+                Ok(())
+            }
+            (NodeDaemonLeaseStatus::Released, _) => Err(ValidationError::Invalid {
+                field: "NodeDaemonLease.released_unix_ms",
+                reason: "released leases require a release time after acquisition",
+            }),
+            (_, Some(_)) => Err(ValidationError::Invalid {
+                field: "NodeDaemonLease.released_unix_ms",
+                reason: "only released leases may carry a release time",
+            }),
+            _ => Ok(()),
+        }
     }
 }
 
 impl Validate for TeamSupervisorLease {
     fn validate(&self) -> Result<(), ValidationError> {
         require_non_empty(&self.team_run_id, "TeamSupervisorLease.team_run_id")?;
+        require_uuid(&self.node_id, "TeamSupervisorLease.node_id")?;
+        require_non_empty(&self.node_daemon_id, "TeamSupervisorLease.node_daemon_id")?;
+        if self.node_daemon_generation == 0 {
+            return Err(ValidationError::Invalid {
+                field: "TeamSupervisorLease.node_daemon_generation",
+                reason: "must be greater than zero",
+            });
+        }
+        require_non_empty(
+            &self.execution_space_id,
+            "TeamSupervisorLease.execution_space_id",
+        )?;
+        require_non_empty(
+            &self.project_binding_id,
+            "TeamSupervisorLease.project_binding_id",
+        )?;
         require_non_empty(&self.supervisor_id, "TeamSupervisorLease.supervisor_id")?;
-        require_non_empty(&self.owner_locator, "TeamSupervisorLease.owner_locator")
+        require_non_empty(&self.owner_locator, "TeamSupervisorLease.owner_locator")?;
+        if self.generation == 0 {
+            return Err(ValidationError::Invalid {
+                field: "TeamSupervisorLease.generation",
+                reason: "must be greater than zero",
+            });
+        }
+        if self.owner_process_id == 0 {
+            return Err(ValidationError::Invalid {
+                field: "TeamSupervisorLease.owner_process_id",
+                reason: "must be greater than zero",
+            });
+        }
+        if self.heartbeat_unix_ms < self.acquired_unix_ms
+            || self.expires_unix_ms < self.heartbeat_unix_ms
+        {
+            return Err(ValidationError::Invalid {
+                field: "TeamSupervisorLease.timestamps",
+                reason: "must be monotonic",
+            });
+        }
+        match (self.status, self.released_unix_ms) {
+            (TeamSupervisorLeaseStatus::Released, Some(released))
+                if released >= self.acquired_unix_ms =>
+            {
+                Ok(())
+            }
+            (TeamSupervisorLeaseStatus::Released, _) => Err(ValidationError::Invalid {
+                field: "TeamSupervisorLease.released_unix_ms",
+                reason: "released leases require a release time after acquisition",
+            }),
+            (_, Some(_)) => Err(ValidationError::Invalid {
+                field: "TeamSupervisorLease.released_unix_ms",
+                reason: "only released leases may carry a release time",
+            }),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -5779,15 +5739,200 @@ impl HostDispatchOutcome {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkDelegationState {
+    Active,
+    Blocked,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkDelegationTransition {
+    Created,
+    Blocked,
+    Resumed,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+/// Durable relationship between an exact source Work revision and a target
+/// Work owned by another flat AgentTeam. The source owner retains integration
+/// responsibility; target completion never mutates or accepts the source Work.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkDelegation {
     pub id: String,
-    pub parent_work_ref: WorkRef,
-    pub parent_owner_member_run_id: String,
-    pub child_agent_team_id: String,
-    pub child_team_run_id: String,
-    pub child_host_actor: TeamActorRef,
+    pub source_work_ref: WorkRef,
+    pub source_work_version: u64,
+    pub source_owner_member_id: String,
+    #[serde(default)]
+    pub created_by_member_run_id: Option<String>,
+    pub target_agent_team_id: String,
+    pub target_work_ref: WorkRef,
+    pub delegated_by_actor: TeamActorRef,
+    pub state: WorkDelegationState,
+    #[serde(default)]
+    pub resolution_summary: Option<String>,
+    #[serde(default)]
+    pub blocker_reason: Option<String>,
+    pub version: u64,
     pub created_at: String,
+    pub updated_at: String,
+}
+
+/// One append-only transition of a [`WorkDelegation`]. Optimistic concurrency
+/// is explicit: every event consumes `expected_version` and produces exactly
+/// the next `resulting_version`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkDelegationEvent {
+    pub id: String,
+    pub delegation_id: String,
+    pub sequence: u64,
+    pub transition: WorkDelegationTransition,
+    pub expected_version: u64,
+    pub resulting_version: u64,
+    pub performed_by_actor: TeamActorRef,
+    #[serde(default)]
+    pub causation_ref: Option<WorkCausationRef>,
+    pub idempotency_key: String,
+    pub payload: serde_json::Value,
+    pub created_at: String,
+}
+
+fn validate_work_ref(reference: &WorkRef, field: &'static str) -> Result<(), ValidationError> {
+    if reference.team_run_id.trim().is_empty() || reference.work_id.trim().is_empty() {
+        return Err(ValidationError::Required { field });
+    }
+    Ok(())
+}
+
+impl Validate for WorkDelegation {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "WorkDelegation.id")?;
+        validate_work_ref(&self.source_work_ref, "WorkDelegation.source_work_ref")?;
+        validate_work_ref(&self.target_work_ref, "WorkDelegation.target_work_ref")?;
+        require_non_empty(
+            &self.source_owner_member_id,
+            "WorkDelegation.source_owner_member_id",
+        )?;
+        require_non_empty(
+            &self.target_agent_team_id,
+            "WorkDelegation.target_agent_team_id",
+        )?;
+        require_non_empty(
+            &self.delegated_by_actor.id,
+            "WorkDelegation.delegated_by_actor.id",
+        )?;
+        validate_actor_metadata(
+            &self.delegated_by_actor,
+            "WorkDelegation.delegated_by_actor",
+        )?;
+        require_non_empty(&self.created_at, "WorkDelegation.created_at")?;
+        require_non_empty(&self.updated_at, "WorkDelegation.updated_at")?;
+        if self.source_work_version == 0 {
+            return Err(ValidationError::Invalid {
+                field: "WorkDelegation.source_work_version",
+                reason: "must be greater than zero",
+            });
+        }
+        if self.version == 0 {
+            return Err(ValidationError::Invalid {
+                field: "WorkDelegation.version",
+                reason: "must be greater than zero",
+            });
+        }
+        if self.source_work_ref == self.target_work_ref {
+            return Err(ValidationError::Invalid {
+                field: "WorkDelegation.target_work_ref",
+                reason: "must differ from source_work_ref",
+            });
+        }
+        if let Some(member_run_id) = &self.created_by_member_run_id {
+            require_non_empty(member_run_id, "WorkDelegation.created_by_member_run_id")?;
+        }
+        match self.state {
+            WorkDelegationState::Active => {
+                if self.resolution_summary.is_some() || self.blocker_reason.is_some() {
+                    return Err(ValidationError::Invalid {
+                        field: "WorkDelegation.state",
+                        reason: "active delegations cannot carry blocker or resolution fields",
+                    });
+                }
+            }
+            WorkDelegationState::Blocked => {
+                let blocker = self.blocker_reason.as_deref().unwrap_or_default();
+                require_non_empty(blocker, "WorkDelegation.blocker_reason")?;
+                if self.resolution_summary.is_some() {
+                    return Err(ValidationError::Invalid {
+                        field: "WorkDelegation.resolution_summary",
+                        reason: "blocked delegations are not resolved",
+                    });
+                }
+            }
+            WorkDelegationState::Completed
+            | WorkDelegationState::Failed
+            | WorkDelegationState::Cancelled => {
+                let summary = self.resolution_summary.as_deref().unwrap_or_default();
+                require_non_empty(summary, "WorkDelegation.resolution_summary")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Validate for WorkDelegationEvent {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "WorkDelegationEvent.id")?;
+        require_non_empty(&self.delegation_id, "WorkDelegationEvent.delegation_id")?;
+        require_non_empty(
+            &self.performed_by_actor.id,
+            "WorkDelegationEvent.performed_by_actor.id",
+        )?;
+        validate_actor_metadata(
+            &self.performed_by_actor,
+            "WorkDelegationEvent.performed_by_actor",
+        )?;
+        require_non_empty(&self.idempotency_key, "WorkDelegationEvent.idempotency_key")?;
+        require_non_empty(&self.created_at, "WorkDelegationEvent.created_at")?;
+        if self.sequence == 0 {
+            return Err(ValidationError::Invalid {
+                field: "WorkDelegationEvent.sequence",
+                reason: "must be greater than zero",
+            });
+        }
+        if self.resulting_version != self.expected_version.saturating_add(1) {
+            return Err(ValidationError::Invalid {
+                field: "WorkDelegationEvent.resulting_version",
+                reason: "must equal expected_version + 1",
+            });
+        }
+        if self.transition == WorkDelegationTransition::Created && self.expected_version != 0 {
+            return Err(ValidationError::Invalid {
+                field: "WorkDelegationEvent.expected_version",
+                reason: "created transition must start at version zero",
+            });
+        }
+        if self.transition != WorkDelegationTransition::Created && self.expected_version == 0 {
+            return Err(ValidationError::Invalid {
+                field: "WorkDelegationEvent.expected_version",
+                reason: "non-created transitions require an existing version",
+            });
+        }
+        if let Some(causation) = &self.causation_ref {
+            if causation.kind.trim().is_empty() || causation.id.trim().is_empty() {
+                return Err(ValidationError::Required {
+                    field: "WorkDelegationEvent.causation_ref",
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Status of a single [`MemberAction`].
@@ -7079,11 +7224,11 @@ mod tests {
     }
 
     #[test]
-    fn legacy_workspace_rows_deserialize_with_absent_new_fields() {
+    fn workspace_rows_deserialize_with_optional_observability_fields() {
         let team: AgentTeamRun = serde_json::from_str(
-            r#"{"id":"tr-legacy","host_surface":"codex-app","objective":"work","status":"planning","created_at":"unix-ms:1","updated_at":"unix-ms:1"}"#,
+            r#"{"id":"tr-1","agent_team_id":"team-1","execution_node_id":"0f95cac7-5ff8-4c76-8f36-9c8f208815d3","project_binding_id":"project-1","host_surface":"codex-app","objective":"work","status":"planning","created_at":"unix-ms:1","updated_at":"unix-ms:1"}"#,
         )
-        .expect("deserialize legacy team run");
+        .expect("deserialize team run");
         assert!(team.execution_root.is_none());
 
         let member: MemberRun = serde_json::from_str(
@@ -7725,236 +7870,131 @@ mod tests {
         assert!(json.get("work_status").is_none());
     }
 
-    fn topology_team(
-        id: &str,
-        member_ids: &[&str],
-        parent_team_id: Option<&str>,
-        host_member_id: Option<&str>,
-    ) -> AgentTeam {
-        AgentTeam {
-            id: id.to_string(),
-            name: format!("{id} name"),
-            description: format!("{id} description"),
-            owner_agent_id: "host".to_string(),
-            status: AgentTeamStatus::Active,
-            member_ids: member_ids.iter().map(|id| id.to_string()).collect(),
-            parent_team_id: parent_team_id.map(str::to_string),
-            host_member_id: host_member_id.map(str::to_string),
-            created_at: "unix-ms:1".to_string(),
-            updated_at: "unix-ms:1".to_string(),
-        }
-    }
-
-    fn topology_map(teams: Vec<AgentTeam>) -> BTreeMap<String, AgentTeam> {
-        teams
-            .into_iter()
-            .map(|team| (team.id.clone(), team))
-            .collect()
-    }
-
     #[test]
-    fn agent_team_topology_fields_default_to_root_for_legacy_rows() {
+    fn agent_team_wire_is_flat_and_requires_mission_host_and_node() {
         let team: AgentTeam = serde_json::from_value(serde_json::json!({
-            "id": "team-legacy",
-            "name": "Legacy",
-            "description": "Row written before the topology slice.",
-            "owner_agent_id": "host",
-            "member_ids": [],
+            "id": "team-1",
+            "name": "Core",
+            "description": "One Mission on one Node",
+            "mission_id": "mission-1",
+            "host_agent_id": "agent-host-1",
+            "node_id": "0f95cac7-5ff8-4c76-8f36-9c8f208815d3",
+            "member_ids": ["agent-worker-1"],
             "created_at": "unix-ms:1",
             "updated_at": "unix-ms:1"
         }))
-        .expect("legacy team row without topology fields remains readable");
-        assert_eq!(team.parent_team_id, None);
-        assert_eq!(team.host_member_id, None);
-        let teams = topology_map(vec![team]);
-        assert_eq!(validate_agent_team_topology(&teams), Ok(()));
-    }
+        .expect("flat AgentTeam wire");
+        assert_eq!(team.validate(), Ok(()));
 
-    fn durable_member(id: &str) -> DurableAgentMember {
-        DurableAgentMember {
-            id: id.to_string(),
-            name: id.to_string(),
-            description: format!("Durable identity for {id}"),
-            role: "lead".to_string(),
-            provider_profile: Some("kimi/qwen3.8-max".to_string()),
-            model: Some("qwen/qwen3.8-max".to_string()),
-            workspace_policy: Some("project_binding".to_string()),
-            project_binding_id: Some("project-harness".to_string()),
-            business_access_ceiling_refs: vec!["company_os.read".to_string()],
-            status: DurableAgentMemberStatus::Active,
-            created_by_member_id: None,
-            created_at: "unix-ms:1".to_string(),
-            updated_at: "unix-ms:1".to_string(),
+        for legacy_field in ["owner_agent_id", "parent_team_id", "host_member_id"] {
+            let mut value = serde_json::to_value(&team).expect("serialize AgentTeam");
+            value[legacy_field] = serde_json::json!("legacy");
+            assert!(
+                serde_json::from_value::<AgentTeam>(value).is_err(),
+                "clean cutover rejects {legacy_field}"
+            );
         }
     }
 
     #[test]
-    fn host_authority_compatibility_mapping_is_deterministic_and_refuses_conflicts() {
-        let mut team = topology_team("root", &["lead"], None, None);
-        team.owner_agent_id = "lead".to_string();
-        assert_eq!(compat_host_member_id(&team), Ok(Some("lead")));
+    fn node_and_daemon_fences_validate_generation_and_time() {
+        let node = ExecutionNode {
+            id: "0f95cac7-5ff8-4c76-8f36-9c8f208815d3".into(),
+            display_name: "build-node-a".into(),
+            status: ExecutionNodeStatus::Active,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+        };
+        assert_eq!(node.validate(), Ok(()));
 
-        team.host_member_id = Some("lead".to_string());
-        assert_eq!(resolve_team_host_authority(&team), Ok("lead"));
+        let mut lease = NodeDaemonLease {
+            node_id: node.id,
+            daemon_id: "daemon-a".into(),
+            generation: 1,
+            instance_id: "pid:4242:start:1000".into(),
+            status: NodeDaemonLeaseStatus::Active,
+            acquired_unix_ms: 1_000,
+            renewed_unix_ms: 1_200,
+            expires_unix_ms: 6_200,
+            released_unix_ms: None,
+        };
+        assert_eq!(lease.validate(), Ok(()));
+        lease.generation = 0;
+        assert!(lease.validate().is_err());
+        lease.generation = 1;
+        lease.expires_unix_ms = 1_100;
+        assert!(lease.validate().is_err());
+    }
 
-        team.host_member_id = Some("different-lead".to_string());
-        assert_eq!(
-            resolve_team_host_authority(&team),
-            Err(HostAuthorityError::Conflicting {
-                team_id: "root".to_string(),
-                owner_agent_id: "lead".to_string(),
-                host_member_id: "different-lead".to_string(),
-            })
-        );
+    fn test_actor(id: &str) -> TeamActorRef {
+        TeamActorRef {
+            kind: TeamActorKind::AgentMember,
+            id: id.into(),
+            display_name: None,
+            authn_source: None,
+        }
     }
 
     #[test]
-    fn host_authority_cutover_requires_explicit_member_backed_single_authority() {
-        let mut team = topology_team("root", &["lead"], None, Some("lead"));
-        let mut teams = topology_map(vec![team.clone()]);
-        let members = BTreeMap::from([("lead".to_string(), durable_member("lead"))]);
+    fn work_delegation_is_cross_work_versioned_responsibility() {
+        let mut delegation = WorkDelegation {
+            id: "delegation-1".into(),
+            source_work_ref: WorkRef {
+                team_run_id: "run-source".into(),
+                work_id: "work-source".into(),
+            },
+            source_work_version: 3,
+            source_owner_member_id: "member-source".into(),
+            created_by_member_run_id: Some("member-run-source".into()),
+            target_agent_team_id: "team-target".into(),
+            target_work_ref: WorkRef {
+                team_run_id: "run-target".into(),
+                work_id: "work-target".into(),
+            },
+            delegated_by_actor: test_actor("member-source"),
+            state: WorkDelegationState::Active,
+            resolution_summary: None,
+            blocker_reason: None,
+            version: 1,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+        };
+        assert_eq!(delegation.validate(), Ok(()));
 
-        assert!(matches!(
-            validate_host_authority_cutover(&teams, &members),
-            Err(HostAuthorityError::CompatibilityAuthorityStillActive { .. })
-        ));
-
-        team.owner_agent_id = "lead".to_string();
-        teams.insert(team.id.clone(), team);
-        assert_eq!(validate_host_authority_cutover(&teams, &members), Ok(()));
-
-        assert!(matches!(
-            validate_host_authority_cutover(&teams, &BTreeMap::new()),
-            Err(HostAuthorityError::UnknownMember { .. })
-        ));
+        delegation.state = WorkDelegationState::Blocked;
+        assert!(delegation.validate().is_err());
+        delegation.blocker_reason = Some("target capacity unavailable".into());
+        assert_eq!(delegation.validate(), Ok(()));
+        delegation.state = WorkDelegationState::Completed;
+        delegation.blocker_reason = None;
+        delegation.resolution_summary = Some("target result returned to source owner".into());
+        assert_eq!(delegation.validate(), Ok(()));
     }
 
     #[test]
-    fn agent_team_topology_accepts_valid_recursive_forest() {
-        let teams = topology_map(vec![
-            topology_team("root", &["lead", "cto"], None, Some("lead")),
-            topology_team("child", &["worker"], Some("root"), Some("cto")),
-            topology_team("grandchild", &["leaf"], Some("child"), Some("worker")),
-            topology_team("legacy-flat", &[], None, None),
-        ]);
-        assert_eq!(validate_agent_team_topology(&teams), Ok(()));
-        assert_eq!(child_team_ids(&teams, "root"), vec!["child".to_string()]);
-        assert_eq!(child_team_ids(&teams, "grandchild"), Vec::<String>::new());
-        assert_eq!(
-            team_subtree_ids(&teams, "root"),
-            vec![
-                "root".to_string(),
-                "child".to_string(),
-                "grandchild".to_string()
-            ]
-        );
-        assert_eq!(
-            team_ancestor_ids(&teams, "grandchild"),
-            vec!["child".to_string(), "root".to_string()]
-        );
-        assert_eq!(team_ancestor_ids(&teams, "root"), Vec::<String>::new());
-        assert_eq!(team_subtree_ids(&teams, "missing"), Vec::<String>::new());
-    }
-
-    #[test]
-    fn agent_team_topology_rejects_missing_parent() {
-        let teams = topology_map(vec![topology_team(
-            "child",
-            &[],
-            Some("missing"),
-            Some("cto"),
-        )]);
-        assert_eq!(
-            validate_agent_team_topology(&teams),
-            Err(TeamTopologyError::UnknownParent {
-                team_id: "child".to_string(),
-                parent_team_id: "missing".to_string(),
-            })
-        );
-    }
-
-    #[test]
-    fn agent_team_topology_rejects_non_root_without_host() {
-        let teams = topology_map(vec![
-            topology_team("root", &["cto"], None, None),
-            topology_team("child", &[], Some("root"), None),
-        ]);
-        assert_eq!(
-            validate_agent_team_topology(&teams),
-            Err(TeamTopologyError::MissingHost {
-                team_id: "child".to_string(),
-            })
-        );
-    }
-
-    #[test]
-    fn agent_team_topology_rejects_host_outside_parent_membership() {
-        let teams = topology_map(vec![
-            topology_team("root", &["lead"], None, Some("lead")),
-            topology_team("child", &[], Some("root"), Some("outsider")),
-        ]);
-        assert_eq!(
-            validate_agent_team_topology(&teams),
-            Err(TeamTopologyError::HostNotParentMember {
-                team_id: "child".to_string(),
-                host_member_id: "outsider".to_string(),
-                parent_team_id: "root".to_string(),
-            })
-        );
-    }
-
-    #[test]
-    fn agent_team_topology_rejects_member_hosting_two_teams() {
-        let teams = topology_map(vec![
-            topology_team("root", &["cto"], None, None),
-            topology_team("child-a", &[], Some("root"), Some("cto")),
-            topology_team("child-b", &[], Some("root"), Some("cto")),
-        ]);
-        assert_eq!(
-            validate_agent_team_topology(&teams),
-            Err(TeamTopologyError::MultipleHostedTeams {
-                host_member_id: "cto".to_string(),
-                first_team_id: "child-a".to_string(),
-                second_team_id: "child-b".to_string(),
-            })
-        );
-    }
-
-    #[test]
-    fn agent_team_topology_rejects_cycles() {
-        let self_parent = topology_map(vec![topology_team(
-            "loop",
-            &["lead"],
-            Some("loop"),
-            Some("lead"),
-        )]);
-        assert_eq!(
-            validate_agent_team_topology(&self_parent),
-            Err(TeamTopologyError::Cycle {
-                team_id: "loop".to_string(),
-            })
-        );
-
-        let mut cycle = topology_map(vec![
-            // a's host ha is a direct member of parent b; b's host hb is a
-            // direct member of parent a — direct-host passes, so the acyclic
-            // invariant is what must reject the pair.
-            topology_team("a", &["hb"], Some("b"), Some("ha")),
-            topology_team("b", &["ha"], Some("a"), Some("hb")),
-        ]);
-        assert_eq!(
-            validate_agent_team_topology(&cycle),
-            Err(TeamTopologyError::Cycle {
-                team_id: "a".to_string(),
-            })
-        );
-        // Breaking one parent link restores a valid two-level tree.
-        cycle.get_mut("b").expect("team b").parent_team_id = None;
-        assert_eq!(validate_agent_team_topology(&cycle), Ok(()));
-        assert_eq!(
-            team_subtree_ids(&cycle, "b"),
-            vec!["b".to_string(), "a".to_string()]
-        );
+    fn work_delegation_event_enforces_cas_version_fence() {
+        let mut event = WorkDelegationEvent {
+            id: "delegation-event-1".into(),
+            delegation_id: "delegation-1".into(),
+            sequence: 1,
+            transition: WorkDelegationTransition::Created,
+            expected_version: 0,
+            resulting_version: 1,
+            performed_by_actor: test_actor("member-source"),
+            causation_ref: Some(WorkCausationRef {
+                kind: "work_event".into(),
+                id: "source-event-3".into(),
+            }),
+            idempotency_key: "create:delegation-1".into(),
+            payload: serde_json::json!({"target_agent_team_id": "team-target"}),
+            created_at: "unix-ms:1".into(),
+        };
+        assert_eq!(event.validate(), Ok(()));
+        event.resulting_version = 2;
+        assert!(event.validate().is_err());
+        event.resulting_version = 1;
+        event.payload = serde_json::Value::Null;
+        assert_eq!(event.validate(), Ok(()));
     }
 
     // ── GateEngine tests ──────────────────────────────────────────

@@ -1,0 +1,10 @@
+{
+  "node_id": "0f95cac7-5ff8-4c76-8f36-9c8f208815d3",
+  "daemon_id": "daemon-a",
+  "generation": 0,
+  "instance_id": "pid:4242:start:1000",
+  "status": "active",
+  "acquired_unix_ms": 1000,
+  "renewed_unix_ms": 1200,
+  "expires_unix_ms": 6200
+}

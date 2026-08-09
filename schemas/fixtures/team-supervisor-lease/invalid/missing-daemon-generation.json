@@ -1,6 +1,11 @@
 {
   "team_run_id": "team-run-1",
+  "node_id": "0f95cac7-5ff8-4c76-8f36-9c8f208815d3",
+  "node_daemon_id": "daemon-1",
+  "execution_space_id": "space-harness",
+  "project_binding_id": "project-harness",
   "supervisor_id": "supervisor-1",
+  "generation": 2,
   "owner_process_id": 4242,
   "owner_locator": "pid:4242",
   "status": "active",

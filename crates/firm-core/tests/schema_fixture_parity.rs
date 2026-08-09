@@ -6,7 +6,10 @@
 //! The directory classification is therefore the shared expected verdict, not
 //! an independent JS-only rule set.
 
-use firm_core::{Review, TeamMessage, Validate, Work};
+use firm_core::{
+    AgentTeam, AgentTeamRun, ExecutionNode, Mission, NodeDaemonLease, NodeProjectRegistration,
+    Review, TeamMessage, TeamSupervisorLease, Validate, Work, WorkDelegation, WorkDelegationEvent,
+};
 use serde::de::DeserializeOwned;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -68,6 +71,19 @@ fn work_fixtures_match_rust_serde_and_validate() {
 #[test]
 fn review_fixtures_match_rust_serde_and_validate() {
     assert_fixture_contract::<Review>("review");
+}
+
+#[test]
+fn wave_three_identity_and_runtime_fixtures_match_rust_contracts() {
+    assert_fixture_contract::<AgentTeam>("agent-team");
+    assert_fixture_contract::<Mission>("mission");
+    assert_fixture_contract::<AgentTeamRun>("agent-team-run");
+    assert_fixture_contract::<ExecutionNode>("execution-node");
+    assert_fixture_contract::<NodeProjectRegistration>("node-project-registration");
+    assert_fixture_contract::<NodeDaemonLease>("node-daemon-lease");
+    assert_fixture_contract::<TeamSupervisorLease>("team-supervisor-lease");
+    assert_fixture_contract::<WorkDelegation>("work-delegation");
+    assert_fixture_contract::<WorkDelegationEvent>("work-delegation-event");
 }
 
 #[test]

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/node-project-registration.schema.json",
+  "title": "NodeProjectRegistration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "node_id",
+    "execution_space_id",
+    "project_binding_id",
+    "status",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "node_id": {
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+    },
+    "execution_space_id": { "type": "string", "minLength": 1 },
+    "project_binding_id": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "enum": ["active", "disabled"] },
+    "created_at": { "type": "string", "minLength": 1 },
+    "updated_at": { "type": "string", "minLength": 1 }
+  }
+}

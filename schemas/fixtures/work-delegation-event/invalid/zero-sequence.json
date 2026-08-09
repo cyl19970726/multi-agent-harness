@@ -1,0 +1,12 @@
+{
+  "id": "delegation-event-1",
+  "delegation_id": "delegation-1",
+  "sequence": 0,
+  "transition": "created",
+  "expected_version": 0,
+  "resulting_version": 1,
+  "performed_by_actor": { "kind": "agent_member", "id": "member-source" },
+  "idempotency_key": "create:delegation-1",
+  "payload": {},
+  "created_at": "2026-08-09T00:00:00Z"
+}

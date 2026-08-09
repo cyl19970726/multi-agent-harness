@@ -42,8 +42,9 @@ use crate::{
     resolve_pending_interaction_value, retired_wave_write_error, revise_mission_context,
     revise_mission_team_link, route_agent_inbox_messages, send_team_message_as_work,
     serde_snake_label, steer_team_member_value, team_member_specs_from_definition,
-    team_run_board_summary_text, team_run_inbox, team_run_wave_index, transition_team_run,
-    visible_member_actions_in_append_order, work_operation_cursors, ResolvedStore, TeamMemberSpec,
+    team_run_board_summary_text, team_run_inbox, team_run_mission_id, team_run_wave_index,
+    transition_team_run, visible_member_actions_in_append_order, work_operation_cursors,
+    ResolvedStore, TeamMemberSpec,
 };
 
 /// MCP protocol revision this server speaks, echoed verbatim in `initialize`
@@ -58,10 +59,10 @@ const DASHBOARD_SAME_ORIGIN_API_BASE: &str = ".";
 
 fn team_dashboard_url(store: &HarnessStore, resolved: &ResolvedStore, team_run_id: &str) -> String {
     let run = latest_team_run(store, team_run_id).ok();
-    let mission_id = run.as_ref().and_then(|run| run.mission_id.as_deref());
-    let direct_wave_id = run.as_ref().and_then(|run| run.wave_id.as_deref());
-    let current_wave_id = direct_wave_id.map(str::to_string).or_else(|| {
-        let mission_id = mission_id?;
+    let mission_id = run
+        .as_ref()
+        .and_then(|run| team_run_mission_id(store, run).ok());
+    let current_wave_id = mission_id.as_deref().and_then(|mission_id| {
         let mut waves = store.latest_waves().ok()?;
         waves.retain(|wave| wave.mission_id == mission_id);
         waves.sort_by_key(|wave| wave.index);
@@ -77,7 +78,7 @@ fn team_dashboard_url(store: &HarnessStore, resolved: &ResolvedStore, team_run_i
             .or_else(|| waves.last())
             .map(|wave| wave.id.clone())
     });
-    let context = match (mission_id, current_wave_id.as_deref()) {
+    let context = match (mission_id.as_deref(), current_wave_id.as_deref()) {
         (Some(mission_id), Some(wave_id)) => format!("&mission={mission_id}&wave={wave_id}"),
         (Some(mission_id), None) => format!("&mission={mission_id}"),
         _ => String::new(),
@@ -1028,8 +1029,8 @@ fn tool_team_run_create(
     Ok(json!({
         "team_run_id": created.team_run.id,
         "member_run_ids": created.team_run.member_run_ids,
-        "mission_id": created.team_run.mission_id,
-        "wave_id": created.team_run.wave_id,
+        "mission_id": team_run_mission_id(store, &created.team_run).map_err(|error| error.to_string())?,
+        "wave_id": null,
         "execution_root": created.team_run.execution_root,
         "member_runs": created.member_runs,
         "works": created.works,
@@ -1146,7 +1147,7 @@ fn tool_team_run_list(store: &HarnessStore, arguments: &Value) -> Result<Value, 
     let runs: Vec<_> = runs
         .into_iter()
         .filter(|run| match project_binding_id.as_deref() {
-            Some(wanted) => run.project_binding_id.as_deref() == Some(wanted),
+            Some(wanted) => run.project_binding_id == wanted,
             None => true,
         })
         .filter(|run| match status_filter {

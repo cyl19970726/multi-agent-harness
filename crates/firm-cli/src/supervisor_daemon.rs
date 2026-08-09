@@ -110,18 +110,13 @@ pub(crate) fn run_supervisor_daemon(
     ));
 
     use crate::{now_string, store_conflict_as_usage};
-    use harness_core::{TeamRunStatus, WaveStatus};
+    use harness_core::TeamRunStatus;
 
     let running = if body.run.status == TeamRunStatus::Planning {
         let mut running = body.run.clone();
         running.status = TeamRunStatus::Running;
         running.updated_at = now_string();
-        store_conflict_as_usage(store.compare_and_append_team_run_with_wave_status(
-            &body.run,
-            &running,
-            WaveStatus::Running,
-            &now_string(),
-        ))?;
+        store_conflict_as_usage(store.compare_and_append_team_run_lifecycle(&body.run, &running))?;
         running
     } else {
         body.run.clone()
@@ -838,18 +833,15 @@ impl MultiTeamDaemon {
 
         // Transition Planning→Running if needed (same as per-run daemon).
         use crate::{now_string, store_conflict_as_usage};
-        use harness_core::{TeamRunStatus, WaveStatus};
+        use harness_core::TeamRunStatus;
 
         let running = if body.run.status == TeamRunStatus::Planning {
             let mut running = body.run.clone();
             running.status = TeamRunStatus::Running;
             running.updated_at = now_string();
-            store_conflict_as_usage(store.compare_and_append_team_run_with_wave_status(
-                &body.run,
-                &running,
-                WaveStatus::Running,
-                &now_string(),
-            ))?;
+            store_conflict_as_usage(
+                store.compare_and_append_team_run_lifecycle(&body.run, &running),
+            )?;
             running
         } else {
             body.run.clone()

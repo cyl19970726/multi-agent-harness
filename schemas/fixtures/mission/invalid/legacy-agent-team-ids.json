@@ -1,0 +1,9 @@
+{
+  "id": "mission-legacy",
+  "title": "Legacy Mission",
+  "objective": "Prove Mission no longer stores Team membership.",
+  "status": "planned",
+  "agent_team_ids": ["team-legacy"],
+  "created_at": "2026-08-09T00:00:00Z",
+  "updated_at": "2026-08-09T00:00:00Z"
+}

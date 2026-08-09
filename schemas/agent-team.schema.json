@@ -4,30 +4,41 @@
   "title": "AgentTeam",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "name", "description", "owner_agent_id", "member_ids", "created_at", "updated_at"],
+  "required": [
+    "id",
+    "name",
+    "description",
+    "mission_id",
+    "host_agent_id",
+    "node_id",
+    "member_ids",
+    "created_at",
+    "updated_at"
+  ],
   "properties": {
     "id": { "type": "string", "minLength": 1 },
     "name": { "type": "string", "minLength": 1 },
     "description": { "type": "string", "minLength": 1 },
-    "owner_agent_id": {
+    "mission_id": {
       "type": "string",
       "minLength": 1,
-      "description": "Team Lead identity. The Host Agent that creates and coordinates the team is its Lead; the reserved value `host` means the current Host Agent. The Lead is not a MemberRun unless explicitly added as an executing member. The field name is retained for wire compatibility."
+      "description": "The one Mission this Team exists to execute. One Team equals one Mission."
+    },
+    "host_agent_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Durable Host Agent identity for this Team."
+    },
+    "node_id": {
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$",
+      "description": "Immutable single-Node placement for the Team and all its Members."
     },
     "status": { "type": "string", "enum": ["active", "closed", "archived"] },
     "member_ids": {
       "type": "array",
+      "uniqueItems": true,
       "items": { "type": "string", "minLength": 1 }
-    },
-    "parent_team_id": {
-      "type": ["string", "null"],
-      "minLength": 1,
-      "description": "Recursive Organization relation (ADR 0052): parent AgentTeam id. Absent or null means a root Team. Graph invariants (existing parent, direct host, acyclic) are enforced by the harness, not by this schema."
-    },
-    "host_member_id": {
-      "type": ["string", "null"],
-      "minLength": 1,
-      "description": "Recursive Organization relation (ADR 0052): durable AgentMember that Hosts this Team. A non-root Team must name one and it must be a direct Member of the parent Team; a Member hosts at most one Team in V1. Optional only so compatibility rows carrying owner_agent_id alone remain readable."
     },
     "created_at": { "type": "string", "minLength": 1 },
     "updated_at": { "type": "string", "minLength": 1 }

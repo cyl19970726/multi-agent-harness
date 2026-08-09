@@ -19,6 +19,8 @@ use harness_store::{ActionCommandClaimResult, CompanyActor, HarnessStore, StoreE
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::team_run_mission_id;
+
 #[derive(Debug)]
 pub struct ApiResponse {
     pub status: &'static str,
@@ -744,8 +746,9 @@ fn standing_assignment_projection(
                 "agent_member_id": agent_member_id,
                 "source_kind": "agent_team_participation",
                 "source_ref": null,
-                "mission_id": team_run.mission_id,
-                "wave_id": team_run.wave_id,
+                "mission_id": team_run_mission_id(execution_store, team_run)
+                    .map_err(|error| StoreError::Conflict(error.to_string()))?,
+                "wave_id": null,
                 "team_run_id": team_run.id,
                 "member_run_id": member.id,
                 "title": format!("{} Agent Team participation", member.name),
@@ -782,8 +785,9 @@ fn standing_assignment_projection(
                     "source_kind": "agent_team_work",
                     "source_ref": work.id,
                     "work_id": work.id,
-                    "mission_id": team_run.mission_id,
-                    "wave_id": team_run.wave_id,
+                    "mission_id": team_run_mission_id(execution_store, team_run)
+                        .map_err(|error| StoreError::Conflict(error.to_string()))?,
+                    "wave_id": null,
                     "team_run_id": team_run.id,
                     "member_run_id": member.id,
                     "title": work.title,

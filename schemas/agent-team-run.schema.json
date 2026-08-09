@@ -6,151 +6,52 @@
   "additionalProperties": false,
   "required": [
     "id",
+    "agent_team_id",
+    "execution_node_id",
+    "project_binding_id",
     "host_surface",
     "objective",
     "status",
     "created_at",
     "updated_at"
   ],
-  "allOf": [
-    {
-      "if": {
-        "required": ["wave_id"],
-        "properties": { "wave_id": { "type": "string" } }
-      },
-      "then": {
-        "required": ["mission_id"],
-        "properties": { "mission_id": { "type": "string" } }
-      }
-    }
-  ],
   "properties": {
-    "id": {
+    "id": { "type": "string", "minLength": 1 },
+    "agent_team_id": { "type": "string", "minLength": 1 },
+    "execution_node_id": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
     },
-    "definition_id": {
-      "type": [
-        "string",
-        "null"
-      ],
-      "minLength": 1
-    },
-    "agent_team_id": {
-      "type": [
-        "string",
-        "null"
-      ],
-      "minLength": 1
-    },
-    "previous_run_id": {
-      "type": [
-        "string",
-        "null"
-      ],
-      "minLength": 1
-    },
-    "mission_id": {
-      "type": [
-        "string",
-        "null"
-      ],
-      "minLength": 1
-    },
-    "wave_id": {
-      "type": [
-        "string",
-        "null"
-      ],
-      "minLength": 1
-    },
-    "project_binding_id": {
-      "type": [
-        "string",
-        "null"
-      ],
-      "minLength": 1
-    },
-    "host_surface": {
-      "type": "string",
-      "minLength": 1
-    },
-    "host_thread_id": {
-      "type": [
-        "string",
-        "null"
-      ],
-      "minLength": 1
-    },
+    "project_binding_id": { "type": "string", "minLength": 1 },
+    "previous_run_id": { "type": ["string", "null"], "minLength": 1 },
+    "host_surface": { "type": "string", "minLength": 1 },
+    "host_thread_id": { "type": ["string", "null"], "minLength": 1 },
     "host_actor": {
       "type": ["object", "null"],
       "additionalProperties": false,
       "required": ["kind", "id"],
       "properties": {
-        "kind": {
-          "type": "string",
-          "enum": ["host", "member_run", "agent_member", "operator", "service"]
-        },
+        "kind": { "type": "string", "enum": ["host", "member_run", "agent_member", "operator", "service"] },
         "id": { "type": "string", "minLength": 1 },
         "display_name": { "type": ["string", "null"], "minLength": 1 },
         "authn_source": { "type": ["string", "null"], "minLength": 1 }
       }
     },
-    "host_control_mode": {
-      "type": "string",
-      "enum": ["managed", "external"]
-    },
-    "objective": {
-      "type": "string",
-      "minLength": 1
-    },
-    "execution_root": {
-      "type": [
-        "string",
-        "null"
-      ],
-      "minLength": 1
-    },
+    "host_control_mode": { "type": "string", "enum": ["managed", "external"] },
+    "objective": { "type": "string", "minLength": 1 },
+    "execution_root": { "type": ["string", "null"], "minLength": 1 },
     "status": {
       "type": "string",
-      "enum": [
-        "planning",
-        "running",
-        "waiting",
-        "reviewing",
-        "completed",
-        "failed",
-        "cancelled"
-      ]
+      "enum": ["planning", "running", "waiting", "reviewing", "completed", "failed", "cancelled"]
     },
     "member_run_ids": {
       "type": "array",
-      "items": {
-        "type": "string",
-        "minLength": 1
-      }
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
     },
-    "budget_limit_usd": {
-      "type": [
-        "number",
-        "null"
-      ],
-      "minimum": 0
-    },
-    "created_at": {
-      "type": "string",
-      "minLength": 1
-    },
-    "updated_at": {
-      "type": "string",
-      "minLength": 1
-    },
-    "completed_at": {
-      "type": [
-        "string",
-        "null"
-      ],
-      "minLength": 1
-    }
+    "budget_limit_usd": { "type": ["number", "null"], "minimum": 0 },
+    "created_at": { "type": "string", "minLength": 1 },
+    "updated_at": { "type": "string", "minLength": 1 },
+    "completed_at": { "type": ["string", "null"], "minLength": 1 }
   }
 }

@@ -6,27 +6,29 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use firm_core::{
-    content_hash_hex16, provider_interaction_response_id, validate_agent_team_topology, AgentEvent,
-    AgentMember, AgentMemberStatus, AgentMessageRoute, AgentRuntime, AgentTeam, AgentTeamRun,
-    BuiltinGateConfig, CodeReviewStrategy, Decision, DelegationRun, DurableAgentMember, Evidence,
-    Gap, GateEngine, GateVerdict, GitHubLink, HostAttention, HostAttentionInbox, HostAttentionKind,
-    HostAttentionStatus, HostBindingLease, HostBindingLeaseOwnerKind, HostBindingLeaseStatus,
-    MemberAction, MemberRun, Message, MessageDelivery, MessageDeliveryStatus,
-    MessageTerminalSource, Mission, MissionLogEntry, MissionStatus, PendingInteraction, Proposal,
-    ProviderChildThread, ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
+    content_hash_hex16, provider_interaction_response_id, AgentEvent, AgentMember,
+    AgentMemberStatus, AgentMessageRoute, AgentRuntime, AgentTeam, AgentTeamRun, BuiltinGateConfig,
+    CodeReviewStrategy, Decision, DelegationRun, DurableAgentMember, Evidence, ExecutionNode,
+    ExecutionNodeStatus, Gap, GateEngine, GateVerdict, GitHubLink, HostAttention,
+    HostAttentionInbox, HostAttentionKind, HostAttentionStatus, HostBindingLease,
+    HostBindingLeaseOwnerKind, HostBindingLeaseStatus, MemberAction, MemberRun, Message,
+    MessageDelivery, MessageDeliveryStatus, MessageTerminalSource, Mission, MissionLogEntry,
+    MissionStatus, NodeDaemonLease, NodeDaemonLeaseStatus, NodeProjectRegistration,
+    NodeProjectRegistrationStatus, PendingInteraction, Proposal, ProviderChildThread,
+    ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
     ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
     ProviderCompatibilityStatus, ProviderExecutionStatus, ProviderIntegrationProfile,
     ProviderInteractionRequestBody, ProviderInteractionResponseBody, Review, ReviewVerdict,
     TeamActorKind, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
     TeamMemberCloseStatus, TeamMessage, TeamMessageKind, TeamRunEvent, TeamRunStatus,
-    TeamSupervisorLease, TeamSupervisorLeaseStatus, Validate, Vision, Wave, WaveExecutorKind,
-    WaveGateStatus, WaveStatus, Work, WorkClaimMode, WorkCommandContext, WorkCondition,
-    WorkConditionRecord, WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate, WorkEvent,
-    WorkEventKind, WorkEvidence, WorkGateEvaluation, WorkOperation, WorkOperationalDecision,
-    WorkPhase, WorkReport, WorkResolution, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun,
-    WorkflowStep,
+    TeamSupervisorLease, TeamSupervisorLeaseStatus, Validate, Vision, Wave, WaveGateStatus,
+    WaveStatus, Work, WorkClaimMode, WorkCommandContext, WorkCondition, WorkConditionRecord,
+    WorkDelegation, WorkDelegationEvent, WorkDelegationState, WorkDelegationTransition,
+    WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate, WorkEvent, WorkEventKind, WorkEvidence,
+    WorkGateEvaluation, WorkOperation, WorkOperationalDecision, WorkPhase, WorkRef, WorkReport,
+    WorkResolution, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
 };
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
 
 mod company_os;
@@ -213,6 +215,24 @@ pub struct WorkReviewPayload {
     pub residual_risk: Option<String>,
     pub missing_validation: Vec<String>,
     pub evidence_ids: Vec<String>,
+}
+
+/// Crash-atomic composite row for cross-Team delegation. The target Work
+/// creation event and Delegation creation event are committed in one JSONL
+/// record; ordinary Work readers fold the embedded operation as native Work.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkDelegationOperation {
+    delegation: WorkDelegation,
+    event: WorkDelegationEvent,
+    target_work_operation: WorkOperation,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkDelegationRevision {
+    delegation: WorkDelegation,
+    event: WorkDelegationEvent,
 }
 
 fn same_work_review_command(
@@ -402,9 +422,8 @@ impl HarnessStore {
         self.append_jsonl("missions.jsonl", value)
     }
 
-    /// Compare-and-append one Mission revision. Used for context and AgentTeam
-    /// relation edits so concurrent Host decisions cannot overwrite each
-    /// other.
+    /// Compare-and-append one Mission revision. Team membership is not stored
+    /// on Mission: `AgentTeam.mission_id` is the single relation authority.
     pub fn compare_and_append_mission(
         &self,
         expected: &Mission,
@@ -432,13 +451,18 @@ impl HarnessStore {
                     .to_string(),
             ));
         }
-        let teams = latest_by_id(self.read_jsonl::<AgentTeam>("teams.jsonl")?, |team| {
-            team.id.clone()
-        });
-        for team_id in &next.agent_team_ids {
-            if !teams.contains_key(team_id) {
+        if next.status == MissionStatus::Running {
+            let active_team_count = self
+                .read_jsonl::<AgentTeam>("teams.jsonl")?
+                .into_iter()
+                .filter(|team| {
+                    team.mission_id == next.id && team.status == firm_core::AgentTeamStatus::Active
+                })
+                .count();
+            if active_team_count != 1 {
                 return Err(StoreError::Conflict(format!(
-                    "agent team not found: {team_id}"
+                    "MISSION_REQUIRES_TEAM: running mission {} requires exactly one active AgentTeam, found {active_team_count}",
+                    next.id
                 )));
             }
         }
@@ -689,19 +713,42 @@ impl HarnessStore {
         self.append_jsonl("members.jsonl", value)
     }
 
+    /// Compare-and-append a Team revision while preserving its Mission, Host,
+    /// Node placement, and creation identity.
     pub fn append_team(&self, value: &AgentTeam) -> StoreResult<()> {
-        self.append_jsonl("teams.jsonl", value)
-    }
-
-    /// Insert a new AgentTeam under the store lock. Rejects a
-    /// concurrently-created duplicate id and enforces the recursive topology
-    /// invariants (ADR 0052) against the latest projection plus the candidate
-    /// before appending. Member-existence checks stay with the caller; this
-    /// guard owns graph integrity only.
-    pub fn insert_agent_team(&self, value: &AgentTeam) -> StoreResult<()> {
+        value
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        let mut teams = latest_by_id(self.read_jsonl::<AgentTeam>("teams.jsonl")?, |team| {
+        let current = latest_by_id(self.read_jsonl::<AgentTeam>("teams.jsonl")?, |team| {
+            team.id.clone()
+        })
+        .remove(&value.id)
+        .ok_or_else(|| StoreError::Conflict(format!("agent team not found: {}", value.id)))?;
+        if value.id != current.id
+            || value.created_at != current.created_at
+            || value.mission_id != current.mission_id
+            || value.host_agent_id != current.host_agent_id
+            || value.node_id != current.node_id
+        {
+            return Err(StoreError::Conflict(format!(
+                "TEAM_IDENTITY_IMMUTABLE: AgentTeam {} cannot change Mission, Host, Node, id, or creation time",
+                value.id
+            )));
+        }
+        self.append_jsonl_unlocked("teams.jsonl", value)
+    }
+
+    /// Insert the one AgentTeam for a Mission. Mission uniqueness and active
+    /// Node placement are checked under the same Store write boundary.
+    pub fn insert_agent_team_with_unique_mission(&self, value: &AgentTeam) -> StoreResult<()> {
+        value
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let teams = latest_by_id(self.read_jsonl::<AgentTeam>("teams.jsonl")?, |team| {
             team.id.clone()
         });
         if teams.contains_key(&value.id) {
@@ -710,10 +757,54 @@ impl HarnessStore {
                 value.id
             )));
         }
-        teams.insert(value.id.clone(), value.clone());
-        validate_agent_team_topology(&teams)
-            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        if teams
+            .values()
+            .any(|team| team.mission_id == value.mission_id)
+        {
+            return Err(StoreError::Conflict(format!(
+                "MISSION_ALREADY_HAS_TEAM: Mission {} already has an AgentTeam",
+                value.mission_id
+            )));
+        }
+        let mission = latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
+            mission.id.clone()
+        })
+        .remove(&value.mission_id)
+        .ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "TEAM_REQUIRES_MISSION: Mission {} not found",
+                value.mission_id
+            ))
+        })?;
+        if matches!(
+            mission.status,
+            MissionStatus::Completed | MissionStatus::Cancelled
+        ) {
+            return Err(StoreError::Conflict(format!(
+                "TEAM_REQUIRES_MISSION: Mission {} is terminal",
+                value.mission_id
+            )));
+        }
+        let node = latest_by_id(
+            self.read_jsonl::<ExecutionNode>("execution_nodes.jsonl")?,
+            |node| node.id.clone(),
+        )
+        .remove(&value.node_id)
+        .ok_or_else(|| {
+            StoreError::Conflict(format!("NODE_NOT_ACTIVE: {} not found", value.node_id))
+        })?;
+        if node.status != ExecutionNodeStatus::Active {
+            return Err(StoreError::Conflict(format!(
+                "NODE_NOT_ACTIVE: {} is {:?}",
+                value.node_id, node.status
+            )));
+        }
         self.append_jsonl_unlocked("teams.jsonl", value)
+    }
+
+    #[deprecated(note = "use insert_agent_team_with_unique_mission")]
+    pub fn insert_agent_team(&self, value: &AgentTeam) -> StoreResult<()> {
+        self.insert_agent_team_with_unique_mission(value)
     }
 
     /// Insert one slim, durable Organization identity under the store lock.
@@ -1017,10 +1108,9 @@ impl HarnessStore {
         Ok(value.clone())
     }
 
-    /// Bootstrap the durable Lead for an existing root Team and converge the
-    /// compatibility `owner_agent_id` alias to the same identity. The operation
-    /// refuses non-root Teams, conflicting owners, and divergent duplicate
-    /// identities; it never manufactures a second Host authority.
+    /// Register the already-declared durable Host identity of one Team. Host
+    /// authority lives only in `AgentTeam.host_agent_id`; this command never
+    /// rewrites Team placement or membership.
     pub fn bootstrap_root_lead_member(
         &self,
         root_team_id: &str,
@@ -1031,30 +1121,16 @@ impl HarnessStore {
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        let mut teams = latest_by_id(self.read_jsonl::<AgentTeam>("teams.jsonl")?, |team| {
+        let teams = latest_by_id(self.read_jsonl::<AgentTeam>("teams.jsonl")?, |team| {
             team.id.clone()
         });
-        let mut root = teams.remove(root_team_id).ok_or_else(|| {
-            StoreError::Conflict(format!("root AgentTeam not found: {root_team_id}"))
-        })?;
-        if root.parent_team_id.is_some() {
+        let team = teams
+            .get(root_team_id)
+            .ok_or_else(|| StoreError::Conflict(format!("AgentTeam not found: {root_team_id}")))?;
+        if team.host_agent_id != member.id {
             return Err(StoreError::Conflict(format!(
-                "AgentTeam {root_team_id} is not a root Team"
-            )));
-        }
-        if root.owner_agent_id != "host" && root.owner_agent_id != member.id {
-            return Err(StoreError::Conflict(format!(
-                "AgentTeam {root_team_id} has conflicting compatibility owner {}",
-                root.owner_agent_id
-            )));
-        }
-        if root
-            .host_member_id
-            .as_deref()
-            .is_some_and(|id| id != member.id)
-        {
-            return Err(StoreError::Conflict(format!(
-                "AgentTeam {root_team_id} already has a different durable Host"
+                "AgentTeam {root_team_id} Host is {}, not {}",
+                team.host_agent_id, member.id
             )));
         }
 
@@ -1073,27 +1149,10 @@ impl HarnessStore {
             None => true,
         };
 
-        let team_already_converged = root.owner_agent_id == member.id
-            && root.host_member_id.as_deref() == Some(member.id.as_str())
-            && root.member_ids.iter().any(|id| id == &member.id)
-            && root.updated_at == member.updated_at;
-        root.owner_agent_id = member.id.clone();
-        root.host_member_id = Some(member.id.clone());
-        if !root.member_ids.iter().any(|id| id == &member.id) {
-            root.member_ids.push(member.id.clone());
-        }
-        root.updated_at = member.updated_at.clone();
-        teams.insert(root.id.clone(), root.clone());
-        validate_agent_team_topology(&teams)
-            .map_err(|error| StoreError::Conflict(error.to_string()))?;
-
         if should_append_member {
             self.append_jsonl_unlocked("durable_agent_members.jsonl", member)?;
         }
-        if !team_already_converged {
-            self.append_jsonl_unlocked("teams.jsonl", &root)?;
-        }
-        Ok(root)
+        Ok(team.clone())
     }
 
     pub fn append_runtime(&self, value: &AgentRuntime) -> StoreResult<()> {
@@ -1458,10 +1517,9 @@ impl HarnessStore {
         }
         if next.id != current.id
             || next.created_at != current.created_at
-            || next.mission_id != current.mission_id
-            || next.wave_id != current.wave_id
             || next.agent_team_id != current.agent_team_id
-            || next.definition_id != current.definition_id
+            || next.execution_node_id != current.execution_node_id
+            || next.project_binding_id != current.project_binding_id
             || next.previous_run_id != current.previous_run_id
             || next.execution_root != current.execution_root
             || next.member_run_ids != current.member_run_ids
@@ -1472,51 +1530,6 @@ impl HarnessStore {
         {
             return Err(StoreError::Conflict(
                 "Host binding revision must preserve TeamRun identity, scope, members, lifecycle, and objective"
-                    .to_string(),
-            ));
-        }
-        self.append_jsonl_unlocked("team_runs.jsonl", next)
-    }
-
-    /// One-way compatibility promotion from an ad-hoc TeamRun to a durable
-    /// AgentTeam identity. No other scope, Host, lifecycle, or membership field
-    /// may change.
-    pub fn compare_and_link_team_run_agent_team(
-        &self,
-        expected: &AgentTeamRun,
-        next: &AgentTeamRun,
-    ) -> StoreResult<()> {
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        let current = latest_by_id(self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?, |run| {
-            run.id.clone()
-        })
-        .remove(&expected.id)
-        .ok_or_else(|| StoreError::Conflict(format!("team run not found: {}", expected.id)))?;
-        if current != *expected {
-            return Err(StoreError::Conflict(format!(
-                "team run {} changed concurrently; retry durable-team linking",
-                expected.id
-            )));
-        }
-        let Some(team_id) = next.agent_team_id.as_deref() else {
-            return Err(StoreError::Conflict(
-                "TEAM_SCOPE_LINK_INVALID: next AgentTeam id is required".to_string(),
-            ));
-        };
-        require_non_empty_store(team_id, "AgentTeam id")?;
-        if current.agent_team_id.is_some() {
-            return Err(StoreError::Conflict(format!(
-                "TEAM_SCOPE_LINK_INVALID: TeamRun {} is already linked",
-                current.id
-            )));
-        }
-        let mut allowed = current.clone();
-        allowed.agent_team_id = next.agent_team_id.clone();
-        allowed.updated_at = next.updated_at.clone();
-        if *next != allowed {
-            return Err(StoreError::Conflict(
-                "TEAM_SCOPE_LINK_INVALID: durable-team linking may only set agent_team_id and updated_at"
                     .to_string(),
             ));
         }
@@ -2083,14 +2096,12 @@ impl HarnessStore {
         Ok(eligible)
     }
 
-    /// Atomically append a newly-created TeamRun. Mission-scoped runs are the
-    /// primary path and intentionally have no Wave id. Rows with both ids are
-    /// retained only for legacy direct-Wave executor compatibility.
-    pub fn insert_team_run_and_register_attempt(
-        &self,
-        value: &AgentTeamRun,
-        wave_updated_at: &str,
-    ) -> StoreResult<()> {
+    /// Create one TeamRun from its durable AgentTeam. Mission and Node cannot
+    /// be supplied independently: they are derived and validated from Team.
+    pub fn create_team_run_from_agent_team(&self, value: &AgentTeamRun) -> StoreResult<()> {
+        value
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let runs = latest_by_id(self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?, |run| {
@@ -2102,131 +2113,90 @@ impl HarnessStore {
                 value.id
             )));
         }
-
-        match (value.mission_id.as_deref(), value.wave_id.as_deref()) {
-            (None, None) => self.append_jsonl_unlocked("team_runs.jsonl", value),
-            (None, Some(_)) => Err(StoreError::Conflict(
-                "a TeamRun with wave_id must also name that Wave's Mission".to_string(),
-            )),
-            (Some(mission_id), None) => {
-                let mission =
-                    latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
-                        mission.id.clone()
-                    })
-                    .remove(mission_id)
-                    .ok_or_else(|| {
-                        StoreError::Conflict(format!("mission not found: {mission_id}"))
-                    })?;
-                if matches!(
-                    mission.status,
-                    MissionStatus::Completed | MissionStatus::Cancelled
-                ) {
-                    return Err(StoreError::Conflict(format!(
-                        "mission {mission_id} is {:?} and cannot start another TeamRun",
-                        mission.status
-                    )));
-                }
-                if let Some(team_id) = value.agent_team_id.as_deref() {
-                    if !mission.agent_team_ids.iter().any(|id| id == team_id) {
-                        return Err(StoreError::Conflict(format!(
-                            "agent team {team_id} is not linked to mission {mission_id}"
-                        )));
-                    }
-                }
-                self.append_jsonl_unlocked("team_runs.jsonl", value)
-            }
-            (Some(mission_id), Some(wave_id)) => {
-                let mission =
-                    latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
-                        mission.id.clone()
-                    })
-                    .remove(mission_id)
-                    .ok_or_else(|| {
-                        StoreError::Conflict(format!("mission not found: {mission_id}"))
-                    })?;
-                if matches!(
-                    mission.status,
-                    MissionStatus::Completed | MissionStatus::Cancelled
-                ) {
-                    return Err(StoreError::Conflict(format!(
-                        "mission {mission_id} is {:?} and cannot accept a TeamRun attempt",
-                        mission.status
-                    )));
-                }
-                let mut waves = latest_by_id(self.read_jsonl::<Wave>("waves.jsonl")?, |wave| {
-                    wave.id.clone()
-                });
-                let mut wave = waves
-                    .remove(wave_id)
-                    .ok_or_else(|| StoreError::Conflict(format!("wave not found: {wave_id}")))?;
-                if wave.mission_id != mission_id {
-                    return Err(StoreError::Conflict(format!(
-                        "wave {wave_id} belongs to mission {}, not {mission_id}",
-                        wave.mission_id
-                    )));
-                }
-                if wave.executor_kind != WaveExecutorKind::AgentTeam {
-                    return Err(StoreError::Conflict(format!(
-                        "wave {wave_id} is not an agent_team Wave"
-                    )));
-                }
-                if !matches!(
-                    wave.status,
-                    WaveStatus::Planned | WaveStatus::Running | WaveStatus::Waiting
-                ) {
-                    return Err(StoreError::Conflict(format!(
-                        "wave {wave_id} is terminal and cannot accept another attempt"
-                    )));
-                }
-                let attempts = wave
-                    .executor_run_ids
-                    .iter()
-                    .filter_map(|id| runs.get(id))
-                    .collect::<Vec<_>>();
-                if let Some(active) = attempts.iter().find(|run| {
-                    matches!(
-                        run.status,
-                        TeamRunStatus::Planning
-                            | TeamRunStatus::Running
-                            | TeamRunStatus::Waiting
-                            | TeamRunStatus::Reviewing
-                    )
-                }) {
-                    return Err(StoreError::Conflict(format!(
-                        "wave {wave_id} already has active attempt {} in status {:?}",
-                        active.id, active.status
-                    )));
-                }
-                if let Some(last_attempt_id) = wave.executor_run_ids.last() {
-                    if value.previous_run_id.as_deref() != Some(last_attempt_id.as_str()) {
-                        return Err(StoreError::Conflict(format!(
-                            "retry for wave {wave_id} must set previous_run_id to latest attempt {last_attempt_id}"
-                        )));
-                    }
-                }
-                if let Some(previous_id) = value.previous_run_id.as_deref() {
-                    let previous = runs.get(previous_id).ok_or_else(|| {
-                        StoreError::Conflict(format!("previous team run not found: {previous_id}"))
-                    })?;
-                    if previous.mission_id.as_deref() != Some(mission_id)
-                        || previous.wave_id.as_deref() != Some(wave_id)
-                    {
-                        return Err(StoreError::Conflict(format!(
-                            "previous run {previous_id} is not an attempt of mission {mission_id} wave {wave_id}"
-                        )));
-                    }
-                }
-                self.append_jsonl_unlocked("team_runs.jsonl", value)?;
-                if !wave.executor_run_ids.contains(&value.id) {
-                    wave.executor_run_ids.push(value.id.clone());
-                }
-                wave.updated_at = wave_updated_at.to_string();
-                self.append_jsonl_unlocked("waves.jsonl", &wave)
+        let team = latest_by_id(self.read_jsonl::<AgentTeam>("teams.jsonl")?, |team| {
+            team.id.clone()
+        })
+        .remove(&value.agent_team_id)
+        .ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "TEAM_RUN_REQUIRES_TEAM: AgentTeam {} not found",
+                value.agent_team_id
+            ))
+        })?;
+        if team.status != firm_core::AgentTeamStatus::Active {
+            return Err(StoreError::Conflict(format!(
+                "TEAM_RUN_REQUIRES_TEAM: AgentTeam {} is {:?}",
+                team.id, team.status
+            )));
+        }
+        if value.execution_node_id != team.node_id {
+            return Err(StoreError::Conflict(format!(
+                "TEAM_RUN_NODE_MISMATCH: TeamRun {} names {}, Team {} is placed on {}",
+                value.id, value.execution_node_id, team.id, team.node_id
+            )));
+        }
+        let mission = latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
+            mission.id.clone()
+        })
+        .remove(&team.mission_id)
+        .ok_or_else(|| StoreError::Conflict(format!("mission not found: {}", team.mission_id)))?;
+        if matches!(
+            mission.status,
+            MissionStatus::Completed | MissionStatus::Cancelled
+        ) {
+            return Err(StoreError::Conflict(format!(
+                "TEAM_RUN_REQUIRES_TEAM: Mission {} is terminal",
+                mission.id
+            )));
+        }
+        let node = latest_by_id(
+            self.read_jsonl::<ExecutionNode>("execution_nodes.jsonl")?,
+            |node| node.id.clone(),
+        )
+        .remove(&team.node_id)
+        .ok_or_else(|| {
+            StoreError::Conflict(format!("NODE_NOT_ACTIVE: {} not found", team.node_id))
+        })?;
+        if node.status != ExecutionNodeStatus::Active {
+            return Err(StoreError::Conflict(format!(
+                "NODE_NOT_ACTIVE: {} is {:?}",
+                node.id, node.status
+            )));
+        }
+        let registrations = latest_by_id(
+            self.read_jsonl::<NodeProjectRegistration>("node_project_registrations.jsonl")?,
+            node_project_registration_identity,
+        );
+        let matching_registrations = registrations
+            .values()
+            .filter(|registration| {
+                registration.node_id == team.node_id
+                    && registration.project_binding_id == value.project_binding_id
+                    && registration.status == NodeProjectRegistrationStatus::Active
+            })
+            .count();
+        if matching_registrations != 1 {
+            return Err(StoreError::Conflict(format!(
+                "PROJECT_NOT_REGISTERED_ON_NODE: expected one active registration for {} on Node {}, found {matching_registrations}",
+                value.project_binding_id, team.node_id
+            )));
+        }
+        if let Some(previous_id) = value.previous_run_id.as_deref() {
+            let previous = runs.get(previous_id).ok_or_else(|| {
+                StoreError::Conflict(format!("previous team run not found: {previous_id}"))
+            })?;
+            if previous.agent_team_id != value.agent_team_id {
+                return Err(StoreError::Conflict(format!(
+                    "previous run {previous_id} belongs to AgentTeam {}",
+                    previous.agent_team_id
+                )));
             }
         }
+        self.append_jsonl_unlocked("team_runs.jsonl", value)
     }
 
-    /// Compare-and-append one Wave row. Used by lifecycle/gate updates so a
+    /// Compare-and-append one Wave row. Used only for historical Wave reads and
+    /// legacy maintenance; TeamRun lifecycle no longer writes Wave/Mission.
     /// concurrent attempt registration or gate cannot be silently overwritten.
     pub fn compare_and_append_wave(&self, expected: &Wave, next: &Wave) -> StoreResult<()> {
         self.init()?;
@@ -2799,6 +2769,258 @@ impl HarnessStore {
         };
         self.append_work_operation_unlocked(&operation)?;
         Ok(work)
+    }
+
+    /// Create a target Team's root Work and the cross-Team Delegation in one
+    /// crash-atomic ledger row. No target Work becomes visible without the
+    /// corresponding Delegation event and projection.
+    pub fn create_work_delegation_with_target_work(
+        &self,
+        mut delegation: WorkDelegation,
+        mut target_work: Work,
+        context: WorkCommandContext,
+    ) -> StoreResult<(WorkDelegation, Work)> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.ensure_work_store_compatible_unlocked()?;
+
+        if let Some(existing) = self
+            .all_work_delegation_revisions_unlocked()?
+            .into_iter()
+            .find(|revision| revision.event.idempotency_key == context.idempotency_key)
+        {
+            if existing.delegation.source_work_ref == delegation.source_work_ref
+                && existing.delegation.target_agent_team_id == delegation.target_agent_team_id
+            {
+                let target = self
+                    .latest_works_unlocked()?
+                    .remove(&existing.delegation.target_work_ref.work_id)
+                    .ok_or_else(|| {
+                        StoreError::Conflict(
+                            "DELEGATION_CORRUPT: idempotent target Work is missing".to_string(),
+                        )
+                    })?;
+                return Ok((existing.delegation, target));
+            }
+            return Err(StoreError::Conflict(format!(
+                "IDEMPOTENCY_CONFLICT: key {} already belongs to Delegation {}",
+                context.idempotency_key, existing.delegation.id
+            )));
+        }
+
+        let source = self.current_work_unlocked(
+            &delegation.source_work_ref.work_id,
+            delegation.source_work_version,
+        )?;
+        if source.team_run_id != delegation.source_work_ref.team_run_id {
+            return Err(StoreError::Conflict(
+                "DELEGATION_STALE_SOURCE: source WorkRef does not match the authoritative Work"
+                    .to_string(),
+            ));
+        }
+        let source_owner = source.owner_member_id.clone().ok_or_else(|| {
+            StoreError::Conflict(
+                "DELEGATION_NOT_AUTHORIZED: source Work has no durable owner".to_string(),
+            )
+        })?;
+        if delegation.source_owner_member_id != source_owner {
+            return Err(StoreError::Conflict(
+                "DELEGATION_STALE_SOURCE: source owner changed".to_string(),
+            ));
+        }
+        match context.performed_by_actor.kind {
+            TeamActorKind::Host | TeamActorKind::Operator | TeamActorKind::Service => {}
+            TeamActorKind::MemberRun => {
+                let member = self.require_member_run_unlocked(
+                    &context.performed_by_actor.id,
+                    &source.team_run_id,
+                )?;
+                if stable_member_identity(&member) != source_owner {
+                    return Err(StoreError::Conflict(
+                        "DELEGATION_NOT_AUTHORIZED: only source owner or Host may delegate"
+                            .to_string(),
+                    ));
+                }
+                delegation.created_by_member_run_id = Some(member.id);
+            }
+            TeamActorKind::AgentMember => {
+                if context.performed_by_actor.id != source_owner {
+                    return Err(StoreError::Conflict(
+                        "DELEGATION_NOT_AUTHORIZED: only source owner or Host may delegate"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+
+        let target_team = latest_by_id(self.read_jsonl::<AgentTeam>("teams.jsonl")?, |team| {
+            team.id.clone()
+        })
+        .remove(&delegation.target_agent_team_id)
+        .ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "DELEGATION_TARGET_INVALID: AgentTeam {} not found",
+                delegation.target_agent_team_id
+            ))
+        })?;
+        if target_team.status != firm_core::AgentTeamStatus::Active {
+            return Err(StoreError::Conflict(format!(
+                "DELEGATION_TARGET_INVALID: AgentTeam {} is {:?}",
+                target_team.id, target_team.status
+            )));
+        }
+        let target_run = self.require_team_run_unlocked(&target_work.team_run_id)?;
+        if target_run.agent_team_id != target_team.id
+            || target_run.execution_node_id != target_team.node_id
+            || matches!(
+                target_run.status,
+                TeamRunStatus::Completed | TeamRunStatus::Failed | TeamRunStatus::Cancelled
+            )
+        {
+            return Err(StoreError::Conflict(
+                "DELEGATION_TARGET_INVALID: target TeamRun is not an active run of target Team"
+                    .to_string(),
+            ));
+        }
+        if source.team_id.as_deref() == Some(target_team.id.as_str()) {
+            return Err(StoreError::Conflict(
+                "DELEGATION_TARGET_INVALID: cross-Team Delegation requires a different target Team"
+                    .to_string(),
+            ));
+        }
+        if self
+            .latest_works_unlocked()?
+            .contains_key(target_work.id.as_str())
+        {
+            return Err(StoreError::Conflict(format!(
+                "work already exists: {}",
+                target_work.id
+            )));
+        }
+        let source_key = work_ref_key(&delegation.source_work_ref);
+        let target_ref = WorkRef {
+            team_run_id: target_work.team_run_id.clone(),
+            work_id: target_work.id.clone(),
+        };
+        let target_key = work_ref_key(&target_ref);
+        let delegations = self.latest_work_delegations_unlocked()?;
+        let mut cursor = target_key.clone();
+        let mut visited = std::collections::BTreeSet::new();
+        while visited.insert(cursor.clone()) {
+            if cursor == source_key {
+                return Err(StoreError::Conflict(
+                    "DELEGATION_CYCLE: cross-Team delegation graph must be acyclic".to_string(),
+                ));
+            }
+            let Some(next) = delegations.values().find(|candidate| {
+                candidate.state != WorkDelegationState::Cancelled
+                    && work_ref_key(&candidate.source_work_ref) == cursor
+            }) else {
+                break;
+            };
+            cursor = work_ref_key(&next.target_work_ref);
+        }
+
+        target_work.team_id = Some(target_team.id.clone());
+        target_work.parent_work_id = None;
+        target_work.phase = WorkPhase::Open;
+        target_work.condition = WorkCondition::Normal;
+        target_work.resolution = None;
+        target_work.version = 1;
+        target_work.created_at = context.created_at.clone();
+        target_work.updated_at = context.created_at.clone();
+        target_work.created_by_actor = context.performed_by_actor.clone();
+        target_work
+            .validate_gates()
+            .map_err(|reason| StoreError::Conflict(format!("INVALID_WORK_GATES: {reason}")))?;
+        target_work
+            .validate()
+            .map_err(|error| StoreError::Conflict(format!("INVALID_WORK_PROJECTION: {error}")))?;
+        self.validate_work_relations_unlocked(&target_work)?;
+
+        delegation.target_work_ref = target_ref;
+        delegation.delegated_by_actor = context.performed_by_actor.clone();
+        delegation.state = WorkDelegationState::Active;
+        delegation.resolution_summary = None;
+        delegation.blocker_reason = None;
+        delegation.version = 1;
+        delegation.created_at = context.created_at.clone();
+        delegation.updated_at = context.created_at.clone();
+        delegation
+            .validate()
+            .map_err(|error| StoreError::Conflict(format!("INVALID_DELEGATION: {error}")))?;
+        if self
+            .latest_work_delegations_unlocked()?
+            .contains_key(&delegation.id)
+        {
+            return Err(StoreError::Conflict(format!(
+                "work delegation already exists: {}",
+                delegation.id
+            )));
+        }
+
+        let target_event_id = format!("{}:target-work", context.event_id);
+        self.ensure_work_event_id_available_unlocked(&target_event_id)?;
+        let target_work_operation = WorkOperation {
+            event: WorkEvent {
+                id: target_event_id,
+                team_run_id: target_work.team_run_id.clone(),
+                work_id: target_work.id.clone(),
+                sequence: 1,
+                kind: WorkEventKind::Created,
+                expected_version: 0,
+                resulting_version: 1,
+                performed_by_actor: context.performed_by_actor.clone(),
+                authority_actor: context.authority_actor.clone(),
+                causation_ref: Some(firm_core::WorkCausationRef {
+                    kind: "work_delegation".to_string(),
+                    id: delegation.id.clone(),
+                }),
+                idempotency_key: format!("{}:target-work", context.idempotency_key),
+                payload: serde_json::json!({
+                    "delegation_id": delegation.id,
+                    "source_work_ref": delegation.source_work_ref,
+                }),
+                created_at: context.created_at.clone(),
+            },
+            work: target_work.clone(),
+            condition_records: Vec::new(),
+            reports: Vec::new(),
+            evidence_records: Vec::new(),
+            gate_evaluations: Vec::new(),
+            decisions: Vec::new(),
+            deliveries: self.initial_work_deliveries_unlocked(
+                &target_work,
+                &format!("{}:target-work", context.event_id),
+                &context.created_at,
+            )?,
+            delivery_updates: Vec::new(),
+        };
+        let event = WorkDelegationEvent {
+            id: context.event_id,
+            delegation_id: delegation.id.clone(),
+            sequence: 1,
+            transition: WorkDelegationTransition::Created,
+            expected_version: 0,
+            resulting_version: 1,
+            performed_by_actor: context.performed_by_actor,
+            causation_ref: context.causation_ref,
+            idempotency_key: context.idempotency_key,
+            payload: serde_json::Value::Null,
+            created_at: context.created_at,
+        };
+        event
+            .validate()
+            .map_err(|error| StoreError::Conflict(format!("INVALID_DELEGATION_EVENT: {error}")))?;
+        self.append_jsonl_unlocked(
+            "work_delegation_operations.jsonl",
+            &WorkDelegationOperation {
+                delegation: delegation.clone(),
+                event,
+                target_work_operation,
+            },
+        )?;
+        Ok((delegation, target_work))
     }
 
     pub fn assign_work(
@@ -5216,7 +5438,153 @@ impl HarnessStore {
     }
 
     fn work_operations_unlocked(&self) -> StoreResult<Vec<WorkOperation>> {
-        self.read_jsonl("work_operations.jsonl")
+        let mut operations = self.read_jsonl("work_operations.jsonl")?;
+        operations.extend(
+            self.read_jsonl::<WorkDelegationOperation>("work_delegation_operations.jsonl")?
+                .into_iter()
+                .map(|operation| operation.target_work_operation),
+        );
+        Ok(operations)
+    }
+
+    fn all_work_delegation_revisions_unlocked(&self) -> StoreResult<Vec<WorkDelegationRevision>> {
+        let mut revisions = self
+            .read_jsonl::<WorkDelegationOperation>("work_delegation_operations.jsonl")?
+            .into_iter()
+            .map(|operation| WorkDelegationRevision {
+                delegation: operation.delegation,
+                event: operation.event,
+            })
+            .collect::<Vec<_>>();
+        revisions
+            .extend(self.read_jsonl::<WorkDelegationRevision>("work_delegation_events.jsonl")?);
+        revisions.sort_by(|left, right| {
+            left.delegation
+                .id
+                .cmp(&right.delegation.id)
+                .then(left.event.sequence.cmp(&right.event.sequence))
+        });
+        Ok(revisions)
+    }
+
+    fn latest_work_delegations_unlocked(
+        &self,
+    ) -> StoreResult<std::collections::BTreeMap<String, WorkDelegation>> {
+        let mut latest = std::collections::BTreeMap::<String, WorkDelegation>::new();
+        for revision in self.all_work_delegation_revisions_unlocked()? {
+            revision
+                .delegation
+                .validate()
+                .map_err(|error| StoreError::Conflict(format!("INVALID_DELEGATION: {error}")))?;
+            revision.event.validate().map_err(|error| {
+                StoreError::Conflict(format!("INVALID_DELEGATION_EVENT: {error}"))
+            })?;
+            if revision.event.delegation_id != revision.delegation.id
+                || revision.event.resulting_version != revision.delegation.version
+                || revision.event.expected_version.saturating_add(1)
+                    != revision.event.resulting_version
+            {
+                return Err(StoreError::Conflict(format!(
+                    "DELEGATION_LEDGER_CORRUPT: event {} does not match projection {} version {}",
+                    revision.event.id, revision.delegation.id, revision.delegation.version
+                )));
+            }
+            if let Some(current) = latest.get(&revision.delegation.id) {
+                if revision.event.expected_version != current.version {
+                    return Err(StoreError::Conflict(format!(
+                        "DELEGATION_LEDGER_CORRUPT: Delegation {} expected version {}, current {}",
+                        revision.delegation.id, revision.event.expected_version, current.version
+                    )));
+                }
+            } else if revision.event.expected_version != 0 {
+                return Err(StoreError::Conflict(format!(
+                    "DELEGATION_LEDGER_CORRUPT: Delegation {} does not start at version 1",
+                    revision.delegation.id
+                )));
+            }
+            latest.insert(revision.delegation.id.clone(), revision.delegation);
+        }
+        Ok(latest)
+    }
+
+    fn append_work_delegation_transition_unlocked(
+        &self,
+        current: &WorkDelegation,
+        next: WorkDelegation,
+        event: WorkDelegationEvent,
+    ) -> StoreResult<WorkDelegation> {
+        let latest = self
+            .latest_work_delegations_unlocked()?
+            .remove(&current.id)
+            .ok_or_else(|| StoreError::Conflict(format!("delegation not found: {}", current.id)))?;
+        if latest != *current {
+            return Err(StoreError::Conflict(format!(
+                "DELEGATION_VERSION_CONFLICT: {} changed concurrently",
+                current.id
+            )));
+        }
+        if next.id != current.id
+            || next.source_work_ref != current.source_work_ref
+            || next.source_work_version != current.source_work_version
+            || next.source_owner_member_id != current.source_owner_member_id
+            || next.created_by_member_run_id != current.created_by_member_run_id
+            || next.target_agent_team_id != current.target_agent_team_id
+            || next.target_work_ref != current.target_work_ref
+            || next.delegated_by_actor != current.delegated_by_actor
+            || next.created_at != current.created_at
+            || next.version != current.version.saturating_add(1)
+            || event.delegation_id != current.id
+            || event.expected_version != current.version
+            || event.resulting_version != next.version
+        {
+            return Err(StoreError::Conflict(
+                "DELEGATION_TRANSITION_INVALID: immutable identity or CAS fields changed"
+                    .to_string(),
+            ));
+        }
+        let legal = matches!(
+            (current.state, next.state),
+            (WorkDelegationState::Active, WorkDelegationState::Blocked)
+                | (WorkDelegationState::Blocked, WorkDelegationState::Active)
+                | (WorkDelegationState::Active, WorkDelegationState::Completed)
+                | (WorkDelegationState::Blocked, WorkDelegationState::Completed)
+                | (WorkDelegationState::Active, WorkDelegationState::Failed)
+                | (WorkDelegationState::Blocked, WorkDelegationState::Failed)
+                | (WorkDelegationState::Active, WorkDelegationState::Cancelled)
+                | (WorkDelegationState::Blocked, WorkDelegationState::Cancelled)
+        );
+        if !legal {
+            return Err(StoreError::Conflict(format!(
+                "DELEGATION_TRANSITION_INVALID: {:?}->{:?}",
+                current.state, next.state
+            )));
+        }
+        next.validate()
+            .map_err(|error| StoreError::Conflict(format!("INVALID_DELEGATION: {error}")))?;
+        event
+            .validate()
+            .map_err(|error| StoreError::Conflict(format!("INVALID_DELEGATION_EVENT: {error}")))?;
+        if self
+            .all_work_delegation_revisions_unlocked()?
+            .iter()
+            .any(|revision| {
+                revision.event.id == event.id
+                    || revision.event.idempotency_key == event.idempotency_key
+            })
+        {
+            return Err(StoreError::Conflict(format!(
+                "DELEGATION_EVENT_CONFLICT: {}",
+                event.id
+            )));
+        }
+        self.append_jsonl_unlocked(
+            "work_delegation_events.jsonl",
+            &WorkDelegationRevision {
+                delegation: next.clone(),
+                event,
+            },
+        )?;
+        Ok(next)
     }
 
     /// Fold immutable additive provenance through every WorkOperation.
@@ -5865,13 +6233,242 @@ impl HarnessStore {
         Ok(())
     }
 
+    pub fn insert_execution_node(&self, value: &ExecutionNode) -> StoreResult<()> {
+        value
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let nodes = latest_by_id(
+            self.read_jsonl::<ExecutionNode>("execution_nodes.jsonl")?,
+            |node| node.id.clone(),
+        );
+        if nodes.contains_key(&value.id) {
+            return Err(StoreError::Conflict(format!(
+                "execution node already exists: {}",
+                value.id
+            )));
+        }
+        self.append_jsonl_unlocked("execution_nodes.jsonl", value)
+    }
+
+    pub fn transition_execution_node(
+        &self,
+        expected: &ExecutionNode,
+        next: &ExecutionNode,
+    ) -> StoreResult<()> {
+        next.validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let current = latest_by_id(
+            self.read_jsonl::<ExecutionNode>("execution_nodes.jsonl")?,
+            |node| node.id.clone(),
+        )
+        .remove(&expected.id)
+        .ok_or_else(|| {
+            StoreError::Conflict(format!("execution node not found: {}", expected.id))
+        })?;
+        if current != *expected {
+            return Err(StoreError::Conflict(format!(
+                "execution node {} changed concurrently",
+                expected.id
+            )));
+        }
+        if next.id != current.id
+            || next.display_name != current.display_name
+            || next.created_at != current.created_at
+            || !matches!(
+                (current.status, next.status),
+                (ExecutionNodeStatus::Active, ExecutionNodeStatus::Draining)
+                    | (ExecutionNodeStatus::Draining, ExecutionNodeStatus::Retired)
+            )
+        {
+            return Err(StoreError::Conflict(
+                "NODE_TRANSITION_INVALID: allowed transitions are active->draining->retired"
+                    .to_string(),
+            ));
+        }
+        self.append_jsonl_unlocked("execution_nodes.jsonl", next)
+    }
+
+    pub fn register_node_project(&self, value: &NodeProjectRegistration) -> StoreResult<()> {
+        value
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let node = latest_by_id(
+            self.read_jsonl::<ExecutionNode>("execution_nodes.jsonl")?,
+            |node| node.id.clone(),
+        )
+        .remove(&value.node_id)
+        .ok_or_else(|| {
+            StoreError::Conflict(format!("NODE_NOT_ACTIVE: {} not found", value.node_id))
+        })?;
+        if node.status != ExecutionNodeStatus::Active {
+            return Err(StoreError::Conflict(format!(
+                "NODE_NOT_ACTIVE: {} is {:?}",
+                node.id, node.status
+            )));
+        }
+        let key = node_project_registration_identity(value);
+        let registrations = latest_by_id(
+            self.read_jsonl::<NodeProjectRegistration>("node_project_registrations.jsonl")?,
+            node_project_registration_identity,
+        );
+        if let Some(current) = registrations.get(&key) {
+            if current == value {
+                return Ok(());
+            }
+            if current.created_at != value.created_at {
+                return Err(StoreError::Conflict(format!(
+                    "node project registration identity already exists: {key}"
+                )));
+            }
+        }
+        self.append_jsonl_unlocked("node_project_registrations.jsonl", value)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn acquire_node_daemon_lease(
+        &self,
+        node_id: &str,
+        daemon_id: &str,
+        instance_id: &str,
+        now_unix_ms: u64,
+        ttl_ms: u64,
+    ) -> StoreResult<NodeDaemonLease> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let node = latest_by_id(
+            self.read_jsonl::<ExecutionNode>("execution_nodes.jsonl")?,
+            |node| node.id.clone(),
+        )
+        .remove(node_id)
+        .ok_or_else(|| StoreError::Conflict(format!("NODE_NOT_ACTIVE: {node_id} not found")))?;
+        if node.status == ExecutionNodeStatus::Retired {
+            return Err(StoreError::Conflict(format!(
+                "NODE_NOT_ACTIVE: {node_id} is retired"
+            )));
+        }
+        let current = latest_by_id(
+            self.read_jsonl::<NodeDaemonLease>("node_daemon_leases.jsonl")?,
+            |lease| lease.node_id.clone(),
+        )
+        .remove(node_id);
+        if let Some(current) = current.as_ref() {
+            if current.status == NodeDaemonLeaseStatus::Active
+                && current.expires_unix_ms > now_unix_ms
+            {
+                if current.daemon_id == daemon_id && current.instance_id == instance_id {
+                    return Ok(current.clone());
+                }
+                return Err(StoreError::Conflict(format!(
+                    "NODE_DAEMON_LEASE_HELD: Node {node_id} is held by {} generation {}",
+                    current.daemon_id, current.generation
+                )));
+            }
+        }
+        let generation = current
+            .as_ref()
+            .map(|lease| lease.generation.saturating_add(1))
+            .unwrap_or(1);
+        let lease = NodeDaemonLease {
+            node_id: node_id.to_string(),
+            daemon_id: daemon_id.to_string(),
+            generation,
+            instance_id: instance_id.to_string(),
+            status: NodeDaemonLeaseStatus::Active,
+            acquired_unix_ms: now_unix_ms,
+            renewed_unix_ms: now_unix_ms,
+            expires_unix_ms: now_unix_ms.saturating_add(ttl_ms.max(1)),
+            released_unix_ms: None,
+        };
+        self.append_jsonl_unlocked("node_daemon_leases.jsonl", &lease)?;
+        Ok(lease)
+    }
+
+    pub fn renew_node_daemon_lease(
+        &self,
+        node_id: &str,
+        daemon_id: &str,
+        generation: u64,
+        instance_id: &str,
+        now_unix_ms: u64,
+        ttl_ms: u64,
+    ) -> StoreResult<NodeDaemonLease> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut lease = latest_by_id(
+            self.read_jsonl::<NodeDaemonLease>("node_daemon_leases.jsonl")?,
+            |lease| lease.node_id.clone(),
+        )
+        .remove(node_id)
+        .ok_or_else(|| StoreError::Conflict(format!("NODE_DAEMON_GENERATION_FENCED: {node_id}")))?;
+        if lease.status != NodeDaemonLeaseStatus::Active
+            || lease.daemon_id != daemon_id
+            || lease.generation != generation
+            || lease.instance_id != instance_id
+            || lease.expires_unix_ms <= now_unix_ms
+        {
+            return Err(StoreError::Conflict(format!(
+                "NODE_DAEMON_GENERATION_FENCED: {daemon_id} generation {generation} no longer owns Node {node_id}"
+            )));
+        }
+        lease.renewed_unix_ms = now_unix_ms;
+        lease.expires_unix_ms = now_unix_ms.saturating_add(ttl_ms.max(1));
+        self.append_jsonl_unlocked("node_daemon_leases.jsonl", &lease)?;
+        Ok(lease)
+    }
+
+    pub fn release_node_daemon_lease(
+        &self,
+        node_id: &str,
+        daemon_id: &str,
+        generation: u64,
+        instance_id: &str,
+        now_unix_ms: u64,
+    ) -> StoreResult<NodeDaemonLease> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut lease = latest_by_id(
+            self.read_jsonl::<NodeDaemonLease>("node_daemon_leases.jsonl")?,
+            |lease| lease.node_id.clone(),
+        )
+        .remove(node_id)
+        .ok_or_else(|| StoreError::Conflict(format!("NODE_DAEMON_GENERATION_FENCED: {node_id}")))?;
+        if lease.daemon_id != daemon_id
+            || lease.generation != generation
+            || lease.instance_id != instance_id
+        {
+            return Err(StoreError::Conflict(format!(
+                "NODE_DAEMON_GENERATION_FENCED: stale daemon cannot release Node {node_id}"
+            )));
+        }
+        if lease.status == NodeDaemonLeaseStatus::Released {
+            return Ok(lease);
+        }
+        lease.status = NodeDaemonLeaseStatus::Released;
+        lease.renewed_unix_ms = now_unix_ms;
+        lease.expires_unix_ms = now_unix_ms;
+        lease.released_unix_ms = Some(now_unix_ms);
+        self.append_jsonl_unlocked("node_daemon_leases.jsonl", &lease)?;
+        Ok(lease)
+    }
+
     /// Acquire the one durable Supervisor lease for a TeamRun. An active,
     /// unexpired lease held by another Supervisor rejects the attach before any
     /// provider side effect. Reacquisition after expiry increments generation.
     #[allow(clippy::too_many_arguments)]
-    pub fn acquire_team_supervisor_lease(
+    pub fn acquire_team_supervisor_under_node_lease(
         &self,
         team_run_id: &str,
+        node_id: &str,
+        node_daemon_id: &str,
+        node_daemon_generation: u64,
+        execution_space_id: &str,
+        project_binding_id: &str,
         supervisor_id: &str,
         owner_process_id: u32,
         owner_locator: &str,
@@ -5880,13 +6477,34 @@ impl HarnessStore {
     ) -> StoreResult<TeamSupervisorLease> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        let run_exists = latest_by_id(self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?, |run| {
+        let run = latest_by_id(self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?, |run| {
             run.id.clone()
         })
-        .contains_key(team_run_id);
-        if !run_exists {
+        .remove(team_run_id)
+        .ok_or_else(|| StoreError::Conflict(format!("team run not found: {team_run_id}")))?;
+        if run.execution_node_id != node_id || run.project_binding_id != project_binding_id {
             return Err(StoreError::Conflict(format!(
-                "team run not found: {team_run_id}"
+                "TEAM_RUN_NODE_MISMATCH: TeamRun {team_run_id} is bound to Node {} / project {}, not {node_id} / {project_binding_id}",
+                run.execution_node_id, run.project_binding_id
+            )));
+        }
+        let parent = latest_by_id(
+            self.read_jsonl::<NodeDaemonLease>("node_daemon_leases.jsonl")?,
+            |lease| lease.node_id.clone(),
+        )
+        .remove(node_id)
+        .ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "TEAM_SUPERVISOR_PARENT_FENCED: Node {node_id} has no NodeDaemon lease"
+            ))
+        })?;
+        if parent.status != NodeDaemonLeaseStatus::Active
+            || parent.daemon_id != node_daemon_id
+            || parent.generation != node_daemon_generation
+            || parent.expires_unix_ms <= now_unix_ms
+        {
+            return Err(StoreError::Conflict(format!(
+                "TEAM_SUPERVISOR_PARENT_FENCED: NodeDaemon {node_daemon_id} generation {node_daemon_generation} is not the active parent for Node {node_id}"
             )));
         }
         let current = self.latest_lease_for_run_unlocked(team_run_id)?;
@@ -5913,6 +6531,11 @@ impl HarnessStore {
             .unwrap_or(1);
         let lease = TeamSupervisorLease {
             team_run_id: team_run_id.to_string(),
+            node_id: node_id.to_string(),
+            node_daemon_id: node_daemon_id.to_string(),
+            node_daemon_generation,
+            execution_space_id: execution_space_id.to_string(),
+            project_binding_id: project_binding_id.to_string(),
             supervisor_id: supervisor_id.to_string(),
             generation,
             owner_process_id,
@@ -5954,6 +6577,26 @@ impl HarnessStore {
         {
             return Err(StoreError::Conflict(format!(
                 "Supervisor lease for team run {team_run_id} is no longer owned by {supervisor_id} generation {generation}"
+            )));
+        }
+        let parent = latest_by_id(
+            self.read_jsonl::<NodeDaemonLease>("node_daemon_leases.jsonl")?,
+            |parent| parent.node_id.clone(),
+        )
+        .remove(&lease.node_id)
+        .ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "TEAM_SUPERVISOR_PARENT_FENCED: Node {} has no active parent",
+                lease.node_id
+            ))
+        })?;
+        if parent.status != NodeDaemonLeaseStatus::Active
+            || parent.daemon_id != lease.node_daemon_id
+            || parent.generation != lease.node_daemon_generation
+            || parent.expires_unix_ms <= now_unix_ms
+        {
+            return Err(StoreError::Conflict(format!(
+                "TEAM_SUPERVISOR_PARENT_FENCED: parent NodeDaemon generation is no longer active for TeamRun {team_run_id}"
             )));
         }
         lease.heartbeat_unix_ms = now_unix_ms;
@@ -6623,18 +7266,13 @@ impl HarnessStore {
         Ok(value)
     }
 
-    /// Compare-and-append a TeamRun lifecycle row and synchronize its linked
-    /// Wave status under the same lock. This prevents two start/transition
-    /// processes from resurrecting or overwriting one attempt. A completion
-    /// also checks the authoritative Work projection while holding this same
-    /// lock, so a concurrent Work create cannot slip between the guard and the
-    /// TeamRun CAS.
-    pub fn compare_and_append_team_run_with_wave_status(
+    /// Compare-and-append a TeamRun lifecycle row. Mission and Node authority
+    /// are reached through the immutable AgentTeam relation and are never
+    /// copied or updated by a run transition.
+    pub fn compare_and_append_team_run_lifecycle(
         &self,
         expected: &AgentTeamRun,
         next: &AgentTeamRun,
-        linked_wave_status: WaveStatus,
-        wave_updated_at: &str,
     ) -> StoreResult<()> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
@@ -6696,90 +7334,7 @@ impl HarnessStore {
             }
         }
 
-        let linked_wave = match (next.mission_id.as_deref(), next.wave_id.as_deref()) {
-            (None, None) => None,
-            (Some(mission_id), None) => {
-                latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
-                    mission.id.clone()
-                })
-                .remove(mission_id)
-                .ok_or_else(|| StoreError::Conflict(format!("mission not found: {mission_id}")))?;
-                // Mission closeout does not own or stop this run. A linked
-                // long-lived Team must still be able to complete, fail, or be
-                // cancelled after the Mission records its own outcome.
-                None
-            }
-            (Some(mission_id), Some(wave_id)) => {
-                let mission =
-                    latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
-                        mission.id.clone()
-                    })
-                    .remove(mission_id)
-                    .ok_or_else(|| {
-                        StoreError::Conflict(format!("mission not found: {mission_id}"))
-                    })?;
-                if matches!(
-                    mission.status,
-                    MissionStatus::Completed | MissionStatus::Cancelled
-                ) {
-                    return Err(StoreError::Conflict(format!(
-                        "mission {mission_id} is {:?} and cannot transition TeamRun {}",
-                        mission.status, next.id
-                    )));
-                }
-                let mut wave = latest_by_id(self.read_jsonl::<Wave>("waves.jsonl")?, |wave| {
-                    wave.id.clone()
-                })
-                .remove(wave_id)
-                .ok_or_else(|| StoreError::Conflict(format!("wave not found: {wave_id}")))?;
-                if wave.mission_id != mission_id || !wave.executor_run_ids.contains(&next.id) {
-                    return Err(StoreError::Conflict(format!(
-                        "team run {} is not registered to mission {mission_id} wave {wave_id}",
-                        next.id
-                    )));
-                }
-                if wave.status == WaveStatus::Completed || wave.accepted_run_id.is_some() {
-                    return Err(StoreError::Conflict(format!(
-                        "wave {wave_id} is already accepted"
-                    )));
-                }
-                wave.status = linked_wave_status;
-                wave.updated_at = wave_updated_at.to_string();
-                Some(wave)
-            }
-            (None, Some(_)) => {
-                return Err(StoreError::Conflict(
-                    "TeamRun lifecycle has a wave_id without mission_id".to_string(),
-                ));
-            }
-        };
-
-        let linked_mission = if next.mission_id.is_some()
-            && matches!(
-                linked_wave_status,
-                WaveStatus::Running | WaveStatus::Waiting
-            ) {
-            let mission_id = next.mission_id.as_deref().unwrap_or_default();
-            let mut mission =
-                latest_by_id(self.read_jsonl::<Mission>("missions.jsonl")?, |mission| {
-                    mission.id.clone()
-                })
-                .remove(mission_id)
-                .ok_or_else(|| StoreError::Conflict(format!("mission not found: {mission_id}")))?;
-            mission.status = MissionStatus::Running;
-            mission.updated_at = wave_updated_at.to_string();
-            Some(mission)
-        } else {
-            None
-        };
-
         self.append_jsonl_unlocked("team_runs.jsonl", next)?;
-        if let Some(wave) = linked_wave {
-            self.append_jsonl_unlocked("waves.jsonl", &wave)?;
-        }
-        if let Some(mission) = linked_mission {
-            self.append_jsonl_unlocked("missions.jsonl", &mission)?;
-        }
         Ok(())
     }
 
@@ -7049,6 +7604,32 @@ impl HarnessStore {
         self.read_jsonl("team_runs.jsonl")
     }
 
+    pub fn latest_execution_nodes(&self) -> StoreResult<Vec<ExecutionNode>> {
+        Ok(latest_by_id(
+            self.read_jsonl::<ExecutionNode>("execution_nodes.jsonl")?,
+            |node| node.id.clone(),
+        )
+        .into_values()
+        .collect())
+    }
+
+    pub fn latest_node_project_registrations(&self) -> StoreResult<Vec<NodeProjectRegistration>> {
+        Ok(latest_by_id(
+            self.read_jsonl::<NodeProjectRegistration>("node_project_registrations.jsonl")?,
+            node_project_registration_identity,
+        )
+        .into_values()
+        .collect())
+    }
+
+    pub fn latest_node_daemon_lease(&self, node_id: &str) -> StoreResult<Option<NodeDaemonLease>> {
+        Ok(latest_by_id(
+            self.read_jsonl::<NodeDaemonLease>("node_daemon_leases.jsonl")?,
+            |lease| lease.node_id.clone(),
+        )
+        .remove(node_id))
+    }
+
     pub fn member_runs(&self) -> StoreResult<Vec<MemberRun>> {
         let rows: Vec<MemberRun> = self.read_jsonl("member_runs.jsonl")?;
         for row in &rows {
@@ -7068,6 +7649,208 @@ impl HarnessStore {
 
     pub fn latest_works(&self) -> StoreResult<Vec<Work>> {
         Ok(self.latest_works_unlocked()?.into_values().collect())
+    }
+
+    pub fn work_delegation_events(&self) -> StoreResult<Vec<WorkDelegationEvent>> {
+        Ok(self
+            .all_work_delegation_revisions_unlocked()?
+            .into_iter()
+            .map(|revision| revision.event)
+            .collect())
+    }
+
+    pub fn latest_work_delegations(&self) -> StoreResult<Vec<WorkDelegation>> {
+        Ok(self
+            .latest_work_delegations_unlocked()?
+            .into_values()
+            .collect())
+    }
+
+    /// Fold target Work state into Delegation state without changing the
+    /// source Work. Repeated reconciliation is idempotent when no state change
+    /// is required.
+    pub fn transition_work_and_roll_up_delegation(
+        &self,
+        target_work_id: &str,
+        context: WorkCommandContext,
+    ) -> StoreResult<Vec<WorkDelegation>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let target = self
+            .latest_works_unlocked()?
+            .remove(target_work_id)
+            .ok_or_else(|| StoreError::Conflict(format!("work not found: {target_work_id}")))?;
+        let current = self
+            .latest_work_delegations_unlocked()?
+            .into_values()
+            .filter(|delegation| delegation.target_work_ref.work_id == target_work_id)
+            .collect::<Vec<_>>();
+        let mut changed = Vec::new();
+        for delegation in current {
+            let desired = if target.phase == WorkPhase::Closed {
+                match target.resolution {
+                    Some(WorkResolution::Accepted) => Some((
+                        WorkDelegationState::Completed,
+                        WorkDelegationTransition::Completed,
+                        target
+                            .result_summary
+                            .clone()
+                            .unwrap_or_else(|| "target Work accepted".to_string()),
+                        None,
+                    )),
+                    Some(WorkResolution::Failed) => Some((
+                        WorkDelegationState::Failed,
+                        WorkDelegationTransition::Failed,
+                        target
+                            .result_summary
+                            .clone()
+                            .or_else(|| target.blocker_reason.clone())
+                            .unwrap_or_else(|| "target Work failed".to_string()),
+                        None,
+                    )),
+                    Some(WorkResolution::Cancelled) => Some((
+                        WorkDelegationState::Cancelled,
+                        WorkDelegationTransition::Cancelled,
+                        target
+                            .result_summary
+                            .clone()
+                            .or_else(|| target.blocker_reason.clone())
+                            .unwrap_or_else(|| "target Work cancelled".to_string()),
+                        None,
+                    )),
+                    None => None,
+                }
+            } else if target.condition == WorkCondition::Blocked {
+                Some((
+                    WorkDelegationState::Blocked,
+                    WorkDelegationTransition::Blocked,
+                    String::new(),
+                    Some(
+                        target
+                            .blocker_reason
+                            .clone()
+                            .unwrap_or_else(|| "target Work blocked".to_string()),
+                    ),
+                ))
+            } else if delegation.state == WorkDelegationState::Blocked {
+                Some((
+                    WorkDelegationState::Active,
+                    WorkDelegationTransition::Resumed,
+                    String::new(),
+                    None,
+                ))
+            } else {
+                None
+            };
+            let Some((state, transition, resolution, blocker)) = desired else {
+                continue;
+            };
+            if delegation.state == state {
+                continue;
+            }
+            if matches!(
+                delegation.state,
+                WorkDelegationState::Completed
+                    | WorkDelegationState::Failed
+                    | WorkDelegationState::Cancelled
+            ) {
+                continue;
+            }
+            let mut next = delegation.clone();
+            next.state = state;
+            next.version = next.version.saturating_add(1);
+            next.updated_at = context.created_at.clone();
+            next.blocker_reason = blocker;
+            next.resolution_summary = if resolution.is_empty() {
+                None
+            } else {
+                Some(resolution)
+            };
+            let event = WorkDelegationEvent {
+                id: format!("{}:{}", context.event_id, delegation.id),
+                delegation_id: delegation.id.clone(),
+                sequence: next.version,
+                transition,
+                expected_version: delegation.version,
+                resulting_version: next.version,
+                performed_by_actor: context.performed_by_actor.clone(),
+                causation_ref: context.causation_ref.clone(),
+                idempotency_key: format!("{}:{}", context.idempotency_key, delegation.id),
+                payload: serde_json::json!({"target_work_version": target.version}),
+                created_at: context.created_at.clone(),
+            };
+            changed.push(self.append_work_delegation_transition_unlocked(
+                &delegation,
+                next,
+                event,
+            )?);
+        }
+        Ok(changed)
+    }
+
+    pub fn cancel_work_delegation(
+        &self,
+        delegation_id: &str,
+        expected_version: u64,
+        reason: &str,
+        context: WorkCommandContext,
+    ) -> StoreResult<WorkDelegation> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let current = self
+            .latest_work_delegations_unlocked()?
+            .remove(delegation_id)
+            .ok_or_else(|| {
+                StoreError::Conflict(format!("delegation not found: {delegation_id}"))
+            })?;
+        if current.version != expected_version {
+            return Err(StoreError::Conflict(format!(
+                "DELEGATION_VERSION_CONFLICT: {} is version {}, expected {expected_version}",
+                current.id, current.version
+            )));
+        }
+        match context.performed_by_actor.kind {
+            TeamActorKind::Host | TeamActorKind::Operator | TeamActorKind::Service => {}
+            TeamActorKind::AgentMember
+                if context.performed_by_actor.id == current.source_owner_member_id => {}
+            TeamActorKind::MemberRun => {
+                let member = self.require_member_run_unlocked(
+                    &context.performed_by_actor.id,
+                    &current.source_work_ref.team_run_id,
+                )?;
+                if stable_member_identity(&member) != current.source_owner_member_id {
+                    return Err(StoreError::Conflict(
+                        "DELEGATION_NOT_AUTHORIZED: only source owner or Host may cancel"
+                            .to_string(),
+                    ));
+                }
+            }
+            _ => {
+                return Err(StoreError::Conflict(
+                    "DELEGATION_NOT_AUTHORIZED: only source owner or Host may cancel".to_string(),
+                ))
+            }
+        }
+        let mut next = current.clone();
+        next.state = WorkDelegationState::Cancelled;
+        next.version = next.version.saturating_add(1);
+        next.updated_at = context.created_at.clone();
+        next.blocker_reason = None;
+        next.resolution_summary = Some(reason.to_string());
+        let event = WorkDelegationEvent {
+            id: context.event_id,
+            delegation_id: current.id.clone(),
+            sequence: next.version,
+            transition: WorkDelegationTransition::Cancelled,
+            expected_version: current.version,
+            resulting_version: next.version,
+            performed_by_actor: context.performed_by_actor,
+            causation_ref: context.causation_ref,
+            idempotency_key: context.idempotency_key,
+            payload: serde_json::json!({"reason": reason}),
+            created_at: context.created_at,
+        };
+        self.append_work_delegation_transition_unlocked(&current, next, event)
     }
 
     pub fn work_condition_records(&self) -> StoreResult<Vec<WorkConditionRecord>> {
@@ -8078,9 +8861,27 @@ fn ensure_team_run_admission_revision(
 }
 
 fn durable_team_id(run: &AgentTeamRun) -> Option<&str> {
-    run.agent_team_id
-        .as_deref()
-        .or(run.definition_id.as_deref())
+    Some(run.agent_team_id.as_str())
+}
+
+fn work_ref_key(reference: &WorkRef) -> String {
+    format!("{}\u{1f}{}", reference.team_run_id, reference.work_id)
+}
+
+fn node_project_registration_identity(value: &NodeProjectRegistration) -> String {
+    node_project_registration_key(
+        &value.node_id,
+        &value.execution_space_id,
+        &value.project_binding_id,
+    )
+}
+
+fn node_project_registration_key(
+    node_id: &str,
+    execution_space_id: &str,
+    project_binding_id: &str,
+) -> String {
+    format!("{node_id}\u{1f}{execution_space_id}\u{1f}{project_binding_id}")
 }
 
 fn works_share_scope(left: &Work, right: &Work) -> bool {
