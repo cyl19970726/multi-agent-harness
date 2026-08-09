@@ -131,6 +131,37 @@ fn wait_for_member_status(
     }
 }
 
+fn wait_for_member_runtime_ready(
+    serve: &ServeHandle,
+    project_id: &str,
+    member_id: &str,
+    within: Duration,
+) {
+    let deadline = Instant::now() + within;
+    loop {
+        let (status, snapshot) = serve.get_json(&format!("/v1/snapshot?project={project_id}"));
+        assert_eq!(status, 200);
+        let ready = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id)
+                    && member["status"].as_str() == Some("idle")
+                    && member["coordination_status"].as_str() == Some("active")
+                    && member["native_session"].is_object()
+            });
+        if ready {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "member {member_id} never published an active idle provider runtime: {snapshot}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
 #[test]
 fn host_attentions_read_and_console_ack_lifecycle() {
     let home = TempHome::new("host-attention-console");
@@ -143,13 +174,7 @@ fn host_attentions_read_and_console_ack_lifecycle() {
         &serde_json::json!({"max_concurrency": 1, "idle_timeout_s": 10}),
     );
     assert_eq!(status, 202, "body: {body}");
-    wait_for_member_status(
-        &serve,
-        &project_id,
-        &member_id,
-        "idle",
-        Duration::from_secs(15),
-    );
+    wait_for_member_runtime_ready(&serve, &project_id, &member_id, Duration::from_secs(15));
 
     // Submitting the initial Work derives a WorkReviewRequested HostAttention.
     let started = run_member_json(
@@ -264,13 +289,7 @@ fn member_resume_route_rejects_active_and_resumes_closed_member() {
         &serde_json::json!({"max_concurrency": 1, "idle_timeout_s": 10}),
     );
     assert_eq!(status, 202, "body: {body}");
-    wait_for_member_status(
-        &serve,
-        &project_id,
-        &member_id,
-        "idle",
-        Duration::from_secs(15),
-    );
+    wait_for_member_runtime_ready(&serve, &project_id, &member_id, Duration::from_secs(15));
 
     // An active member is continued by message/steer, never by resume.
     let (status, body) = serve.post_json(
