@@ -126,6 +126,7 @@ impl MultiTeamDaemon {
                         std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
                     ) =>
                 {
+                    Self::ensure_stale_socket_reclaimable(&firm_home, &node_id)?;
                     std::fs::remove_file(&socket_path).map_err(|remove_error| {
                         CliError::Usage(format!(
                             "cannot remove stale supervisor socket at {}: {remove_error}",
@@ -188,6 +189,44 @@ impl MultiTeamDaemon {
         let release_result = daemon.release_node_authorities();
         eprintln!("[node-daemon] shutdown complete");
         serve_result.and(shutdown_result).and(release_result)
+    }
+
+    /// A dead socket is not sufficient evidence that the previous daemon
+    /// generation lost authority. Every registered Execution Space must
+    /// either have no active lease for this Node or have an expired one before
+    /// the filesystem rendezvous may be reclaimed. An unreadable Store is
+    /// fail-closed because it may contain the live lease we are trying not to
+    /// steal.
+    fn ensure_stale_socket_reclaimable(firm_home: &Path, node_id: &str) -> CliResult<()> {
+        let spaces = crate::execution_space::list_spaces(firm_home).map_err(|error| {
+            CliError::Usage(format!(
+                "NODE_DAEMON_SOCKET_RECLAIM_UNSAFE: cannot list Execution Spaces: {error}"
+            ))
+        })?;
+        let now_ms = current_unix_ms_u64();
+        for space in spaces {
+            let store = HarnessStore::new(space.store_root.clone());
+            let lease = store.latest_node_daemon_lease(node_id).map_err(|error| {
+                CliError::Usage(format!(
+                    "NODE_DAEMON_SOCKET_RECLAIM_UNSAFE: cannot verify Node {node_id} authority in Execution Space {}: {error}",
+                    space.id
+                ))
+            })?;
+            if let Some(lease) = lease {
+                if lease.status == harness_core::NodeDaemonLeaseStatus::Active
+                    && lease.expires_unix_ms > now_ms
+                {
+                    return Err(CliError::Usage(format!(
+                        "NODE_DAEMON_LEASE_HELD: refusing to remove stale socket for Node {node_id}; Execution Space {} is held by {} generation {} until {}",
+                        space.id,
+                        lease.daemon_id,
+                        lease.generation,
+                        lease.expires_unix_ms
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Enumerate non-terminal team-runs and adopt runs whose supervisor lease

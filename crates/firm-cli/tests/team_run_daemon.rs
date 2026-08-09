@@ -405,6 +405,49 @@ fn daemon_rejects_second_machine_owner_and_bad_commands() {
 }
 
 #[test]
+fn stale_socket_with_live_lease_is_not_reclaimed() {
+    let home = TempHome::new("node-daemon-live-lease-fence");
+    let fixture = bootstrap_runtime(&home, "project");
+    let socket = node_daemon_socket_path(&home, &fixture.node_id);
+    std::fs::create_dir_all(socket.parent().expect("socket parent")).unwrap();
+    let stale_listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    drop(stale_listener);
+    assert!(socket.exists(), "fixture did not leave a stale socket");
+
+    let store = HarnessStore::new(home.spaces_dir().join(&fixture.execution_space_id));
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    store
+        .acquire_node_daemon_lease(
+            &fixture.node_id,
+            "node-daemon:previous-owner",
+            "previous-instance",
+            now_ms,
+            60_000,
+        )
+        .expect("seed live NodeDaemon lease");
+
+    let attempted_takeover = std::process::Command::new(env!("CARGO_BIN_EXE_firm"))
+        .args(["daemon", "serve"])
+        .current_dir(&fixture.project_root)
+        .envs(home.envs())
+        .output()
+        .expect("attempt NodeDaemon takeover");
+    assert!(
+        !attempted_takeover.status.success(),
+        "daemon unexpectedly reclaimed a socket protected by a live lease"
+    );
+    assert!(
+        String::from_utf8_lossy(&attempted_takeover.stderr).contains("NODE_DAEMON_LEASE_HELD"),
+        "unexpected takeover error: {}",
+        String::from_utf8_lossy(&attempted_takeover.stderr)
+    );
+    assert!(socket.exists(), "live-lease fence removed the stale socket");
+}
+
+#[test]
 fn one_node_daemon_adopts_runs_from_two_execution_spaces() {
     let home = TempHome::new("node-daemon-two-spaces");
     let fixture_a = bootstrap_runtime(&home, "project-a");
