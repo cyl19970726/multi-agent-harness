@@ -133,6 +133,35 @@ pub fn handle_get(
             .map_err(ApiError::from),
         ));
     }
+    if path == "/v1/company-os/works" {
+        return Some(finish(
+            company_work_projection_from_spaces(
+                execution_store.unwrap_or(store),
+                execution_spaces.unwrap_or(&[]),
+                &CompanyWorkQuery::default(),
+            )
+            .map_err(ApiError::from),
+        ));
+    }
+    if let Some(work_id) = path.strip_prefix("/v1/company-os/works/") {
+        if work_id.is_empty() || work_id.contains('/') {
+            return None;
+        }
+        return Some(finish(
+            resolve_unique_company_work(
+                execution_store.unwrap_or(store),
+                execution_spaces.unwrap_or(&[]),
+                work_id,
+            )
+            .and_then(|resolved| {
+                resolved
+                    .map(|(work, _)| serde_json::to_value(work))
+                    .transpose()
+                    .map_err(|error| ApiError::internal(error.to_string()))?
+                    .ok_or_else(|| ApiError::not_found(format!("Work:{work_id}")))
+            }),
+        ));
+    }
     // Read-only archived-source provenance and Docs health projections. They
     // resolve the latest ledger rows only; they never write or migrate rows.
     if path == "/v1/company-os/organization-provenance" {
@@ -143,7 +172,12 @@ pub fn handle_get(
     if path == "/v1/company-os/docs-health" {
         return Some(finish(docs_health_report(store).map_err(ApiError::from)));
     }
-    if let Some(response) = docs_v2_get(store, path) {
+    if let Some(response) = docs_v2_get(
+        store,
+        execution_store.unwrap_or(store),
+        execution_spaces.unwrap_or(&[]),
+        path,
+    ) {
         return Some(response);
     }
     let suffix = path.strip_prefix("/v1/company-os/")?;
@@ -195,7 +229,12 @@ pub fn handle_post_with_execution(
         return Some(error.response());
     }
     if path == "/v1/company-os/actions/dispatch" {
-        return Some(finish(dispatch_action(store, body)));
+        return Some(finish(dispatch_action(
+            store,
+            execution_store.unwrap_or(store),
+            execution_spaces.unwrap_or(&[]),
+            body,
+        )));
     }
     if let Some(response) = docs_v2_post(store, path, body) {
         return Some(response);
@@ -345,6 +384,61 @@ struct CompanyWorkQuery {
     conditions: Vec<WorkCondition>,
     resolutions: Vec<WorkResolution>,
     owner_member_ids: Vec<String>,
+}
+
+/// Resolve a Work through its unique owning Execution Space. When the
+/// aggregate contains the same Work id in more than one space, no caller may
+/// guess an owner.
+fn resolve_unique_company_work(
+    selected_store: &HarnessStore,
+    execution_spaces: &[(String, HarnessStore)],
+    work_id: &str,
+) -> Result<Option<(Work, Option<String>)>, ApiError> {
+    if execution_spaces.is_empty() {
+        return Ok(selected_store
+            .latest_works()?
+            .into_iter()
+            .find(|work| work.id == work_id)
+            .map(|work| (work, None)));
+    }
+    let mut matches = Vec::new();
+    for (space_id, store) in execution_spaces {
+        if let Some(work) = store
+            .latest_works()?
+            .into_iter()
+            .find(|work| work.id == work_id)
+        {
+            matches.push((work, Some(space_id.clone())));
+        }
+    }
+    match matches.len() {
+        0 => Ok(None),
+        1 => Ok(matches.pop()),
+        _ => Err(ApiError::conflict(format!(
+            "Work:{work_id} has duplicate owners across Execution Spaces: {}",
+            matches
+                .iter()
+                .filter_map(|(_, space_id)| space_id.as_deref())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
+fn company_entity_exists_with_execution(
+    company_store: &HarnessStore,
+    selected_store: &HarnessStore,
+    execution_spaces: &[(String, HarnessStore)],
+    reference: &harness_core::EntityRef,
+) -> Result<bool, ApiError> {
+    if reference.kind == EntityKind::Work {
+        return Ok(
+            resolve_unique_company_work(selected_store, execution_spaces, &reference.id)?.is_some(),
+        );
+    }
+    company_store
+        .company_entity_exists(reference)
+        .map_err(ApiError::from)
 }
 
 fn company_work_records_from_spaces(
@@ -1189,6 +1283,76 @@ mod projection_tests {
             .get("work-duplicate")
             .is_none());
 
+        assert!(company_store.latest_works().unwrap().is_empty());
+        let work_ref = harness_core::EntityRef {
+            kind: EntityKind::Work,
+            id: "work-first".to_string(),
+        };
+        assert!(company_entity_exists_with_execution(
+            &company_store,
+            &first_store,
+            &spaces,
+            &work_ref,
+        )
+        .unwrap());
+        let missing_ref = harness_core::EntityRef {
+            kind: EntityKind::Work,
+            id: "work-missing".to_string(),
+        };
+        assert!(!company_entity_exists_with_execution(
+            &company_store,
+            &first_store,
+            &spaces,
+            &missing_ref,
+        )
+        .unwrap());
+        let duplicate_ref = harness_core::EntityRef {
+            kind: EntityKind::Work,
+            id: "work-duplicate".to_string(),
+        };
+        assert!(company_entity_exists_with_execution(
+            &company_store,
+            &first_store,
+            &spaces,
+            &duplicate_ref,
+        )
+        .is_err());
+
+        let canonical_list = handle_get(
+            &company_store,
+            Some(&first_store),
+            Some(&spaces),
+            "/v1/company-os/works",
+        )
+        .unwrap();
+        assert_eq!(canonical_list.status, "200 OK");
+        assert_eq!(canonical_list.body["result"]["authority"], "team_work");
+        let canonical_item = handle_get(
+            &company_store,
+            Some(&first_store),
+            Some(&spaces),
+            "/v1/company-os/works/work-first",
+        )
+        .unwrap();
+        assert_eq!(canonical_item.status, "200 OK");
+        assert_eq!(canonical_item.body["result"]["id"], "work-first");
+        let missing_item = handle_get(
+            &company_store,
+            Some(&first_store),
+            Some(&spaces),
+            "/v1/company-os/works/work-missing",
+        )
+        .unwrap();
+        assert_eq!(missing_item.status, "404 Not Found");
+        let duplicate_item = handle_get(
+            &company_store,
+            Some(&first_store),
+            Some(&spaces),
+            "/v1/company-os/works/work-duplicate",
+        )
+        .unwrap();
+        assert_eq!(duplicate_item.status, "409 Conflict");
+
         for store in [&company_store, &first_store, &second_store] {
             let _ = std::fs::remove_dir_all(store.root());
         }
@@ -1500,7 +1664,6 @@ fn read_resource(
         "org-units" => to_values(store.latest_org_units()?)?,
         "memberships" => to_values(store.latest_organization_memberships()?)?,
         "milestones" => to_values(store.latest_milestones()?)?,
-        "works" => to_values(store.latest_works()?)?,
         "approvals" => to_values(store.latest_approvals()?)?,
         "commitments" => to_values(store.latest_commitments()?)?,
         "payments" => to_values(store.latest_payments()?)?,
@@ -1708,7 +1871,12 @@ fn parse<T: DeserializeOwned>(body: &Value) -> Result<T, ApiError> {
     serde_json::from_value(body.clone()).map_err(|error| ApiError::bad_request(error.to_string()))
 }
 
-fn dispatch_action(store: &HarnessStore, body: &Value) -> Result<Value, ApiError> {
+fn dispatch_action(
+    store: &HarnessStore,
+    execution_store: &HarnessStore,
+    execution_spaces: &[(String, HarnessStore)],
+    body: &Value,
+) -> Result<Value, ApiError> {
     let mut command: ActionCommand = parse(body)?;
     command
         .validate()
@@ -1772,7 +1940,12 @@ fn dispatch_action(store: &HarnessStore, body: &Value) -> Result<Value, ApiError
             }
         }
     }
-    if !store.company_entity_exists(&command.subject_ref)? {
+    if !company_entity_exists_with_execution(
+        store,
+        execution_store,
+        execution_spaces,
+        &command.subject_ref,
+    )? {
         return Err(ApiError::not_found(format!(
             "action subject {:?}:{}",
             command.subject_ref.kind, command.subject_ref.id
@@ -1811,7 +1984,14 @@ fn dispatch_action(store: &HarnessStore, body: &Value) -> Result<Value, ApiError
             require_human_approval(store, &command)?;
         }
     }
-    validate_definition_scope(store, &declaration, &command, &record)?;
+    validate_definition_scope(
+        store,
+        execution_store,
+        execution_spaces,
+        &declaration,
+        &command,
+        &record,
+    )?;
     if command.command_name == "approval.decide" {
         validate_approval_decision(store, &command, &record)?;
     }
@@ -2190,6 +2370,8 @@ fn policies_for_definition(
 
 fn validate_definition_scope(
     store: &HarnessStore,
+    execution_store: &HarnessStore,
+    execution_spaces: &[(String, HarnessStore)],
     definition: &CustomPageDefinition,
     command: &ActionCommand,
     record: &Value,
@@ -2258,19 +2440,51 @@ fn validate_definition_scope(
             .get("module_id")
             .and_then(Value::as_str)
             .is_some_and(|id| id == definition.module_id),
-        "relation.append" => ["from_ref", "to_ref"].iter().all(|field| {
-            record
-                .get(*field)
-                .cloned()
-                .and_then(|value| serde_json::from_value::<harness_core::EntityRef>(value).ok())
-                .is_some_and(|reference| entity_in_module(store, definition, &reference, 0))
-        }),
-        "approval.request" | "approval.decide" => {
-            entity_in_module(store, definition, &command.subject_ref, 0)
+        "relation.append" => {
+            let references = ["from_ref", "to_ref"]
+                .iter()
+                .map(|field| {
+                    record
+                        .get(*field)
+                        .cloned()
+                        .and_then(|value| {
+                            serde_json::from_value::<harness_core::EntityRef>(value).ok()
+                        })
+                        .ok_or_else(|| {
+                            ApiError::validation(format!("relation.append record requires {field}"))
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut in_scope = true;
+            for reference in references {
+                in_scope &= entity_in_module(
+                    store,
+                    execution_store,
+                    execution_spaces,
+                    definition,
+                    &reference,
+                    0,
+                )?;
+            }
+            in_scope
         }
+        "approval.request" | "approval.decide" => entity_in_module(
+            store,
+            execution_store,
+            execution_spaces,
+            definition,
+            &command.subject_ref,
+            0,
+        )?,
         "commitment.propose" => {
             command.subject_ref.kind == EntityKind::Work
-                && work_in_module(store, definition, &command.subject_ref.id)
+                && work_in_module(
+                    store,
+                    execution_store,
+                    execution_spaces,
+                    definition,
+                    &command.subject_ref.id,
+                )?
                 && record
                     .get("source_document_id")
                     .and_then(Value::as_str)
@@ -2330,28 +2544,37 @@ fn document_in_module(
     false
 }
 
-fn work_in_module(store: &HarnessStore, definition: &CustomPageDefinition, work_id: &str) -> bool {
-    store.latest_milestones().ok().is_some_and(|milestones| {
-        milestones.into_iter().any(|milestone| {
-            milestone.business_module_ref.as_deref() == Some(definition.module_id.as_str())
-                && milestone
-                    .work_refs
-                    .iter()
-                    .any(|reference| reference == work_id)
-        })
-    })
+fn work_in_module(
+    store: &HarnessStore,
+    execution_store: &HarnessStore,
+    execution_spaces: &[(String, HarnessStore)],
+    definition: &CustomPageDefinition,
+    work_id: &str,
+) -> Result<bool, ApiError> {
+    if resolve_unique_company_work(execution_store, execution_spaces, work_id)?.is_none() {
+        return Ok(false);
+    }
+    Ok(store.latest_milestones()?.into_iter().any(|milestone| {
+        milestone.business_module_ref.as_deref() == Some(definition.module_id.as_str())
+            && milestone
+                .work_refs
+                .iter()
+                .any(|reference| reference == work_id)
+    }))
 }
 
 fn entity_in_module(
     store: &HarnessStore,
+    execution_store: &HarnessStore,
+    execution_spaces: &[(String, HarnessStore)],
     definition: &CustomPageDefinition,
     reference: &harness_core::EntityRef,
     depth: usize,
-) -> bool {
+) -> Result<bool, ApiError> {
     if depth > 8 {
-        return false;
+        return Ok(false);
     }
-    match reference.kind {
+    Ok(match reference.kind {
         EntityKind::Document => document_in_module(store, definition, &reference.id),
         EntityKind::TypedRecord => store
             .latest_typed_records()
@@ -2372,14 +2595,31 @@ fn entity_in_module(
                             document_in_module(store, definition, document_id)
                         })
             }),
-        EntityKind::Work => work_in_module(store, definition, &reference.id),
-        EntityKind::Approval => store
-            .latest_approvals()
-            .ok()
-            .and_then(|approvals| approvals.into_iter().find(|item| item.id == reference.id))
-            .is_some_and(|approval| {
-                entity_in_module(store, definition, &approval.subject_ref, depth + 1)
-            }),
+        EntityKind::Work => work_in_module(
+            store,
+            execution_store,
+            execution_spaces,
+            definition,
+            &reference.id,
+        )?,
+        EntityKind::Approval => {
+            if let Some(approval) = store
+                .latest_approvals()?
+                .into_iter()
+                .find(|item| item.id == reference.id)
+            {
+                entity_in_module(
+                    store,
+                    execution_store,
+                    execution_spaces,
+                    definition,
+                    &approval.subject_ref,
+                    depth + 1,
+                )?
+            } else {
+                false
+            }
+        }
         EntityKind::FinancialRecord => {
             let commitment = store
                 .latest_commitments()
@@ -2398,7 +2638,7 @@ fn entity_in_module(
                     })
         }
         EntityKind::Actor | EntityKind::Evidence | EntityKind::Execution => false,
-    }
+    })
 }
 
 fn validate_commitment_proposal(
@@ -3112,7 +3352,12 @@ fn docs_v2_pages_index(store: &HarnessStore) -> Result<Value, ApiError> {
     Ok(json!({ "count": items.len(), "items": items }))
 }
 
-fn docs_v2_get(store: &HarnessStore, path: &str) -> Option<ApiResponse> {
+fn docs_v2_get(
+    store: &HarnessStore,
+    execution_store: &HarnessStore,
+    execution_spaces: &[(String, HarnessStore)],
+    path: &str,
+) -> Option<ApiResponse> {
     if path == DOCS_V2_PAGES {
         return Some(finish(docs_v2_pages_index(store)));
     }
@@ -3129,7 +3374,12 @@ fn docs_v2_get(store: &HarnessStore, path: &str) -> Option<ApiResponse> {
                 crate::docs_v2_page::read_page_value(store, document_id, &options)
                     .map_err(docs_v2_error)
                     .and_then(|mut page| {
-                        let resolved = resolve_entity_embed_refs(store, &page)?;
+                        let resolved = resolve_entity_embed_refs(
+                            store,
+                            execution_store,
+                            execution_spaces,
+                            &page,
+                        )?;
                         page["resolved_embeds"] = resolved;
                         Ok(page)
                     }),
@@ -3250,7 +3500,12 @@ fn docs_v2_post(store: &HarnessStore, path: &str, body: &Value) -> Option<ApiRes
 /// F4: resolve entity_embed targets live from their owning ledgers so embed
 /// cards can show real titles instead of bare refs. Missing targets resolve
 /// to an explicit `found: false` entry rather than disappearing.
-fn resolve_entity_embed_refs(store: &HarnessStore, page: &Value) -> Result<Value, ApiError> {
+fn resolve_entity_embed_refs(
+    store: &HarnessStore,
+    execution_store: &HarnessStore,
+    execution_spaces: &[(String, HarnessStore)],
+    page: &Value,
+) -> Result<Value, ApiError> {
     let mut targets: Vec<(String, String)> = Vec::new();
     if let Some(blocks) = page.get("blocks").and_then(Value::as_array) {
         for block in blocks {
@@ -3278,7 +3533,6 @@ fn resolve_entity_embed_refs(store: &HarnessStore, page: &Value) -> Result<Value
     }
     let typed_records = store.latest_typed_records().map_err(ApiError::from)?;
     let views = store.latest_views().map_err(ApiError::from)?;
-    let works = store.latest_works().map_err(ApiError::from)?;
     let mut resolved = serde_json::Map::new();
     for (kind, id) in targets {
         let entry = match kind.as_str() {
@@ -3302,16 +3556,18 @@ fn resolve_entity_embed_refs(store: &HarnessStore, page: &Value) -> Result<Value
                     "mode": serde_json::to_value(view.mode).unwrap_or(json!(null)),
                 })
             }),
-            "work" => works.iter().find(|work| work.id == id).map(|work| {
-                json!({
-                    "kind": "work",
-                    "found": true,
-                    "title": work.title,
-                    "phase": work.phase,
-                    "condition": work.condition,
-                    "resolution": work.resolution,
-                })
-            }),
+            "work" => resolve_unique_company_work(execution_store, execution_spaces, &id)?.map(
+                |(work, _)| {
+                    json!({
+                        "kind": "work",
+                        "found": true,
+                        "title": work.title,
+                        "phase": work.phase,
+                        "condition": work.condition,
+                        "resolution": work.resolution,
+                    })
+                },
+            ),
             _ => None,
         };
         resolved.insert(

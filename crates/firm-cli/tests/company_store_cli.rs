@@ -336,6 +336,17 @@ fn migrate_from_project_copies_only_company_os_ledgers() {
     assert!(project_store
         .join("company_os_human_members.jsonl")
         .is_file());
+    for retired in [
+        "company_os_work_items.jsonl",
+        "company_os_assignments.jsonl",
+        "company_os_work_cutover_fences.jsonl",
+    ] {
+        std::fs::write(
+            project_store.join(retired),
+            format!("{{\"id\":\"retired-{retired}\"}}\n"),
+        )
+        .unwrap();
+    }
 
     let out = run_firm(
         &home,
@@ -355,8 +366,12 @@ fn migrate_from_project_copies_only_company_os_ledgers() {
     let migrated = json_out(&out);
     assert_eq!(migrated["ok"], true);
     assert_eq!(
-        migrated["boundary"]["copied"], "company_os_*.jsonl only",
+        migrated["boundary"]["copied"], "active Company OS ledger allowlist only",
         "migration must declare its narrow copy boundary"
+    );
+    assert_eq!(
+        migrated["boundary"]["retired_workitem_history_migrated"],
+        false
     );
     assert!(
         migrated["copied_records"].as_u64().unwrap() >= 1,
@@ -369,6 +384,16 @@ fn migrate_from_project_copies_only_company_os_ledgers() {
     assert!(company_store
         .join("company_os_human_members.jsonl")
         .is_file());
+    for retired in [
+        "company_os_work_items.jsonl",
+        "company_os_assignments.jsonl",
+        "company_os_work_cutover_fences.jsonl",
+    ] {
+        assert!(
+            !company_store.join(retired).exists(),
+            "retired ledger must not be copied: {retired}"
+        );
+    }
     assert!(company_store
         .join("company_store_migrations.jsonl")
         .is_file());

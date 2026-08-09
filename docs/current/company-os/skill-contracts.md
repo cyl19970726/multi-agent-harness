@@ -104,11 +104,13 @@ HARNESS_COMPANY=<company-id> firm company work list
 If no Company is selected, current commands still fall back to the
 project-derived compatibility Store. That fallback is allowed for legacy reads
 and migration work, but new dogfood/company operations should prefer an
-explicit Company Store. `migrate-from-project` copies only `company_os_*.jsonl`
-ledgers and must not be treated as Execution Space, Project Binding, provider
+explicit Company Store. `migrate-from-project` copies and verifies only the
+explicit active Company Store ledger allowlist. Retired WorkItem, Assignment,
+and cutover ledgers are disposable history and are not migration inputs. The
+command must not be treated as Execution Space, Project Binding, provider
 session, prompt, or runtime migration. A successful copy or `--verify-only`
-run proves every exact source row remains present in the destination, appends
-an audit record to `company_store_migrations.jsonl`, and writes an advisory
+run proves every exact active source row remains present in the destination,
+appends an audit record to `company_store_migrations.jsonl`, and writes an advisory
 source marker. The marker recommends read-only audit use but does not falsely
 claim filesystem write enforcement.
 

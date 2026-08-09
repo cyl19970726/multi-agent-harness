@@ -65,8 +65,10 @@ The current implementation now has the first explicit Company Store slice:
 `--company <id>`, and `HARNESS_COMPANY` route `firm company ...` commands to
 `<HARNESS_HOME>/companies/<id>/`. If no Company is selected, the older
 project-derived Company OS compatibility path still works. The migration command
-copies only `company_os_*.jsonl` ledgers; it does not move Mission/Wave, Agent
-Team, Workflow, provider sessions, prompts, or runtimes. ADR 0042 defines the
+copies only the explicit active Company Store ledger allowlist. Retired
+WorkItem, Assignment, and cutover ledgers are neither copied nor verified; it
+also does not move Mission/Wave, Agent Team, Workflow, provider sessions,
+prompts, or runtimes. ADR 0042 defines the
 implemented identity split: Company Store owns Agent Company Workspace truth,
 Execution Space owns Mission/Wave, Agent Team, Workflow, and Host coordination,
 and Project Binding owns repo / worktree / provider-cwd selection. Company is

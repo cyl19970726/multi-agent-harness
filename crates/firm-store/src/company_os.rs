@@ -1026,10 +1026,11 @@ impl HarnessStore {
             EntityKind::Milestone => Ok(self
                 .find_by_id::<Milestone>(MILESTONES, &reference.id)?
                 .is_some()),
-            EntityKind::Work => Ok(self
-                .latest_works()?
-                .iter()
-                .any(|work| work.id == reference.id)),
+            // Work is owned by Execution Spaces. A Company Store can never
+            // prove this reference exists from its own root; callers that
+            // retain Work EntityRefs must resolve them through the canonical
+            // cross-space route.
+            EntityKind::Work => Ok(false),
             EntityKind::Approval => Ok(self
                 .find_by_id::<Approval>(APPROVALS, &reference.id)?
                 .is_some()),
@@ -1690,10 +1691,14 @@ impl HarnessStore {
     }
 
     fn require_entity(&self, reference: &EntityRef) -> StoreResult<()> {
-        // Evidence and execution ids are owned by their native stores. They
-        // remain opaque references here instead of being falsely resolved via
-        // a legacy or executor ledger.
-        if matches!(reference.kind, EntityKind::Evidence | EntityKind::Execution) {
+        // Work, evidence, and execution ids are owned by their native stores.
+        // They remain opaque references here instead of being falsely
+        // resolved via a legacy or executor ledger. API callers resolve Work
+        // through its unique Execution Space before reaching this boundary.
+        if matches!(
+            reference.kind,
+            EntityKind::Work | EntityKind::Evidence | EntityKind::Execution
+        ) {
             return Ok(());
         }
         if !self.company_entity_exists(reference)? {

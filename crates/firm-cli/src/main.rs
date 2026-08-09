@@ -2398,7 +2398,8 @@ fn company_store_migrate_from_project_command(args: &[String]) -> CliResult<()> 
         "verified_at": verified_at,
         "verification": verification,
         "boundary": {
-            "copied": "company_os_*.jsonl only",
+            "copied": "active Company OS ledger allowlist only",
+            "retired_workitem_history_migrated": false,
             "execution_space_migration": false,
             "project_binding_migration": false,
             "dual_write": false,
@@ -2441,8 +2442,9 @@ fn company_store_migrate_from_project_command(args: &[String]) -> CliResult<()> 
         "migration_record": migration_record,
         "source_marker": source_marker,
         "boundary": {
-            "copied": "company_os_*.jsonl only",
-            "not_copied": ["missions.jsonl", "waves.jsonl", "agent_teams.jsonl", "team_runs.jsonl", "member_runs.jsonl", "team_messages.jsonl", "provider_sessions.jsonl", "runtimes", "prompts"],
+            "copied": "active Company OS ledger allowlist only",
+            "not_copied": ["retired WorkItem/Assignment/cutover ledgers", "missions.jsonl", "waves.jsonl", "agent_teams.jsonl", "team_runs.jsonl", "member_runs.jsonl", "team_messages.jsonl", "provider_sessions.jsonl", "runtimes", "prompts"],
+            "retired_workitem_history_migrated": false,
             "execution_space_migration": false,
             "project_binding_migration": false,
             "dual_write": false,
@@ -2480,21 +2482,51 @@ struct CompanyLedgerCopyOutcome {
     skipped_identical_files: u64,
 }
 
+/// Current Company Store ledgers only. Retired WorkItem, Assignment and
+/// cutover ledgers are intentionally absent: historical Company task data is
+/// disposable and is neither copied nor verified.
+const ACTIVE_COMPANY_OS_LEDGER_FILES: &[&str] = &[
+    "company_os_documents.jsonl",
+    "company_os_blocks.jsonl",
+    "company_os_typed_records.jsonl",
+    "company_os_relations.jsonl",
+    "company_os_views.jsonl",
+    "company_os_business_modules.jsonl",
+    "company_os_human_members.jsonl",
+    "company_os_standing_agents.jsonl",
+    "company_os_external_participants.jsonl",
+    "company_os_service_actors.jsonl",
+    "company_os_org_units.jsonl",
+    "company_os_organization_memberships.jsonl",
+    "company_os_milestones.jsonl",
+    "company_os_approvals.jsonl",
+    "company_os_commitments.jsonl",
+    "company_os_payments.jsonl",
+    "company_os_custom_page_definitions.jsonl",
+    "company_os_custom_page_packages.jsonl",
+    "company_os_action_commands.jsonl",
+    "company_os_action_policy_definitions.jsonl",
+    "company_os_audit_events.jsonl",
+    "company_os_action_audit_reservations.jsonl",
+    "company_os_blocks_v2.jsonl",
+    "company_os_document_revisions.jsonl",
+    "company_os_document_change_ops.jsonl",
+];
+
+fn active_company_os_ledger_paths(root: &Path) -> Vec<PathBuf> {
+    ACTIVE_COMPANY_OS_LEDGER_FILES
+        .iter()
+        .map(|file_name| root.join(file_name))
+        .filter(|path| path.is_file())
+        .collect()
+}
+
 fn verify_company_os_ledger_migration(src: &Path, dst: &Path) -> Result<serde_json::Value, String> {
-    let mut source_ledgers = fs::read_dir(src)
-        .map_err(|error| error.to_string())?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("company_os_") && name.ends_with(".jsonl"))
-        })
-        .collect::<Vec<_>>();
+    let mut source_ledgers = active_company_os_ledger_paths(src);
     source_ledgers.sort();
     if source_ledgers.is_empty() {
         return Err(format!(
-            "source store has no company_os_*.jsonl ledgers: {}",
+            "source store has no active Company OS ledgers: {}",
             src.display()
         ));
     }
@@ -2595,15 +2627,10 @@ fn copy_company_os_ledgers(
     fs::create_dir_all(dst).map_err(|err| err.to_string())?;
     let mut outcome = CompanyLedgerCopyOutcome::default();
     let mut saw_company_ledger = false;
-    for entry in fs::read_dir(src).map_err(|err| err.to_string())? {
-        let entry = entry.map_err(|err| err.to_string())?;
-        let path = entry.path();
+    for path in active_company_os_ledger_paths(src) {
         let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        if !file_name.starts_with("company_os_") || !file_name.ends_with(".jsonl") {
-            continue;
-        }
         saw_company_ledger = true;
         let target = dst.join(file_name);
         if target.exists() {
@@ -2628,7 +2655,7 @@ fn copy_company_os_ledgers(
     }
     if !saw_company_ledger {
         return Err(format!(
-            "source store has no company_os_*.jsonl ledgers: {}",
+            "source store has no active Company OS ledgers: {}",
             src.display()
         ));
     }
