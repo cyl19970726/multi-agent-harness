@@ -15911,6 +15911,377 @@ fn exact_host_binding_lease_from_args(
     Ok(latest)
 }
 
+fn headless_host_project_context(
+    resolved: &ResolvedStore,
+    run: &AgentTeamRun,
+) -> CliResult<ProjectContext> {
+    if let Some(context) = resolved.context.as_ref() {
+        if run
+            .project_binding_id
+            .as_deref()
+            .is_none_or(|id| id == context.id)
+        {
+            return Ok(context.clone());
+        }
+    }
+    let binding_id = run.project_binding_id.as_deref().ok_or_else(|| {
+        CliError::Usage(format!(
+            "TeamRun {} has no Project Binding; headless Host dispatch requires an exact provider cwd",
+            run.id
+        ))
+    })?;
+    let home = project::firm_home().map_err(project_err)?;
+    project::context_for_id(&home, binding_id)
+        .map_err(project_err)?
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "Project Binding {binding_id} for TeamRun {} is not registered",
+                run.id
+            ))
+        })
+}
+
+fn synthetic_headless_host_member(
+    run: &AgentTeamRun,
+    provider: &str,
+    thread_id: &str,
+) -> AgentMember {
+    let provider_config = AgentProviderConfig {
+        sandbox_policy: Some("read-only".to_string()),
+        ..AgentProviderConfig::default()
+    };
+    AgentMember {
+        id: format!("headless-host:{}", run.id),
+        name: "headless-host-triage".to_string(),
+        description: "Read-only dispatcher for the exact bound Host session".to_string(),
+        role: "host-triage".to_string(),
+        provider: provider.to_string(),
+        model: None,
+        profile: None,
+        provider_config,
+        capabilities: vec!["triage".to_string()],
+        team_ids: Vec::new(),
+        prompt_ref: None,
+        skill_refs: Vec::new(),
+        workspace_policy: Some("read_only".to_string()),
+        worktree_ref: None,
+        permission_profile: Some("read_only".to_string()),
+        runtime_workspace_roots: Vec::new(),
+        status: AgentMemberStatus::Idle,
+        current_task_id: None,
+        current_proposal_id: None,
+        provider_runtime_id: None,
+        native_session: Some(provider_native_session_ref(provider, thread_id)),
+        provider_thread_id: Some(thread_id.to_string()),
+        provider_agent_path: None,
+        provider_agent_nickname: None,
+        provider_agent_role: None,
+        control_endpoint: None,
+        created_at: now_string(),
+        last_seen_at: None,
+    }
+}
+
+fn dispatch_headless_host_once(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    args: &[String],
+) -> CliResult<serde_json::Value> {
+    let team_run_id = required(args, "--id")?;
+    let timeout_ms = value(args, "--timeout-ms")
+        .map(|raw| {
+            raw.parse::<u64>()
+                .map_err(|_| CliError::Usage("--timeout-ms must be an integer".to_string()))
+        })
+        .transpose()?
+        .unwrap_or(300_000);
+    let min_age_secs = value(args, "--min-age-s")
+        .map(|raw| {
+            raw.parse::<u64>()
+                .map_err(|_| CliError::Usage("--min-age-s must be an integer".to_string()))
+        })
+        .transpose()?
+        .unwrap_or_else(HostDispatchConfig::default_age_threshold);
+    let config = HostDispatchConfig {
+        attention_age_threshold_secs: min_age_secs,
+        ..HostDispatchConfig::default()
+    };
+    let now_ms = current_unix_ms_u64();
+    let decision =
+        host_dispatcher::schedule_team_run(store, &team_run_id, &config, now_ms, &now_string())?;
+    let attention_ids = match decision {
+        host_dispatcher::ScheduleDecision::DispatchReady { attention_ids, .. } => attention_ids,
+        other => {
+            return Ok(serde_json::json!({
+                "team_run_id": team_run_id,
+                "dispatched": false,
+                "decision": format!("{other:?}"),
+            }))
+        }
+    };
+    let run = latest_team_run(store, &team_run_id)?;
+    let thread_id = run.host_thread_id.as_deref().ok_or_else(|| {
+        CliError::Usage(format!(
+            "TeamRun {team_run_id} has no exact Host thread binding"
+        ))
+    })?;
+    let provider = canonical_surface(&run.host_surface).to_string();
+    if !matches!(provider.as_str(), "codex" | "claude" | "kimi") {
+        return Err(CliError::Usage(format!(
+            "Host surface {:?} has no headless resume adapter",
+            run.host_surface
+        )));
+    }
+    let project_context = headless_host_project_context(resolved, &run)?;
+    let execution_mode = match provider.as_str() {
+        "codex" => "codex_exec",
+        "claude" => "claude_cli",
+        "kimi" => "kimi_acp",
+        _ => unreachable!("unsupported Host provider was rejected above"),
+    };
+    let mut profile = team_member_provider_profile_for_mode(&provider, Some(execution_mode));
+    let detected = team_member_provider_version_output(&provider);
+    let probe_error = detected.as_ref().err().cloned();
+    apply_provider_version(&mut profile, detected.ok());
+    let compatibility = resolve_provider_compatibility(store, &profile, probe_error.as_deref())?;
+    if !compatibility.allowed {
+        return Err(CliError::Usage(format!(
+            "PROVIDER_COMPATIBILITY_BLOCKED: headless Host provider {} mode {} status {:?}; complete source review or record an exact operational admission before dispatch",
+            profile.provider, profile.execution_mode, compatibility.status
+        )));
+    }
+
+    let owner_id = format!("dispatcher:cli:{}", std::process::id());
+    let lease_id = generated_id("host-dispatch-lease");
+    let lease = store_conflict_as_usage(store.acquire_host_binding_lease(
+        &run.id,
+        &run.host_surface,
+        thread_id,
+        HostBindingLeaseOwnerKind::Dispatcher,
+        &owner_id,
+        &lease_id,
+        now_ms,
+        timeout_ms.saturating_add(30_000),
+    ))?;
+    let claim_id = generated_id("host-dispatch-claim");
+    let delivery_id = generated_id("host-dispatch-delivery");
+    let member = synthetic_headless_host_member(&run, &provider, thread_id);
+    let runtime = AgentRuntime {
+        id: format!("runtime:{delivery_id}"),
+        agent_member_id: member.id.clone(),
+        provider: provider.clone(),
+        status: AgentRuntimeStatus::Running,
+        pid: None,
+        control_endpoint: Some(format!("headless-host://{provider}/{thread_id}")),
+        command: provider.clone(),
+        args: Vec::new(),
+        started_at: now_string(),
+        ended_at: None,
+        last_event_at: Some(now_string()),
+        health: AgentRuntimeHealth {
+            process_alive: true,
+            socket_exists: false,
+            protocol_probe: Some("exact-native-session-resume".to_string()),
+            delivery_probe: None,
+            checked_at: Some(now_string()),
+        },
+    };
+    let cutoff = now_ms.saturating_sub(min_age_secs.saturating_mul(1_000));
+    let dispatched = host_dispatcher::claim_dispatcher_batch_with_consumer(
+        store,
+        host_dispatcher::DispatcherBatchRequest {
+            lease: &lease,
+            older_than_unix_ms: cutoff,
+            limit: attention_ids.len(),
+            claim_id: &claim_id,
+            now_unix_ms: now_ms,
+            updated_at: &format!("unix-ms:{now_ms}"),
+        },
+        |claimed| {
+            let delivered_attention_ids = claimed
+                .iter()
+                .map(|attention| attention.id.clone())
+                .collect::<Vec<_>>();
+            let message = Message {
+                id: delivery_id.clone(),
+                task_id: None,
+                from_agent_id: "system:host-dispatcher".to_string(),
+                to_agent_id: Some(member.id.clone()),
+                channel: Some("host-triage".to_string()),
+                kind: MessageKind::Message,
+                delivery_status: MessageDeliveryStatus::Acknowledged,
+                content: host_dispatcher::build_headless_host_prompt(
+                    &run.id,
+                    &run.objective,
+                    claimed,
+                ),
+                evidence_ids: Vec::new(),
+                created_at: now_string(),
+                delivery: None,
+                sender_kind: SenderKind::System,
+            };
+            if provider == "kimi" {
+                let response = Arc::new(Mutex::new(String::new()));
+                let response_sink = Arc::clone(&response);
+                let receipt = Arc::new(Mutex::new(None::<String>));
+                let receipt_sink = Arc::clone(&receipt);
+                let mut client = kimi_acp::KimiAcpClient::spawn(
+                    &project_context.project_root,
+                    None,
+                    None,
+                    Some(thread_id),
+                    &[],
+                )
+                .map_err(|error| StoreError::Conflict(error.to_string()))?;
+                let outcome = client
+                    .prompt(
+                        &message.content,
+                        Duration::from_millis(timeout_ms),
+                        move |provider_receipt_id| {
+                            *receipt_sink.lock().map_err(|error| {
+                                CliError::Usage(format!("Host receipt lock poisoned: {error}"))
+                            })? = Some(provider_receipt_id.to_string());
+                            Ok(())
+                        },
+                        move |update| {
+                            if update.get("sessionUpdate").and_then(|kind| kind.as_str())
+                                == Some("agent_message_chunk")
+                            {
+                                if let Some(text) = update
+                                    .get("content")
+                                    .and_then(|content| content.get("text"))
+                                    .and_then(|text| text.as_str())
+                                {
+                                    if let Ok(mut collected) = response_sink.lock() {
+                                        collected.push_str(text);
+                                    }
+                                }
+                            }
+                        },
+                        |_| {
+                            Err(CliError::Usage(
+                                "headless Host triage refuses provider permission requests"
+                                    .to_string(),
+                            ))
+                        },
+                        |_| Ok(()),
+                        || Ok(kimi_acp::PromptControl::Continue),
+                    )
+                    .map_err(|error| StoreError::Conflict(error.to_string()))?;
+                if let Some(error) = outcome.provider_error {
+                    return Err(StoreError::Conflict(format!(
+                        "headless Kimi Host turn failed: {error}"
+                    )));
+                }
+                let receipt = receipt
+                    .lock()
+                    .map_err(|error| {
+                        StoreError::Conflict(format!("Host receipt lock poisoned: {error}"))
+                    })?
+                    .clone()
+                    .ok_or_else(|| {
+                        StoreError::Conflict(
+                            "headless Kimi Host turn returned no prompt receipt".to_string(),
+                        )
+                    })?;
+                let summary = response
+                    .lock()
+                    .map_err(|error| {
+                        StoreError::Conflict(format!("Host response lock poisoned: {error}"))
+                    })?
+                    .clone();
+                return host_dispatcher::DispatcherConsumerSuccess::new(
+                    (summary, delivered_attention_ids),
+                    receipt,
+                );
+            }
+
+            let outcome = run_provider_delivery(
+                store,
+                &member,
+                &runtime,
+                &message,
+                &delivery_id,
+                timeout_ms,
+                &project_context,
+            )
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+            if outcome.status != ProviderExecutionStatus::Succeeded {
+                return Err(StoreError::Conflict(format!(
+                    "headless Host provider turn ended {:?}: {}",
+                    outcome.status, outcome.summary
+                )));
+            }
+            let resumed_session = outcome
+                .native_session
+                .as_ref()
+                .map(|session| session.native_session_id.as_str())
+                .or(outcome.provider_thread_id.as_deref());
+            if resumed_session != Some(thread_id) {
+                return Err(StoreError::Conflict(format!(
+                    "headless Host resume identity drifted: expected {thread_id}, got {}",
+                    resumed_session.unwrap_or("unavailable")
+                )));
+            }
+            let receipt = outcome
+                .provider_request_id
+                .or(outcome.provider_turn_id)
+                .map(|id| format!("{provider}:{thread_id}:{id}"))
+                .or_else(|| {
+                    outcome
+                        .evidence_ids
+                        .first()
+                        .map(|id| format!("{provider}:{thread_id}:terminal-evidence:{id}"))
+                })
+                .ok_or_else(|| {
+                    StoreError::Conflict(
+                        "headless Host turn returned no provider terminal evidence".to_string(),
+                    )
+                })?;
+            host_dispatcher::DispatcherConsumerSuccess::new(
+                (outcome.summary, delivered_attention_ids),
+                receipt,
+            )
+        },
+    );
+    let released = store.release_host_binding_lease(&lease, current_unix_ms_u64());
+    let (summary, delivered_attention_ids) = match (dispatched, released) {
+        (Ok(delivery), Ok(_)) => delivery,
+        (Err(error), Ok(_)) => return Err(error.into()),
+        (Ok(_), Err(error)) => return Err(error.into()),
+        (Err(error), Err(release_error)) => {
+            return Err(StoreError::Conflict(format!(
+                "{error}; dispatcher lease release also failed: {release_error}"
+            ))
+            .into())
+        }
+    };
+    append_team_run_event(
+        store,
+        &run.id,
+        next_team_run_seq(store, &run.id)?,
+        TeamRunEventSourceKind::Host,
+        None,
+        "host_dispatch",
+        &run.id,
+        "delivered",
+        &format!(
+            "headless Host delivered {} attention(s) to exact {}:{}",
+            delivered_attention_ids.len(),
+            provider,
+            thread_id
+        ),
+    )?;
+    Ok(serde_json::json!({
+        "team_run_id": run.id,
+        "dispatched": true,
+        "host_surface": provider,
+        "host_thread_id": thread_id,
+        "attention_ids": delivered_attention_ids,
+        "provider_summary": summary,
+    }))
+}
+
 fn team_run_command(
     store: &HarnessStore,
     resolved: &ResolvedStore,
@@ -15918,11 +16289,15 @@ fn team_run_command(
 ) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run create|list|status|board-summary|work|recover|host-inbox|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|wait|complete|cancel",
+        "team-run create|list|status|board-summary|work|recover|host-inbox|dispatch-host|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|wait|complete|cancel",
     )?;
     let json = has_flag(args, "--json");
     match args[0].as_str() {
         "work" => team_run_work_command(store, &args[1..])?,
+        "dispatch-host" => {
+            let result = dispatch_headless_host_once(store, resolved, &args[1..])?;
+            print_json(&result)?;
+        }
         "create" => {
             let agent_team_id = value(args, "--agent-team-id");
             let mut members: Vec<TeamMemberSpec> = many(args, "--member")
@@ -39323,6 +39698,7 @@ team-run send       --id <id> --from <actor> --to <csv> --kind message|handoff|c
                     --body <text> [--response-required|--informational]
                     [--work-id <id>] [--correlation-id <id>] [--json]
 team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]
+team-run dispatch-host --id <id> [--min-age-s <n>] [--timeout-ms <n>]
 team-run ack        --id <id> (--message-id <csv>|--all-delivered)
                     [--member-id <id>] [--json]
 team-run events     --id <id> [--after-seq <n>] [--json]
@@ -39373,6 +39749,7 @@ team-run wait --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
 team-run send --id <id> --from <actor> --to <csv>
   --kind message|handoff|control --body <text> [--work-id <id>] [--json]
 team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]
+team-run dispatch-host --id <id> [--min-age-s <n>] [--timeout-ms <n>]
 team-run ack --id <id> (--message-id <csv>|--all-delivered) [--json]
 team-run events --id <id> [--json]
 team-run board-summary --id <id>
@@ -39420,7 +39797,7 @@ fn print_help() {
   mission log append --mission-id <id> --kind judgment|replan|recovery|closeout_evidence --body <md>
   mission log show --mission-id <id> [--tail <n>]
   wave list|show|history (historical reads only; create|update|advance|gate retired by ADR 0051 -- use `mission log append`)
-  team-run create|list|status|recover|host-inbox|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|complete|cancel
+  team-run create|list|status|recover|host-inbox|dispatch-host|bind-host|host-lease-status|renew-host-lease|release-host-lease|inbox|ack|reconcile-delivery|add-member|rename-member|close-member|reopen-member|deactivate-member|start|send|resolve-interaction|events|complete|cancel
   team-run board-summary --id <team-run-id>
       <=500-char plain-text board digest: counts by status, assigned/unassigned,
       ready, and one idle|working|awaiting-review line per active member.
