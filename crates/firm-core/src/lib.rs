@@ -2415,6 +2415,110 @@ pub enum MemberRunStatus {
     Stopped,
 }
 
+/// The provider execution boundary fenced before any provider-native side
+/// effect. This enum is deliberately closed: free-form boundary prose must
+/// never become recovery authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCompatibilityBlockBoundary {
+    StartPersistentExecution,
+    ResumePersistentExecution,
+}
+
+/// The compatibility resolver branch that caused a durable provider block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCompatibilityBlockSource {
+    AdapterCompatibility,
+    ProbeFailure,
+}
+
+/// Typed, replay-validatable authority for a compatibility-owned block.
+///
+/// `MemberAction` remains an audit projection. Neither action type nor action
+/// summary can create or clear this authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderCompatibilityBlockCause {
+    pub schema_version: u32,
+    pub id: String,
+    pub member_run_id: String,
+    pub provider: String,
+    pub execution_mode: String,
+    pub provider_version: String,
+    pub adapter_contract_version: String,
+    pub boundary: ProviderCompatibilityBlockBoundary,
+    pub compatibility_status: ProviderCompatibilityStatus,
+    pub source: ProviderCompatibilityBlockSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_error: Option<String>,
+    pub caused_at: String,
+}
+
+impl ProviderCompatibilityBlockCause {
+    pub const SCHEMA_VERSION: u32 = 1;
+
+    pub fn exact_key(&self) -> (&str, &str, &str, &str) {
+        (
+            &self.provider,
+            &self.execution_mode,
+            &self.provider_version,
+            &self.adapter_contract_version,
+        )
+    }
+}
+
+impl Validate for ProviderCompatibilityBlockCause {
+    fn validate(&self) -> Result<(), ValidationError> {
+        if self.schema_version != Self::SCHEMA_VERSION {
+            return Err(ValidationError::Invalid {
+                field: "ProviderCompatibilityBlockCause.schema_version",
+                reason: "unsupported schema version",
+            });
+        }
+        require_non_empty(&self.id, "ProviderCompatibilityBlockCause.id")?;
+        require_non_empty(
+            &self.member_run_id,
+            "ProviderCompatibilityBlockCause.member_run_id",
+        )?;
+        require_non_empty(&self.provider, "ProviderCompatibilityBlockCause.provider")?;
+        require_non_empty(
+            &self.execution_mode,
+            "ProviderCompatibilityBlockCause.execution_mode",
+        )?;
+        require_non_empty(
+            &self.provider_version,
+            "ProviderCompatibilityBlockCause.provider_version",
+        )?;
+        require_non_empty(
+            &self.adapter_contract_version,
+            "ProviderCompatibilityBlockCause.adapter_contract_version",
+        )?;
+        require_non_empty(&self.caused_at, "ProviderCompatibilityBlockCause.caused_at")?;
+        match (self.compatibility_status, self.source, &self.probe_error) {
+            (
+                ProviderCompatibilityStatus::Unavailable,
+                ProviderCompatibilityBlockSource::ProbeFailure,
+                Some(error),
+            ) => require_non_empty(error, "ProviderCompatibilityBlockCause.probe_error")?,
+            (
+                ProviderCompatibilityStatus::ReviewRequired
+                | ProviderCompatibilityStatus::Incompatible
+                | ProviderCompatibilityStatus::Unknown,
+                ProviderCompatibilityBlockSource::AdapterCompatibility,
+                None,
+            ) => {}
+            _ => {
+                return Err(ValidationError::Invalid {
+                    field: "ProviderCompatibilityBlockCause.compatibility_status",
+                    reason: "status, source, and probe_error are inconsistent",
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Durable coordination lifecycle of one MemberRun, separate from its
 /// provider runtime/work status. Close is reversible; Retire is permanent.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -2881,6 +2985,11 @@ pub struct MemberRun {
     /// independent of `provider_profile.compatibility_status`.
     #[serde(default)]
     pub provider_capacity: Option<ProviderCapacitySnapshot>,
+    /// Present only while the Store's provider-compatibility transition owns
+    /// this MemberRun's Blocked state. Generic MemberRun CAS cannot set or
+    /// clear it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_compatibility_block_cause: Option<ProviderCompatibilityBlockCause>,
     /// Durable mailbox/participation state, independent of the process state
     /// represented by `status`.
     #[serde(default)]
@@ -3066,6 +3175,45 @@ impl Validate for MemberRun {
         }
         if let Some(snapshot) = &self.workspace_snapshot {
             snapshot.validate()?;
+        }
+        if let Some(cause) = &self.provider_compatibility_block_cause {
+            cause.validate()?;
+            if self.status != MemberRunStatus::Blocked {
+                return Err(ValidationError::Invalid {
+                    field: "MemberRun.provider_compatibility_block_cause",
+                    reason: "typed compatibility cause requires Blocked status",
+                });
+            }
+            if cause.member_run_id != self.id || cause.provider != self.provider {
+                return Err(ValidationError::Invalid {
+                    field: "MemberRun.provider_compatibility_block_cause",
+                    reason: "typed compatibility cause does not match MemberRun identity",
+                });
+            }
+            let profile = self
+                .provider_profile
+                .as_ref()
+                .ok_or(ValidationError::Invalid {
+                    field: "MemberRun.provider_compatibility_block_cause",
+                    reason: "typed compatibility cause requires the observed provider profile",
+                })?;
+            if cause.compatibility_status != profile.compatibility_status
+                || cause.exact_key()
+                    != (
+                        profile.provider.as_str(),
+                        profile.execution_mode.as_str(),
+                        profile.provider_version.as_deref().unwrap_or("unavailable"),
+                        profile
+                            .adapter_contract_version
+                            .as_deref()
+                            .unwrap_or("unknown"),
+                    )
+            {
+                return Err(ValidationError::Invalid {
+                    field: "MemberRun.provider_compatibility_block_cause",
+                    reason: "typed compatibility cause does not match the observed provider tuple",
+                });
+            }
         }
         Ok(())
     }
@@ -7192,6 +7340,35 @@ mod tests {
     }
 
     #[test]
+    fn provider_compatibility_block_cause_is_typed_and_rejects_unknown_fields() {
+        let cause = ProviderCompatibilityBlockCause {
+            schema_version: ProviderCompatibilityBlockCause::SCHEMA_VERSION,
+            id: "cause-1".into(),
+            member_run_id: "member-1".into(),
+            provider: "codex".into(),
+            execution_mode: "codex_app_server".into(),
+            provider_version: "9.9.9".into(),
+            adapter_contract_version: "codex-app-server-v1".into(),
+            boundary: ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+            compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
+            source: ProviderCompatibilityBlockSource::AdapterCompatibility,
+            probe_error: None,
+            caused_at: "unix-ms:1".into(),
+        };
+        cause.validate().expect("valid typed cause");
+        let mut value = serde_json::to_value(&cause).unwrap();
+        value["forged_authority"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<ProviderCompatibilityBlockCause>(value).is_err());
+
+        let mut inconsistent = cause;
+        inconsistent.compatibility_status = ProviderCompatibilityStatus::Unavailable;
+        assert!(inconsistent.validate().is_err());
+        inconsistent.source = ProviderCompatibilityBlockSource::ProbeFailure;
+        inconsistent.probe_error = Some("probe failed".into());
+        inconsistent.validate().expect("typed probe failure");
+    }
+
+    #[test]
     fn member_run_rows_without_capacity_stay_readable_and_absent_is_not_available() {
         let row = serde_json::json!({
             "id": "member-run-1",
@@ -7276,6 +7453,43 @@ mod tests {
         });
         let mut member: MemberRun = serde_json::from_value(row).expect("member run");
         member.provider_capacity = Some(snapshot.clone());
+        member.status = MemberRunStatus::Blocked;
+        member.provider_profile = Some(ProviderIntegrationProfile {
+            provider: "claude".into(),
+            execution_mode: "sdk".into(),
+            execution_driver: MemberExecutionDriver::HostDriven,
+            provider_version: Some("2.1.220".into()),
+            adapter_contract_version: Some("claude-sdk-v1".into()),
+            reviewed_provider_versions: Vec::new(),
+            compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
+            adapter_reviewed_at: None,
+            compatibility_note: None,
+            interaction_mode: ProviderInteractionMode::EndRoundAndFollowUp,
+            ordinary_message_boundary: OrdinaryMessageBoundary::InTurn,
+            plan_mode: ProviderFeatureMode::Emulated,
+            goal_mode: ProviderFeatureMode::Emulated,
+            tool_event_fidelity: ProviderEventFidelity::Structured,
+            artifact_event_fidelity: ProviderEventFidelity::Structured,
+            supports_cancel: true,
+            supports_resume: true,
+            observes_native_subagents: false,
+            observes_background_tasks: false,
+            thinking_transient_only: true,
+        });
+        member.provider_compatibility_block_cause = Some(ProviderCompatibilityBlockCause {
+            schema_version: ProviderCompatibilityBlockCause::SCHEMA_VERSION,
+            id: "cause-schema-1".into(),
+            member_run_id: member.id.clone(),
+            provider: "claude".into(),
+            execution_mode: "sdk".into(),
+            provider_version: "2.1.220".into(),
+            adapter_contract_version: "claude-sdk-v1".into(),
+            boundary: ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+            compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
+            source: ProviderCompatibilityBlockSource::AdapterCompatibility,
+            probe_error: None,
+            caused_at: "unix-ms:1785591600000".into(),
+        });
 
         let encoded = serde_json::to_value(&member).expect("encode member run");
         let declared = schema["properties"].as_object().expect("schema properties");
@@ -7306,10 +7520,28 @@ mod tests {
             "emitted provider_capacity fields are not declared in member-run.schema.json:              {undeclared_capacity:?}"
         );
 
+        let declared_cause = declared["provider_compatibility_block_cause"]["properties"]
+            .as_object()
+            .expect("schema must declare typed compatibility cause properties");
+        let undeclared_cause = encoded["provider_compatibility_block_cause"]
+            .as_object()
+            .expect("typed cause serialises when present")
+            .keys()
+            .filter(|key| !declared_cause.contains_key(key.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(
+            undeclared_cause.is_empty(),
+            "emitted typed compatibility cause fields are not declared: {undeclared_cause:?}"
+        );
+
         // Round-trip: the snapshot survives encode/decode unchanged, so the
         // schema is describing the shape the runtime actually persists.
         let decoded: MemberRun = serde_json::from_value(encoded).expect("decode member run");
         assert_eq!(decoded.provider_capacity, Some(snapshot));
+        decoded
+            .validate()
+            .expect("typed blocked MemberRun round-trips");
     }
 
     #[test]

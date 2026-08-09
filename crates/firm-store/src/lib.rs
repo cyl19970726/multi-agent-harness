@@ -15,7 +15,8 @@ use firm_core::{
     MemberAction, MemberRun, Message, MessageDelivery, MessageDeliveryStatus,
     MessageTerminalSource, Mission, MissionLogEntry, MissionStatus, PendingInteraction, Proposal,
     ProviderChildThread, ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
-    ProviderExecutionStatus, ProviderInteractionRequestBody, ProviderInteractionResponseBody,
+    ProviderCompatibilityBlockCause, ProviderCompatibilityStatus, ProviderExecutionStatus,
+    ProviderIntegrationProfile, ProviderInteractionRequestBody, ProviderInteractionResponseBody,
     Review, ReviewVerdict, TeamActorKind, TeamDeliveryPolicy, TeamDeliveryStatus,
     TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage, TeamMessageKind, TeamRunEvent,
     TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus, Validate, Vision, Wave,
@@ -2127,6 +2128,15 @@ impl HarnessStore {
     }
 
     pub fn append_member_run(&self, value: &MemberRun) -> StoreResult<()> {
+        value
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        if value.provider_compatibility_block_cause.is_some() {
+            return Err(StoreError::Conflict(
+                "PROVIDER_COMPATIBILITY_BLOCK_AUTHORITY_REQUIRED: initial MemberRun append cannot set a typed compatibility cause"
+                    .to_string(),
+            ));
+        }
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let rows = self.read_jsonl::<MemberRun>("member_runs.jsonl")?;
@@ -2186,13 +2196,187 @@ impl HarnessStore {
         }
         ensure_member_provenance_unchanged(&current, next)?;
         ensure_member_lifecycle_revision(&current, next)?;
+        ensure_provider_compatibility_cause_unchanged(&current, next)?;
+        next.validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
         self.append_jsonl_unlocked("member_runs.jsonl", next)
+    }
+
+    /// Atomically enter a compatibility-owned Blocked state. This is the only
+    /// Store API allowed to introduce a typed compatibility cause.
+    pub fn block_member_run_for_provider_compatibility(
+        &self,
+        expected: &MemberRun,
+        profile: &ProviderIntegrationProfile,
+        cause: ProviderCompatibilityBlockCause,
+        last_event_at: &str,
+    ) -> StoreResult<MemberRun> {
+        cause
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let current = latest_by_id(self.read_jsonl::<MemberRun>("member_runs.jsonl")?, |row| {
+            row.id.clone()
+        })
+        .remove(&expected.id)
+        .ok_or_else(|| StoreError::Conflict(format!("member run not found: {}", expected.id)))?;
+        if current != *expected {
+            return Err(StoreError::Conflict(format!(
+                "MemberRun {} changed concurrently; retry the operation",
+                expected.id
+            )));
+        }
+        current
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        if current.provider_compatibility_block_cause.is_some() {
+            return Err(StoreError::Conflict(format!(
+                "PROVIDER_COMPATIBILITY_BLOCK_ALREADY_OWNED: MemberRun {} already has a typed cause",
+                current.id
+            )));
+        }
+        ensure_compatibility_cause_matches_profile(&current, profile, &cause)?;
+        if cause.compatibility_status != profile.compatibility_status {
+            return Err(StoreError::Conflict(
+                "PROVIDER_COMPATIBILITY_BLOCK_STATUS_MISMATCH: typed cause status does not match the observed provider profile"
+                    .to_string(),
+            ));
+        }
+        require_non_empty_store(last_event_at, "compatibility block last_event_at")?;
+        let mut next = current.clone();
+        next.provider_profile = Some(profile.clone());
+        next.status = firm_core::MemberRunStatus::Blocked;
+        next.provider_compatibility_block_cause = Some(cause);
+        next.last_event_at = Some(last_event_at.to_string());
+        next.validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        self.append_jsonl_unlocked("member_runs.jsonl", &next)?;
+        Ok(next)
+    }
+
+    /// Atomically clear a compatibility-owned block after the current exact
+    /// tuple is either source-reviewed or covered by an active admission.
+    pub fn recover_member_run_from_provider_compatibility_block(
+        &self,
+        expected: &MemberRun,
+        profile: &ProviderIntegrationProfile,
+        recovery_status: firm_core::MemberRunStatus,
+        last_event_at: &str,
+    ) -> StoreResult<MemberRun> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let current = latest_by_id(self.read_jsonl::<MemberRun>("member_runs.jsonl")?, |row| {
+            row.id.clone()
+        })
+        .remove(&expected.id)
+        .ok_or_else(|| StoreError::Conflict(format!("member run not found: {}", expected.id)))?;
+        if current != *expected {
+            return Err(StoreError::Conflict(format!(
+                "MemberRun {} changed concurrently; retry the operation",
+                expected.id
+            )));
+        }
+        current
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        let cause = current
+            .provider_compatibility_block_cause
+            .as_ref()
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "PROVIDER_COMPATIBILITY_BLOCK_CAUSE_REQUIRED: MemberRun {} has no typed compatibility cause",
+                    current.id
+                ))
+            })?;
+        if current.status != firm_core::MemberRunStatus::Blocked {
+            return Err(StoreError::Conflict(format!(
+                "PROVIDER_COMPATIBILITY_BLOCK_STATE_MISMATCH: MemberRun {} is not Blocked",
+                current.id
+            )));
+        }
+        ensure_compatibility_cause_matches_profile(&current, profile, cause)?;
+        if !matches!(
+            recovery_status,
+            firm_core::MemberRunStatus::Disconnected
+                | firm_core::MemberRunStatus::Queued
+                | firm_core::MemberRunStatus::Idle
+        ) {
+            return Err(StoreError::Conflict(
+                "PROVIDER_COMPATIBILITY_RECOVERY_STATUS_INVALID: recovery target must be disconnected, queued, or idle"
+                    .to_string(),
+            ));
+        }
+        let authorized = if profile.compatibility_status == ProviderCompatibilityStatus::Current {
+            profile.provider_version.as_ref().is_some_and(|version| {
+                profile
+                    .reviewed_provider_versions
+                    .iter()
+                    .any(|reviewed| reviewed == version)
+            })
+        } else if profile.compatibility_status == ProviderCompatibilityStatus::ReviewRequired {
+            let (project_id, store_id) = self.provider_compatibility_scope().ok_or_else(|| {
+                StoreError::Conflict(
+                    "PROVIDER_COMPATIBILITY_SCOPE_REQUIRED: recovery requires an exact project/store scope"
+                        .to_string(),
+                )
+            })?;
+            let rows: Vec<ProviderCompatibilityAdmission> =
+                self.read_jsonl(PROVIDER_COMPATIBILITY_ADMISSIONS_LEDGER)?;
+            for row in &rows {
+                row.validate()
+                    .map_err(|error| StoreError::Conflict(error.to_string()))?;
+            }
+            validate_provider_compatibility_admission_ledger(&rows)?;
+            rows.into_iter()
+                .rev()
+                .find(|row| {
+                    row.project_id == project_id
+                        && row.store_id == store_id
+                        && row.exact_key()
+                            == (
+                                profile.provider.as_str(),
+                                profile.execution_mode.as_str(),
+                                profile.provider_version.as_deref().unwrap_or(""),
+                                profile.adapter_contract_version.as_deref().unwrap_or(""),
+                            )
+                })
+                .is_some_and(|row| row.is_active())
+        } else {
+            false
+        };
+        if !authorized {
+            return Err(StoreError::Conflict(format!(
+                "PROVIDER_COMPATIBILITY_RECOVERY_NOT_AUTHORIZED: exact tuple for MemberRun {} is not source-reviewed or actively admitted",
+                current.id
+            )));
+        }
+        require_non_empty_store(last_event_at, "compatibility recovery last_event_at")?;
+        let mut next = current.clone();
+        next.provider_profile = Some(profile.clone());
+        next.status = recovery_status;
+        next.provider_compatibility_block_cause = None;
+        next.finished_at = None;
+        next.last_event_at = Some(last_event_at.to_string());
+        next.validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        self.append_jsonl_unlocked("member_runs.jsonl", &next)?;
+        Ok(next)
     }
 
     /// Materialize one MemberRun already declared by the immutable first
     /// TeamRun row. This is the compatibility path for initial team creation;
     /// later membership changes must use [`Self::admit_member_run`].
     pub fn materialize_initial_member_run(&self, value: &MemberRun) -> StoreResult<()> {
+        value
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        if value.provider_compatibility_block_cause.is_some() {
+            return Err(StoreError::Conflict(
+                "PROVIDER_COMPATIBILITY_BLOCK_AUTHORITY_REQUIRED: materialization cannot set a typed compatibility cause"
+                    .to_string(),
+            ));
+        }
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         if self
@@ -2233,6 +2417,15 @@ impl HarnessStore {
         next: &AgentTeamRun,
         member: &MemberRun,
     ) -> StoreResult<()> {
+        member
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        if member.provider_compatibility_block_cause.is_some() {
+            return Err(StoreError::Conflict(
+                "PROVIDER_COMPATIBILITY_BLOCK_AUTHORITY_REQUIRED: member admission cannot set a typed compatibility cause"
+                    .to_string(),
+            ));
+        }
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let current = latest_by_id(self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?, |run| {
@@ -6435,7 +6628,12 @@ impl HarnessStore {
     }
 
     pub fn member_runs(&self) -> StoreResult<Vec<MemberRun>> {
-        self.read_jsonl("member_runs.jsonl")
+        let rows: Vec<MemberRun> = self.read_jsonl("member_runs.jsonl")?;
+        for row in &rows {
+            row.validate()
+                .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        }
+        Ok(rows)
     }
 
     pub fn team_messages(&self) -> StoreResult<Vec<TeamMessage>> {
@@ -7405,6 +7603,50 @@ fn ensure_member_lifecycle_revision(current: &MemberRun, next: &MemberRun) -> St
     Ok(())
 }
 
+fn ensure_provider_compatibility_cause_unchanged(
+    current: &MemberRun,
+    next: &MemberRun,
+) -> StoreResult<()> {
+    if current.provider_compatibility_block_cause != next.provider_compatibility_block_cause {
+        return Err(StoreError::Conflict(format!(
+            "PROVIDER_COMPATIBILITY_BLOCK_AUTHORITY_REQUIRED: generic MemberRun CAS cannot set, replace, or clear the typed compatibility cause for {}",
+            current.id
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_compatibility_cause_matches_profile(
+    member: &MemberRun,
+    profile: &ProviderIntegrationProfile,
+    cause: &ProviderCompatibilityBlockCause,
+) -> StoreResult<()> {
+    cause
+        .validate()
+        .map_err(|error| StoreError::Conflict(error.to_string()))?;
+    let provider_version = profile.provider_version.as_deref().unwrap_or("unavailable");
+    let adapter_contract_version = profile
+        .adapter_contract_version
+        .as_deref()
+        .unwrap_or("unknown");
+    if cause.member_run_id != member.id
+        || profile.provider != member.provider
+        || cause.exact_key()
+            != (
+                profile.provider.as_str(),
+                profile.execution_mode.as_str(),
+                provider_version,
+                adapter_contract_version,
+            )
+    {
+        return Err(StoreError::Conflict(format!(
+            "PROVIDER_COMPATIBILITY_BLOCK_TUPLE_MISMATCH: typed cause does not match MemberRun {} and its observed provider profile",
+            member.id
+        )));
+    }
+    Ok(())
+}
+
 fn ensure_team_run_admission_revision(
     current: &AgentTeamRun,
     next: &AgentTeamRun,
@@ -7612,13 +7854,16 @@ mod tests {
 
     use firm_core::{
         DelegationMode, DelegationStatus, GateEngine, GateSpec, GateVerdict, HostAttentionKind,
-        MemberActionStatus, MemberRunStatus, MemberWorkspaceSnapshot, MessageKind, Mission,
-        MissionLogEntry, MissionLogEntryKind, MissionStatus, NativeSessionAvailability,
-        NativeSessionRef, ProviderInteractionMessageOption, ProviderInteractionRequestBody,
-        ProviderInteractionResponseBody, ProviderInteractionType, SenderKind, TeamActorKind,
-        TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessageDelivery, TeamMessageKind,
-        TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEventSourceKind,
-        TeamRunStatus, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, WorkPriority,
+        MemberActionStatus, MemberExecutionDriver, MemberRunStatus, MemberWorkspaceSnapshot,
+        MessageKind, Mission, MissionLogEntry, MissionLogEntryKind, MissionStatus,
+        NativeSessionAvailability, NativeSessionRef, OrdinaryMessageBoundary,
+        ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockSource,
+        ProviderEventFidelity, ProviderFeatureMode, ProviderInteractionMessageOption,
+        ProviderInteractionMode, ProviderInteractionRequestBody, ProviderInteractionResponseBody,
+        ProviderInteractionType, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy,
+        TeamDeliveryStatus, TeamMessageDelivery, TeamMessageKind, TeamMessageResponseIntent,
+        TeamRecipientKind, TeamRecipientRef, TeamRunEventSourceKind, TeamRunStatus, Wave,
+        WaveExecutorKind, WaveGateStatus, WaveStatus, WorkPriority,
     };
 
     use super::*;
@@ -7643,6 +7888,31 @@ mod tests {
             lifecycle: ProviderCompatibilityAdmissionLifecycle::Active,
             predecessor_admission_id: None,
             reason: None,
+        }
+    }
+
+    fn provider_compatibility_test_profile() -> ProviderIntegrationProfile {
+        ProviderIntegrationProfile {
+            provider: "kimi".into(),
+            execution_mode: "kimi_acp".into(),
+            execution_driver: MemberExecutionDriver::HostDriven,
+            provider_version: Some("2.1.220".into()),
+            adapter_contract_version: Some("kimi-acp-v1".into()),
+            reviewed_provider_versions: Vec::new(),
+            compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
+            adapter_reviewed_at: None,
+            compatibility_note: None,
+            interaction_mode: ProviderInteractionMode::EndRoundAndFollowUp,
+            ordinary_message_boundary: OrdinaryMessageBoundary::InTurn,
+            plan_mode: ProviderFeatureMode::Emulated,
+            goal_mode: ProviderFeatureMode::Emulated,
+            tool_event_fidelity: ProviderEventFidelity::Structured,
+            artifact_event_fidelity: ProviderEventFidelity::Structured,
+            supports_cancel: true,
+            supports_resume: true,
+            observes_native_subagents: false,
+            observes_background_tasks: false,
+            thinking_transient_only: true,
         }
     }
 
@@ -7702,6 +7972,149 @@ mod tests {
                 .policy,
             firm_core::ProviderCompatibilityAdmissionPolicy::Advisory
         );
+    }
+
+    #[test]
+    fn typed_provider_block_is_store_owned_and_recovery_is_exact() {
+        let root = provider_admission_test_root("typed-block");
+        let store =
+            HarnessStore::new(&root).with_provider_compatibility_scope("project-1", "store-1");
+        let (_run, initial, _work) = seed_host_attention_fixture(&store, "typed-block", None);
+        let profile = provider_compatibility_test_profile();
+        let cause = ProviderCompatibilityBlockCause {
+            schema_version: ProviderCompatibilityBlockCause::SCHEMA_VERSION,
+            id: "cause-1".into(),
+            member_run_id: initial.id.clone(),
+            provider: "kimi".into(),
+            execution_mode: "kimi_acp".into(),
+            provider_version: "2.1.220".into(),
+            adapter_contract_version: "kimi-acp-v1".into(),
+            boundary: ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+            compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
+            source: ProviderCompatibilityBlockSource::AdapterCompatibility,
+            probe_error: None,
+            caused_at: "unix-ms:2".into(),
+        };
+
+        let mut forged = initial.clone();
+        forged.status = MemberRunStatus::Blocked;
+        forged.provider_compatibility_block_cause = Some(cause.clone());
+        assert!(store
+            .compare_and_append_member_run(&initial, &forged)
+            .expect_err("generic CAS cannot forge typed cause")
+            .to_string()
+            .contains("AUTHORITY_REQUIRED"));
+
+        let blocked = store
+            .block_member_run_for_provider_compatibility(&initial, &profile, cause, "unix-ms:2")
+            .expect("dedicated typed block");
+        let mut cleared = blocked.clone();
+        cleared.status = MemberRunStatus::Idle;
+        cleared.provider_compatibility_block_cause = None;
+        assert!(store
+            .compare_and_append_member_run(&blocked, &cleared)
+            .expect_err("generic CAS cannot clear typed cause")
+            .to_string()
+            .contains("AUTHORITY_REQUIRED"));
+
+        let mut wrong = profile.clone();
+        wrong.provider_version = Some("2.1.221".into());
+        assert!(store
+            .recover_member_run_from_provider_compatibility_block(
+                &blocked,
+                &wrong,
+                MemberRunStatus::Idle,
+                "unix-ms:3"
+            )
+            .expect_err("wrong tuple cannot recover")
+            .to_string()
+            .contains("TUPLE_MISMATCH"));
+
+        let mut admission =
+            provider_compatibility_admission("typed-recovery", "kimi_acp", "kimi-acp-v1");
+        admission.provider = "kimi".into();
+        store
+            .admit_provider_compatibility_admission(&admission)
+            .expect("exact admission");
+        let recovered = store
+            .recover_member_run_from_provider_compatibility_block(
+                &blocked,
+                &profile,
+                MemberRunStatus::Idle,
+                "unix-ms:3",
+            )
+            .expect("exact typed recovery");
+        assert_eq!(recovered.id, initial.id);
+        assert_eq!(recovered.status, MemberRunStatus::Idle);
+        assert!(recovered.provider_compatibility_block_cause.is_none());
+        assert!(store
+            .recover_member_run_from_provider_compatibility_block(
+                &blocked,
+                &profile,
+                MemberRunStatus::Idle,
+                "unix-ms:4"
+            )
+            .expect_err("stale recovery loses CAS")
+            .to_string()
+            .contains("changed concurrently"));
+
+        let mut operator_blocked = recovered.clone();
+        operator_blocked.status = MemberRunStatus::Blocked;
+        store
+            .compare_and_append_member_run(&recovered, &operator_blocked)
+            .expect("ordinary operator block remains representable");
+        assert!(store
+            .recover_member_run_from_provider_compatibility_block(
+                &operator_blocked,
+                &profile,
+                MemberRunStatus::Idle,
+                "unix-ms:5"
+            )
+            .expect_err("operator block has no typed cause")
+            .to_string()
+            .contains("CAUSE_REQUIRED"));
+
+        let (_run2, initial2, _work2) =
+            seed_host_attention_fixture(&store, "typed-source-reviewed", None);
+        let mut review_pending = provider_compatibility_test_profile();
+        review_pending.provider_version = Some("3.3.3".into());
+        let source_cause = ProviderCompatibilityBlockCause {
+            schema_version: ProviderCompatibilityBlockCause::SCHEMA_VERSION,
+            id: "cause-source-review".into(),
+            member_run_id: initial2.id.clone(),
+            provider: "kimi".into(),
+            execution_mode: "kimi_acp".into(),
+            provider_version: "3.3.3".into(),
+            adapter_contract_version: "kimi-acp-v1".into(),
+            boundary: ProviderCompatibilityBlockBoundary::ResumePersistentExecution,
+            compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
+            source: ProviderCompatibilityBlockSource::AdapterCompatibility,
+            probe_error: None,
+            caused_at: "unix-ms:6".into(),
+        };
+        let source_blocked = store
+            .block_member_run_for_provider_compatibility(
+                &initial2,
+                &review_pending,
+                source_cause,
+                "unix-ms:6",
+            )
+            .expect("block pending source review");
+        let mut source_reviewed = review_pending;
+        source_reviewed.compatibility_status = ProviderCompatibilityStatus::Current;
+        source_reviewed.reviewed_provider_versions = vec!["3.3.3".into()];
+        let source_recovered = store
+            .recover_member_run_from_provider_compatibility_block(
+                &source_blocked,
+                &source_reviewed,
+                MemberRunStatus::Idle,
+                "unix-ms:7",
+            )
+            .expect("exact source review authorizes recovery without an admission");
+        assert!(source_recovered
+            .provider_compatibility_block_cause
+            .is_none());
+        std::fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]
@@ -8873,6 +9286,7 @@ mod tests {
             provider_controls: Default::default(),
             provider_profile: None,
             provider_capacity: None,
+            provider_compatibility_block_cause: None,
             coordination_status: Default::default(),
             runtime_generation: 1,
             status: MemberRunStatus::Idle,
@@ -9762,6 +10176,7 @@ mod tests {
             provider_controls: Default::default(),
             provider_profile: None,
             provider_capacity: None,
+            provider_compatibility_block_cause: None,
             coordination_status: Default::default(),
             runtime_generation: 1,
             status: MemberRunStatus::Running,
@@ -9941,6 +10356,7 @@ mod tests {
                 provider_controls: Default::default(),
                 provider_profile: None,
                 provider_capacity: None,
+                provider_compatibility_block_cause: None,
                 coordination_status: Default::default(),
                 runtime_generation: 2,
                 status: MemberRunStatus::Waiting,
@@ -11357,6 +11773,7 @@ mod tests {
             provider_controls: Default::default(),
             provider_profile: None,
             provider_capacity: None,
+            provider_compatibility_block_cause: None,
             coordination_status: Default::default(),
             runtime_generation: 1,
             status: MemberRunStatus::Running,
@@ -11615,6 +12032,7 @@ mod tests {
             provider_controls: Default::default(),
             provider_profile: None,
             provider_capacity: None,
+            provider_compatibility_block_cause: None,
             coordination_status: Default::default(),
             runtime_generation: 1,
             status: MemberRunStatus::Idle,
@@ -16209,6 +16627,7 @@ mod tests {
             provider_controls: Default::default(),
             provider_profile: None,
             provider_capacity: None,
+            provider_compatibility_block_cause: None,
             coordination_status: Default::default(),
             runtime_generation: 1,
             status: MemberRunStatus::Idle,
