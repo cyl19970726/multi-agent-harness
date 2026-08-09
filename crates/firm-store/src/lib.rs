@@ -48,6 +48,38 @@ pub const PROVIDER_COMPATIBILITY_ADMISSIONS_LEDGER: &str =
     "provider_compatibility_admissions.jsonl";
 const TRUSTED_HOST_REVIEWER_ID: &str = "host";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnsureProviderCompatibilityAdmissionResult {
+    pub admission: ProviderCompatibilityAdmission,
+    pub created: bool,
+}
+
+fn canonical_provider_admission_evidence_refs(values: &[String]) -> Vec<String> {
+    let mut canonical = values.to_vec();
+    canonical.sort();
+    canonical.dedup();
+    canonical
+}
+
+fn provider_admission_replay_matches(
+    existing: &ProviderCompatibilityAdmission,
+    candidate: &ProviderCompatibilityAdmission,
+) -> bool {
+    existing.project_id == candidate.project_id
+        && existing.store_id == candidate.store_id
+        && existing.exact_key() == candidate.exact_key()
+        && existing.policy == candidate.policy
+        && existing.actor == candidate.actor
+        && canonical_provider_admission_evidence_refs(&existing.evidence_refs)
+            == canonical_provider_admission_evidence_refs(&candidate.evidence_refs)
+        && existing.lifecycle == ProviderCompatibilityAdmissionLifecycle::Active
+        && candidate.lifecycle == ProviderCompatibilityAdmissionLifecycle::Active
+        && existing.predecessor_admission_id.is_none()
+        && candidate.predecessor_admission_id.is_none()
+        && existing.reason.is_none()
+        && candidate.reason.is_none()
+}
+
 fn validate_provider_compatibility_admission_ledger(
     rows: &[ProviderCompatibilityAdmission],
 ) -> StoreResult<()> {
@@ -699,6 +731,78 @@ impl HarnessStore {
             ));
         }
         self.append_provider_compatibility_admission_checked(value)
+    }
+
+    /// Atomically create or reuse the active admission represented by a
+    /// command request.
+    ///
+    /// Generated ids and timestamps are deliberately excluded from replay
+    /// identity. Evidence references are a set: ordering and duplicates do
+    /// not change command semantics, and newly appended rows store them in
+    /// sorted, deduplicated order. Any other difference remains a conflict.
+    pub fn ensure_provider_compatibility_admission(
+        &self,
+        value: &ProviderCompatibilityAdmission,
+    ) -> StoreResult<EnsureProviderCompatibilityAdmissionResult> {
+        if value.lifecycle != ProviderCompatibilityAdmissionLifecycle::Active {
+            return Err(StoreError::Conflict(
+                "provider compatibility admission must have active lifecycle".to_string(),
+            ));
+        }
+        let (project_id, store_id) = self.require_provider_compatibility_scope()?;
+        if value.project_id != project_id || value.store_id != store_id {
+            return Err(StoreError::Conflict(format!(
+                "provider compatibility admission scope mismatch: current project/store is {project_id}/{store_id}, record is {}/{}",
+                value.project_id, value.store_id
+            )));
+        }
+        let mut candidate = value.clone();
+        candidate.evidence_refs =
+            canonical_provider_admission_evidence_refs(&candidate.evidence_refs);
+        candidate
+            .validate()
+            .map_err(|error| StoreError::Conflict(error.to_string()))?;
+
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let rows = self.provider_compatibility_admissions()?;
+
+        if let Some(existing) = rows.iter().find(|row| row.id == candidate.id) {
+            if existing == &candidate {
+                return Ok(EnsureProviderCompatibilityAdmissionResult {
+                    admission: existing.clone(),
+                    created: false,
+                });
+            }
+            return Err(StoreError::Conflict(format!(
+                "provider compatibility admission id {} already has different content",
+                candidate.id
+            )));
+        }
+
+        let current = rows.iter().rev().find(|row| {
+            row.project_id == candidate.project_id
+                && row.store_id == candidate.store_id
+                && row.exact_key() == candidate.exact_key()
+        });
+        if let Some(active) = current.filter(|row| row.is_active()) {
+            if provider_admission_replay_matches(active, &candidate) {
+                return Ok(EnsureProviderCompatibilityAdmissionResult {
+                    admission: active.clone(),
+                    created: false,
+                });
+            }
+            return Err(StoreError::Conflict(format!(
+                "provider compatibility tuple already has semantically different active admission {}",
+                active.id
+            )));
+        }
+
+        self.append_jsonl_unlocked(PROVIDER_COMPATIBILITY_ADMISSIONS_LEDGER, &candidate)?;
+        Ok(EnsureProviderCompatibilityAdmissionResult {
+            admission: candidate,
+            created: true,
+        })
     }
 
     /// Compatibility alias for callers that name the operation, rather than
@@ -8175,6 +8279,125 @@ mod tests {
     }
 
     #[test]
+    fn provider_compatibility_command_replay_reuses_canonical_active_record() {
+        let store = provider_admission_test_store("command-replay");
+        let mut first = provider_compatibility_admission("generated-one", "sdk", "contract-v1");
+        first.evidence_refs = vec![
+            "evidence-b".into(),
+            "evidence-a".into(),
+            "evidence-b".into(),
+        ];
+        let created = store
+            .ensure_provider_compatibility_admission(&first)
+            .expect("create admission");
+        assert!(created.created);
+        assert_eq!(
+            created.admission.evidence_refs,
+            ["evidence-a", "evidence-b"]
+        );
+
+        let mut replay = first;
+        replay.id = "generated-two".into();
+        replay.admitted_at = "unix-ms:999".into();
+        replay.evidence_refs = vec!["evidence-a".into(), "evidence-b".into()];
+        let reused = store
+            .ensure_provider_compatibility_admission(&replay)
+            .expect("reuse admission");
+        assert!(!reused.created);
+        assert_eq!(reused.admission.id, created.admission.id);
+        assert_eq!(store.provider_compatibility_admissions().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn concurrent_provider_compatibility_command_replay_appends_once() {
+        let store = Arc::new(provider_admission_test_store("concurrent-command-replay"));
+        let barrier = Arc::new(Barrier::new(3));
+        let mut workers = Vec::new();
+        for (id, admitted_at, evidence_refs) in [
+            ("generated-one", "unix-ms:10", vec!["b", "a", "b"]),
+            ("generated-two", "unix-ms:20", vec!["a", "b"]),
+        ] {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            workers.push(std::thread::spawn(move || {
+                let mut admission = provider_compatibility_admission(id, "sdk", "contract-v1");
+                admission.admitted_at = admitted_at.into();
+                admission.evidence_refs = evidence_refs.into_iter().map(String::from).collect();
+                barrier.wait();
+                store.ensure_provider_compatibility_admission(&admission)
+            }));
+        }
+        barrier.wait();
+        let results = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("join").expect("ensure"))
+            .collect::<Vec<_>>();
+        assert_eq!(results.iter().filter(|result| result.created).count(), 1);
+        assert_eq!(results[0].admission.id, results[1].admission.id);
+        assert_eq!(store.provider_compatibility_admissions().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn provider_compatibility_command_replay_rejects_semantic_drift() {
+        for (tag, mutate) in [
+            (
+                "policy",
+                (|row: &mut ProviderCompatibilityAdmission| {
+                    row.policy = firm_core::ProviderCompatibilityAdmissionPolicy::Advisory;
+                }) as fn(&mut ProviderCompatibilityAdmission),
+            ),
+            ("actor", |row: &mut ProviderCompatibilityAdmission| {
+                row.actor = "another-operator".into();
+            }),
+            ("evidence", |row: &mut ProviderCompatibilityAdmission| {
+                row.evidence_refs = vec!["different-evidence".into()];
+            }),
+        ] {
+            let store = provider_admission_test_store(tag);
+            let first = provider_compatibility_admission("first", "sdk", "contract-v1");
+            store
+                .ensure_provider_compatibility_admission(&first)
+                .expect("seed admission");
+            let mut drifted = first;
+            drifted.id = "second".into();
+            drifted.admitted_at = "unix-ms:2".into();
+            mutate(&mut drifted);
+            assert!(matches!(
+                store.ensure_provider_compatibility_admission(&drifted),
+                Err(StoreError::Conflict(_))
+            ));
+            assert_eq!(store.provider_compatibility_admissions().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn provider_compatibility_command_replay_creates_after_terminal_row() {
+        let store = provider_admission_test_store("command-after-terminal");
+        let active = provider_compatibility_admission("active", "sdk", "contract-v1");
+        store
+            .ensure_provider_compatibility_admission(&active)
+            .expect("seed active");
+        let mut revoked = active.clone();
+        revoked.id = "revoked".into();
+        revoked.lifecycle = ProviderCompatibilityAdmissionLifecycle::Revoked;
+        revoked.predecessor_admission_id = Some(active.id.clone());
+        revoked.reason = Some("operator revoked".into());
+        store
+            .revoke_provider_compatibility_admission(&revoked)
+            .expect("revoke active");
+
+        let mut replacement = active;
+        replacement.id = "replacement".into();
+        replacement.admitted_at = "unix-ms:3".into();
+        let result = store
+            .ensure_provider_compatibility_admission(&replacement)
+            .expect("create replacement");
+        assert!(result.created);
+        assert_eq!(result.admission.id, "replacement");
+        assert_eq!(store.provider_compatibility_admissions().unwrap().len(), 3);
+    }
+
+    #[test]
     fn provider_compatibility_revoke_and_supersede_fence_stale_predecessors() {
         for lifecycle in [
             ProviderCompatibilityAdmissionLifecycle::Revoked,
@@ -8275,6 +8498,13 @@ mod tests {
         assert!(first
             .effective_provider_compatibility_admission("claude", "sdk", "2.1.220", "contract-v1")
             .is_err());
+        let mut replay = admission;
+        replay.id = "two".into();
+        replay.admitted_at = "unix-ms:2".into();
+        assert!(matches!(
+            first.ensure_provider_compatibility_admission(&replay),
+            Err(StoreError::Json(_))
+        ));
     }
 
     #[test]

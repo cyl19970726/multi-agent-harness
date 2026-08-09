@@ -136,7 +136,10 @@ Revocation and supersession append terminal rows that name the one current
 active predecessor and a reason. Replay validates the full causal ledger and
 fails closed on duplicate ids, unknown/non-current predecessors, policy/scope
 drift, forks, or invalid ordering. An idempotent command replay does not append
-a duplicate row. A revoked or superseded key no longer authorizes execution;
+a duplicate row: evidence refs are treated as a sorted, deduplicated set, while
+policy, actor, scope, and the exact four-part tuple must still match. The
+command reports whether it created or reused the durable record. A revoked or
+superseded key no longer authorizes execution;
 historical evidence remains readable. Execution-space migration copies and
 verifies the admission ledger bytes, but stale source scope grants no authority
 in the destination.
