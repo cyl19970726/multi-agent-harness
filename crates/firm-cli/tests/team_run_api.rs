@@ -2062,7 +2062,8 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
     let peer_message_id = peer_mail["result"]["id"].as_str().unwrap().to_string();
 
     let mut delivered_once = false;
-    for _ in 0..200 {
+    let mut builder_completed_rounds = 0;
+    for _ in 0..300 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
         let messages = snapshot["team_messages"]
             .as_array()
@@ -2078,7 +2079,16 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
                 })
         };
         delivered_once = delivered(&host_message_id) && delivered(&peer_message_id);
-        if delivered_once {
+        builder_completed_rounds = snapshot["member_actions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|action| {
+                action["member_run_id"].as_str() == Some(builder_id.as_str())
+                    && action["action_type"].as_str() == Some("turn_completed")
+            })
+            .count();
+        if delivered_once && builder_completed_rounds >= 2 {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -2088,15 +2098,6 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
         "Host and peer conversation mail were not each delivered exactly once"
     );
     let (_, snapshot) = serve.get_json("/v1/snapshot");
-    let builder_completed_rounds = snapshot["member_actions"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|action| {
-            action["member_run_id"].as_str() == Some(builder_id.as_str())
-                && action["action_type"].as_str() == Some("turn_completed")
-        })
-        .count();
     assert!(
         builder_completed_rounds >= 2,
         "initial Work and follow-up conversation should produce provider rounds without fabricating Handoff messages: {builder_completed_rounds}"
