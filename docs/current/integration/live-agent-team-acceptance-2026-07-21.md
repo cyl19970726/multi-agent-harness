@@ -316,7 +316,7 @@ collapsing their lifecycles:
 
 - Company OS StandingAgent and reusable AgentMember
   `agent-org-runtime-dogfood`;
-- Mission-linked reusable team `team-org-runtime-dogfood`;
+- Mission-owned flat team `team-org-runtime-dogfood`;
 - TeamRun `team-run-1785235941106-p35827-0`;
 - MemberRun `member-run-1785235941106-p35827-1`;
 - Assignment correlation `corr-1785235941131-p35827-5`;
@@ -324,7 +324,7 @@ collapsing their lifecycles:
 - Codex app-server thread `019fa85b-0b68-7270-aab4-e09dc01fbb3c` on reviewed
   Codex `0.145.0`.
 
-Creating the TeamRun from its independent Team definition automatically
+Creating the TeamRun from its Mission-owned flat Team definition automatically
 preserved `MemberRun.agent_member_id`. Before provider execution, the Company
 OS snapshot already projected the exact Assignment. After the first provider
 turn, the same projection included the idle MemberRun, native-session locator,

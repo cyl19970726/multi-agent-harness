@@ -150,28 +150,14 @@ export interface AgentTeam {
   id: string;
   name?: string;
   description?: string;
-  /** Team Lead identity. `host` means the current Host Agent. */
-  owner_agent_id?: string;
+  /** The one Mission this flat Team executes. */
+  mission_id: string;
+  /** Durable Host Agent identity for this Team. */
+  host_agent_id: string;
+  /** Immutable machine placement for every Member in the Team. */
+  node_id: string;
   status?: "active" | "closed" | "archived";
   member_ids?: string[];
-  /**
-   * Recursive Organization relation (ADR 0052): parent AgentTeam id. Absent
-   * or null means a root Team. Wire name frozen by the topology slice
-   * (schemas/agent-team.schema.json); rows pre-dating it read as roots.
-   */
-  parent_team_id?: string | null;
-  /**
-   * Recursive Organization relation (ADR 0052): durable AgentMember that
-   * Hosts this Team. Optional on compatibility rows; never inferred from
-   * `owner_agent_id` — that legacy field is rendered separately.
-   */
-  host_member_id?: string | null;
-  /** Owning Company id (Organization model §3.1). null = unbound execution-only Team. */
-  company_id?: string | null;
-  /** Machine where this Team's Supervisor runs (§3.1). null = default/unknown. */
-  machine_id?: string | null;
-  /** User-defined tags for grouping and filtering (§3.1). */
-  labels?: string[];
 }
 
 export interface Message {
@@ -264,7 +250,7 @@ export type MissionStatus =
   | "completed"
   | "cancelled";
 
-/** Durable intent container for one or more ordered Waves. */
+/** Durable intent container. Its AgentTeam is resolved by Team.mission_id. */
 export interface Mission {
   id: string;
   title: string;
@@ -273,7 +259,6 @@ export interface Mission {
   desired_outcome?: string | null;
   status?: MissionStatus | string;
   wave_ids?: string[];
-  agent_team_ids?: string[];
   outcome_summary?: string | null;
   completed_by?: string | null;
   created_at?: string;
@@ -357,18 +342,15 @@ export type TeamRunStatus =
   | "cancelled";
 
 /**
- * One independent or Mission-scoped Agent Team run. Its members and native
+ * One execution of a required Mission-owned AgentTeam. Its members and native
  * sessions may continue across Host-plan Waves. Wire shape is snake_case;
  * timestamps are "unix-ms:<ms>" strings like the rest of the snapshot.
  */
 export interface TeamRun {
   id: string;
-  definition_id?: string | null;
-  agent_team_id?: string | null;
-  /** Optional Mission relation for a long-lived TeamRun. */
-  mission_id?: string | null;
-  /** Legacy direct-Wave ownership only; new runs leave this null. */
-  wave_id?: string | null;
+  agent_team_id: string;
+  execution_node_id: string;
+  project_binding_id: string;
   /** Explicit retry lineage when this run replaces an earlier run, if any. */
   previous_run_id?: string | null;
   host_surface?: string | null;
@@ -841,8 +823,61 @@ export interface WorkDelivery {
   updated_at: string;
 }
 
+export type WorkDelegationState = "active" | "blocked" | "completed" | "failed" | "cancelled";
+
+export interface WorkDelegation {
+  id: string;
+  source_work_ref: { team_run_id: string; work_id: string };
+  source_work_version: number;
+  source_owner_member_id: string;
+  created_by_member_run_id?: string | null;
+  target_agent_team_id: string;
+  target_work_ref: { team_run_id: string; work_id: string };
+  delegated_by_actor: TeamActorRef;
+  state: WorkDelegationState | string;
+  resolution_summary?: string | null;
+  blocker_reason?: string | null;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExecutionNode {
+  id: string;
+  display_name: string;
+  status: "active" | "draining" | "retired" | string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NodeProjectRegistration {
+  node_id: string;
+  execution_space_id: string;
+  project_binding_id: string;
+  status: "active" | "disabled" | string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NodeDaemonLease {
+  node_id: string;
+  daemon_id: string;
+  generation: number;
+  instance_id: string;
+  status: "active" | "draining" | "released" | "expired" | string;
+  acquired_unix_ms: number;
+  renewed_unix_ms: number;
+  expires_unix_ms: number;
+  released_unix_ms?: number | null;
+}
+
 export interface TeamSupervisorLease {
   team_run_id: string;
+  node_id: string;
+  node_daemon_id: string;
+  node_daemon_generation: number;
+  execution_space_id: string;
+  project_binding_id: string;
   supervisor_id: string;
   generation: number;
   owner_process_id: number;
@@ -1010,6 +1045,10 @@ export interface DashboardSnapshot {
   works?: Work[];
   work_events?: WorkEvent[];
   work_deliveries?: WorkDelivery[];
+  work_delegations?: WorkDelegation[];
+  execution_nodes?: ExecutionNode[];
+  node_project_registrations?: NodeProjectRegistration[];
+  node_daemon_leases?: NodeDaemonLease[];
   team_supervisor_leases?: TeamSupervisorLease[];
   team_member_close_requests?: TeamMemberCloseRequest[];
   agent_message_routes?: AgentMessageRoute[];

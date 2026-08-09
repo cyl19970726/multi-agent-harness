@@ -10,12 +10,51 @@ mod fake_provider;
 mod firm_env;
 use firm_env::{current_project_id, run_firm, run_firm_with_env, ServeHandle, TempHome};
 
-fn init_project(home: &TempHome, name: &str) -> String {
+fn init_project(home: &TempHome, name: &str) -> (String, String, String) {
     let root = home.base().join(name);
     std::fs::create_dir_all(&root).unwrap();
     let out = run_firm(home, &root, &["init"]);
     assert!(out.status.success(), "init {name} failed: {out:?}");
-    current_project_id(home)
+    let project_id = current_project_id(home);
+    let node = run_firm(home, &root, &["node", "init"]);
+    assert!(node.status.success(), "node init failed: {node:?}");
+    let node: serde_json::Value = serde_json::from_slice(&node.stdout).expect("node JSON");
+    let node_id = node["id"].as_str().expect("node id").to_string();
+    let registration = run_firm(
+        home,
+        &root,
+        &[
+            "node",
+            "project",
+            "register",
+            "--node-id",
+            &node_id,
+            "--project-binding-id",
+            &project_id,
+        ],
+    );
+    assert!(
+        registration.status.success(),
+        "register failed: {registration:?}"
+    );
+    let host = run_firm(
+        home,
+        &root,
+        &[
+            "agent",
+            "create",
+            "--name",
+            "console-host",
+            "--role",
+            "host",
+            "--provider",
+            "codex",
+        ],
+    );
+    assert!(host.status.success(), "host create failed: {host:?}");
+    let host: serde_json::Value = serde_json::from_slice(&host.stdout).expect("host JSON");
+    let host_id = host["id"].as_str().expect("host id").to_string();
+    (project_id, node_id, host_id)
 }
 
 fn run_member_json(
@@ -62,7 +101,13 @@ fn spawn_fake_kimi_serve(home: &TempHome) -> ServeHandle {
     )
 }
 
-fn create_mission_and_run(serve: &ServeHandle, project_id: &str) -> (String, String, String) {
+fn create_mission_and_run(
+    home: &TempHome,
+    serve: &ServeHandle,
+    project_id: &str,
+    node_id: &str,
+    host_id: &str,
+) -> (String, String, String) {
     let (status, body) = serve.post_json(
         &format!("/v1/missions?project={project_id}"),
         &serde_json::json!({
@@ -72,11 +117,36 @@ fn create_mission_and_run(serve: &ServeHandle, project_id: &str) -> (String, Str
         }),
     );
     assert_eq!(status, 200, "body: {body}");
+    let team = run_firm(
+        home,
+        home.base(),
+        &[
+            "--project",
+            project_id,
+            "team",
+            "create",
+            "--id",
+            "team-console-followups",
+            "--name",
+            "Console follow-ups team",
+            "--description",
+            "Flat team for HostAttention runtime coverage",
+            "--mission-id",
+            "mission-console-followups",
+            "--host-agent-id",
+            host_id,
+            "--node-id",
+            node_id,
+            "--member",
+            host_id,
+        ],
+    );
+    assert!(team.status.success(), "team create failed: {team:?}");
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs?project={project_id}"),
         &serde_json::json!({
+            "agent_team_id": "team-console-followups",
             "objective": "Drive the console follow-up routes",
-            "mission_id": "mission-console-followups",
             "members": [{
                 "name": "worker",
                 "role": "implementer",
@@ -165,9 +235,10 @@ fn wait_for_member_runtime_ready(
 #[test]
 fn host_attentions_read_and_console_ack_lifecycle() {
     let home = TempHome::new("host-attention-console");
-    let project_id = init_project(&home, "alpha");
+    let (project_id, node_id, host_id) = init_project(&home, "alpha");
     let serve = spawn_fake_kimi_serve(&home);
-    let (run_id, member_id, work_id) = create_mission_and_run(&serve, &project_id);
+    let (run_id, member_id, work_id) =
+        create_mission_and_run(&home, &serve, &project_id, &node_id, &host_id);
 
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/start?project={project_id}"),
@@ -280,9 +351,10 @@ fn host_attentions_read_and_console_ack_lifecycle() {
 #[test]
 fn member_resume_route_rejects_active_and_resumes_closed_member() {
     let home = TempHome::new("member-resume-console");
-    let project_id = init_project(&home, "alpha");
+    let (project_id, node_id, host_id) = init_project(&home, "alpha");
     let serve = spawn_fake_kimi_serve(&home);
-    let (run_id, member_id, _work_id) = create_mission_and_run(&serve, &project_id);
+    let (run_id, member_id, _work_id) =
+        create_mission_and_run(&home, &serve, &project_id, &node_id, &host_id);
 
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/start?project={project_id}"),
@@ -324,10 +396,23 @@ fn member_resume_route_rejects_active_and_resumes_closed_member() {
         &serde_json::json!({"resumed_by": "operator"}),
     );
     assert_eq!(status, 202, "body: {body}");
-    assert_eq!(body["result"]["via"].as_str(), Some("resume"));
     assert_eq!(
-        body["result"]["member_run"]["coordination_status"].as_str(),
+        body["result"]["resume"]["via"].as_str(),
+        Some("resume"),
+        "body: {body}"
+    );
+    assert_eq!(
+        body["result"]["resume"]["member_run"]["coordination_status"].as_str(),
         Some("active"),
         "resume reactivates coordination: {body}"
+    );
+    assert_eq!(
+        body["result"]["resume"]["runtime_activation"].as_str(),
+        Some("supervisor_rescan"),
+        "the existing NodeDaemon child supervisor owns resumed execution: {body}"
+    );
+    assert!(
+        body["result"]["runtime_start"].is_null(),
+        "an already-managed TeamRun must not spawn another runtime owner: {body}"
     );
 }

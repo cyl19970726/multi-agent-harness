@@ -1136,8 +1136,52 @@ pub fn docs_health_report(store: &HarnessStore) -> Result<Value, StoreError> {
 mod projection_tests {
     use super::*;
     use harness_core::{
-        AgentTeamRun, DurableAgentMember, DurableAgentMemberStatus, MemberRun, StandingAgent,
+        AgentTeam, AgentTeamRun, AgentTeamStatus, DurableAgentMember, DurableAgentMemberStatus,
+        ExecutionNode, ExecutionNodeStatus, MemberRun, Mission, MissionStatus, StandingAgent,
     };
+
+    fn insert_projection_team(store: &HarnessStore, team_id: &str, mission_id: &str) {
+        const NODE_ID: &str = "00000000-0000-4000-8000-000000000001";
+        store
+            .append_mission(&Mission {
+                id: mission_id.to_string(),
+                title: "Projection mission".to_string(),
+                objective: "Exercise Company projection joins".to_string(),
+                context: String::new(),
+                desired_outcome: None,
+                status: MissionStatus::Planned,
+                wave_ids: Vec::new(),
+                outcome_summary: None,
+                completed_by: None,
+                created_at: "1".to_string(),
+                updated_at: "1".to_string(),
+                completed_at: None,
+            })
+            .unwrap();
+        store
+            .insert_execution_node(&ExecutionNode {
+                id: NODE_ID.to_string(),
+                display_name: "Projection node".to_string(),
+                status: ExecutionNodeStatus::Active,
+                created_at: "1".to_string(),
+                updated_at: "1".to_string(),
+            })
+            .unwrap();
+        store
+            .insert_agent_team_with_unique_mission(&AgentTeam {
+                id: team_id.to_string(),
+                name: "Projection Team".to_string(),
+                description: "Canonical Team join fixture".to_string(),
+                mission_id: mission_id.to_string(),
+                host_agent_id: "host".to_string(),
+                node_id: NODE_ID.to_string(),
+                status: AgentTeamStatus::Active,
+                member_ids: Vec::new(),
+                created_at: "1".to_string(),
+                updated_at: "1".to_string(),
+            })
+            .unwrap();
+    }
 
     fn standing(id: &str, execution_ref: Option<&str>) -> StandingAgent {
         serde_json::from_value(json!({
@@ -1238,6 +1282,9 @@ mod projection_tests {
                 .append_team_run(
                     &serde_json::from_value(json!({
                         "id": run_id,
+                        "agent_team_id": format!("team-{run_id}"),
+                        "execution_node_id": "00000000-0000-4000-8000-000000000001",
+                        "project_binding_id": "projection-project",
                         "host_surface": "test",
                         "objective": "cross-space Work projection",
                         "status": "running",
@@ -1430,8 +1477,12 @@ mod projection_tests {
         store
             .append_standing_agent(&standing("member-collision", None))
             .unwrap();
+        insert_projection_team(&store, "team-projection", "mission-projection");
         let run: AgentTeamRun = serde_json::from_value(json!({
-            "id": "run", "host_surface": "test", "objective": "projection",
+            "id": "run", "agent_team_id": "team-projection",
+            "execution_node_id": "00000000-0000-4000-8000-000000000001",
+            "project_binding_id": "projection-project",
+            "host_surface": "test", "objective": "projection",
             "status": "running", "member_run_ids": ["run-linked", "run-collision"],
             "created_at": "1", "updated_at": "1"
         }))
@@ -1580,8 +1631,12 @@ mod projection_tests {
         );
         force_duplicate_link_row(&store, &standing("standing-dup-b", Some("member-shared")));
 
+        insert_projection_team(&store, "team-degrade", "mission-degrade");
         let run: AgentTeamRun = serde_json::from_value(json!({
-            "id": "run", "host_surface": "test", "objective": "degrade",
+            "id": "run", "agent_team_id": "team-degrade",
+            "execution_node_id": "00000000-0000-4000-8000-000000000001",
+            "project_binding_id": "projection-project",
+            "host_surface": "test", "objective": "degrade",
             "status": "running", "member_run_ids": ["run-healthy", "run-shared"],
             "created_at": "1", "updated_at": "1"
         }))

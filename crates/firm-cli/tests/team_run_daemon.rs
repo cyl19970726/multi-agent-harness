@@ -1,17 +1,13 @@
-//! Integration tests for the multi-team supervisor daemon (#366).
+//! Integration tests for the machine-scoped NodeDaemon.
 //!
-//! These tests exercise the daemon lifecycle: spawn, delegate, status, stop,
-//! and verify that the control socket protocol works correctly.
-//!
-//! Tests use the same TempHome + fake provider infrastructure as
-//! `supervisor_daemon.rs` and `team_run_start.rs`.
+//! One stable local NodeDaemon discovers registered Execution Spaces and owns
+//! every child TeamRun supervisor. A Team is placed on exactly one Node.
 
-use std::path::Path;
-use std::time::Duration;
-use std::{
-    collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
-};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::io::{BufRead, Write};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use harness_core::TeamSupervisorLeaseStatus;
 use harness_store::HarnessStore;
@@ -19,53 +15,200 @@ use harness_store::HarnessStore;
 mod fake_provider;
 mod firm_env;
 
-use firm_env::{current_project_id, run_firm, TempHome};
+use firm_env::{current_project_id, run_firm, run_firm_with_env, TempHome};
 
-fn supervisor_socket_path(store_root: &Path) -> std::path::PathBuf {
-    let direct = store_root.join("supervisor.sock");
+struct RuntimeFixture {
+    project_root: PathBuf,
+    project_id: String,
+    execution_space_id: String,
+    node_id: String,
+    team_id: String,
+}
+
+fn success(output: &std::process::Output, context: &str) {
+    assert!(
+        output.status.success(),
+        "{context} failed\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn bootstrap_runtime(home: &TempHome, name: &str) -> RuntimeFixture {
+    let project_root = home.base().join(name);
+    std::fs::create_dir_all(&project_root).unwrap();
+    success(&run_firm(home, &project_root, &["init"]), "firm init");
+    let project_id = current_project_id(home);
+    let execution_space_id = format!("{name}-space");
+    success(
+        &run_firm(
+            home,
+            &project_root,
+            &[
+                "space",
+                "init",
+                "--id",
+                &execution_space_id,
+                "--project-binding",
+                &project_id,
+            ],
+        ),
+        "space init",
+    );
+    let selected = |args: &[&str]| {
+        let mut full = vec![
+            "--space",
+            execution_space_id.as_str(),
+            "--project",
+            project_id.as_str(),
+        ];
+        full.extend_from_slice(args);
+        run_firm(home, &project_root, &full)
+    };
+
+    let node = selected(&["node", "init"]);
+    success(&node, "node init");
+    let node: serde_json::Value = serde_json::from_slice(&node.stdout).expect("node JSON");
+    let node_id = node["id"].as_str().expect("node id").to_string();
+
+    success(
+        &selected(&[
+            "node",
+            "project",
+            "register",
+            "--node-id",
+            &node_id,
+            "--execution-space-id",
+            &execution_space_id,
+            "--project-binding-id",
+            &project_id,
+        ]),
+        "node project register",
+    );
+
+    let mission = selected(&[
+        "mission",
+        "create",
+        "--title",
+        &format!("Daemon mission {name}"),
+        "--objective",
+        "Verify machine-scoped NodeDaemon execution",
+    ]);
+    success(&mission, "mission create");
+    let mission_id = String::from_utf8_lossy(&mission.stdout).trim().to_string();
+
+    let host = selected(&[
+        "agent",
+        "create",
+        "--name",
+        &format!("host-{name}"),
+        "--role",
+        "host",
+        "--provider",
+        "codex",
+    ]);
+    success(&host, "host agent create");
+    let host: serde_json::Value = serde_json::from_slice(&host.stdout).expect("host JSON");
+    let host_id = host["id"].as_str().expect("host id");
+
+    let team = selected(&[
+        "team",
+        "create",
+        "--name",
+        &format!("Daemon team {name}"),
+        "--description",
+        "Flat AgentTeam placed on one Node",
+        "--mission-id",
+        &mission_id,
+        "--host-agent-id",
+        host_id,
+        "--node-id",
+        &node_id,
+        "--member",
+        host_id,
+    ]);
+    success(&team, "team create");
+    let team: serde_json::Value = serde_json::from_slice(&team.stdout).expect("team JSON");
+    let team_id = team["id"].as_str().expect("team id").to_string();
+
+    RuntimeFixture {
+        project_root,
+        project_id,
+        execution_space_id,
+        node_id,
+        team_id,
+    }
+}
+
+fn node_daemon_socket_path(home: &TempHome, node_id: &str) -> PathBuf {
+    let direct = home
+        .firm_home()
+        .join("nodes")
+        .join(node_id)
+        .join("daemon.sock");
     if direct.to_string_lossy().len() < 100 {
         return direct;
     }
     let mut hasher = DefaultHasher::new();
-    store_root.to_string_lossy().hash(&mut hasher);
-    std::path::Path::new("/tmp").join(format!("firm-supervisor-{:x}.sock", hasher.finish()))
+    home.firm_home().to_string_lossy().hash(&mut hasher);
+    node_id.hash(&mut hasher);
+    Path::new("/tmp").join(format!("firm-node-daemon-{:x}.sock", hasher.finish()))
 }
 
-fn wait_for_child(child: &mut std::process::Child, timeout: Duration) -> bool {
-    let deadline = std::time::Instant::now() + timeout;
-    while std::time::Instant::now() < deadline {
-        if child.try_wait().ok().flatten().is_some() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(25));
+fn spawn_daemon(
+    home: &TempHome,
+    fixture: &RuntimeFixture,
+    extra_env: &[(&str, &str)],
+) -> std::process::Child {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_firm"));
+    command
+        .args([
+            "daemon",
+            "serve",
+            "--scan-interval-secs",
+            "1",
+            "--idle-timeout-secs",
+            "30",
+            "--max-concurrency",
+            "8",
+        ])
+        .current_dir(&fixture.project_root)
+        .envs(home.envs())
+        .env_remove("FIRM_ROOT")
+        .env_remove("FIRM_PROJECT")
+        .env_remove("FIRM_SPACE")
+        .env_remove("FIRM_COMPANY")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    for (key, value) in extra_env {
+        command.env(key, value);
     }
-    false
+    command.spawn().expect("spawn NodeDaemon")
 }
 
-fn wait_for_socket(child: &mut std::process::Child, socket_path: &Path, timeout: Duration) {
-    let deadline = std::time::Instant::now() + timeout;
+fn wait_for_socket(child: &mut std::process::Child, socket: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        if std::os::unix::net::UnixStream::connect(socket_path).is_ok() {
+        if std::os::unix::net::UnixStream::connect(socket).is_ok() {
             return;
         }
-        if let Some(status) = child.try_wait().expect("inspect daemon") {
+        if let Some(status) = child.try_wait().expect("inspect NodeDaemon") {
             panic!(
-                "daemon exited before binding {}: {status}",
-                socket_path.display()
+                "NodeDaemon exited before binding {}: {status}",
+                socket.display()
             );
         }
         assert!(
-            std::time::Instant::now() < deadline,
-            "daemon did not bind {} before timeout",
-            socket_path.display()
+            Instant::now() < deadline,
+            "NodeDaemon did not bind {}",
+            socket.display()
         );
         std::thread::sleep(Duration::from_millis(25));
     }
 }
 
-fn socket_request(socket_path: &Path, request: &str) -> serde_json::Value {
-    use std::io::{BufRead, Write};
-    let mut stream = std::os::unix::net::UnixStream::connect(socket_path).expect("connect");
+fn socket_request(socket: &Path, request: &str) -> serde_json::Value {
+    let mut stream = std::os::unix::net::UnixStream::connect(socket).expect("connect daemon");
     stream
         .set_read_timeout(Some(Duration::from_secs(3)))
         .unwrap();
@@ -74,579 +217,270 @@ fn socket_request(socket_path: &Path, request: &str) -> serde_json::Value {
     let mut response = String::new();
     std::io::BufReader::new(&mut stream)
         .read_line(&mut response)
-        .unwrap_or_else(|error| panic!("read daemon response for {request:?}: {error}"));
-    serde_json::from_str(response.trim()).unwrap_or_else(|error| {
-        panic!("parse daemon response for {request:?} from {response:?}: {error}")
-    })
+        .expect("read daemon response");
+    serde_json::from_str(response.trim()).expect("daemon response JSON")
 }
 
-fn stop_daemon(child: &mut std::process::Child, socket_path: &Path) {
-    let response = socket_request(socket_path, r#"{"cmd":"stop"}"#);
-    assert_eq!(response["ok"], true);
-    assert!(
-        wait_for_child(child, Duration::from_secs(5)),
-        "daemon did not drain before timeout"
-    );
-    assert!(
-        !socket_path.exists(),
-        "daemon left its control socket behind"
-    );
-}
-
-fn wait_for_managed_run(socket_path: &Path, run_id: &str, timeout: Duration) {
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        let status = socket_request(socket_path, r#"{"cmd":"status"}"#);
-        if status["runs"]
-            .as_array()
-            .is_some_and(|runs| runs.iter().any(|run| run["run_id"] == run_id))
-        {
+fn stop_daemon(child: &mut std::process::Child, socket: &Path) {
+    assert_eq!(socket_request(socket, r#"{"cmd":"stop"}"#)["ok"], true);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if child.try_wait().expect("inspect daemon stop").is_some() {
+            assert!(!socket.exists(), "daemon left socket behind");
             return;
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "daemon did not manage {run_id} before timeout: {status}"
-        );
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(25));
     }
+    let _ = child.kill();
+    panic!("NodeDaemon did not stop before timeout");
 }
 
-/// Init a project and return its id.
-fn init_project(home: &TempHome, name: &str) -> String {
-    let root = home.base().join(name);
-    std::fs::create_dir_all(&root).unwrap();
-    let out = run_firm(home, &root, &["init"]);
-    assert!(out.status.success(), "init {name} failed: {out:?}");
-    current_project_id(home)
-}
-
-/// Run `firm <args...>` with the fake kimi shim on PATH.
-fn run_with_fake_kimi(
+fn create_run(
     home: &TempHome,
-    fake_bin: &Path,
-    fake_result: &str,
-    args: &[&str],
-) -> std::process::Output {
-    let path = format!(
-        "{}:{}",
-        fake_bin.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-    std::process::Command::new(env!("CARGO_BIN_EXE_firm"))
-        .args(args)
-        .current_dir(home.base())
-        .envs(home.envs())
-        .env_remove("FIRM_ROOT")
-        .env_remove("FIRM_PROJECT")
-        .env_remove("FIRM_SPACE")
-        .env_remove("FIRM_COMPANY")
-        .env("PATH", path)
-        .env("FAKE_KIMI_RESULT", fake_result)
-        .env(
-            "FAKE_KIMI_ENV_MARKER",
-            home.base().join("kimi-collaboration.env"),
-        )
-        .env(
-            "FAKE_CODEX_ENV_MARKER",
-            home.base().join("codex-collaboration.env"),
-        )
-        .env(
-            "FAKE_CODEX_NAME_MARKER",
-            home.base().join("codex-thread-name.jsonl"),
-        )
-        .env(
-            "FAKE_CODEX_PLAN_MARKER",
-            home.base().join("codex-execution-driver.log"),
-        )
-        .env("FAKE_CODEX_AUTO_COMPLETE", "1")
-        .env(
-            "FAKE_CLAUDE_ENV_MARKER",
-            home.base().join("claude-collaboration.env"),
-        )
-        .env_remove("KIMI_CODE_BIN")
-        .output()
-        .expect("run firm")
-}
-
-/// Store rows from a JSONL file.
-fn store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::Value> {
-    let path = home.spaces_dir().join(project_id).join(file);
-    let text =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    let mut ids: Vec<String> = Vec::new();
-    let mut by_id: std::collections::HashMap<String, serde_json::Value> =
-        std::collections::HashMap::new();
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let row: serde_json::Value =
-            serde_json::from_str(trimmed).unwrap_or_else(|e| panic!("{file} row not JSON: {e}"));
-        let id = row["id"].as_str().expect("row id").to_string();
-        ids.retain(|known| known != &id);
-        ids.push(id.clone());
-        by_id.insert(id, row);
-    }
-    ids.into_iter()
-        .map(|id| by_id.remove(&id).unwrap())
-        .collect()
-}
-
-// ---------------------------------------------------------------------------
-// Test: daemon serve starts and binds the control socket
-// ---------------------------------------------------------------------------
-
-#[test]
-fn daemon_serve_binds_socket() {
-    let home = TempHome::new("mt-daemon-bind");
-    let project_id = init_project(&home, "proj");
-
-    // Start the multi-team daemon in the background.
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_firm"))
-        .args([
+    fixture: &RuntimeFixture,
+    name: &str,
+    extra_env: &[(&str, &str)],
+) -> String {
+    let output = run_firm_with_env(
+        home,
+        &fixture.project_root,
+        &[
+            "--space",
+            &fixture.execution_space_id,
             "--project",
-            &project_id,
-            "daemon",
-            "serve",
-            "--idle-timeout-secs",
-            "5",
-        ])
-        .current_dir(home.base())
-        .envs(home.envs())
-        .env_remove("FIRM_ROOT")
-        .env_remove("FIRM_PROJECT")
-        .env_remove("FIRM_SPACE")
-        .env_remove("FIRM_COMPANY")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("spawn daemon");
-
-    let store_root = home.spaces_dir().join(&project_id);
-    let socket_path = supervisor_socket_path(&store_root);
-    wait_for_socket(&mut child, &socket_path, Duration::from_secs(5));
-    assert!(
-        socket_path.exists(),
-        "supervisor socket not found at {}",
-        socket_path.display()
+            &fixture.project_id,
+            "team-run",
+            "create",
+            "--agent-team-id",
+            &fixture.team_id,
+            "--objective",
+            &format!("NodeDaemon run {name}"),
+            "--member",
+            &format!("{name}:implementer:kimi@crates/a#Wait for daemon inspection"),
+        ],
+        extra_env,
     );
-
-    let resp = socket_request(&socket_path, r#"{"cmd":"status"}"#);
-    assert_eq!(resp["ok"], true);
-    assert!(resp["runs"].is_array());
-    stop_daemon(&mut child, &socket_path);
+    success(&output, "team-run create");
+    let store = HarnessStore::new(home.spaces_dir().join(&fixture.execution_space_id));
+    store
+        .team_runs()
+        .expect("team runs")
+        .into_iter()
+        .find(|run| run.objective == format!("NodeDaemon run {name}"))
+        .expect("created TeamRun")
+        .id
 }
 
-// ---------------------------------------------------------------------------
-// Test: delegate start to daemon via socket
-// ---------------------------------------------------------------------------
+fn wait_for_run(socket: &Path, execution_space_id: &str, run_id: &str) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status = socket_request(socket, r#"{"cmd":"status"}"#);
+        if status["runs"].as_array().is_some_and(|runs| {
+            runs.iter().any(|run| {
+                run["execution_space_id"] == execution_space_id && run["run_id"] == run_id
+            })
+        }) {
+            return status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "daemon did not adopt {execution_space_id}/{run_id}: {status}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
 
 #[test]
-fn delegate_start_to_daemon() {
-    let home = TempHome::new("mt-delegate");
+fn daemon_serve_uses_stable_node_socket_and_reports_identity() {
+    let home = TempHome::new("node-daemon-bind");
+    let fixture = bootstrap_runtime(&home, "project");
+    let socket = node_daemon_socket_path(&home, &fixture.node_id);
+    let mut daemon = spawn_daemon(&home, &fixture, &[]);
+    wait_for_socket(&mut daemon, &socket);
+
+    let status = socket_request(&socket, r#"{"cmd":"status"}"#);
+    assert_eq!(status["ok"], true);
+    assert_eq!(status["node_id"], fixture.node_id);
+    assert_eq!(
+        status["daemon_id"],
+        format!("node-daemon:{}", fixture.node_id)
+    );
+    assert!(status["runs"].as_array().is_some_and(Vec::is_empty));
+
+    stop_daemon(&mut daemon, &socket);
+}
+
+#[test]
+fn team_run_start_delegates_to_node_daemon_and_is_idempotent() {
+    let home = TempHome::new("node-daemon-delegate");
+    let fixture = bootstrap_runtime(&home, "project");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
     let fake_path = format!(
         "{}:{}",
         fake_bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let project_id = init_project(&home, "proj");
-
-    // Start the daemon.
-    let mut daemon = std::process::Command::new(env!("CARGO_BIN_EXE_firm"))
-        .args([
-            "--project",
-            &project_id,
-            "daemon",
-            "serve",
-            "--scan-interval-secs",
-            "1",
-            "--idle-timeout-secs",
-            "5",
-        ])
-        .current_dir(home.base())
-        .envs(home.envs())
-        .env_remove("FIRM_ROOT")
-        .env_remove("FIRM_PROJECT")
-        .env_remove("FIRM_SPACE")
-        .env_remove("FIRM_COMPANY")
-        .env("PATH", fake_path)
-        .env("KIMI_CODE_BIN", fake_bin.join("kimi"))
-        .env("FAKE_KIMI_VERSION", "0.31.0")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn daemon");
-
-    let socket_path = supervisor_socket_path(&home.spaces_dir().join(&project_id));
-    wait_for_socket(&mut daemon, &socket_path, Duration::from_secs(5));
-
-    // Create a team run.
-    let out = run_with_fake_kimi(
-        &home,
-        &fake_bin,
-        "done",
-        &[
-            "--project",
-            &project_id,
-            "team-run",
-            "create",
-            "--objective",
-            "MT daemon test",
-            "--member",
-            "worker:implementer:kimi@crates/a#Implement",
-        ],
-    );
-    assert!(
-        out.status.success(),
-        "create failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let second = run_with_fake_kimi(
-        &home,
-        &fake_bin,
-        "done",
-        &[
-            "--project",
-            &project_id,
-            "team-run",
-            "create",
-            "--objective",
-            "MT daemon second run",
-            "--member",
-            "worker-2:reviewer:kimi@crates/b#Review",
-        ],
-    );
-    assert!(
-        second.status.success(),
-        "second create failed: {}",
-        String::from_utf8_lossy(&second.stderr)
-    );
-
-    let run_ids = store_rows(&home, &project_id, "member_runs.jsonl")
-        .into_iter()
-        .map(|row| row["team_run_id"].as_str().unwrap().to_string())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    assert_eq!(run_ids.len(), 2);
-
-    for run_id in &run_ids {
-        let start_out = run_with_fake_kimi(
-            &home,
-            &fake_bin,
-            "done",
-            &[
-                "--project",
-                &project_id,
-                "team-run",
-                "start",
-                "--id",
-                run_id,
-                "--idle-timeout-s",
-                "5",
-            ],
-        );
-        let stdout = String::from_utf8_lossy(&start_out.stdout);
-        assert!(
-            start_out.status.success(),
-            "start failed: {}",
-            String::from_utf8_lossy(&start_out.stderr)
-        );
-        assert!(
-            stdout.contains("delegated to supervisor daemon"),
-            "expected delegation in output: {stdout}"
-        );
-    }
-
-    let replay = run_with_fake_kimi(
-        &home,
-        &fake_bin,
-        "done",
-        &[
-            "--project",
-            &project_id,
-            "team-run",
-            "start",
-            "--id",
-            &run_ids[0],
-        ],
-    );
-    assert!(
-        replay.status.success(),
-        "idempotent start failed: {replay:?}"
-    );
-
-    let resp = socket_request(&socket_path, r#"{"cmd":"status"}"#);
-    assert_eq!(resp["ok"], true);
-    let runs = resp["runs"].as_array().unwrap();
-    for run_id in &run_ids {
-        assert!(
-            runs.iter().any(|run| run["run_id"] == *run_id),
-            "daemon status omitted {run_id}: {runs:?}"
-        );
-    }
-
-    let status = run_with_fake_kimi(
-        &home,
-        &fake_bin,
-        "done",
-        &[
-            "--project",
-            &project_id,
-            "team-run",
-            "status",
-            "--id",
-            &run_ids[0],
-            "--json",
-        ],
-    );
-    assert!(status.status.success(), "status failed: {status:?}");
-    let status_json: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
-    assert_eq!(status_json["multi_team_daemon"]["ok"], true);
-    assert_eq!(
-        status_json["multi_team_daemon"]["runs"]
-            .as_array()
-            .map(Vec::len),
-        Some(2)
-    );
-
-    stop_daemon(&mut daemon, &socket_path);
-    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
-    for run_id in &run_ids {
-        let lease = store
-            .latest_team_supervisor_lease(run_id)
-            .unwrap()
-            .expect("supervisor lease");
-        assert_eq!(lease.status, TeamSupervisorLeaseStatus::Released);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Test: daemon status reports empty when no runs
-// ---------------------------------------------------------------------------
-
-#[test]
-fn daemon_status_empty() {
-    let home = TempHome::new("mt-empty");
-    let project_id = init_project(&home, "proj");
-
-    let mut daemon = std::process::Command::new(env!("CARGO_BIN_EXE_firm"))
-        .args([
-            "--project",
-            &project_id,
-            "daemon",
-            "serve",
-            "--scan-interval-secs",
-            "1",
-            "--idle-timeout-secs",
-            "5",
-        ])
-        .current_dir(home.base())
-        .envs(home.envs())
-        .env_remove("FIRM_ROOT")
-        .env_remove("FIRM_PROJECT")
-        .env_remove("FIRM_SPACE")
-        .env_remove("FIRM_COMPANY")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn daemon");
-
-    let store_root = home.spaces_dir().join(&project_id);
-    let socket_path = supervisor_socket_path(&store_root);
-    wait_for_socket(&mut daemon, &socket_path, Duration::from_secs(5));
-    assert!(socket_path.exists(), "socket not found");
-
-    let resp = socket_request(&socket_path, r#"{"cmd":"status"}"#);
-    assert_eq!(resp["ok"], true);
-    let runs = resp["runs"].as_array().unwrap();
-    assert!(runs.is_empty(), "expected empty runs, got {runs:?}");
-
-    stop_daemon(&mut daemon, &socket_path);
-}
-
-#[test]
-fn daemon_rejects_second_owner_and_malformed_control_commands() {
-    let home = TempHome::new("mt-daemon-negative");
-    let project_id = init_project(&home, "proj");
-    let daemon_args = [
-        "--project",
-        project_id.as_str(),
-        "daemon",
-        "serve",
-        "--scan-interval-secs",
-        "1",
+    let run_id = create_run(&home, &fixture, "worker", &[]);
+    let socket = node_daemon_socket_path(&home, &fixture.node_id);
+    let kimi_bin = fake_bin.join("kimi").display().to_string();
+    let provider_env = [
+        ("PATH", fake_path.as_str()),
+        ("KIMI_CODE_BIN", kimi_bin.as_str()),
+        ("FAKE_KIMI_VERSION", "0.31.0"),
+        ("FAKE_KIMI_WAIT", "1"),
     ];
-    let mut daemon = std::process::Command::new(env!("CARGO_BIN_EXE_firm"))
-        .args(daemon_args)
-        .current_dir(home.base())
-        .envs(home.envs())
-        .env_remove("FIRM_ROOT")
-        .env_remove("FIRM_PROJECT")
-        .env_remove("FIRM_SPACE")
-        .env_remove("FIRM_COMPANY")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn daemon");
-    let socket_path = supervisor_socket_path(&home.spaces_dir().join(&project_id));
-    wait_for_socket(&mut daemon, &socket_path, Duration::from_secs(5));
+    let mut daemon = spawn_daemon(&home, &fixture, &provider_env);
+    wait_for_socket(&mut daemon, &socket);
 
-    let malformed = socket_request(&socket_path, "{not-json");
+    let start_args = [
+        "--space",
+        fixture.execution_space_id.as_str(),
+        "--project",
+        fixture.project_id.as_str(),
+        "team-run",
+        "start",
+        "--id",
+        run_id.as_str(),
+    ];
+    let first = run_firm_with_env(&home, &fixture.project_root, &start_args, &provider_env);
+    success(&first, "team-run start");
+    assert!(String::from_utf8_lossy(&first.stdout).contains("delegated to NodeDaemon"));
+    let status = wait_for_run(&socket, &fixture.execution_space_id, &run_id);
+    let managed = status["runs"].as_array().unwrap();
+    assert_eq!(managed.len(), 1);
+    assert_eq!(managed[0]["project_binding_id"], fixture.project_id);
+
+    let replay = run_firm_with_env(&home, &fixture.project_root, &start_args, &provider_env);
+    success(&replay, "idempotent team-run start");
+    let replay_status = wait_for_run(&socket, &fixture.execution_space_id, &run_id);
+    assert_eq!(replay_status["runs"].as_array().map(Vec::len), Some(1));
+
+    stop_daemon(&mut daemon, &socket);
+    let store = HarnessStore::new(home.spaces_dir().join(&fixture.execution_space_id));
+    let lease = store
+        .latest_team_supervisor_lease(&run_id)
+        .expect("lease read")
+        .expect("supervisor lease");
+    assert_eq!(lease.status, TeamSupervisorLeaseStatus::Released);
+}
+
+#[test]
+fn daemon_rejects_second_machine_owner_and_bad_commands() {
+    let home = TempHome::new("node-daemon-negative");
+    let fixture = bootstrap_runtime(&home, "project");
+    let socket = node_daemon_socket_path(&home, &fixture.node_id);
+    let mut daemon = spawn_daemon(&home, &fixture, &[]);
+    wait_for_socket(&mut daemon, &socket);
+
+    let malformed = socket_request(&socket, "{not-json");
     assert_eq!(malformed["ok"], false);
     assert!(malformed["error"]
         .as_str()
         .is_some_and(|error| error.starts_with("invalid json:")));
-    let unknown = socket_request(&socket_path, r#"{"cmd":"unknown-command"}"#);
-    assert_eq!(unknown["ok"], false);
-    assert_eq!(unknown["error"], "unknown command: unknown-command");
-    let missing_run = socket_request(&socket_path, r#"{"cmd":"start"}"#);
-    assert_eq!(missing_run["ok"], false);
-    assert_eq!(missing_run["error"], "run_id is required");
-
-    // A client that disconnects before reading its response must not take the
-    // daemon (or its other managed runs) down with its BrokenPipe.
-    {
-        let mut disconnected = std::os::unix::net::UnixStream::connect(&socket_path).unwrap();
-        writeln!(disconnected, "{{\"cmd\":\"status\"}}").unwrap();
-        disconnected.flush().unwrap();
-    }
-    std::thread::sleep(Duration::from_millis(50));
-    let after_disconnect = socket_request(&socket_path, r#"{"cmd":"status"}"#);
-    assert_eq!(after_disconnect["ok"], true);
-
-    use std::io::{BufRead, Write};
-    let mut partial = std::os::unix::net::UnixStream::connect(&socket_path).unwrap();
-    partial
-        .set_read_timeout(Some(Duration::from_secs(3)))
-        .unwrap();
-    write!(partial, "{{\"cmd\":").unwrap();
-    partial.flush().unwrap();
-    let mut partial_response = String::new();
-    std::io::BufReader::new(&mut partial)
-        .read_line(&mut partial_response)
-        .unwrap();
-    let partial_json: serde_json::Value = serde_json::from_str(partial_response.trim()).unwrap();
-    assert_eq!(partial_json["ok"], false);
+    let missing = socket_request(&socket, r#"{"cmd":"start"}"#);
     assert_eq!(
-        partial_json["error"],
-        "control command must be one newline-terminated JSON object"
+        missing["error"],
+        "execution_space_id and run_id are required"
     );
+    let unknown = socket_request(&socket, r#"{"cmd":"unknown"}"#);
+    assert_eq!(unknown["error"], "unknown command: unknown");
 
     let second = std::process::Command::new(env!("CARGO_BIN_EXE_firm"))
-        .args(daemon_args)
-        .current_dir(home.base())
+        .args(["daemon", "serve"])
+        .current_dir(&fixture.project_root)
         .envs(home.envs())
-        .env_remove("FIRM_ROOT")
-        .env_remove("FIRM_PROJECT")
-        .env_remove("FIRM_SPACE")
-        .env_remove("FIRM_COMPANY")
         .output()
-        .expect("start second daemon");
+        .expect("second daemon");
     assert!(
         !second.status.success(),
-        "second daemon unexpectedly started"
+        "second machine daemon unexpectedly started"
     );
     assert!(
-        String::from_utf8_lossy(&second.stderr).contains("already serves"),
-        "unexpected second-daemon error: {}",
+        String::from_utf8_lossy(&second.stderr).contains("NODE_DAEMON_ALREADY_RUNNING"),
+        "unexpected second-owner error: {}",
         String::from_utf8_lossy(&second.stderr)
     );
 
-    stop_daemon(&mut daemon, &socket_path);
+    stop_daemon(&mut daemon, &socket);
 }
 
 #[test]
-fn crashed_daemon_is_replaced_and_orphaned_run_is_adopted() {
-    let home = TempHome::new("mt-daemon-crash-adopt");
+fn one_node_daemon_adopts_runs_from_two_execution_spaces() {
+    let home = TempHome::new("node-daemon-two-spaces");
+    let fixture_a = bootstrap_runtime(&home, "project-a");
+    let fixture_b = bootstrap_runtime(&home, "project-b");
+    assert_eq!(
+        fixture_a.node_id, fixture_b.node_id,
+        "local Node identity changed"
+    );
+    assert_ne!(fixture_a.execution_space_id, fixture_b.execution_space_id);
+
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
     let fake_path = format!(
         "{}:{}",
         fake_bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let project_id = init_project(&home, "proj");
-    let created = run_with_fake_kimi(
-        &home,
-        &fake_bin,
-        "done",
-        &[
-            "--project",
-            &project_id,
-            "team-run",
-            "create",
-            "--objective",
-            "Crash recovery adoption",
-            "--member",
-            "worker:implementer:kimi@crates/a#Implement",
-        ],
-    );
-    assert!(created.status.success(), "create failed: {created:?}");
-    let run_id = store_rows(&home, &project_id, "member_runs.jsonl")[0]["team_run_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let spawn = || {
-        std::process::Command::new(env!("CARGO_BIN_EXE_firm"))
-            .args([
+    let kimi_bin = fake_bin.join("kimi").display().to_string();
+    let run_a = create_run(&home, &fixture_a, "worker-a", &[]);
+    let run_b = create_run(&home, &fixture_b, "worker-b", &[]);
+    let socket = node_daemon_socket_path(&home, &fixture_a.node_id);
+    let provider_env = [
+        ("PATH", fake_path.as_str()),
+        ("KIMI_CODE_BIN", kimi_bin.as_str()),
+        ("FAKE_KIMI_VERSION", "0.31.0"),
+        ("FAKE_KIMI_WAIT", "1"),
+    ];
+    let mut daemon = spawn_daemon(&home, &fixture_a, &provider_env);
+    wait_for_socket(&mut daemon, &socket);
+
+    for (fixture, run_id) in [(&fixture_a, &run_a), (&fixture_b, &run_b)] {
+        let start = run_firm_with_env(
+            &home,
+            &fixture.project_root,
+            &[
+                "--space",
+                &fixture.execution_space_id,
                 "--project",
-                &project_id,
-                "daemon",
-                "serve",
-                "--scan-interval-secs",
-                "1",
-                "--idle-timeout-secs",
-                "5",
-            ])
-            .current_dir(home.base())
-            .envs(home.envs())
-            .env_remove("FIRM_ROOT")
-            .env_remove("FIRM_PROJECT")
-            .env_remove("FIRM_SPACE")
-            .env_remove("FIRM_COMPANY")
-            .env("PATH", &fake_path)
-            .env("KIMI_CODE_BIN", fake_bin.join("kimi"))
-            .env("FAKE_KIMI_VERSION", "0.31.0")
-            .env("FIRM_TEAM_SUPERVISOR_LEASE_MS", "500")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn daemon")
-    };
-    let socket_path = supervisor_socket_path(&home.spaces_dir().join(&project_id));
-    let mut first = spawn();
-    wait_for_socket(&mut first, &socket_path, Duration::from_secs(5));
-    let start = run_with_fake_kimi(
-        &home,
-        &fake_bin,
-        "done",
-        &[
-            "--project",
-            &project_id,
-            "team-run",
-            "start",
-            "--id",
-            &run_id,
-        ],
-    );
-    assert!(start.status.success(), "start failed: {start:?}");
-    wait_for_managed_run(&socket_path, &run_id, Duration::from_secs(5));
+                &fixture.project_id,
+                "team-run",
+                "start",
+                "--id",
+                run_id,
+            ],
+            &provider_env,
+        );
+        success(&start, "cross-space team-run start");
+    }
 
-    first.kill().expect("crash first daemon");
-    first.wait().expect("reap crashed daemon");
+    wait_for_run(&socket, &fixture_a.execution_space_id, &run_a);
+    let status = wait_for_run(&socket, &fixture_b.execution_space_id, &run_b);
+    let runs = status["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 2);
+    assert!(runs
+        .iter()
+        .any(|run| run["execution_space_id"] == fixture_a.execution_space_id));
+    assert!(runs
+        .iter()
+        .any(|run| run["execution_space_id"] == fixture_b.execution_space_id));
+    assert_eq!(status["process_id"].as_u64(), Some(daemon.id() as u64));
 
-    let mut replacement = spawn();
-    wait_for_socket(&mut replacement, &socket_path, Duration::from_secs(5));
-    wait_for_managed_run(&socket_path, &run_id, Duration::from_secs(5));
-    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
-    let lease = store
-        .latest_team_supervisor_lease(&run_id)
+    let store_a = HarnessStore::new(home.spaces_dir().join(&fixture_a.execution_space_id));
+    let store_b = HarnessStore::new(home.spaces_dir().join(&fixture_b.execution_space_id));
+    let lease_a = store_a
+        .latest_team_supervisor_lease(&run_a)
         .unwrap()
-        .expect("replacement lease");
-    assert!(lease.generation >= 2, "run was not adopted: {lease:?}");
+        .unwrap();
+    let lease_b = store_b
+        .latest_team_supervisor_lease(&run_b)
+        .unwrap()
+        .unwrap();
+    assert_eq!(lease_a.owner_process_id, lease_b.owner_process_id);
+    assert_eq!(lease_a.node_daemon_id, lease_b.node_daemon_id);
+    assert_eq!(
+        lease_a.node_daemon_generation,
+        lease_b.node_daemon_generation
+    );
 
-    stop_daemon(&mut replacement, &socket_path);
+    stop_daemon(&mut daemon, &socket);
 }

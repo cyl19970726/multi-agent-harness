@@ -142,7 +142,7 @@ Target-only until accepted end to end:
 - atomic sibling budget/concurrency reservation and ancestor fencing;
 - authenticated Supervisor-bound Member authority with the root token kept
   service-side;
-- autonomous child Team Member and approved-template Standing Agent creation;
+- authenticated flat-Team WorkDelegation and approved AgentMember creation;
   and
 - truthful configured/effective/fenced authority plus Human Decision Queue UI.
 

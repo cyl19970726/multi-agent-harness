@@ -3,7 +3,7 @@
 ```text
 status: implemented baseline; Works projection redesign pending ADR 0050
 owner_role: product-design
-canonical_for: Mission context, linked Agent Teams, ordered Host-plan Waves,
+canonical_for: Mission context, its Mission-owned AgentTeam, ordered Host-plan Waves,
                Wave revision history, advance decisions, and closeout
 route_or_surface: Missions -> Mission -> selected Wave
 architecture: ADR 0034 + ADR 0037 + ADR 0044 + ADR 0050
@@ -14,7 +14,7 @@ architecture: ADR 0034 + ADR 0037 + ADR 0044 + ADR 0050
 The Host and Human need one readable surface for:
 
 - what the Mission means and how success is judged;
-- which independent Agent Teams are available to the Mission;
+- which flat AgentTeam owns execution for the Mission;
 - what the Host currently believes and plans;
 - which Works are complete, active, blocked, or intentionally carried
   forward; and
@@ -26,20 +26,21 @@ The page is not a task graph, scheduler, transcript, or TeamRun attempt browser.
 
 ```text
 Mission -> ordered Host-plan Wave
-Mission <-> independent AgentTeam
-AgentTeamRun(mission_id, agent_team_id) -> MemberRun -> native session
+Mission -> exactly one flat AgentTeam
+AgentTeamRun(agent_team_id, execution_node_id, project_binding_id)
+  -> MemberRun -> native session
 ```
 
 Required projections:
 
 - `Mission`: title, objective, Markdown context, status, linked
-  `agent_team_ids`, provenance, and closeout;
+  its owning flat AgentTeam (derived by `AgentTeam.mission_id`), provenance, and closeout;
 - ordered `Wave`: title, objective, Markdown context, revision, updated actor,
   advance outcome, artifacts, and history;
-- linked teams: stable identity, composition, latest Mission-scoped runs,
+- owning Team: stable identity, Host, Node placement, composition, latest runs,
   current Supervisor/reconnect health, member/Work status, and open-Team
   action;
-- Works: compact Mission-linked Team summaries for active, blocked, review and
+- Works: compact Mission-owned Team summaries for active, blocked, review and
   carry-over state; detailed scheduling remains in Team Workbench;
 - messages: authored conversation linked to Work when relevant;
 - pending interactions and evidence that require Host or Human judgment.
@@ -55,8 +56,8 @@ context rail.
 ```text
 +----------------------+--------------------------------------+------------------+
 | Product sidebar      | Mission header                       | Mission brief    |
-|                      | status · linked teams · actions      | Needs You        |
-| Active context tree  +--------------------------------------+ Linked teams     |
+|                      | status · owning Team · actions       | Needs You        |
+| Active context tree  +--------------------------------------+ Owning Team      |
 |                      | Mission context (Markdown)           | Selected Wave    |
 |                      +--------------------------------------+ Runtime summary  |
 |                      | Wave 1 · advanced (compact)          |                  |
@@ -92,10 +93,10 @@ Compose flexible compact modules:
 
 1. **MissionBrief** — durable context excerpt, status, source, and closeout.
 2. **NeedsYou** — real PendingInteractions, blockers, or approval requests.
-3. **MissionTeams** — linked Agent Teams, member state, latest run, and open
-   Team action. Render every linked reusable team independently; never collapse
-   a one-to-many Mission relation into one global “latest team” summary. This is
-   Mission-scoped, not nested under one Wave.
+3. **MissionTeam** — the Mission's one immutable flat AgentTeam, member state,
+   latest run, and open Team action. Render its complete TeamRun history without
+   inventing a mutable or one-to-many Mission/Team relation. This is
+   Mission-scoped, not nested under one historical Wave.
 4. **SelectedWave** — revision, updated actor, judgment excerpt, carry-over,
    artifacts, and history action. When the Wave is advanced, show its immutable
    `as recorded at advance` Work citations separately from `current execution
@@ -152,7 +153,7 @@ responsibility, risk, or decision boundary changes materially.
 ## Screenshot And UX Acceptance
 
 At desktop acceptance the first viewport must show the Mission heading/context
-start, linked teams, ordered Waves, one selected Wave heading/context start,
+start, the owning Team, ordered Waves, one selected Wave heading/context start,
 responsibility table, and an available Host advance decision. Long Markdown is
 not required to fit in one viewport; it must be reachable without clipping.
 Pre-Works baselines do not prove ADR 0050. New expected/actual cases must also

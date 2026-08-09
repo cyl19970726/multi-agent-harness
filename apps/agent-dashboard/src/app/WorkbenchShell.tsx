@@ -670,12 +670,21 @@ function AppRail({
   compact?: boolean;
 }) {
   const selectedRun = (model.snapshot.team_runs ?? []).find((run) => run.id === selection.teamId);
-  const missionId = selection.missionId ?? selectedRun?.mission_id;
-  const waveId = selection.waveId ?? selectedRun?.wave_id;
+  const selectedTeam = (model.snapshot.teams ?? []).find(
+    (team) => team.id === selectedRun?.agent_team_id,
+  );
+  const missionId = selection.missionId ?? selectedTeam?.mission_id;
+  const waveId = selection.waveId ?? (model.snapshot.waves ?? []).find(
+    (candidate) => (candidate.executor_run_ids ?? []).includes(selectedRun?.id ?? ""),
+  )?.id;
   const mission = (model.snapshot.missions ?? []).find((item) => item.id === missionId);
   const wave = (model.snapshot.waves ?? []).find((item) => item.id === waveId);
   const contextRun = selectedRun ?? (model.snapshot.team_runs ?? []).find(
-    (run) => run.wave_id === waveId && run.mission_id === missionId,
+    (run) =>
+      (wave?.executor_run_ids ?? []).includes(run.id)
+      && (model.snapshot.teams ?? []).some(
+        (team) => team.id === run.agent_team_id && team.mission_id === missionId,
+      ),
   );
   const contextMembers = (model.snapshot.member_runs ?? []).filter(
     (member) => member.team_run_id === contextRun?.id,
@@ -1061,8 +1070,11 @@ function nativeContextLabel(model: WorkbenchModel, selection: SelectionState): s
     const run = (model.snapshot.team_runs ?? []).find(
       (candidate) => candidate.id === (selection.teamId ?? memberRun?.team_run_id),
     );
-    const mission = run?.mission_id
-      ? (model.snapshot.missions ?? []).find((candidate) => candidate.id === run.mission_id)
+    const team = (model.snapshot.teams ?? []).find(
+      (candidate) => candidate.id === run?.agent_team_id,
+    );
+    const mission = team?.mission_id
+      ? (model.snapshot.missions ?? []).find((candidate) => candidate.id === team.mission_id)
       : undefined;
     return memberRun?.name ?? mission?.title ?? (run ? "Team attempt" : "Agent Team attempts");
   }

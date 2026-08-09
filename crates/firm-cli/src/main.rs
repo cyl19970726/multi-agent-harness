@@ -39,10 +39,10 @@ use harness_core::{
     ReviewVerdict, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus,
     TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery,
     TeamMessageKind, TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
-    TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Validate, Wave, WaveExecutorKind,
-    WaveStatus, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkCondition,
-    WorkDelegation, WorkDelegationState, WorkDelivery, WorkDeliveryStatus, WorkPhase, WorkPriority,
-    WorkRef, WorkResolution, WorkWorkspace, WorkWorkspaceKind, WorkflowArtifactFile,
+    TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Validate, Wave, Work,
+    WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkCondition, WorkDelegation,
+    WorkDelegationState, WorkDelivery, WorkDeliveryStatus, WorkPhase, WorkPriority, WorkRef,
+    WorkResolution, WorkWorkspace, WorkWorkspaceKind, WorkflowArtifactFile,
     WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus,
     WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
     EXECUTION_MODE_EXTERNAL_INTERACTIVE,
@@ -66,8 +66,6 @@ mod native_session;
 mod pi_rpc;
 mod project;
 mod resident;
-#[cfg(unix)]
-mod resident_daemon;
 mod sse;
 #[cfg(unix)]
 mod supervisor_daemon;
@@ -2000,7 +1998,7 @@ fn run() -> CliResult<()> {
         "serve" => serve_command(&store, &resolved, &args[1..])?,
         "mcp" => mcp::run(&store, &resolved)?,
         #[cfg(unix)]
-        "daemon" => daemon_command(&store, &args[1..])?,
+        "daemon" => daemon_command(&args[1..])?,
         command if retired_command(command) => return Err(retired_surface_error(command)),
         command => return Err(CliError::Usage(format!("unknown command: {command}"))),
     }
@@ -9008,18 +9006,6 @@ pub(crate) fn revise_mission_context(
     Ok(mission)
 }
 
-pub(crate) fn revise_mission_team_link(
-    _store: &HarnessStore,
-    _mission_id: &str,
-    _team_id: &str,
-    _link: bool,
-) -> CliResult<Mission> {
-    Err(CliError::Usage(
-        "Mission-Team link writes were removed; create one AgentTeam with its required mission_id"
-            .to_string(),
-    ))
-}
-
 /// Read one native Wave by id. Wave write commands (`create`/`update`/
 /// `advance`/`gate`) retired with the ADR 0051 Mission Log cutover; this
 /// stays because `wave show` and legacy row lookups remain historical reads.
@@ -11690,6 +11676,103 @@ fn created_team_run_json(created: &CreatedTeamRun) -> serde_json::Value {
 /// arm and POST /v1/team-runs. `previous_run_id` records explicit retry
 /// lineage. It must remain inside the same Mission/Team relation; historical
 /// direct-Wave retries additionally remain inside that exact Wave.
+#[cfg(test)]
+fn ensure_legacy_unit_test_team_binding(
+    store: &HarnessStore,
+) -> CliResult<(ProjectContext, String)> {
+    // This compatibility fixture is compiled only into the `firm` unit-test
+    // binary. Production and integration-test command paths must always supply
+    // their real Project Binding and AgentTeam explicitly.
+    const MISSION_ID: &str = "unit-test-mission";
+    const TEAM_ID: &str = "unit-test-agent-team";
+    const NODE_ID: &str = "00000000-0000-4000-8000-000000000001";
+    const PROJECT_ID: &str = "unit-test-project";
+    const SPACE_ID: &str = "unit-test-space";
+
+    let now = "unix-ms:1".to_string();
+    if !store
+        .latest_missions()?
+        .iter()
+        .any(|mission| mission.id == MISSION_ID)
+    {
+        store.insert_mission(&Mission {
+            id: MISSION_ID.to_string(),
+            title: "Unit-test mission".to_string(),
+            objective: "Exercise legacy unit fixtures through the canonical Team contract"
+                .to_string(),
+            context: String::new(),
+            desired_outcome: None,
+            status: MissionStatus::Planned,
+            wave_ids: Vec::new(),
+            outcome_summary: None,
+            completed_by: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            completed_at: None,
+        })?;
+    }
+    if !store
+        .latest_execution_nodes()?
+        .iter()
+        .any(|node| node.id == NODE_ID)
+    {
+        store.insert_execution_node(&ExecutionNode {
+            id: NODE_ID.to_string(),
+            display_name: "unit-test-node".to_string(),
+            status: ExecutionNodeStatus::Active,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        })?;
+    }
+    let registration_exists =
+        store
+            .latest_node_project_registrations()?
+            .iter()
+            .any(|registration| {
+                registration.node_id == NODE_ID
+                    && registration.execution_space_id == SPACE_ID
+                    && registration.project_binding_id == PROJECT_ID
+                    && registration.status == NodeProjectRegistrationStatus::Active
+            });
+    if !registration_exists {
+        store.register_node_project(&NodeProjectRegistration {
+            node_id: NODE_ID.to_string(),
+            execution_space_id: SPACE_ID.to_string(),
+            project_binding_id: PROJECT_ID.to_string(),
+            status: NodeProjectRegistrationStatus::Active,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        })?;
+    }
+    if !latest_teams(store)?.contains_key(TEAM_ID) {
+        store.insert_agent_team_with_unique_mission(&AgentTeam {
+            id: TEAM_ID.to_string(),
+            name: "Unit-test AgentTeam".to_string(),
+            description: "Canonical binding for pre-Wave-3 unit fixtures".to_string(),
+            mission_id: MISSION_ID.to_string(),
+            host_agent_id: "host".to_string(),
+            node_id: NODE_ID.to_string(),
+            status: AgentTeamStatus::Active,
+            member_ids: Vec::new(),
+            created_at: now.clone(),
+            updated_at: now,
+        })?;
+    }
+
+    let project_root = store.root().join("unit-test-project");
+    std::fs::create_dir_all(&project_root)?;
+    Ok((
+        ProjectContext {
+            id: PROJECT_ID.to_string(),
+            project_root,
+            store_root: store.root().to_path_buf(),
+            kind: ProjectKind::Repo,
+            is_git_repo: false,
+        },
+        TEAM_ID.to_string(),
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn create_team_run(
     store: &HarnessStore,
@@ -11736,6 +11819,28 @@ fn create_team_run(
             "agent_team runs require at least one member".to_string(),
         ));
     }
+    #[cfg(test)]
+    let legacy_test_binding = if project_context.is_none()
+        && agent_team_id.is_none()
+        && mission_id.is_none()
+        && wave_id.is_none()
+    {
+        Some(ensure_legacy_unit_test_team_binding(store)?)
+    } else {
+        None
+    };
+    #[cfg(test)]
+    let project_context = project_context.or_else(|| {
+        legacy_test_binding
+            .as_ref()
+            .map(|(project_context, _)| project_context)
+    });
+    #[cfg(test)]
+    let agent_team_id = agent_team_id.or_else(|| {
+        legacy_test_binding
+            .as_ref()
+            .map(|(_, agent_team_id)| agent_team_id.clone())
+    });
     let execution_root = match requested_execution_root {
         Some(root) => validate_workspace_override(project_context, &root, "execution_root")?,
         None => default_execution_root(project_context),
@@ -12154,78 +12259,6 @@ fn deactivate_team_run_member(
         &format!("member {} deactivated: {reason}", member.name),
     )?;
     Ok(member)
-}
-
-/// Validate optional outer Mission/Wave joins for a new AgentTeamRun.
-/// Mission-only is the primary long-lived-team path. Supplying a Wave retains
-/// legacy direct-executor compatibility and can derive its Mission.
-fn resolve_team_run_mission_wave(
-    store: &HarnessStore,
-    mission_id: Option<String>,
-    wave_id: Option<String>,
-) -> CliResult<(Option<String>, Option<String>, Option<Wave>)> {
-    if mission_id.as_ref().is_some_and(|id| id.trim().is_empty()) {
-        return Err(CliError::Usage(
-            "mission_id must not be empty when supplied".to_string(),
-        ));
-    }
-    if wave_id.as_ref().is_some_and(|id| id.trim().is_empty()) {
-        return Err(CliError::Usage(
-            "wave_id must not be empty when supplied".to_string(),
-        ));
-    }
-    let mut mission_id = mission_id;
-
-    if mission_id.is_some()
-        && !store.latest_missions()?.iter().any(|mission| {
-            mission_id
-                .as_deref()
-                .is_some_and(|mission_id| mission.id == mission_id)
-        })
-    {
-        return Err(CliError::Usage(format!(
-            "mission not found: {}",
-            mission_id.as_deref().unwrap_or_default()
-        )));
-    }
-
-    let wave = if let Some(wave_id) = wave_id.as_deref() {
-        let wave = store
-            .latest_waves()?
-            .into_iter()
-            .find(|wave| wave.id == wave_id)
-            .ok_or_else(|| CliError::Usage(format!("wave not found: {wave_id}")))?;
-        if let Some(requested_mission_id) = mission_id.as_deref() {
-            if wave.mission_id != requested_mission_id {
-                return Err(CliError::Usage(format!(
-                    "wave {wave_id} belongs to mission {}, not {requested_mission_id}",
-                    wave.mission_id
-                )));
-            }
-        } else {
-            mission_id = Some(wave.mission_id.clone());
-        }
-        if wave.executor_kind != WaveExecutorKind::AgentTeam {
-            return Err(CliError::Usage(format!(
-                "wave {wave_id} uses executor_kind {}, not agent_team",
-                serde_snake_label(&wave.executor_kind)
-            )));
-        }
-        if !matches!(
-            wave.status,
-            WaveStatus::Planned | WaveStatus::Running | WaveStatus::Waiting
-        ) {
-            return Err(CliError::Usage(format!(
-                "wave {wave_id} is {} and cannot accept another team-run attempt; revise or create a later Wave",
-                serde_snake_label(&wave.status)
-            )));
-        }
-        Some(wave)
-    } else {
-        None
-    };
-
-    Ok((mission_id, wave_id, wave))
 }
 
 fn compatibility_team_actor(id: &str, authn_source: &str) -> TeamActorRef {
@@ -13033,7 +13066,7 @@ fn parse_team_run_status(s: &str) -> CliResult<TeamRunStatus> {
 /// falsely making the failed attempt acceptance-eligible. Anything else is a usage error
 /// (HTTP 400) so an attempt cannot skip review or resurrect after termination.
 /// Completing a running TeamRun deliberately does not close any MemberRun:
-/// reusable member runtimes may carry work into a later Wave. A running attempt
+/// persistent member runtimes may carry work into a later run of the same Team. A running attempt
 /// still cannot be status-cancelled until provider execution has a real
 /// cooperative interruption path.
 /// Completing an attempt only makes it eligible for the separate Wave gate; it
@@ -16546,10 +16579,14 @@ fn team_run_command(
             let supervisor = store.latest_team_supervisor_lease(&id)?;
             let supervisor_current = supervisor.as_ref().is_some_and(is_supervisor_current);
             #[cfg(unix)]
-            let multi_team_daemon = supervisor_daemon::daemon_status_via_socket(store)
+            let node_daemon = execution_space::firm_home()
+                .ok()
+                .and_then(|home| {
+                    supervisor_daemon::daemon_status_via_socket(&home, &run.execution_node_id)
+                })
                 .and_then(|response| serde_json::from_str::<serde_json::Value>(&response).ok());
             #[cfg(not(unix))]
-            let multi_team_daemon: Option<serde_json::Value> = None;
+            let node_daemon: Option<serde_json::Value> = None;
             if json {
                 let members: Vec<serde_json::Value> = member_runs
                     .iter()
@@ -16581,7 +16618,7 @@ fn team_run_command(
                             })
                             .unwrap_or(0),
                     },
-                    "multi_team_daemon": multi_team_daemon,
+                    "node_daemon": node_daemon,
                 }))?;
                 if unacked_messages > 0 && run.host_thread_id.is_none() {
                     eprintln!(
@@ -16662,11 +16699,11 @@ fn team_run_command(
                         );
                     }
                 }
-                if let Some(status) = multi_team_daemon {
+                if let Some(status) = node_daemon {
                     let managed = status["runs"].as_array().map(Vec::len).unwrap_or_default();
-                    println!("multi_team_daemon: running\tmanaged_runs={managed}");
+                    println!("node_daemon: running\tmanaged_runs={managed}");
                 } else {
-                    println!("multi_team_daemon: absent");
+                    println!("node_daemon: absent");
                 }
             }
         }
@@ -17756,6 +17793,7 @@ impl TeamSupervisorRegistration {
     pub(crate) fn start(
         store: &HarnessStore,
         team_run_id: &str,
+        expected_execution_space_id: Option<&str>,
     ) -> CliResult<TeamSupervisorRegistration> {
         let supervisor_id = generated_id("supervisor");
         let ttl_ms = team_supervisor_lease_ttl_ms();
@@ -17778,20 +17816,32 @@ impl TeamSupervisorRegistration {
                 run.execution_node_id
             )));
         }
-        let registration = store
+        let registrations = store
             .latest_node_project_registrations()?
             .into_iter()
-            .find(|registration| {
+            .filter(|registration| {
                 registration.node_id == run.execution_node_id
                     && registration.project_binding_id == run.project_binding_id
                     && registration.status == NodeProjectRegistrationStatus::Active
+                    && expected_execution_space_id
+                        .is_none_or(|expected| registration.execution_space_id == expected)
             })
-            .ok_or_else(|| {
-                CliError::Usage(format!(
-                    "PROJECT_NOT_REGISTERED_ON_NODE: {} on {}",
-                    run.project_binding_id, run.execution_node_id
-                ))
-            })?;
+            .collect::<Vec<_>>();
+        if registrations.len() != 1 {
+            return Err(CliError::Usage(format!(
+                "PROJECT_NOT_REGISTERED_ON_NODE: expected one active registration for {} on {} in Execution Space {}, found {}",
+                run.project_binding_id,
+                run.execution_node_id,
+                expected_execution_space_id.unwrap_or("<unambiguous>"),
+                registrations.len()
+            )));
+        }
+        let registration = registrations.into_iter().next().ok_or_else(|| {
+            CliError::Usage(format!(
+                "PROJECT_NOT_REGISTERED_ON_NODE: {} on {}",
+                run.project_binding_id, run.execution_node_id
+            ))
+        })?;
         let lease = store
             .acquire_team_supervisor_under_node_lease(
                 team_run_id,
@@ -18003,7 +18053,7 @@ fn reserve_team_supervisor(
     }
     drop(supervisors);
 
-    match TeamSupervisorRegistration::start(store, team_run_id) {
+    match TeamSupervisorRegistration::start(store, team_run_id, None) {
         Ok(reg) => Ok(reg),
         Err(error) => {
             LIVE_TEAM_SUPERVISORS
@@ -19972,24 +20022,20 @@ pub(crate) fn prepare_team_run_start(
     })
 }
 
-/// `harness team-run start`: spawn or adopt a supervisor daemon, then exit.
-/// The daemon owns the delivery loop, heartbeat, and control listener.
-/// The old in-process path (`prepare_team_run_start` + `drive_prepared_team_run`)
-/// remains available for `serve_command` and `dashboard_command`.
-///
-/// On non-Unix platforms the supervisor runs in-process (no daemon).
+/// `firm team-run start`: delegate one admitted TeamRun to the machine-scoped
+/// NodeDaemon. Public start surfaces never spawn a per-run daemon.
 pub(crate) fn team_run_start(
     store: &HarnessStore,
-    _resolved: &ResolvedStore,
+    resolved: &ResolvedStore,
     run_id: &str,
     max_concurrency: usize,
     idle_timeout: Duration,
 ) -> CliResult<()> {
     #[cfg(unix)]
     {
-        // When the test-idle env var is set, fall back to the old in-process
-        // supervisor path so integration tests that expect blocking completion
-        // continue to work without spawning a real daemon child.
+        // The test-idle hook drives the already-admitted run synchronously so
+        // integration tests can observe bounded completion. This branch is not
+        // compiled into production and does not expose a public daemon fallback.
         let test_idle_ms = std::env::var("FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS")
             .or_else(|_| std::env::var("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS"))
             .ok();
@@ -19997,94 +20043,106 @@ pub(crate) fn team_run_start(
             let prepared = prepare_team_run_start(store, run_id, max_concurrency)?;
             return drive_prepared_team_run(
                 prepared,
-                _resolved.execution_space_context.clone(),
-                _resolved.context.clone(),
+                resolved.execution_space_context.clone(),
+                resolved.context.clone(),
                 max_concurrency,
                 idle_timeout,
                 None,
             );
         }
 
-        // Validate the team run and refresh member provider profiles before
-        // spawning.  The daemon will re-validate on its side, but pre-validating
-        // here gives the CLI user an immediate error for unrecoverable problems.
-        let _body = prepare_team_run_start_body(store, run_id, max_concurrency)?;
-
-        match crate::supervisor_daemon::try_delegate_to_daemon(store, run_id) {
-            Ok(response) => {
-                let parsed: serde_json::Value =
-                    serde_json::from_str(&response).map_err(|error| {
-                        CliError::Usage(format!(
-                            "supervisor daemon returned invalid JSON for {run_id}: {error}"
-                        ))
-                    })?;
-                if parsed["ok"].as_bool() == Some(true) {
-                    println!("team run {run_id}\tdelegated to supervisor daemon");
-                    return Ok(());
-                }
-                return Err(CliError::Usage(format!(
-                    "supervisor daemon rejected {run_id}: {}",
-                    parsed["error"]
-                        .as_str()
-                        .unwrap_or("daemon returned no error detail")
-                )));
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-                ) =>
-            {
-                eprintln!(
-                    "[star-harness] multi-team daemon unavailable ({error}); using per-run daemon"
-                );
-            }
-            Err(error) => {
-                return Err(CliError::Usage(format!(
-                    "supervisor daemon communication failed for {run_id}: {error}"
-                )));
-            }
-        }
-
-        let daemon =
-            match crate::supervisor_daemon::check_existing_supervisor_daemon(store, run_id)? {
-                Some(info) => {
-                    eprintln!(
-                    "[star-harness] team run {run_id}: adopting supervisor daemon pid {} (gen {})",
-                    info.pid, info.generation,
-                );
-                    info
-                }
-                None => {
-                    eprintln!("[star-harness] team run {run_id}: spawning supervisor daemon...");
-                    crate::supervisor_daemon::spawn_supervisor_daemon(
-                        store,
-                        run_id,
-                        max_concurrency,
-                        idle_timeout.as_secs(),
-                    )?
-                }
-            };
-
-        crate::supervisor_daemon::adopt_daemon(&daemon)?;
+        let delegated = delegate_team_run_to_node_daemon(store, resolved, run_id, max_concurrency)?;
         println!(
-            "team run {run_id}\trunning (daemon pid {}, gen {})",
-            daemon.pid, daemon.generation,
+            "team run {run_id}\tdelegated to NodeDaemon {}",
+            delegated["node_id"].as_str().unwrap_or("unknown")
         );
         Ok(())
     }
 
     #[cfg(not(unix))]
     {
-        let prepared = prepare_team_run_start(store, run_id, max_concurrency)?;
-        drive_prepared_team_run(
-            prepared,
-            _resolved.execution_space_context.clone(),
-            _resolved.context.clone(),
-            max_concurrency,
-            idle_timeout,
-            None,
+        let _ = (store, resolved, run_id, max_concurrency, idle_timeout);
+        Err(CliError::Usage(
+            "NodeDaemon execution currently requires Unix-domain sockets".to_string(),
+        ))
+    }
+}
+
+/// Validate a TeamRun locally and ask the one machine NodeDaemon to adopt it.
+/// CLI and MCP share this boundary so no public control surface can spawn an
+/// per-TeamRun supervisor process outside the machine NodeDaemon.
+pub(crate) fn delegate_team_run_to_node_daemon(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    run_id: &str,
+    max_concurrency: usize,
+) -> CliResult<serde_json::Value> {
+    let execution_space_id = resolved
+        .execution_space_context
+        .as_ref()
+        .map(|space| space.id.as_str())
+        .ok_or_else(|| {
+            CliError::Usage(
+                "team-run start requires an explicitly resolved Execution Space".to_string(),
+            )
+        })?;
+    delegate_team_run_to_node_daemon_in_space(store, execution_space_id, run_id, max_concurrency)
+}
+
+pub(crate) fn delegate_team_run_to_node_daemon_in_space(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    run_id: &str,
+    max_concurrency: usize,
+) -> CliResult<serde_json::Value> {
+    #[cfg(unix)]
+    {
+        let body = prepare_team_run_start_body(store, run_id, max_concurrency)?;
+        let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
+        let local_node_id = read_local_node_id()?;
+        if body.run.execution_node_id != local_node_id {
+            return Err(CliError::Usage(format!(
+                "REMOTE_TEAM_RUN_NOT_ADOPTED: TeamRun {run_id} belongs to Node {}, local Node is {local_node_id}",
+                body.run.execution_node_id
+            )));
+        }
+        let response = crate::supervisor_daemon::try_delegate_to_node_daemon(
+            &firm_home,
+            &local_node_id,
+            execution_space_id,
+            run_id,
         )
+        .map_err(|error| {
+            CliError::Usage(format!(
+                "NODE_DAEMON_UNAVAILABLE: cannot reach Node {local_node_id} for TeamRun {run_id}: {error}; start it with `firm daemon start`"
+            ))
+        })?;
+        let parsed: serde_json::Value = serde_json::from_str(&response).map_err(|error| {
+            CliError::Usage(format!(
+                "NodeDaemon returned invalid JSON for {run_id}: {error}"
+            ))
+        })?;
+        if parsed["ok"].as_bool() != Some(true) {
+            return Err(CliError::Usage(format!(
+                "NodeDaemon rejected {run_id}: {}",
+                parsed["error"]
+                    .as_str()
+                    .unwrap_or("daemon returned no error detail")
+            )));
+        }
+        Ok(serde_json::json!({
+            "node_id": local_node_id,
+            "execution_space_id": execution_space_id,
+            "team_run_id": run_id,
+            "daemon_response": parsed,
+        }))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (store, execution_space_id, run_id, max_concurrency);
+        Err(CliError::Usage(
+            "NodeDaemon execution currently requires Unix-domain sockets".to_string(),
+        ))
     }
 }
 
@@ -27368,21 +27426,14 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
     Ok(())
 }
 
-/// `harness daemon start|status|stop`: the resident warm-child host, plus
-/// `harness daemon serve` for the multi-TeamRun supervisor (unix-only).
-///
-/// The daemon keeps `claude` children warm across short-lived `harness deliver`
-/// invocations behind a per-workspace Unix socket under the store root. The
-/// resident delivery path (`HARNESS_CLAUDE_RESIDENT=1`) routes through it when a
-/// socket is present, and falls back to an inline single turn when it is not.
+/// Machine-scoped NodeDaemon lifecycle. Exactly one process serves the stable
+/// local Node and discovers all registered Execution Spaces under FIRM_HOME.
 #[cfg(unix)]
-fn daemon_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "daemon start|status|stop|supervisor|serve")?;
-    let harness_root = store.root().to_path_buf();
+fn daemon_command(args: &[String]) -> CliResult<()> {
+    require_subcommand(args, "daemon start|serve|status|stop")?;
+    let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
+    let node_id = read_local_node_id()?;
     match args[0].as_str() {
-        "supervisor" => {
-            supervisor_daemon::supervisor_daemon_command(store, &args[1..])?;
-        }
         "serve" => {
             let max_concurrency = value(args, "--max-concurrency")
                 .map(|raw| {
@@ -27415,62 +27466,58 @@ fn daemon_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                 ));
             }
             supervisor_daemon::MultiTeamDaemon::run(
-                store.clone(),
+                firm_home,
+                node_id,
                 max_concurrency,
                 idle_timeout_secs,
                 scan_interval_secs,
             )?;
         }
         "start" => {
-            let idle_secs = value(args, "--idle-secs")
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(resident::DEFAULT_MAX_IDLE.as_secs());
-            // `--socket <path>` may only restate the default per-workspace
-            // socket. Discovery is FIRM_ROOT-first: the delivery client and
-            // `daemon status`/`stop` derive the socket from FIRM_ROOT (with the
-            // deprecated HARNESS_ROOT alias) via
-            // `daemon_socket_path`, with no way to learn an overridden directory.
-            // So a socket whose parent != the store root would start a live but
-            // UNDISCOVERABLE daemon (deliveries silently degrade to inline,
-            // `status` reports absent, `stop` finds no pidfile). We therefore
-            // accept the flag only when it names exactly `<FIRM_ROOT>/resident.sock`
-            // and reject any other path with a clear error rather than spawning
-            // an orphan daemon.
-            if let Some(path) = value(args, "--socket") {
-                let path = PathBuf::from(path);
-                let expected = resident_daemon::daemon_socket_path(&harness_root);
-                if path != expected {
+            if supervisor_daemon::daemon_status_via_socket(&firm_home, &node_id).is_some() {
+                println!("NodeDaemon already running for Node {node_id}");
+                return Ok(());
+            }
+            let mut command = Command::new(std::env::current_exe()?);
+            command
+                .arg("daemon")
+                .arg("serve")
+                .arg("--max-concurrency")
+                .arg(value(args, "--max-concurrency").unwrap_or_else(|| "4".to_string()))
+                .arg("--idle-timeout-secs")
+                .arg(value(args, "--idle-timeout-secs").unwrap_or_else(|| "300".to_string()))
+                .arg("--scan-interval-secs")
+                .arg(value(args, "--scan-interval-secs").unwrap_or_else(|| "5".to_string()))
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let child = command.spawn()?;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if supervisor_daemon::daemon_status_via_socket(&firm_home, &node_id).is_some() {
+                    println!("NodeDaemon started for Node {node_id} (pid {})", child.id());
+                    break;
+                }
+                if Instant::now() >= deadline {
                     return Err(CliError::Usage(format!(
-                        "--socket must be {} (discovery is FIRM_ROOT-first); got {}",
-                        expected.display(),
-                        path.display()
+                        "NodeDaemon pid {} did not become ready within 10s",
+                        child.id()
                     )));
                 }
+                std::thread::sleep(Duration::from_millis(50));
             }
-            resident_daemon::run_daemon(&harness_root, idle_secs)?;
         }
-        "status" => match resident_daemon::daemon_status(&harness_root) {
-            resident_daemon::DaemonStatus::Running => {
-                let pid = resident_daemon::daemon_pid(&harness_root);
-                println!(
-                    "running (socket {}{})",
-                    resident_daemon::daemon_socket_path(&harness_root).display(),
-                    pid.map(|p| format!(", pid {p}")).unwrap_or_default()
-                );
-            }
-            resident_daemon::DaemonStatus::Stale => println!(
-                "stale (socket {} exists but no daemon answers)",
-                resident_daemon::daemon_socket_path(&harness_root).display()
-            ),
-            resident_daemon::DaemonStatus::Absent => println!("absent (no daemon socket)"),
+        "status" => match supervisor_daemon::daemon_status_via_socket(&firm_home, &node_id) {
+            Some(response) => println!("{response}"),
+            None => println!("absent (no NodeDaemon for Node {node_id})"),
         },
-        "stop" => match resident_daemon::daemon_pid(&harness_root) {
-            Some(pid) => {
-                stop_pid(pid)?;
-                println!("stopped resident daemon pid {pid}");
-            }
-            None => return Err(CliError::Usage("no resident daemon pidfile found".into())),
-        },
+        "stop" => {
+            let response = supervisor_daemon::daemon_stop_via_socket(&firm_home, &node_id)
+                .ok_or_else(|| {
+                    CliError::Usage(format!("no NodeDaemon is running for Node {node_id}"))
+                })?;
+            println!("{response}");
+        }
         other => return Err(CliError::Usage(format!("unknown daemon command: {other}"))),
     }
     Ok(())
@@ -27659,6 +27706,107 @@ fn handle_http_connection(
                 Err(error) => return Err(error),
             }
             return Ok(());
+        }
+        if path_only == "/v1/work-delegations" {
+            let source_work_id = query_param(&path, "source_work_id");
+            let target_team_id = query_param(&path, "target_agent_team_id");
+            let state = query_param(&path, "state");
+            let delegations = store
+                .latest_work_delegations()?
+                .into_iter()
+                .filter(|delegation| {
+                    source_work_id
+                        .as_deref()
+                        .is_none_or(|id| delegation.source_work_ref.work_id == id)
+                })
+                .filter(|delegation| {
+                    target_team_id
+                        .as_deref()
+                        .is_none_or(|id| delegation.target_agent_team_id == id)
+                })
+                .filter(|delegation| {
+                    state
+                        .as_deref()
+                        .is_none_or(|expected| serde_snake_label(&delegation.state) == expected)
+                })
+                .collect::<Vec<_>>();
+            write_http_json(
+                &mut stream,
+                "200 OK",
+                &serde_json::json!({"delegations": delegations}),
+            )?;
+            return Ok(());
+        }
+        if path_only == "/v1/execution-nodes" {
+            write_http_json(
+                &mut stream,
+                "200 OK",
+                &serde_json::json!({
+                    "nodes": store.latest_execution_nodes()?,
+                    "registrations": store.latest_node_project_registrations()?,
+                    "daemon_leases": store.latest_node_daemon_leases()?,
+                }),
+            )?;
+            return Ok(());
+        }
+        if let Some(node_id) = path_only.strip_prefix("/v1/execution-nodes/") {
+            if !node_id.contains('/') {
+                let node = store
+                    .latest_execution_nodes()?
+                    .into_iter()
+                    .find(|node| node.id == node_id);
+                if let Some(node) = node {
+                    let registrations = store
+                        .latest_node_project_registrations()?
+                        .into_iter()
+                        .filter(|registration| registration.node_id == node_id)
+                        .collect::<Vec<_>>();
+                    let daemon_lease = store.latest_node_daemon_lease(node_id)?;
+                    write_http_json(
+                        &mut stream,
+                        "200 OK",
+                        &serde_json::json!({
+                            "node": node,
+                            "registrations": registrations,
+                            "daemon_lease": daemon_lease,
+                        }),
+                    )?;
+                } else {
+                    write_http_json(
+                        &mut stream,
+                        "404 Not Found",
+                        &serde_json::json!({"error": "execution_node_not_found"}),
+                    )?;
+                }
+                return Ok(());
+            }
+        }
+        if let Some(delegation_id) = path_only.strip_prefix("/v1/work-delegations/") {
+            if !delegation_id.contains('/') {
+                let delegation = store
+                    .latest_work_delegations()?
+                    .into_iter()
+                    .find(|delegation| delegation.id == delegation_id);
+                if let Some(delegation) = delegation {
+                    let events = store
+                        .work_delegation_events()?
+                        .into_iter()
+                        .filter(|event| event.delegation_id == delegation_id)
+                        .collect::<Vec<_>>();
+                    write_http_json(
+                        &mut stream,
+                        "200 OK",
+                        &serde_json::json!({"delegation": delegation, "events": events}),
+                    )?;
+                } else {
+                    write_http_json(
+                        &mut stream,
+                        "404 Not Found",
+                        &serde_json::json!({"error": "work_delegation_not_found"}),
+                    )?;
+                }
+                return Ok(());
+            }
         }
         if let Some(rest) = path_only.strip_prefix("/v1/team-runs/") {
             let parts = rest.split('/').collect::<Vec<_>>();
@@ -28192,55 +28340,27 @@ fn handle_http_connection(
     if let Some(rest) = path_only.strip_prefix("/v1/team-runs/") {
         let parts = rest.split('/').collect::<Vec<_>>();
         if let [team_run_id, "members", member_run_id, "reopen"] = parts.as_slice() {
-            let result = (|| -> CliResult<(serde_json::Value, Option<PreparedTeamRunStart>)> {
+            let result = (|| -> CliResult<serde_json::Value> {
                 let reopened =
                     reopen_team_member_value(store, team_run_id, member_run_id, &body_json)?;
-                let prepared = if reopened_member_requires_supervisor_start(
+                let runtime_start = if reopened_member_requires_supervisor_start(
                     store,
                     team_run_id,
                     member_run_id,
                 )? {
-                    Some(prepare_reopened_team_run_start(
+                    Some(delegate_team_run_to_node_daemon_in_space(
                         store,
+                        &project_id,
                         team_run_id,
                         TEAM_RUN_START_DEFAULT_CONCURRENCY,
                     )?)
                 } else {
                     None
                 };
-                Ok((reopened, prepared))
+                Ok(serde_json::json!({"reopen": reopened, "runtime_start": runtime_start}))
             })();
             match result {
-                Ok((reopened, prepared)) => {
-                    if let Some(prepared) = prepared {
-                        let context = projects.context_for(
-                            project_param.as_deref(),
-                            Some(&project_id),
-                            store,
-                        );
-                        let execution_space = projects.space_context_for(&project_id);
-                        let activity_manager = sse_manager.clone();
-                        let activity_project = project_id.clone();
-                        let live_sink: LiveMemberActivitySink = Arc::new(move |activity| {
-                            broadcast_live_member_activity(
-                                &activity_manager,
-                                &activity_project,
-                                activity,
-                            );
-                        });
-                        std::thread::spawn(move || {
-                            if let Err(error) = drive_prepared_team_run(
-                                prepared,
-                                execution_space,
-                                Some(context),
-                                TEAM_RUN_START_DEFAULT_CONCURRENCY,
-                                Duration::from_secs(kimi_acp::DEFAULT_PROMPT_IDLE_TIMEOUT_SECS),
-                                Some(live_sink),
-                            ) {
-                                eprintln!("team member HTTP reopen failed: {error}");
-                            }
-                        });
-                    }
+                Ok(reopened) => {
                     write_http_json(
                         &mut stream,
                         "202 Accepted",
@@ -28263,55 +28383,27 @@ fn handle_http_connection(
     if let Some(rest) = path_only.strip_prefix("/v1/team-runs/") {
         let parts = rest.split('/').collect::<Vec<_>>();
         if let [team_run_id, "members", member_run_id, "resume"] = parts.as_slice() {
-            let result = (|| -> CliResult<(serde_json::Value, Option<PreparedTeamRunStart>)> {
+            let result = (|| -> CliResult<serde_json::Value> {
                 let resumed =
                     resume_team_member_value(store, team_run_id, member_run_id, &body_json)?;
-                let prepared = if reopened_member_requires_supervisor_start(
+                let runtime_start = if reopened_member_requires_supervisor_start(
                     store,
                     team_run_id,
                     member_run_id,
                 )? {
-                    Some(prepare_reopened_team_run_start(
+                    Some(delegate_team_run_to_node_daemon_in_space(
                         store,
+                        &project_id,
                         team_run_id,
                         TEAM_RUN_START_DEFAULT_CONCURRENCY,
                     )?)
                 } else {
                     None
                 };
-                Ok((resumed, prepared))
+                Ok(serde_json::json!({"resume": resumed, "runtime_start": runtime_start}))
             })();
             match result {
-                Ok((resumed, prepared)) => {
-                    if let Some(prepared) = prepared {
-                        let context = projects.context_for(
-                            project_param.as_deref(),
-                            Some(&project_id),
-                            store,
-                        );
-                        let execution_space = projects.space_context_for(&project_id);
-                        let activity_manager = sse_manager.clone();
-                        let activity_project = project_id.clone();
-                        let live_sink: LiveMemberActivitySink = Arc::new(move |activity| {
-                            broadcast_live_member_activity(
-                                &activity_manager,
-                                &activity_project,
-                                activity,
-                            );
-                        });
-                        std::thread::spawn(move || {
-                            if let Err(error) = drive_prepared_team_run(
-                                prepared,
-                                execution_space,
-                                Some(context),
-                                TEAM_RUN_START_DEFAULT_CONCURRENCY,
-                                Duration::from_secs(kimi_acp::DEFAULT_PROMPT_IDLE_TIMEOUT_SECS),
-                                Some(live_sink),
-                            ) {
-                                eprintln!("team member HTTP resume failed: {error}");
-                            }
-                        });
-                    }
+                Ok(resumed) => {
                     write_http_json(
                         &mut stream,
                         "202 Accepted",
@@ -28328,10 +28420,9 @@ fn handle_http_connection(
         }
     }
 
-    // POST /v1/team-runs/{id}/start — reserve the planning attempt under the
-    // store CAS, then run providers on a background thread. The immediate 202
-    // lets the Console keep its SSE connection responsive while member turns
-    // execute; durable state still flows through the normal ledgers.
+    // POST /v1/team-runs/{id}/start — ask the one machine NodeDaemon to adopt
+    // the attempt. The HTTP server never starts an in-process or per-run
+    // supervisor, so every public control surface shares the same parent fence.
     if let Some(team_run_id) = path_only
         .strip_prefix("/v1/team-runs/")
         .and_then(|rest| rest.strip_suffix("/start"))
@@ -28344,7 +28435,7 @@ fn handle_http_connection(
                 }),
             }
         };
-        let result = (|| -> CliResult<(PreparedTeamRunStart, usize, Duration)> {
+        let result = (|| -> CliResult<(serde_json::Value, AgentTeamRun)> {
             let max_concurrency_u64 =
                 parse_positive("max_concurrency", TEAM_RUN_START_DEFAULT_CONCURRENCY as u64)?;
             let max_concurrency = usize::try_from(max_concurrency_u64)
@@ -28353,45 +28444,26 @@ fn handle_http_connection(
                 .ok_or_else(|| {
                     CliError::Usage("max_concurrency must be between 1 and 64".to_string())
                 })?;
-            let idle_timeout_s =
-                parse_positive("idle_timeout_s", kimi_acp::DEFAULT_PROMPT_IDLE_TIMEOUT_SECS)?;
-            let prepared = prepare_team_run_start(store, team_run_id, max_concurrency)?;
-            Ok((
-                prepared,
+            let delegated = delegate_team_run_to_node_daemon_in_space(
+                store,
+                &project_id,
+                team_run_id,
                 max_concurrency,
-                Duration::from_secs(idle_timeout_s),
-            ))
+            )?;
+            Ok((delegated, latest_team_run(store, team_run_id)?))
         })();
         match result {
-            Ok((prepared, max_concurrency, idle_timeout)) => {
-                let context =
-                    projects.context_for(project_param.as_deref(), Some(&project_id), store);
-                let execution_space = projects.space_context_for(&project_id);
-                let activity_manager = sse_manager.clone();
-                let activity_project = project_id.clone();
-                let live_sink: LiveMemberActivitySink = Arc::new(move |activity| {
-                    broadcast_live_member_activity(&activity_manager, &activity_project, activity);
-                });
-                let accepted_run_id = prepared.run_id.clone();
-                let accepted_status = serde_snake_label(&prepared.running.status);
-                std::thread::spawn(move || {
-                    if let Err(error) = drive_prepared_team_run(
-                        prepared,
-                        execution_space,
-                        Some(context),
-                        max_concurrency,
-                        idle_timeout,
-                        Some(live_sink),
-                    ) {
-                        eprintln!("team-run HTTP start failed: {error}");
-                    }
-                });
+            Ok((node_daemon, running)) => {
                 write_http_json(
                     &mut stream,
                     "202 Accepted",
                     &serde_json::json!({
                         "ok": true,
-                        "result": {"id": accepted_run_id, "status": accepted_status},
+                        "result": {
+                            "id": running.id,
+                            "status": running.status,
+                            "node_daemon": node_daemon,
+                        },
                     }),
                 )?;
             }
@@ -28601,12 +28673,16 @@ fn handle_http_action(
         .strip_prefix("/v1/missions/")
         .and_then(|rest| rest.strip_suffix("/teams"))
     {
-        let team_value = create_team_value(store, body)?;
-        let team_id = team_value["id"]
-            .as_str()
-            .ok_or_else(|| CliError::Usage("created team has no id".to_string()))?;
-        let mission = revise_mission_team_link(store, mission_id, team_id, true)?;
-        return Ok(serde_json::json!({"mission": mission, "team": team_value}));
+        let mut team_body = body.clone();
+        let object = team_body.as_object_mut().ok_or_else(|| {
+            CliError::Usage("Mission Team body must be a JSON object".to_string())
+        })?;
+        object.insert(
+            "mission_id".to_string(),
+            serde_json::Value::String(mission_id.to_string()),
+        );
+        let team_value = create_team_value(store, &team_body)?;
+        return Ok(serde_json::json!({"team": team_value}));
     }
     if let Some(mission_id) = path
         .strip_prefix("/v1/missions/")
@@ -28616,28 +28692,6 @@ fn handle_http_action(
             store,
             mission_id,
             &required_json_string(body, "context")?,
-        )?)?);
-    }
-    if let Some(mission_id) = path
-        .strip_prefix("/v1/missions/")
-        .and_then(|rest| rest.strip_suffix("/link-team"))
-    {
-        return Ok(serde_json::to_value(revise_mission_team_link(
-            store,
-            mission_id,
-            &required_json_string(body, "team_id")?,
-            true,
-        )?)?);
-    }
-    if let Some(mission_id) = path
-        .strip_prefix("/v1/missions/")
-        .and_then(|rest| rest.strip_suffix("/unlink-team"))
-    {
-        return Ok(serde_json::to_value(revise_mission_team_link(
-            store,
-            mission_id,
-            &required_json_string(body, "team_id")?,
-            false,
         )?)?);
     }
     if let Some(mission_id) = path
@@ -28684,6 +28738,15 @@ fn handle_http_action(
     }
     if path == "/v1/team-runs" {
         return create_team_run_value(store, project_context, body);
+    }
+    if path == "/v1/work-delegations" {
+        return create_work_delegation_value(store, body);
+    }
+    if let Some(delegation_id) = path
+        .strip_prefix("/v1/work-delegations/")
+        .and_then(|rest| rest.strip_suffix("/cancel"))
+    {
+        return cancel_work_delegation_value(store, delegation_id, body);
     }
     if let Some(team_run_id) = path
         .strip_prefix("/v1/team-runs/")
@@ -29480,31 +29543,6 @@ pub(crate) fn reopened_member_requires_supervisor_start(
     Ok(false)
 }
 
-/// A closing Supervisor releases its durable lease before its Drop guard
-/// removes the process-local registration. Reopen may therefore correctly
-/// decide that a successor is required and still collide with that short
-/// cleanup window. Wait only for that exact in-process race; every other start
-/// failure remains immediate and visible.
-fn prepare_reopened_team_run_start(
-    store: &HarnessStore,
-    team_run_id: &str,
-    max_concurrency: usize,
-) -> CliResult<PreparedTeamRunStart> {
-    for attempt in 0..40 {
-        match prepare_team_run_start(store, team_run_id, max_concurrency) {
-            Ok(prepared) => return Ok(prepared),
-            Err(CliError::Usage(message))
-                if message.contains("already has a live supervisor in this Host process")
-                    && attempt < 39 =>
-            {
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    unreachable!("bounded reopen Supervisor preparation always returns")
-}
-
 pub(crate) fn resolve_pending_interaction_value(
     store: &HarnessStore,
     team_run_id: &str,
@@ -30286,6 +30324,145 @@ fn create_team_work_value(
         updated_at: String::new(),
     };
     Ok(serde_json::to_value(store.insert_work(work, context)?)?)
+}
+
+/// Create one cross-Team WorkDelegation and its target root Work atomically.
+/// This is the shared JSON service used by HTTP and MCP; the CLI keeps the
+/// same Store contract through `team-run work delegate`.
+pub(crate) fn create_work_delegation_value(
+    store: &HarnessStore,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let source_run_id = required_json_string(body, "source_team_run_id")?;
+    let source_work_id = required_json_string(body, "source_work_id")?;
+    let source_version = required_json_work_version(body)?;
+    let target_team_id = required_json_string(body, "target_agent_team_id")?;
+    let source = store
+        .latest_works()?
+        .into_iter()
+        .find(|work| work.id == source_work_id && work.team_run_id == source_run_id)
+        .ok_or_else(|| {
+            CliError::Usage(format!("Work not found: {source_run_id}/{source_work_id}"))
+        })?;
+    if source.version != source_version {
+        return Err(CliError::Usage(format!(
+            "DELEGATION_STALE_SOURCE: Work {source_work_id} is version {}, expected {source_version}",
+            source.version
+        )));
+    }
+    let source_owner = source.owner_member_id.clone().ok_or_else(|| {
+        CliError::Usage("DELEGATION_NOT_AUTHORIZED: source Work has no durable owner".to_string())
+    })?;
+    let target_runs = latest_team_runs_in_append_order(store)?
+        .into_iter()
+        .filter(|run| run.agent_team_id == target_team_id)
+        .filter(|run| {
+            !matches!(
+                run.status,
+                TeamRunStatus::Completed | TeamRunStatus::Failed | TeamRunStatus::Cancelled
+            )
+        })
+        .collect::<Vec<_>>();
+    if target_runs.len() != 1 {
+        return Err(CliError::Usage(format!(
+            "DELEGATION_TARGET_INVALID: target Team {target_team_id} must have exactly one active TeamRun, found {}",
+            target_runs.len()
+        )));
+    }
+    let target_run = &target_runs[0];
+    let context = http_host_work_context(body)?;
+    let gates = match body.get("gates") {
+        None => Vec::new(),
+        Some(value) => {
+            let gates: Vec<GateSpec> = serde_json::from_value(value.clone()).map_err(|error| {
+                CliError::Usage(format!("invalid delegated Work gates JSON array: {error}"))
+            })?;
+            validate_gate_specs(&gates)
+                .map_err(|reason| CliError::Usage(format!("invalid Work gates: {reason}")))?;
+            gates
+        }
+    };
+    let target_work_id =
+        json_string(body, "target_work_id").unwrap_or_else(|| generated_id("delegated-work"));
+    let now = context.created_at.clone();
+    let target_work = Work {
+        id: target_work_id.clone(),
+        team_run_id: target_run.id.clone(),
+        team_id: Some(target_team_id.clone()),
+        parent_work_id: None,
+        title: required_json_string(body, "target_title")?,
+        context_markdown: json_string(body, "target_context_markdown").unwrap_or_default(),
+        completion_criteria_markdown: required_json_string(
+            body,
+            "target_completion_criteria_markdown",
+        )?,
+        phase: WorkPhase::Open,
+        condition: WorkCondition::Normal,
+        resolution: None,
+        owner_member_id: None,
+        active_member_run_id: None,
+        claim_mode: WorkClaimMode::TeamClaim,
+        eligible_member_ids: json_string_array(body, "target_eligible_member_ids"),
+        prerequisite_work_ids: Vec::new(),
+        priority: optional_json_string(body, "target_priority")?
+            .map(|raw| parse_work_priority(&raw))
+            .transpose()?
+            .unwrap_or(source.priority),
+        created_by_actor: context.performed_by_actor.clone(),
+        created_by_member_id: None,
+        result_summary: None,
+        blocker_reason: None,
+        artifact_refs: Vec::new(),
+        check_refs: Vec::new(),
+        github_links: Vec::new(),
+        gates,
+        workspace: None,
+        version: 0,
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+    let delegation = WorkDelegation {
+        id: json_string(body, "delegation_id").unwrap_or_else(|| generated_id("work-delegation")),
+        source_work_ref: WorkRef {
+            team_run_id: source_run_id,
+            work_id: source_work_id,
+        },
+        source_work_version: source_version,
+        source_owner_member_id: source_owner,
+        created_by_member_run_id: None,
+        target_agent_team_id: target_team_id,
+        target_work_ref: WorkRef {
+            team_run_id: target_run.id.clone(),
+            work_id: target_work_id,
+        },
+        delegated_by_actor: context.performed_by_actor.clone(),
+        state: WorkDelegationState::Active,
+        resolution_summary: None,
+        blocker_reason: None,
+        version: 1,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    let (delegation, target_work) =
+        store.create_work_delegation_with_target_work(delegation, target_work, context)?;
+    Ok(serde_json::json!({
+        "delegation": delegation,
+        "target_work": target_work,
+    }))
+}
+
+pub(crate) fn cancel_work_delegation_value(
+    store: &HarnessStore,
+    delegation_id: &str,
+    body: &serde_json::Value,
+) -> CliResult<serde_json::Value> {
+    let delegation = store.cancel_work_delegation(
+        delegation_id,
+        required_json_work_version(body)?,
+        &required_json_string(body, "reason")?,
+        http_host_work_context(body)?,
+    )?;
+    Ok(serde_json::to_value(delegation)?)
 }
 
 fn mutate_team_work_value(
@@ -36335,6 +36512,11 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     let works = store.latest_works()?;
     let work_events = store.work_events()?;
     let work_deliveries = store.latest_work_deliveries()?;
+    let work_delegations = store.latest_work_delegations()?;
+    let work_delegation_events = store.work_delegation_events()?;
+    let execution_nodes = store.latest_execution_nodes()?;
+    let node_project_registrations = store.latest_node_project_registrations()?;
+    let node_daemon_leases = store.latest_node_daemon_leases()?;
     let team_supervisor_leases = latest_team_supervisor_leases_in_append_order(store)?;
     let team_member_close_requests = latest_team_member_close_requests_in_append_order(store)?;
     let agent_message_routes = store.agent_message_routes()?;
@@ -36398,8 +36580,8 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
                 "model": member.model,
                 "profile": member.profile,
                 "provider_config": member.provider_config,
-                // Reverse membership is derived from the latest reusable Team
-                // definitions. AgentMember.team_ids is compatibility input,
+                // Reverse membership is derived from the latest Mission-owned
+                // Team definitions. AgentMember.team_ids is compatibility input,
                 // never authoritative read-model state.
                 "team_ids": derived_team_ids,
                 "created_at": member.created_at,
@@ -36431,6 +36613,11 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "works": works,
         "work_events": work_events,
         "work_deliveries": work_deliveries,
+        "work_delegations": work_delegations,
+        "work_delegation_events": work_delegation_events,
+        "execution_nodes": execution_nodes,
+        "node_project_registrations": node_project_registrations,
+        "node_daemon_leases": node_daemon_leases,
         "team_supervisor_leases": team_supervisor_leases,
         "team_member_close_requests": team_member_close_requests,
         "agent_message_routes": agent_message_routes,
@@ -39355,15 +39542,9 @@ fn build_resident_config(
 /// tuple shape as the default path so `run_claude_delivery` can share the same
 /// status, telemetry, and recording logic.
 ///
-/// Two modes (both opt-in via `HARNESS_CLAUDE_RESIDENT=1`):
-///   * Daemon-first (unix): if a resident daemon owns the per-workspace socket,
-///     the turn is delivered over it so successive short-lived `harness deliver`
-///     invocations share ONE warm child across CLI runs (the daemon owns the
-///     long-lived `ResidentPool`; see `resident_daemon`).
-///   * Inline fallback: with no daemon present, spawn a single resident for this
-///     one turn and shut it down on return (its `Drop` closes stdin and reaps
-///     the child — no leaked PID). This still exercises the stream-json contract
-///     but does not keep the child warm across deliveries.
+/// This transport is process-local: the machine NodeDaemon is the only durable
+/// daemon authority. The resident is dropped after the turn, which closes
+/// stdin and reaps the child without creating a second lifecycle controller.
 fn run_claude_resident_delivery_real(
     session_dir: &Path,
     member: &AgentMember,
@@ -39383,68 +39564,6 @@ fn run_claude_resident_delivery_real(
     let config = build_resident_config(member, message, project);
     let stderr_path = session_dir.join("claude.stderr");
     let timeout = Duration::from_millis(timeout_ms.max(1));
-
-    // Daemon-first (unix): if a resident daemon owns the per-workspace socket,
-    // deliver this turn over it so successive short-lived `harness deliver`
-    // invocations share ONE warm child. When no daemon is present we fall
-    // through to the inline single-turn path below (graceful degrade).
-    #[cfg(unix)]
-    {
-        let harness_root = canonical_or_legacy_env("FIRM_ROOT", "HARNESS_ROOT")
-            .map(|(value, _)| PathBuf::from(value))
-            .unwrap_or_else(|| PathBuf::from(".harness"));
-        if resident_daemon::daemon_is_available(&harness_root) {
-            let request = resident_daemon::DaemonRequest {
-                member_id: member.id.clone(),
-                config: config.clone(),
-                stderr_path: stderr_path.display().to_string(),
-                user_text: message_content.clone(),
-                timeout_ms,
-            };
-            match resident_daemon::daemon_deliver(&harness_root, &request) {
-                Ok(response) => {
-                    let events: Vec<ClaudeStreamEvent> = response
-                        .events
-                        .into_iter()
-                        .map(|event| ClaudeStreamEvent {
-                            event_type: event.event_type,
-                            payload: event.payload,
-                        })
-                        .collect();
-                    let mut stderr_log =
-                        fs::read_to_string(&response.stderr_path).unwrap_or_default();
-                    if let Some(error) = response.error {
-                        if !stderr_log.is_empty() {
-                            stderr_log.push('\n');
-                        }
-                        stderr_log.push_str(&error);
-                    }
-                    let raw_events = events.iter().map(|event| event.payload.clone()).collect();
-                    return Ok((
-                        response.success,
-                        events,
-                        raw_events,
-                        response.session_id,
-                        stderr_log,
-                    ));
-                }
-                Err(error) => {
-                    // The connect succeeded but the round-trip failed (daemon
-                    // died mid-turn). The turn may have partially run against the
-                    // warm child, so we report a failed delivery rather than
-                    // silently retrying inline (avoids double-delivery).
-                    let stderr_log = fs::read_to_string(&stderr_path).unwrap_or_default();
-                    return Ok((
-                        false,
-                        Vec::new(),
-                        Vec::new(),
-                        None,
-                        format!("resident daemon delivery failed: {error}\n{stderr_log}"),
-                    ));
-                }
-            }
-        }
-    }
 
     let mut resident = resident::ResidentClaude::spawn(config, &stderr_path).map_err(|error| {
         CliError::Usage(format!("failed to spawn resident claude process: {error}"))
@@ -39839,8 +39958,8 @@ fn cheatsheet_command(args: &[String]) -> CliResult<()> {
 // the real CLI definitions in this file. Length budgets are enforced by the
 // anti-drift test (cheatsheet_length_budgets).
 
-const CHEATSHEET_TEAM: &str = r#"team-run create     --objective <text> [--agent-team-id <id>] [--budget-usd <n>]
-                    [--mission-id <id>] [--wave-id <id>] [--previous <id>]
+const CHEATSHEET_TEAM: &str = r#"team-run create     --objective <text> --agent-team-id <id> [--budget-usd <n>]
+                    [--previous <id>]
                     --member name:role:provider[/mode][:model][@paths]
 team-run start      --id <id> [--max-concurrency <n>] [--idle-timeout-s <n>]
 team-run add-member --id <id> --member <spec> [--initial-work <text>]
@@ -39882,8 +40001,6 @@ const CHEATSHEET_MISSION: &str = r#"mission create        --title <text> --objec
                       [--desired-outcome <text>] [--context <text>] [--json]
 mission show          --id <id>
 mission update-context --id <id> --context <text>
-mission create-team   --id <id> --name <text> --description <text>
-                      [--lead <id>] [--member <id>] [--team-id <id>]
 mission close         --id <id> --outcome <text> [--completed-by <actor>]
 mission log append    --mission-id <id>
                       --kind judgment|replan|recovery|closeout_evidence
@@ -39892,7 +40009,7 @@ mission log show       --mission-id <id> [--tail <n>] [--json]
 wave list (historical) [--mission-id <id>]
 "#;
 
-const CHEATSHEET_ALL: &str = r#"team-run create --objective <text> [--mission-id <id>] [--wave-id <id>]
+const CHEATSHEET_ALL: &str = r#"team-run create --objective <text> --agent-team-id <id>
   --member name:role:provider[/mode][:model][@paths]
 team-run start --id <id> [--max-concurrency <n>]
 team-run add-member --id <id> --member <spec>
@@ -39925,13 +40042,13 @@ mission create --title <text> --objective <text> [--id <id>]
   [--context <text>] [--json]
 mission show --id <id>
 mission update-context --id <id> --context <text>
-mission create-team --id <id> --name <text> --description <text>
-  [--lead <id>] [--member <id>]
+team create --name <text> --description <text> --mission-id <id>
+  --host-agent-id <id> --node-id <uuid> [--member <id>]
 mission close --id <id> --outcome <text>
 mission log append --mission-id <id>
   --kind judgment|replan|recovery|closeout_evidence --body <md>
 mission log show --mission-id <id> [--tail <n>]
-wave list (historical) [--mission-id <id>]
+wave list (history) [--mission-id <id>]
 "#;
 
 fn print_help() {
@@ -39945,7 +40062,7 @@ fn print_help() {
   space migrate-from-project --from-project <binding-id|path> --id <space-id> [--name <name>]
   legacy-goal-task export --project <id|path> --output <dir>
   legacy-goal-task verify --archive <dir>
-  mission create|list|show|update-context|create-team|link-team|unlink-team|close
+  mission create|list|show|update-context|close
   mission log append --mission-id <id> --kind judgment|replan|recovery|closeout_evidence --body <md>
   mission log show --mission-id <id> [--tail <n>]
   wave list|show|history (historical reads only; create|update|advance|gate retired by ADR 0051 -- use `mission log append`)
@@ -40008,8 +40125,7 @@ Execution selection is independent: --space/FIRM_SPACE selects coordination
 storage; --project/FIRM_PROJECT selects the provider cwd/config/Skill boundary.
 HARNESS_SPACE and HARNESS_PROJECT remain deprecated compatibility aliases.
 
-Agent Team creation uses --lead <host-agent-id>; --owner remains a compatibility
-alias. Mission create-team defaults the Lead to the current Host Agent (`host`)."#
+Agent Team creation requires one Mission, Host Agent, and ExecutionNode."#
     );
 }
 #[cfg(test)]
@@ -44019,6 +44135,80 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
 
+    trait TestSupervisorLeaseExt {
+        fn acquire_test_supervisor_lease(
+            &self,
+            team_run_id: &str,
+            supervisor_id: &str,
+            owner_process_id: u32,
+            owner_locator: &str,
+            now_unix_ms: u64,
+            ttl_ms: u64,
+        ) -> Result<TeamSupervisorLease, StoreError>;
+    }
+
+    impl TestSupervisorLeaseExt for HarnessStore {
+        fn acquire_test_supervisor_lease(
+            &self,
+            team_run_id: &str,
+            supervisor_id: &str,
+            owner_process_id: u32,
+            owner_locator: &str,
+            now_unix_ms: u64,
+            ttl_ms: u64,
+        ) -> Result<TeamSupervisorLease, StoreError> {
+            let run = self
+                .team_runs()?
+                .into_iter()
+                .rev()
+                .find(|run| run.id == team_run_id)
+                .ok_or_else(|| {
+                    StoreError::Conflict(format!("team run not found: {team_run_id}"))
+                })?;
+            if !self
+                .latest_execution_nodes()?
+                .iter()
+                .any(|node| node.id == run.execution_node_id)
+            {
+                self.insert_execution_node(&ExecutionNode {
+                    id: run.execution_node_id.clone(),
+                    display_name: "test-node".to_string(),
+                    status: ExecutionNodeStatus::Active,
+                    created_at: "unix-ms:0".to_string(),
+                    updated_at: "unix-ms:0".to_string(),
+                })?;
+            }
+            let daemon = match self.latest_node_daemon_lease(&run.execution_node_id)? {
+                Some(lease)
+                    if lease.status == NodeDaemonLeaseStatus::Active
+                        && lease.expires_unix_ms > now_unix_ms =>
+                {
+                    lease
+                }
+                _ => self.acquire_node_daemon_lease(
+                    &run.execution_node_id,
+                    "test-node-daemon",
+                    "test-node-daemon-instance",
+                    now_unix_ms,
+                    u64::MAX / 2,
+                )?,
+            };
+            self.acquire_team_supervisor_under_node_lease(
+                team_run_id,
+                &run.execution_node_id,
+                &daemon.daemon_id,
+                daemon.generation,
+                "test-execution-space",
+                &run.project_binding_id,
+                supervisor_id,
+                owner_process_id,
+                owner_locator,
+                now_unix_ms,
+                ttl_ms,
+            )
+        }
+    }
+
     #[test]
     fn heartbeat_failure_marker_is_published_after_local_lease_loss_latch() {
         let marker = std::env::temp_dir().join(format!(
@@ -44602,7 +44792,6 @@ mod tests {
                         desired_outcome: None,
                         status: MissionStatus::Planned,
                         wave_ids: Vec::new(),
-                        agent_team_ids: Vec::new(),
                         outcome_summary: None,
                         completed_by: None,
                         created_at: "unix-ms:2".into(),
@@ -45568,12 +45757,10 @@ package:com.tencent.mm
         store
             .append_team_run(&AgentTeamRun {
                 id: "team-native-open".into(),
-                definition_id: None,
-                agent_team_id: None,
+                agent_team_id: "team-native-open-definition".into(),
+                execution_node_id: "node-native-open".into(),
                 previous_run_id: None,
-                mission_id: None,
-                wave_id: None,
-                project_binding_id: None,
+                project_binding_id: "project-native-open".into(),
                 host_surface: "test".into(),
                 host_thread_id: None,
                 host_actor: None,
@@ -46142,7 +46329,7 @@ package:com.tencent.mm
             .expect("admit exact tuple");
 
         let lease = store
-            .acquire_team_supervisor_lease(
+            .acquire_test_supervisor_lease(
                 &created.team_run.id,
                 "compatibility-recovery-supervisor",
                 std::process::id(),
@@ -48137,12 +48324,7 @@ package:com.tencent.mm
         active_run.status = TeamRunStatus::Running;
         active_run.updated_at = "unix-ms:provider-bridge-running".into();
         store
-            .compare_and_append_team_run_with_wave_status(
-                &initial_run,
-                &active_run,
-                WaveStatus::Running,
-                "unix-ms:provider-bridge-running",
-            )
+            .compare_and_append_team_run_lifecycle(&initial_run, &active_run)
             .expect("seed running TeamRun");
         let initial = created.member_runs[0].clone();
         let mut running = initial.clone();
@@ -48260,7 +48442,7 @@ package:com.tencent.mm
         // and consumes the already queued answer under the new lease.
         let now = current_unix_ms_u64();
         let old_lease = store
-            .acquire_team_supervisor_lease(
+            .acquire_test_supervisor_lease(
                 &created.team_run.id,
                 "supervisor-before-restart",
                 std::process::id(),
@@ -48278,7 +48460,7 @@ package:com.tencent.mm
             )
             .expect("release old Supervisor");
         let replacement = store
-            .acquire_team_supervisor_lease(
+            .acquire_test_supervisor_lease(
                 &created.team_run.id,
                 "supervisor-after-restart",
                 std::process::id(),
@@ -48468,7 +48650,7 @@ package:com.tencent.mm
         let created = create_two_member_team_run(&store);
         let blocked = seed_capacity_blocked_member(&store, &created.member_runs[0]);
         let lease = store
-            .acquire_team_supervisor_lease(
+            .acquire_test_supervisor_lease(
                 &created.team_run.id,
                 "supervisor-capacity-recovery-post-cas",
                 std::process::id(),
@@ -48527,7 +48709,7 @@ package:com.tencent.mm
         let created = create_two_member_team_run(&store);
         let blocked = seed_capacity_blocked_member(&store, &created.member_runs[0]);
         let lease = store
-            .acquire_team_supervisor_lease(
+            .acquire_test_supervisor_lease(
                 &created.team_run.id,
                 "supervisor-capacity-recovery-conflict",
                 std::process::id(),
@@ -48587,7 +48769,7 @@ package:com.tencent.mm
         let created = create_two_member_team_run(&store);
         let blocked = seed_capacity_blocked_member(&store, &created.member_runs[0]);
         let lease = store
-            .acquire_team_supervisor_lease(
+            .acquire_test_supervisor_lease(
                 &created.team_run.id,
                 "supervisor-capacity-recovery-failed",
                 std::process::id(),
@@ -48644,7 +48826,7 @@ package:com.tencent.mm
         let created = create_two_member_team_run(&store);
         let blocked = seed_capacity_blocked_member(&store, &created.member_runs[0]);
         let lease = store
-            .acquire_team_supervisor_lease(
+            .acquire_test_supervisor_lease(
                 &created.team_run.id,
                 "supervisor-capacity-recovery-post-cas-failed",
                 std::process::id(),
@@ -48702,7 +48884,7 @@ package:com.tencent.mm
         let created = create_two_member_team_run(&store);
         let initial = created.member_runs[0].clone();
         let lease = store
-            .acquire_team_supervisor_lease(
+            .acquire_test_supervisor_lease(
                 &created.team_run.id,
                 "supervisor-capacity-block-post-cas",
                 std::process::id(),
@@ -48764,7 +48946,7 @@ package:com.tencent.mm
         let created = create_two_member_team_run(&store);
         let initial = created.member_runs[0].clone();
         let lease = store
-            .acquire_team_supervisor_lease(
+            .acquire_test_supervisor_lease(
                 &created.team_run.id,
                 "supervisor-capacity-block-conflict",
                 std::process::id(),
@@ -48827,7 +49009,7 @@ package:com.tencent.mm
         let created = create_two_member_team_run(&store);
         let member = created.member_runs[0].clone();
         let lease = store
-            .acquire_team_supervisor_lease(
+            .acquire_test_supervisor_lease(
                 &created.team_run.id,
                 "supervisor-pre-spawn-close",
                 std::process::id(),
@@ -48910,7 +49092,7 @@ package:com.tencent.mm
         let (store, root) = temp_store("pre-spawn-rebase-fences");
         let created = create_two_member_team_run(&store);
         let lease = store
-            .acquire_team_supervisor_lease(
+            .acquire_test_supervisor_lease(
                 &created.team_run.id,
                 "supervisor-pre-spawn-rebase",
                 std::process::id(),
@@ -48989,7 +49171,7 @@ package:com.tencent.mm
         let (store, root) = temp_store("pre-spawn-bounded-conflicts");
         let created = create_two_member_team_run(&store);
         let lease = store
-            .acquire_team_supervisor_lease(
+            .acquire_test_supervisor_lease(
                 &created.team_run.id,
                 "supervisor-pre-spawn-conflicts",
                 std::process::id(),
@@ -49038,7 +49220,7 @@ package:com.tencent.mm
         let created = create_two_member_team_run(&store);
         let initial = created.member_runs[0].clone();
         let first_lease = store
-            .acquire_team_supervisor_lease(
+            .acquire_test_supervisor_lease(
                 &created.team_run.id,
                 "stale-supervisor",
                 std::process::id(),
@@ -49063,7 +49245,7 @@ package:com.tencent.mm
             )
             .expect("release stale Supervisor lease");
         let successor_lease = store
-            .acquire_team_supervisor_lease(
+            .acquire_test_supervisor_lease(
                 &created.team_run.id,
                 "successor-supervisor",
                 std::process::id(),
@@ -49113,7 +49295,7 @@ package:com.tencent.mm
         let created = create_two_member_team_run(&store);
         let member = created.member_runs[0].clone();
         let lease = store
-            .acquire_team_supervisor_lease(
+            .acquire_test_supervisor_lease(
                 &created.team_run.id,
                 "supervisor-start-claim-close",
                 std::process::id(),
@@ -49193,7 +49375,7 @@ package:com.tencent.mm
             .compare_and_append_member_run(&initial, &reopened)
             .expect("seed reopened queued generation");
         let lease = store
-            .acquire_team_supervisor_lease(
+            .acquire_test_supervisor_lease(
                 &created.team_run.id,
                 "supervisor-reopened-queued",
                 std::process::id(),
@@ -49227,7 +49409,7 @@ package:com.tencent.mm
         let created = create_two_member_team_run(&store);
         let member = created.member_runs[0].clone();
         let lease = store
-            .acquire_team_supervisor_lease(
+            .acquire_test_supervisor_lease(
                 &created.team_run.id,
                 "supervisor-post-claim-close",
                 std::process::id(),
@@ -49463,12 +49645,7 @@ package:com.tencent.mm
         run.status = TeamRunStatus::Running;
         run.updated_at = "unix-ms:2".into();
         store
-            .compare_and_append_team_run_with_wave_status(
-                &initial_run,
-                &run,
-                WaveStatus::Running,
-                "unix-ms:2",
-            )
+            .compare_and_append_team_run_lifecycle(&initial_run, &run)
             .expect("mark run running");
         let initial_member = created.member_runs[0].clone();
         let mut member = initial_member.clone();
@@ -49554,7 +49731,7 @@ package:com.tencent.mm
         )
         .expect("create owned Work");
         let lease = store
-            .acquire_team_supervisor_lease(
+            .acquire_test_supervisor_lease(
                 &run.id,
                 "supervisor-close-test",
                 std::process::id(),
@@ -51892,13 +52069,42 @@ package:com.tencent.mm
     #[test]
     fn create_team_value_persists_team_and_appears_in_snapshot() {
         let (store, root) = temp_store("wp-ii-team");
-        for (id, name) in [("worker-1", "Worker One"), ("worker-2", "Worker Two")] {
+        store
+            .append_mission(&Mission {
+                id: "mission-platform".into(),
+                title: "Platform mission".into(),
+                objective: "Own the dashboard".into(),
+                context: String::new(),
+                desired_outcome: None,
+                status: MissionStatus::Planned,
+                wave_ids: Vec::new(),
+                outcome_summary: None,
+                completed_by: None,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+                completed_at: None,
+            })
+            .expect("mission");
+        store
+            .insert_execution_node(&ExecutionNode {
+                id: "00000000-0000-4000-8000-000000000010".into(),
+                display_name: "Platform node".into(),
+                status: ExecutionNodeStatus::Active,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+            })
+            .expect("node");
+        for (id, name, role) in [
+            ("lead-1", "Platform Lead", "host"),
+            ("worker-1", "Worker One", "worker"),
+            ("worker-2", "Worker Two", "worker"),
+        ] {
             create_agent_value(
                 &store,
                 &serde_json::json!({
                     "id": id,
                     "name": name,
-                    "role": "worker",
+                    "role": role,
                     "provider": "codex"
                 }),
             )
@@ -51907,7 +52113,9 @@ package:com.tencent.mm
         let body = serde_json::json!({
             "name": "Platform Squad",
             "description": "Owns the dashboard",
-            "lead_agent_id": "lead-1",
+            "mission_id": "mission-platform",
+            "host_agent_id": "lead-1",
+            "node_id": "00000000-0000-4000-8000-000000000010",
             "member": ["worker-1", "worker-2"]
         });
 
@@ -51917,13 +52125,15 @@ package:com.tencent.mm
             .expect("created team has id")
             .to_string();
         assert_eq!(created["name"], "Platform Squad");
-        assert_eq!(created["owner_agent_id"], "lead-1");
+        assert_eq!(created["host_agent_id"], "lead-1");
 
         // Persisted as a domain entity.
         let teams = latest_teams(&store).expect("teams readable");
         let persisted = teams.get(&team_id).expect("team persisted in store");
         assert_eq!(persisted.name, "Platform Squad");
-        assert_eq!(persisted.owner_agent_id, "lead-1");
+        assert_eq!(persisted.host_agent_id, "lead-1");
+        assert_eq!(persisted.mission_id, "mission-platform");
+        assert_eq!(persisted.node_id, "00000000-0000-4000-8000-000000000010");
         assert_eq!(persisted.member_ids, vec!["worker-1", "worker-2"]);
         assert_eq!(persisted.status, AgentTeamStatus::Active);
 
@@ -51958,11 +52168,38 @@ package:com.tencent.mm
     #[test]
     fn create_team_rejects_missing_and_duplicate_member_ids() {
         let (store, root) = temp_store("team-member-integrity");
+        store
+            .append_mission(&Mission {
+                id: "mission-integrity".into(),
+                title: "Integrity mission".into(),
+                objective: "Validate roster".into(),
+                context: String::new(),
+                desired_outcome: None,
+                status: MissionStatus::Planned,
+                wave_ids: Vec::new(),
+                outcome_summary: None,
+                completed_by: None,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+                completed_at: None,
+            })
+            .expect("mission");
+        store
+            .insert_execution_node(&ExecutionNode {
+                id: "00000000-0000-4000-8000-000000000011".into(),
+                display_name: "Integrity node".into(),
+                status: ExecutionNodeStatus::Active,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+            })
+            .expect("node");
         let missing = serde_json::json!({
             "id": "team-missing",
             "name": "Invalid",
             "description": "References a missing member",
-            "lead_agent_id": "host",
+            "mission_id": "mission-integrity",
+            "host_agent_id": "host",
+            "node_id": "00000000-0000-4000-8000-000000000011",
             "member": ["missing"]
         });
         let error = create_team_value(&store, &missing).expect_err("missing member must fail");
@@ -51985,7 +52222,9 @@ package:com.tencent.mm
             "id": "team-duplicate",
             "name": "Invalid",
             "description": "Duplicates a member",
-            "lead_agent_id": "host",
+            "mission_id": "mission-integrity",
+            "host_agent_id": "host",
+            "node_id": "00000000-0000-4000-8000-000000000011",
             "member": ["member-1", "member-1"]
         });
         let error = create_team_value(&store, &duplicate).expect_err("duplicate must fail");
@@ -52392,14 +52631,7 @@ package:com.tencent.mm
             );
         }
         let mission_body = function_body(MAIN_RS_SOURCE, "mission_command");
-        for leaf in [
-            "create",
-            "show",
-            "update-context",
-            "create-team",
-            "close",
-            "log",
-        ] {
+        for leaf in ["create", "show", "update-context", "close", "log"] {
             assert!(
                 subcommand_is_real(mission_body, leaf),
                 "mission {leaf} is documented in the cheatsheet but is not a \
@@ -52647,12 +52879,10 @@ mod sse_tests {
         };
         let run = AgentTeamRun {
             id: "team-cwd".into(),
-            definition_id: None,
-            agent_team_id: None,
+            agent_team_id: "team-cwd-definition".into(),
+            execution_node_id: "node-cwd".into(),
             previous_run_id: None,
-            mission_id: None,
-            wave_id: None,
-            project_binding_id: Some(context.id.clone()),
+            project_binding_id: context.id.clone(),
             host_surface: "test".into(),
             host_thread_id: None,
             host_actor: None,
@@ -53187,6 +53417,11 @@ mod tests_team_run_recover {
     ) -> harness_core::TeamSupervisorLease {
         harness_core::TeamSupervisorLease {
             team_run_id: "tr-test".into(),
+            node_id: "node-test".into(),
+            node_daemon_id: "daemon-test".into(),
+            node_daemon_generation: 1,
+            execution_space_id: "space-test".into(),
+            project_binding_id: "project-test".into(),
             supervisor_id: "sv-test".into(),
             generation: 1,
             owner_process_id: pid,

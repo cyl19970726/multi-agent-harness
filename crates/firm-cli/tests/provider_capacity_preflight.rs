@@ -25,7 +25,87 @@ fn init_project(home: &TempHome, name: &str) -> String {
     std::fs::create_dir_all(&root).unwrap();
     let out = run_firm(home, &root, &["init"]);
     assert!(out.status.success(), "init {name} failed: {out:?}");
-    current_project_id(home)
+    let project_id = current_project_id(home);
+    let node = run_firm(home, &root, &["node", "init"]);
+    assert!(node.status.success(), "node init failed: {node:?}");
+    let node: serde_json::Value = serde_json::from_slice(&node.stdout).expect("node JSON");
+    let node_id = node["id"].as_str().expect("node id");
+    let registration = run_firm(
+        home,
+        &root,
+        &[
+            "node",
+            "project",
+            "register",
+            "--node-id",
+            node_id,
+            "--project-binding-id",
+            &project_id,
+        ],
+    );
+    assert!(
+        registration.status.success(),
+        "register failed: {registration:?}"
+    );
+    let mission = run_firm(
+        home,
+        &root,
+        &[
+            "mission",
+            "create",
+            "--id",
+            "mission-capacity-fixture",
+            "--title",
+            "Provider capacity mission",
+            "--objective",
+            "Verify provider capacity preflight",
+        ],
+    );
+    assert!(
+        mission.status.success(),
+        "mission create failed: {mission:?}"
+    );
+    let host = run_firm(
+        home,
+        &root,
+        &[
+            "agent",
+            "create",
+            "--id",
+            "agent-capacity-host",
+            "--name",
+            "capacity-host",
+            "--role",
+            "host",
+            "--provider",
+            "codex",
+        ],
+    );
+    assert!(host.status.success(), "host create failed: {host:?}");
+    let team = run_firm(
+        home,
+        &root,
+        &[
+            "team",
+            "create",
+            "--id",
+            "team-capacity-fixture",
+            "--name",
+            "Provider capacity team",
+            "--description",
+            "Flat provider capacity test team",
+            "--mission-id",
+            "mission-capacity-fixture",
+            "--host-agent-id",
+            "agent-capacity-host",
+            "--node-id",
+            node_id,
+            "--member",
+            "agent-capacity-host",
+        ],
+    );
+    assert!(team.status.success(), "team create failed: {team:?}");
+    project_id
 }
 
 struct FakeCodex<'a> {
@@ -87,6 +167,57 @@ impl<'a> FakeCodex<'a> {
     }
 }
 
+/// The in-process provider fixtures still require the real parent authority:
+/// one machine NodeDaemon lease. A long scan interval keeps this authority
+/// holder from independently adopting the fixture run while the focused test
+/// drives it synchronously.
+fn spawn_node_authority(home: &TempHome) -> std::process::Child {
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_firm"))
+        .args([
+            "daemon",
+            "serve",
+            "--scan-interval-secs",
+            "30",
+            "--idle-timeout-secs",
+            "60",
+        ])
+        .current_dir(home.base())
+        .envs(home.envs())
+        .env_remove("FIRM_ROOT")
+        .env_remove("FIRM_PROJECT")
+        .env_remove("FIRM_SPACE")
+        .env_remove("FIRM_COMPANY")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn NodeDaemon authority");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let status = run_firm(home, home.base(), &["daemon", "status"]);
+        if status.status.success() && !String::from_utf8_lossy(&status.stdout).contains("absent") {
+            return child;
+        }
+        assert!(
+            child.try_wait().expect("inspect NodeDaemon").is_none(),
+            "NodeDaemon exited before becoming ready"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "NodeDaemon readiness timeout"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+fn stop_node_authority(home: &TempHome, child: &mut std::process::Child) {
+    let stop = run_firm(home, home.base(), &["daemon", "stop"]);
+    assert!(stop.status.success(), "NodeDaemon stop failed: {stop:?}");
+    assert!(
+        child.wait().expect("wait NodeDaemon").success(),
+        "NodeDaemon authority did not exit cleanly"
+    );
+}
+
 fn store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::Value> {
     let path = home.spaces_dir().join(project_id).join(file);
     let Ok(text) = std::fs::read_to_string(&path) else {
@@ -140,6 +271,8 @@ fn create_single_member_run(
             project_id,
             "team-run",
             "create",
+            "--agent-team-id",
+            "team-capacity-fixture",
             "--objective",
             "Prove the capacity preflight gates provider start without consuming Work",
             "--member",
@@ -506,6 +639,7 @@ fn missing_proxy_is_diagnosed_as_runtime_context_not_an_account_limit() {
 fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
     let home = TempHome::new("capacity-start-guard-block");
     let project_id = init_project(&home, "alpha");
+    let mut daemon = spawn_node_authority(&home);
     let bin = fake_provider::install_kimi_acp_shim(home.base());
     fake_provider::install_codex_team_shim(&bin);
     let thread_marker = home.base().join("codex-threads.log");
@@ -683,12 +817,14 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
         "the recovered observation replaces the blocking one"
     );
     assert_ne!(member["status"], serde_json::json!("blocked"));
+    stop_node_authority(&home, &mut daemon);
 }
 
 #[test]
 fn unknown_capacity_still_starts_the_member_and_delivers_work() {
     let home = TempHome::new("capacity-start-guard-unknown");
     let project_id = init_project(&home, "alpha");
+    let mut daemon = spawn_node_authority(&home);
     let bin = fake_provider::install_kimi_acp_shim(home.base());
     fake_provider::install_codex_team_shim(&bin);
     let fake = FakeCodex {
@@ -747,12 +883,14 @@ fn unknown_capacity_still_starts_the_member_and_delivers_work() {
         serde_json::json!("queued"),
         "an ungated member must claim its Work: {delivery}"
     );
+    stop_node_authority(&home, &mut daemon);
 }
 
 #[test]
 fn a_disabled_preflight_records_no_snapshot_and_never_blocks() {
     let home = TempHome::new("capacity-preflight-off");
     let project_id = init_project(&home, "alpha");
+    let mut daemon = spawn_node_authority(&home);
     let bin = fake_provider::install_kimi_acp_shim(home.base());
     fake_provider::install_codex_team_shim(&bin);
     let path = format!(
@@ -766,6 +904,8 @@ fn a_disabled_preflight_records_no_snapshot_and_never_blocks() {
             &project_id,
             "team-run",
             "create",
+            "--agent-team-id",
+            "team-capacity-fixture",
             "--objective",
             "Prove the preflight can be disabled without changing semantics",
             "--member",
@@ -825,4 +965,5 @@ fn a_disabled_preflight_records_no_snapshot_and_never_blocks() {
         "a disabled probe observes nothing rather than asserting availability"
     );
     assert_ne!(member["status"], serde_json::json!("blocked"));
+    stop_node_authority(&home, &mut daemon);
 }

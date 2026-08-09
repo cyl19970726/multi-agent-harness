@@ -1,11 +1,9 @@
 import { useMemo, useState } from "react";
 import {
   AlertTriangle,
-  ArrowUpRight,
   Bot,
   BriefcaseBusiness,
   ChevronDown,
-  ChevronRight,
   Monitor,
   Network,
   Search,
@@ -46,13 +44,6 @@ export function AgentTeamOrganization({
   const [runtimeFilter, setRuntimeFilter] = useState<RuntimeFilter>("all");
   const [unassignedOnly, setUnassignedOnly] = useState(false);
   const selected = model.nodesById.get(selection.orgTeamId ?? "") ?? model.roots[0];
-  const defaultExpanded = new Set([
-    ...model.roots.map((node) => node.team.id),
-    ...(selected ? orgTeamPath(model, selected.team.id).map((node) => node.team.id) : []),
-  ]);
-  const expanded = selection.orgExpanded
-    ? new Set(selection.orgExpanded.split(",").filter(Boolean))
-    : defaultExpanded;
   const normalizedQuery = query.trim().toLowerCase();
   const visible = visibleTeamIds(model, normalizedQuery, durableStatus, runtimeFilter, unassignedOnly);
   const allFindings = [
@@ -69,9 +60,9 @@ export function AgentTeamOrganization({
       <main className="grid h-full min-h-0 place-items-center overflow-auto bg-background p-5" data-agent-team-organization="empty">
         <section className="max-w-xl rounded-2xl border border-dashed border-border bg-card p-8 text-center">
           <Network className="mx-auto size-8 text-muted-foreground" />
-          <h1 className="mt-4 text-xl font-semibold">No root Agent Team yet</h1>
+          <h1 className="mt-4 text-xl font-semibold">No Agent Team yet</h1>
           <p className="mt-2 text-sm leading-6 text-muted-foreground">
-            Recursive Organization appears after the first durable AgentTeam exists. No fixture Team is substituted.
+            The flat Organization appears after the first durable AgentTeam exists. No fixture Team is substituted.
           </p>
           <Button className="mt-5" disabled title="A governed Team creation transport is not connected">Create Team unavailable</Button>
         </section>
@@ -80,19 +71,9 @@ export function AgentTeamOrganization({
   }
 
   const path = selected ? orgTeamPath(model, selected.team.id) : [];
-  const mobileChildren = selected
-    ? selected.childTeamIds.map((id) => model.nodesById.get(id)).filter((node): node is OrgTeamNode => Boolean(node))
-    : model.roots;
 
   function selectTeam(teamId: string): void {
     onSelectionChange?.({ orgView: "agent-teams", orgTeamId: teamId });
-  }
-
-  function toggleTeam(teamId: string): void {
-    const next = new Set(expanded);
-    if (next.has(teamId)) next.delete(teamId);
-    else next.add(teamId);
-    onSelectionChange?.({ orgExpanded: [...next].sort().join(",") || undefined });
   }
 
   function openTeam(node: OrgTeamNode): void {
@@ -101,13 +82,13 @@ export function AgentTeamOrganization({
   }
 
   return (
-    <main className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-background" data-agent-team-organization="ready" data-org-topology-edges={model.hasTopologyEdges ? "present" : "compatibility-roots"}>
+    <main className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-background" data-agent-team-organization="ready" data-org-topology="flat">
       <header className="shrink-0 border-b border-border bg-card/70 px-4 py-4 sm:px-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-primary">Organization · Agent Teams</p>
-            <h1 className="mt-1 text-2xl font-semibold tracking-tight">Recursive execution organization</h1>
-            <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">Durable AgentTeam topology, explicit direct Members, TeamRun-scoped Work counts, and separately labelled runtime state.</p>
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight">Flat AgentTeam organization</h1>
+            <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">Every Team owns one Mission on one Node. Cross-Team collaboration is represented by WorkDelegation, not nested Team topology.</p>
           </div>
           <div className="flex gap-2">
             <Button disabled title="A governed Team creation transport is not connected">Create Team</Button>
@@ -127,14 +108,14 @@ export function AgentTeamOrganization({
 
       {allFindings.length > 0 && (
         <section role="alert" className="shrink-0 border-b border-status-warn/30 bg-status-warn/[0.06] px-4 py-3 text-xs" data-org-integrity-count={allFindings.length}>
-          <div className="flex items-center gap-2 font-semibold text-status-warn"><AlertTriangle className="size-4" />Topology integrity findings ({allFindings.length})</div>
+          <div className="flex items-center gap-2 font-semibold text-status-warn"><AlertTriangle className="size-4" />Organization contract findings ({allFindings.length})</div>
           <ul className="mt-2 list-disc space-y-1 pl-5 text-muted-foreground">{allFindings.map((finding, index) => <li key={`${finding}-${index}`}>{finding}</li>)}</ul>
         </section>
       )}
 
       <div className="hidden min-h-0 flex-1 grid-cols-[minmax(19rem,0.9fr)_minmax(24rem,1.3fr)] md:grid">
-        <section className="min-h-0 overflow-y-auto border-r border-border p-4" aria-label="Agent Team tree">
-          <div className="space-y-2">{model.roots.map((root) => <TeamTreeBranch key={root.team.id} node={root} model={model} selectedId={selected?.team.id} expanded={expanded} visible={visible} onSelect={selectTeam} onToggle={toggleTeam} />)}</div>
+        <section className="min-h-0 overflow-y-auto border-r border-border p-4" aria-label="Flat Agent Teams">
+          <div className="space-y-2">{model.roots.map((root) => <TeamListRow key={root.team.id} node={root} selectedId={selected?.team.id} visible={visible} onSelect={selectTeam} />)}</div>
         </section>
         <section className="min-h-0 overflow-y-auto p-5 lg:p-7" aria-label="Selected Agent Team detail">
           {selected && <TeamDetail node={selected} snapshot={snapshot} onOpenTeam={() => openTeam(selected)} onOpenMember={(memberRun) => onSelectionChange?.({ surface: "team", teamId: memberRun.team_run_id, memberRunId: memberRun.id, orgView: undefined, orgTeamId: undefined, orgExpanded: undefined })} onSelectionChange={onSelectionChange} />}
@@ -144,32 +125,28 @@ export function AgentTeamOrganization({
       <section className="min-h-0 flex-1 overflow-y-auto p-4 md:hidden" aria-label="Agent Team drill-down">
         <nav aria-label="Organization breadcrumb" className="mb-3 flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
           <button type="button" onClick={() => onSelectionChange?.({ orgTeamId: undefined })} className="min-h-11 px-1 text-primary">Organization</button>
-          {path.map((entry) => <span key={entry.team.id} className="inline-flex items-center gap-1"><ChevronRight className="size-3" /><button type="button" onClick={() => selectTeam(entry.team.id)} className="min-h-11 max-w-40 truncate px-1">{entry.team.name ?? entry.team.id}</button></span>)}
+          {path.map((entry) => <span key={entry.team.id} className="inline-flex items-center gap-1"><span aria-hidden="true">/</span><button type="button" onClick={() => selectTeam(entry.team.id)} className="min-h-11 max-w-40 truncate px-1">{entry.team.name ?? entry.team.id}</button></span>)}
         </nav>
         {selected && <TeamDetail node={selected} snapshot={snapshot} compact onOpenTeam={() => openTeam(selected)} onOpenMember={(memberRun) => onSelectionChange?.({ surface: "team", teamId: memberRun.team_run_id, memberRunId: memberRun.id, orgView: undefined, orgTeamId: undefined, orgExpanded: undefined })} onSelectionChange={onSelectionChange} />}
         <div className="mt-4 space-y-2">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Child Teams</p>
-          {mobileChildren.length ? mobileChildren.map((child) => <button key={child.team.id} type="button" onClick={() => selectTeam(child.team.id)} className="flex min-h-12 w-full items-center justify-between rounded-xl border border-border bg-card px-3 text-left text-sm"><span>{child.team.name ?? child.team.id}</span><ChevronRight className="size-4 text-muted-foreground" /></button>) : <p className="rounded-xl border border-dashed border-border p-4 text-xs text-muted-foreground">No child Teams</p>}
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Peer Agent Teams</p>
+          {model.roots.filter((peer) => peer.team.id !== selected?.team.id && visible.has(peer.team.id)).length ? model.roots.filter((peer) => peer.team.id !== selected?.team.id && visible.has(peer.team.id)).map((peer) => <button key={peer.team.id} type="button" onClick={() => selectTeam(peer.team.id)} className="flex min-h-12 w-full items-center rounded-xl border border-border bg-card px-3 text-left text-sm"><span>{peer.team.name ?? peer.team.id}</span></button>) : <p className="rounded-xl border border-dashed border-border p-4 text-xs text-muted-foreground">No other Agent Teams match</p>}
         </div>
       </section>
     </main>
   );
 }
 
-function TeamTreeBranch({ node, model, selectedId, expanded, visible, onSelect, onToggle }: { node: OrgTeamNode; model: AgentTeamOrgModel; selectedId?: string; expanded: Set<string>; visible: Set<string>; onSelect: (id: string) => void; onToggle: (id: string) => void }) {
-  const children = node.childTeamIds.map((id) => model.nodesById.get(id)).filter((child): child is OrgTeamNode => Boolean(child));
-  const open = expanded.has(node.team.id);
+function TeamListRow({ node, selectedId, visible, onSelect }: { node: OrgTeamNode; selectedId?: string; visible: Set<string>; onSelect: (id: string) => void }) {
   const dimmed = !visible.has(node.team.id);
   return (
     <div data-org-team-depth={node.depth} data-org-team-id={node.team.id} className={cn("transition-opacity", dimmed && "opacity-35")}>
-      <div className={cn("flex items-center gap-1 rounded-xl border bg-card p-2", selectedId === node.team.id ? "border-primary/40 ring-1 ring-primary/15" : "border-border")}>
-        <button type="button" aria-label={`${open ? "Collapse" : "Expand"} ${node.team.name ?? node.team.id}`} disabled={!children.length} onClick={() => onToggle(node.team.id)} className="grid size-10 shrink-0 place-items-center rounded-lg text-muted-foreground disabled:opacity-25">{open ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}</button>
+      <div className={cn("flex items-center rounded-xl border bg-card p-2", selectedId === node.team.id ? "border-primary/40 ring-1 ring-primary/15" : "border-border")}>
         <button type="button" onClick={() => onSelect(node.team.id)} className="min-w-0 flex-1 rounded-lg px-2 py-1 text-left">
           <span className="block truncate text-sm font-semibold">{node.team.name ?? node.team.id}</span>
-          <span className="mt-1 flex flex-wrap gap-1"><Badge tone="muted" data-durable-status={node.team.status ?? "unknown"}>Durable · {node.team.status ?? "unknown"}</Badge>{node.team.machine_id && <Badge tone="info"><Monitor className="size-2.5" /> {node.team.machine_id}</Badge>}<Badge tone={node.runtime.running ? "running" : "muted"} data-runtime-state={node.runtime.running ? "running" : "idle"}>Runtime · {node.runtime.running}/{node.runtime.total}</Badge></span>
+          <span className="mt-1 flex flex-wrap gap-1"><Badge tone="muted" data-durable-status={node.team.status ?? "unknown"}>Durable · {node.team.status ?? "unknown"}</Badge><Badge tone="info"><Monitor className="size-2.5" /> {node.team.node_id}</Badge><Badge tone={node.runtime.running ? "running" : "muted"} data-runtime-state={node.runtime.running ? "running" : "idle"}>Runtime · {node.runtime.running}/{node.runtime.total}</Badge></span>
         </button>
       </div>
-      {open && children.length > 0 && <div className="ml-5 mt-2 space-y-2 border-l border-border pl-3">{children.map((child) => <TeamTreeBranch key={child.team.id} node={child} model={model} selectedId={selectedId} expanded={expanded} visible={visible} onSelect={onSelect} onToggle={onToggle} />)}</div>}
     </div>
   );
 }
@@ -199,13 +176,13 @@ function TeamDetail({ node, snapshot, compact = false, onOpenTeam, onOpenMember,
     <article className={cn("rounded-2xl border border-border bg-card shadow-sm", compact ? "p-4" : "p-5 lg:p-6")} data-org-selected-team={node.team.id}>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-primary">AgentTeam · depth {node.depth}</p>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-primary">AgentTeam · flat organization</p>
           <h2 className="mt-1 break-words text-2xl font-semibold">{node.team.name ?? node.team.id}</h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">{node.team.description || "No durable Team description supplied."}</p>
-          {node.team.machine_id && (
+          {node.team.node_id && (
             <div className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground">
               <Monitor className="size-3.5 text-primary" />
-              <span>Runs on <span className="font-mono text-foreground">{node.team.machine_id}</span></span>
+              <span>Runs on Node <span className="font-mono text-foreground">{node.team.node_id}</span></span>
             </div>
           )}
           <code className="mt-2 block break-all text-[10px] text-muted-foreground">{node.team.id}</code>
@@ -222,7 +199,7 @@ function TeamDetail({ node, snapshot, compact = false, onOpenTeam, onOpenMember,
       <div className="mt-4 grid gap-2 sm:grid-cols-3">
         <Fact label="Durable status" value={node.team.status ?? "unknown"} icon={<ShieldCheck className="size-3.5" />} dataAttribute="durable" />
         <Fact label="Runtime attempts" value={`${node.runtime.running} running / ${node.runtime.total} total`} icon={<Bot className="size-3.5" />} dataAttribute="runtime" />
-        <Fact label="Direct structure" value={`${node.members.length} Members / ${node.childTeamIds.length} child Teams`} icon={<Users className="size-3.5" />} />
+        <Fact label="Team identity" value={`${node.members.length} Members / Mission ${node.team.mission_id}`} icon={<Users className="size-3.5" />} />
       </div>
       <section className="mt-5">
         <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Current TeamRun Work</h3>
@@ -232,7 +209,7 @@ function TeamDetail({ node, snapshot, compact = false, onOpenTeam, onOpenMember,
       </section>
       <section className="mt-5">
         <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Host relation</h3>
-        <p className="mt-2 rounded-xl border border-border bg-background p-3 text-sm">{node.host ? `${node.host.name ?? node.host.id} · explicit host_member_id · ${node.host.identitySource} identity` : node.compatLeadLabel ?? "No Host relation recorded"}</p>
+        <p className="mt-2 rounded-xl border border-border bg-background p-3 text-sm">{node.host ? `${node.host.name ?? node.host.id} · Host Agent · ${node.host.identitySource} identity` : `${node.team.host_agent_id} · Host Agent identity not projected`}</p>
       </section>
       <section className="mt-5">
         <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Direct Members</h3>

@@ -21,6 +21,7 @@ interface TeamWorksProps {
 
 const demandGroups: Array<{ id: TeamWorkDemandClass; label: string; detail: string }> = [
   { id: "unassigned", label: "Discovered · unassigned", detail: "Open Work with no durable owner" },
+  { id: "delegated", label: "Delegated", detail: "Target Work created through explicit cross-Team WorkDelegation" },
   { id: "owned", label: "Owned", detail: "Assigned or operator-created Work" },
   { id: "follow-up", label: "Follow-up", detail: "Child Work with explicit parent_work_id" },
 ];
@@ -29,6 +30,8 @@ export function TeamWorks({ snapshot, selection, loading = false, onSelectionCha
   const model = useMemo(() => buildTeamWorksModel(snapshot), [snapshot]);
   const filters: TeamWorksFilters = {
     teamId: selection.workTeamId,
+    missionId: selection.workMissionId,
+    nodeId: selection.workNodeId,
     hostId: selection.workHostId,
     memberId: selection.workMemberId,
     status: selection.workStatus,
@@ -46,11 +49,11 @@ export function TeamWorks({ snapshot, selection, loading = false, onSelectionCha
   }
 
   function clearFilters(): void {
-    onSelectionChange?.({ workTeamId: undefined, workHostId: undefined, workMemberId: undefined, workStatus: undefined, workPriority: undefined, workSource: undefined, workDemand: undefined });
+    onSelectionChange?.({ workTeamId: undefined, workMissionId: undefined, workNodeId: undefined, workHostId: undefined, workMemberId: undefined, workStatus: undefined, workPriority: undefined, workSource: undefined, workDemand: undefined });
   }
 
   function openWork(work: Work): void {
-    onSelectionChange?.({ surface: "team", teamId: work.team_run_id, teamWorkId: work.id, memberRunId: undefined, workView: undefined, workTeamId: undefined, workHostId: undefined, workMemberId: undefined, workStatus: undefined, workPriority: undefined, workSource: undefined, workDemand: undefined });
+    onSelectionChange?.({ surface: "team", teamId: work.team_run_id, teamWorkId: work.id, memberRunId: undefined, workView: undefined, workTeamId: undefined, workMissionId: undefined, workNodeId: undefined, workHostId: undefined, workMemberId: undefined, workStatus: undefined, workPriority: undefined, workSource: undefined, workDemand: undefined });
   }
 
   return (
@@ -64,6 +67,7 @@ export function TeamWorks({ snapshot, selection, loading = false, onSelectionCha
           </div>
           <div className="flex flex-wrap gap-2">
             <Badge tone={model.counts.unassigned ? "warn" : "muted"}>{model.counts.unassigned} unassigned</Badge>
+            <Badge tone="info">{model.counts.delegated} delegated</Badge>
             <Badge tone="info">{model.counts.total} total</Badge>
           </div>
         </div>
@@ -76,7 +80,9 @@ export function TeamWorks({ snapshot, selection, loading = false, onSelectionCha
             <Search className="size-3.5 text-muted-foreground" />
             <span className="text-xs text-muted-foreground">Filters</span>
           </label>
-          <Filter label="Team path" value={selection.workTeamId} onChange={(value) => updateFilter("workTeamId", value)} options={model.facets.teams} />
+          <Filter label="Team" value={selection.workTeamId} onChange={(value) => updateFilter("workTeamId", value)} options={model.facets.teams} />
+          <Filter label="Mission" value={selection.workMissionId} onChange={(value) => updateFilter("workMissionId", value)} options={model.facets.missions} />
+          <Filter label="Node" value={selection.workNodeId} onChange={(value) => updateFilter("workNodeId", value)} options={model.facets.nodes} />
           <Filter label="Host" value={selection.workHostId} onChange={(value) => updateFilter("workHostId", value)} options={model.facets.hosts} />
           <Filter label="Member" value={selection.workMemberId} onChange={(value) => updateFilter("workMemberId", value)} options={model.facets.members} />
           <Filter label="Status" value={selection.workStatus} onChange={(value) => updateFilter("workStatus", value)} options={model.facets.statuses.map((status) => ({ id: status, label: status }))} />
@@ -111,9 +117,6 @@ export function TeamWorks({ snapshot, selection, loading = false, onSelectionCha
                 <div className="grid gap-2">{grouped.map((row) => <TeamWorkRow key={row.work.id} row={row} onOpen={() => openWork(row.work)} />)}</div>
               </section>;
             })}
-            <section className="rounded-xl border border-dashed border-border p-4 text-xs leading-5 text-muted-foreground" data-team-work-demand="delegated-unavailable">
-              <span className="font-semibold text-foreground">Delegated demand unavailable.</span> WorkDelegation is not present in the dashboard snapshot, so no delegated rows are inferred from child TeamRuns or names.
-            </section>
           </div>
         )}
       </div>
@@ -152,7 +155,7 @@ function TeamWorksLoading() {
 }
 
 function isDemand(value?: string): value is TeamWorkDemandClass {
-  return value === "unassigned" || value === "owned" || value === "follow-up";
+  return value === "unassigned" || value === "delegated" || value === "owned" || value === "follow-up";
 }
 
 function workTone(status: string): "good" | "warn" | "bad" | "info" | "muted" {

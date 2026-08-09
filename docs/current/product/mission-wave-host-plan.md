@@ -17,8 +17,8 @@ external memory without turning that memory into a rigid scheduler.
   and read before every recovery or re-entry (ADR 0051). Wave played this
   role before the cutover; historical Wave rows remain readable, but no new
   Host judgment is written there.
-- **Agent Team** is an independent reusable group led by the Host that created
-  and coordinates it.
+- **Agent Team** is the Mission's one flat execution agency, led by its Host
+  and placed immutably on one Node.
 - **Works** say what exists, who owns it, and its current execution state.
 - **Messages** let Host and Members discuss Works without becoming task state.
 - **Provider-native sessions** prove what each member actually executed.
@@ -92,9 +92,9 @@ session continue.
 ### Mission
 
 - Stores Markdown `context`.
-- Links `agent_team_ids[]`.
-- Can link/unlink an independent team without mutating that team.
-- Shows linked teams and active runs as relations.
+- Is owned by exactly one flat AgentTeam through `AgentTeam.mission_id`.
+- Creates that Team once; there is no link/unlink or second-Team authoring path.
+- Shows the owning Team and its active runs as relations.
 - Closes with an explicit Host outcome; team lifecycle is unchanged.
 
 ### Mission Log
@@ -128,15 +128,16 @@ session continue.
 - Stable definition with editable name, description, Team Lead, status, and
   member identities.
 - The Host Agent that creates and coordinates a team is its **Team Lead**.
-  `owner_agent_id` is the compatibility wire field for that identity; `host`
+  `host_agent_id` is the canonical durable identity; `host`
   means the current Host Agent.
 - The Team Lead owns formation, Works, member interaction, composition
   changes, integration, and acceptance. It is not an ordinary MemberRun and is
   not counted in the member roster unless it explicitly joins as an executing
   member.
-- Can be standalone or linked to Missions.
-- A Mission-scoped TeamRun uses `mission_id` and `agent_team_id`; `wave_id` is
-  absent in the primary path.
+- Exists for exactly one Mission; Mission and AgentTeam are one-to-one.
+- Every TeamRun requires `agent_team_id`, `execution_node_id`, and
+  `project_binding_id`. Mission is derived through the Team and Wave is absent
+  from the TeamRun contract.
 - Members can continue, join, be renamed, or be explicitly closed across
   re-plans. Interrupt stops only the current turn; Close ends one runtime
   generation, and explicit Reopen resumes the same MemberRun/native session.
@@ -171,9 +172,10 @@ session continue.
 - `origin_wave_id` is optional navigation metadata.
 - Host and members can query inbox/status projections without reading provider
   transcripts.
-- One current Team Supervisor generation owns provider delivery and live
-  controls. Claim, provider receipt, recipient ACK, semantic reply, and Host
-  acceptance remain distinct.
+- One machine NodeDaemon generation owns every local TeamRun. Each Team
+  Supervisor generation is parent-fenced by it and owns provider delivery and
+  live controls for one run. Claim, provider receipt, recipient ACK, semantic
+  reply, and Host acceptance remain distinct.
 
 ### Member autonomy
 

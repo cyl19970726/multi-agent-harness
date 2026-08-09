@@ -56,6 +56,70 @@ fn create_mission(home: &TempHome, space_id: &str, project_id: &str, id: &str, o
     assert!(out.status.success(), "mission create failed: {out:?}");
 }
 
+fn create_team(home: &TempHome, space_id: &str, project_id: &str) -> String {
+    let run = |args: &[&str]| {
+        let mut full = vec!["--space", space_id, "--project", project_id];
+        full.extend_from_slice(args);
+        let output = run_firm(home, home.base(), &full);
+        assert!(
+            output.status.success(),
+            "fixture {args:?} failed: {output:?}"
+        );
+        output
+    };
+    let node = run(&["node", "init"]);
+    let node: serde_json::Value = serde_json::from_slice(&node.stdout).expect("node JSON");
+    let node_id = node["id"].as_str().expect("node id");
+    run(&[
+        "node",
+        "project",
+        "register",
+        "--node-id",
+        node_id,
+        "--execution-space-id",
+        space_id,
+        "--project-binding-id",
+        project_id,
+    ]);
+    create_mission(
+        home,
+        space_id,
+        project_id,
+        "mission-sse-work",
+        "Verify external Work stream convergence",
+    );
+    let host = run(&[
+        "agent",
+        "create",
+        "--name",
+        "sse-host",
+        "--role",
+        "host",
+        "--provider",
+        "codex",
+    ]);
+    let host: serde_json::Value = serde_json::from_slice(&host.stdout).expect("host JSON");
+    let host_id = host["id"].as_str().expect("host id");
+    let team = run(&[
+        "team",
+        "create",
+        "--name",
+        "SSE Work team",
+        "--description",
+        "Flat external Work stream test team",
+        "--mission-id",
+        "mission-sse-work",
+        "--host-agent-id",
+        host_id,
+        "--node-id",
+        node_id,
+        "--member",
+        host_id,
+    ]);
+    let team: serde_json::Value = serde_json::from_slice(&team.stdout).expect("team JSON");
+    team["id"].as_str().expect("team id").to_string()
+}
+
 fn record_ids(frames: &[serde_json::Value]) -> Vec<String> {
     frames
         .iter()
@@ -222,6 +286,7 @@ fn external_work_and_delivery_writes_invalidate_a_healthy_stream_and_snapshot_co
     let home = TempHome::new("sse-external-work");
     let project_id = init_project(&home, "alpha");
     create_space(&home, "space-alpha", &project_id);
+    let team_id = create_team(&home, "space-alpha", &project_id);
 
     let created_run = json_output(
         &run_firm(
@@ -234,6 +299,8 @@ fn external_work_and_delivery_writes_invalidate_a_healthy_stream_and_snapshot_co
                 &project_id,
                 "team-run",
                 "create",
+                "--agent-team-id",
+                &team_id,
                 "--objective",
                 "Exercise external Work projection",
                 "--member",

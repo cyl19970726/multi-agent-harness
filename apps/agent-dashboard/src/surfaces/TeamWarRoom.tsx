@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import {
   CheckCircle2,
   ChevronDown,
-  ChevronRight,
   Columns3,
   ExternalLink,
   Inbox,
@@ -96,10 +95,10 @@ const TEAM_VIEWS = [
 ] as const;
 
 /**
- * One operational view of one AgentTeamRun. New runs are independent or
- * Mission-scoped and may span Host-plan Waves; a selected Wave is navigation
- * context only. Legacy direct-Wave attempts remain readable without inventing
- * a dependency graph.
+ * One operational view of one AgentTeamRun. Every new run belongs to its
+ * Mission-owned flat Team; a selected historical Wave is navigation context
+ * only. Legacy direct-Wave attempts remain readable without inventing a
+ * dependency graph.
  */
 export function TeamWarRoom({
   model,
@@ -201,9 +200,6 @@ export function TeamWarRoom({
   const organization = buildAgentTeamOrgModel(model.snapshot);
   const organizationNode = stableTeam ? organization.nodesById.get(stableTeam.id) : undefined;
   const organizationPath = organizationNode ? orgTeamPath(organization, organizationNode.team.id) : [];
-  const childTeams = organizationNode?.childTeamIds
-    .map((id) => organization.nodesById.get(id))
-    .filter((node): node is NonNullable<typeof node> => Boolean(node)) ?? [];
   const supervisor = model.snapshot.team_supervisor_leases?.find(
     (lease) => lease.team_run_id === run.id,
   );
@@ -397,7 +393,7 @@ export function TeamWarRoom({
             <div className="flex w-full min-w-0 items-center gap-2 overflow-x-auto pb-0.5 [&>*]:shrink-0 [&>*]:whitespace-nowrap sm:flex-wrap sm:overflow-visible sm:[&>*]:whitespace-normal">
               <Badge tone={teamTone(status)}>{status}</Badge>
               <Badge tone="muted">attempt {attemptNumber(attempts, run.id)}</Badge>
-              <Badge tone="muted">Lead · {teamLeadLabel(stableTeam?.owner_agent_id)}</Badge>
+              <Badge tone="muted">Host Agent · {teamLeadLabel(stableTeam?.host_agent_id)}</Badge>
               <Badge
                 tone={supervisorCurrent ? "good" : status === "running" ? "bad" : "muted"}
                 title={supervisorCurrent
@@ -534,8 +530,8 @@ export function TeamWarRoom({
           <MissionTeamModule
             missionTitle={navigationMission?.title}
             teamName={stableTeam?.name}
-            leadAgentId={stableTeam?.owner_agent_id}
-            missionScoped={Boolean(run.mission_id && !run.wave_id)}
+            leadAgentId={stableTeam?.host_agent_id}
+            missionScoped={Boolean(stableTeam?.mission_id)}
             members={orderedMembers}
             onOpenMember={openMember}
             onOpen={() => navigationMission && onSelectionChange({ surface: "missions", missionId: navigationMission.id, waveId: navigationWave?.id, teamId: undefined })}
@@ -619,26 +615,6 @@ export function TeamWarRoom({
               setParticipantFilter("all");
             }}
           />
-        )}
-
-        {childTeams.length > 0 && (
-          <section className="mt-2 rounded-xl border border-border bg-card/65 px-3 py-2" aria-label="Child Agent Teams" data-team-child-count={childTeams.length}>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Child Teams</span>
-              {childTeams.map((child) => (
-                <button
-                  key={child.team.id}
-                  type="button"
-                  disabled={!child.latestRunId}
-                  onClick={() => child.latestRunId && onSelectionChange({ surface: "team", teamId: child.latestRunId, memberRunId: undefined, teamWorkId: undefined })}
-                  className="inline-flex min-h-11 items-center gap-1 rounded-lg border border-border bg-background px-3 text-xs font-medium text-foreground disabled:text-muted-foreground sm:min-h-8"
-                  title={child.latestRunId ? "Open child Team War Room" : "No TeamRun exists for this child Team"}
-                >
-                  {child.team.name ?? child.team.id}<ChevronRight className="size-3" />
-                </button>
-              ))}
-            </div>
-          </section>
         )}
 
         {["completed", "cancelled"].includes(status ?? "") && needsYou.unfinishedWorks.length > 0 && (
@@ -1041,8 +1017,8 @@ function MissionTeamModule({ missionTitle, teamName, leadAgentId, missionScoped,
 }) {
   return (
     <ContextModule
-      title={teamName ?? "Independent Agent Team"}
-      kicker={missionScoped ? "Mission-linked team" : "Agent Team"}
+      title={teamName ?? "Agent Team"}
+      kicker={missionScoped ? "Mission-owned team" : "Legacy unbound team data"}
       tone="good"
       action={missionTitle ? <button type="button" onClick={onOpen} className="text-[11px] font-medium text-primary hover:underline">Open Mission</button> : undefined}
     >
@@ -1051,7 +1027,7 @@ function MissionTeamModule({ missionTitle, teamName, leadAgentId, missionScoped,
           <Avatar name="Host Lead" tone="info" size="xs" />
           <span className="min-w-0 flex-1">
             <span className="block truncate text-[11px] font-semibold text-foreground">{teamLeadLabel(leadAgentId)}</span>
-            <span className="block text-[9px] uppercase tracking-wider text-muted-foreground">Lead · outside MemberRuns</span>
+            <span className="block text-[9px] uppercase tracking-wider text-muted-foreground">Host Agent identity · outside MemberRuns</span>
           </span>
         </div>
         {members.slice(0, 4).map((member) => (
@@ -1073,8 +1049,8 @@ function MissionTeamModule({ missionTitle, teamName, leadAgentId, missionScoped,
       </div>
       <p className="mt-2 line-clamp-2 text-[10px] leading-relaxed text-muted-foreground">
         {missionTitle
-          ? `${missionScoped ? "Mission-scoped" : "Linked"} · ${missionTitle}. Sessions may continue across Host-plan Waves.`
-          : "Independent Team. Link it to a Mission when useful."}
+          ? `${missionScoped ? "Mission-owned" : "Legacy projection"} · ${missionTitle}. Sessions may continue across TeamRuns.`
+          : "No Mission relation is present; this is legacy read-only data."}
       </p>
     </ContextModule>
   );

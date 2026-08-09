@@ -30,6 +30,7 @@
 //! (a [`ResidentConfig`]) rather than the bin-private `LaunchSpec`/`AgentMember`
 //! types so it stays unit-testable against a fake `claude` script.
 
+#[cfg(test)]
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
@@ -466,21 +467,24 @@ impl Drop for ResidentClaude {
 }
 
 /// Default max idle before a pooled resident is reclaimed.
+#[cfg(test)]
 pub const DEFAULT_MAX_IDLE: Duration = Duration::from_secs(300);
 
 /// A pool of resident `claude` children keyed by `(member_id, config
 /// fingerprint)`.
 ///
-/// This is the cross-loop residency seam. The `resident_daemon` module hosts one
+/// This is the cross-loop residency seam. The NodeDaemon-hosted runtime owns one
 /// of these behind a Unix socket so short-lived `harness deliver` invocations
 /// share warm children; the in-process single-turn delivery path still spawns a
 /// one-shot resident when no daemon is running.
+#[cfg(test)]
 pub struct ResidentPool {
     children: HashMap<String, ResidentClaude>,
     max_idle: Duration,
 }
 
 /// Classification of one turn attempt, used to decide whether to respawn.
+#[cfg(test)]
 enum DriveOutcome {
     Ok(ResidentTurn),
     /// The child died (before or during the turn); eligible for resume respawn.
@@ -491,6 +495,7 @@ enum DriveOutcome {
     Err(io::Error),
 }
 
+#[cfg(test)]
 impl ResidentPool {
     pub fn new() -> ResidentPool {
         ResidentPool {
@@ -618,19 +623,6 @@ impl ResidentPool {
         }
     }
 
-    /// Best-effort idle sweep callers may invoke between members.
-    pub fn reclaim_idle(&mut self) {
-        let stale: Vec<String> = self
-            .children
-            .iter()
-            .filter(|(_, child)| child.idle_for() > self.max_idle)
-            .map(|(key, _)| key.clone())
-            .collect();
-        for key in stale {
-            self.children.remove(&key); // Drop -> shutdown.
-        }
-    }
-
     /// Number of live pooled children (observability helper; exercised in tests).
     #[allow(dead_code)]
     pub fn len(&self) -> usize {
@@ -654,6 +646,7 @@ impl ResidentPool {
     }
 }
 
+#[cfg(test)]
 impl Default for ResidentPool {
     fn default() -> ResidentPool {
         ResidentPool::new()
@@ -661,7 +654,7 @@ impl Default for ResidentPool {
 }
 
 /// A small RAII tempdir for tests (no extra dev-dependency). Removed on drop.
-/// `pub(crate)` so the sibling `resident_daemon` test module reuses it.
+/// `pub(crate)` so runtime integration tests can reuse it.
 #[cfg(test)]
 pub(crate) struct TempDir {
     pub(crate) path: PathBuf,
@@ -671,7 +664,7 @@ pub(crate) struct TempDir {
 impl TempDir {
     pub(crate) fn new(tag: &str) -> TempDir {
         // macOS limits Unix-domain socket paths to roughly 104 bytes. Tests in
-        // `resident_daemon` place `resident.sock` under this directory, so use
+        // runtime control sockets may live under this directory, so use
         // the stable short `/tmp` alias instead of the much longer per-user
         // `TMPDIR` path under `/var/folders/...`.
         let mut path = PathBuf::from("/tmp");
@@ -690,7 +683,7 @@ impl TempDir {
 }
 
 /// Write a fake `claude` script honoring the stream-json line protocol, shared
-/// by this module's tests and the sibling `resident_daemon` tests:
+/// by this module's tests and runtime integration tests:
 ///   * emit one `system` init frame with a fixed session_id at startup,
 ///   * record the PID to `pid_file` exactly once,
 ///   * loop reading stdin user frames; per frame echo an `assistant` text frame

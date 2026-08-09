@@ -18,7 +18,7 @@ use harness_store::{HarnessStore, WorkDeliveryClaimResult};
 
 mod fake_provider;
 mod firm_env;
-use firm_env::{current_project_id, run_firm, TempHome};
+use firm_env::{current_project_id, run_firm, run_firm_with_env, TempHome};
 
 /// `harness init` a project rooted at `<base>/<name>` and return its id.
 fn init_project(home: &TempHome, name: &str) -> String {
@@ -27,6 +27,103 @@ fn init_project(home: &TempHome, name: &str) -> String {
     let out = run_firm(home, &root, &["init"]);
     assert!(out.status.success(), "init {name} failed: {out:?}");
     current_project_id(home)
+}
+
+/// Seed the mandatory flat AgentTeam relation used by every AgentTeamRun:
+/// one Mission, one durable Host Agent, and the local ExecutionNode.
+fn seed_agent_team(home: &TempHome, project_root: &std::path::Path, suffix: &str) -> String {
+    let mission = run_firm(
+        home,
+        project_root,
+        &[
+            "mission",
+            "create",
+            "--title",
+            &format!("MCP Mission {suffix}"),
+            "--objective",
+            "Exercise the MCP AgentTeam contract",
+        ],
+    );
+    assert!(
+        mission.status.success(),
+        "mission create failed: {mission:?}"
+    );
+    let mission_id = String::from_utf8_lossy(&mission.stdout).trim().to_string();
+
+    let host = run_firm(
+        home,
+        project_root,
+        &[
+            "agent",
+            "create",
+            "--name",
+            &format!("mcp-host-{suffix}"),
+            "--role",
+            "host",
+            "--provider",
+            "codex",
+        ],
+    );
+    assert!(host.status.success(), "host create failed: {host:?}");
+    let host: serde_json::Value = serde_json::from_slice(&host.stdout).expect("host JSON");
+    let host_id = host["id"].as_str().expect("host id");
+
+    seed_team_for_mission(home, project_root, &mission_id, host_id, suffix)
+}
+
+fn seed_team_for_mission(
+    home: &TempHome,
+    project_root: &std::path::Path,
+    mission_id: &str,
+    host_id: &str,
+    suffix: &str,
+) -> String {
+    let node = run_firm(home, project_root, &["node", "init"]);
+    assert!(node.status.success(), "node init failed: {node:?}");
+    let node: serde_json::Value = serde_json::from_slice(&node.stdout).expect("node init JSON");
+    let node_id = node["id"].as_str().expect("node id");
+    let project_id = current_project_id(home);
+    let registration = run_firm(
+        home,
+        project_root,
+        &[
+            "node",
+            "project",
+            "register",
+            "--node-id",
+            node_id,
+            "--project-binding-id",
+            &project_id,
+        ],
+    );
+    assert!(
+        registration.status.success(),
+        "node project register failed: {registration:?}"
+    );
+
+    let team = run_firm(
+        home,
+        project_root,
+        &[
+            "team",
+            "create",
+            "--name",
+            &format!("MCP Team {suffix}"),
+            "--description",
+            "Flat test AgentTeam",
+            "--mission-id",
+            mission_id,
+            "--host-agent-id",
+            host_id,
+            "--node-id",
+            node_id,
+            "--member",
+            host_id,
+        ],
+    );
+    assert!(team.status.success(), "team create failed: {team:?}");
+    let team: serde_json::Value = serde_json::from_slice(&team.stdout).expect("team JSON");
+    team["id"].as_str().expect("team id").to_string()
 }
 
 /// A spawned `harness mcp` child with framed stdin/stdout. Killed on drop.
@@ -111,6 +208,8 @@ impl Drop for McpClient {
 fn mcp_stdio_host_only_typed_work_review_boundary() {
     let home = TempHome::new("mcp-host-work-review");
     let project_id = init_project(&home, "mcp-host-work-review-proj");
+    let project_root = home.base().join("mcp-host-work-review-proj");
+    let team_id = seed_agent_team(&home, &project_root, "host-review");
     let mut mcp = McpClient::spawn(&home, &project_id, &[]);
     let response = mcp.request(
         "initialize",
@@ -184,6 +283,7 @@ fn mcp_stdio_host_only_typed_work_review_boundary() {
             "name": "team_run_create",
             "arguments": {
                 "objective": "Exercise typed host-only MCP review",
+                "agent_team_id": team_id,
                 "members": [{
                     "name": "owner",
                     "role": "implementer",
@@ -562,12 +662,15 @@ fn mcp_resolves_provider_request_messages_and_keeps_legacy_ledger_empty() {
     let home = TempHome::new("mcp-provider-interaction-message");
     let project_id = init_project(&home, "mcp-provider-interaction");
     let project_root = home.base().join("mcp-provider-interaction");
+    let team_id = seed_agent_team(&home, &project_root, "provider-interaction");
     let created = run_firm(
         &home,
         &project_root,
         &[
             "team-run",
             "create",
+            "--agent-team-id",
+            &team_id,
             "--objective",
             "Exercise MCP provider response bridge",
             "--member",
@@ -769,6 +872,7 @@ fn mcp_stdio_agent_team_tools() {
         &[
             ("KIMI_CODE_BIN", fake_kimi.as_str()),
             ("FAKE_KIMI_RESULT", "done"),
+            ("FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS", "100"),
         ],
     );
 
@@ -808,8 +912,6 @@ fn mcp_stdio_agent_team_tools() {
         [
             "mission_create",
             "mission_update_context",
-            "mission_link_team",
-            "mission_unlink_team",
             "mission_close",
             "mission_list",
             "wave_create",
@@ -831,6 +933,12 @@ fn mcp_stdio_agent_team_tools() {
             "team_run_work_accept",
             "team_run_work_cancel",
             "team_run_work_reconcile_delivery",
+            "work_delegation_create",
+            "work_delegation_list",
+            "work_delegation_show",
+            "work_delegation_cancel",
+            "execution_node_list",
+            "execution_node_show",
             "team_run_add_member",
             "team_run_rename_member",
             "team_run_deactivate_member",
@@ -895,18 +1003,17 @@ fn mcp_stdio_agent_team_tools() {
         .iter()
         .find(|tool| tool["name"].as_str() == Some("team_run_create"))
         .expect("team_run_create definition");
-    assert!(
-        create_schema["inputSchema"]["properties"]
-            .get("mission_id")
-            .is_some(),
-        "MCP create accepts mission_id: {create_schema}"
-    );
-    assert!(
-        create_schema["inputSchema"]["properties"]
-            .get("wave_id")
-            .is_some(),
-        "MCP create accepts wave_id: {create_schema}"
-    );
+    assert!(create_schema["inputSchema"]["properties"]
+        .get("mission_id")
+        .is_none());
+    assert!(create_schema["inputSchema"]["properties"]
+        .get("wave_id")
+        .is_none());
+    assert!(create_schema["inputSchema"]["required"]
+        .as_array()
+        .expect("team_run_create required")
+        .iter()
+        .any(|field| field == "agent_team_id"));
     assert!(
         create_schema["inputSchema"]["properties"]
             .get("execution_root")
@@ -959,6 +1066,13 @@ fn mcp_stdio_agent_team_tools() {
     );
     let mission = call_payload(&response);
     assert_eq!(mission["id"].as_str(), Some("mission-mcp"));
+    let team_id = seed_team_for_mission(
+        &home,
+        &project_root,
+        "mission-mcp",
+        &stable_agent_id,
+        "main",
+    );
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -980,18 +1094,15 @@ fn mcp_stdio_agent_team_tools() {
     );
     seed_historical_wave(&home, &project_id, "wave-mcp", "mission-mcp", 2);
 
-    // 4. team_run_create with two members → run id + member run ids. Direct
-    // wave_id binding still works against the seeded historical row --
-    // ADR 0051 retired Wave *write* commands, not citing an existing Wave id
-    // on TeamRun creation.
+    // 4. team_run_create with two members → run id + member run ids. Mission
+    // and navigation Wave are derived through the required flat AgentTeam.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
             "name": "team_run_create",
             "arguments": {
                 "objective": "Ship v0",
-                "mission_id": "mission-mcp",
-                "wave_id": "wave-mcp",
+                "agent_team_id": team_id,
                 "execution_root": project_root,
                 "budget_limit_usd": 5.5,
                 "host_surface": "codex-app",
@@ -1013,7 +1124,7 @@ fn mcp_stdio_agent_team_tools() {
     );
     assert!(team_run_id.starts_with("team-run-"), "id: {team_run_id}");
     assert_eq!(payload["mission_id"].as_str(), Some("mission-mcp"));
-    assert_eq!(payload["wave_id"].as_str(), Some("wave-mcp"));
+    assert!(payload["wave_id"].is_null());
     assert_eq!(
         payload["execution_root"].as_str(),
         Some(project_root.to_str().expect("project root"))
@@ -1051,7 +1162,7 @@ fn mcp_stdio_agent_team_tools() {
             "name": "team_run_create",
             "arguments": {
                 "objective": "Mission-scoped cold-link proof",
-                "mission_id": "mission-mcp",
+                "agent_team_id": team_id,
                 "members": [
                     {"name": "cold-link", "role": "observer", "provider": "codex"}
                 ]
@@ -1585,8 +1696,7 @@ fn mcp_stdio_agent_team_tools() {
             "name": "team_run_create",
             "arguments": {
                 "objective": "Finish through fake Kimi ACP",
-                "mission_id": "mission-mcp",
-                "wave_id": "wave-mcp-start",
+                "agent_team_id": team_id,
                 "members": [{"name": "async-worker", "role": "implementer", "provider": "kimi"}]
             }
         }),
@@ -1596,6 +1706,20 @@ fn mcp_stdio_agent_team_tools() {
         .as_str()
         .expect("startable team run id")
         .to_string();
+    let daemon = run_firm_with_env(
+        &home,
+        &project_root,
+        &["daemon", "start"],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_RESULT", "done"),
+        ],
+    );
+    assert!(
+        daemon.status.success(),
+        "start NodeDaemon failed: {}",
+        String::from_utf8_lossy(&daemon.stderr)
+    );
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -1608,7 +1732,7 @@ fn mcp_stdio_agent_team_tools() {
     assert_eq!(
         started["dashboard_url"].as_str(),
         Some(
-            format!("http://127.0.0.1:5173/?api=.&surface=team&team={startable_id}&space={project_id}&project={project_id}&mission=mission-mcp&wave=wave-mcp-start")
+            format!("http://127.0.0.1:5173/?api=.&surface=team&team={startable_id}&space={project_id}&project={project_id}&mission=mission-mcp&wave=wave-mcp")
                 .as_str()
         )
     );
@@ -1636,6 +1760,11 @@ fn mcp_stdio_agent_team_tools() {
     assert!(
         idle.is_some(),
         "MCP-started Member did not return to idle while TeamRun stayed running"
+    );
+    let stopped = run_firm(&home, &project_root, &["daemon", "stop"]);
+    assert!(
+        stopped.status.success(),
+        "stop NodeDaemon failed: {stopped:?}"
     );
 
     // Mission closeout is a separate Host decision; it no longer requires
@@ -1728,6 +1857,7 @@ fn mcp_stdio_external_interactive_member_authorship() {
     let project_id = init_project(&home, "mcp-proj");
     let project_root =
         std::fs::canonicalize(home.base().join("mcp-proj")).expect("canonical project root");
+    let team_id = seed_agent_team(&home, &project_root, "external");
     let mut mcp = McpClient::spawn(&home, &project_id, &[]);
     let response = mcp.request(
         "initialize",
@@ -1747,6 +1877,7 @@ fn mcp_stdio_external_interactive_member_authorship() {
             "name": "team_run_create",
             "arguments": {
                 "objective": "External authorship gate",
+                "agent_team_id": team_id,
                 "execution_root": project_root,
                 "members": [
                     {"name": "lead", "role": "coordinator", "provider": "kimi"},
@@ -2010,6 +2141,30 @@ fn mcp_stdio_work_rebind_and_successor_delivery_reconcile() {
         .as_str()
         .expect("stable Agent id")
         .to_string();
+    let mission = run_firm(
+        &home,
+        &project_root,
+        &[
+            "mission",
+            "create",
+            "--title",
+            "Rebind",
+            "--objective",
+            "Exercise recovery",
+        ],
+    );
+    assert!(
+        mission.status.success(),
+        "mission create failed: {mission:?}"
+    );
+    let mission_id = String::from_utf8_lossy(&mission.stdout).trim().to_string();
+    let team_id = seed_team_for_mission(
+        &home,
+        &project_root,
+        &mission_id,
+        &stable_agent_id,
+        "rebind",
+    );
 
     // This is the successful rebind path, so pin the provider probe to the
     // reviewed fake Kimi version instead of inheriting a developer machine's
@@ -2023,6 +2178,7 @@ fn mcp_stdio_work_rebind_and_successor_delivery_reconcile() {
             "name": "team_run_create",
             "arguments": {
                 "objective": "Exercise MCP Work lifecycle recovery",
+                "agent_team_id": team_id,
                 "execution_root": project_root,
                 "members": [{
                     "name": "stable-worker",
@@ -2156,9 +2312,23 @@ fn mcp_stdio_work_rebind_and_successor_delivery_reconcile() {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("unix epoch")
         .as_millis() as u64;
+    let node_daemon = store
+        .acquire_node_daemon_lease(
+            &run.execution_node_id,
+            "daemon-mcp",
+            "instance-mcp",
+            now_unix_ms,
+            60_000,
+        )
+        .expect("parent NodeDaemon lease");
     let first = store
-        .acquire_team_supervisor_lease(
+        .acquire_team_supervisor_under_node_lease(
             &team_run_id,
+            &run.execution_node_id,
+            &node_daemon.daemon_id,
+            node_daemon.generation,
+            &project_id,
+            &run.project_binding_id,
             "supervisor-mcp-generation-1",
             11,
             "mcp:test:first",
@@ -2184,8 +2354,13 @@ fn mcp_stdio_work_rebind_and_successor_delivery_reconcile() {
     };
     assert_eq!(claimed.status, WorkDeliveryStatus::Claimed);
     let successor = store
-        .acquire_team_supervisor_lease(
+        .acquire_team_supervisor_under_node_lease(
             &team_run_id,
+            &run.execution_node_id,
+            &node_daemon.daemon_id,
+            node_daemon.generation,
+            &project_id,
+            &run.project_binding_id,
             "supervisor-mcp-generation-2",
             22,
             "mcp:test:successor",
@@ -2225,6 +2400,7 @@ fn mcp_stdio_work_list_brief_since_and_board_summary() {
     let project_id = init_project(&home, "mcp-board-reads-proj");
     let project_root = std::fs::canonicalize(home.base().join("mcp-board-reads-proj"))
         .expect("canonical project root");
+    let team_id = seed_agent_team(&home, &project_root, "board-reads");
 
     let mut mcp = McpClient::spawn(&home, &project_id, &[]);
     let response = mcp.request(
@@ -2233,6 +2409,7 @@ fn mcp_stdio_work_list_brief_since_and_board_summary() {
             "name": "team_run_create",
             "arguments": {
                 "objective": "Exercise decision-shaped board reads over MCP",
+                "agent_team_id": team_id,
                 "execution_root": project_root,
                 "members": [{
                     "name": "alice",

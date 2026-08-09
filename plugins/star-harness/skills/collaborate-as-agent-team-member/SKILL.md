@@ -238,8 +238,11 @@ own. Do not force assignment to a same-level peer.
   --idempotency-key <stable-command-key>
 ```
 
-If you have authority to create a child Team, become that Team's Host and
-assign child Works there. You remain accountable for integrating child results and submitting the parent Work. Child completion never auto-completes parent Work — see shared hard invariants §7.
+If another Team should own a substantial result, report that finding to your
+Host with the proposed boundary and evidence. The Host may create an explicit
+`WorkDelegation` to another flat Team. You remain accountable for integrating
+the delegated result and submitting your source Work; target completion never
+auto-completes the source Work — see shared hard invariants §7.
 
 When the runtime presents `SHARED WORK AVAILABLE`, treat it as a board-derived
 discovery hint, not ownership. Refresh the Work and claim it with the bound
@@ -362,10 +365,11 @@ Verify that:
 - your MemberRun stays available until the Host requests changes, accepts,
   reassigns, closes, or retires it.
 
-## ADR 0052 Target Contract: Recursive Agent Teams
+## Flat AgentTeam Contract
 
-
-The Organization is a recursive AgentTeam topology: the Lead Hosts the root AgentTeam, and any direct Member may create and Host one child AgentTeam. You may create a child Team when you own Work that benefits from delegated execution; you become that Team's Host and remain accountable for integrating child results.
+The Organization contains multiple flat AgentTeams. Each Team belongs to one
+Mission and one Node; Members never create nested Teams. Cross-Team execution
+is an explicit Host-coordinated WorkDelegation, not hierarchy.
 
 The current separate StandingAgent record is a compatibility implementation. New target architecture must not add another durable agent identity. Your current operating procedures and Workspace isolation work with both models.
 

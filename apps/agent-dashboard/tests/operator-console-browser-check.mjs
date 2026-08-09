@@ -5,7 +5,7 @@
  * docs/design/dashboard-operator-console.md).
  *
  * Proves the creation + chat flows a single-console operator needs, against
- * a mocked live source: durable AgentMember creation, independent team +
+ * a mocked live source: durable AgentMember creation, flat Mission-bound team +
  * first run + start, Mission Log append replacing retired Wave writes, and
  * an explicit-response-intent team message. POST bodies are captured and the
  * mock snapshot mutates, so the UI must reflect new rows without reload.
@@ -127,7 +127,6 @@ const state = {
     },
   ],
   missionContext: null,
-  linkedMissionTeamIds: new Set(),
 };
 
 function buildSnapshot() {
@@ -137,7 +136,6 @@ function buildSnapshot() {
     missions: baseline.missions.map((mission) => mission.id === missionId
       ? {
           ...mission,
-          agent_team_ids: [...state.linkedMissionTeamIds],
           context: state.missionContext ?? mission.context,
         }
       : mission),
@@ -185,7 +183,9 @@ async function mockRoutes(page) {
           id: `team-console-${state.teams.length + 1}`,
           name: body.name,
           description: body.description ?? "",
-          owner_agent_id: body.lead_agent_id ?? "host",
+          mission_id: body.mission_id,
+          host_agent_id: body.host_agent_id ?? "host",
+          node_id: body.node_id ?? "11111111-1111-4111-8111-111111111111",
           member_ids: body.member ?? [],
           status: "active",
         });
@@ -243,16 +243,6 @@ async function mockRoutes(page) {
       if (contextRoute) {
         state.missionContext = body.context ?? "";
         return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, result: { context: state.missionContext } }) });
-      }
-      const linkRoute = url.pathname.match(/^\/v1\/missions\/([^/]+)\/link-team$/);
-      if (linkRoute) {
-        state.linkedMissionTeamIds.add(body.team_id);
-        return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
-      }
-      const unlinkRoute = url.pathname.match(/^\/v1\/missions\/([^/]+)\/unlink-team$/);
-      if (unlinkRoute) {
-        state.linkedMissionTeamIds.delete(body.team_id);
-        return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
       }
       const ackRoute = url.pathname.match(/^\/v1\/host-attentions\/([^/]+)\/ack$/);
       if (ackRoute) {
@@ -326,19 +316,25 @@ try {
     await context.close();
   }
 
-  // ── Flow B: independent team → first run → start, all from the console ──
+  // ── Flow B: Mission-bound, Node-placed team → first run → start ──
   {
     const { context, page } = await newPage({ surface: "team" });
     await page.getByRole("button", { name: "New Agent Team" }).click();
     await page.getByLabel("Team name").fill("Console Team");
     await page.getByLabel("Description").fill("Created end-to-end from the console");
+    await page.getByLabel("Mission ID").fill(missionId);
+    await page.getByLabel("Node ID").fill("11111111-1111-4111-8111-111111111111");
     await page.getByRole("button", { name: "Create team" }).click();
     await page.getByText("Console Team").first().waitFor({ timeout: 10_000 }).catch(() => {});
     check(await page.getByText("Console Team").first().isVisible().catch(() => false),
       "created team is visible even before it has a run");
     const teamCreate = lastPost(/^\/v1\/teams$/);
-    check(Boolean(teamCreate) && teamCreate.body.name === "Console Team" && teamCreate.body.lead_agent_id === "host",
-      "create team posts /v1/teams with host lead default");
+    check(Boolean(teamCreate)
+      && teamCreate.body.name === "Console Team"
+      && teamCreate.body.mission_id === missionId
+      && teamCreate.body.host_agent_id === "host"
+      && teamCreate.body.node_id === "11111111-1111-4111-8111-111111111111",
+    "create team posts /v1/teams with Mission, Host, and Node placement");
 
     // Scope to the run-less teams section and match the exact button name:
     // attempt cards wrap in a role=button whose accessible name also contains
@@ -423,7 +419,7 @@ try {
     await context.close();
   }
 
-  // ── Flow F: Mission brief edit + team link/unlink ──
+  // ── Flow F: Mission brief edit + immutable Team ownership ──
   {
     const { context, page } = await newPage({ surface: "missions", mission: missionId });
     await page.getByRole("button", { name: "Edit context" }).click();
@@ -434,16 +430,11 @@ try {
     check(Boolean(contextPost) && String(contextPost.body.context).includes("durable brief rewritten"),
       "Edit context posts /v1/missions/{id}/context with the rewritten brief");
 
-    await page.getByLabel("Team to link").selectOption("team-platform-foundation");
-    await page.getByRole("button", { name: "Link team" }).click();
-    await page.waitForTimeout(800);
-    check(Boolean(lastPost(new RegExp(`^/v1/missions/${missionId}/link-team$`))),
-      "Link team posts /v1/missions/{id}/link-team");
-    await page.getByRole("button", { name: "Unlink" }).first().waitFor({ timeout: 8_000 }).catch(() => {});
-    await page.getByRole("button", { name: "Unlink" }).first().click();
-    await page.waitForTimeout(800);
-    check(Boolean(lastPost(new RegExp(`^/v1/missions/${missionId}/unlink-team$`))),
-      "Unlink posts /v1/missions/{id}/unlink-team");
+    check(await page.getByText("Platform Foundation Team", { exact: true }).last().isVisible().catch(() => false),
+      "Mission renders the AgentTeam whose immutable mission_id points to it");
+    check(await page.getByRole("button", { name: "Link team" }).count() === 0
+      && await page.getByRole("button", { name: "Unlink" }).count() === 0,
+    "retired mutable Mission-Team link and unlink controls are absent");
     await context.close();
   }
 

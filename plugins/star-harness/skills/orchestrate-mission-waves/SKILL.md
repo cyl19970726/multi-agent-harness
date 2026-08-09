@@ -77,7 +77,7 @@ Select exactly one top-level execution driver per MemberRun — see shared hard 
 ## Run The Host Loop
 
 1. **Observe.** Select the Execution Space and Project Binding explicitly.
-   Inspect Mission, the Mission Log, linked Teams, Works, messages, pending
+   Inspect Mission, the Mission Log, its Mission-owned Team, Works, messages, pending
    interactions, Member/Supervisor health, and native-session bindings.
 2. **Orient.** Create or update Mission Markdown with the durable objective,
    constraints, decision boundary, and success standard.
@@ -86,9 +86,10 @@ Select exactly one top-level execution driver per MemberRun — see shared hard 
    changed facts, composition decisions, important Work ids, carry-over, and
    evidence needed to advance. Log before you act on the judgment, never as
    after-the-fact narration.
-4. **Form the Team.** Link an existing AgentTeam or create one. Start one
-   Mission-scoped TeamRun when persistent collaborators are useful. TeamRun
-   ownership is the Team Lead's; no Mission Log entry owns a run.
+4. **Form the Team.** Create the Mission's one flat AgentTeam with its Host and
+   immutable Node placement. Start one Team/Node/Project-fenced TeamRun when
+   persistent collaborators are useful. TeamRun ownership is the Host's; no
+   Mission Log entry owns a run.
 5. **Create Works.** Put every schedulable responsibility on the shared board.
    Directly assign bounded lanes or create eligible unassigned Works for
    atomic Member claim. Give parallel code owners disjoint paths or require
@@ -113,8 +114,8 @@ Select exactly one top-level execution driver per MemberRun — see shared hard 
    session. Active Work keeps the same Work id, MemberRun, Workspace, and
    native session across every Log entry — see shared hard invariants §9.
 9. **Close.** Append a `--kind closeout_evidence` Mission Log entry, then
-   record an explicit Mission outcome. Closing a Mission never closes the
-   independent Team or its Members.
+   record an explicit Mission outcome. Closing a Mission does not erase its
+   Team or provider-session history; runtime closure remains explicit.
 
 ## Host Scheduling Policy
 
@@ -537,9 +538,11 @@ harness team-run wait --id <team-run-id> \
   --after-seq <last-seq> --timeout-secs <bounded-seconds>
 ```
 
-### Supervisor Recovery Ladder (L0 → L4)
+### NodeDaemon Recovery Ladder (L0 → L4)
 
-The supervisor is a detached daemon process (PR #365). `team-run start` spawns or adopts the daemon and exits; the daemon owns delivery, heartbeat, and control.
+One machine-scoped NodeDaemon owns every local TeamRun. Each Team Supervisor is
+a child context fenced by the current NodeDaemon generation. `team-run start`
+requires that daemon and never launches a private per-run fallback.
 
 When `team-run status` or `team-run recover` shows no live supervisor:
 
@@ -548,25 +551,26 @@ When `team-run status` or `team-run recover` shows no live supervisor:
 harness team-run status --id <team-run-id>
 # Look for: supervisor current=false, pid_alive=false, heartbeat_age_s
 harness team-run status --id <team-run-id> --json | jq '.supervisor'
-# Daemon-specific diagnosis (after #346):
-harness daemon supervisor status --team-run-id <team-run-id>
-# States: Running(pid,gen) | Crashed(pid,gen) | Expired(pid,gen) | Absent
+harness daemon status
 ```
 
-**L1 — Restart daemon** (covers transient crash, lease expiry, dead daemon):
+**L1 — Start or restart the machine daemon** (covers crash or lease expiry):
 ```bash
+harness daemon start
 harness team-run start --id <team-run-id>
 ```
-This spawns a new daemon or adopts an existing one. `team-run start` exits cleanly after spawning; the daemon continues in background.
+The NodeDaemon reacquires all registered Execution Spaces and resumes eligible
+TeamRun contexts under a new parent generation.
 
-**L2 — Stop and restart wedged daemon** (PID alive but daemon not writing):
+**L2 — Stop and restart a wedged NodeDaemon** (process alive but no progress):
 ```bash
-harness daemon supervisor stop --team-run-id <team-run-id>
+harness daemon stop
+harness daemon start
 harness team-run start --id <team-run-id>
 ```
-Only kill the PID directly when `daemon supervisor stop` fails.
+Do not kill a PID directly; preserve the daemon lease and recovery diagnostics.
 
-**L3 — Per-member close/reopen** (single bad member, daemon healthy):
+**L3 — Per-member close/reopen** (single bad member, NodeDaemon healthy):
 ```bash
 harness team-run close-member --id <team-run-id> --member-run-id <id> --reason "..."
 harness team-run reopen-member --id <team-run-id> --member-run-id <id>
@@ -612,14 +616,21 @@ The driver is a field on `ProviderIntegrationProfile.execution_driver`, not a CL
 
 ## Delegate Without Losing Accountability
 
-A Member may use native subagents internally; they do not become Team Members or own Work — see shared hard invariants §6. For durable multi-level delegation, the parent owner creates a child Team and becomes its Host. Child Works remain in the child TeamRun; an explicit WorkDelegation links them. Child completion never auto-submits or accepts the parent Work — see shared hard invariants §7.
+A Member may use native subagents internally; they do not become Team Members
+or own Work — see shared hard invariants §6. For durable cross-Team delegation,
+the Host creates an explicit WorkDelegation to another flat Team. Target
+completion never auto-submits or accepts the source Work — see shared hard
+invariants §7.
 
-## ADR 0052 Target Contract: Recursive Agent Teams
-
+## Flat Organization Target Contract
 
 - **AgentMember is the organization-agent identity**, durable across MemberRuns, provider processes, native sessions, and execution attempts.
-- **Organization is recursive AgentTeam topology**: the Lead AgentMember Hosts the root AgentTeam; any Member may create and Host a child AgentTeam.
-- **One Work kernel serves Team and Organization**: ADR 0050 Work semantics become the base responsibility model, with optional business relations for Document, Milestone, Module, Approval, Finance, Mission, or external delivery.
+- **Organization contains flat AgentTeams**: each Team has one Mission, one Host,
+  and immutable single-Node placement; no Member or Team nests another Team.
+- **One Work kernel serves Team and Organization**: Team Work semantics are the
+  atom, while explicit WorkDelegation connects flat Teams and optional business
+  relations connect Document, Milestone, Module, Approval, Finance, Mission, or
+  external delivery.
 
 The current separate StandingAgent record is a compatibility implementation; new target architecture must not add another durable agent identity. The current deploy/Host loop in this skill works with both the compatibility and target models.
 

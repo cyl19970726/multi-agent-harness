@@ -7,13 +7,16 @@ outputs, adapters, and the Agent Dashboard.
 
 | Object | Purpose |
 | --- | --- |
-| `Mission` | Durable intent/context, linked Agent Teams, ordered Waves, and closeout |
+| `Mission` | Durable intent/context, one owning AgentTeam, ordered Waves, and closeout |
 | `Wave` | One lightweight versioned Host plan/judgment and advance outcome |
-| `AgentTeamRun` | One standalone or Mission-scoped use of an independent Agent Team |
+| `AgentTeam` | One Mission's flat Team with required Host Agent and immutable Node placement |
+| `AgentTeamRun` | One Team execution with required Team, Node, and Project Binding identity |
 | `MemberRun` | One role/provider execution instance inside a TeamRun |
 | `Work` / `WorkOperation` / `WorkEvent` / `WorkDelivery` | TeamRun-scoped responsibility projection, crash-atomic replay row, append-only semantic transition, and versioned runtime delivery |
+| `WorkDelegation` / `WorkDelegationEvent` | Cross-Team responsibility handoff with CAS, idempotency, cycle prevention, and source rollup |
 | `TeamMessage` | Typed sender/recipients, optional `work_id`, correlation/causation, optional origin Wave, response intent, claim/provider-receipt/ACK delivery state; conversation only |
-| `TeamSupervisorLease` | Latest-wins TeamRun control owner, generation fence, heartbeat, and loopback locator |
+| `ExecutionNode` / `NodeProjectRegistration` / `NodeDaemonLease` | Machine identity, available Project Bindings, and the one daemon generation that owns all local TeamRuns |
+| `TeamSupervisorLease` | Latest-wins TeamRun control owner parent-fenced by NodeDaemon generation |
 | `AgentMessageRoute` | Idempotent bridge from stable Agent Inbox mail to a MemberRun/TeamMessage |
 | `MemberAction` | Transitional action schema; target scope is Harness-owned coordination/control facts, never mirrored provider activity |
 | `DelegationRun` | Honest attribution for observed or harness-controlled delegation |

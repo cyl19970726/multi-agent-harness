@@ -38,8 +38,8 @@ retired through governed operations.
 
 ### Mission and Wave
 
-A Mission captures durable execution intent and may relate to multiple
-independent Agent Teams. Its ordered Waves are lightweight, versioned Markdown
+A Mission captures durable execution intent and owns exactly one flat
+AgentTeam. Its ordered Waves are lightweight, versioned Markdown
 records of the Host's plan and judgment. A Wave is not a task graph, executor
 container, synchronization barrier, or provider-session boundary.
 
@@ -51,8 +51,9 @@ Execution Space with `company_id = null`.
 
 ### AgentTeamRun and MemberRun
 
-An `AgentTeamRun` is a standalone or Mission-scoped use of an independent
-AgentTeam. It may remain active across multiple Waves. A `MemberRun` is one
+An `AgentTeamRun` is one execution of the Mission's AgentTeam and freezes the
+Team's Node plus the selected Project Binding. It may remain active across
+multiple Waves. A `MemberRun` is one
 participant instance inside that run; its provider-native session may continue
 while the Host advances the plan. The Agent Team Works contract proves lane
 responsibility:
@@ -74,7 +75,7 @@ its displayed name, provider, model, role, or timestamps resemble a standing
 Agent.
 
 The implemented Agent Team path preserves this link when a TeamRun is created
-from an independent AgentTeam definition: the definition's member identifier is
+from its Mission-owned AgentTeam: the Team's member identifier is
 copied into `MemberRun.agent_member_id`. The Organization projection includes
 participation only when a Company OS `StandingAgent.execution_agent_member_ref`
 names that AgentMember. Equal ids do not bind. This is an explicit cross-layer
@@ -82,8 +83,9 @@ join, not lifecycle collapse: the StandingAgent owns organization identity and a
 AgentMember definition owns reusable execution configuration, and MemberRun
 owns participation in one TeamRun.
 
-An AgentTeamRun may execute against one Project Binding, while another TeamRun
-inside the same Mission uses a different Project Binding. The Mission/Wave
+An AgentTeamRun may execute against one Project Binding, while a later TeamRun
+of the same Mission Team uses a different Project Binding registered on the
+same Node. The Mission/Wave
 history belongs to the Execution Space. `AgentTeamRun.project_binding_id` pins
 provider execution context so a later selector change cannot retarget existing
 members.
@@ -94,15 +96,15 @@ destroy that member. The Host may message, inspect, interrupt one current turn,
 resume from the native session, or Close the member runtime. TeamRun or Wave
 completion never substitutes for Close.
 
-Physical live-control handles are process-local, while the durable Team
-Supervisor lease is cross-process authority. Dashboard/MCP controls must route
-through the lease's loopback locator to the service holding the current
-generation. That owner fences the operation immediately before using its
-physical handle; another process cannot attach or claim messages from the same
-TeamRun. Before a Supervisor claims queued mail it verifies that the selected
-provider transport is live. Delivery then records an atomic claim, a native
-provider receipt, and recipient ACK separately. Transport failure before claim
-leaves mail queued and reconnects the recorded native session first.
+Physical live-control handles are process-local to the machine NodeDaemon.
+Its lease is the parent authority for every local Team Supervisor lease.
+Dashboard/MCP controls route through the Node daemon's loopback locator; that
+owner fences the operation against both daemon and Team generations immediately
+before using a physical handle. Before a Supervisor claims queued mail it
+verifies that the selected provider transport is live. Delivery then records an
+atomic claim, a native provider receipt, and recipient ACK separately. Transport
+failure before claim leaves mail queued and reconnects the recorded native
+session first.
 
 Team mail uses typed Host, Member, stable Agent, Operator, and Service actor
 references. External Agent-addressed mail reaches a participating Member only
@@ -182,7 +184,7 @@ accountable owner chooses proportionate execution:
 | --- | --- |
 | Small document update or human follow-up | direct human/Agent action recorded on the TeamWork |
 | One-shot, structured, bounded work | Dynamic Workflow |
-| Collaborative work needing shared responsibility, messages, or review | standalone or Mission-linked Agent Team |
+| Collaborative work needing shared responsibility, messages, or review | the Mission's flat, Node-placed Agent Team |
 | Durable, staged outcome with several gates | Mission with ordered Waves |
 | Direct resident-agent operation | Host action, with observable outcome |
 
@@ -201,9 +203,9 @@ ADR 0025 and ADR 0026 are partially superseded by ADR 0034.
   superseded.
 - **ADR 0026 — Mission/Wave Product Architecture:** Mission/Wave names and
   transient-thinking policy remain valid. Wave-as-executor is superseded.
-- **ADR 0034 — Host Plan Waves And Mission-Scoped Agent Teams:** Mission links
-  reusable teams; Waves preserve Host judgment; TeamRuns and native sessions
-  may span Waves.
+- **ADR 0034 — Host Plan Waves And Mission-Scoped Agent Teams:** historical
+  Mission/Team and Wave language is superseded by the one Mission = one flat
+  AgentTeam contract; TeamRuns and native sessions remain execution history.
 - **ADR 0044 — Durable Team Supervision And Typed Mail:** latest-wins
   Supervisor generations, typed actors, claim/provider receipt/ACK, stable
   Agent routes, cross-process controls, reconnect, and Close define the current

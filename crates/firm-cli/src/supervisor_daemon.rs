@@ -1,49 +1,27 @@
-//! Supervisor daemon — the detached process that owns the writer loop,
-//! heartbeat, and TCP control listener for a team run.  The `harness daemon
-//! supervisor serve` command calls [`run_supervisor_daemon`] in the foreground.
-//! `harness team-run start` spawns the daemon as a child and exits.
+//! Machine-scoped NodeDaemon.
+//!
+//! One daemon owns the local execution-node lease and supervises every TeamRun
+//! admitted from the node's registered Execution Spaces. TeamRun supervisors
+//! are children of that daemon generation; they are not independently
+//! discoverable or startable daemons.
 
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, HashSet};
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, Read, Write};
-use std::net::TcpStream;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::{
-    current_unix_ms_u64, drive_prepared_team_run, prepare_team_run_start_body,
-    supervisor_lease_live_diagnosis, CliError, CliResult, HarnessStore, PreparedTeamRunStart,
-    TeamRunLedger, TeamSupervisorRegistration,
+    current_unix_ms_u64, drive_prepared_team_run, prepare_team_run_start_body, CliError, CliResult,
+    HarnessStore, PreparedTeamRunStart, TeamRunLedger, TeamSupervisorRegistration,
 };
 
 // ---------------------------------------------------------------------------
-// Signal handling (portable Unix FFI — same pattern as resident_daemon.rs)
+// Signal handling (portable Unix FFI)
 // ---------------------------------------------------------------------------
-
-/// Set by the SIGTERM/SIGINT handler so the accept loop can exit between
-/// connections.  The daemon runs [`drive_prepared_team_run`] on the main
-/// thread, so the signal only affects the per-connection accept loop inside
-/// the control thread — the delivery loop exits when `heartbeat_valid` goes
-/// false.
-static SHUTDOWN: AtomicBool = AtomicBool::new(false);
-
-fn install_signal_handlers() {
-    extern "C" fn handle(_sig: i32) {
-        SHUTDOWN.store(true, Ordering::SeqCst);
-    }
-    // SAFETY: `handle` only stores into an AtomicBool (async-signal-safe),
-    // and `signal(2)` is a stable C ABI symbol present in libc on all unix
-    // targets.  `handle` (an `extern "C" fn(i32)`) coerces directly to
-    // `SigHandler`, so no function-item-to-integer cast is needed.
-    unsafe {
-        signal(SIGTERM, handle);
-        signal(SIGINT, handle);
-    }
-}
 
 const SIGINT: i32 = 2;
 const SIGTERM: i32 = 15;
@@ -53,524 +31,34 @@ extern "C" {
 }
 
 // ---------------------------------------------------------------------------
-// Public types
+// Machine-scoped NodeDaemon (#429)
 // ---------------------------------------------------------------------------
+// One NodeDaemon manages every local TeamRun across every registered Execution
+// Space. A Team never crosses Nodes; a control request therefore names the
+// exact Execution Space and TeamRun and is rejected when placement differs.
 
-/// Information a CLI client needs to adopt or inspect a running daemon.
-#[derive(Clone, Debug)]
-pub(crate) struct DaemonInfo {
-    pub pid: u32,
-    pub locator: String,
-    pub generation: u64,
-    #[allow(dead_code)]
-    pub supervisor_id: String,
-}
-
-/// Status of a supervisor daemon for a given team run.
-#[derive(Clone, Debug)]
-pub(crate) enum SupervisorDaemonStatus {
-    /// Lease Active, PID alive, heartbeat fresh — normal operation.
-    Running {
-        pid: u32,
-        generation: u64,
-        heartbeat_age_ms: u64,
-    },
-    /// Lease Active, heartbeat stale, PID dead — daemon crashed.
-    Crashed { pid: u32, generation: u64 },
-    /// Lease Active but expired — daemon gone, lease past TTL.
-    Expired { pid: u32, generation: u64 },
-    /// Lease released or never existed.
-    Absent,
-}
-
-// ---------------------------------------------------------------------------
-// Daemon entry point (foreground — `harness daemon supervisor serve`)
-// ---------------------------------------------------------------------------
-
-/// Run the supervisor daemon in the foreground.  Blocks until the delivery
-/// loop exits (team run completes, cancelled, or lease is lost).
-pub(crate) fn run_supervisor_daemon(
-    store: &HarnessStore,
-    run_id: &str,
-    max_concurrency: usize,
-    idle_timeout_secs: u64,
-) -> CliResult<()> {
-    install_signal_handlers();
-
-    let body = prepare_team_run_start_body(store, run_id, max_concurrency)?;
-
-    let supervisor_registration = TeamSupervisorRegistration::start(store, run_id)?;
-
-    let ledger = Arc::new(TeamRunLedger::new(
-        store,
-        run_id,
-        &supervisor_registration.supervisor_id,
-        supervisor_registration.generation,
-        Arc::clone(&supervisor_registration.heartbeat_valid),
-    ));
-
-    use crate::{now_string, store_conflict_as_usage};
-    use harness_core::TeamRunStatus;
-
-    let running = if body.run.status == TeamRunStatus::Planning {
-        let mut running = body.run.clone();
-        running.status = TeamRunStatus::Running;
-        running.updated_at = now_string();
-        store_conflict_as_usage(store.compare_and_append_team_run_lifecycle(&body.run, &running))?;
-        running
-    } else {
-        body.run.clone()
-    };
-
-    ledger.fold_event(
-        harness_core::TeamRunEventSourceKind::Host,
-        None,
-        "team_run",
-        run_id,
-        "updated",
-        &format!(
-            "member supervisor {} generation {} {} ({} unclosed member(s), max-concurrency {max_concurrency})",
-            supervisor_registration.supervisor_id,
-            supervisor_registration.generation,
-            if body.run.status == TeamRunStatus::Planning {
-                "started"
-            } else {
-                "reattached"
-            },
-            body.members.len(),
-        ),
-    )?;
-
-    let prepared = PreparedTeamRunStart {
-        run_id: body.run_id,
-        objective: body.objective,
-        running,
-        members: body.members,
-        ledger,
-        supervisor_registration,
-    };
-
-    eprintln!(
-        "[supervisor-daemon] team run {}: serving (pid {}, gen {})",
-        run_id,
-        std::process::id(),
-        prepared.supervisor_registration.generation,
-    );
-
-    drive_prepared_team_run(
-        prepared,
-        None, // execution_space — daemon resolves from store when needed
-        None, // project_context — daemon resolves from store when needed
-        max_concurrency,
-        Duration::from_secs(idle_timeout_secs),
-        None,
-    )
-}
-
-// ---------------------------------------------------------------------------
-// launchd plist generation (artifact only)
-// ---------------------------------------------------------------------------
-
-/// Write a macOS LaunchAgent plist for the supervisor daemon.  This is an
-/// *artifact* — the portable `Command::spawn` path is the primary mechanism;
-/// the plist is optional hardening.
-pub(crate) fn generate_launchd_plist(
-    team_run_id: &str,
-    firm_bin: &str,
-    max_concurrency: usize,
-    idle_timeout_secs: u64,
-) -> CliResult<()> {
-    let home = dirs_fallback();
-    let agents_dir = home.join("Library").join("LaunchAgents");
-    std::fs::create_dir_all(&agents_dir)?;
-
-    let label = format!("com.firm.supervisor.{team_run_id}");
-    let plist_path = agents_dir.join(format!("{label}.plist"));
-
-    let plist = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{label}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{firm_bin}</string>
-        <string>daemon</string>
-        <string>supervisor</string>
-        <string>serve</string>
-        <string>--team-run-id</string>
-        <string>{team_run_id}</string>
-        <string>--max-concurrency</string>
-        <string>{max_concurrency}</string>
-        <string>--idle-timeout-secs</string>
-        <string>{idle_timeout_secs}</string>
-    </array>
-    <key>KeepAlive</key>
-    <true/>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>/tmp/firm-supervisor-{team_run_id}.stdout.log</string>
-    <key>StandardErrorPath</key>
-    <string>/tmp/firm-supervisor-{team_run_id}.stderr.log</string>
-</dict>
-</plist>
-"#
-    );
-
-    std::fs::write(&plist_path, plist)?;
-    eprintln!(
-        "[supervisor-daemon] wrote launchd plist: {}",
-        plist_path.display()
-    );
-    eprintln!(
-        "[supervisor-daemon] to activate: launchctl load {}",
-        plist_path.display()
-    );
-    Ok(())
-}
-
-fn dirs_fallback() -> PathBuf {
-    std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/tmp"))
-}
-
-// ---------------------------------------------------------------------------
-// Control-plane helpers (status / stop / check / spawn / adopt)
-// ---------------------------------------------------------------------------
-
-/// Inspect the lease and report the daemon's status.
-pub(crate) fn supervisor_daemon_status(
-    store: &HarnessStore,
-    team_run_id: &str,
-) -> CliResult<SupervisorDaemonStatus> {
-    let Some(lease) = store.latest_team_supervisor_lease(team_run_id)? else {
-        return Ok(SupervisorDaemonStatus::Absent);
-    };
-    if lease.status != harness_core::TeamSupervisorLeaseStatus::Active {
-        return Ok(SupervisorDaemonStatus::Absent);
-    }
-    let now_ms = current_unix_ms_u64();
-    let heartbeat_age_ms = now_ms.saturating_sub(lease.heartbeat_unix_ms);
-    let (pid_alive, _diag) = supervisor_lease_live_diagnosis(&lease);
-    if !pid_alive {
-        return Ok(SupervisorDaemonStatus::Crashed {
-            pid: lease.owner_process_id,
-            generation: lease.generation,
-        });
-    }
-    if lease.expires_unix_ms > 0 && lease.expires_unix_ms < now_ms {
-        return Ok(SupervisorDaemonStatus::Expired {
-            pid: lease.owner_process_id,
-            generation: lease.generation,
-        });
-    }
-    Ok(SupervisorDaemonStatus::Running {
-        pid: lease.owner_process_id,
-        generation: lease.generation,
-        heartbeat_age_ms,
-    })
-}
-
-/// Send a shutdown request to a running daemon via the control channel.
-pub(crate) fn stop_supervisor_daemon(store: &HarnessStore, team_run_id: &str) -> CliResult<()> {
-    let info = check_existing_supervisor_daemon(store, team_run_id)?.ok_or_else(|| {
-        CliError::Usage(format!(
-            "no running supervisor daemon for team run {team_run_id}"
-        ))
-    })?;
-
-    let addr = info.locator.strip_prefix("tcp://").unwrap_or(&info.locator);
-    let mut stream = TcpStream::connect(addr)?;
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-
-    // The control protocol is JSON-line: send an interrupt command.
-    let cmd = serde_json::json!({
-        "kind": "interrupt",
-        "member_run_id": "*",
-    });
-    writeln!(stream, "{}", serde_json::to_string(&cmd)?)?;
-    stream.flush()?;
-
-    // Read one line of acknowledgement (best-effort).
-    let mut buf = String::new();
-    let mut reader = std::io::BufReader::new(&mut stream);
-    let _ = reader.read_line(&mut buf);
-
-    eprintln!(
-        "[supervisor-daemon] stop sent to pid {} (gen {})",
-        info.pid, info.generation
-    );
-    Ok(())
-}
-
-/// Check whether an active supervisor daemon exists for `team_run_id`.
-/// Returns `None` when no daemon is running or the lease is stale.
-pub(crate) fn check_existing_supervisor_daemon(
-    store: &HarnessStore,
-    team_run_id: &str,
-) -> CliResult<Option<DaemonInfo>> {
-    let Some(lease) = store.latest_team_supervisor_lease(team_run_id)? else {
-        return Ok(None);
-    };
-    if lease.status != harness_core::TeamSupervisorLeaseStatus::Active {
-        return Ok(None);
-    }
-    let now_ms = current_unix_ms_u64();
-    if lease.expires_unix_ms > 0 && lease.expires_unix_ms < now_ms {
-        return Ok(None);
-    }
-    let (pid_alive, _diag) = supervisor_lease_live_diagnosis(&lease);
-    if !pid_alive {
-        return Ok(None);
-    }
-
-    // Quick TCP probe to confirm the daemon is actually serving.
-    let addr = lease
-        .owner_locator
-        .strip_prefix("tcp://")
-        .unwrap_or(&lease.owner_locator);
-    if TcpStream::connect_timeout(
-        &addr
-            .parse()
-            .map_err(|e| CliError::Usage(format!("bad locator: {e}")))?,
-        Duration::from_secs(2),
-    )
-    .is_err()
-    {
-        return Ok(None);
-    }
-
-    Ok(Some(DaemonInfo {
-        pid: lease.owner_process_id,
-        locator: lease.owner_locator,
-        generation: lease.generation,
-        supervisor_id: lease.supervisor_id,
-    }))
-}
-
-/// Spawn the supervisor daemon as a detached child process.  Polls the lease
-/// until a heartbeat appears (timeout 10s).
-pub(crate) fn spawn_supervisor_daemon(
-    store: &HarnessStore,
-    run_id: &str,
-    max_concurrency: usize,
-    idle_timeout_secs: u64,
-) -> CliResult<DaemonInfo> {
-    let exe = std::env::current_exe()
-        .map_err(|e| CliError::Usage(format!("cannot resolve current executable: {e}")))?;
-
-    let store_root = store.root().to_path_buf();
-    let store_root_str = store_root.to_string_lossy().to_string();
-
-    let mut cmd = Command::new(&exe);
-    cmd.args([
-        "daemon",
-        "supervisor",
-        "serve",
-        "--team-run-id",
-        run_id,
-        "--max-concurrency",
-        &max_concurrency.to_string(),
-        "--idle-timeout-secs",
-        &idle_timeout_secs.to_string(),
-    ])
-    .env("FIRM_ROOT", &store_root_str)
-    .stdin(Stdio::null())
-    .stdout(Stdio::null())
-    .stderr(Stdio::null());
-
-    // Inherit all parent environment variables so test harness vars
-    // (FAKE_KIMI_RESULT, PATH with fake shims, etc.) flow through to
-    // the daemon child. FIRM_ROOT is already overridden above; never re-inject
-    // a parent HARNESS_ROOT alias that could point at a different raw store.
-    for (key, val) in std::env::vars() {
-        if key != "FIRM_ROOT" && key != "HARNESS_ROOT" {
-            cmd.env(key, val);
-        }
-    }
-
-    let child = cmd
-        .spawn()
-        .map_err(|e| CliError::Usage(format!("failed to spawn supervisor daemon: {e}")))?;
-    let pid = child.id();
-
-    eprintln!("[supervisor-daemon] spawned daemon pid {pid} for team run {run_id}");
-
-    // Poll the lease until the daemon writes its first heartbeat AND its TCP
-    // control listener is accepting connections.
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        std::thread::sleep(Duration::from_millis(200));
-        if let Some(lease) = store.latest_team_supervisor_lease(run_id)? {
-            if lease.heartbeat_unix_ms > 0
-                && lease.status == harness_core::TeamSupervisorLeaseStatus::Active
-            {
-                let (alive, _) = supervisor_lease_live_diagnosis(&lease);
-                if alive {
-                    // Also verify the TCP control listener is ready before
-                    // returning — the heartbeat thread may start before the
-                    // control thread binds.
-                    let addr = lease
-                        .owner_locator
-                        .strip_prefix("tcp://")
-                        .unwrap_or(&lease.owner_locator);
-                    if TcpStream::connect_timeout(
-                        &addr
-                            .parse()
-                            .map_err(|e| CliError::Usage(format!("bad locator: {e}")))?,
-                        Duration::from_secs(1),
-                    )
-                    .is_ok()
-                    {
-                        return Ok(DaemonInfo {
-                            pid: lease.owner_process_id,
-                            locator: lease.owner_locator,
-                            generation: lease.generation,
-                            supervisor_id: lease.supervisor_id,
-                        });
-                    }
-                }
-            }
-        }
-        if std::time::Instant::now() > deadline {
-            return Err(CliError::Usage(format!(
-                "supervisor daemon pid {pid} did not become ready within 10s for team run {run_id}"
-            )));
-        }
-    }
-}
-
-/// Verify that we can connect to a running daemon.  Returns `Ok(())` on
-/// successful TCP handshake.
-pub(crate) fn adopt_daemon(info: &DaemonInfo) -> CliResult<()> {
-    let addr = info.locator.strip_prefix("tcp://").unwrap_or(&info.locator);
-    let _stream = TcpStream::connect_timeout(
-        &addr
-            .parse()
-            .map_err(|e| CliError::Usage(format!("bad locator: {e}")))?,
-        Duration::from_secs(5),
-    )
-    .map_err(|e| {
-        CliError::Usage(format!(
-            "cannot connect to supervisor daemon at {addr}: {e}"
-        ))
-    })?;
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// CLI subcommand dispatch
-// ---------------------------------------------------------------------------
-
-/// Parse `--team-run-id`, `--max-concurrency`, and `--idle-timeout-secs`
-/// from the provided args list.
-fn value(args: &[String], flag: &str) -> Option<String> {
-    let mut i = 1; // skip subcommand
-    while i < args.len() {
-        if args[i] == flag {
-            return args.get(i + 1).cloned();
-        }
-        i += 1;
-    }
-    None
-}
-
-/// Dispatch the `harness daemon supervisor ...` subcommand.
-pub(crate) fn supervisor_daemon_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    if args.is_empty() {
-        return Err(CliError::Usage(
-            "supervisor daemon serve|status|stop|generate-plist".into(),
-        ));
-    }
-    let run_id = value(args, "--team-run-id")
-        .ok_or_else(|| CliError::Usage("--team-run-id is required".into()))?;
-    match args[0].as_str() {
-        "serve" => {
-            let max_concurrency: usize = value(args, "--max-concurrency")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(4);
-            let idle_timeout_secs: u64 = value(args, "--idle-timeout-secs")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(300);
-            run_supervisor_daemon(store, &run_id, max_concurrency, idle_timeout_secs)
-        }
-        "status" => {
-            let status = supervisor_daemon_status(store, &run_id)?;
-            match status {
-                SupervisorDaemonStatus::Running {
-                    pid,
-                    generation,
-                    heartbeat_age_ms,
-                } => {
-                    println!(
-                        "running (pid {pid}, gen {generation}, heartbeat age {heartbeat_age_ms}ms)"
-                    );
-                }
-                SupervisorDaemonStatus::Crashed { pid, generation } => {
-                    println!("crashed (pid {pid}, gen {generation})");
-                }
-                SupervisorDaemonStatus::Expired { pid, generation } => {
-                    println!("expired (pid {pid}, gen {generation})");
-                }
-                SupervisorDaemonStatus::Absent => {
-                    println!("absent (no active supervisor daemon)");
-                }
-            }
-            Ok(())
-        }
-        "stop" => stop_supervisor_daemon(store, &run_id),
-        "generate-plist" => {
-            let max_concurrency: usize = value(args, "--max-concurrency")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(4);
-            let idle_timeout_secs: u64 = value(args, "--idle-timeout-secs")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(300);
-            let firm_bin = std::env::current_exe()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| "firm".to_string());
-            generate_launchd_plist(&run_id, &firm_bin, max_concurrency, idle_timeout_secs)
-        }
-        other => Err(CliError::Usage(format!(
-            "unknown supervisor daemon command: {other}"
-        ))),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Multi-team supervisor daemon (#366)
-// ---------------------------------------------------------------------------
-// The multi-team daemon manages N team-runs in a single process.
-// It scans the store for active runs, spawns one supervisor thread per run,
-// and exposes a Unix-domain control socket for start/status/stop commands.
-// This supersedes the per-run detached daemon as the primary path; the
-// per-run daemon remains available as a fallback when the multi-team daemon
-// is not running.
-
-/// Socket path for the multi-team daemon's control socket.
-/// Uses a hash-based fallback under /tmp when the store root path exceeds
+/// Socket path for the one NodeDaemon that owns a stable local Node identity.
+/// Uses a hash-based fallback under /tmp when the FIRM_HOME path exceeds
 /// the macOS AF_UNIX 104-byte limit.
-pub(crate) fn multi_team_socket_path(store_root: &std::path::Path) -> PathBuf {
-    let direct = store_root.join("supervisor.sock");
+pub(crate) fn node_daemon_socket_path(firm_home: &Path, node_id: &str) -> PathBuf {
+    let direct = firm_home.join("nodes").join(node_id).join("daemon.sock");
     let direct_str = direct.to_string_lossy();
     if direct_str.len() < 100 {
         return direct;
     }
-    // Hash-based fallback for long paths (macOS AF_UNIX 104-byte limit).
+    // Hash-based fallback for long paths (macOS AF_UNIX 104-byte limit). Node
+    // identity remains part of the hash so two local profiles cannot collide.
     let mut hasher = DefaultHasher::new();
-    store_root.to_string_lossy().hash(&mut hasher);
+    firm_home.to_string_lossy().hash(&mut hasher);
+    node_id.hash(&mut hasher);
     let hash = hasher.finish();
-    std::path::Path::new("/tmp").join(format!("firm-supervisor-{hash:x}.sock"))
+    std::path::Path::new("/tmp").join(format!("firm-node-daemon-{hash:x}.sock"))
 }
 
-/// A managed team-run context inside the multi-team daemon.
+/// A managed TeamRun context inside the NodeDaemon.
 struct MultiTeamContext {
+    execution_space_id: String,
+    project_binding_id: String,
     run_id: String,
     heartbeat_valid: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<CliResult<()>>>,
@@ -590,9 +78,12 @@ enum ControlReadState {
     Invalid(&'static str),
 }
 
-/// The multi-team supervisor daemon.
+/// The one machine-scoped NodeDaemon.
 pub(crate) struct MultiTeamDaemon {
-    store: HarnessStore,
+    firm_home: PathBuf,
+    node_id: String,
+    daemon_id: String,
+    instance_id: String,
     contexts: Mutex<Vec<MultiTeamContext>>,
     max_concurrency: usize,
     idle_timeout_secs: u64,
@@ -604,7 +95,8 @@ impl MultiTeamDaemon {
     /// Run the multi-team daemon in the foreground. Blocks until SIGTERM/SIGINT
     /// or until the control socket receives a "stop" command.
     pub(crate) fn run(
-        store: HarnessStore,
+        firm_home: PathBuf,
+        node_id: String,
         max_concurrency: usize,
         idle_timeout_secs: u64,
         scan_interval_secs: u64,
@@ -616,13 +108,16 @@ impl MultiTeamDaemon {
         let shutdown_sig = Arc::clone(&shutdown);
         install_signal_handlers_mt(Arc::clone(&shutdown_sig));
 
-        let socket_path = multi_team_socket_path(store.root());
+        let socket_path = node_daemon_socket_path(&firm_home, &node_id);
+        if let Some(parent) = socket_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         if socket_path.exists() {
             match UnixStream::connect(&socket_path) {
                 Ok(_) => {
                     return Err(CliError::Usage(format!(
-                        "multi-team supervisor daemon already serves {}",
-                        store.root().display()
+                        "NODE_DAEMON_ALREADY_RUNNING: Node {node_id} is already served at {}",
+                        socket_path.display()
                     )))
                 }
                 Err(error)
@@ -657,10 +152,23 @@ impl MultiTeamDaemon {
             .set_nonblocking(true)
             .map_err(|e| CliError::Usage(format!("cannot set socket non-blocking: {e}")))?;
 
-        eprintln!("[multi-team-daemon] listening on {}", socket_path.display());
+        let daemon_id = format!("node-daemon:{node_id}");
+        let instance_id = format!(
+            "{}:{}:{}",
+            std::process::id(),
+            current_unix_ms_u64(),
+            daemon_id
+        );
+        eprintln!(
+            "[node-daemon] Node {node_id} listening on {}",
+            socket_path.display()
+        );
 
         let daemon = MultiTeamDaemon {
-            store,
+            firm_home,
+            node_id,
+            daemon_id,
+            instance_id,
             contexts: Mutex::new(Vec::new()),
             max_concurrency,
             idle_timeout_secs,
@@ -677,53 +185,132 @@ impl MultiTeamDaemon {
         let _ = std::fs::remove_file(&socket_path);
         let shutdown_result = daemon.graceful_shutdown();
 
-        eprintln!("[multi-team-daemon] shutdown complete");
-        serve_result.and(shutdown_result)
+        let release_result = daemon.release_node_authorities();
+        eprintln!("[node-daemon] shutdown complete");
+        serve_result.and(shutdown_result).and(release_result)
     }
 
     /// Enumerate non-terminal team-runs and adopt runs whose supervisor lease
     /// is expired (no live supervisor elsewhere).
     fn recover_orphaned_runs(&self) -> CliResult<()> {
-        let runs = self.store.team_runs().map_err(|e| {
-            CliError::Store(harness_store::StoreError::Conflict(format!(
-                "list team runs: {e}"
-            )))
+        self.scan_and_adopt()
+    }
+
+    fn registered_spaces(&self) -> CliResult<Vec<(harness_core::ExecutionSpace, HarnessStore)>> {
+        let spaces = crate::execution_space::list_spaces(&self.firm_home).map_err(|error| {
+            CliError::Usage(format!(
+                "cannot list Execution Spaces for NodeDaemon: {error}"
+            ))
         })?;
+        Ok(spaces
+            .into_iter()
+            .map(|space| {
+                let store = HarnessStore::new(space.store_root.clone());
+                (space, store)
+            })
+            .collect())
+    }
+
+    fn node_lease_ttl_ms(&self) -> u64 {
+        self.scan_interval
+            .as_millis()
+            .min(u64::MAX as u128)
+            .try_into()
+            .unwrap_or(u64::MAX)
+            .saturating_mul(4)
+            .max(15_000)
+    }
+
+    /// Acquire or renew this process' parent authority in one registered
+    /// Execution Space. A malformed/broken Space is isolated by the caller.
+    fn ensure_node_authority(
+        &self,
+        space: &harness_core::ExecutionSpace,
+        store: &HarnessStore,
+    ) -> CliResult<harness_core::NodeDaemonLease> {
+        let node = store
+            .latest_execution_nodes()?
+            .into_iter()
+            .find(|node| node.id == self.node_id)
+            .ok_or_else(|| {
+                CliError::Usage(format!(
+                    "NODE_NOT_ENROLLED: Node {} is absent from Execution Space {}",
+                    self.node_id, space.id
+                ))
+            })?;
+        if node.status == harness_core::ExecutionNodeStatus::Retired {
+            return Err(CliError::Usage(format!(
+                "NODE_NOT_ACTIVE: Node {} is retired in Execution Space {}",
+                self.node_id, space.id
+            )));
+        }
+        let registered =
+            store
+                .latest_node_project_registrations()?
+                .into_iter()
+                .any(|registration| {
+                    registration.node_id == self.node_id
+                        && registration.execution_space_id == space.id
+                        && registration.status
+                            == harness_core::NodeProjectRegistrationStatus::Active
+                });
+        if !registered {
+            return Err(CliError::Usage(format!(
+                "NODE_HAS_NO_REGISTERED_PROJECT: Node {} has no active project in Execution Space {}",
+                self.node_id, space.id
+            )));
+        }
         let now_ms = current_unix_ms_u64();
-        let mut adopted = 0usize;
+        let ttl_ms = self.node_lease_ttl_ms();
+        let lease = store
+            .acquire_node_daemon_lease(
+                &self.node_id,
+                &self.daemon_id,
+                &self.instance_id,
+                now_ms,
+                ttl_ms,
+            )
+            .map_err(CliError::Store)?;
+        store
+            .renew_node_daemon_lease(
+                &self.node_id,
+                &lease.daemon_id,
+                lease.generation,
+                &lease.instance_id,
+                now_ms,
+                ttl_ms,
+            )
+            .map_err(CliError::Store)
+    }
 
-        for run in &runs {
-            use harness_core::TeamRunStatus;
-            // P0-2 fix: only adopt Running runs (not Planning) and check lease.
-            if !matches!(run.status, TeamRunStatus::Running) {
-                continue;
-            }
-
-            let lease = self
-                .store
-                .latest_team_supervisor_lease(&run.id)
-                .ok()
-                .flatten();
-            let should_adopt = match &lease {
-                None => true,
-                Some(l) => {
-                    l.status != harness_core::TeamSupervisorLeaseStatus::Active
-                        || (l.expires_unix_ms > 0 && l.expires_unix_ms < now_ms)
+    fn release_node_authorities(&self) -> CliResult<()> {
+        for (space, store) in self.registered_spaces()? {
+            let lease = match store.latest_node_daemon_lease(&self.node_id) {
+                Ok(Some(lease)) => lease,
+                Ok(None) => continue,
+                Err(error) => {
+                    eprintln!(
+                        "[node-daemon] isolating Execution Space {} during Node authority release: {error}",
+                        space.id
+                    );
+                    continue;
                 }
             };
-
-            if should_adopt {
-                eprintln!("[multi-team-daemon] adopting orphaned run {}", run.id);
-                if let Err(e) = self.start_supervising(&run.id) {
-                    eprintln!("[multi-team-daemon] failed to adopt run {}: {e}", run.id);
-                } else {
-                    adopted += 1;
-                }
+            if lease.daemon_id != self.daemon_id || lease.instance_id != self.instance_id {
+                continue;
             }
-        }
-
-        if adopted > 0 {
-            eprintln!("[multi-team-daemon] adopted {adopted} orphaned run(s)");
+            if let Err(error) = store.release_node_daemon_lease(
+                &self.node_id,
+                &lease.daemon_id,
+                lease.generation,
+                &lease.instance_id,
+                current_unix_ms_u64(),
+            ) {
+                eprintln!(
+                    "[node-daemon] failed to release Node authority in {}: {error}",
+                    space.id
+                );
+            }
         }
         Ok(())
     }
@@ -747,91 +334,131 @@ impl MultiTeamDaemon {
         Ok(())
     }
 
-    /// Scan store for active Running team-runs not yet managed.
-    /// Does NOT hold the context lock across store I/O (fixes P0-7).
+    /// Scan every registered Execution Space. One broken Store is logged and
+    /// isolated; it cannot stop healthy local Teams from progressing.
     fn scan_and_adopt(&self) -> CliResult<()> {
-        let runs = self.store.team_runs().map_err(|e| {
-            CliError::Store(harness_store::StoreError::Conflict(format!(
-                "list team runs: {e}"
-            )))
-        })?;
-
-        let managed_ids: Vec<String> = {
+        let mut managed_ids: HashSet<(String, String)> = {
             let ctx = self
                 .contexts
                 .lock()
                 .map_err(|e| CliError::Usage(format!("context lock poisoned: {e}")))?;
-            ctx.iter().map(|c| c.run_id.clone()).collect()
+            ctx.iter()
+                .map(|context| (context.execution_space_id.clone(), context.run_id.clone()))
+                .collect()
         };
 
-        for run in &runs {
-            use harness_core::TeamRunStatus;
-            if !matches!(run.status, TeamRunStatus::Running) {
+        for (space, store) in self.registered_spaces()? {
+            if let Err(error) = self.ensure_node_authority(&space, &store) {
+                eprintln!(
+                    "[node-daemon] isolating Execution Space {} during authority refresh: {error}",
+                    space.id
+                );
                 continue;
             }
-            if managed_ids.contains(&run.id) {
-                continue;
-            }
-            // P0-2 fix: check lease before adopting.
-            let now_ms = current_unix_ms_u64();
-            let should_start = match self
-                .store
-                .latest_team_supervisor_lease(&run.id)
-                .ok()
-                .flatten()
-            {
-                None => true,
-                Some(l) => {
-                    l.status != harness_core::TeamSupervisorLeaseStatus::Active
-                        || (l.expires_unix_ms > 0 && l.expires_unix_ms < now_ms)
+            let runs = match crate::latest_team_runs_in_append_order(&store) {
+                Ok(runs) => runs,
+                Err(error) => {
+                    eprintln!(
+                        "[node-daemon] isolating Execution Space {} after Store read failure: {error}",
+                        space.id
+                    );
+                    continue;
                 }
             };
-            if !should_start {
-                continue;
-            }
-
-            eprintln!("[multi-team-daemon] starting supervisor for run {}", run.id);
-            // P0-4 fix: errors propagate, not just stderr.
-            if let Err(e) = self.start_supervising(&run.id) {
-                eprintln!("[multi-team-daemon] failed to start run {}: {e}", run.id);
+            for run in runs {
+                if run.execution_node_id != self.node_id
+                    || !matches!(run.status, harness_core::TeamRunStatus::Running)
+                    || managed_ids.contains(&(space.id.clone(), run.id.clone()))
+                {
+                    continue;
+                }
+                let now_ms = current_unix_ms_u64();
+                let should_start = match store.latest_team_supervisor_lease(&run.id) {
+                    Ok(None) => true,
+                    Ok(Some(lease)) => {
+                        lease.status != harness_core::TeamSupervisorLeaseStatus::Active
+                            || lease.expires_unix_ms <= now_ms
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "[node-daemon] cannot inspect TeamRun {} in {}: {error}",
+                            run.id, space.id
+                        );
+                        false
+                    }
+                };
+                if should_start {
+                    eprintln!(
+                        "[node-daemon] adopting {}/{} on Node {}",
+                        space.id, run.id, self.node_id
+                    );
+                    match self.start_supervising(space.clone(), store.clone(), &run.id) {
+                        Ok(()) => {
+                            managed_ids.insert((space.id.clone(), run.id.clone()));
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "[node-daemon] failed to adopt {}/{}: {error}",
+                                space.id, run.id
+                            );
+                        }
+                    }
+                }
             }
         }
         Ok(())
     }
 
-    /// Spawn a supervisor thread for a single team-run.
-    fn start_supervising(&self, run_id: &str) -> CliResult<()> {
+    /// Spawn one Team supervisor under this exact NodeDaemon generation.
+    fn start_supervising(
+        &self,
+        space: harness_core::ExecutionSpace,
+        store: HarnessStore,
+        run_id: &str,
+    ) -> CliResult<()> {
+        self.ensure_node_authority(&space, &store)?;
         // P0-2 fix: enforce concurrent team-run limit.
         {
             let contexts = self
                 .contexts
                 .lock()
                 .map_err(|e| CliError::Usage(format!("context lock poisoned: {e}")))?;
-            if contexts.iter().any(|context| context.run_id == run_id) {
+            if contexts
+                .iter()
+                .any(|context| context.execution_space_id == space.id && context.run_id == run_id)
+            {
                 return Err(CliError::Usage(format!(
-                    "multi-team daemon already manages {run_id}"
+                    "NodeDaemon already manages {}/{run_id}",
+                    space.id
                 )));
             }
             if contexts.len() >= self.max_concurrency {
                 return Err(CliError::Usage(format!(
-                    "multi-team daemon at capacity ({}/{} runs); cannot start {run_id}",
+                    "NodeDaemon at capacity ({}/{} runs); cannot start {}/{run_id}",
                     contexts.len(),
                     self.max_concurrency,
+                    space.id,
                 )));
             }
         }
 
-        let store = self.store.clone();
         let run_id = run_id.to_string();
         let max_concurrency = self.max_concurrency;
         let idle_timeout_secs = self.idle_timeout_secs;
 
         // Validate and create registration outside the context lock (fixes P0-7).
         let body = prepare_team_run_start_body(&store, &run_id, max_concurrency)?;
-        let registration = TeamSupervisorRegistration::start(&store, &run_id)?;
+        if body.run.execution_node_id != self.node_id {
+            return Err(CliError::Usage(format!(
+                "REMOTE_TEAM_RUN_NOT_ADOPTED: TeamRun {run_id} belongs to Node {}, local Node is {}",
+                body.run.execution_node_id, self.node_id
+            )));
+        }
+        let project_binding_id = body.run.project_binding_id.clone();
+        let registration = TeamSupervisorRegistration::start(&store, &run_id, Some(&space.id))?;
         let heartbeat_valid = Arc::clone(&registration.heartbeat_valid);
 
-        // Transition Planning→Running if needed (same as per-run daemon).
+        // Transition Planning→Running when the child supervisor is admitted.
         use crate::{now_string, store_conflict_as_usage};
         use harness_core::TeamRunStatus;
 
@@ -884,17 +511,19 @@ impl MultiTeamDaemon {
         };
 
         eprintln!(
-            "[multi-team-daemon] team run {}: serving (pid {}, gen {})",
+            "[node-daemon] {}/{}: serving (pid {}, gen {})",
+            space.id,
             run_id,
             std::process::id(),
             prepared.supervisor_registration.generation,
         );
 
+        let execution_space_id = space.id.clone();
         let thread = std::thread::spawn(move || {
             drive_prepared_team_run(
                 prepared,
-                None, // execution_space — daemon resolves from store
-                None, // project_context — daemon resolves from store
+                Some(space),
+                None,
                 max_concurrency,
                 Duration::from_secs(idle_timeout_secs),
                 None,
@@ -908,6 +537,8 @@ impl MultiTeamDaemon {
                 .lock()
                 .map_err(|e| CliError::Usage(format!("context lock poisoned: {e}")))?;
             contexts.push(MultiTeamContext {
+                execution_space_id,
+                project_binding_id,
                 run_id,
                 heartbeat_valid,
                 thread: Some(thread),
@@ -942,13 +573,22 @@ impl MultiTeamDaemon {
             if let Some(thread) = ctx.thread {
                 match thread.join() {
                     Ok(Ok(())) => {
-                        eprintln!("[multi-team-daemon] run {} completed", ctx.run_id);
+                        eprintln!(
+                            "[node-daemon] {}/{} completed",
+                            ctx.execution_space_id, ctx.run_id
+                        );
                     }
                     Ok(Err(e)) => {
-                        eprintln!("[multi-team-daemon] run {} error: {e}", ctx.run_id);
+                        eprintln!(
+                            "[node-daemon] {}/{} error: {e}",
+                            ctx.execution_space_id, ctx.run_id
+                        );
                     }
                     Err(_) => {
-                        eprintln!("[multi-team-daemon] run {} panicked", ctx.run_id);
+                        eprintln!(
+                            "[node-daemon] {}/{} panicked",
+                            ctx.execution_space_id, ctx.run_id
+                        );
                     }
                 }
             }
@@ -967,7 +607,7 @@ impl MultiTeamDaemon {
             match listener.accept() {
                 Ok((stream, _addr)) => {
                     if let Err(error) = stream.set_nonblocking(true) {
-                        eprintln!("[multi-team-daemon] cannot configure client socket: {error}");
+                        eprintln!("[node-daemon] cannot configure client socket: {error}");
                         continue;
                     }
                     pending.push(PendingControlConnection {
@@ -978,7 +618,7 @@ impl MultiTeamDaemon {
                 }
                 Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(error) => {
-                    eprintln!("[multi-team-daemon] socket accept error: {error}");
+                    eprintln!("[node-daemon] socket accept error: {error}");
                     break;
                 }
             }
@@ -997,7 +637,7 @@ impl MultiTeamDaemon {
                     if let Err(error) =
                         self.handle_control_command(&mut connection.stream, command.trim())
                     {
-                        eprintln!("[multi-team-daemon] control client error: {error}");
+                        eprintln!("[node-daemon] control client error: {error}");
                     }
                 }
                 ControlReadState::Invalid(error) => {
@@ -1006,7 +646,7 @@ impl MultiTeamDaemon {
                     if let Err(write_error) =
                         Self::write_control_response(&mut connection.stream, &response)
                     {
-                        eprintln!("[multi-team-daemon] control client error: {write_error}");
+                        eprintln!("[node-daemon] control client error: {write_error}");
                     }
                 }
             }
@@ -1077,8 +717,12 @@ impl MultiTeamDaemon {
         match cmd_name {
             "start" => {
                 let run_id = cmd["run_id"].as_str().unwrap_or("");
-                if run_id.is_empty() {
-                    let response = serde_json::json!({"ok": false, "error": "run_id is required"});
+                let execution_space_id = cmd["execution_space_id"].as_str().unwrap_or("");
+                if run_id.is_empty() || execution_space_id.is_empty() {
+                    let response = serde_json::json!({
+                        "ok": false,
+                        "error": "execution_space_id and run_id are required"
+                    });
                     Self::write_control_response(stream, &response)?;
                     return Ok(());
                 }
@@ -1087,18 +731,37 @@ impl MultiTeamDaemon {
                     .lock()
                     .map_err(|e| CliError::Usage(format!("context lock poisoned: {e}")))?
                     .iter()
-                    .any(|context| context.run_id == run_id);
+                    .any(|context| {
+                        context.execution_space_id == execution_space_id && context.run_id == run_id
+                    });
                 if already_managed {
-                    let response =
-                        serde_json::json!({"ok": true, "run_id": run_id, "reused": true});
+                    let response = serde_json::json!({
+                        "ok": true,
+                        "execution_space_id": execution_space_id,
+                        "run_id": run_id,
+                        "reused": true
+                    });
                     Self::write_control_response(stream, &response)?;
                     return Ok(());
                 }
-                // P0-4 fix: propagate actual error, not "delegated to daemon".
-                match self.start_supervising(run_id) {
+                let space =
+                    crate::execution_space::context_for_id(&self.firm_home, execution_space_id)
+                        .map_err(|error| {
+                            CliError::Usage(format!(
+                                "cannot resolve Execution Space {execution_space_id}: {error}"
+                            ))
+                        })?
+                        .ok_or_else(|| {
+                            CliError::Usage(format!(
+                                "Execution Space not found: {execution_space_id}"
+                            ))
+                        })?;
+                let store = HarnessStore::new(space.store_root.clone());
+                match self.start_supervising(space, store, run_id) {
                     Ok(()) => {
                         let response = serde_json::json!({
                             "ok": true,
+                            "execution_space_id": execution_space_id,
                             "run_id": run_id,
                             "reused": false,
                         });
@@ -1107,6 +770,7 @@ impl MultiTeamDaemon {
                     Err(e) => {
                         let response = serde_json::json!({
                             "ok": false,
+                            "execution_space_id": execution_space_id,
                             "run_id": run_id,
                             "error": e.to_string(),
                         });
@@ -1126,6 +790,8 @@ impl MultiTeamDaemon {
                             let is_finished =
                                 ctx.thread.as_ref().map(|t| t.is_finished()).unwrap_or(true);
                             serde_json::json!({
+                                "execution_space_id": ctx.execution_space_id,
+                                "project_binding_id": ctx.project_binding_id,
                                 "run_id": ctx.run_id,
                                 "status": if is_finished { "finished" } else { "running" },
                                 "elapsed_secs": ctx.started_at.elapsed().as_secs(),
@@ -1133,7 +799,14 @@ impl MultiTeamDaemon {
                         })
                         .collect()
                 };
-                let resp = serde_json::json!({"ok": true, "runs": runs});
+                let resp = serde_json::json!({
+                    "ok": true,
+                    "node_id": self.node_id,
+                    "daemon_id": self.daemon_id,
+                    "instance_id": self.instance_id,
+                    "process_id": std::process::id(),
+                    "runs": runs
+                });
                 Self::write_control_response(stream, &resp)?;
             }
             "stop" => {
@@ -1155,7 +828,7 @@ impl MultiTeamDaemon {
     /// Graceful shutdown: signal all managed contexts to stop, drain them,
     /// and join threads with a deadline.
     fn graceful_shutdown(&self) -> CliResult<()> {
-        eprintln!("[multi-team-daemon] graceful shutdown initiated");
+        eprintln!("[node-daemon] graceful shutdown initiated");
 
         // Drain contexts from the registry.
         let contexts: Vec<MultiTeamContext> = {
@@ -1171,7 +844,7 @@ impl MultiTeamDaemon {
         }
 
         eprintln!(
-            "[multi-team-daemon] waiting for {} run(s) to finish...",
+            "[node-daemon] waiting for {} run(s) to finish...",
             contexts.len()
         );
 
@@ -1196,8 +869,8 @@ impl MultiTeamDaemon {
                 }
                 if Instant::now() >= deadline {
                     eprintln!(
-                        "[multi-team-daemon] shutdown deadline exceeded for run {}",
-                        ctx.run_id
+                        "[node-daemon] shutdown deadline exceeded for {}/{}",
+                        ctx.execution_space_id, ctx.run_id
                     );
                     break;
                 }
@@ -1216,7 +889,7 @@ impl MultiTeamDaemon {
 fn install_signal_handlers_mt(shutdown: Arc<AtomicBool>) {
     // P0-8 fix: leak the Arc to get a 'static reference for the signal
     // handler. The leaked memory is reclaimed at process exit. This avoids
-    // the dangling raw pointer pattern of the per-run daemon while still
+    // dangling raw pointers while still
     // being async-signal-safe.
     let leaked: &'static AtomicBool = Box::leak(Box::new(shutdown));
 
@@ -1244,21 +917,27 @@ fn install_signal_handlers_mt(shutdown: Arc<AtomicBool>) {
 static mut MT_SIGNAL_FLAG: Option<&'static AtomicBool> = None;
 
 // ---------------------------------------------------------------------------
-// CLI integration: delegate team-run start to multi-team daemon
+// CLI integration: delegate TeamRun start to the machine NodeDaemon
 // ---------------------------------------------------------------------------
 
-/// Try to send a start command to the multi-team daemon via its control socket.
+/// Send an exact Execution Space + TeamRun start request to the local Node.
 /// Returns the response line on success.
-pub(crate) fn try_delegate_to_daemon(
-    store: &HarnessStore,
+pub(crate) fn try_delegate_to_node_daemon(
+    firm_home: &Path,
+    node_id: &str,
+    execution_space_id: &str,
     run_id: &str,
 ) -> Result<String, std::io::Error> {
-    let socket_path = multi_team_socket_path(store.root());
+    let socket_path = node_daemon_socket_path(firm_home, node_id);
     let mut stream = UnixStream::connect(&socket_path)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
 
-    let cmd = serde_json::json!({"cmd": "start", "run_id": run_id});
+    let cmd = serde_json::json!({
+        "cmd": "start",
+        "execution_space_id": execution_space_id,
+        "run_id": run_id
+    });
     let cmd_str = serde_json::to_string(&cmd).map_err(std::io::Error::other)?;
     writeln!(stream, "{cmd_str}")?;
     stream.flush()?;
@@ -1269,9 +948,9 @@ pub(crate) fn try_delegate_to_daemon(
     Ok(buf.trim().to_string())
 }
 
-/// Send a status request to the multi-team daemon.
-pub(crate) fn daemon_status_via_socket(store: &HarnessStore) -> Option<String> {
-    let socket_path = multi_team_socket_path(store.root());
+/// Send a status request to the machine NodeDaemon.
+pub(crate) fn daemon_status_via_socket(firm_home: &Path, node_id: &str) -> Option<String> {
+    let socket_path = node_daemon_socket_path(firm_home, node_id);
     let mut stream = UnixStream::connect(&socket_path).ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
     stream
@@ -1293,9 +972,8 @@ pub(crate) fn daemon_status_via_socket(store: &HarnessStore) -> Option<String> {
 }
 
 /// Send a stop command to the multi-team daemon.
-#[allow(dead_code)]
-pub(crate) fn daemon_stop_via_socket(store: &HarnessStore) -> Option<String> {
-    let socket_path = multi_team_socket_path(store.root());
+pub(crate) fn daemon_stop_via_socket(firm_home: &Path, node_id: &str) -> Option<String> {
+    let socket_path = node_daemon_socket_path(firm_home, node_id);
     let mut stream = UnixStream::connect(&socket_path).ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
 
@@ -1318,38 +996,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn daemon_info_debug() {
-        let info = DaemonInfo {
-            pid: 12345,
-            locator: "tcp://127.0.0.1:9999".into(),
-            generation: 3,
-            supervisor_id: "sup-1".into(),
-        };
-        assert_eq!(info.pid, 12345);
-        assert_eq!(info.generation, 3);
-    }
-
-    #[test]
-    fn multi_team_socket_path_short_root() {
+    fn node_daemon_socket_path_short_home() {
         let root = std::path::Path::new("/tmp/firm-test");
-        let path = multi_team_socket_path(root);
-        assert_eq!(path, root.join("supervisor.sock"));
+        let path = node_daemon_socket_path(root, "00000000-0000-4000-8000-000000000001");
+        assert_eq!(
+            path,
+            root.join("nodes")
+                .join("00000000-0000-4000-8000-000000000001")
+                .join("daemon.sock")
+        );
     }
 
     #[test]
-    fn multi_team_socket_path_long_root_fallback() {
+    fn node_daemon_socket_path_long_home_fallback() {
         let long = "/tmp/very-long-directory-name-that-makes-the-path-exceed-the-af-unix-limit-on-macos-which-is-104-bytes".repeat(2);
         let root = std::path::Path::new(&long);
-        let path = multi_team_socket_path(root);
-        assert!(path.to_string_lossy().starts_with("/tmp/firm-supervisor-"));
+        let path = node_daemon_socket_path(root, "00000000-0000-4000-8000-000000000001");
+        assert!(path.to_string_lossy().starts_with("/tmp/firm-node-daemon-"));
         assert!(path.to_string_lossy().len() < 104);
     }
 
     #[test]
-    fn multi_team_socket_path_deterministic() {
+    fn node_daemon_socket_path_is_stable_per_node() {
         let root = std::path::Path::new("/some/store/root");
-        let p1 = multi_team_socket_path(root);
-        let p2 = multi_team_socket_path(root);
+        let p1 = node_daemon_socket_path(root, "00000000-0000-4000-8000-000000000001");
+        let p2 = node_daemon_socket_path(root, "00000000-0000-4000-8000-000000000001");
         assert_eq!(p1, p2);
     }
 }

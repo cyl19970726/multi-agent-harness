@@ -27,9 +27,9 @@
     "evidence.jsonl"
   ],
   "invariants": [
-    "Mission stores full Markdown context and links one independent AgentTeam.",
-    "Waves store versioned Host plan and judgment; Wave 2 does not own the TeamRun.",
-    "The Mission-scoped TeamRun has agent_team_id and mission_id but no wave_id.",
+    "Mission stores full Markdown context and links exactly one flat AgentTeam.",
+    "Historical Waves remain readable but do not own current TeamRuns.",
+    "The TeamRun requires agent_team_id, execution_node_id, and project_binding_id; Mission is derived through AgentTeam.",
     "Four MemberRuns include running, reviewing, and blocked pressure states and remain eligible to carry forward.",
     "Shared Works carry stable ownership without using Messages as an assignment authority; their append-only events preserve a continuous version chain.",
     "The fixture covers visible unassigned and assigned queues, team claim, start, block, resume, submit, and explicit Host acceptance, including Work delivery invalidation.",

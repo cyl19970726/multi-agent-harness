@@ -2,120 +2,48 @@
 
 ## Purpose
 
-The active execution MVP proves:
+The active MVP proves a simple Firm workflow:
 
 ```text
-Mission -> ordered Host-plan Wave
-Mission <-> independent AgentTeam -> Mission-scoped TeamRun -> MemberRun
+Mission → one flat AgentTeam → TeamRuns → MemberRuns → Work → Result
+                         └──────── WorkDelegation ────────→ peer Team
 ```
 
-Mission/Wave gives the Host durable external memory while leaving real
-execution with Agent Teams, Dynamic Workflows, Host work, and provider-native
-sessions. The retired Goal/GoalPhase/task-graph stack is not an active
-dependency.
+## Required slice
 
-## MVP Slice
+1. Mission is durable intent; one Team owns it.
+2. AgentTeam requires `mission_id`, `host_agent_id`, and one immutable
+   `node_id`. Teams do not nest and Members do not cross machines.
+3. AgentTeamRun requires Team, execution Node, and project binding. Mission is
+   derived through Team.
+4. Work is the responsibility kernel. Member planning and Sub-Agent checklists
+   stay internal unless promoted to a Finding, Result, Failure, or new Work.
+5. WorkDelegation is the only cross-Team responsibility transfer. It is
+   explicit, versioned, cycle-safe, and observable from source and target.
+6. One machine NodeDaemon drives every admitted local TeamRun. Public surfaces
+   fail explicitly when it is unavailable; there is no per-run fallback.
+7. Provider-native sessions own transcript and tool truth. Firm owns identity,
+   assignment, messages, lifecycle, evidence refs, and acceptance.
+8. Company Work is an aggregate/filter view over the same Team Work kernel,
+   not a second lifecycle model.
 
-### 1. Mission And Wave
+## Acceptance journey
 
-- Mission stores durable Markdown context, linked `agent_team_ids`, status, and
-  closeout.
-- Wave stores ordered Markdown context, revision, updated actor, outcome,
-  artifacts, and explicit Host advance.
-- Wave is not an executor container, task graph, barrier, or session boundary.
-- Append-only history reconstructs how Host judgment changed.
+1. Initialize a Node and register two isolated Execution Spaces.
+2. Create one Mission and flat Team in each space.
+3. Start one NodeDaemon and concurrently run both Teams.
+4. Assign Work, report Findings and Result, and delegate one bounded Work item
+   between Teams.
+5. Restart the daemon and prove parent-generation fencing, recovery without
+   duplicate delivery, and isolation from one broken store.
+6. Verify CLI, HTTP, MCP, and Dashboard show the same Team/Node/delegation truth.
+7. Close the Mission without inventing Wave gates or deleting reusable records.
 
-### 2. Independent Agent Team
+## Non-goals
 
-- Stable AgentTeam definition can exist without a Mission and can link to more
-  than one Mission over time.
-- A Mission may link multiple teams.
-- Primary TeamRun creation uses `mission_id + agent_team_id` and no Wave id.
-- MemberRuns and provider-native sessions may continue across Wave advance.
-- Agent Team ownership uses Work assignment/claim, WorkEvent and WorkDelivery
-  under ADR 0050. Optional Mission/Wave
-  links are navigation and judgment context, not Work ownership.
-- One latest-wins `TeamSupervisorLease` generation owns provider transports,
-  message claims, reconnect, and real live controls for the TeamRun.
-- TeamMessage uses typed Host/Member/Agent/Operator sender and recipients;
-  unbound API/MCP/UI callers cannot impersonate a Member.
-- Delivery separates atomic claim, provider receipt, recipient ACK, semantic
-  response, and Host acceptance.
-- A stable Agent Inbox may route explicitly and idempotently through
-  `AgentMessageRoute`; it does not turn a Standing Agent into a MemberRun.
-- Host can add a repair member while the run is active without erasing prior
-  Works, MemberRuns, or native sessions.
-
-### 3. Other Execution
-
-- Dynamic Workflow owns its run/step/result/artifact truth.
-- Host work records observable outcomes/artifacts without invented children.
-- A Wave may explain either capability but does not absorb its runtime model.
-
-### 4. Provider Truth
-
-- Harness persists coordination, session locators, messages, pending
-  interactions, controls, outcomes, and artifact/check references.
-- Provider-native storage remains sole transcript, tool/command/file/turn, and
-  resume truth.
-- Thinking is sanitized transient live state only and never evidence.
-- Provider questions and plan reviews become PendingInteractions; a provider
-  `completed` frame is not a semantic answer or approval.
-
-### 5. Host And Dashboard
-
-- CLI is the complete control surface and shares application logic with HTTP.
-- MCP is an optional thin adapter with no independent lifecycle or storage.
-- The thin `orchestrate-mission-waves` skill teaches Host procedure, not schema.
-- Mission Canvas renders long Markdown context, linked teams, ordered Wave
-  history, responsibility tables, carry-over, advance, and closeout.
-- Team and Member pages provide honest activity, navigation, chat, pending
-  interaction, current Supervisor/reconnect state, typed message provenance,
-  delivery claim/receipt/ACK, steer, interrupt, Close, and resume according to
-  adapter capability.
-
-## Deterministic Acceptance Journey
-
-1. Create a Mission with Markdown context.
-2. Create/link an independent AgentTeam with at least three members.
-3. Create Wave 1 with a responsibility table in Markdown.
-4. Start a Mission-scoped TeamRun without `wave_id`.
-5. Assign correlated lanes and bind provider-native sessions.
-6. Advance Wave 1 while one member remains active.
-7. Create Wave 2, continue the same MemberRun/session, and add a repair member.
-8. Verify Mission, Wave history, linked team, messages, origin metadata,
-   pending interactions, artifacts, and native-session resolution in CLI/API
-   and Dashboard.
-9. Route a control from a second service to the current Supervisor, restart the
-   owner, reconnect the same native session, and prove only one delivery under
-   concurrent claim attempts.
-10. Explicitly close a Member and prove queued mail cannot revive it.
-11. Close the Mission without deleting, archiving, or silently completing the
-   team.
-12. Prove the optional MCP adapter delegates to the same behavior and cannot
-    author Member-originated mail while unbound.
-
-Run:
-
-```bash
-npx pnpm@9.15.4 acceptance:mission-wave
-```
-
-Deterministic acceptance proves contracts, not a live-provider claim. A live
-claim additionally needs resolvable provider-native records.
-
-## Compatibility Boundary
-
-Existing direct-Wave-executor fields and rows remain readable as legacy data.
-New authoring, fixtures, tests, Dashboard copy, and Host examples do not create
-them. Retry history is preserved; migration never mutates an old attempt into
-the new model.
-
-## Explicit Non-Goals
-
-- task graph or universal executor object;
-- Harness transcript/tool/thinking ledger;
-- Wave-owned TeamRun lifecycle;
-- automatic team deletion at Mission closeout;
-- mandatory MCP or plugin installation;
-- treating Company OS TeamWork approval as equivalent to Wave advance.
+- nested Teams or cross-machine Members;
+- a second Company Work state machine;
+- Wave-owned scheduling or Run lifecycle;
+- hidden automatic Team selection in production;
+- permission complexity beyond what is needed to run the workflow safely;
+- Harness-owned transcript, tool-call, or chain-of-thought storage.

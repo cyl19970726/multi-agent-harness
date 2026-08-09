@@ -96,14 +96,14 @@ async function main() {
 
   check(
     mission?.status === "running"
-      && mission.wave_ids.length === 3
-      && mission.context.includes("# Ship the Star Harness Host integration")
-      && mission.agent_team_ids.includes(manifest.agent_team_id),
-    "Mission has durable Markdown context, three ordered Waves, and one linked independent Team",
+      && mission.wave_ids.length === 0
+      && mission.context.includes("# Ship the AgentFirm Host integration")
+      && linkedTeam?.mission_id === mission.id,
+    "Mission has durable Markdown context and is owned by one flat AgentTeam",
   );
   check(
     linkedTeam?.status === "active" && linkedTeam.name === "Platform Foundation Team",
-    "Fixture contains the stable reusable AgentTeam linked by Mission",
+    "Fixture contains the flat AgentTeam linked one-to-one with Mission",
   );
   check(
     priorWave?.status === "completed"
@@ -123,10 +123,10 @@ async function main() {
   check(
     currentRun?.status === "running"
       && currentRun.agent_team_id === manifest.agent_team_id
-      && currentRun.mission_id === manifest.mission_id
-      && currentRun.wave_id === null
+      && currentRun.execution_node_id === linkedTeam.node_id
+      && currentRun.project_binding_id
       && currentRun.member_run_ids.length === 4,
-    "Current four-member TeamRun is Mission-scoped and independent of one Wave",
+    "Current four-member TeamRun carries Team, Node, and project-binding identity",
   );
   check(
     shellSource.includes("Provider cwd boundary:")
@@ -231,20 +231,21 @@ async function main() {
   );
   check(
     agentTeamsHomeSource.includes("run.agent_team_id")
-      && agentTeamsHomeSource.includes("Mission-scoped")
-      && agentTeamsHomeSource.includes("Standalone team run")
+      && agentTeamsHomeSource.includes("Flat Mission-owned teams")
+      && agentTeamsHomeSource.includes("Execution Nodes")
+      && agentTeamsHomeSource.includes("daemon generation")
       && agentTeamsHomeSource.includes("Legacy Wave")
       && !agentTeamsHomeSource.includes(`run.${duplicateWaveField}`),
-    "Agent Team home supports independent, Mission-scoped, and labelled legacy runs",
+    "Agent Team home exposes flat Mission-owned runs, NodeDaemon status, and labelled historical Waves",
   );
   check(
-    agentTeamsHomeSource.includes("Team Lead ·")
-      && warRoomSource.includes("Lead · {teamLeadLabel")
+    agentTeamsHomeSource.includes("Host Agent ·")
+      && warRoomSource.includes("Host Agent ·")
       && warRoomSource.includes("Host coordination only")
-      && warRoomSource.includes("Lead · outside MemberRuns")
-      && missionSource.includes('"Current Host Agent"')
+      && warRoomSource.includes("Host Agent identity")
+      && missionSource.includes("host_agent_id")
       && missionSource.includes("not counted as a MemberRun unless explicitly added"),
-    "Agent Team surfaces identify the current Host as Team Lead without inventing a Lead MemberRun",
+    "Agent Team surfaces identify the Host Agent without inventing a MemberRun",
   );
   check(
     captureSource.includes("HARNESS_CAPTURE_API_PROXY: apiBase")

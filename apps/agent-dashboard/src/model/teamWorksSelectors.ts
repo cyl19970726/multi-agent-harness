@@ -2,22 +2,11 @@ import type { DashboardSnapshot, Work } from "../types";
 import { organizationMembersById } from "./orgSelectors";
 
 /**
- * Global "Team Works" aggregate: one cross-TeamRun projection over native
- * Team Work rows, derived only from real snapshot fields (`works`,
- * `team_runs`, `teams`, `members`). It never mixes a second Company task ledger with
- * Team Work and never fabricates an owner, source, or milestone.
- *
- * Demand classes follow the recursive-Work discovery contract
- * (docs/company-os/nested-agent-team-organization.md): discovered-unassigned,
- * self-owned (owned here, since the global viewer is the operator), and
- * follow-up. The delegated class is intentionally omitted: `WorkDelegation`
- * (harness-core) is not yet projected into the dashboard snapshot, so no
- * honest row-level derivation exists — tracked as a follow-up Work.
- *
- * Contract: docs/design/company-os-v6/recursive-org-docs-works-v1.
+ * Company-wide Work is a read projection over native Team Work. Delegation is
+ * explicit provenance from WorkDelegation; no child-Team or naming inference.
  */
 
-export type TeamWorkDemandClass = "unassigned" | "follow-up" | "owned";
+export type TeamWorkDemandClass = "unassigned" | "delegated" | "follow-up" | "owned";
 
 export interface TeamWorkRow {
   work: Work;
@@ -27,6 +16,8 @@ export interface TeamWorkRow {
   /** Proven root-to-team label path; never inferred from run or member names. */
   teamPath: string;
   teamId?: string;
+  missionId?: string;
+  nodeId?: string;
   runId: string;
   runStatus?: string;
   hostId?: string;
@@ -38,10 +29,13 @@ export interface TeamWorkRow {
   parentWorkId?: string | null;
   /** Durable team scope from Work.team_id, falling back to run.agent_team_id. */
   durableTeamId?: string;
+  delegationId?: string;
 }
 
 export interface TeamWorksFacets {
   teams: Array<{ id: string; label: string }>;
+  missions: Array<{ id: string; label: string }>;
+  nodes: Array<{ id: string; label: string }>;
   hosts: Array<{ id: string; label: string }>;
   members: Array<{ id: string; label: string }>;
   statuses: string[];
@@ -51,7 +45,7 @@ export interface TeamWorksFacets {
 
 export interface TeamWorksModel {
   rows: TeamWorkRow[];
-  counts: { unassigned: number; followUp: number; owned: number; total: number };
+  counts: { unassigned: number; delegated: number; followUp: number; owned: number; total: number };
   facets: TeamWorksFacets;
   /**
    * True when every visible row belongs to one TeamRun — happens when the app
@@ -64,6 +58,8 @@ export interface TeamWorksModel {
 
 export interface TeamWorksFilters {
   teamId?: string;
+  missionId?: string;
+  nodeId?: string;
   hostId?: string;
   memberId?: string;
   status?: string;
@@ -86,24 +82,23 @@ export function buildTeamWorksModel(snapshot: DashboardSnapshot): TeamWorksModel
   const runsById = new Map((snapshot.team_runs ?? []).map((run) => [run.id, run]));
   const teamsById = new Map((snapshot.teams ?? []).map((team) => [team.id, team]));
   const membersById = organizationMembersById(snapshot);
-  const teamPath = (teamId?: string): string => {
-    if (!teamId) return "Team unavailable";
-    const labels: string[] = [];
-    const seen = new Set<string>();
-    let cursor = teamsById.get(teamId);
-    while (cursor && !seen.has(cursor.id)) {
-      seen.add(cursor.id);
-      labels.unshift(cursor.name ?? cursor.id);
-      cursor = cursor.parent_team_id ? teamsById.get(cursor.parent_team_id) : undefined;
-    }
-    return labels.join(" / ") || teamId;
-  };
+  const missionsById = new Map((snapshot.missions ?? []).map((mission) => [mission.id, mission]));
+  const nodesById = new Map((snapshot.execution_nodes ?? []).map((node) => [node.id, node]));
+  const delegationByTarget = new Map(
+    (snapshot.work_delegations ?? []).map((delegation) => [
+      `${delegation.target_work_ref.team_run_id}:${delegation.target_work_ref.work_id}`,
+      delegation,
+    ]),
+  );
 
   const rows: TeamWorkRow[] = works.map((work) => {
     const run = runsById.get(work.team_run_id);
     const team = run?.agent_team_id ? teamsById.get(run.agent_team_id) : undefined;
+    const delegation = delegationByTarget.get(`${work.team_run_id}:${work.id}`);
     const demandClass: TeamWorkDemandClass =
-      work.phase === "open" && work.condition === "normal" && !work.owner_member_id
+      delegation
+        ? "delegated"
+        : work.phase === "open" && work.condition === "normal" && !work.owner_member_id
         ? "unassigned"
         : work.parent_work_id
           ? "follow-up"
@@ -115,20 +110,21 @@ export function buildTeamWorksModel(snapshot: DashboardSnapshot): TeamWorksModel
       work,
       demandClass,
       teamLabel: team?.name ?? team?.id ?? `TeamRun ${work.team_run_id}`,
-      teamPath: teamPath(team?.id),
+      teamPath: team?.name ?? team?.id ?? "Team unavailable",
       teamId: team?.id,
+      missionId: team?.mission_id,
+      nodeId: team?.node_id,
       runId: work.team_run_id,
       runStatus: run?.status,
-      // Durable Team authority wins. TeamRun.host_actor is execution-attempt
-      // metadata and remains only as a compatibility fallback for old Teams.
-      hostId: team?.host_member_id ?? run?.host_actor?.id ?? undefined,
-      hostLabel: team?.host_member_id
-        ? (membersById.get(team.host_member_id)?.name ?? team.host_member_id)
-        : (run?.host_actor?.display_name ?? run?.host_actor?.id ?? undefined),
+      hostId: team?.host_agent_id,
+      hostLabel: team?.host_agent_id
+        ? (membersById.get(team.host_agent_id)?.name ?? team.host_agent_id)
+        : undefined,
       ownerLabel,
-      sourceLabel: `${work.created_by_actor?.kind ?? "unknown"} intake`,
+      sourceLabel: delegation ? `delegated from ${delegation.source_work_ref.work_id}` : `${work.created_by_actor?.kind ?? "unknown"} intake`,
       parentWorkId: work.parent_work_id ?? null,
       durableTeamId: work.team_id ?? team?.id,
+      delegationId: delegation?.id,
     };
   });
 
@@ -148,6 +144,18 @@ export function buildTeamWorksModel(snapshot: DashboardSnapshot): TeamWorksModel
       rows
         .filter((row) => row.teamId)
         .map((row) => ({ id: row.teamId as string, label: row.teamLabel })),
+    ),
+    missions: uniq(
+      rows.filter((row) => row.missionId).map((row) => ({
+        id: row.missionId as string,
+        label: missionsById.get(row.missionId as string)?.title ?? (row.missionId as string),
+      })),
+    ),
+    nodes: uniq(
+      rows.filter((row) => row.nodeId).map((row) => ({
+        id: row.nodeId as string,
+        label: nodesById.get(row.nodeId as string)?.display_name ?? (row.nodeId as string),
+      })),
     ),
     hosts: uniq(
       rows
@@ -176,6 +184,7 @@ export function buildTeamWorksModel(snapshot: DashboardSnapshot): TeamWorksModel
     rows,
     counts: {
       unassigned: rows.filter((row) => row.demandClass === "unassigned").length,
+      delegated: rows.filter((row) => row.demandClass === "delegated").length,
       followUp: rows.filter((row) => row.demandClass === "follow-up").length,
       owned: rows.filter((row) => row.demandClass === "owned").length,
       total: rows.length,
@@ -190,6 +199,8 @@ export function buildTeamWorksModel(snapshot: DashboardSnapshot): TeamWorksModel
 export function filterTeamWorks(rows: TeamWorkRow[], filters: TeamWorksFilters): TeamWorkRow[] {
   return rows.filter((row) => {
     if (filters.teamId && row.teamId !== filters.teamId) return false;
+    if (filters.missionId && row.missionId !== filters.missionId) return false;
+    if (filters.nodeId && row.nodeId !== filters.nodeId) return false;
     if (filters.hostId && row.hostId !== filters.hostId) return false;
     if (filters.memberId && row.work.owner_member_id !== filters.memberId) return false;
     if (filters.status && workLifecycleLabel(row.work) !== filters.status) return false;

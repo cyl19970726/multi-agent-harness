@@ -17,7 +17,103 @@ fn init_project(home: &TempHome, name: &str) -> String {
     std::fs::create_dir_all(&root).unwrap();
     let out = run_firm(home, &root, &["init"]);
     assert!(out.status.success(), "init {name} failed: {out:?}");
-    current_project_id(home)
+    let project_id = current_project_id(home);
+    let node = run_firm(home, &root, &["node", "init"]);
+    assert!(node.status.success(), "node init failed: {node:?}");
+    let node: serde_json::Value = serde_json::from_slice(&node.stdout).expect("node JSON");
+    let node_id = node["id"].as_str().expect("node id");
+    let registration = run_firm(
+        home,
+        &root,
+        &[
+            "node",
+            "project",
+            "register",
+            "--node-id",
+            node_id,
+            "--project-binding-id",
+            &project_id,
+        ],
+    );
+    assert!(
+        registration.status.success(),
+        "register failed: {registration:?}"
+    );
+    let mission = run_firm(
+        home,
+        &root,
+        &[
+            "mission",
+            "create",
+            "--id",
+            "mission-runtime-fixture",
+            "--title",
+            "Provider runtime fixture",
+            "--objective",
+            "Verify provider-native TeamRun execution",
+        ],
+    );
+    assert!(
+        mission.status.success(),
+        "mission create failed: {mission:?}"
+    );
+    let host = run_firm(
+        home,
+        &root,
+        &[
+            "agent",
+            "create",
+            "--id",
+            "agent-runtime-host",
+            "--name",
+            "runtime-host",
+            "--role",
+            "host",
+            "--provider",
+            "codex",
+        ],
+    );
+    assert!(host.status.success(), "host create failed: {host:?}");
+    let team = run_firm(
+        home,
+        &root,
+        &[
+            "team",
+            "create",
+            "--id",
+            "team-runtime-fixture",
+            "--name",
+            "Provider runtime team",
+            "--description",
+            "Flat provider runtime test team",
+            "--mission-id",
+            "mission-runtime-fixture",
+            "--host-agent-id",
+            "agent-runtime-host",
+            "--node-id",
+            node_id,
+            "--member",
+            "agent-runtime-host",
+        ],
+    );
+    assert!(team.status.success(), "team create failed: {team:?}");
+    let daemon = run_firm(
+        home,
+        &root,
+        &[
+            "daemon",
+            "start",
+            "--scan-interval-secs",
+            "60",
+            "--idle-timeout-secs",
+            "60",
+        ],
+    );
+    assert!(
+        daemon.status.success(),
+        "NodeDaemon start failed: {daemon:?}"
+    );
+    project_id
 }
 
 /// Run `harness <args...>` with the fake kimi dir prepended to PATH (so
@@ -35,8 +131,29 @@ fn run_with_fake_kimi(
         fake_bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
+    let is_create = args
+        .windows(2)
+        .any(|window| window == ["team-run", "create"]);
+    let has_team = args.contains(&"--agent-team-id");
+    let mut normalized = Vec::with_capacity(args.len() + 2);
+    let mut skip_legacy_value = false;
+    for arg in args {
+        if skip_legacy_value {
+            skip_legacy_value = false;
+            continue;
+        }
+        if is_create && (*arg == "--mission-id" || *arg == "--wave-id") {
+            skip_legacy_value = true;
+            continue;
+        }
+        normalized.push(*arg);
+    }
+    if is_create && !has_team {
+        normalized.push("--agent-team-id");
+        normalized.push("team-runtime-fixture");
+    }
     std::process::Command::new(env!("CARGO_BIN_EXE_firm"))
-        .args(args)
+        .args(normalized)
         .current_dir(home.base())
         .envs(home.envs())
         .env_remove("FIRM_ROOT")

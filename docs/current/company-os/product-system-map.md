@@ -109,7 +109,7 @@ cannot authorize legal filing, payment, permission, or organization mutation.
 | Work | Work, WorkEvent, WorkDelivery, Milestone and typed business/Approval relations | commitment, responsibility, lifecycle, evidence and result routing |
 | Finance | Commitment, Invoice, Payment, Refund and financial evidence | monetary truth and transitions |
 | Plugins / Gateways | GatewayPlugin manifest, GatewayAction, GatewayEvent, connector sync records, view-extension declarations, evidence refs | platform capabilities, external state synchronization, and presentation extensions; never approval or business truth |
-| Execution Space | Mission context, append-only Mission Log judgment, independent or Mission-scoped AgentTeamRun/MemberRun, WorkflowRun/Step, Host outcome | how selected work was planned, delegated, and run; Company is optional |
+| Execution Space | Mission context, append-only Mission Log judgment, Mission-owned AgentTeamRun/MemberRun, WorkflowRun/Step, Host outcome | how selected work was planned, delegated, and run; Company is optional |
 | Project Binding / external source | ProjectBinding, ExternalProject, ProductDocSource, ProductDocSnapshot, ProductDocMapping, SourceChangeEvent, SourceSyncRun, DeliveryRef | how repositories, worktrees, GitHub-hosted software PRDs, ADRs, code delivery, and CI evidence are selected or mapped |
 
 There is no native `Project`, Task Graph, GoalPhase, or separate universal
@@ -169,7 +169,7 @@ after the GitHub path proves the contract.
 | Work read model | Team Works plus current Company TeamWork/Milestone projections exist | one persistent Team-scoped Work kernel, recursive Global Works, and explicit compatibility cutover |
 | Finance/Approval | native records, separation of Commitment and Payment, and governed action slices exist | actor-bound product sessions and broader operator controls |
 | Agent roles | current governance-role records and decision contracts exist | role-neutral AgentMembers organized by flat Teams instead of a fixed governance hierarchy |
-| AgentOS self-hosting | AgentOS Lead and compatibility StandingAgent/TeamWork rows plus real execution evidence exist | Lead -> CTO -> child Team dogfood over one Work kernel, relation-correct UI, and durable Runtime Supervisor |
+| AgentOS self-hosting | AgentOS Lead and compatibility StandingAgent/TeamWork rows plus real execution evidence exist | Flat Team-to-Team WorkDelegation dogfood over one Work kernel, relation-correct UI, and machine NodeDaemon |
 | Execution foundation | Mission/Wave, Agent Team, Dynamic Workflow, Host, providers and Dashboard contracts exist | continue improving honest observation and adapter coverage without replacing company objects |
 | AgentOS plugins/gateways | generic external gateway and plugin contract exists; social readiness is a read-only bootstrap probe; local repo source sync exists | GitHub connector plugin first, then WeCom/social/ecommerce/logistics plugins with connector sync and view extensions |
 

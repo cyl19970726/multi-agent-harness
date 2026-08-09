@@ -279,7 +279,7 @@ produces the same row; it never silently rewrites an existing identity.
 ### Bootstrap, host resolution, and audit
 
 ```bash
-# Bootstrap a root AgentTeam with a durable Host member (one atomic operation)
+# Bootstrap compatibility Host authority before canonical Mission/Team authoring
 harness org bootstrap-lead \
   --team <team-id> \
   --name <name> \
@@ -297,11 +297,12 @@ harness org host --team <team-id>
 harness org cutover-audit
 ```
 
-`bootstrap-lead` expects the team to already exist (created with `harness team create`).
-It sets the team's `host_member_id` and `owner_agent_id` to the durable member id.
-`host` resolves the authoritative Host member (source: `explicit` or
-`owner_agent_id_compatibility`). `cutover-audit` validates cycle-free topology,
-host-member existence, and no conflicting `owner_agent_id` / `host_member_id` pairs.
+For new authoring, create the durable Host Agent first, then the Mission and
+ExecutionNode, and finally `team create --mission-id ... --host-agent-id ...
+--node-id ...`. `host` resolves the one canonical `host_agent_id`.
+`cutover-audit` validates flat topology, one-Team-per-Mission identity, Host
+existence, and Node placement. `bootstrap-lead` remains a compatibility helper;
+it does not define a second Host-authority field.
 
 ### When to use cutover vs. company org
 

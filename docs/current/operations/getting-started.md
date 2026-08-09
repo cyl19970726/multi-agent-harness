@@ -116,12 +116,12 @@ mail to that owner. A Wave or TeamRun completing does not close a Member.
   --title "Dogfood Agent Team" \
   --objective "Prove persistent multi-member collaboration" \
   --context "## Context\nUse native provider sessions, shared Works, and explicit Host acceptance."
-./target/debug/firm member register \
+./target/debug/firm agent create \
   --id builder-codex --name Builder --role builder --provider codex
-./target/debug/firm mission create-team \
-  --id <mission-id> --name builders --description "Persistent builders" \
-  --lead host --member builder-codex
-./target/debug/
+./target/debug/firm node init
+./target/debug/firm team create \
+  --mission-id <mission-id> --name builders --description "Persistent builders" \
+  --host-agent-id builder-codex --node-id <node-uuid> --member builder-codex
 Use `team-run send`, `inbox`, `host-inbox`, `status`, and `events` for durable
 coordination. Ordinary Message queues for the next safe provider cycle; Steer
 is a distinct real same-turn control where supported. `close-member` releases

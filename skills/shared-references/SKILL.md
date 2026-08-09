@@ -60,11 +60,12 @@ inherit the parent's Workspace and permission ceiling, return evidence to the
 parent, and never become Harness Members, own Work, or serve as independent
 reviewers.
 
-## 7. Child Completion Never Auto-Completes Parent
+## 7. Delegated Completion Never Auto-Completes Source
 
-When a parent delegates to a child Team or child Work, child completion does
-not auto-submit or auto-complete the parent Work. The parent owner remains
-accountable for integrating child results and submitting the parent Work.
+When Work is delegated to another flat Team or split into child Work inside the
+same TeamRun, target completion does not auto-submit or auto-complete the
+source Work. The source owner remains accountable for integrating results and
+submitting the source Work.
 
 ## 8. No Plan Mode / No Plan Gate
 

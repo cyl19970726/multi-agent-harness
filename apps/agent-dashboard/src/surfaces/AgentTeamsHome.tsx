@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, Play, Plus, Users } from "lucide-react";
+import { ArrowRight, Play, Plus, Server, Users } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -41,11 +41,7 @@ interface NativeAttempt {
   members: MemberRun[];
 }
 
-/**
- * Native Agent Team entry point. Agent Teams are independent: runs may be
- * standalone or Mission-scoped. A wave_id is rendered only as legacy
- * direct-executor context.
- */
+/** Native entry point for flat, Mission-owned Agent Teams and their attempts. */
 export function AgentTeamsHome({ model, onSelectionChange, actionsEnabled = false, onAction }: AgentTeamsHomeProps) {
   const snapshot = model.snapshot;
   const [teamOpen, setTeamOpen] = useState(false);
@@ -56,12 +52,14 @@ export function AgentTeamsHome({ model, onSelectionChange, actionsEnabled = fals
   const membersByRun = groupBy(snapshot.member_runs ?? [], (member) => member.team_run_id);
   const attempts = (snapshot.team_runs ?? [])
     .flatMap((run): NativeAttempt[] => {
-      const mission = run.mission_id ? missions.get(run.mission_id) : undefined;
-      const teamId = run.agent_team_id ?? run.definition_id ?? undefined;
-      const team = teamId ? teams.get(teamId) : undefined;
-      const legacyWave = run.wave_id ? waves.get(run.wave_id) : undefined;
-      if (run.mission_id && !mission) return [];
-      if (run.wave_id && (!legacyWave || legacyWave.mission_id !== run.mission_id)) return [];
+      const team = teams.get(run.agent_team_id);
+      if (!team) return [];
+      const mission = missions.get(team.mission_id);
+      if (!mission) return [];
+      const legacyWave = [...waves.values()].find((candidate) =>
+        (candidate.executor_run_ids ?? []).includes(run.id),
+      );
+      if (legacyWave && legacyWave.mission_id !== team.mission_id) return [];
       return [{ run, team, mission, legacyWave, members: membersByRun.get(run.id) ?? [] }];
     })
     .sort((left, right) => timestamp(right.run.updated_at ?? right.run.created_at) - timestamp(left.run.updated_at ?? left.run.created_at));
@@ -97,6 +95,9 @@ export function AgentTeamsHome({ model, onSelectionChange, actionsEnabled = fals
     if (teamKey && !latestRunIdByTeam.has(teamKey)) latestRunIdByTeam.set(teamKey, attempt.run.id);
   }
   const durableMembers = snapshot.members ?? [];
+  const executionNodes = snapshot.execution_nodes ?? [];
+  const nodeRegistrations = snapshot.node_project_registrations ?? [];
+  const nodeDaemonLeases = snapshot.node_daemon_leases ?? [];
 
   return (
     <DocumentSurface className="max-w-[1120px]">
@@ -107,7 +108,7 @@ export function AgentTeamsHome({ model, onSelectionChange, actionsEnabled = fals
           </p>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight text-foreground">Agent Teams</h1>
           <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
-            Independent teams and their standalone or Mission-scoped runs. Open a run to
+            Flat Mission-owned teams and their runtime attempts. Open a run to
             inspect members, assignments, native sessions, pressure, and controls.
           </p>
         </div>
@@ -131,12 +132,41 @@ export function AgentTeamsHome({ model, onSelectionChange, actionsEnabled = fals
         </div>
       </header>
 
+      <section className="pt-5" aria-label="Execution Node operator view">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Execution Nodes</h2>
+            <p className="mt-1 text-xs text-muted-foreground">Stable placement, registered Execution Spaces, and current NodeDaemon generation.</p>
+          </div>
+          <Badge tone={executionNodes.length ? "good" : "warn"}>{executionNodes.length} nodes</Badge>
+        </div>
+        <div className="mt-2 grid gap-2 lg:grid-cols-2">
+          {executionNodes.map((node) => {
+            const registrations = nodeRegistrations.filter((registration) => registration.node_id === node.id && registration.status === "active");
+            const lease = nodeDaemonLeases.find((candidate) => candidate.node_id === node.id);
+            const daemonCurrent = lease?.status === "active";
+            return (
+              <div key={node.id} className="flex min-w-0 items-center gap-3 rounded-xl border border-border/80 bg-card/65 px-4 py-3">
+                <span className="grid size-9 shrink-0 place-items-center rounded-lg border border-primary/15 bg-primary/[0.055] text-primary"><Server className="size-4" /></span>
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-2"><span className="truncate text-sm font-semibold text-foreground">{node.display_name}</span><Badge tone={node.status === "active" ? "good" : "warn"}>{node.status}</Badge></span>
+                  <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground">{node.id}</span>
+                  <span className="mt-1 block text-[11px] text-muted-foreground">{registrations.length} registered spaces · {daemonCurrent ? `daemon generation ${lease?.generation}` : "daemon unavailable"}</span>
+                </span>
+                <StatusDot tone={daemonCurrent ? "good" : "warn"} pulse={daemonCurrent} />
+              </div>
+            );
+          })}
+          {executionNodes.length === 0 && <p className="rounded-xl border border-dashed border-border px-4 py-3 text-xs text-muted-foreground">No ExecutionNode has been initialized.</p>}
+        </div>
+      </section>
+
       {attempts.length === 0 ? (
         <div className="pt-6">
           <EmptyState
             icon={Users}
             title="No Agent Team runs"
-            description="Create an independent Agent Team, then use it standalone or link it to a Mission."
+            description="Create one flat Agent Team for a Mission, then create its first TeamRun."
           />
         </div>
       ) : (
@@ -184,11 +214,11 @@ export function AgentTeamsHome({ model, onSelectionChange, actionsEnabled = fals
                       <span className="mt-1 block truncate text-xs text-muted-foreground">
                         {mission
                           ? `${mission.title} · Mission-scoped`
-                          : "Standalone team run"}
+                          : "Mission relation unavailable"}
                         {legacyWave ? ` · Legacy Wave ${legacyWave.index}` : ""}
                       </span>
                       <span className="mt-1 block truncate text-[11px] text-muted-foreground">
-                        Team Lead · {teamLeadLabel(team?.owner_agent_id)}
+                        Host Agent · {teamLeadLabel(team?.host_agent_id)}
                       </span>
                     </span>
                     <ArrowRight className="mt-2 size-3.5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
@@ -283,7 +313,7 @@ export function AgentTeamsHome({ model, onSelectionChange, actionsEnabled = fals
   );
 }
 
-/** Create an independent AgentTeam definition (POST /v1/teams). */
+/** Create the flat AgentTeam bound one-to-one to its Mission (POST /v1/teams). */
 function TeamDialog({
   open,
   durableMembers,
@@ -299,29 +329,32 @@ function TeamDialog({
 }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [missionId, setMissionId] = useState("");
+  const [nodeId, setNodeId] = useState("");
   const [leadAgentId, setLeadAgentId] = useState("host");
   const [memberIds, setMemberIds] = useState<string[]>([]);
-  const [hostMemberId, setHostMemberId] = useState("");
 
   useEffect(() => {
     if (open) {
       setName("");
       setDescription("");
+      setMissionId("");
+      setNodeId("");
       setLeadAgentId("host");
       setMemberIds([]);
-      setHostMemberId("");
     }
   }, [open]);
 
-  const valid = Boolean(name.trim() && description.trim() && leadAgentId);
+  const valid = Boolean(name.trim() && description.trim() && missionId.trim() && nodeId.trim() && leadAgentId);
   const submit = () => {
     if (!valid) return;
     const descriptor = createTeam({
       name: name.trim(),
       description: description.trim(),
-      leadAgentId,
+      missionId: missionId.trim(),
+      nodeId: nodeId.trim(),
+      hostAgentId: leadAgentId,
       memberIds,
-      hostMemberId: hostMemberId || undefined,
     });
     void onAction?.(descriptor.path, descriptor.body);
     onClose();
@@ -331,7 +364,7 @@ function TeamDialog({
     <Dialog
       open={open}
       title="New Agent Team"
-      description="Create an independent, reusable team definition. Runs are created from it separately."
+      description="Create the one flat AgentTeam for a Mission on one Node. Runs are created from it separately."
       onClose={onClose}
     >
       <form
@@ -346,6 +379,12 @@ function TeamDialog({
         </Field>
         <Field label="Description" required hint="Purpose of the team, shown on its cards and runs.">
           {(id) => <TextArea id={id} value={description} onChange={(event) => setDescription(event.target.value)} />}
+        </Field>
+        <Field label="Mission ID" required hint="One Team equals one Mission; this relation is immutable.">
+          {(id) => <TextInput id={id} value={missionId} onChange={(event) => setMissionId(event.target.value)} />}
+        </Field>
+        <Field label="Node ID" required hint="Stable UUID of the machine that owns every Member in this Team.">
+          {(id) => <TextInput id={id} value={nodeId} onChange={(event) => setNodeId(event.target.value)} />}
         </Field>
         <Field label="Team Lead" required hint="The Host leads by default; a durable member may lead instead.">
           {(id) => (
@@ -387,16 +426,6 @@ function TeamDialog({
               </div>
             )
           }
-        </Field>
-        <Field label="Host member" hint="Optional durable AgentMember that Hosts this team (ADR 0052).">
-          {(id) => (
-            <Select id={id} value={hostMemberId} onChange={(event) => setHostMemberId(event.target.value)}>
-              <option value="">None · session Host</option>
-              {durableMembers.map((member) => (
-                <option key={member.id} value={member.id}>{member.name ?? member.id}</option>
-              ))}
-            </Select>
-          )}
         </Field>
         <p className="rounded-md border border-border bg-muted/35 px-3 py-2 text-[11px] text-muted-foreground">
           Creating a team does not start any runtime; members run when a team run starts.

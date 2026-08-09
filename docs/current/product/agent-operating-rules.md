@@ -23,7 +23,7 @@ metrics, and financial effects return to the originating records
 
 Mission/Wave, Agent Team, Dynamic Workflow, Host execution, providers, plugins,
 and MCP are the shared execution foundation. `Mission` is durable intent and
-may link multiple reusable teams. `Wave` is a lightweight, versioned Markdown
+owns exactly one flat AgentTeam. `Wave` is a lightweight, versioned Markdown
 record of the Host's current plan and judgment; it is not an executor container
 or synchronization barrier. An AgentTeamRun may span multiple Waves while its
 MemberRuns and native sessions continue. ADR 0050 defines Work as member
@@ -128,12 +128,12 @@ New Agent Team members use only their persistent bidirectional mode:
 reads; they are not Team fallbacks. The Host explicitly creates, messages,
 inspects, interrupts, closes, and resumes members. Interrupt stops one current
 turn; Close ends the member runtime; Wave or TeamRun completion never implies
-Close. Physical live control handles remain process-local to the Harness
-service that started them. A durable Team Supervisor lease is the cross-process
-control authority and contains a loopback service locator. Dashboard, CLI, and
-MCP clients route controls to that owner; the owner revalidates supervisor id,
-generation, status, and expiry immediately before driving its handle. After a
-crash, a new Supervisor generation reattaches the recorded native sessions;
+Close. Physical live control handles remain process-local to the machine
+NodeDaemon. Its durable lease owns all local Team contexts; each Team
+Supervisor lease is parent-fenced by the daemon generation and contains a
+loopback service locator. Dashboard, CLI, and MCP clients route controls to
+that owner; it revalidates both generations, status, and expiry immediately
+before driving its handle. After a crash, a new NodeDaemon generation reattaches the recorded native sessions;
 uncertain claimed deliveries require explicit reconciliation, never blind
 replay.
 
@@ -192,11 +192,11 @@ The Lead Agent should use this sequence for non-trivial new work:
 
 1. Inspect relevant code/docs and native state with `firm mission list`,
    `firm wave list`, and the Agent Team/Dynamic Workflow surfaces needed.
-2. Create or select the Mission, link any independent teams the Host may use,
-   and write the current ordered Wave as Markdown plan and judgment.
+2. Create or select the Mission and its one flat AgentTeam, then write the
+   current ordered Wave as Markdown plan and judgment.
 3. Let each executor own its internal plan. A Wave records what changed, what
    the Host decided, which work carries forward, and why it can advance.
-4. For Agent Team work, create one Mission-scoped TeamRun and put every lane on
+4. For Agent Team work, create one Team/Node/Project-fenced TeamRun and put every lane on
    its shared Works board. Assign bounded responsibility directly or expose
    eligible unassigned Work for atomic claim. Give concurrent members
    disjoint owned paths or explicit conflict boundaries. Let each Member decide
@@ -229,17 +229,17 @@ Useful local commands:
 target/debug/firm init
 target/debug/firm mission create --title <title> --objective <objective> \
   --context <mission-markdown>
-target/debug/firm mission create-team --id <mission> --name <team> \
-  --description <purpose> --lead host --member <agent-member-id>
-  --objective <objective> --context <wave-markdown>
-target/debug/firm team-run create --mission-id <mission> \
-  --agent-team-id <team> --objective <objective>
+target/debug/firm node init
+target/debug/firm team create --name <team> --description <purpose> \
+  --mission-id <mission> --host-agent-id <agent-member-id> \
+  --node-id <node-uuid> --member <agent-member-id>
+target/debug/firm team-run create --agent-team-id <team> --objective <objective>
 target/debug/firm team-run work create --team-run-id <team-run> \
   --title <title> --context <markdown> \
   --completion-criteria <criteria> --owner-member-run-id <member-run>
 target/debug/firm team-run work list --team-run-id <team-run>
-target/debug/firm mission log append --mission-id <mission> --kind judgment --body "<decision>" \
-  --outcome <summary>
+target/debug/firm mission log append --mission-id <mission> --kind judgment --body "<decision>"
+target/debug/firm mission close --id <mission> --outcome <summary>
 target/debug/firm dashboard snapshot
 target/debug/firm serve --addr 127.0.0.1:8787
 npx pnpm@9.15.4 acceptance:mission-wave

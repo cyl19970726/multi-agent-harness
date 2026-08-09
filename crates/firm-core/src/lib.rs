@@ -1148,8 +1148,8 @@ pub struct Vision {
 // ---------------------------------------------------------------------------
 // Mission / Wave product contracts (ADR 0026)
 //
-// A Mission owns durable intent, context, linked independent Teams, and
-// outcome. Each Wave is one versioned Host plan/judgment memo. Execution
+// A Mission owns durable intent, context, one flat AgentTeam, and outcome.
+// Each historical Wave is one versioned Host plan/judgment memo. Execution
 // records remain independently addressable and are related through Mission,
 // assignment messages, correlations, and optional origin_wave_id.
 // ---------------------------------------------------------------------------

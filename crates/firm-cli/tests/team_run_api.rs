@@ -46,6 +46,10 @@ const NATIVE_SELECTOR_CLEAN_ENV: &[(&str, &str)] = &[
     ("HARNESS_HOME", ""),
 ];
 
+const FIXTURE_TEAM_ID: &str = "team-runtime-fixture";
+const FIXTURE_MISSION_ID: &str = "mission-runtime-fixture";
+const FIXTURE_HOST_ID: &str = "agent-runtime-host";
+
 fn wait_for_file(path: &std::path::Path, context: &str) {
     for _ in 0..500 {
         if path.exists() {
@@ -78,8 +82,13 @@ fn replace_supervisor_lease(store: &HarnessStore, run_id: &str) {
         )
         .expect("release current lease");
     store
-        .acquire_team_supervisor_lease(
+        .acquire_team_supervisor_under_node_lease(
             run_id,
+            &lease.node_id,
+            &lease.node_daemon_id,
+            lease.node_daemon_generation,
+            &lease.execution_space_id,
+            &lease.project_binding_id,
             "terminal-frame-fencing-supervisor",
             std::process::id(),
             "tcp://127.0.0.1:1",
@@ -119,7 +128,9 @@ fn init_project_selector_clean(home: &TempHome, name: &str) -> String {
     std::fs::create_dir_all(&root).unwrap();
     let out = run_firm_with_env(home, &root, &["init"], NATIVE_SELECTOR_CLEAN_ENV);
     assert!(out.status.success(), "init {name} failed: {out:?}");
-    current_project_id(home)
+    let project_id = current_project_id(home);
+    seed_runtime_team(home, &project_id, NATIVE_SELECTOR_CLEAN_ENV);
+    project_id
 }
 
 /// `harness init` a project rooted at `<base>/<name>` and return its derived id.
@@ -128,7 +139,81 @@ fn init_project(home: &TempHome, name: &str) -> String {
     std::fs::create_dir_all(&root).unwrap();
     let out = run_firm(home, &root, &["init"]);
     assert!(out.status.success(), "init {name} failed: {out:?}");
-    current_project_id(home)
+    let project_id = current_project_id(home);
+    seed_runtime_team(home, &project_id, &[]);
+    project_id
+}
+
+/// Every TeamRun now belongs to a durable flat AgentTeam. The broad runtime
+/// regression suite predates that invariant, so give its scenarios one
+/// explicit Mission-owned Team instead of weakening production admission.
+fn seed_runtime_team(home: &TempHome, project_id: &str, env: &[(&str, &str)]) {
+    let run = |args: &[&str]| {
+        let mut full = vec!["--project", project_id];
+        full.extend_from_slice(args);
+        let out = run_firm_with_env(home, home.base(), &full, env);
+        assert!(
+            out.status.success(),
+            "fixture command {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    };
+    run(&[
+        "agent",
+        "create",
+        "--id",
+        FIXTURE_HOST_ID,
+        "--name",
+        "Runtime Host",
+        "--role",
+        "host",
+        "--provider",
+        "kimi",
+    ]);
+    run(&[
+        "mission",
+        "create",
+        "--id",
+        FIXTURE_MISSION_ID,
+        "--title",
+        "Runtime Regression",
+        "--objective",
+        "Preserve provider, recovery, lease, and mailbox contracts",
+        "--json",
+    ]);
+    let node = run(&["node", "init"]);
+    let node: serde_json::Value = serde_json::from_slice(&node.stdout).expect("node JSON");
+    let node_id = node["id"].as_str().expect("node id");
+    run(&[
+        "node",
+        "project",
+        "register",
+        "--node-id",
+        node_id,
+        "--execution-space-id",
+        project_id,
+        "--project-binding-id",
+        project_id,
+    ]);
+    run(&[
+        "team",
+        "create",
+        "--id",
+        FIXTURE_TEAM_ID,
+        "--name",
+        "Runtime Fixture Team",
+        "--description",
+        "Flat Team used by TeamRun regression scenarios",
+        "--mission-id",
+        FIXTURE_MISSION_ID,
+        "--host-agent-id",
+        FIXTURE_HOST_ID,
+        "--node-id",
+        node_id,
+        "--member",
+        FIXTURE_HOST_ID,
+    ]);
 }
 
 /// Seed the native Mission/Wave ledgers directly so the public team-run
@@ -136,8 +221,15 @@ fn init_project(home: &TempHome, name: &str) -> String {
 /// Mission authoring command in this integration suite.
 fn seed_native_mission_wave(home: &TempHome, project_id: &str) {
     let store = home.spaces_dir().join(project_id);
-    std::fs::write(
-        store.join("missions.jsonl"),
+    use std::io::Write as _;
+    let mut missions = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(store.join("missions.jsonl"))
+        .expect("open missions");
+    writeln!(
+        missions,
+        "{}",
         serde_json::json!({
             "id": "mission-test",
             "title": "Test Mission",
@@ -150,8 +242,6 @@ fn seed_native_mission_wave(home: &TempHome, project_id: &str) {
             "updated_at": "2026-07-19T00:00:00Z",
             "completed_at": null
         })
-        .to_string()
-            + "\n",
     )
     .expect("seed mission");
     std::fs::write(
@@ -225,6 +315,10 @@ fn seed_historical_wave(
 fn team_run_json(home: &TempHome, project_id: &str, args: &[&str]) -> serde_json::Value {
     let mut full = vec!["--project", project_id, "team-run"];
     full.extend_from_slice(args);
+    if args.first() == Some(&"create") && !args.contains(&"--agent-team-id") {
+        full.push("--agent-team-id");
+        full.push(FIXTURE_TEAM_ID);
+    }
     let out = run_firm(home, home.base(), &full);
     assert!(
         out.status.success(),
@@ -326,19 +420,19 @@ fn team_run_cli_create_list_status_send_events() {
     let run_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
     assert!(run_id.starts_with("team-run-"), "run id: {run_id}");
 
-    // list --json: one run, wave/budget/member ids carried through.
+    // list --json: one run, durable Team identity/budget/member ids carried through.
     let runs = team_run_json(&home, &project_id, &["list", "--json"]);
     let runs = runs.as_array().expect("runs array");
     assert_eq!(runs.len(), 1, "runs: {runs:?}");
     assert_eq!(runs[0]["id"].as_str(), Some(run_id.as_str()));
     assert_eq!(runs[0]["status"].as_str(), Some("planning"));
-    assert_eq!(runs[0]["wave_index"].as_u64(), Some(2));
-    assert_eq!(runs[0]["mission_id"].as_str(), Some("mission-test"));
+    assert_eq!(runs[0]["agent_team_id"].as_str(), Some(FIXTURE_TEAM_ID));
+    assert!(runs[0].get("mission_id").is_none());
+    assert!(runs[0].get("wave_id").is_none());
     assert_eq!(
         runs[0]["execution_root"].as_str(),
         Some(project_root.as_str())
     );
-    assert_eq!(runs[0]["wave_id"].as_str(), Some("wave-test"));
     assert_eq!(runs[0]["budget_limit_usd"].as_f64(), Some(5.5));
     let member_ids: Vec<&str> = runs[0]["member_run_ids"]
         .as_array()
@@ -985,7 +1079,7 @@ fn team_run_cli_message_reuses_conversation_lineage_only_within_its_run() {
 }
 
 #[test]
-fn team_run_rejects_non_agent_team_wave_before_journaling_attempt() {
+fn historical_wave_executor_kind_no_longer_controls_team_run_admission() {
     let home = TempHome::new("team-run-wrong-executor");
     let project_id = init_project(&home, "alpha");
     seed_native_mission_wave(&home, &project_id);
@@ -1011,20 +1105,11 @@ fn team_run_rejects_non_agent_team_wave_before_journaling_attempt() {
             "worker:implementer:kimi",
         ],
     );
-    assert!(!out.status.success(), "unexpected success: {out:?}");
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("not agent_team"),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        !home
-            .spaces_dir()
-            .join(&project_id)
-            .join("team_runs.jsonl")
-            .exists(),
-        "failed validation must not append a TeamRun"
-    );
+    assert!(out.status.success(), "create failed: {out:?}");
+    let runs = team_run_json(&home, &project_id, &["list", "--json"]);
+    assert_eq!(runs.as_array().map(Vec::len), Some(1));
+    assert_eq!(runs[0]["agent_team_id"].as_str(), Some(FIXTURE_TEAM_ID));
+    assert!(runs[0].get("wave_id").is_none());
 }
 
 #[test]
@@ -1109,13 +1194,13 @@ fn mission_wave_cli_authoring_with_seeded_wave_and_retired_gate() {
         &project_id,
         &["wave", "show", "--id", "wave-cli", "--json"],
     );
-    assert_eq!(waiting_wave["status"].as_str(), Some("waiting"));
+    assert_eq!(waiting_wave["status"].as_str(), Some("planned"));
     let running_mission = command_json(
         &home,
         &project_id,
         &["mission", "show", "--id", "mission-cli", "--json"],
     );
-    assert_eq!(running_mission["status"].as_str(), Some("running"));
+    assert_eq!(running_mission["status"].as_str(), Some("planned"));
 
     // `wave gate` is retired (ADR 0051): there is nothing left to accept,
     // revise, or block. The Host records closeout evidence in the Mission
@@ -1213,7 +1298,7 @@ fn post_mission_and_retired_wave_write_routes() {
         "error: {error}"
     );
     let (_, snapshot) = serve.get_json("/v1/snapshot");
-    assert_eq!(snapshot["missions"].as_array().map(Vec::len), Some(1));
+    assert_eq!(snapshot["missions"].as_array().map(Vec::len), Some(2));
     assert_eq!(
         snapshot["waves"].as_array().map(Vec::len),
         Some(0),
@@ -1360,7 +1445,7 @@ fn get_host_inbox_is_scoped_to_exact_native_thread() {
 }
 
 #[test]
-fn linked_team_run_rejects_previous_attempt_from_another_wave() {
+fn retry_lineage_is_scoped_by_agent_team_not_retired_wave_identity() {
     let home = TempHome::new("team-run-previous-wave");
     let project_id = init_project(&home, "alpha");
     for (mission_id, wave_id) in [("mission-a", "wave-a"), ("mission-b", "wave-b")] {
@@ -1400,34 +1485,30 @@ fn linked_team_run_rejects_previous_attempt_from_another_wave() {
         ],
     );
     let first_id = first["team_run"]["id"].as_str().unwrap();
-    let out = run_firm(
+    let second = team_run_json(
         &home,
-        home.base(),
+        &project_id,
         &[
-            "--project",
-            &project_id,
-            "team-run",
             "create",
             "--objective",
-            "invalid retry",
-            "--mission-id",
-            "mission-b",
-            "--wave-id",
-            "wave-b",
+            "same Team retry",
             "--previous",
             first_id,
             "--member",
             "worker-b:implementer:kimi",
+            "--json",
         ],
     );
-    assert!(!out.status.success(), "unexpected success: {out:?}");
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("not an attempt of mission"),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+    assert_eq!(
+        second["team_run"]["previous_run_id"].as_str(),
+        Some(first_id)
+    );
+    assert_eq!(
+        second["team_run"]["agent_team_id"].as_str(),
+        Some(FIXTURE_TEAM_ID)
     );
     let runs = team_run_json(&home, &project_id, &["list", "--json"]);
-    assert_eq!(runs.as_array().map(Vec::len), Some(1));
+    assert_eq!(runs.as_array().map(Vec::len), Some(2));
 }
 
 #[test]
@@ -1464,10 +1545,11 @@ fn post_team_run_creates_entities_and_get_snapshot_projects_them() {
     assert_eq!(result["team_run"]["objective"].as_str(), Some("Ship v0"));
     assert_eq!(result["team_run"]["status"].as_str(), Some("planning"));
     assert_eq!(
-        result["team_run"]["mission_id"].as_str(),
-        Some("mission-test")
+        result["team_run"]["agent_team_id"].as_str(),
+        Some(FIXTURE_TEAM_ID)
     );
-    assert_eq!(result["team_run"]["wave_id"].as_str(), Some("wave-test"));
+    assert!(result["team_run"].get("mission_id").is_none());
+    assert!(result["team_run"].get("wave_id").is_none());
     assert_eq!(
         result["team_run"]["execution_root"].as_str(),
         Some(project_root.to_str().expect("project root"))
@@ -1507,11 +1589,7 @@ fn post_team_run_creates_entities_and_get_snapshot_projects_them() {
     let waves = snapshot["waves"].as_array().expect("waves");
     assert_eq!(waves.len(), 1, "waves: {waves:?}");
     assert_eq!(waves[0]["id"].as_str(), Some("wave-test"));
-    assert_eq!(
-        waves[0]["executor_run_ids"],
-        serde_json::json!([run_id]),
-        "linked Wave owns the new AgentTeamRun attempt"
-    );
+    assert_eq!(waves[0]["executor_run_ids"], serde_json::json!([]));
 
     let member_runs = snapshot["member_runs"].as_array().expect("member_runs");
     assert_eq!(member_runs.len(), 2, "member_runs: {member_runs:?}");
@@ -1602,7 +1680,7 @@ fn post_mutation_response_is_bounded_and_dashboard_can_refresh_from_get_snapshot
     assert_eq!(status, 200, "snapshot: {snapshot}");
     assert_eq!(
         snapshot["missions"].as_array().map(Vec::len),
-        Some(80),
+        Some(81),
         "the Dashboard refresh GET must still expose every mutation"
     );
     assert!(
@@ -2388,8 +2466,13 @@ fn stale_supervisor_quiesces_and_successor_resumes_mail_once() {
         )
         .expect("release stale generation");
     let fencing_lease = store
-        .acquire_team_supervisor_lease(
+        .acquire_team_supervisor_under_node_lease(
             &run_id,
+            &old_lease.node_id,
+            &old_lease.node_daemon_id,
+            old_lease.node_daemon_generation,
+            &old_lease.execution_space_id,
+            &old_lease.project_binding_id,
             "test-fencing-supervisor",
             std::process::id(),
             "tcp://127.0.0.1:1",
@@ -3432,15 +3515,15 @@ fn host_can_explicitly_close_a_live_codex_member() {
     );
     assert_eq!(status, 202, "body: {reopened}");
     assert_eq!(
-        reopened["result"]["member_run"]["id"].as_str(),
+        reopened["result"]["reopen"]["member_run"]["id"].as_str(),
         Some(member_id.as_str())
     );
     assert_eq!(
-        reopened["result"]["member_run"]["runtime_generation"].as_u64(),
+        reopened["result"]["reopen"]["member_run"]["runtime_generation"].as_u64(),
         Some(2)
     );
     assert_eq!(
-        reopened["result"]["member_run"]["native_session"]["native_session_id"].as_str(),
+        reopened["result"]["reopen"]["member_run"]["native_session"]["native_session_id"].as_str(),
         Some(native_session_id.as_str())
     );
 
@@ -4148,23 +4231,15 @@ fn reviewed_recovery_redelivers_same_stable_member_without_duplicate_work_or_ses
         .to_string();
     let store = HarnessStore::new(home.spaces_dir().join(&project_id));
 
-    // Give this deterministic fixture the same durable Team provenance that a
-    // Mission-linked production TeamRun carries, then let the member create
-    // its own Work so both provenance fields are non-null before recovery.
-    let unlinked_run = store
+    // Team provenance is required at TeamRun creation after the clean cutover.
+    let linked_run = store
         .team_runs()
         .expect("TeamRun rows")
         .into_iter()
         .rev()
         .find(|run| run.id == run_id)
         .expect("TeamRun");
-    let mut linked_run = unlinked_run.clone();
-    linked_run.agent_team_id = Some("agent-team-stable-recovery".to_string());
-    linked_run.updated_at = "unix-ms:stable-recovery-team-link".to_string();
-    store
-        .compare_and_link_team_run_agent_team(&unlinked_run, &linked_run)
-        .expect("link AgentTeam");
-
+    assert!(!linked_run.agent_team_id.is_empty());
     let work = member_team_run_json(
         &home,
         &project_id,
@@ -5403,20 +5478,14 @@ fn post_team_run_transition_and_compatibility_lineage() {
         .open(store_root.join("team_runs.jsonl"))
         .expect("open team_runs.jsonl");
     use std::io::Write as _;
-    writeln!(
-        ledger,
-        "{}",
-        serde_json::json!({
-            "id": wave2_id,
-            "host_surface": "http",
-            "objective": "Compatibility attempt two",
-            "status": "reviewing",
-            "previous_run_id": wave1_id,
-            "created_at": "unix-ms:1",
-            "updated_at": "unix-ms:2",
-        })
-    )
-    .expect("append reviewing row");
+    let mut reviewing = runs
+        .iter()
+        .find(|run| run["id"].as_str() == Some(wave2_id.as_str()))
+        .expect("attempt two row")
+        .clone();
+    reviewing["status"] = serde_json::json!("reviewing");
+    reviewing["updated_at"] = serde_json::json!("unix-ms:2");
+    writeln!(ledger, "{}", reviewing).expect("append reviewing row");
 
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{wave2_id}/transition"),
@@ -5499,23 +5568,14 @@ fn post_team_run_transition_and_compatibility_lineage() {
         .as_str()
         .expect("running attempt id")
         .to_string();
+    let mut running_row = body["result"]["team_run"].clone();
+    running_row["status"] = serde_json::json!("running");
+    running_row["updated_at"] = serde_json::json!("unix-ms:4");
     let mut ledger = std::fs::OpenOptions::new()
         .append(true)
         .open(store_root.join("team_runs.jsonl"))
         .expect("open team_runs.jsonl");
-    writeln!(
-        ledger,
-        "{}",
-        serde_json::json!({
-            "id": running_id,
-            "host_surface": "http",
-            "objective": "Active compatibility attempt",
-            "status": "running",
-            "created_at": "unix-ms:3",
-            "updated_at": "unix-ms:4",
-        })
-    )
-    .expect("append running row");
+    writeln!(ledger, "{}", running_row).expect("append running row");
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{running_id}/transition"),
         &serde_json::json!({"status": "cancelled"}),
@@ -6863,6 +6923,7 @@ fn kimi_model_switch_uses_only_the_new_models_advertised_effort_controls() {
 fn external_interactive_member_joins_and_exchanges_mail() {
     let home = TempHome::new("team-run-external-interactive");
     let project_id = init_project(&home, "alpha");
+    let _node_runtime = ServeHandle::spawn(&home, home.base(), &[]);
 
     // A declared external interactive member may use an arbitrary provider
     // label because Harness never executes it or claims adapter capability.
@@ -8093,21 +8154,6 @@ fn team_run_recover_prints_mission_log_tail_before_the_report() {
     let home = TempHome::new("team-run-recover-mission-log");
     let project_id = init_project(&home, "alpha");
 
-    command_json(
-        &home,
-        &project_id,
-        &[
-            "mission",
-            "create",
-            "--id",
-            "mission-recover",
-            "--title",
-            "Recovering mission",
-            "--objective",
-            "Prove team-run recover reads judgment first",
-            "--json",
-        ],
-    );
     for (kind, body) in [
         ("judgment", "First judgment before recovery."),
         ("replan", "Re-planned after review."),
@@ -8121,7 +8167,7 @@ fn team_run_recover_prints_mission_log_tail_before_the_report() {
                 "log",
                 "append",
                 "--mission-id",
-                "mission-recover",
+                FIXTURE_MISSION_ID,
                 "--kind",
                 kind,
                 "--body",
@@ -8141,8 +8187,6 @@ fn team_run_recover_prints_mission_log_tail_before_the_report() {
             "create",
             "--objective",
             "Recoverable run",
-            "--mission-id",
-            "mission-recover",
             "--member",
             "lead:coordinator:kimi#Coordinate the delivery",
         ],
@@ -8202,100 +8246,4 @@ fn team_run_recover_prints_mission_log_tail_before_the_report() {
     assert!(stdout.contains("[judgment]"), "stdout: {stdout}");
     assert!(stdout.contains("[replan]"), "stdout: {stdout}");
     assert!(stdout.contains("[recovery]"), "stdout: {stdout}");
-
-    // A team-run linked to a Mission with no Log entries yet prints the
-    // explicit sentinel instead of an empty section.
-    command_json(
-        &home,
-        &project_id,
-        &[
-            "mission",
-            "create",
-            "--id",
-            "mission-recover-empty",
-            "--title",
-            "Fresh mission",
-            "--objective",
-            "No judgment recorded yet",
-            "--json",
-        ],
-    );
-    let empty_create_out = run_firm(
-        &home,
-        home.base(),
-        &[
-            "--project",
-            &project_id,
-            "team-run",
-            "create",
-            "--objective",
-            "Recoverable run with no log",
-            "--mission-id",
-            "mission-recover-empty",
-            "--member",
-            "lead:coordinator:kimi#Coordinate the delivery",
-        ],
-    );
-    assert!(empty_create_out.status.success());
-    let empty_run_id = String::from_utf8_lossy(&empty_create_out.stdout)
-        .trim()
-        .to_string();
-    let empty_recover_out = run_firm(
-        &home,
-        home.base(),
-        &[
-            "--project",
-            &project_id,
-            "team-run",
-            "recover",
-            "--id",
-            &empty_run_id,
-        ],
-    );
-    assert!(empty_recover_out.status.success());
-    let empty_stdout = String::from_utf8_lossy(&empty_recover_out.stdout);
-    assert!(
-        empty_stdout.contains("no mission log yet"),
-        "stdout: {empty_stdout}"
-    );
-
-    // A team-run with no linked Mission at all prints no mission-log section
-    // -- the mandatory reader is conditional on `run.mission_id`, not
-    // unconditional narration.
-    let unlinked_create_out = run_firm(
-        &home,
-        home.base(),
-        &[
-            "--project",
-            &project_id,
-            "team-run",
-            "create",
-            "--objective",
-            "Standalone run with no Mission",
-            "--member",
-            "lead:coordinator:kimi#Coordinate the delivery",
-        ],
-    );
-    assert!(unlinked_create_out.status.success());
-    let unlinked_run_id = String::from_utf8_lossy(&unlinked_create_out.stdout)
-        .trim()
-        .to_string();
-    let unlinked_recover_out = run_firm(
-        &home,
-        home.base(),
-        &[
-            "--project",
-            &project_id,
-            "team-run",
-            "recover",
-            "--id",
-            &unlinked_run_id,
-        ],
-    );
-    assert!(unlinked_recover_out.status.success());
-    let unlinked_stdout = String::from_utf8_lossy(&unlinked_recover_out.stdout);
-    assert!(
-        !unlinked_stdout.contains("mission log"),
-        "a run with no linked Mission must not print a mission-log section: {unlinked_stdout}"
-    );
 }

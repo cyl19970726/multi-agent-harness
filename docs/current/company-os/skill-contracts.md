@@ -477,7 +477,7 @@ membership, approve spending, or create governed Company OS records.
 | Input | Requirement |
 | --- | --- |
 | Mission intent | Durable objective, completion criteria, constraints, and success standard. |
-| Current state | Mission Log, linked Teams, Works board, messages, pending interactions, Member/Supervisor health, and native-session bindings. |
+| Current state | Mission Log, its Mission-owned Team, Works board, messages, pending interactions, Member/Supervisor health, and native-session bindings. |
 | Execution Space and Project Binding | Explicit `HARNESS_SPACE` and `HARNESS_PROJECT` selection. |
 | Decision boundary | Work to assign, Members to compose, and acceptance authority for submitted Work. |
 

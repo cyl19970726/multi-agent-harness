@@ -181,9 +181,9 @@ async function main() {
   check(
     missionSource.includes("updateMissionContext(")
       && missionSource.includes("Edit context")
-      && missionSource.includes("linkMissionTeam(")
-      && missionSource.includes("unlinkMissionTeam("),
-    "Mission canvas exposes durable context editing and team link/unlink controls",
+      && missionSource.includes("createTeam(")
+      && missionSource.includes("one flat AgentTeam"),
+    "Mission canvas exposes durable context editing and one-Team creation without link/unlink",
   );
   check(
     teamSource.includes("fetchHostAttentions(")
@@ -292,8 +292,8 @@ async function main() {
   );
   check(
     missionSource.includes("linkedTeamSummaries.map")
-      && missionSource.includes("Linked and reusable; no TeamRun has started yet."),
-    "Mission Canvas renders every linked reusable Agent Team instead of collapsing the relation to one latest run",
+      && missionSource.includes("Mission-owned Team; no TeamRun has started yet."),
+    "Mission Canvas renders its immutable Mission-owned AgentTeam without collapsing its run history",
   );
   check(
     memberSource.includes('composerMode === "steer"')
