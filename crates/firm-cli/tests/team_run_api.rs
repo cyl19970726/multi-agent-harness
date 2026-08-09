@@ -6362,6 +6362,7 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
     let mut stopped = None;
     let mut last_snapshot = serde_json::Value::Null;
     let mut post_reset_nudge_sent = false;
+    let mut circuit_converged = false;
     for _ in 0..500 {
         // Predicate-gated wake intentionally sleeps after round 3 produces a
         // real report without changing Work. One explicit Host nudge starts
@@ -6397,14 +6398,23 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
             })
             .cloned();
         if stopped.is_some() {
-            assert!(snapshot["member_runs"]
+            let member_failed = snapshot["member_runs"]
                 .as_array()
                 .into_iter()
                 .flatten()
                 .any(|member| {
                     member["id"].as_str() == Some(member_id.as_str())
                         && member["status"].as_str() == Some("failed")
-                }));
+                });
+            // The breaker audit action and MemberRun transition live in
+            // separate append-only ledgers. A snapshot may briefly observe
+            // the action before the failed MemberRun revision; require both
+            // facts to converge instead of treating that split read as a
+            // product failure.
+            if !member_failed {
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
+            }
             let empty_rounds = snapshot["member_actions"]
                 .as_array()
                 .into_iter()
@@ -6418,6 +6428,7 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
             assert!(empty_rounds
                 .iter()
                 .all(|action| action["status"].as_str() == Some("failed")));
+            circuit_converged = true;
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -6428,6 +6439,10 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
             std::fs::read_to_string(&prompts).ok()
         )
     });
+    assert!(
+        circuit_converged,
+        "breaker action and failed MemberRun did not converge: {last_snapshot}"
+    );
     let summary = stopped["summary"].as_str().unwrap_or_default();
     assert!(
         summary.contains("3 consecutive unproductive rounds"),
