@@ -133,9 +133,9 @@ The Unified Work cutover removed:
 - the browser `workItem` route and task-focus page;
 - read fallback to old fixture rows.
 
-Historical records are not automatically deleted. Explicit migration or
-archival remains an operator action, but legacy rows no longer participate in
-live Work authority.
+Historical Company task rows are disposable and unsupported. The cutover does
+not migrate, archive, export, interpret, or dual-read them; operators use a
+fresh Execution Space for authoritative Work.
 
 ## Acceptance
 

@@ -56,7 +56,7 @@ In practice:
 
 - `Document`, `Block`, `TypedRecord`, `Relation`, `View`, and `BusinessModule`
   are Docs-owned objects.
-- `WorkItem`, `Assignment`, and `Approval` remain Work-owned objects.
+- `Work`, `Work ownership`, and `Approval` remain Work-owned objects.
 - `HumanMember`, `AgentMember`, `OrgUnit`, role, permission, and reporting
   changes remain Organization-owned objects.
 - `Commitment`, `Payment`, invoice, refund, and monetary metrics remain
@@ -166,7 +166,7 @@ Archive a Document or subtree when it is superseded, closed, duplicated, or no
 longer part of current operating context. Before archival:
 
 1. query and traverse the candidate subtree;
-2. inspect refs, related records, open WorkItems, maintained-document owners,
+2. inspect refs, related records, open Work records, maintained-document owners,
    and active module/page entrypoints;
 3. move any still-current fact or accepted result to the active owner through
    an explicit update or relation;
@@ -192,8 +192,8 @@ editing a real commercial project page, check:
   records?
 - Are stable facts modeled as `TypedRecord`s and `Relation`s rather than copied
   only into prose?
-- Are WorkItems, Assignments, Approvals, Finance records, and Organization
-  actors referenced through their owning systems instead of implied by text?
+- Are authoritative Work, Approvals, Finance records, and Organization actors
+  referenced through their owning systems instead of implied by text?
 - Are module boundaries explicit so an Agent knows which CLI/skill to use next?
 - If the page is a core surface, is there a standard View fallback and a custom
   page candidate only when the standard composition is not enough?
@@ -222,7 +222,7 @@ selected/root Document, ordered Blocks, children, templates, source-linked
 TypedRecords, Relations, Views, module/page policy context, health findings,
 available commands, and explicit boundaries.
 
-`docs query` does not create WorkItems, Approvals, Finance records,
+`docs query` does not create Work records, Approvals, Finance records,
 Organization changes, execution runs, or UI-only state. The canonical write
 store remains append-only JSONL ledgers plus latest projections. SQL is a
 future derived read/query/index layer that must serve the same contract without
@@ -259,9 +259,9 @@ this is the native Docs substrate for external PRD mapping; later dedicated
 schema or SQL read models must remain rebuildable from these Company OS records.
 
 `source sync` observes software product truth. It does not overwrite Company OS
-commercial truth, create WorkItems, approve spending, update Finance, mutate
+commercial truth, create Work records, approve spending, update Finance, mutate
 Organization, execute GitHub actions, or treat a GitHub webhook as authority.
-When synced sources drift materially, create or route a separate WorkItem for
+When synced sources drift materially, create or route a separate Work for
 Docs Governance review through `$company-work-operator`. Issue/PR/check/review
 sync and DeliveryRef reconciliation belong to `$connect-github-company-os`,
 not to this Docs command.
@@ -293,7 +293,7 @@ These commands do not generate business data and do not make a visual mock an
 implemented product claim. Current `page publish` records candidate package
 metadata only; it does not switch the active definition package pointer. A
 custom page may be beautiful and purpose-built, but it remains presentation
-over native Documents, TypedRecords, Relations, Views, WorkItems, Approvals,
+over native Documents, TypedRecords, Relations, Views, Work records, Approvals,
 FinancialRecords, and Actors.
 
 ## Page authoring and structure (v2 page surface)
@@ -348,9 +348,9 @@ Boundary rules:
 - A top-level operating area or DocumentSpace root is created with
   `page create` without `--parent` (plus `--space` when the store has several
   spaces). This replaces the retired Block-era root bootstrap; it still creates
-  only the page, not a BusinessModule, PageDefinition, WorkItem, Relation,
+  only the page, not a BusinessModule, PageDefinition, Work, Relation,
   Finance row, Organization row, or source sync record.
-- Page commands do not create WorkItems, Approvals, Finance records,
+- Page commands do not create Work records, Approvals, Finance records,
   Organization changes, or execution records, and they never physically delete
   pages or revisions.
 

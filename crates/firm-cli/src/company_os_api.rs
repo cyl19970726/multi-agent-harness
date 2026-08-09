@@ -163,6 +163,19 @@ pub fn handle_post(
     body: &Value,
     transport_token: Option<&str>,
 ) -> Option<ApiResponse> {
+    handle_post_with_execution(store, None, None, path, body, transport_token)
+}
+
+/// Handle a Company OS POST path while keeping Company Store writes separate
+/// from the Execution Spaces that own authoritative Work records.
+pub fn handle_post_with_execution(
+    store: &HarnessStore,
+    execution_store: Option<&HarnessStore>,
+    execution_spaces: Option<&[(String, HarnessStore)]>,
+    path: &str,
+    body: &Value,
+    transport_token: Option<&str>,
+) -> Option<ApiResponse> {
     if !path.starts_with("/v1/company-os/") {
         return None;
     }
@@ -170,7 +183,12 @@ pub fn handle_post(
     // not create or mutate a second Company task object.
     if path == "/v1/company-os/work-query" {
         return Some(finish(parse::<CompanyWorkQuery>(body).and_then(|query| {
-            company_work_projection(store, &query).map_err(ApiError::from)
+            company_work_projection_from_spaces(
+                execution_store.unwrap_or(store),
+                execution_spaces.unwrap_or(&[]),
+                &query,
+            )
+            .map_err(ApiError::from)
         })));
     }
     if let Err(error) = authenticate_write_transport(transport_token) {
@@ -327,13 +345,6 @@ struct CompanyWorkQuery {
     conditions: Vec<WorkCondition>,
     resolutions: Vec<WorkResolution>,
     owner_member_ids: Vec<String>,
-}
-
-fn company_work_projection(
-    execution_store: &HarnessStore,
-    query: &CompanyWorkQuery,
-) -> Result<Value, StoreError> {
-    company_work_projection_from_spaces(execution_store, &[], query)
 }
 
 fn company_work_records_from_spaces(
@@ -1046,6 +1057,143 @@ mod projection_tests {
         .unwrap()
     }
 
+    fn insert_test_work(store: &HarnessStore, id: &str, team_run_id: &str, event_id: &str) {
+        store
+            .insert_work(
+                harness_core::Work {
+                    id: id.to_string(),
+                    team_run_id: team_run_id.to_string(),
+                    team_id: None,
+                    created_by_member_id: None,
+                    parent_work_id: None,
+                    title: id.to_string(),
+                    context_markdown: "projection".to_string(),
+                    completion_criteria_markdown: "done".to_string(),
+                    phase: harness_core::WorkPhase::Open,
+                    condition: harness_core::WorkCondition::Normal,
+                    resolution: None,
+                    owner_member_id: None,
+                    active_member_run_id: None,
+                    claim_mode: harness_core::WorkClaimMode::HostAssign,
+                    eligible_member_ids: Vec::new(),
+                    prerequisite_work_ids: Vec::new(),
+                    priority: harness_core::WorkPriority::Normal,
+                    created_by_actor: harness_core::TeamActorRef {
+                        kind: harness_core::TeamActorKind::Host,
+                        id: "host".to_string(),
+                        display_name: None,
+                        authn_source: Some("test".to_string()),
+                    },
+                    result_summary: None,
+                    blocker_reason: None,
+                    artifact_refs: Vec::new(),
+                    check_refs: Vec::new(),
+                    github_links: Vec::new(),
+                    gates: Vec::new(),
+                    workspace: None,
+                    version: 0,
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                },
+                harness_core::WorkCommandContext {
+                    event_id: event_id.to_string(),
+                    performed_by_actor: harness_core::TeamActorRef {
+                        kind: harness_core::TeamActorKind::Host,
+                        id: "host".to_string(),
+                        display_name: None,
+                        authn_source: Some("test".to_string()),
+                    },
+                    authority_actor: None,
+                    causation_ref: None,
+                    idempotency_key: format!("command-{event_id}"),
+                    created_at: "1".to_string(),
+                    duplicate_ok: false,
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn work_query_post_aggregates_all_execution_spaces_and_reports_duplicate_ids() {
+        let nonce = format!(
+            "{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let company_store = HarnessStore::new(
+            std::env::temp_dir().join(format!("company-work-query-company-{nonce}")),
+        );
+        let first_store = HarnessStore::new(
+            std::env::temp_dir().join(format!("company-work-query-first-{nonce}")),
+        );
+        let second_store = HarnessStore::new(
+            std::env::temp_dir().join(format!("company-work-query-second-{nonce}")),
+        );
+        for store in [&company_store, &first_store, &second_store] {
+            store.init().unwrap();
+        }
+        for (store, run_id) in [(&first_store, "run-a"), (&second_store, "run-b")] {
+            store
+                .append_team_run(
+                    &serde_json::from_value(json!({
+                        "id": run_id,
+                        "host_surface": "test",
+                        "objective": "cross-space Work projection",
+                        "status": "running",
+                        "member_run_ids": [],
+                        "created_at": "1",
+                        "updated_at": "1"
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        insert_test_work(&first_store, "work-first", "run-a", "event-first");
+        insert_test_work(&second_store, "work-second", "run-b", "event-second");
+        insert_test_work(&first_store, "work-duplicate", "run-a", "event-duplicate-a");
+        insert_test_work(
+            &second_store,
+            "work-duplicate",
+            "run-b",
+            "event-duplicate-b",
+        );
+        let spaces = vec![
+            ("space-a".to_string(), first_store.clone()),
+            ("space-b".to_string(), second_store.clone()),
+        ];
+
+        let response = handle_post_with_execution(
+            &company_store,
+            Some(&first_store),
+            Some(&spaces),
+            "/v1/company-os/work-query",
+            &json!({"team_run_ids": ["run-b"]}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(response.status, "200 OK");
+        assert_eq!(response.body["result"]["summary"]["total"], 2);
+        assert_eq!(response.body["result"]["works"][0]["team_run_id"], "run-b");
+        assert_eq!(
+            response.body["result"]["routes"]["work-second"]["execution_space_id"],
+            "space-b"
+        );
+        assert_eq!(
+            response.body["result"]["conflicts"][0]["work_id"],
+            "work-duplicate"
+        );
+        assert!(response.body["result"]["routes"]
+            .get("work-duplicate")
+            .is_none());
+
+        for store in [&company_store, &first_store, &second_store] {
+            let _ = std::fs::remove_dir_all(store.root());
+        }
+    }
+
     #[test]
     fn snapshot_projects_durable_agent_members_from_the_execution_space() {
         let nonce = format!(
@@ -1210,7 +1358,8 @@ mod projection_tests {
             projected.conflicts.is_empty(),
             "a healthy store must report an empty conflict list"
         );
-        let company_work = company_work_projection(&store, &CompanyWorkQuery::default()).unwrap();
+        let company_work =
+            company_work_projection_from_spaces(&store, &[], &CompanyWorkQuery::default()).unwrap();
         assert_eq!(company_work["authority"], "team_work");
         assert_eq!(company_work["summary"]["total"], 2);
         assert_eq!(company_work["works"][0]["id"], "work-1");

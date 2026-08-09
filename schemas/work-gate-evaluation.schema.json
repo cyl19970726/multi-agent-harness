@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/work-gate-evaluation.schema.json",
+  "title": "AgentTeamWorkGateEvaluation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "work_id", "work_report_id", "gate_requirement_ref", "evaluator_actor", "verdict", "summary", "evidence_refs", "created_at"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "work_id": { "type": "string", "minLength": 1 },
+    "work_report_id": { "type": "string", "minLength": 1 },
+    "gate_requirement_ref": { "type": "string", "minLength": 1 },
+    "evaluator_actor": { "$ref": "#/$defs/actor" },
+    "verdict": { "type": "string", "enum": ["passed", "failed", "blocked"] },
+    "summary": { "type": "string", "minLength": 1 },
+    "evidence_refs": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+    "created_at": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["host", "member_run", "agent_member", "operator", "service"] },
+        "id": { "type": "string", "minLength": 1 },
+        "display_name": { "type": ["string", "null"], "minLength": 1 },
+        "authn_source": { "type": ["string", "null"], "minLength": 1 }
+      }
+    }
+  }
+}

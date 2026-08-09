@@ -1,6 +1,6 @@
 ---
 name: connect-github-company-os
-description: Connect GitHub repositories, Issues, pull requests, commits, checks, reviews, comments, releases, and repo documents to Company OS as external source observations and software-delivery evidence. Use when an Agent needs to register or sync a repository, map repo docs into Docs, link GitHub activity to a WorkItem, reconcile delivery state, triage an Issue, or design/operate the GitHub connector without letting GitHub replace Company Docs, Work, Organization, Approval, or Finance truth.
+description: Connect GitHub repositories, Issues, pull requests, commits, checks, reviews, comments, releases, and repo documents to Company OS as external source observations and software-delivery evidence. Use when an Agent needs to register or sync a repository, map repo docs into Docs, link GitHub activity to a Work, reconcile delivery state, triage an Issue, or design/operate the GitHub connector without letting GitHub replace Company Docs, Work, Organization, Approval, or Finance truth.
 ---
 
 # Connect GitHub To Company OS
@@ -22,7 +22,7 @@ Read only the relevant canonical sources before changing durable records:
 - `docs/current/company-os/work-items-and-approvals.md`
 
 Use `$company-docs-operator` for source records/relations and
-`$company-work-operator` for WorkItem links/lifecycle. Use
+`$company-work-operator` for Work links/lifecycle. Use
 `$company-org-operator` only when actor identity or permission is in scope.
 
 ## Keep Three Identities Distinct
@@ -59,7 +59,7 @@ The connector may project:
 | --- | --- |
 | repository/default branch | external project / Project Binding relation |
 | repo PRD, ADR, schema, design doc | product source/snapshot mapped to Docs |
-| Issue | source observation or DeliveryRef linked to a WorkItem |
+| Issue | source observation or DeliveryRef linked to a Work |
 | PR/commit | implementation deliverable |
 | check/workflow run | delivery evidence snapshot |
 | review | review evidence; not Company Approval |
@@ -98,7 +98,7 @@ Inspect both sides:
 
 ```bash
 harness --company <company-id> company docs query --document <source-doc-id>
-harness --company <company-id> company work query --work-item <work-item-id>
+harness --company <company-id> company work query --work <work-id>
 gh repo view <owner/repo> --json nameWithOwner,defaultBranchRef,url
 gh issue view <number> --repo <owner/repo> --json number,title,state,url,labels,milestone
 gh pr view <number> --repo <owner/repo> \
@@ -112,7 +112,7 @@ remote merge from a local branch or a Work acceptance from a green check.
 
 ### 1. Observe
 
-Fetch the smallest GitHub fact set required for the current WorkItem or source
+Fetch the smallest GitHub fact set required for the current Work or source
 mapping. Preserve repo identity, external id, URL, revision/SHA, observation
 time, and transport.
 
@@ -138,7 +138,7 @@ Finance, Approval, or execution side effects.
 
 ### 2. Correlate And Route
 
-Reuse explicit relations or WorkItem refs. One WorkItem may link several
+Reuse explicit relations or Work refs. One Work may link several
 Issues, PRs, commits, and checks; one repository may support several Company
 modules. Do not correlate by title alone.
 
@@ -150,10 +150,10 @@ github:<owner>/<repo>:pull:<number>
 github:<owner>/<repo>:check:<run-or-check-id>:<sha>
 ```
 
-If no WorkItem owns a material finding, submit the observation to the
+If no Work owns a material finding, submit the observation to the
 continuous Company intake path through `$company-work-operator`. The Company
 Lead decides priority, deduplication, and capacity; the accountable Domain Lead
-receives one Company Assignment and may delegate delivery only inside its
+receives one Work ownership and delivery and may delegate delivery only inside its
 attenuated Organization ceiling. The Supervisor may route intake or execution
 mail, but it does not choose business priority, create authority, or close
 Work.
@@ -175,7 +175,7 @@ Classify external effects:
 | R2 product commitment | public roadmap promise, close disputed Issue, merge/release | Lead/Human policy gate |
 | R3 protected | permissions, branch protection, security disclosure, destructive repo action | explicit Human/Policy gate |
 
-Opening a PR during an explicitly assigned development WorkItem is normal
+Opening a PR during an explicitly assigned development Work is normal
 delivery when repository policy permits it. Merging, release, permission
 change, deployment, or destructive cleanup requires the applicable explicit
 authority. Never treat a logged-in `gh` session as that authority.
@@ -186,7 +186,7 @@ After GitHub changes:
 
 1. read the remote object again;
 2. record the final URL/id/SHA/state and check/review evidence;
-3. attach delivery/evidence refs to the WorkItem through Work;
+3. attach delivery/evidence refs to the Work through Work;
 4. let the accountable reviewer decide Company acceptance;
 5. return the durable result to the source Document/module; and
 6. update connector freshness/sync state.
@@ -198,7 +198,7 @@ and current capacity rather than from GitHub state alone.
 Current implemented connector truth is local Docs source sync plus direct
 Git/GitHub observation through existing transports. Typed
 Issue/PR/check/review projections, durable freshness reconciliation, and exact
-Company Assignment → Team delivery → native execution → Handoff → GitHub
+Work ownership and delivery → Team delivery → native execution → Handoff → GitHub
 observation linkage remain partial/target until their schema, Store, API, UI,
 and acceptance checks exist. Never invent those rows from a URL or Skill
 procedure.
@@ -228,7 +228,7 @@ acceptance, or completion.
 
 The Company UI should show GitHub where it helps decisions:
 
-- WorkItem: source Issue/finding, PR/commit deliverables, checks/reviews,
+- Work: source Issue/finding, PR/commit deliverables, checks/reviews,
   freshness, and deep links;
 - Docs: source path/branch/commit snapshots and drift review;
 - Agent detail: assigned Issues/PRs/failed checks derived through Work/Org
@@ -245,7 +245,7 @@ Report:
 
 - Company, Project Binding, and GitHub repo identities;
 - source observations and sync cursor/freshness;
-- linked WorkItem, Docs, actor, execution, and delivery/evidence refs;
+- linked Work, Docs, actor, execution, and delivery/evidence refs;
 - Company Lead triage/replan, Domain Lead delegation, and Human exceptions;
 - external actions and their authority;
 - remote readback and checks;

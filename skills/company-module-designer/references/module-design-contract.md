@@ -17,7 +17,7 @@ Produce one JSON object with these top-level keys:
   "relations": [],
   "views": [],
   "actors_and_roles": [],
-  "work_items": [],
+  "works": [],
   "approvals": [],
   "financial_relations": [],
   "actions": [],

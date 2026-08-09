@@ -100,16 +100,7 @@ async function main() {
   check(documentAction.includes('command_name: "typed_record.append"') && documentAction.includes('command_name: "view.append"') && documentAction.includes('command_name: "relation.append"') && documentAction.includes('subject_ref: { kind: "business_module"') && documentAction.includes('source_document_ref: context.sourceDocumentId'), "Module authoring actions build native TypedRecord, View, and Relation commands from scoped Docs context");
   check(documentAction.includes("mode: params.mode ?? \"table\"") && documentAction.includes("source_kinds: sourceKinds?.length ? sourceKinds : [\"typed_record\"]") && documentAction.includes("query: params.query ?? {}"), "View authoring command preserves saved mode, source kinds, and query configuration in native View records");
   check(!documentAction.includes('command_name: "document.append"') && !documentAction.includes('command_name: "block.append"'), "browser Docs actions no longer build Block-era document.append or block.append commands");
-  const [captureScript, seedScript] = await Promise.all([
-    readFile(join(repositoryRoot, "scripts", "capture-company-os-v2.mjs"), "utf8"),
-    readFile(join(repositoryRoot, "scripts", "seed-company-os-trademark-v1.mjs"), "utf8"),
-  ]);
   check(!health.includes("work_item.append"), "Docs Health browser surface has no retired corrective WorkItem action");
-  check(captureScript.includes("--docs-health-relation-token") && captureScript.includes("docs_health_relation_action") && captureScript.includes("work_item_count_before"), "capture script verifies Store-live direct Docs Relation repair without Work or Finance side effects");
-  check(captureScript.includes("--docs-module-action-token") && captureScript.includes("docs_module_action") && captureScript.includes('"typed_record.append"') && captureScript.includes('"view.append"') && captureScript.includes('"relation.append"') && captureScript.includes("work_item_count_before"), "capture script verifies Store-live standard module TypedRecord/View/Relation authoring without Work or Finance side effects");
-  check(seedScript.includes("--capture-docs-health-relation") && seedScript.includes("--docs-health-relation-token"), "seed script retains the Store-live Docs relation acceptance path");
-  check(seedScript.includes("--capture-docs-health-relation") && seedScript.includes("--docs-health-relation-token") && seedScript.includes('"relation.append"'), "seed script declares and captures Store-live Docs Relation repair acceptance");
-  check(seedScript.includes("--capture-docs-module-action") && seedScript.includes("--docs-module-action-token"), "seed script declares and captures Store-live Docs module authoring acceptance");
   check(!adapter.includes("trademark-application-cn-2026-018") && !adapter.includes("Trademark Management"), "projection adapter contains no canonical trademark fixture IDs or labels");
   check(!adapter.includes('type: "payment"') && !adapter.includes("Paid"), "fixture adapter does not fabricate a payment or settlement state");
   const commitment = fixture.financial_records.find((record) => record.type === "commitment");

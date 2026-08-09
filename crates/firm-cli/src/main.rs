@@ -2034,7 +2034,7 @@ fn retired_surface_error(command: &str) -> CliError {
 }
 
 fn company_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "company <init|list|current|switch|show|migrate-from-project|migrations> | company docs ... | company work list|query|create|update|assign|transition|close|milestone | company org ... | company approval ... | company finance ... | company gateway social readiness")?;
+    require_subcommand(args, "company <init|list|current|switch|show|migrate-from-project|migrations> | company docs ... | company work list|query|milestone | company org ... | company approval ... | company finance ... | company gateway social readiness")?;
     match args[0].as_str() {
         "init" => company_store_init_command(args.get(1..).unwrap_or(&[])),
         "list" => company_store_list_command(),
@@ -3603,10 +3603,27 @@ fn company_work_list_command(store: &HarnessStore, args: &[String]) -> CliResult
 
 fn company_work_query_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     let work_id = required(args, "--work")?;
-    let work = store
-        .latest_works()?
+    let projection = company_work_projection_value(store, &serde_json::json!({}))?;
+    let conflicts = projection["conflicts"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if let Some(conflict) = conflicts.iter().find(|conflict| {
+        conflict.get("work_id").and_then(serde_json::Value::as_str) == Some(work_id.as_str())
+    }) {
+        return Err(CliError::Usage(format!(
+            "Work {work_id} is ambiguous across Execution Spaces: {}",
+            serde_json::to_string(conflict)?
+        )));
+    }
+    let work = projection["works"]
+        .as_array()
         .into_iter()
-        .find(|candidate| candidate.id == work_id)
+        .flatten()
+        .find(|candidate| {
+            candidate.get("id").and_then(serde_json::Value::as_str) == Some(work_id.as_str())
+        })
+        .cloned()
         .ok_or_else(|| CliError::Usage(format!("Work not found: {work_id}")))?;
     let milestones = store
         .latest_milestones()?
@@ -3617,6 +3634,7 @@ fn company_work_query_command(store: &HarnessStore, args: &[String]) -> CliResul
         "ok": true,
         "result": {
             "work": work,
+            "route": projection["routes"].get(&work_id),
             "milestones": milestones,
             "boundaries": company_work_read_boundaries()
         },
@@ -6645,8 +6663,23 @@ fn company_work_projection_value(
     store: &HarnessStore,
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
-    let response = company_os_api::handle_post(store, "/v1/company-os/work-query", body, None)
-        .ok_or_else(|| CliError::Usage("Company OS work query is unavailable".into()))?;
+    let execution_spaces = execution_space::firm_home()
+        .ok()
+        .and_then(|firm_home| execution_space::list_spaces(&firm_home).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|space| (space.id, HarnessStore::new(space.store_root)))
+        .collect::<Vec<_>>();
+    let selected_execution_store = execution_spaces.first().map(|(_, store)| store);
+    let response = company_os_api::handle_post_with_execution(
+        store,
+        selected_execution_store,
+        (!execution_spaces.is_empty()).then_some(execution_spaces.as_slice()),
+        "/v1/company-os/work-query",
+        body,
+        None,
+    )
+    .ok_or_else(|| CliError::Usage("Company OS work query is unavailable".into()))?;
     if response.body.get("ok").and_then(|value| value.as_bool()) != Some(true) {
         let detail = response
             .body
@@ -14982,7 +15015,7 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 }
                 github_links.push(link);
             }
-            let work = store.submit_work_with_links(
+            let work = store.submit_work_with_revision_and_links(
                 &required(args, "--work-id")?,
                 required_work_version(args)?,
                 &member_run_id,
@@ -14990,6 +15023,8 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 artifact_refs,
                 check_refs,
                 github_links,
+                value(args, "--base-revision"),
+                value(args, "--candidate-revision"),
                 member_work_context(args, &team_run_id, &member_run_id)?,
             )?;
             append_work_event(
@@ -27584,9 +27619,19 @@ fn handle_http_connection(
             }
         }
     };
-    if let Some(response) =
-        company_os_api::handle_post(store, &path_only, &body_json, company_os_token.as_deref())
-    {
+    let execution_space_stores = projects
+        .list_spaces()
+        .into_iter()
+        .map(|space| (space.id, HarnessStore::new(space.store_root)))
+        .collect::<Vec<_>>();
+    if let Some(response) = company_os_api::handle_post_with_execution(
+        store,
+        Some(&store_owned),
+        Some(&execution_space_stores),
+        &path_only,
+        &body_json,
+        company_os_token.as_deref(),
+    ) {
         write_http_json(&mut stream, response.status, &response.body)?;
         return Ok(());
     }
@@ -39494,7 +39539,7 @@ fn print_help() {
   company docs query|search|traverse|refs|related|health|source sync|snapshot|diff|change-report
   company docs module create | page create|read|write|append|search|rename|move|archive|scaffold|verify|publish | page-definition create
   company docs typed-record append|update|validate | view create|update | relation link|unlink|relink
-  company work list|query|create|update|assign|transition|close
+  company work list|query
   company work milestone list|show|create|update|close
   company finance list|query|propose-commitment|request-approval|decide-approval|transition-commitment|record-payment|transition-payment
   company finance commitment list|show|propose|transition

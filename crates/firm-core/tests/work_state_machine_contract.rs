@@ -94,11 +94,11 @@ fn report_revision_binding_is_exact() {
     let mut report = WorkReport {
         id: "report-1".into(),
         work_id: "work-1".into(),
-        source_work_version: 3,
+        work_version: 3,
         report_revision: 1,
         submitted_by_actor: host_actor(),
         base_revision: Some("base-sha".into()),
-        candidate_revision: Some("candidate-sha".into()),
+        candidate_revision: "candidate-sha".into(),
         result_summary: "implemented".into(),
         artifact_refs: vec!["diff:1".into()],
         check_refs: vec!["test:1".into()],
@@ -107,8 +107,8 @@ fn report_revision_binding_is_exact() {
         created_at: "unix-ms:2".into(),
     };
     report.validate().expect("bound report");
-    report.candidate_revision = None;
-    assert!(report.validate().is_err(), "half-bound report must fail");
+    report.candidate_revision.clear();
+    assert!(report.validate().is_err(), "unbound report must fail");
 }
 
 #[test]

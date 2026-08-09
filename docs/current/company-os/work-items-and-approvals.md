@@ -121,6 +121,6 @@ The cutover has no dual-write or read fallback:
   Work;
 - no browser action that creates a corrective Company task.
 
-Legacy persisted data is not automatically deleted. Migration or archival must
-be an explicit operator decision with backup and evidence. It is never used as
-live Work authority after this cutover.
+Legacy Company task data is disposable and unsupported. There is no migration,
+archival workflow, compatibility reader, or fallback; use a fresh Execution
+Space for authoritative Work.

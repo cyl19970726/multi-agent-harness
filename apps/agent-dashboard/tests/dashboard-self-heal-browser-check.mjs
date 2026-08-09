@@ -73,9 +73,9 @@ function buildSnapshot(space, company, title) {
         revision: "fnv1a64:0123456789abcdef",
         projection: "latest_row_wins",
       },
-      documents: [], work_items: [], approvals: [], financial_records: [],
+      documents: [], approvals: [], financial_records: [],
       human_members: [], agent_members: [], org_units: [], business_modules: [],
-      typed_records: [], relations: [], assignments: [], metric_observations: [],
+      typed_records: [], relations: [], metric_observations: [],
     },
   };
 }
@@ -185,7 +185,7 @@ function emitInvalidation({ space = "space-a", company = "company-a", revision, 
   const payload = malformed ? { bad: true } : {
     scope,
     scope_id: scope === "company" ? company : space,
-    ledger: scope === "company" ? "company_os_work_items.jsonl" : "work_operations.jsonl",
+    ledger: scope === "company" ? "company_os_documents.jsonl" : "work_operations.jsonl",
     revision,
     reason: "append",
     stream_epoch: "epoch-client",

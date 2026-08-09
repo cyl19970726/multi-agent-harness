@@ -14,6 +14,11 @@
 | Agent Team Work | [work.schema.json](work.schema.json) |
 | Agent Team Work event | [work-event.schema.json](work-event.schema.json) |
 | Agent Team Work delivery | [work-delivery.schema.json](work-delivery.schema.json) |
+| Agent Team Work condition record | [work-condition-record.schema.json](work-condition-record.schema.json) |
+| Agent Team Work report | [work-report.schema.json](work-report.schema.json) |
+| Agent Team Work evidence | [work-evidence.schema.json](work-evidence.schema.json) |
+| Agent Team Work gate evaluation | [work-gate-evaluation.schema.json](work-gate-evaluation.schema.json) |
+| Agent Team Work operational decision | [work-operational-decision.schema.json](work-operational-decision.schema.json) |
 | Team Supervisor lease | [team-supervisor-lease.schema.json](team-supervisor-lease.schema.json) |
 | Durable Member Close | [team-member-close-request.schema.json](team-member-close-request.schema.json) |
 | Agent Inbox runtime route | [agent-message-route.schema.json](agent-message-route.schema.json) |

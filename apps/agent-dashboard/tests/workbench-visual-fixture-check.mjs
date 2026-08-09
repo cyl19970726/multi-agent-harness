@@ -179,12 +179,16 @@ async function main() {
   check(
     JSON.stringify(leadHistory.map((operation) => operation.event.kind))
       === JSON.stringify(["created", "assigned", "started", "blocked", "resumed", "submitted", "accepted"])
-      && researchHistory.at(-1)?.work.status === "review"
-      && backendHistory.at(-1)?.work.status === "in_progress"
+      && researchHistory.at(-1)?.work.phase === "review"
+      && researchHistory.at(-1)?.work.condition === "normal"
+      && backendHistory.at(-1)?.work.phase === "active"
+      && backendHistory.at(-1)?.work.condition === "normal"
       && qaHistory.some((operation) => operation.event.kind === "claimed")
-      && qaHistory.at(-1)?.work.status === "blocked"
+      && qaHistory.at(-1)?.work.phase === "active"
+      && qaHistory.at(-1)?.work.condition === "blocked"
       && !openHistory.at(-1)?.work.owner_member_id
-      && assignedHistory.at(-1)?.work.status === "open"
+      && assignedHistory.at(-1)?.work.phase === "open"
+      && assignedHistory.at(-1)?.work.condition === "normal"
       && assignedHistory.at(-1)?.work.owner_member_id === "member-wave2-lead",
     "Fixture proves unassigned and assigned queues, team claim, block/resume, submit, and explicit Host acceptance while retaining live board pressure",
   );

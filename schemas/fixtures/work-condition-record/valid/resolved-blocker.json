@@ -1,0 +1,13 @@
+{
+  "id": "condition-resolution-1",
+  "work_id": "work-1",
+  "work_version": 4,
+  "condition": "blocked",
+  "owner_actor": { "kind": "host", "id": "host" },
+  "impact": "dependency unavailable",
+  "resume_condition": "dependency restored",
+  "evidence_refs": [],
+  "created_at": "unix-ms:4",
+  "resolved_at": "unix-ms:4",
+  "supersedes_condition_record_id": "condition-1"
+}

@@ -50,7 +50,7 @@ async function loadRecursiveSelectors() {
   }
 }
 
-check(router.includes('selection.orgView === "agent-teams"') && router.includes('selection.workView === "team-works"'), "OrgUnit/AgentTeam and WorkItem/Team Work kernels have distinct URL views");
+check(router.includes('selection.orgView === "agent-teams"') && router.includes('selection.workView === "team-works"'), "OrgUnit/AgentTeam and Work/Team Work kernels have distinct URL views");
 check(router.includes("Execution snapshot") && router.includes("remain separate from the Company Store"), "execution snapshot truth is not labelled as Company Store truth");
 check(selection.includes('params.get("orgTeam")') && selection.includes('params.get("teamWork")'), "recursive Team and Team Work focus round-trip through URL selection");
 

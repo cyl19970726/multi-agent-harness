@@ -582,8 +582,8 @@ async function main() {
     if (missingSourceRelations.length) {
       throw new Error(`missing Document source_for relations: ${missingSourceRelations.join(", ")}`);
     }
-    if ((snapshot.work_items ?? []).length || (snapshot.approvals ?? []).length || (snapshot.financial_records ?? []).length) {
-      throw new Error("Docs seed created Work, Approval, or Finance side effects");
+    if ((snapshot.approvals ?? []).length || (snapshot.financial_records ?? []).length) {
+      throw new Error("Docs seed created Approval or Finance side effects");
     }
 
     console.log(JSON.stringify({
@@ -604,7 +604,6 @@ async function main() {
         lottery_unlock_checkins: 12,
       },
       side_effects: {
-        work_items: (snapshot.work_items ?? []).length,
         approvals: (snapshot.approvals ?? []).length,
         financial_records: (snapshot.financial_records ?? []).length,
       },

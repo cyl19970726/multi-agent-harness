@@ -4161,6 +4161,8 @@ pub struct WorkConditionRecord {
     pub created_at: String,
     #[serde(default)]
     pub resolved_at: Option<String>,
+    #[serde(default)]
+    pub supersedes_condition_record_id: Option<String>,
 }
 
 /// Immutable submission for one exact Work revision and, when applicable,
@@ -4170,13 +4172,15 @@ pub struct WorkConditionRecord {
 pub struct WorkReport {
     pub id: String,
     pub work_id: String,
-    pub source_work_version: u64,
+    /// Exact Work projection version produced by this submission report.
+    pub work_version: u64,
     pub report_revision: u64,
     pub submitted_by_actor: TeamActorRef,
     #[serde(default)]
     pub base_revision: Option<String>,
-    #[serde(default)]
-    pub candidate_revision: Option<String>,
+    /// Exact immutable candidate identifier. Code submissions should use the
+    /// source revision; other submissions use the canonical content digest.
+    pub candidate_revision: String,
     pub result_summary: String,
     #[serde(default)]
     pub artifact_refs: Vec<String>,
@@ -4186,6 +4190,21 @@ pub struct WorkReport {
     pub evidence_refs: Vec<String>,
     #[serde(default)]
     pub known_risks: Vec<String>,
+    pub created_at: String,
+}
+
+/// Immutable evidence binding one WorkReport to its exact candidate revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkEvidence {
+    pub id: String,
+    pub work_id: String,
+    pub work_report_id: String,
+    pub work_version: u64,
+    pub candidate_revision: String,
+    pub source_type: String,
+    pub source_ref: String,
+    pub summary: String,
     pub created_at: String,
 }
 
@@ -4286,9 +4305,9 @@ impl Validate for WorkReport {
         )?;
         require_non_empty(&self.result_summary, "WorkReport.result_summary")?;
         require_non_empty(&self.created_at, "WorkReport.created_at")?;
-        if self.source_work_version == 0 {
+        if self.work_version == 0 {
             return Err(ValidationError::Invalid {
-                field: "WorkReport.source_work_version",
+                field: "WorkReport.work_version",
                 reason: "must be greater than zero",
             });
         }
@@ -4298,23 +4317,51 @@ impl Validate for WorkReport {
                 reason: "must be greater than zero",
             });
         }
-        match (&self.base_revision, &self.candidate_revision) {
-            (Some(base), Some(candidate)) => {
-                require_non_empty(base, "WorkReport.base_revision")?;
-                require_non_empty(candidate, "WorkReport.candidate_revision")?;
-            }
-            (None, None) => {}
-            _ => {
-                return Err(ValidationError::Invalid {
-                    field: "WorkReport.candidate_revision",
-                    reason: "base_revision and candidate_revision must be supplied together",
-                });
-            }
+        require_non_empty(&self.candidate_revision, "WorkReport.candidate_revision")?;
+        if let Some(base) = &self.base_revision {
+            require_non_empty(base, "WorkReport.base_revision")?;
         }
         validate_non_empty_unique_strings(&self.artifact_refs, "WorkReport.artifact_refs", true)?;
         validate_non_empty_unique_strings(&self.check_refs, "WorkReport.check_refs", true)?;
+        if self.evidence_refs.is_empty() {
+            return Err(ValidationError::Required {
+                field: "WorkReport.evidence_refs",
+            });
+        }
         validate_non_empty_unique_strings(&self.evidence_refs, "WorkReport.evidence_refs", true)?;
         validate_non_empty_unique_strings(&self.known_risks, "WorkReport.known_risks", false)
+    }
+}
+
+impl Validate for WorkEvidence {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "WorkEvidence.id")?;
+        require_non_empty(&self.work_id, "WorkEvidence.work_id")?;
+        require_non_empty(&self.work_report_id, "WorkEvidence.work_report_id")?;
+        require_non_empty(&self.candidate_revision, "WorkEvidence.candidate_revision")?;
+        require_non_empty(&self.source_type, "WorkEvidence.source_type")?;
+        require_non_empty(&self.source_ref, "WorkEvidence.source_ref")?;
+        require_non_empty(&self.summary, "WorkEvidence.summary")?;
+        require_non_empty(&self.created_at, "WorkEvidence.created_at")?;
+        if self.work_version == 0 {
+            return Err(ValidationError::Invalid {
+                field: "WorkEvidence.work_version",
+                reason: "must be greater than zero",
+            });
+        }
+        if self.source_type != "work_candidate_revision" {
+            return Err(ValidationError::Invalid {
+                field: "WorkEvidence.source_type",
+                reason: "must be work_candidate_revision",
+            });
+        }
+        if self.source_ref != self.candidate_revision {
+            return Err(ValidationError::Invalid {
+                field: "WorkEvidence.source_ref",
+                reason: "must equal candidate_revision",
+            });
+        }
+        Ok(())
     }
 }
 
@@ -5429,6 +5476,8 @@ pub struct WorkOperation {
     pub condition_records: Vec<WorkConditionRecord>,
     #[serde(default)]
     pub reports: Vec<WorkReport>,
+    #[serde(default)]
+    pub evidence_records: Vec<WorkEvidence>,
     #[serde(default)]
     pub gate_evaluations: Vec<WorkGateEvaluation>,
     #[serde(default)]

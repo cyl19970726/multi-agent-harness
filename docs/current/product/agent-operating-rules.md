@@ -95,8 +95,9 @@ Mission relation, `AgentTeamRun`, `MemberRun` plus its native-session binding,
 `Work`, `WorkEvent`, `WorkDelivery`, `TeamMessage`, `PendingInteraction`,
 explicit outcome and artifact/check references, and control acknowledgements.
 Work owner and state prove responsibility; TeamMessage is authored conversation.
-There is no Assignment Message compatibility path; active stores using the old
-ownership model must be reset or explicitly migrated rather than dual-read.
+There is no Assignment Message compatibility path; stores using the retired
+Company task model must be reset. Those rows are disposable and are never
+migrated or dual-read into Unified Work.
 The provider's native session store is the sole execution truth for that member's transcript, tool
 calls, commands, file events, and provider turn lifecycle; do not mirror those
 streams into Harness ledgers

@@ -1,7 +1,7 @@
 # Organization + Company Work Model — Design
 
 ```text
-status: proposed
+status: superseded-by-issue-420
 owner_role: product-architecture
 target_spec: specs/organization-company-work/design.md
 references:
@@ -11,6 +11,11 @@ references:
   - specs/nested-agent-team-organization/requirements.md
   - specs/nested-agent-team-organization/design.md
 ```
+
+> Historical design input only. The implemented #420 contract is documented in
+> `docs/current/company-os/work-operating-system.md` and
+> `docs/current/product/agent-team-works.md`. Existing Company task data is
+> disposable: there is no migration, compatibility read, fallback, or dual write.
 
 ## 1. Purpose
 
@@ -318,16 +323,10 @@ These remain unchanged from the current Team Work implementation:
   `WorkReviewRequested`, `WorkBlocked`, `MemberStoppedWithOwnedReadyWork`,
   `MemberFailedWithOwnedReadyWork`.
 
-### 4.6 Migration from WorkItem
+### 4.6 Cutover policy
 
-`WorkItem` (Company OS) rows are exported and archived.  New code reads only
-the unified `Work`.  Cutover:
-
-1. `harness work migrate-work-items` reads `company_os_work_items.jsonl`,
-   maps each `WorkItem` to a `Work` row (dropping multi-actor assignment fields,
-   preserving `business_module_ref`, `milestone_ref`, `document_refs`).
-2. `harness work cutover-audit` validates all references.
-3. After audit, `company_os_work_items.jsonl` is archived.
+The implemented cutover deletes the obsolete Company task ledger and bridge.
+Historical rows are not migrated, interpreted, exported, or dual-written.
 
 ### 4.7 Cross-Machine Work
 
@@ -514,9 +513,6 @@ harness work request-changes --id <id> --version <n> [--reason <s>]
 harness work accept --id <id> --version <n> [--summary <s>]
 harness work cancel --id <id> --version <n>
 
-# Migration (new)
-harness work migrate-work-items --company <id> [--dry-run]
-harness work cutover-audit --company <id>
 ```
 
 ### 6.2 HTTP API
@@ -584,7 +580,6 @@ No new ledger files.  Extend existing ledgers:
 | `teams.jsonl` | `AgentTeam` rows | Add `company_id`, `machine_id`, `labels` fields |
 | `durable_agent_members.jsonl` | `DurableAgentMember` rows | Add `hosted_team_id`, `human_sponsor_ref` fields |
 | `work_operations.jsonl` | `WorkOperation` rows | Add `business_module_ref`, `milestone_ref`, `document_refs`, `approval_refs`, `finance_refs`, `source_observation_ref`, `due_at` fields to `Work` |
-| `company_os_work_items.jsonl` | Compatibility `WorkItem` rows | Frozen after migration; archived after audit |
 | `company_os_standing_agents.jsonl` | Compatibility `StandingAgent` rows | Frozen after convergence; archived after audit |
 
 New optional ledgers:
@@ -599,15 +594,11 @@ New optional ledgers:
    works through the machine registry.
 2. `DurableAgentMember` is the single agent identity; `StandingAgent` rows are
    converged and archived.
-3. Unified `Work` rows carry Company OS extensions; `WorkItem` rows are
-   migrated and archived.
+3. Unified `Work` rows are authoritative; obsolete Company task rows are discarded.
 4. `GET /v1/organization` returns the full recursive Team tree with work counts.
 5. `GET /v1/works` filters by team, status, owner, priority, milestone, module,
    and demand class.
 6. Per-Team Works view reuses existing Team War Room without modification.
 7. Global Works view shows all Work across all Teams under a Company.
-8. `harness work migrate-work-items` produces valid `Work` rows with preserved
-   references.
-9. `harness org cutover-audit` passes after migration.
-10. A real dogfood run exercises Lead → child Team delegation, cross-machine
+8. A real dogfood run exercises Lead → child Team delegation, cross-machine
     Work delivery, and the global Works view.

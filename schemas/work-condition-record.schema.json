@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/work-condition-record.schema.json",
+  "title": "AgentTeamWorkConditionRecord",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "work_id", "work_version", "condition", "owner_actor", "impact", "resume_condition", "evidence_refs", "created_at"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "work_id": { "type": "string", "minLength": 1 },
+    "work_version": { "type": "integer", "minimum": 1 },
+    "condition": { "type": "string", "enum": ["blocked", "on_hold"] },
+    "owner_actor": { "$ref": "#/$defs/actor" },
+    "impact": { "type": "string", "minLength": 1 },
+    "resume_condition": { "type": "string", "minLength": 1 },
+    "next_check_at": { "type": ["string", "null"], "minLength": 1 },
+    "evidence_refs": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "created_at": { "type": "string", "minLength": 1 },
+    "resolved_at": { "type": ["string", "null"], "minLength": 1 },
+    "supersedes_condition_record_id": { "type": ["string", "null"], "minLength": 1 }
+  },
+  "$defs": {
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["host", "member_run", "agent_member", "operator", "service"] },
+        "id": { "type": "string", "minLength": 1 },
+        "display_name": { "type": ["string", "null"], "minLength": 1 },
+        "authn_source": { "type": ["string", "null"], "minLength": 1 }
+      }
+    }
+  }
+}

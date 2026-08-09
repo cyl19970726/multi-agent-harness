@@ -1,0 +1,11 @@
+{
+  "id": "condition-1",
+  "work_id": "work-1",
+  "work_version": 3,
+  "condition": "normal",
+  "owner_actor": { "kind": "host", "id": "host" },
+  "impact": "none",
+  "resume_condition": "none",
+  "evidence_refs": [],
+  "created_at": "unix-ms:3"
+}

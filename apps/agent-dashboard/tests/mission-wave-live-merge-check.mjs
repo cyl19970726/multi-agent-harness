@@ -192,7 +192,7 @@ async function main() {
   const gap = invalidations.observe(token(3), scope);
   const duplicate = invalidations.observe(token(2), scope);
   const otherCompany = invalidations.observe(token(1, {
-    scope: "company", scope_id: "company-b", ledger: "company_os_work_items.jsonl",
+    scope: "company", scope_id: "company-b", ledger: "company_os_documents.jsonl",
   }), scope);
   if (
     first.kind === "refresh" && !first.gap

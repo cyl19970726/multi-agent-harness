@@ -7,7 +7,7 @@ description: Operate Company OS Finance through governed Store/API/Action contra
 
 Operate the Company OS Finance surface. This skill is a procedural capability,
 not product authority. It helps an Agent handle monetary records through
-governed contracts and avoid treating approval text, WorkItem notes, or
+governed contracts and avoid treating approval text, Work notes, or
 document tables as money state.
 
 ## Select the Company Store
@@ -80,7 +80,7 @@ records, not document-owned money state.
 
 When a page contract references Finance, require:
 
-- source Document and, when applicable, source WorkItem ref;
+- source Document and, when applicable, source Work ref;
 - amount, currency, category, cost center, and business reason;
 - Commitment id/status for planned spend;
 - Approval id and human decision actor when policy requires approval;
@@ -161,7 +161,7 @@ Current v1 boundary:
 ```bash
 harness company finance commitment list
 harness company finance commitment show --commitment <commitment-id>
-harness company finance commitment propose --definition <page-definition-id> --work-item <work-item-id> --source-document <document-id> --submitted-by <actor-id> --accountable-owner <actor-id> --amount <amount> --currency <CURRENCY> --relation <relation-id>
+harness company finance commitment propose --definition <page-definition-id> --work <work-id> --source-document <document-id> --submitted-by <actor-id> --accountable-owner <actor-id> --amount <amount> --currency <CURRENCY> --relation <relation-id>
 harness company finance commitment transition --definition <page-definition-id> --commitment <commitment-id> --status pending_approval|approved|cancelled|fulfilled --actor <actor-id> --approval <approval-id> --evidence <ref>
 harness company finance payment list
 harness company finance payment show --payment <payment-id>
@@ -177,9 +177,9 @@ planned until their CLI and acceptance checks exist.
 
 ## Safe workflow
 
-1. Inspect the source WorkItem and Docs context before changing Finance.
+1. Inspect the source Work and Docs context before changing Finance.
    If the request comes from a business page, inspect the page contract so the
-   Finance record links back to the correct Document, WorkItem, and right-rail
+   Finance record links back to the correct Document, Work, and right-rail
    finance panel.
 2. Determine whether the request is a proposed future spend, an approved
    commitment, an actual payment, a refund, or a metric observation.
@@ -187,7 +187,7 @@ planned until their CLI and acceptance checks exist.
    edit document tables or JSONL ledgers directly.
 4. Apply approval policy. If the amount, actor, category, or policy requires
    Human approval, request Approval before transition or payment.
-5. Link Finance records back to WorkItem and Docs. The finance record is the
+5. Link Finance records back to Work and Docs. The finance record is the
    money truth; Docs renders it and Work references it.
 6. Record evidence for actual effects: invoice, receipt, transfer record,
    payment processor id, refund id, or reconciliation note.
@@ -196,7 +196,7 @@ planned until their CLI and acceptance checks exist.
 
 ## Validation checklist
 
-- Amount, currency, category, cost center, and related WorkItem/Docs refs are
+- Amount, currency, category, cost center, and related Work/Docs refs are
   explicit.
 - Actor has appropriate Organization authority or a Human approval exists.
 - Approval is a durable Approval record, not a comment.
@@ -215,7 +215,7 @@ When handing off, state:
   `design-only`;
 - Commitment ids and statuses;
 - Payment/refund/invoice ids, if any;
-- source WorkItem and Docs refs;
+- source Work and Docs refs;
 - approval refs and decision actor;
 - evidence refs;
 - remaining system gaps.

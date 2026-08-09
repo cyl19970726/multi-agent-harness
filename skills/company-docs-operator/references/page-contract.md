@@ -7,7 +7,7 @@ for a custom page.
 
 Repository design files are construction plans. The live Company OS truth must
 exist in the project Store as Documents, Blocks, TypedRecords, Relations,
-Views, BusinessModules, WorkItems, Actors, Approvals, and FinancialRecords.
+Views, BusinessModules, Work records, Actors, Approvals, and FinancialRecords.
 
 For example:
 

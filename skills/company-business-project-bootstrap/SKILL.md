@@ -1,6 +1,6 @@
 ---
 name: company-business-project-bootstrap
-description: Bootstrap or reorganize a real commercial/business project inside Company OS. Use when a user wants to turn a venture, city rollout, merchant network, procurement plan, content operation, software PRD repository, or similar business into a governed Company OS setup spanning Docs, WorkItems, Organization, Finance, external product sources, and optional custom pages.
+description: Bootstrap or reorganize a real commercial/business project inside Company OS. Use when a user wants to turn a venture, city rollout, merchant network, procurement plan, content operation, software PRD repository, or similar business into a governed Company OS setup spanning Docs, Work records, Organization, Finance, external product sources, and optional custom pages.
 ---
 
 # Company Business Project Bootstrap
@@ -12,8 +12,8 @@ It does not replace the module operators:
 
 - `$dogfood-company-os` owns repeated self-hosting cycles after bootstrap.
 - `$company-docs-operator` owns durable company memory.
-- `$company-work-operator` owns WorkItems, Milestones, assignments, lifecycle,
-  and result provenance.
+- `$company-work-operator` reads the Company aggregate, routes native TeamWork
+  lifecycle commands, and owns Milestone references and result provenance.
 - `$company-org-operator` owns humans, Standing Agents, org units, roles,
   permissions, and capability lifecycle.
 - `$company-finance-operator` owns budgets, commitments, invoices, payments,
@@ -81,7 +81,7 @@ Produce a concise bootstrap plan or implementation report with:
    required sections, standard Views, related-record panels, and navigation
    links to sibling pages.
 3. Business modules and their owned facts.
-4. WorkTypes, Milestones, first WorkItems, assignment/routing policy, and
+4. Work classifications, Milestones, first Work records, assignment/routing policy, and
    lifecycle views.
 5. Organization model: Lead Agent, governance Agents, business Agents, humans,
    external collaborators, services, roles, delegation ceilings, capacity, and
@@ -154,11 +154,11 @@ Before writing blocks, define a page contract for each important document:
 
 | Page kind | Must answer | Typical presentation |
 | --- | --- | --- |
-| Project Home | What is this business, what modules exist, what is live, what is blocked, and where should a human or Agent go next? | hero thesis, operating loop, module cards, launch-state snapshot, top WorkItems, Finance/Approval watchlist, software-source status, right-side document tree. |
+| Project Home | What is this business, what modules exist, what is live, what is blocked, and where should a human or Agent go next? | hero thesis, operating loop, module cards, launch-state snapshot, top Work records, Finance/Approval watchlist, software-source status, right-side document tree. |
 | Business Model | What is sold, who pays, who receives value, why partners join, how money flows, and how the model replicates? | revenue table, customer/merchant value blocks, partner capability matrix, cost/finance boundary, replication canvas, KPI table. |
 | Product / Offer | What SKUs/rights exist and how are they sold or fulfilled? | SKU table, pricing and entitlement rules, channel/settlement rules, links to design assets and inventory. |
 | Experience / Route | What experience does the user complete and what unlocks at each threshold? | route/spot table, 8/12 reward rules, AR asset readiness, validation/evidence links. |
-| Merchant Network | Which merchants exist, what capabilities each has, and what status/action is next? | merchant capability matrix, contact/onboarding board, map/list view, related WorkItems. |
+| Merchant Network | Which merchants exist, what capabilities each has, and what status/action is next? | merchant capability matrix, contact/onboarding board, map/list view, related Work records. |
 | Procurement / Inventory | What must be bought, where it is, what it costs, and what can be redeemed? | purchase orders, shipment/inventory table, redemption allocation, Finance Commitment links. |
 | Growth / Outreach | What content and creator motions are running and what results came back? | campaign calendar, post/creator pipeline, metrics table, result-return links. |
 | Launch Readiness | Can this project go live safely? | cross-module gates, blockers, owner, evidence, required approvals. |
@@ -190,9 +190,10 @@ custom code-declared page
 Record that choice in the Store page contract. Hand custom page candidates to
 `$company-page-builder`; do not embed custom HTML as company truth.
 
-### 3. Turn work into WorkItems
+### 3. Turn work into authoritative TeamWork
 
-Every committed action becomes a WorkItem, not a loose note:
+Every committed action becomes native TeamWork in a selected Execution Space,
+not a loose note or a second Company task:
 
 - sourcing a supplier;
 - contacting a merchant;
@@ -202,9 +203,10 @@ Every committed action becomes a WorkItem, not a loose note:
 - syncing a software PRD;
 - collecting launch evidence.
 
-Group WorkItems by `Milestone`, `WorkType`, business line, source document,
-owner, assignee, priority, and due date. Do not create a separate `Project`
-object and do not reintroduce Task Graph, GoalPhase, or old planning models.
+Use Team/TeamRun scope, parent Work, phase, condition, resolution, owner,
+priority, evidence, and Milestone `work_refs`. Company Work is only the
+cross-space read and routing aggregate. Do not create a separate `Project`
+object, Company task ledger, Task Graph, GoalPhase, or old planning model.
 
 Define the continuous operating queue at bootstrap:
 
@@ -212,9 +214,8 @@ Define the continuous operating queue at bootstrap:
   provenance; the Supervisor routes them without becoming Company authority.
 - Company Lead triages, deduplicates, prioritizes, checks capacity, and replans
   when facts or constraints change.
-- Domain Lead accepts accountable delivery and issues one Company Assignment,
-  then delegates bounded execution to existing actors within its Organization
-  ceiling.
+- Domain Lead creates or owns one native Work and delegates bounded execution
+  through its Work owner and WorkDelivery within the Organization ceiling.
 - Human queue contains only named policy gates, protected effects, authority
   expansion, unresolved ambiguity/conflict, or capacity exceptions.
 
@@ -234,14 +235,14 @@ governance layer. Skills are tools, never authority. Adding an Agent, role, or
 permission is an organization effect and should go through an explicit
 proposal/approval path when sensitive.
 
-For each Domain Lead record responsibility, accepted WorkTypes, maintained
+For each Domain Lead record responsibility, accepted Work classifications, maintained
 Docs, explicit capacity, escalation policy, and permission/budget/tool ceiling.
 Delegation must attenuate: a child actor receives only the subset needed by the
-WorkItem and cannot approve its own privilege increase or any protected effect.
+Work and cannot approve its own privilege increase or any protected effect.
 
 Label the bootstrap boundary explicitly. Current Company OS can author actors,
-units, memberships, permissions, WorkItems, and Assignments through the
-implemented governed/admin surfaces. Hierarchical `ScopedPermissionGrant`
+units, memberships, permissions, and Milestones; Work mutations route only
+through `team-run work` in the authoritative Execution Space. Hierarchical `ScopedPermissionGrant`
 lineage, strict recursive subset checks, sibling resource reservation,
 ancestor fencing, autonomous approved-template Standing Agent creation, and
 their effective-authority UI are target capabilities until accepted schemas,
@@ -249,7 +250,7 @@ Actions, authenticated transport, and tests exist.
 
 ### 5. Route money through Finance
 
-A WorkItem may request a monetary effect, but Finance owns the money state:
+A Work may request a monetary effect, but Finance owns the money state:
 
 - budget;
 - estimate;
@@ -259,9 +260,9 @@ A WorkItem may request a monetary effect, but Finance owns the money state:
 - refund;
 - monetary metric.
 
-Never infer Payment from a purchase note, WorkItem, Approval, or model answer.
+Never infer Payment from a purchase note, Work, Approval, or model answer.
 Record Commitments before spend, Payments only after real payment evidence, and
-link them back to the source WorkItem and Docs record.
+link them back to the source Work and Docs record.
 
 ### 6. Sync software PRDs as external product sources
 
@@ -286,7 +287,7 @@ The top-level `--company` selects Company Store truth. The optional top-level
 `--project` selects the Project Binding/worktree context. The command-level
 `--project-id` names the external software product source.
 Treat GitHub webhooks and sync runs as observations of software product truth.
-They do not overwrite commercial truth, create WorkItems, approve finance,
+They do not overwrite commercial truth, create Work records, approve finance,
 change Organization, or prove delivery.
 
 ### 7. Decide custom pages only after module shape is stable
@@ -323,8 +324,8 @@ use governed CLI/API commands and module operator skills directly:
 1. inspect current Store with `docs query`, `traverse`, `health`, Work, Org, and
    Finance reads;
 2. write the approved page contract through governed CLI/API commands;
-3. create or update typed records, relations, views, WorkItems, assignments,
-   and Finance records through their owning module commands; and
+3. create or update typed records, relations, views, and Finance records through
+   their owning module commands, and route Work mutations to `team-run work`; and
 4. verify Store-live UI and CLI projections.
 
 Do not leave project-specific seed scripts as active product entrypoints. If a
@@ -345,7 +346,7 @@ agentos_dogfood_entry: document-cli-11-agentos-dogfood-external-gateway-agentos
 Treat Wanchengwanling as the first real commercial Company OS dogfood project,
 not as a sample dataset. Repo markdown, design images, generated reports, and
 scripts are useful only when they point back to Store-backed Documents,
-TypedRecords, Relations, Views, WorkItems, Actors, Finance records, source-sync
+TypedRecords, Relations, Views, Work records, Actors, Finance records, source-sync
 observations, and custom page definitions.
 
 Do not use repository markdown as the operating database. The durable business
@@ -355,7 +356,7 @@ reports, and seed scripts are references or acceptance evidence.
 The historical four-system and roadmap seeds proved that the project could be
 represented as Docs, Work, Organization, Approval, and Finance records. They are
 not the authoring path for new dogfood operations. New business pages,
-WorkItems, actor changes, Finance effects, source-sync observations, and
+Work records, actor changes, Finance effects, source-sync observations, and
 custom-page contracts must be created through the owning governed commands.
 
 ## Wanchengwanling example mapping
@@ -382,7 +383,7 @@ otherwise:
   and logistics integrations should be modeled as gateway plugins. A plugin
   may provide Skill instructions, MCP tools, plugin-owned CLI adapters,
   connector sync, and view extensions, but the project truth still returns to
-  Docs, WorkItems, Organization actors, metrics, evidence, and Finance/Approval
+  Docs, Work records, Organization actors, metrics, evidence, and Finance/Approval
   records when money or protected actions are involved.
 
 ## Handoff format
@@ -390,7 +391,7 @@ otherwise:
 When handing off, state:
 
 - created or proposed DocumentSpace, modules, and key documents;
-- created or proposed WorkTypes, Milestones, and initial WorkItems;
+- created or proposed Work classifications, Milestones, and initial Work records;
 - Organization actors, governance/business split, and permission gaps;
 - Finance records, approvals, and money-state gaps;
 - software source sync status;

@@ -22,8 +22,9 @@ use firm_core::{
     TeamSupervisorLease, TeamSupervisorLeaseStatus, Validate, Vision, Wave, WaveExecutorKind,
     WaveGateStatus, WaveStatus, Work, WorkClaimMode, WorkCommandContext, WorkCondition,
     WorkConditionRecord, WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate, WorkEvent,
-    WorkEventKind, WorkGateEvaluation, WorkOperation, WorkOperationalDecision, WorkPhase,
-    WorkReport, WorkResolution, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
+    WorkEventKind, WorkEvidence, WorkGateEvaluation, WorkOperation, WorkOperationalDecision,
+    WorkPhase, WorkReport, WorkResolution, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun,
+    WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -56,6 +57,37 @@ fn canonical_provider_admission_evidence_refs(values: &[String]) -> Vec<String> 
     canonical.sort();
     canonical.dedup();
     canonical
+}
+
+fn canonical_work_candidate_revision(
+    result_summary: &str,
+    artifact_refs: &[String],
+    check_refs: &[String],
+    github_links: &[GitHubLink],
+) -> String {
+    let mut artifacts = artifact_refs.to_vec();
+    artifacts.sort();
+    artifacts.dedup();
+    let mut checks = check_refs.to_vec();
+    checks.sort();
+    checks.dedup();
+    let mut links = github_links
+        .iter()
+        .map(|link| serde_json::to_string(link).expect("GitHubLink serializes"))
+        .collect::<Vec<_>>();
+    links.sort();
+    links.dedup();
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "result_summary": result_summary,
+        "artifact_refs": artifacts,
+        "check_refs": checks,
+        "github_links": links,
+    }))
+    .expect("canonical Work candidate serializes");
+    let hash = bytes.iter().fold(0xcbf29ce484222325_u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+    });
+    format!("work-content-fnv1a64:{hash:016x}")
 }
 
 fn provider_admission_replay_matches(
@@ -2759,6 +2791,7 @@ impl HarnessStore {
             work: work.clone(),
             condition_records: Vec::new(),
             reports: Vec::new(),
+            evidence_records: Vec::new(),
             gate_evaluations: Vec::new(),
             decisions: Vec::new(),
             deliveries,
@@ -3305,6 +3338,7 @@ impl HarnessStore {
             evidence_refs: Vec::new(),
             created_at: context.created_at.clone(),
             resolved_at: None,
+            supersedes_condition_record_id: None,
         };
         self.transition_owned_work_with_payload(
             work_id,
@@ -3343,6 +3377,7 @@ impl HarnessStore {
             evidence_refs: Vec::new(),
             created_at: context.created_at.clone(),
             resolved_at: None,
+            supersedes_condition_record_id: None,
         };
         self.transition_work_as_host(
             work_id,
@@ -3371,6 +3406,8 @@ impl HarnessStore {
                 "blocker resolution is required".to_string(),
             ));
         }
+        let resolved_record =
+            self.resolved_work_condition_record(work_id, expected_version, resolution, &context)?;
         self.transition_owned_work_with_payload(
             work_id,
             expected_version,
@@ -3380,7 +3417,7 @@ impl HarnessStore {
             (WorkPhase::Active, WorkCondition::Blocked),
             (WorkPhase::Active, WorkCondition::Normal),
             serde_json::json!({ "resolution": resolution }),
-            Vec::new(),
+            vec![resolved_record],
             Vec::new(),
             |work| work.blocker_reason = None,
         )
@@ -3398,6 +3435,8 @@ impl HarnessStore {
                 "blocker resolution is required".to_string(),
             ));
         }
+        let resolved_record =
+            self.resolved_work_condition_record(work_id, expected_version, resolution, &context)?;
         self.transition_work_as_host(
             work_id,
             expected_version,
@@ -3406,10 +3445,48 @@ impl HarnessStore {
             (WorkPhase::Active, WorkCondition::Blocked),
             (WorkPhase::Active, WorkCondition::Normal),
             serde_json::json!({ "resolution": resolution }),
-            Vec::new(),
+            vec![resolved_record],
             Vec::new(),
             |work| work.blocker_reason = None,
         )
+    }
+
+    fn resolved_work_condition_record(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        resolution: &str,
+        context: &WorkCommandContext,
+    ) -> StoreResult<WorkConditionRecord> {
+        let active = self
+            .work_condition_records()?
+            .into_iter()
+            .rev()
+            .find(|record| {
+                record.work_id == work_id
+                    && record.condition == WorkCondition::Blocked
+                    && record.resolved_at.is_none()
+                    && record.work_version <= expected_version
+            })
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "ACTIVE_WORK_CONDITION_REQUIRED: Work {work_id} has no unresolved blocker record"
+                ))
+            })?;
+        Ok(WorkConditionRecord {
+            id: format!("work-condition-resolution-{}", context.event_id),
+            work_id: work_id.to_string(),
+            work_version: expected_version.saturating_add(1),
+            condition: active.condition,
+            owner_actor: context.performed_by_actor.clone(),
+            impact: active.impact,
+            resume_condition: resolution.to_string(),
+            next_check_at: None,
+            evidence_refs: active.evidence_refs,
+            created_at: context.created_at.clone(),
+            resolved_at: Some(context.created_at.clone()),
+            supersedes_condition_record_id: Some(active.id),
+        })
     }
 
     pub fn release_work(
@@ -3469,21 +3546,72 @@ impl HarnessStore {
         github_links: Vec<GitHubLink>,
         context: WorkCommandContext,
     ) -> StoreResult<Work> {
+        self.submit_work_with_revision_and_links(
+            work_id,
+            expected_version,
+            member_run_id,
+            result_summary,
+            artifact_refs,
+            check_refs,
+            github_links,
+            None,
+            None,
+            context,
+        )
+    }
+
+    /// Submit one immutable candidate. `candidate_revision` is the preferred
+    /// source revision for code delivery; when omitted the Store derives a
+    /// deterministic digest from the complete submitted payload.
+    #[allow(clippy::too_many_arguments)]
+    pub fn submit_work_with_revision_and_links(
+        &self,
+        work_id: &str,
+        expected_version: u64,
+        member_run_id: &str,
+        result_summary: &str,
+        artifact_refs: Vec<String>,
+        check_refs: Vec<String>,
+        github_links: Vec<GitHubLink>,
+        base_revision: Option<String>,
+        candidate_revision: Option<String>,
+        context: WorkCommandContext,
+    ) -> StoreResult<Work> {
         if result_summary.trim().is_empty() {
             return Err(StoreError::Conflict("RESULT_REQUIRED".to_string()));
         }
+        let candidate_revision = candidate_revision
+            .filter(|revision| !revision.trim().is_empty())
+            .unwrap_or_else(|| {
+                canonical_work_candidate_revision(
+                    result_summary,
+                    &artifact_refs,
+                    &check_refs,
+                    &github_links,
+                )
+            });
+        if base_revision
+            .as_deref()
+            .is_some_and(|revision| revision.trim().is_empty())
+        {
+            return Err(StoreError::Conflict(
+                "base revision must not be empty".to_string(),
+            ));
+        }
+        let report_id = format!("work-report-{}", context.event_id);
+        let evidence_id = format!("work-evidence-{}", context.event_id);
         let report = WorkReport {
-            id: format!("work-report-{}", context.event_id),
+            id: report_id,
             work_id: work_id.to_string(),
-            source_work_version: expected_version,
-            report_revision: expected_version,
+            work_version: expected_version.saturating_add(1),
+            report_revision: 1,
             submitted_by_actor: context.performed_by_actor.clone(),
-            base_revision: None,
-            candidate_revision: None,
+            base_revision,
+            candidate_revision,
             result_summary: result_summary.to_string(),
             artifact_refs: artifact_refs.clone(),
             check_refs: check_refs.clone(),
-            evidence_refs: Vec::new(),
+            evidence_refs: vec![evidence_id],
             known_risks: Vec::new(),
             created_at: context.created_at.clone(),
         };
@@ -3553,12 +3681,49 @@ impl HarnessStore {
         next.github_links = github_links;
         next.version += 1;
         next.updated_at = context.created_at.clone();
-        self.append_work_transition_with_payload_unlocked(
+        let reports = if current.phase == WorkPhase::Review {
+            let previous = self
+                .work_operations_unlocked()?
+                .into_iter()
+                .flat_map(|operation| operation.reports)
+                .filter(|report| {
+                    report.work_id == current.id && report.work_version == current.version
+                })
+                .max_by_key(|report| report.report_revision)
+                .ok_or_else(|| {
+                    StoreError::Conflict(format!(
+                        "CURRENT_WORK_REPORT_REQUIRED: Work {work_id} version {} cannot refresh review evidence",
+                        current.version
+                    ))
+                })?;
+            vec![WorkReport {
+                id: format!("work-report-{}", context.event_id),
+                work_id: previous.work_id,
+                work_version: next.version,
+                report_revision: previous.report_revision.saturating_add(1),
+                submitted_by_actor: previous.submitted_by_actor,
+                base_revision: previous.base_revision,
+                candidate_revision: previous.candidate_revision,
+                result_summary: previous.result_summary,
+                artifact_refs: previous.artifact_refs,
+                check_refs: previous.check_refs,
+                evidence_refs: vec![format!("work-evidence-{}", context.event_id)],
+                known_risks: previous.known_risks,
+                created_at: context.created_at.clone(),
+            }]
+        } else {
+            Vec::new()
+        };
+        self.append_work_transition_with_records_unlocked(
             current,
             next,
             WorkEventKind::Updated,
             context,
             serde_json::json!({ "reason": "github_ci_poll" }),
+            Vec::new(),
+            reports,
+            Vec::new(),
+            Vec::new(),
         )
     }
 
@@ -3587,18 +3752,22 @@ impl HarnessStore {
                     .to_string(),
             ));
         }
+        let report_id = format!("work-report-{}", context.event_id);
+        let evidence_id = format!("work-evidence-{}", context.event_id);
+        let candidate_revision =
+            canonical_work_candidate_revision(result_summary, &[], &[], &github_links);
         let report = WorkReport {
-            id: format!("work-report-{}", context.event_id),
+            id: report_id,
             work_id: work_id.to_string(),
-            source_work_version: expected_version,
-            report_revision: expected_version,
+            work_version: expected_version.saturating_add(1),
+            report_revision: 1,
             submitted_by_actor: context.performed_by_actor.clone(),
             base_revision: None,
-            candidate_revision: None,
+            candidate_revision,
             result_summary: result_summary.to_string(),
             artifact_refs: Vec::new(),
             check_refs: Vec::new(),
-            evidence_refs: Vec::new(),
+            evidence_refs: vec![evidence_id],
             known_risks: Vec::new(),
             created_at: context.created_at.clone(),
         };
@@ -3666,36 +3835,76 @@ impl HarnessStore {
         }
         require_host_actor(&context.performed_by_actor)?;
         let current = self.current_work_unlocked(work_id, expected_version)?;
+        if current.owner_member_id.as_deref() == Some(context.performed_by_actor.id.as_str())
+            || current.active_member_run_id.as_deref()
+                == Some(context.performed_by_actor.id.as_str())
+        {
+            return Err(StoreError::Conflict(
+                "ACCOUNTABLE_MEMBER_CANNOT_ACCEPT: Work owner cannot accept its own candidate"
+                    .to_string(),
+            ));
+        }
         if current.phase != WorkPhase::Review || current.condition != WorkCondition::Normal {
             return Err(StoreError::Conflict(format!(
                 "work {work_id} must await Host acceptance"
             )));
         }
         self.require_work_gates_pass_unlocked(&current)?;
-        let report = self
-            .work_operations_unlocked()?
-            .into_iter()
-            .flat_map(|operation| operation.reports)
-            .filter(|report| report.work_id == current.id)
+        let operations = self.work_operations_unlocked()?;
+        let report = operations
+            .iter()
+            .flat_map(|operation| operation.reports.iter())
+            .filter(|report| {
+                report.work_id == current.id && report.work_version == current.version
+            })
             .max_by_key(|report| report.report_revision)
             .ok_or_else(|| {
                 StoreError::Conflict(format!(
-                    "WORK_REPORT_REQUIRED: Work {work_id} has no immutable submission"
+                    "CURRENT_WORK_REPORT_REQUIRED: Work {work_id} version {} has no immutable submission",
+                    current.version
                 ))
             })?;
-        let gate_evaluations = current
-            .gates
+        let evidence = operations
             .iter()
+            .flat_map(|operation| operation.evidence_records.iter())
+            .filter(|evidence| {
+                evidence.work_id == current.id
+                    && evidence.work_report_id == report.id
+                    && evidence.work_version == current.version
+                    && evidence.candidate_revision == report.candidate_revision
+                    && evidence.source_ref == report.candidate_revision
+                    && report.evidence_refs.contains(&evidence.id)
+            })
+            .collect::<Vec<_>>();
+        if evidence.is_empty() || evidence.len() != report.evidence_refs.len() {
+            return Err(StoreError::Conflict(format!(
+                "WORK_REPORT_EVIDENCE_REQUIRED: report {} is not fully bound to candidate {}",
+                report.id, report.candidate_revision
+            )));
+        }
+        let reviews = self.read_jsonl::<Review>("reviews.jsonl")?;
+        let gate_results = GateEngine::evaluate_work_gates_with_reviews(&current, &reviews);
+        let gate_evaluations = gate_results
+            .into_iter()
             .enumerate()
-            .map(|(index, gate)| WorkGateEvaluation {
+            .map(|(index, result)| WorkGateEvaluation {
                 id: format!("work-gate-evaluation-{}-{index}", context.event_id),
                 work_id: current.id.clone(),
                 work_report_id: report.id.clone(),
-                gate_requirement_ref: gate.plugin.clone(),
+                gate_requirement_ref: result.gate.plugin.clone(),
                 evaluator_actor: context.performed_by_actor.clone(),
                 verdict: firm_core::WorkGateVerdict::Passed,
-                summary: format!("{} gate passed for immutable WorkReport", gate.plugin),
-                evidence_refs: report.evidence_refs.clone(),
+                summary: format!(
+                    "{} gate evaluated {:?} for immutable WorkReport",
+                    result.gate.plugin, result.verdict
+                ),
+                evidence_refs: report
+                    .evidence_refs
+                    .iter()
+                    .chain(current.artifact_refs.iter())
+                    .chain(current.check_refs.iter())
+                    .cloned()
+                    .collect(),
                 created_at: context.created_at.clone(),
             })
             .collect::<Vec<_>>();
@@ -3708,7 +3917,7 @@ impl HarnessStore {
             rationale: summary
                 .unwrap_or("all declared Work gates passed")
                 .to_string(),
-            work_report_id: Some(report.id),
+            work_report_id: Some(report.id.clone()),
             gate_requirement_ref: None,
             failure_analysis_ref: None,
             evidence_refs: gate_evaluations
@@ -4117,6 +4326,31 @@ impl HarnessStore {
                 }
             })
             .collect();
+        let evidence_records = reports
+            .iter()
+            .map(|report| {
+                let evidence_id = report.evidence_refs.first().cloned().ok_or_else(|| {
+                    StoreError::Conflict(format!(
+                        "WORK_REPORT_EVIDENCE_REQUIRED: report {} has no candidate evidence",
+                        report.id
+                    ))
+                })?;
+                Ok(WorkEvidence {
+                    id: evidence_id,
+                    work_id: report.work_id.clone(),
+                    work_report_id: report.id.clone(),
+                    work_version: report.work_version,
+                    candidate_revision: report.candidate_revision.clone(),
+                    source_type: "work_candidate_revision".to_string(),
+                    source_ref: report.candidate_revision.clone(),
+                    summary: format!(
+                        "Exact candidate evidence for immutable WorkReport {}",
+                        report.id
+                    ),
+                    created_at: report.created_at.clone(),
+                })
+            })
+            .collect::<StoreResult<Vec<_>>>()?;
         let operation = WorkOperation {
             event: WorkEvent {
                 id: context.event_id,
@@ -4136,6 +4370,7 @@ impl HarnessStore {
             work: next.clone(),
             condition_records,
             reports,
+            evidence_records,
             gate_evaluations,
             decisions,
             deliveries,
@@ -5053,6 +5288,7 @@ impl HarnessStore {
                     .iter()
                     .map(|record| record.id.as_str())
                     .chain(row.reports.iter().map(|record| record.id.as_str()))
+                    .chain(row.evidence_records.iter().map(|record| record.id.as_str()))
                     .chain(row.gate_evaluations.iter().map(|record| record.id.as_str()))
                     .chain(row.decisions.iter().map(|record| record.id.as_str()))
             })
@@ -5069,6 +5305,13 @@ impl HarnessStore {
                 )
             })
             .chain(operation.reports.iter().map(|record| {
+                (
+                    record.id.as_str(),
+                    record.work_id.as_str(),
+                    record.validate(),
+                )
+            }))
+            .chain(operation.evidence_records.iter().map(|record| {
                 (
                     record.id.as_str(),
                     record.work_id.as_str(),
@@ -5102,6 +5345,26 @@ impl HarnessStore {
             if existing_record_ids.contains(id) || !new_record_ids.insert(id) {
                 return Err(StoreError::Conflict(format!(
                     "WORK_RECORD_ID_CONFLICT: record id {id} is already in use"
+                )));
+            }
+        }
+        for report in &operation.reports {
+            if report.work_version != operation.work.version {
+                return Err(StoreError::Conflict(format!(
+                    "WORK_REPORT_VERSION_MISMATCH: report {} binds Work version {}, operation produced {}",
+                    report.id, report.work_version, operation.work.version
+                )));
+            }
+            let matching_evidence = operation.evidence_records.iter().any(|evidence| {
+                evidence.work_report_id == report.id
+                    && evidence.work_version == report.work_version
+                    && evidence.candidate_revision == report.candidate_revision
+                    && report.evidence_refs.contains(&evidence.id)
+            });
+            if !matching_evidence {
+                return Err(StoreError::Conflict(format!(
+                    "WORK_REPORT_EVIDENCE_MISMATCH: report {} lacks exact candidate evidence",
+                    report.id
                 )));
             }
         }
@@ -6820,6 +7083,14 @@ impl HarnessStore {
             .work_operations_unlocked()?
             .into_iter()
             .flat_map(|operation| operation.reports)
+            .collect())
+    }
+
+    pub fn work_evidence(&self) -> StoreResult<Vec<WorkEvidence>> {
+        Ok(self
+            .work_operations_unlocked()?
+            .into_iter()
+            .flat_map(|operation| operation.evidence_records)
             .collect())
     }
 
@@ -12995,8 +13266,18 @@ mod tests {
         assert_eq!(accepted.resolution, Some(WorkResolution::Accepted));
         let reports = store.work_reports().expect("WorkReports");
         assert_eq!(reports.len(), 1);
-        assert_eq!(reports[0].source_work_version, 2);
+        assert_eq!(reports[0].work_version, 3);
         assert_eq!(reports[0].result_summary, "Implemented and checked");
+        assert!(!reports[0].candidate_revision.is_empty());
+        let evidence = store.work_evidence().expect("WorkEvidence");
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].work_report_id, reports[0].id);
+        assert_eq!(evidence[0].work_version, submitted.version);
+        assert_eq!(
+            evidence[0].candidate_revision,
+            reports[0].candidate_revision
+        );
+        assert_eq!(evidence[0].source_ref, reports[0].candidate_revision);
         let decisions = store
             .work_operational_decisions()
             .expect("WorkOperationalDecisions");
@@ -14280,6 +14561,22 @@ mod tests {
             .expect("resumed event");
         assert_eq!(resumed_event.kind, WorkEventKind::Resumed);
         assert_eq!(resumed_event.payload["resolution"], "dependency restored");
+        let condition_records = store.work_condition_records().expect("condition records");
+        let blocked_record = condition_records
+            .iter()
+            .find(|record| {
+                record.condition == WorkCondition::Blocked && record.resolved_at.is_none()
+            })
+            .expect("active blocker record");
+        let resolved_record = condition_records
+            .iter()
+            .find(|record| record.resolved_at.is_some())
+            .expect("resolved blocker record");
+        assert_eq!(
+            resolved_record.supersedes_condition_record_id.as_deref(),
+            Some(blocked_record.id.as_str())
+        );
+        assert_eq!(resolved_record.work_version, resumed.version);
         assert!(store
             .latest_work_deliveries()
             .expect("deliveries")
@@ -15306,6 +15603,7 @@ mod tests {
             work: sparse_work,
             condition_records: Vec::new(),
             reports: Vec::new(),
+            evidence_records: Vec::new(),
             gate_evaluations: Vec::new(),
             decisions: Vec::new(),
             deliveries: Vec::new(),
@@ -16260,6 +16558,74 @@ mod tests {
         assert!(
             stale.is_err() && stale.unwrap_err().to_string().contains("VERSION_CONFLICT"),
             "stale poll must conflict"
+        );
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn review_link_refresh_derives_a_report_bound_to_the_new_work_version() {
+        let (root, store, run, member, _) = work_test_fixture("github-review-report-refresh");
+        let created = store
+            .insert_work(
+                unassigned_test_work(&run.id, "github-review-report-refresh-1"),
+                host_work_context("we-grr-1", "create-grr", "unix-ms:2"),
+            )
+            .expect("create Work");
+        let claimed = store
+            .claim_work(
+                &created.id,
+                created.version,
+                &member.id,
+                member_work_context(&member.id, "we-grr-2", "claim-grr", "unix-ms:3"),
+            )
+            .expect("claim Work");
+        let submitted = store
+            .submit_work_with_revision_and_links(
+                &claimed.id,
+                claimed.version,
+                &member.id,
+                "candidate",
+                vec!["artifact://candidate".into()],
+                vec!["check://candidate".into()],
+                Vec::new(),
+                Some("base-sha".into()),
+                Some("candidate-sha".into()),
+                member_work_context(&member.id, "we-grr-3", "submit-grr", "unix-ms:4"),
+            )
+            .expect("submit Work");
+        let refreshed = store
+            .update_work_github_links(
+                &submitted.id,
+                submitted.version,
+                vec![test_github_link("MERGED", Some("success"))],
+                host_work_context("we-grr-4", "refresh-grr", "unix-ms:5"),
+            )
+            .expect("refresh review links");
+
+        let reports = store.work_reports().expect("reports");
+        assert_eq!(reports.len(), 2);
+        assert_eq!(reports[0].work_version, submitted.version);
+        assert_eq!(reports[1].work_version, refreshed.version);
+        assert_eq!(reports[1].candidate_revision, "candidate-sha");
+        assert_eq!(reports[1].report_revision, reports[0].report_revision + 1);
+        let evidence = store.work_evidence().expect("evidence");
+        assert_eq!(evidence.len(), 2);
+        assert_eq!(evidence[1].work_report_id, reports[1].id);
+        assert_eq!(evidence[1].work_version, refreshed.version);
+
+        let accepted = store
+            .accept_work(
+                &refreshed.id,
+                refreshed.version,
+                host_work_context("we-grr-5", "accept-grr", "unix-ms:6"),
+            )
+            .expect("current derived report authorizes acceptance");
+        assert_eq!(accepted.phase, WorkPhase::Closed);
+        assert_eq!(
+            store.work_operational_decisions().unwrap()[0]
+                .work_report_id
+                .as_deref(),
+            Some(reports[1].id.as_str())
         );
         std::fs::remove_dir_all(root).expect("remove temp store");
     }

@@ -9,13 +9,14 @@ The product has two primary systems:
 2. **Organization** — humans, standing Agents, external collaborators, and
    services arranged into accountable, permissioned operating units.
 
-Documents create explicit `WorkItem` and `Approval` records. Actors execute the
-work directly or select an execution tool. Results, evidence, metrics, and
-financial effects return to the originating document and related records.
+Documents initiate or reference authoritative `Work` and explicit `Approval`
+records. Work lifecycle and ownership stay in the selected Execution Space;
+Company OS only aggregates it for company-wide reading and routing. Results,
+evidence, metrics, and financial effects return to related business records.
 
 ```text
 Document / Business Module
-  -> WorkItem / Approval
+  -> Work / Approval
      -> Human or Standing Agent responsibility
      -> Mission/Wave | Agent Team | Dynamic Workflow | direct work
   -> Result / Evidence / Metric / FinancialRecord
@@ -37,7 +38,7 @@ provider-native sessions while idle; typed Host, Member, Agent, and Operator
 mail remains durable across service restarts, and only an explicit Host Close
 ends a member runtime.
 The Company OS product contracts, document system, mixed human/Agent
-organization, WorkItem/Approval model, and new frontend information
+organization, Work/Approval model, and new frontend information
 architecture are the current product-development focus.
 
 The superseded coordination stack is being frozen, exported, verified, and
@@ -55,8 +56,8 @@ Primary:
 
 Shared operating views:
 
-- **Work** — WorkItems with explicit submission, ownership, execution, review,
-  approval, source document, and result document.
+- **Work** — a read-only company aggregate over authoritative TeamWork, with
+  explicit lifecycle, condition, ownership, reports, evidence, and decisions.
 - **Approvals** — human and policy gates for legal, finance, permissions, and
   organization changes.
 - **Finance** — typed budgets, commitments, invoices, payments, and refunds
@@ -96,7 +97,7 @@ and [getting started](docs/current/operations/getting-started.md).
 - [Company OS documentation](docs/current/company-os/README.md)
 - [Document system](docs/current/company-os/document-system.md)
 - [Organization and actors](docs/current/company-os/organization-and-actors.md)
-- [WorkItems and approvals](docs/current/company-os/work-items-and-approvals.md)
+- [Work records and approvals](docs/current/company-os/work-items-and-approvals.md)
 - [Module design](docs/current/company-os/module-design.md)
 - [Governance](docs/current/company-os/governance.md)
 - [Execution foundation](docs/current/company-os/execution-foundation.md)

@@ -25,7 +25,7 @@
   "relations": [{"from_type": "trademark-application", "to_type": "financial-record", "cardinality": "one-to-many", "ownership": "finance"}],
   "views": [{"id": "view-trademark-applications"}],
   "actors_and_roles": [{"actor_id": "actor-human-brand-owner", "role": "accountable_owner_and_approver"}],
-  "work_items": [{"id": "workitem-trademark-filing-brand-a"}],
+  "works": [{"id": "work-trademark-filing-brand-a"}],
   "approvals": [{"id": "approval-trademark-filing-fee-cn-2026-018"}],
   "financial_relations": [{"id": "financial-commitment-trademark-filing-fee-cn-2026-018", "type": "commitment", "source_type": "trademark-application"}],
   "actions": [{"id": "request-trademark-approval", "effects": ["approval_requested"], "policy_gate": "human-financial-and-legal-approval"}],

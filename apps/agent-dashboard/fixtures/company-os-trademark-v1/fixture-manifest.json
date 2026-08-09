@@ -2,7 +2,7 @@
   "id": "company-os-trademark-v1",
   "version": 1,
   "authoritative_source": "../../../../docs/current/company-os/fixtures/company-os-trademark-v1.json",
-  "authoritative_sha256": "eb9371f486ac59398623b1e94a424ad3f5fa107d648f941a8db38024fd63e9b9",
+  "authoritative_sha256": "69b2eb33515cac410dfaa84cdfd906f4c3b75ae01d006a0164b0c81636dad3cc",
   "ownership": "company-os-current-fixtures",
   "provenance": {
     "migration": "explicit promotion of stable test data; no archived document or path is restored",
@@ -40,7 +40,6 @@
   },
   "responsive_pages": [
     "document-focus",
-    "work-item-focus",
     "standing-agent-focus",
     "governance-proposal",
     "approval-focus",
@@ -49,7 +48,6 @@
   ],
   "route_tokens": {
     "<brand-a-content-plan-id>": "document-brand-a-content-operating-plan",
-    "<trademark-filing-id>": "workitem-trademark-filing-brand-a",
     "<document-architecture-agent-id>": "actor-agent-document-architecture",
     "<trademark-management-module-id>": "governance-proposal-trademark-management",
     "<trademark-filing-fee-id>": "approval-trademark-filing-fee-cn-2026-018",
