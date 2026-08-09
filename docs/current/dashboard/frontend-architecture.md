@@ -72,7 +72,7 @@ different from a Human Approval; an AgentTeamRun is different from an OrgUnit.
 | Team War Room | stable Team identity, Mission relation, shared Works, current Supervisor, typed actors, WorkDelivery claim/receipt/failure, authored Message delivery/ACK, member presence, Work-linked conversation, unified activity, and controls | claiming a selected Wave owns the TeamRun, impersonating a Member, or fabricating provider control |
 | MemberRun Focus | one run-scoped member's contract, native-session binding, mailbox and evidence | Standing Agent identity or a copied provider transcript |
 | Workflows | WorkflowRun/WorkflowStep/result/artifacts | Agent Team semantics |
-| Company OS | Documents, WorkItems, actors, approvals, finance, metrics, governance | unimplemented schema authority |
+| Company OS | Documents, TeamWorks, actors, approvals, finance, metrics, governance | unimplemented schema authority |
 | Debug | raw snapshot and diagnostics | primary product navigation |
 
 ## Component Policy

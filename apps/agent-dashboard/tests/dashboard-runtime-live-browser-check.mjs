@@ -94,21 +94,6 @@ function documentRecord(id, title) {
   };
 }
 
-function workRecord(id, title, sourceDocument) {
-  return {
-    id, title, objective: `Prove ${title} converges in an open browser`,
-    description: "External Runtime acceptance write.", acceptance_criteria: ["Visible without reload"],
-    context_refs: [], deliverable_refs: [], status: "in_progress",
-    source_document_ref: sourceDocument, source_record_refs: [], milestone_ref: null,
-    work_type: "development", business_module_ref: null, result_document_ref: null,
-    result_record_refs: [], submitted_by: actorRef, requested_by: actorRef,
-    accountable_owner: actorRef, assignees: [actorRef], contributors: [], reviewer: actorRef,
-    approver: null, execution_mode: "direct", execution_refs: [], approval_refs: [],
-    evidence_refs: [], artifact_refs: [], outcome_summary: null, due_at: null,
-    priority: "high", risk_level: "low", created_at: now, updated_at: now, completed_at: null,
-  };
-}
-
 function orgUnitRecord(id, name) {
   return {
     id, organization_id: "company", name, purpose: `Prove ${name} converges in an open browser`,
@@ -229,6 +214,26 @@ for (const company of ["company-a", "company-b"]) {
   await postCompany(company, "documents", documentRecord(`document-seed-${company}`, `Seed document ${company}`));
 }
 
+const liveTeamRunPayload = JSON.parse(runHarness([
+  "team-run", "create",
+  "--objective", "Exercise Runtime convergence against native TeamWork",
+  "--member", "worker:worker:codex/app-server",
+  "--json",
+], env, projectRoot));
+const liveTeamRunId = liveTeamRunPayload.team_run?.id ?? liveTeamRunPayload.id ?? liveTeamRunPayload.result?.id;
+if (!liveTeamRunId) throw new Error(`team-run create did not return an id: ${JSON.stringify(liveTeamRunPayload)}`);
+function createNativeWork(id, title) {
+  runHarness([
+    "team-run", "work", "create",
+    "--team-run-id", liveTeamRunId,
+    "--work-id", id,
+    "--title", title,
+    "--context", "External Runtime acceptance write.",
+    "--completion-criteria", "Visible without reload in the Company Work aggregate.",
+    "--priority", "high",
+  ], env, projectRoot);
+}
+
 const vite = await createViteServer({
   configFile: join(dashboardRoot, "vite.config.ts"),
   server: {
@@ -316,7 +321,7 @@ try {
   // may display a row only after its authoritative scoped snapshot converges.
   await navigate(page, "Work");
   delayNextCompanyBSnapshotMs = 400;
-  await postCompany("company-b", "work-items", workRecord("work-live-external", "External Work converged", "document-seed-company-b"));
+  createNativeWork("work-live-external", "External Work converged");
   await waitForDomain(page, "works", "stale");
   check(await page.locator('[data-freshness-domain="docs"][data-freshness-status="live"]').count() === 1, "Work invalidation leaves Docs freshness truthful and independent");
   await waitForText(page, "External Work converged");
@@ -346,14 +351,15 @@ try {
   const startedPromise = new Promise((resolveStarted) => { signalStarted = resolveStarted; });
   const releasePromise = new Promise((resolveRelease) => { releaseDelayed = resolveRelease; });
   delayedCompanyB = { started: signalStarted, releasePromise };
-  await postCompany("company-b", "work-items", workRecord("work-live-delayed", "Delayed Company B response", "document-seed-company-b"));
+  createNativeWork("work-live-delayed", "Delayed Company B response");
   await startedPromise;
   await navigate(page, "Docs");
   await page.getByLabel("Active company").selectOption("company-a");
   await waitForText(page, "Seed document company-a");
   releaseDelayed();
   await new Promise((resolveWait) => setTimeout(resolveWait, 500));
-  check(!(await page.locator("body").innerText()).includes("Delayed Company B response"), "delayed stale Runtime response cannot overwrite the current Company scope");
+  const afterDelayedScopeSwitch = await page.locator("body").innerText();
+  check(afterDelayedScopeSwitch.includes("Seed document company-a") && !afterDelayedScopeSwitch.includes("Seed document company-b"), "delayed stale Runtime response cannot overwrite the current Company-scoped Docs truth");
 
   // External registry creation changes the CLI default as a CLI operation, then
   // we restore it. Visibility recovery refreshes the picker while this tab keeps

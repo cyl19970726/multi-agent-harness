@@ -91,11 +91,11 @@ async function main() {
   check(workspace.includes("data-docs-template-record-policy") && workspace.includes("Template → TypedRecord policy") && workspace.includes("Template instantiation never creates TypedRecords or Relations"), "Docs Workspace exposes template-to-TypedRecord relation policy without hidden record creation");
   check(workspace.includes('data-docs-workspace-search="projection"') && workspace.includes("Search projection-backed Docs workspace") && workspace.includes('data-docs-workspace-search-boundary="projection-only"') && workspace.includes("filteredSpaces") && workspace.includes("filteredTemplates") && workspace.includes("filteredRecent"), "Docs Workspace filters spaces, templates, and recent records from the current projection without claiming global search");
   check(workspace.includes("preserveCompanyOsWorkbenchContext") && relation.includes("preserveCompanyOsWorkbenchContext") && health.includes("preserveCompanyOsWorkbenchContext") && workspace.includes('data-docs-tree-link="true"') && workspace.includes('data-docs-space-link="true"') && workspace.includes('data-docs-recent-link="true"'), "Docs surfaces preserve live api/project context while linking document tree, relation chips, Health, spaces, and recent records");
-  check(health.includes("No deletion without governed action") && health.includes("data-docs-health-finding") && health.includes("Create corrective WorkItem") && health.includes("Direct Docs action"), "Document Health Review renders governed cleanup boundaries and actionable findings");
+  check(health.includes("No deletion without governed action") && health.includes("data-docs-health-finding") && health.includes("native TeamWork") && health.includes("Direct Docs action"), "Document Health Review renders governed cleanup boundaries and actionable findings");
   check(health.includes('data-docs-cleanup-queue="true"') && health.includes("data-docs-cleanup-operation") && health.includes("Rename, split, merge, archive, and migration are high-judgment operations"), "Document Health Review exposes high-judgment cleanup routing without direct cleanup execution");
-  check(health.includes("data-docs-health-action-token") && health.includes("data-docs-health-corrective-note") && health.includes("onCreateCorrectiveWork") && health.includes("data-company-os-action-state"), "Document Health Review exposes Store-live corrective WorkItem controls without storing capability");
+  check(!health.includes("onCreateCorrectiveWork") && !health.includes("work_item.append") && health.includes("native TeamWork"), "Document Health Review does not recreate Company WorkItem mutation controls");
   check(health.includes("onRepairRelation") && health.includes("data-docs-health-direct-action-state") && health.includes("buildDocsHealthRelationRepairCommand"), "Document Health Review exposes Store-live direct Relation repair controls without storing capability");
-  check(healthAction.includes('command_name: "work_item.append"') && healthAction.includes('subject_ref: { kind: "document"') && healthAction.includes('required_permission: "company.records.write"') && !healthAction.includes("commitment") && !healthAction.includes("payment"), "Document Health corrective action builds a native WorkItem command without Finance effects");
+  check(!healthAction.includes('command_name: "work_item.append"') && !healthAction.includes("CompanyOsCorrectiveWorkCommand"), "Document Health has no Company WorkItem command builder");
   check(healthAction.includes('command_name: "relation.append"') && healthAction.includes('relation_type: context.relationType') && healthAction.includes('provenance_ref') && !healthAction.includes("action_note"), "Document Health direct action builds a strict native Relation command without polluting relation records");
   check(documentAction.includes('command_name: "typed_record.append"') && documentAction.includes('command_name: "view.append"') && documentAction.includes('command_name: "relation.append"') && documentAction.includes('subject_ref: { kind: "business_module"') && documentAction.includes('source_document_ref: context.sourceDocumentId'), "Module authoring actions build native TypedRecord, View, and Relation commands from scoped Docs context");
   check(documentAction.includes("mode: params.mode ?? \"table\"") && documentAction.includes("source_kinds: sourceKinds?.length ? sourceKinds : [\"typed_record\"]") && documentAction.includes("query: params.query ?? {}"), "View authoring command preserves saved mode, source kinds, and query configuration in native View records");
@@ -104,10 +104,10 @@ async function main() {
     readFile(join(repositoryRoot, "scripts", "capture-company-os-v2.mjs"), "utf8"),
     readFile(join(repositoryRoot, "scripts", "seed-company-os-trademark-v1.mjs"), "utf8"),
   ]);
-  check(captureScript.includes("--docs-health-action-token") && captureScript.includes("docs_health_action") && captureScript.includes("payment_count") && captureScript.includes("idempotent_replay"), "capture script verifies Store-live Docs Health corrective WorkItem action without payment side effects");
+  check(!health.includes("work_item.append"), "Docs Health browser surface has no retired corrective WorkItem action");
   check(captureScript.includes("--docs-health-relation-token") && captureScript.includes("docs_health_relation_action") && captureScript.includes("work_item_count_before"), "capture script verifies Store-live direct Docs Relation repair without Work or Finance side effects");
   check(captureScript.includes("--docs-module-action-token") && captureScript.includes("docs_module_action") && captureScript.includes('"typed_record.append"') && captureScript.includes('"view.append"') && captureScript.includes('"relation.append"') && captureScript.includes("work_item_count_before"), "capture script verifies Store-live standard module TypedRecord/View/Relation authoring without Work or Finance side effects");
-  check(seedScript.includes("--capture-docs-health-action") && seedScript.includes("--docs-health-action-token"), "seed script can run the Store-live Docs Health action acceptance path");
+  check(seedScript.includes("--capture-docs-health-relation") && seedScript.includes("--docs-health-relation-token"), "seed script retains the Store-live Docs relation acceptance path");
   check(seedScript.includes("--capture-docs-health-relation") && seedScript.includes("--docs-health-relation-token") && seedScript.includes('"relation.append"'), "seed script declares and captures Store-live Docs Relation repair acceptance");
   check(seedScript.includes("--capture-docs-module-action") && seedScript.includes("--docs-module-action-token"), "seed script declares and captures Store-live Docs module authoring acceptance");
   check(!adapter.includes("trademark-application-cn-2026-018") && !adapter.includes("Trademark Management"), "projection adapter contains no canonical trademark fixture IDs or labels");
@@ -121,31 +121,11 @@ async function main() {
   archivedSource.lifecycle_status = "archived";
   const archivedHealthPages = adaptCompanyOsDocsProjection(archivedSourceProjection, {});
   check(
-    archivedHealthPages.health.findings.some((finding) => finding.kind === "work_item_source_document_archived"
-      && finding.severity === "warning"
-      && finding.subject?.id === "workitem-trademark-filing-brand-a"
-      && finding.related?.id === archivedSource.id
-      && finding.related?.label === archivedSource.title
-      && finding.related?.meta === "archived")
-      && archivedHealthPages.health.findings.some((finding) => finding.kind === "typed_record_source_document_archived" && finding.severity === "warning")
-      && !archivedHealthPages.health.findings.some((finding) => (finding.kind === "work_item_source_document_missing" || finding.kind === "typed_record_source_document_missing") && finding.related?.id === archivedSource.id),
-    "Docs health reports archived Work and record sources as explicit archived history with title and lifecycle, never as missing",
+    archivedHealthPages.health.findings.some((finding) => finding.kind === "typed_record_source_document_archived" && finding.severity === "warning")
+      && !archivedHealthPages.health.findings.some((finding) => finding.kind === "typed_record_source_document_missing" && finding.related?.id === archivedSource.id),
+    "Docs health reports archived record sources as explicit archived history, never as missing",
   );
-  check(
-    archivedHealthPages.home.changes.some((link) => link.id === archivedSource.id && link.meta === "Archived history"),
-    "Home keeps the archived Work source navigable as archived history instead of falling back to another Document",
-  );
-  const missingSourceProjection = structuredClone(fixture);
-  missingSourceProjection.work_items[0].source_document_ref = "document-pruned-away";
-  const missingSourcePages = adaptCompanyOsDocsProjection(missingSourceProjection, {});
-  check(
-    missingSourcePages.health.findings.some((finding) => finding.kind === "work_item_source_document_missing"
-      && finding.severity === "critical"
-      && finding.subject?.id === "workitem-trademark-filing-brand-a"
-      && finding.related?.id === "document-pruned-away"),
-    "a missing Work source is a critical Docs health finding instead of a silently degraded id",
-  );
-  check(adapter.includes("work_item_source_document_archived") && adapter.includes("work_item_source_document_missing") && adapter.includes("typed_record_source_document_archived") && adapter.includes("sourceDocuments"), "Docs health adapter computes Work and record archived-source findings from the unfiltered Document projection");
+  check(!adapter.includes("work_item_source_document_archived") && !adapter.includes("work_item_source_document_missing") && adapter.includes("typed_record_source_document_archived") && adapter.includes("sourceDocuments"), "Docs health no longer validates deleted Company WorkItem provenance");
   check(pages.home.decisionActor?.name === "Brand Owner" && pages.home.financeSummary[0]?.value === "¥3,000" && pages.home.financeSummary[0]?.financialRecordType === "commitment", "home preserves the human decision and pending-commitment distinction");
   check(pages.home.decisionRequired?.href === "?surface=approvals&approval=approval-trademark-filing-fee-cn-2026-018", "projection adapter supplies the Home review CTA with the selected approval route");
   check(!/^[a-z][a-z0-9]*(?:[._:-][a-z0-9-]+)+$/i.test(pages.home.decisionRequired?.label ?? "") && pages.home.decisionRequired?.label !== pages.home.decisionSummary && pages.home.decisionRequester?.label === "Trademark Agent" && (pages.home.decisionCollaborators?.length ?? 0) > 0, "Home derives a readable non-duplicated approval prompt with grouped requester and collaborators");
@@ -203,7 +183,7 @@ async function main() {
   check(workspace.includes("data-docs-authoring-command") && workspace.includes("CLI / Skill authoring") && workspace.includes("Governance commands require a Human admin"), "Docs workspace renders honest CLI/Skill authoring affordances without fake UI writes");
   check(pages.health.counts.documents === fixture.documents.length && pages.health.counts.typedRecords === fixture.typed_records.length && pages.health.counts.relations === (fixture.relations ?? []).length, "Document Health counts are projection-backed");
   check(pages.health.findings.some((finding) => finding.kind === "missing_document_record_relation") && pages.health.actionHints?.some((hint) => hint.command === "harness company docs health"), "Document Health surfaces relation findings and the ready CLI audit command");
-  check(pages.health.findings.every((finding) => !finding.correctiveWorkContext && !finding.relationRepairContext) && pages.health.actionHints?.find((hint) => hint.id === "corrective-work")?.disabledReason, "fixture health review does not fabricate Store-live corrective or direct Docs action contracts");
+  check(pages.health.findings.every((finding) => !("correctiveWorkContext" in finding)) && pages.health.actionHints?.some((hint) => hint.command.includes("team-run work create")), "fixture health review routes corrective work to native TeamWork without fabricating a Company WorkItem contract");
   const duplicateHealthPages = adaptCompanyOsDocsProjection({
     actors: [{ id: "actor-agent-docs-cleanup", display_name: "Docs Governance Agent", actor_type: "agent", permission_policy_refs: ["company.records.write"] }],
     documents: [
@@ -212,9 +192,9 @@ async function main() {
       { id: "document-duplicate-b", space_id: "company", parent_document_id: "document-cleanup-root", title: "Vendor onboarding", kind: "page", lifecycle_status: "active", block_ids: [], template_ref: null, permission_policy_refs: ["company.records.write"], reference_refs: [], created_by: { actor_type: "agent", actor_id: "actor-agent-docs-cleanup" }, updated_by: { actor_type: "agent", actor_id: "actor-agent-docs-cleanup" }, created_at: "2026-07-20T10:00:00+08:00", updated_at: "2026-07-20T10:00:00+08:00" },
     ],
     business_modules: [{ id: "module-docs-cleanup", name: "Docs Cleanup", root_document_ref: "document-cleanup-root", status: "active", default_view_refs: [] }],
-    custom_page_definitions: [{ id: "definition-docs-cleanup", module_id: "module-docs-cleanup", action_command_refs: ["work_item.append"], policy_refs: ["definition-docs-cleanup:work_item.append"] }],
+    custom_page_definitions: [],
   });
-  check(duplicateHealthPages.health.cleanupQueue?.some((item) => item.operation === "merge" && item.route === "corrective_work_item" && !item.disabledReason), "Document Health routes duplicate-title cleanup through a corrective WorkItem queue");
+  check(duplicateHealthPages.health.cleanupQueue?.some((item) => item.operation === "merge" && item.route === "team_work" && !item.disabledReason), "Document Health routes duplicate-title cleanup through native TeamWork");
   check(workspace.includes('className="hidden border-b') && workspace.includes('className="hidden border-t'), "Docs mobile layout prioritizes document content over desktop tree and context rails");
   const emptyPages = adaptCompanyOsDocsProjection({});
   check(emptyPages.workspace.tree.length === 0 && emptyPages.home.decisionRequired === undefined && emptyPages.home.financeSummary.length === 0, "empty projections render honest empty Docs data without fixture facts");
@@ -222,7 +202,7 @@ async function main() {
   const alternatePages = adaptCompanyOsDocsProjection({
     documents: [{ id: "document-live-1", title: "Live operating brief", space: "Operations" }],
     typed_records: [{ id: "record-live-1", record_type: "Initiative", source_document_ref: "document-live-1" }],
-    work_items: [{ id: "work-live-1", title: "Prepare live brief", source_document_ref: "document-live-1" }],
+    work: { works: [{ id: "work-live-1", team_run_id: "run-live-1", title: "Prepare live brief", phase: "open", condition: "normal", resolution: null }] },
   });
   check(alternatePages.workspace.recentlyUpdated?.some((link) => link.id === "document-live-1") && alternatePages.home.changes.every((link) => !/trademark|brand a/i.test(link.label)), "a different live projection maps only its supplied records");
   const archivedPages = adaptCompanyOsDocsProjection({
@@ -436,13 +416,12 @@ async function main() {
     ].filter(Boolean)),
   };
   for (const page of ["home", "docs-workspace", "business-module-focus"]) {
-    const missing = fixture.page_slices[page].required_refs.filter((ref) => !pageRefs[page].has(ref));
+    const missing = fixture.page_slices[page].required_refs.filter((ref) => !ref.startsWith("workitem-") && !pageRefs[page].has(ref));
     check(missing.length === 0, `${page} adapter exposes every fixture-required reference through a visible node (${missing.join(", ") || "complete"})`);
   }
   const crossPageRefs = [
     "document-trademark-application-cn-2026-018",
     "trademark-application-cn-2026-018",
-    "workitem-trademark-filing-brand-a",
     "approval-trademark-filing-fee-cn-2026-018",
     "financial-commitment-trademark-filing-fee-cn-2026-018",
   ];

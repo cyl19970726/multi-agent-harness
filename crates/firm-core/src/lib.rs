@@ -4090,13 +4090,27 @@ impl TeamMessage {
 /// projection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkStatus {
+pub enum WorkPhase {
     Open,
-    InProgress,
-    Blocked,
+    Active,
     Review,
-    Done,
+    Closed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkCondition {
+    Normal,
+    Blocked,
+    OnHold,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkResolution {
+    Accepted,
     Cancelled,
+    Failed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -4125,6 +4139,268 @@ pub struct WorkRef {
 pub struct WorkCausationRef {
     pub kind: String,
     pub id: String,
+}
+
+/// Immutable explanation of why a Work cannot currently progress normally.
+/// The Work row only points at the active record; resolving a condition stamps
+/// `resolved_at` instead of rewriting the original diagnosis.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkConditionRecord {
+    pub id: String,
+    pub work_id: String,
+    pub work_version: u64,
+    pub condition: WorkCondition,
+    pub owner_actor: TeamActorRef,
+    pub impact: String,
+    pub resume_condition: String,
+    #[serde(default)]
+    pub next_check_at: Option<String>,
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
+    pub created_at: String,
+    #[serde(default)]
+    pub resolved_at: Option<String>,
+}
+
+/// Immutable submission for one exact Work revision and, when applicable,
+/// one exact source/candidate revision pair.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkReport {
+    pub id: String,
+    pub work_id: String,
+    pub source_work_version: u64,
+    pub report_revision: u64,
+    pub submitted_by_actor: TeamActorRef,
+    #[serde(default)]
+    pub base_revision: Option<String>,
+    #[serde(default)]
+    pub candidate_revision: Option<String>,
+    pub result_summary: String,
+    #[serde(default)]
+    pub artifact_refs: Vec<String>,
+    #[serde(default)]
+    pub check_refs: Vec<String>,
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
+    #[serde(default)]
+    pub known_risks: Vec<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkGateVerdict {
+    Passed,
+    Failed,
+    Blocked,
+}
+
+/// Immutable evaluation of one declared gate against one exact WorkReport.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkGateEvaluation {
+    pub id: String,
+    pub work_id: String,
+    pub work_report_id: String,
+    pub gate_requirement_ref: String,
+    pub evaluator_actor: TeamActorRef,
+    pub verdict: WorkGateVerdict,
+    pub summary: String,
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkDecisionKind {
+    Accept,
+    Revise,
+    Cancel,
+    Fail,
+    WaiveGate,
+}
+
+/// Immutable Host/Operator decision. Store operations validate authority and
+/// apply the resulting Work transition atomically with this record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkOperationalDecision {
+    pub id: String,
+    pub work_id: String,
+    pub expected_work_version: u64,
+    pub kind: WorkDecisionKind,
+    pub decided_by_actor: TeamActorRef,
+    pub rationale: String,
+    #[serde(default)]
+    pub work_report_id: Option<String>,
+    #[serde(default)]
+    pub gate_requirement_ref: Option<String>,
+    #[serde(default)]
+    pub failure_analysis_ref: Option<String>,
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
+    pub created_at: String,
+}
+
+impl Validate for WorkConditionRecord {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "WorkConditionRecord.id")?;
+        require_non_empty(&self.work_id, "WorkConditionRecord.work_id")?;
+        require_non_empty(&self.owner_actor.id, "WorkConditionRecord.owner_actor.id")?;
+        require_non_empty(&self.impact, "WorkConditionRecord.impact")?;
+        require_non_empty(
+            &self.resume_condition,
+            "WorkConditionRecord.resume_condition",
+        )?;
+        require_non_empty(&self.created_at, "WorkConditionRecord.created_at")?;
+        if self.work_version == 0 {
+            return Err(ValidationError::Invalid {
+                field: "WorkConditionRecord.work_version",
+                reason: "must be greater than zero",
+            });
+        }
+        if self.condition == WorkCondition::Normal {
+            return Err(ValidationError::Invalid {
+                field: "WorkConditionRecord.condition",
+                reason: "condition records describe blocked or on-hold Work",
+            });
+        }
+        validate_non_empty_unique_strings(
+            &self.evidence_refs,
+            "WorkConditionRecord.evidence_refs",
+            true,
+        )
+    }
+}
+
+impl Validate for WorkReport {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "WorkReport.id")?;
+        require_non_empty(&self.work_id, "WorkReport.work_id")?;
+        require_non_empty(
+            &self.submitted_by_actor.id,
+            "WorkReport.submitted_by_actor.id",
+        )?;
+        require_non_empty(&self.result_summary, "WorkReport.result_summary")?;
+        require_non_empty(&self.created_at, "WorkReport.created_at")?;
+        if self.source_work_version == 0 {
+            return Err(ValidationError::Invalid {
+                field: "WorkReport.source_work_version",
+                reason: "must be greater than zero",
+            });
+        }
+        if self.report_revision == 0 {
+            return Err(ValidationError::Invalid {
+                field: "WorkReport.report_revision",
+                reason: "must be greater than zero",
+            });
+        }
+        match (&self.base_revision, &self.candidate_revision) {
+            (Some(base), Some(candidate)) => {
+                require_non_empty(base, "WorkReport.base_revision")?;
+                require_non_empty(candidate, "WorkReport.candidate_revision")?;
+            }
+            (None, None) => {}
+            _ => {
+                return Err(ValidationError::Invalid {
+                    field: "WorkReport.candidate_revision",
+                    reason: "base_revision and candidate_revision must be supplied together",
+                });
+            }
+        }
+        validate_non_empty_unique_strings(&self.artifact_refs, "WorkReport.artifact_refs", true)?;
+        validate_non_empty_unique_strings(&self.check_refs, "WorkReport.check_refs", true)?;
+        validate_non_empty_unique_strings(&self.evidence_refs, "WorkReport.evidence_refs", true)?;
+        validate_non_empty_unique_strings(&self.known_risks, "WorkReport.known_risks", false)
+    }
+}
+
+impl Validate for WorkGateEvaluation {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "WorkGateEvaluation.id")?;
+        require_non_empty(&self.work_id, "WorkGateEvaluation.work_id")?;
+        require_non_empty(&self.work_report_id, "WorkGateEvaluation.work_report_id")?;
+        require_non_empty(
+            &self.gate_requirement_ref,
+            "WorkGateEvaluation.gate_requirement_ref",
+        )?;
+        require_non_empty(
+            &self.evaluator_actor.id,
+            "WorkGateEvaluation.evaluator_actor.id",
+        )?;
+        require_non_empty(&self.summary, "WorkGateEvaluation.summary")?;
+        require_non_empty(&self.created_at, "WorkGateEvaluation.created_at")?;
+        validate_non_empty_unique_strings(
+            &self.evidence_refs,
+            "WorkGateEvaluation.evidence_refs",
+            true,
+        )
+    }
+}
+
+impl Validate for WorkOperationalDecision {
+    fn validate(&self) -> Result<(), ValidationError> {
+        require_non_empty(&self.id, "WorkOperationalDecision.id")?;
+        require_non_empty(&self.work_id, "WorkOperationalDecision.work_id")?;
+        require_non_empty(
+            &self.decided_by_actor.id,
+            "WorkOperationalDecision.decided_by_actor.id",
+        )?;
+        require_non_empty(&self.rationale, "WorkOperationalDecision.rationale")?;
+        require_non_empty(&self.created_at, "WorkOperationalDecision.created_at")?;
+        if self.expected_work_version == 0 {
+            return Err(ValidationError::Invalid {
+                field: "WorkOperationalDecision.expected_work_version",
+                reason: "must be greater than zero",
+            });
+        }
+        match self.kind {
+            WorkDecisionKind::Accept | WorkDecisionKind::Revise
+                if self.work_report_id.is_none() =>
+            {
+                return Err(ValidationError::Required {
+                    field: "WorkOperationalDecision.work_report_id",
+                });
+            }
+            WorkDecisionKind::WaiveGate if self.gate_requirement_ref.is_none() => {
+                return Err(ValidationError::Required {
+                    field: "WorkOperationalDecision.gate_requirement_ref",
+                });
+            }
+            WorkDecisionKind::Fail if self.failure_analysis_ref.is_none() => {
+                return Err(ValidationError::Required {
+                    field: "WorkOperationalDecision.failure_analysis_ref",
+                });
+            }
+            _ => {}
+        }
+        for (value, field) in [
+            (
+                self.work_report_id.as_deref(),
+                "WorkOperationalDecision.work_report_id",
+            ),
+            (
+                self.gate_requirement_ref.as_deref(),
+                "WorkOperationalDecision.gate_requirement_ref",
+            ),
+            (
+                self.failure_analysis_ref.as_deref(),
+                "WorkOperationalDecision.failure_analysis_ref",
+            ),
+        ] {
+            if let Some(value) = value {
+                require_non_empty(value, field)?;
+            }
+        }
+        validate_non_empty_unique_strings(
+            &self.evidence_refs,
+            "WorkOperationalDecision.evidence_refs",
+            true,
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -4813,12 +5089,13 @@ pub struct Work {
     /// [`WorkDelegation`].
     #[serde(default)]
     pub parent_work_id: Option<String>,
-    #[serde(default)]
-    pub source_work_item_ref: Option<String>,
     pub title: String,
     pub context_markdown: String,
     pub completion_criteria_markdown: String,
-    pub status: WorkStatus,
+    pub phase: WorkPhase,
+    pub condition: WorkCondition,
+    #[serde(default)]
+    pub resolution: Option<WorkResolution>,
     /// Stable AgentMember/slot identity. Runtime generations bind through
     /// `active_member_run_id`.
     #[serde(default)]
@@ -4876,7 +5153,27 @@ impl Work {
     }
 
     pub fn is_terminal(&self) -> bool {
-        matches!(self.status, WorkStatus::Done | WorkStatus::Cancelled)
+        self.phase == WorkPhase::Closed
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.phase == WorkPhase::Open
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.phase == WorkPhase::Active
+    }
+
+    pub fn is_in_review(&self) -> bool {
+        self.phase == WorkPhase::Review
+    }
+
+    pub fn is_blocked(&self) -> bool {
+        self.condition == WorkCondition::Blocked
+    }
+
+    pub fn is_accepted(&self) -> bool {
+        self.phase == WorkPhase::Closed && self.resolution == Some(WorkResolution::Accepted)
     }
 
     /// Whether every declared prerequisite has reached Host-accepted `Done`.
@@ -4888,16 +5185,18 @@ impl Work {
     pub fn prerequisites_satisfied<'a>(&self, works: impl IntoIterator<Item = &'a Work>) -> bool {
         let by_id = works
             .into_iter()
-            .map(|work| (work.id.as_str(), work.status))
+            .map(|work| (work.id.as_str(), work.is_accepted()))
             .collect::<std::collections::HashMap<_, _>>();
         self.prerequisite_work_ids
             .iter()
-            .all(|id| by_id.get(id.as_str()) == Some(&WorkStatus::Done))
+            .all(|id| by_id.get(id.as_str()) == Some(&true))
     }
 
     /// Whether this Work can be newly claimed from the shared Works board.
     pub fn is_claim_ready<'a>(&self, works: impl IntoIterator<Item = &'a Work>) -> bool {
-        self.status == WorkStatus::Open && self.prerequisites_satisfied(works)
+        self.phase == WorkPhase::Open
+            && self.condition == WorkCondition::Normal
+            && self.prerequisites_satisfied(works)
     }
 
     /// Compatibility spelling retained for existing callers. Readiness here
@@ -4940,10 +5239,6 @@ impl Validate for Work {
         for (value, field) in [
             (self.team_id.as_deref(), "Work.team_id"),
             (self.parent_work_id.as_deref(), "Work.parent_work_id"),
-            (
-                self.source_work_item_ref.as_deref(),
-                "Work.source_work_item_ref",
-            ),
             (self.owner_member_id.as_deref(), "Work.owner_member_id"),
             (
                 self.active_member_run_id.as_deref(),
@@ -5004,6 +5299,22 @@ impl Validate for Work {
                 reason: "must be greater than zero",
             });
         }
+        match (self.phase, self.condition, self.resolution) {
+            (WorkPhase::Closed, WorkCondition::Normal, Some(_)) => {}
+            (WorkPhase::Closed, _, _) => {
+                return Err(ValidationError::Invalid {
+                    field: "Work.condition",
+                    reason: "closed Work must be normal and carry a resolution",
+                });
+            }
+            (_, _, Some(_)) => {
+                return Err(ValidationError::Invalid {
+                    field: "Work.resolution",
+                    reason: "resolution is only valid for closed Work",
+                });
+            }
+            _ => {}
+        }
         self.validate_gates().map_err(|_| ValidationError::Invalid {
             field: "Work.gates",
             reason: "gate declarations are invalid",
@@ -5047,341 +5358,10 @@ pub enum WorkEventKind {
     Cancelled,
     Updated,
     Rebound,
-    /// A compatibility TeamRun-scoped Work was explicitly promoted onto the
-    /// durable AgentTeam named by its current execution attempt.
-    TeamScopePromoted,
     /// The execution attempt (`team_run_id`) of a Team-scoped Work moved to a
     /// successor TeamRun of the same AgentTeam. Durable scope (`team_id`),
     /// owner, and provenance are unchanged (ADR 0052).
     ExecutionRetargeted,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkCutoverIssueKind {
-    LegacyTeamRunScope,
-    MissingExecutionRun,
-    TeamScopeMismatch,
-    MissingCompanyWorkItem,
-    ActiveCompanyWorkItemOverlap,
-    DuplicateCompanyWorkItemLink,
-    MissingCompanyWorkItemFence,
-    ConflictingCompanyWorkItemFence,
-    IncompleteCompanyWorkItemFence,
-    CompanyWorkItemChangedAfterFence,
-}
-
-/// Durable one-way refusal marker written into the Company Store before a
-/// source-linked Work becomes Team-scoped authority.
-///
-/// This is deliberately not a cross-store transaction claim. The Company
-/// Store persists this marker first and thereafter refuses every revision of
-/// the retired WorkItem. Only then may the Execution Store append the
-/// `TeamScopePromoted` WorkOperation. A crash between those appends leaves no
-/// mutable responsibility authority and an idempotent retry may finish the
-/// promotion using the same marker.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkCutoverFence {
-    pub company_work_item_id: String,
-    pub work_id: String,
-    pub team_id: String,
-    /// Event intended by the command that first installed the fence. A crash
-    /// gap may allow compatibility Work versions to advance; completion may
-    /// therefore use a later `TeamScopePromoted` event after a refreshed retry.
-    pub promotion_event_id: String,
-    pub expected_work_version: u64,
-    pub company_work_item_status: WorkItemStatus,
-    pub company_work_item_updated_at: String,
-    /// Canonical typed snapshot of the retired WorkItem. Store APIs refuse all
-    /// later revisions, and verification compares the full value so manual
-    /// ledger mutation cannot hide behind an unchanged status/timestamp.
-    #[serde(default)]
-    pub company_work_item_snapshot: serde_json::Value,
-    pub idempotency_key: String,
-    pub created_at: String,
-}
-
-/// One reason the Company WorkItem -> persistent Team Work cutover cannot be
-/// accepted. The validator is deliberately read-only: it proves a snapshot is
-/// unambiguous but never dual-writes either responsibility system.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkCutoverIssue {
-    pub kind: WorkCutoverIssueKind,
-    #[serde(default)]
-    pub work_id: Option<String>,
-    #[serde(default)]
-    pub company_work_item_id: Option<String>,
-    pub detail: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkCutoverReport {
-    pub valid: bool,
-    pub checked_work_count: usize,
-    pub team_scoped_work_count: usize,
-    pub source_linked_work_count: usize,
-    #[serde(default)]
-    pub fenced_source_count: usize,
-    pub issues: Vec<WorkCutoverIssue>,
-}
-
-/// Validate the breaking responsibility cutover required by ADR 0052.
-///
-/// A source-linked persistent Work is accepted only after the compatibility
-/// Company WorkItem is no longer live. This prevents two mutable owner/status
-/// records from surviving the cutover. Duplicate source links are refused
-/// because they would make one Company responsibility fan out into competing
-/// Work authorities.
-pub fn validate_work_cutover(
-    works: &[Work],
-    team_runs: &[AgentTeamRun],
-    company_work_items: &[WorkItem],
-) -> WorkCutoverReport {
-    validate_work_cutover_impl(works, team_runs, company_work_items, &[], &[], false)
-}
-
-/// Validate the concurrency-safe cutover protocol, including the durable
-/// Company refusal markers and their matching Work promotion events.
-pub fn validate_work_cutover_with_fences(
-    works: &[Work],
-    team_runs: &[AgentTeamRun],
-    company_work_items: &[WorkItem],
-    fences: &[WorkCutoverFence],
-    work_events: &[WorkEvent],
-) -> WorkCutoverReport {
-    validate_work_cutover_impl(
-        works,
-        team_runs,
-        company_work_items,
-        fences,
-        work_events,
-        true,
-    )
-}
-
-fn validate_work_cutover_impl(
-    works: &[Work],
-    team_runs: &[AgentTeamRun],
-    company_work_items: &[WorkItem],
-    fences: &[WorkCutoverFence],
-    work_events: &[WorkEvent],
-    enforce_fences: bool,
-) -> WorkCutoverReport {
-    let runs = team_runs
-        .iter()
-        .map(|run| (run.id.as_str(), run))
-        .collect::<BTreeMap<_, _>>();
-    let company_items = company_work_items
-        .iter()
-        .map(|item| (item.id.as_str(), item))
-        .collect::<BTreeMap<_, _>>();
-    let works_by_id = works
-        .iter()
-        .map(|work| (work.id.as_str(), work))
-        .collect::<BTreeMap<_, _>>();
-    let events_by_id = work_events
-        .iter()
-        .map(|event| (event.id.as_str(), event))
-        .collect::<BTreeMap<_, _>>();
-    let mut fences_by_source = BTreeMap::<&str, Vec<&WorkCutoverFence>>::new();
-    for fence in fences {
-        fences_by_source
-            .entry(fence.company_work_item_id.as_str())
-            .or_default()
-            .push(fence);
-    }
-    let mut source_links = BTreeMap::<&str, Vec<&str>>::new();
-    let mut issues = Vec::new();
-
-    for work in works {
-        let Some(team_id) = work.team_id.as_deref() else {
-            issues.push(WorkCutoverIssue {
-                kind: WorkCutoverIssueKind::LegacyTeamRunScope,
-                work_id: Some(work.id.clone()),
-                company_work_item_id: work.source_work_item_ref.clone(),
-                detail: format!(
-                    "Work {} is still scoped only to TeamRun {}",
-                    work.id, work.team_run_id
-                ),
-            });
-            continue;
-        };
-        match runs.get(work.team_run_id.as_str()) {
-            None => issues.push(WorkCutoverIssue {
-                kind: WorkCutoverIssueKind::MissingExecutionRun,
-                work_id: Some(work.id.clone()),
-                company_work_item_id: work.source_work_item_ref.clone(),
-                detail: format!(
-                    "Work {} references missing execution TeamRun {}",
-                    work.id, work.team_run_id
-                ),
-            }),
-            Some(run) => {
-                let run_team_id = run
-                    .agent_team_id
-                    .as_deref()
-                    .or(run.definition_id.as_deref());
-                if run_team_id != Some(team_id) {
-                    issues.push(WorkCutoverIssue {
-                        kind: WorkCutoverIssueKind::TeamScopeMismatch,
-                        work_id: Some(work.id.clone()),
-                        company_work_item_id: work.source_work_item_ref.clone(),
-                        detail: format!(
-                            "Work {} is scoped to AgentTeam {} but execution TeamRun {} belongs to {:?}",
-                            work.id, team_id, work.team_run_id, run_team_id
-                        ),
-                    });
-                }
-            }
-        }
-
-        let Some(source_id) = work.source_work_item_ref.as_deref() else {
-            continue;
-        };
-        source_links.entry(source_id).or_default().push(&work.id);
-        match company_items.get(source_id) {
-            None => issues.push(WorkCutoverIssue {
-                kind: WorkCutoverIssueKind::MissingCompanyWorkItem,
-                work_id: Some(work.id.clone()),
-                company_work_item_id: Some(source_id.to_string()),
-                detail: format!(
-                    "Work {} references missing Company WorkItem {}",
-                    work.id, source_id
-                ),
-            }),
-            Some(item)
-                if !matches!(
-                    item.status,
-                    WorkItemStatus::Draft
-                        | WorkItemStatus::Completed
-                        | WorkItemStatus::Cancelled
-                        | WorkItemStatus::Archived
-                ) =>
-            {
-                issues.push(WorkCutoverIssue {
-                    kind: WorkCutoverIssueKind::ActiveCompanyWorkItemOverlap,
-                    work_id: Some(work.id.clone()),
-                    company_work_item_id: Some(source_id.to_string()),
-                    detail: format!(
-                        "Company WorkItem {} is {:?} while persistent Work {} is also authoritative",
-                        source_id, item.status, work.id
-                    ),
-                });
-            }
-            Some(_) => {}
-        }
-
-        if enforce_fences {
-            match fences_by_source.get(source_id).map(Vec::as_slice) {
-                None | Some([]) => issues.push(WorkCutoverIssue {
-                    kind: WorkCutoverIssueKind::MissingCompanyWorkItemFence,
-                    work_id: Some(work.id.clone()),
-                    company_work_item_id: Some(source_id.to_string()),
-                    detail: format!(
-                        "persistent Work {} has no durable Company WorkItem refusal fence",
-                        work.id
-                    ),
-                }),
-                Some([fence])
-                    if fence.work_id == work.id
-                        && fence.team_id == team_id
-                        && (events_by_id
-                            .get(fence.promotion_event_id.as_str())
-                            .is_some_and(|event| {
-                                event.work_id == work.id
-                                    && event.kind == WorkEventKind::TeamScopePromoted
-                                    && event.expected_version == fence.expected_work_version
-                            })
-                            || work_events.iter().any(|event| {
-                                event.work_id == work.id
-                                    && event.kind == WorkEventKind::TeamScopePromoted
-                                    && event.expected_version >= fence.expected_work_version
-                            })) =>
-                {
-                    if let Some(item) = company_items.get(source_id) {
-                        if serde_json::to_value(item).ok().as_ref()
-                            != Some(&fence.company_work_item_snapshot)
-                        {
-                            issues.push(WorkCutoverIssue {
-                                kind: WorkCutoverIssueKind::CompanyWorkItemChangedAfterFence,
-                                work_id: Some(work.id.clone()),
-                                company_work_item_id: Some(source_id.to_string()),
-                                detail: format!(
-                                    "Company WorkItem {source_id} changed after its cutover fence"
-                                ),
-                            });
-                        }
-                    }
-                }
-                Some([fence]) if fence.work_id == work.id && fence.team_id == team_id => {
-                    issues.push(WorkCutoverIssue {
-                        kind: WorkCutoverIssueKind::IncompleteCompanyWorkItemFence,
-                        work_id: Some(work.id.clone()),
-                        company_work_item_id: Some(source_id.to_string()),
-                        detail: format!(
-                            "Company WorkItem {source_id} fence references missing or invalid promotion event {}",
-                            fence.promotion_event_id
-                        ),
-                    });
-                }
-                Some(_) => issues.push(WorkCutoverIssue {
-                    kind: WorkCutoverIssueKind::ConflictingCompanyWorkItemFence,
-                    work_id: Some(work.id.clone()),
-                    company_work_item_id: Some(source_id.to_string()),
-                    detail: format!(
-                        "Company WorkItem {source_id} has multiple or mismatched cutover fences"
-                    ),
-                }),
-            }
-        }
-    }
-
-    if enforce_fences {
-        for fence in fences {
-            if !works_by_id.get(fence.work_id.as_str()).is_some_and(|work| {
-                work.team_id.as_deref() == Some(fence.team_id.as_str())
-                    && work.source_work_item_ref.as_deref()
-                        == Some(fence.company_work_item_id.as_str())
-            }) {
-                issues.push(WorkCutoverIssue {
-                    kind: WorkCutoverIssueKind::IncompleteCompanyWorkItemFence,
-                    work_id: Some(fence.work_id.clone()),
-                    company_work_item_id: Some(fence.company_work_item_id.clone()),
-                    detail: format!(
-                        "Company WorkItem {} is fenced for Work {}, but that Work is not yet the matching Team authority",
-                        fence.company_work_item_id, fence.work_id
-                    ),
-                });
-            }
-        }
-    }
-
-    for (source_id, linked_work_ids) in source_links {
-        if linked_work_ids.len() > 1 {
-            issues.push(WorkCutoverIssue {
-                kind: WorkCutoverIssueKind::DuplicateCompanyWorkItemLink,
-                work_id: None,
-                company_work_item_id: Some(source_id.to_string()),
-                detail: format!(
-                    "Company WorkItem {} is linked by multiple Works: {}",
-                    source_id,
-                    linked_work_ids.join(", ")
-                ),
-            });
-        }
-    }
-
-    WorkCutoverReport {
-        valid: issues.is_empty(),
-        checked_work_count: works.len(),
-        team_scoped_work_count: works.iter().filter(|work| work.is_team_scoped()).count(),
-        source_linked_work_count: works
-            .iter()
-            .filter(|work| work.source_work_item_ref.is_some())
-            .count(),
-        fenced_source_count: fences_by_source.len(),
-        issues,
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -5443,6 +5423,16 @@ pub struct WorkDelivery {
 pub struct WorkOperation {
     pub event: WorkEvent,
     pub work: Work,
+    /// Immutable records committed in the same crash-atomic row as the Work
+    /// transition they explain.
+    #[serde(default)]
+    pub condition_records: Vec<WorkConditionRecord>,
+    #[serde(default)]
+    pub reports: Vec<WorkReport>,
+    #[serde(default)]
+    pub gate_evaluations: Vec<WorkGateEvaluation>,
+    #[serde(default)]
+    pub decisions: Vec<WorkOperationalDecision>,
     #[serde(default)]
     pub deliveries: Vec<WorkDelivery>,
     #[serde(default)]
@@ -7546,18 +7536,24 @@ mod tests {
 
     #[test]
     fn work_prerequisite_satisfaction_is_distinct_from_claim_readiness() {
-        fn work(id: &str, status: WorkStatus, prerequisites: Vec<&str>) -> Work {
+        fn work(
+            id: &str,
+            phase: WorkPhase,
+            resolution: Option<WorkResolution>,
+            prerequisites: Vec<&str>,
+        ) -> Work {
             Work {
                 id: id.into(),
                 team_run_id: "team-1".into(),
                 team_id: None,
                 created_by_member_id: None,
                 parent_work_id: None,
-                source_work_item_ref: None,
                 title: id.into(),
                 context_markdown: String::new(),
                 completion_criteria_markdown: "done".into(),
-                status,
+                phase,
+                condition: WorkCondition::Normal,
+                resolution,
                 owner_member_id: None,
                 active_member_run_id: None,
                 claim_mode: WorkClaimMode::TeamClaim,
@@ -7583,184 +7579,27 @@ mod tests {
             }
         }
 
-        let prerequisite = work("prerequisite", WorkStatus::Done, vec![]);
-        let in_progress = work("dependent", WorkStatus::InProgress, vec!["prerequisite"]);
+        let prerequisite = work(
+            "prerequisite",
+            WorkPhase::Closed,
+            Some(WorkResolution::Accepted),
+            vec![],
+        );
+        let in_progress = work("dependent", WorkPhase::Active, None, vec!["prerequisite"]);
         assert!(in_progress.prerequisites_satisfied([&prerequisite]));
         assert!(!in_progress.is_claim_ready([&prerequisite]));
 
-        let open = work("dependent-open", WorkStatus::Open, vec!["prerequisite"]);
+        let open = work(
+            "dependent-open",
+            WorkPhase::Open,
+            None,
+            vec!["prerequisite"],
+        );
         assert!(open.is_claim_ready([&prerequisite]));
 
-        let unfinished = work("prerequisite", WorkStatus::Review, vec![]);
+        let unfinished = work("prerequisite", WorkPhase::Review, None, vec![]);
         assert!(!open.prerequisites_satisfied([&unfinished]));
         assert!(!open.is_claim_ready([&unfinished]));
-    }
-
-    #[test]
-    fn work_cutover_rejects_live_company_overlap_and_accepts_archived_source() {
-        let run: AgentTeamRun = serde_json::from_value(serde_json::json!({
-            "id": "run-1",
-            "agent_team_id": "team-1",
-            "host_surface": "test",
-            "objective": "cut over",
-            "status": "running",
-            "member_run_ids": [],
-            "created_at": "unix-ms:1",
-            "updated_at": "unix-ms:1"
-        }))
-        .expect("team run");
-        let work: Work = serde_json::from_value(serde_json::json!({
-            "id": "work-1",
-            "team_run_id": "run-1",
-            "team_id": "team-1",
-            "source_work_item_ref": "company-work-1",
-            "title": "Persistent Work",
-            "context_markdown": "context",
-            "completion_criteria_markdown": "done",
-            "status": "open",
-            "claim_mode": "team_claim",
-            "eligible_member_ids": [],
-            "prerequisite_work_ids": [],
-            "priority": "normal",
-            "created_by_actor": {"kind": "host", "id": "host"},
-            "artifact_refs": [],
-            "check_refs": [],
-            "version": 1,
-            "created_at": "unix-ms:1",
-            "updated_at": "unix-ms:1"
-        }))
-        .expect("Work");
-        let item = |status: &str| -> WorkItem {
-            serde_json::from_value(serde_json::json!({
-                "id": "company-work-1",
-                "title": "Compatibility WorkItem",
-                "objective": "cut over",
-                "status": status,
-                "source_document_ref": "document-1",
-                "source_record_refs": [],
-                "result_document_ref": null,
-                "result_record_refs": [],
-                "submitted_by": {"actor_type": "human", "actor_id": "human-1"},
-                "requested_by": null,
-                "accountable_owner": {"actor_type": "human", "actor_id": "human-1"},
-                "assignees": [],
-                "contributors": [],
-                "reviewer": null,
-                "approver": null,
-                "execution_mode": "agent_team",
-                "execution_refs": [],
-                "approval_refs": [],
-                "evidence_refs": [],
-                "artifact_refs": [],
-                "outcome_summary": null,
-                "due_at": null,
-                "priority": null,
-                "risk_level": null,
-                "created_at": "unix-ms:1",
-                "updated_at": "unix-ms:1",
-                "completed_at": null
-            }))
-            .expect("WorkItem")
-        };
-        let promotion_event: WorkEvent = serde_json::from_value(serde_json::json!({
-            "id": "event-promote-work-1",
-            "team_run_id": "run-1",
-            "work_id": "work-1",
-            "sequence": 2,
-            "kind": "team_scope_promoted",
-            "expected_version": 0,
-            "resulting_version": 1,
-            "performed_by_actor": {"kind": "host", "id": "host"},
-            "idempotency_key": "promote-work-1",
-            "created_at": "unix-ms:1"
-        }))
-        .expect("promotion event");
-        let fence = WorkCutoverFence {
-            company_work_item_id: "company-work-1".into(),
-            work_id: work.id.clone(),
-            team_id: "team-1".into(),
-            promotion_event_id: promotion_event.id.clone(),
-            expected_work_version: promotion_event.expected_version,
-            company_work_item_status: WorkItemStatus::Archived,
-            company_work_item_updated_at: "unix-ms:1".into(),
-            company_work_item_snapshot: serde_json::to_value(item("archived"))
-                .expect("WorkItem snapshot"),
-            idempotency_key: promotion_event.idempotency_key.clone(),
-            created_at: "unix-ms:1".into(),
-        };
-
-        let active = validate_work_cutover_with_fences(
-            std::slice::from_ref(&work),
-            std::slice::from_ref(&run),
-            &[item("in_progress")],
-            std::slice::from_ref(&fence),
-            std::slice::from_ref(&promotion_event),
-        );
-        assert!(!active.valid);
-        assert!(active
-            .issues
-            .iter()
-            .any(|issue| { issue.kind == WorkCutoverIssueKind::ActiveCompanyWorkItemOverlap }));
-
-        let missing_fence = validate_work_cutover_with_fences(
-            std::slice::from_ref(&work),
-            std::slice::from_ref(&run),
-            &[item("archived")],
-            &[],
-            std::slice::from_ref(&promotion_event),
-        );
-        assert!(missing_fence
-            .issues
-            .iter()
-            .any(|issue| { issue.kind == WorkCutoverIssueKind::MissingCompanyWorkItemFence }));
-
-        assert!(
-            validate_work_cutover(
-                std::slice::from_ref(&work),
-                std::slice::from_ref(&run),
-                &[item("archived")],
-            )
-            .valid
-        );
-        let archived = validate_work_cutover_with_fences(
-            std::slice::from_ref(&work),
-            std::slice::from_ref(&run),
-            &[item("archived")],
-            std::slice::from_ref(&fence),
-            std::slice::from_ref(&promotion_event),
-        );
-        assert!(archived.valid, "unexpected issues: {:?}", archived.issues);
-        let mut silently_mutated = item("archived");
-        silently_mutated.title = "mutated without advancing updated_at".into();
-        let mutated = validate_work_cutover_with_fences(
-            std::slice::from_ref(&work),
-            &[],
-            &[silently_mutated],
-            std::slice::from_ref(&fence),
-            std::slice::from_ref(&promotion_event),
-        );
-        assert!(mutated
-            .issues
-            .iter()
-            .any(|issue| { issue.kind == WorkCutoverIssueKind::CompanyWorkItemChangedAfterFence }));
-
-        let duplicate = validate_work_cutover_with_fences(
-            &[
-                work.clone(),
-                Work {
-                    id: "work-2".into(),
-                    ..work
-                },
-            ],
-            &[],
-            &[item("archived")],
-            &[fence],
-            &[promotion_event],
-        );
-        assert!(duplicate
-            .issues
-            .iter()
-            .any(|issue| { issue.kind == WorkCutoverIssueKind::DuplicateCompanyWorkItemLink }));
     }
 
     #[test]
@@ -8078,11 +7917,12 @@ mod tests {
             team_id: None,
             created_by_member_id: None,
             parent_work_id: None,
-            source_work_item_ref: None,
             title: "test work".into(),
             context_markdown: String::new(),
             completion_criteria_markdown: "done".into(),
-            status: WorkStatus::Review,
+            phase: WorkPhase::Review,
+            condition: WorkCondition::Normal,
+            resolution: None,
             owner_member_id: None,
             active_member_run_id: None,
             claim_mode: WorkClaimMode::HostAssign,

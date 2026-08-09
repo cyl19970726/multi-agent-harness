@@ -1,7 +1,7 @@
 //! Read-only archive support for the retired Goal / Task-Graph records.
 //!
 //! The archive deliberately preserves source JSONL bytes. It does not deserialize
-//! rows into the current Rust domain model, rename Tasks to WorkItems, or create
+//! rows into the current Rust domain model, rename Tasks to Work, or create
 //! Mission/Wave compatibility projections.
 
 use std::collections::{BTreeMap, BTreeSet};

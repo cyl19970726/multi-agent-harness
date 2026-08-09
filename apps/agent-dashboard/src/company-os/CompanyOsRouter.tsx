@@ -20,7 +20,6 @@ import {
   HumanMemberFocus,
   OrganizationPage,
   StandingAgentFocus,
-  WorkItemFocus,
   adaptTrademarkOperationsProjection,
 } from "./operations";
 import { WorkOperatingPage } from "./work/WorkOperatingPage";
@@ -35,7 +34,6 @@ type CompanyOsPage =
   | "custom-page"
   | "workboard"
   | "team-works"
-  | "work-item-focus"
   | "finance"
   | "agents-organization"
   | "agent-team-organization"
@@ -62,7 +60,7 @@ function selectedPage(selection: SelectionState): CompanyOsPage | undefined {
       return "docs-workspace";
     case "work":
       if (selection.workView === "team-works") return "team-works";
-      return selection.workItemId ? "work-item-focus" : "workboard";
+      return "workboard";
     case "finance":
       return "finance";
     case "organization":
@@ -197,7 +195,7 @@ function KernelViewTabs({ surface, selection, onSelectionChange }: { surface: "o
         { id: "agent-teams", label: "Agent Teams", icon: Network },
       ]
     : [
-        { id: "company-work", label: "Company WorkItems", icon: Database },
+        { id: "company-work", label: "Company Work", icon: Database },
         { id: "team-works", label: "Team Works", icon: BriefcaseBusiness },
       ];
   const active = organization ? (selection.orgView ?? "org-units") : (selection.workView ?? "company-work");
@@ -207,7 +205,7 @@ function KernelViewTabs({ surface, selection, onSelectionChange }: { surface: "o
         const Icon = option.icon;
         return <button key={option.id} type="button" aria-current={active === option.id ? "page" : undefined} onClick={() => onSelectionChange?.(organization
           ? { surface: "organization", orgView: option.id === "agent-teams" ? "agent-teams" : undefined, orgTeamId: undefined, orgExpanded: undefined, standingAgentId: undefined, personId: undefined, proposalId: undefined }
-          : { surface: "work", workView: option.id === "team-works" ? "team-works" : undefined, workItemId: undefined, teamWorkId: undefined, workTeamId: undefined, workHostId: undefined, workMemberId: undefined, workStatus: undefined, workSource: undefined, workDemand: undefined })} className={`inline-flex min-h-9 shrink-0 items-center gap-2 rounded-lg px-3 text-xs font-medium ${active === option.id ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-accent hover:text-foreground"}`}><Icon className="size-3.5" />{option.label}</button>;
+          : { surface: "work", workView: option.id === "team-works" ? "team-works" : undefined, teamWorkId: undefined, workTeamId: undefined, workHostId: undefined, workMemberId: undefined, workStatus: undefined, workSource: undefined, workDemand: undefined })} className={`inline-flex min-h-9 shrink-0 items-center gap-2 rounded-lg px-3 text-xs font-medium ${active === option.id ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-accent hover:text-foreground"}`}><Icon className="size-3.5" />{option.label}</button>;
       })}
     </nav>
   );
@@ -265,16 +263,15 @@ export function CompanyOsRouter({ model, selection, actionsEnabled = false, live
     documentId: selection.documentId,
     moduleId: selection.moduleId,
   });
-  const operations = adaptTrademarkOperationsProjection(resolved.value, { workItemId: selection.workItemId });
+  const operations = adaptTrademarkOperationsProjection(resolved.value);
 
   let content: ReactNode;
   switch (page) {
     case "home": content = <CompanyHome data={docs.home} />; break;
     case "docs-workspace": content = <DocsWorkspace workspace={docs.workspace} />; break;
-    case "document-health": content = <DocumentHealthReview health={docs.health} actionEnabled={actionsEnabled && resolved.mode === "store-live"} onCreateCorrectiveWork={onAction ? (command, capabilityToken) => onAction("/v1/company-os/actions/dispatch", command, { headers: { "X-Harness-Company-OS-Token": capabilityToken } }) : undefined} onRepairRelation={onAction ? (command, capabilityToken) => onAction("/v1/company-os/actions/dispatch", command, { headers: { "X-Harness-Company-OS-Token": capabilityToken } }) : undefined} />; break;
+    case "document-health": content = <DocumentHealthReview health={docs.health} actionEnabled={actionsEnabled && resolved.mode === "store-live"} onRepairRelation={onAction ? (command, capabilityToken) => onAction("/v1/company-os/actions/dispatch", command, { headers: { "X-Harness-Company-OS-Token": capabilityToken } }) : undefined} />; break;
     case "custom-page": content = <CustomPageHost pageId={selection.customPageId} source={resolved.value} />; break;
     case "workboard": content = <WorkOperatingPage source={resolved.value} />; break;
-    case "work-item-focus": content = <WorkItemFocus data={operations} actionEnabled={actionsEnabled && resolved.mode === "store-live"} onTransition={onAction ? (command, capabilityToken) => onAction("/v1/company-os/actions/dispatch", command, { headers: { "X-Harness-Company-OS-Token": capabilityToken } }) : undefined} />; break;
     case "finance": content = <FinancePage data={operations} />; break;
     case "agents-organization": content = <OrganizationPage data={operations} onSelectionChange={onSelectionChange} />; break;
     case "standing-agent-focus": content = <StandingAgentFocus data={operations} actorId={selection.standingAgentId} onSelectionChange={onSelectionChange} />; break;

@@ -23,7 +23,7 @@ use harness_core::{
     validate_gate_specs, BuiltinGateConfig, CodeReviewStrategy, GateSpec, MemberRunStatus,
     PendingInteractionStatus, TeamActorKind, TeamActorRef, TeamRunEvent, TeamRunStatus,
     TeamSupervisorLeaseStatus, WaveStatus, Work, WorkCausationRef, WorkClaimMode,
-    WorkCommandContext, WorkPriority, WorkStatus,
+    WorkCommandContext, WorkCondition, WorkPhase, WorkPriority,
 };
 use harness_store::{HarnessStore, WorkReviewPayload};
 use serde_json::{json, Value};
@@ -337,7 +337,6 @@ fn tool_team_run_work_create(store: &HarnessStore, arguments: &Value) -> Result<
         "claim_mode",
         "eligible_member_ids",
         "parent_work_id",
-        "source_work_item_ref",
         "prerequisite_work_ids",
         "priority",
         "caused_by_message_id",
@@ -376,7 +375,6 @@ fn tool_team_run_work_create(store: &HarnessStore, arguments: &Value) -> Result<
         team_id: None,
         created_by_member_id: None,
         parent_work_id: optional_non_empty_str(arguments, "parent_work_id")?,
-        source_work_item_ref: optional_non_empty_str(arguments, "source_work_item_ref")?,
         title: required_non_empty_str(arguments, "title")?.to_string(),
         context_markdown: optional_str(arguments, "context_markdown")?.unwrap_or_default(),
         completion_criteria_markdown: required_non_empty_str(
@@ -384,7 +382,9 @@ fn tool_team_run_work_create(store: &HarnessStore, arguments: &Value) -> Result<
             "completion_criteria_markdown",
         )?
         .to_string(),
-        status: WorkStatus::Open,
+        phase: WorkPhase::Open,
+        condition: WorkCondition::Normal,
+        resolution: None,
         owner_member_id: None,
         active_member_run_id: owner_member_run_id,
         claim_mode,
@@ -679,8 +679,9 @@ fn tool_team_run_work_accept(store: &HarnessStore, arguments: &Value) -> Result<
         .into_iter()
         .find(|work| work.id == work_id && work.team_run_id == team_run_id)
         .ok_or_else(|| format!("Work not found: {work_id}"))?;
-    let is_new_transition =
-        current.version == expected_version && current.status == WorkStatus::Review;
+    let is_new_transition = current.version == expected_version
+        && current.phase == WorkPhase::Review
+        && current.condition == WorkCondition::Normal;
     let work = store
         .accept_work(
             work_id,
@@ -1670,7 +1671,6 @@ fn tool_definitions() -> Value {
                     "claim_mode": {"type": "string", "enum": ["host_assign", "team_claim"]},
                     "eligible_member_ids": {"type": "array", "items": {"type": "string", "minLength": 1}},
                     "parent_work_id": {"type": "string", "minLength": 1},
-                    "source_work_item_ref": {"type": "string", "minLength": 1},
                     "prerequisite_work_ids": {"type": "array", "items": {"type": "string", "minLength": 1}},
                     "priority": {"type": "string", "enum": ["low", "normal", "high", "urgent"]},
                     "caused_by_message_id": {"type": "string", "minLength": 1},

@@ -16,6 +16,20 @@ import type {
   WorkEvent,
 } from "../types";
 
+function workIsTerminal(work: Work): boolean {
+  return work.phase === "closed";
+}
+
+function workIsAccepted(work: Work): boolean {
+  return work.phase === "closed" && work.resolution === "accepted";
+}
+
+function workLifecycleLabel(work: Work): string {
+  if (work.condition !== "normal") return work.condition;
+  if (work.phase === "closed") return work.resolution ?? "closed";
+  return work.phase;
+}
+
 /**
  * Read-model selectors for Mission-linked independent Agent Teams, TeamRuns,
  * versioned Host-plan Waves, and provider-native MemberRun bindings.
@@ -172,8 +186,8 @@ export function selectFilteredTeamWorks(
       || (ownerFilter === "unassigned" && !work.owner_member_id && !work.active_member_run_id)
       || Boolean(selectedMember && selectWorkOwnerMember(work, members)?.id === selectedMember.id);
     const attentionMatches = attentionFilter === "all"
-      || (attentionFilter === "review" && work.status === "review")
-      || (attentionFilter === "blocked" && work.status === "blocked");
+      || (attentionFilter === "review" && work.phase === "review")
+      || (attentionFilter === "blocked" && work.condition === "blocked");
     return ownerMatches && attentionMatches;
   });
 }
@@ -390,10 +404,10 @@ export function selectTeamRunNeedsYou(
   const approvals: TeamMessage[] = [];
   const waitingMembers: MemberRun[] = [];
   const unfinishedWorks = terminalRun
-    ? sortWorks(works.filter((work) => !["done", "cancelled"].includes(work.status)))
+    ? sortWorks(works.filter((work) => !workIsTerminal(work)))
     : [];
-  const blockedWorks = sortWorks(works.filter((work) => work.status === "blocked"));
-  const reviewWorks = sortWorks(works.filter((work) => work.status === "review"));
+  const blockedWorks = sortWorks(works.filter((work) => work.condition === "blocked"));
+  const reviewWorks = sortWorks(works.filter((work) => work.phase === "review"));
   // A member can be blocked without owning any Work: the provider-capacity
   // start gate runs before the adapter claims anything, so such a member never
   // appears in `blockedWorks`. Deriving blocked members from Work alone made
@@ -607,9 +621,9 @@ export interface TeamCapacityTile {
 export function selectTeamCapacity(members: MemberRun[], works: Work[]): TeamCapacityTile[] {
   const activeTurns = members.filter((member) => member.status === "running").length;
   const readyMembers = members.filter(canMemberAcceptWork).length;
-  const queuedWorks = works.filter((work) => work.status === "open").length;
-  const reviewWorks = works.filter((work) => work.status === "review").length;
-  const blockedWorks = works.filter((work) => work.status === "blocked");
+  const queuedWorks = works.filter((work) => work.phase === "open").length;
+  const reviewWorks = works.filter((work) => work.phase === "review").length;
+  const blockedWorks = works.filter((work) => work.condition === "blocked");
   const blockedWorkMemberIds = new Set(
     blockedWorks.flatMap((work) => work.active_member_run_id ? [work.active_member_run_id] : []),
   );
@@ -634,9 +648,9 @@ export function selectTeamCapacity(members: MemberRun[], works: Work[]): TeamCap
 }
 
 function isWorkReady(work: Work, works: Work[]): boolean {
-  if (work.status !== "open") return false;
-  const statusById = new Map(works.map((candidate) => [candidate.id, candidate.status]));
-  return (work.prerequisite_work_ids ?? []).every((id) => statusById.get(id) === "done");
+  if (work.phase !== "open" || work.condition !== "normal") return false;
+  const acceptedById = new Map(works.map((candidate) => [candidate.id, workIsAccepted(candidate)]));
+  return (work.prerequisite_work_ids ?? []).every((id) => acceptedById.get(id) === true);
 }
 
 function selectEligibleReadyWorks(works: Work[], members: MemberRun[], member: MemberRun): Work[] {
@@ -683,18 +697,19 @@ function isResponsibilityUpdate(event: WorkEvent): boolean {
 
 function sortMemberWorks(works: Work[]): Work[] {
   const statusRank: Record<string, number> = {
-    in_progress: 0,
+    active: 0,
     blocked: 1,
     review: 2,
     open: 3,
-    done: 4,
+    accepted: 4,
+    failed: 5,
     cancelled: 5,
   };
   return [...works]
-    .filter((work) => !["done", "cancelled"].includes(work.status))
+    .filter((work) => !workIsTerminal(work))
     .sort((left, right) =>
-      (statusRank[left.status] ?? Number.MAX_SAFE_INTEGER)
-      - (statusRank[right.status] ?? Number.MAX_SAFE_INTEGER)
+      (statusRank[workLifecycleLabel(left)] ?? Number.MAX_SAFE_INTEGER)
+      - (statusRank[workLifecycleLabel(right)] ?? Number.MAX_SAFE_INTEGER)
       || priorityRank(left.priority) - priorityRank(right.priority)
       || parseTeamTimestamp(left.updated_at) - parseTeamTimestamp(right.updated_at)
       || stableIdCompare(left.id, right.id),

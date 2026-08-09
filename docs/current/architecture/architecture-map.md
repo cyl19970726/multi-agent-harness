@@ -18,7 +18,7 @@ flowchart TB
   Org["Organization\nhumans · standing agents · external · services"]
   Collab["Collaboration spine\nconversation · activity · artifacts"]
   TeamWork["Agent Team Works\nownership · readiness · Kanban · review"]
-  Work["Company Work\nWorkItems · Milestones · business relations"]
+  Work["Company Work\nTeamWorks · Milestones · business relations"]
   Approval["Approvals and Needs You"]
   Gov["Governance Agents\nDocs · Work · Finance · Org / HR"]
   Finance["Finance and Metrics"]
@@ -82,7 +82,7 @@ flowchart TB
 | Organization | Actor identity, Human Owner → Lead Agent, optional role agents, role, authority, permissions, availability, capacity | one TeamRun attempt or work-routing inference |
 | Collaboration | cross-actor messages, interaction routing, artifacts, explicit outcomes, and provider-native session links | Work ownership, approval, finance truth, copied provider transcripts, or raw thinking |
 | Agent Team Works | TeamRun-scoped Work ownership, assigned/unassigned readiness, atomic claim, review, child delegation, and Kanban projection | authored conversation, company approval/finance, or provider transcript |
-| Company Work and Approval | WorkCore extension with Milestones, WorkItem responsibility, source/result provenance, policy gates, and execution reference | provider runtime or a second Agent Team scheduler |
+| Company Work and Approval | WorkCore extension with Milestones, TeamWork responsibility, source/result provenance, policy gates, and execution reference | provider runtime or a second Agent Team scheduler |
 | Finance and Metrics | typed values, observations, audit, business relations | copied document display values |
 | Execution | Mission context/Host-plan Waves, independent or Mission-scoped Agent Teams, durable Team Supervisors, typed mail, Workflow, direct delivery | company organization or document truth; Wave runtime containment |
 | Runtime | provider processes, native sessions, native activity readers/resume, plugins, MCP, and ephemeral projections | business approval, assignment inference, or a second provider history |

@@ -87,10 +87,10 @@ function MemberCapacityRow({
 }) {
   const tone = memberTone(member.status);
   const owned = works.filter((work) => selectWorkOwnerMember(work, [member])?.id === member.id);
-  const active = owned.filter((work) => work.status === "in_progress").length;
-  const queued = owned.filter((work) => work.status === "open").length;
-  const blocked = owned.filter((work) => work.status === "blocked").length;
-  const review = owned.filter((work) => work.status === "review").length;
+  const active = owned.filter((work) => work.phase === "active").length;
+  const queued = owned.filter((work) => work.phase === "open").length;
+  const blocked = owned.filter((work) => work.condition === "blocked").length;
+  const review = owned.filter((work) => work.phase === "review").length;
   const addressable = canMemberAcceptWork(member);
   return (
     <article

@@ -590,7 +590,7 @@ fn window_from_json(
 ) -> Option<ProviderCapacityWindow> {
     // `usedPercent` is the only required field of a provider window. Without it
     // there is no number to report, and inventing one is exactly what this
-    // WorkItem forbids.
+    // Work forbids.
     let used_percent = provider_number(window.get("usedPercent"))?;
     Some(ProviderCapacityWindow {
         label: label.to_string(),

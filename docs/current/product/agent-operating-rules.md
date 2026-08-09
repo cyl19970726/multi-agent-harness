@@ -17,7 +17,7 @@ conflict; do not restate its contract here.
 Star Harness is an AI Company OS with two primary systems: a Notion-like Docs
 system for company memory and operating structure, and a mixed Organization of
 humans, Standing Agents, external collaborators, and services. Documents create
-WorkItems and Approvals; accountable actors execute them; results, evidence,
+TeamWorks and Approvals; accountable actors execute them; results, evidence,
 metrics, and financial effects return to the originating records
 ([prd.md](prd.md), [company-os/README.md](../company-os/README.md)).
 
@@ -57,16 +57,16 @@ credentials and other protected actions still require the appropriate Human or
 policy approval.
 
 Docs plus flat AgentTeam Organization is the accepted target direction.
-AgentMember is the target durable agent identity and Work is the target shared
-responsibility kernel. Current StandingAgent, Company WorkItem, OrgUnit, and
-explicit execution-ref rows remain compatibility implementation truth until an
-explicit verified cutover. Do not claim target objects or fields exist until
-schemas, stores, APIs, and acceptance checks prove them. See
+AgentMember is the durable agent identity and native Work is the shared
+responsibility kernel. The Unified Work cutover is implemented: Company Work
+aggregates native TeamWork and owns no second task or Assignment ledger. Do not
+claim other target objects or fields exist until schemas, stores, APIs, and
+acceptance checks prove them. See
 [company-os/README.md](../company-os/README.md) and
 [ADR 0052](../../decisions/0052-nested-agent-teams-are-the-agent-organization.md).
 
 The first Company OS acceptance scenario is a governed Trademark Management
-module whose filing WorkItem, human approval, ¥3,000 financial commitment,
+module whose filing TeamWork, human approval, ¥3,000 financial commitment,
 participants, evidence, and source/result documents remain one linked truth.
 Repository self-hosting remains the first execution-foundation scenario.
 Project-specific logic belongs in modules, adapters, and scenario skills, not
@@ -78,9 +78,9 @@ For company operations, the native product objects are `Document`,
 `BusinessModule`, `TypedRecord`, `Relation`, `ActorRef`, `HumanMember`,
 `AgentMember`, flat `AgentTeam`, `Work`, `Approval`,
 `FinancialRecord`, and `MetricObservation`. Some of these are currently design
-contracts rather than implemented schemas; current `OrgUnit`, `StandingAgent`,
-`WorkItem`, and `Assignment` rows remain compatibility implementation truth.
-Keep that distinction explicit. See
+contracts rather than implemented schemas. Native Work, WorkReport, gate
+evaluation, and operational decision are implemented authority; Company Work
+is only their read projection. Keep that distinction explicit. See
 concept-model.md.
 
 `Mission` and `Wave` are the only native coordination objects for new work. The

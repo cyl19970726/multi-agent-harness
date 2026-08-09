@@ -11,7 +11,7 @@ The product is not primarily a multi-agent run dashboard. It is a Company OS:
 ```text
 Docs organize business intent and knowledge.
 Organization supplies long-lived human and Agent capability.
-WorkItems connect intent to accountable execution.
+TeamWorks connect intent to accountable execution.
 Approvals protect high-risk actions.
 Execution tools perform the work.
 Results and effects return to Docs and related records.
@@ -46,7 +46,7 @@ Docs is the company memory and operating hub. It must support:
   embedded related-record views over TypedRecords and Relations;
 - typed records and relations rather than copied values;
 - templates and Module Designs for repeatable business domains;
-- actions that create WorkItems and Approvals with source-document provenance;
+- actions that create TeamWorks and Approvals with source-document provenance;
 - result, evidence, metric, and financial-effect updates back into the source;
 - structure-health, reorganization, archival, and conflict detection.
 
@@ -73,30 +73,27 @@ becoming their organizational manager. `reports_to_actor_ref` and
 
 Organization collaboration is object-centred. Human and Agent conversation,
 handoff, activity, and artifacts remain linked to a Document, BusinessModule,
-Milestone, WorkItem, Approval, or execution attempt. The Organization overview
+Milestone, TeamWork, Approval, or execution attempt. The Organization overview
 and compact Actor configuration compose those explicit links; dedicated Agent
 workspaces are deferred and ordinary provider logs are never company context.
 
 ### Work and approvals
 
-`WorkItem` is the product-level work record. It is distinct from executor
-internals and from ordinary messages.
+Native `Work` is the product-level execution record; `TeamWork` is its
+explicit-context name. Company Work is a read-only aggregate, not another
+record. Work remains distinct from runtime internals and ordinary messages.
 
-`Milestone` is the only grouping layer above WorkItems. It records a named
-stage outcome, owner, target date, acceptance criteria, and the WorkItems that
+`Milestone` is the only grouping layer above TeamWorks. It records a named
+stage outcome, owner, target date, acceptance criteria, and the TeamWorks that
 contribute to it. There is no separate canonical `Project` object. A
 BusinessModule or Document supplies durable business context while Work owns
-Milestones and WorkItems.
+Milestones and TeamWorks.
 
-Every WorkItem records:
-
-- source document and result document;
-- requested by and submitted by;
-- accountable owner;
-- assignees and contributors;
-- reviewer and approver when required;
-- execution reference;
-- result, evidence, metrics, and linked financial records.
+Every TeamWork records its Team/TeamRun scope, exact revision, owner Member,
+context and completion criteria, independent phase/condition/resolution,
+prerequisites, gates, reports, artifacts, checks, and decisions. Documents,
+Approvals, Finance, and Milestones relate to the Work id without copying or
+controlling its lifecycle.
 
 `Approval` records legal, financial, permission, publication, and organization
 gates. Policies may require a human actor; an Agent cannot impersonate that
@@ -106,7 +103,7 @@ approval.
 
 Structured records are linked, not duplicated. A trademark filing fee shown in
 a trademark document and in Finance is one `FinancialRecord` with relations to
-the application, BusinessModule, Milestone, source document, WorkItem,
+the application, BusinessModule, Milestone, source document, TeamWork,
 approval, and evidence.
 
 Finance distinguishes budget, commitment, invoice, payment, refund, and
@@ -117,7 +114,7 @@ retain their source.
 
 - Docs Governance Agent proposes new or reorganized Document and Module
   structures.
-- Work Governance Agent classifies and routes durable WorkItems and their
+- Work Governance Agent classifies and routes durable TeamWorks and their
   cross-system effects.
 - Finance Governance Agent manages monetary requests, controls, evidence, and
   authorized financial transitions.
@@ -129,7 +126,7 @@ retain their source.
 
 ## Execution foundation
 
-A WorkItem may be executed directly by a human or Standing Agent, or may start
+A TeamWork may be executed directly by a human or Standing Agent, or may start
 one of the product's one-time long-task capabilities:
 
 ```text
@@ -152,7 +149,7 @@ execution = Agent Team | Dynamic Workflow | Host work
 - provider sessions, plugins, MCP, and child work remain execution evidence.
 
 No executor owns the originating document, organization, approval, or company
-record. Results return through the WorkItem relation.
+record. Results return through the TeamWork relation.
 
 ## Required product experiences
 
@@ -163,8 +160,9 @@ record. Results return through the WorkItem relation.
    pages for core surfaces.
 3. Organization shows a mixed company and distinct details for humans and
    standing Agents.
-4. Work is the company-wide ledger of Milestones and typed WorkItems and makes
-   submission, responsibility, remaining work, and acceptance visible.
+4. Work is the company-wide read-only aggregate of native TeamWorks plus
+   Milestone groupings and makes submission, responsibility, remaining work,
+   gates, and acceptance visible.
 5. Approvals provides a focused `Needs You` queue and complete audit history.
 6. Finance provides typed, permissioned records linked to business origin.
 7. Governance handles new business domains, document growth, organization
@@ -181,7 +179,7 @@ The first Company OS scenario is a new Trademark Management module:
   relations, views, permissions, and archival rules.
 - Organization Governance identifies a Brand Owner human, Trademark Agent,
   Finance Agent, and External Lawyer participation.
-- a filing WorkItem preserves requester, submitter, owner, contributors,
+- a filing TeamWork preserves requester, submitter, owner, contributors,
   reviewer, and human approver;
 - the ¥3,000 filing fee is one linked FinancialRecord, not copied text;
 - approval updates Work, Finance, and the trademark application;
@@ -191,9 +189,9 @@ The first Company OS scenario is a new Trademark Management module:
 
 - do not make raw provider transcripts or thinking the company knowledge base;
 - do not infer assignment from matching names, roles, providers, or sessions;
-- do not make every message a WorkItem;
-- do not introduce a separate Project object above Milestone and WorkItem;
-- do not force every WorkItem into Mission/Wave or another executor;
+- do not make every message a TeamWork;
+- do not introduce a separate Project object above Milestone and TeamWork;
+- do not force every TeamWork into Mission/Wave or another executor;
 - do not use runtime status as business availability;
 - do not let an Agent satisfy a human-required approval;
 - do not copy finance or metric values between modules;

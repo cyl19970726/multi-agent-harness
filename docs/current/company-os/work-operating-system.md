@@ -1,216 +1,104 @@
-# Work Operating System
+# Company Work Operating System
+
+Status: current
+Contract: AFM-2026.08.2
+
+## Product boundary
+
+Company Work is the company-wide operating view of native TeamWork. It lets an
+operator search, filter, group, inspect, and route Work across execution
+spaces. It never creates another executable object.
+
+The authority split is:
+
+| Concern | Authority |
+|---|---|
+| Work identity and revision | native TeamWork store |
+| lifecycle transition | `team-run work` |
+| immutable submission | `WorkReport` |
+| verification | `WorkGateEvaluation` and evidence |
+| accept/reject decision | `WorkOperationalDecision` |
+| company grouping | read-only Company Work projection |
+| business outcome grouping | Milestone referencing Work ids |
+| human policy decision | Approval |
+
+## Read projection
+
+The projection is computed from execution-space stores at read time:
 
 ```text
-status: canonical product contract; native model, projection, and first Work workspace implemented
-owner_role: product
-canonical_for: company-wide Work information architecture, views, filters, and Milestone boundary
+ExecutionSpace A ─┐
+ExecutionSpace B ─┼─> Company Work aggregate ─> filter / board / route
+ExecutionSpace C ─┘
 ```
 
-## Product responsibility
+It must:
 
-`Work` is the company-wide operating ledger for commitments. It answers four
-questions without making the operator reconstruct them from chats or execution
-logs:
+- preserve exact Work ids and revisions;
+- expose the source execution space and mutation route;
+- filter by team, team run, phase, condition, resolution, and owner;
+- report duplicate-id conflicts rather than silently selecting one source;
+- keep an explicitly empty aggregate empty;
+- avoid fixture or retired-ledger fallback.
 
-1. What work exists across every business line?
-2. Who is accountable, who is executing, and who must review or approve?
-3. What is complete, in motion, blocked, waiting, overdue, or unassigned?
-4. Which document created the work, how is it being executed, and where will
-   the durable result return?
+## Operator flow
 
-Every Work surface is a projection over the same native `WorkItem` records.
-Board cards, table rows, workload cells, Milestone summaries, document embeds,
-and actor assignments never become duplicate task objects.
+1. Read Company Work to find the relevant native Work.
+2. Resolve its execution-space route.
+3. Inspect the latest native Work revision.
+4. Mutate only through `team-run work` in that execution space.
+5. Submit an immutable report with evidence and checks.
+6. Run declared gates.
+7. Record an operational decision.
+8. Observe the changed Work through the Company aggregate.
 
-## Deliberately small hierarchy
+## Dashboard contract
 
-```text
-Work
-  -> optional Milestone
-       -> WorkItem
-```
+The default Company Work page is read-only and shows:
 
-There is no `Project` object and no task graph. A business line is represented
-by `BusinessModule` or another explicit business relation; it is a grouping and
-filter dimension, not another task container.
+- exact Work id;
+- team and TeamRun;
+- owner;
+- `phase`, `condition`, and `resolution` independently;
+- blocker reason where present;
+- summary counts derived from the same `works` collection.
 
-`Milestone` is a durable business checkpoint such as “Trademark application
-submitted” or “V1 released”. It groups WorkItems around an outcome and target
-date. `Mission` with its append-only MissionLog is an optional execution plan for long-running work and
-remains outside this hierarchy. A WorkItem can link to a Mission,
-AgentTeamRun, WorkflowRun, Host execution, Git Issue, or Pull Request through
-typed execution and delivery references.
+The page exposes deterministic provenance markers:
 
-## Primary navigation
+- `data-company-work-authority="team-work"`;
+- `data-company-work-read-only="true"`;
+- `data-company-work-projection="company_work_aggregate"`.
 
-The top-level Work page has six stable data views:
+There is no Company task detail route and no `workItem` URL parameter. A native
+Work focus uses `teamWork=<id>` and routes to the Team Work surface.
 
-| View | Operator question | Default representation |
-| --- | --- | --- |
-| Overview | What needs attention and where is progress drifting? | operating summary plus attention queues |
-| Board | How is work flowing through states? | status Kanban |
-| All Work | What is the complete, sortable ledger? | dense table |
-| Milestones | Which business outcomes are on track or at risk? | roadmap and grouped work |
-| Timeline | What is due when and which dates collide? | chronological schedule |
-| Workload | Who owns what and where is capacity or ownership unhealthy? | actor lanes and capacity summary |
+## Milestones
 
-Saved views are named query presets, not new pages or stores: `My Work`,
-`Agent Work`, `Human Actions`, `Waiting for Approval`, `Blocked`, `Due Soon`,
-`Completed`, and `Unassigned`.
+Milestone is a Company grouping object, not a work executor. Its `work_refs`:
 
-## Shared dimensions
+- store native Work ids unchanged;
+- may span teams or execution spaces;
+- do not copy Work title, owner, lifecycle, evidence, or revision;
+- never cause a Work transition when the Milestone changes.
 
-All primary and saved views use the same filter vocabulary:
+Milestone closure is a governed business statement. Native Work acceptance
+remains separately evidenced.
 
-- business line / `BusinessModule`;
-- `work_type`;
-- status;
-- accountable owner;
-- assignee actor and actor kind;
-- Milestone;
-- approval state;
-- priority, risk, and due range;
-- source document and execution mode.
+## Failure handling
 
-The native store now persists `Milestone`, carries `work_type`,
-`business_module_ref`, and optional `milestone_ref` on `WorkItem`, and exposes
-one filtered `WorkProjection` for Board, business-line, Work type, Milestone,
-and workload reads. `GET /v1/company-os/work-projection` returns the default
-ledger projection; read-only `POST /v1/company-os/work-query` accepts the typed
-`WorkQuery` filter body without granting a mutation capability. Historical
-WorkItem rows remain readable and are projected
-honestly as `general`, unclassified, and without a Milestone. The first real
-Work workspace consumes this projection across Overview, Board, All Work,
-Milestones, Timeline, and Workload. Multi-business-line store tests are present;
-the Store-live acceptance dataset now supplies six WorkItems, four Milestones,
-and four business lines. Desktop, tablet, and mobile captures cover all six
-views without document-level horizontal overflow or console errors.
+- Duplicate Work id across spaces: show a conflict and withhold a mutation
+  route until scope is explicit.
+- Missing execution space: keep the Work visible with an unavailable route.
+- Stale revision: reject mutation and require a fresh read.
+- Blocked/on-hold: preserve phase and record condition history.
+- Provider or delivery failure: record runtime truth without silently closing
+  Work.
+- Gate failure: retain report and evidence, reject acceptance, and create a new
+  Work revision only through a declared corrective operation.
 
-## Board contract
+## Cutover invariant
 
-The default status workflow is:
-
-```text
-Inbox -> Accepted -> In Progress -> In Review -> Completed
-                         |              |
-                         +-> Blocked    +-> Waiting for Approval
-```
-
-The rendering may collapse low-volume states, but stored state is never
-rewritten to make a cleaner board. A card prioritizes operational recognition:
-
-- title, Work type, business line, and optional Milestone;
-- accountable owner plus active assignee(s), with actor-kind identity;
-- due date, priority, and risk;
-- Approval pressure or blocker and next required actor;
-- source Document and execution mode;
-- explicit completion or review evidence when terminal.
-
-Movement between columns invokes the governed lifecycle Action. Dragging a
-card is not permission to bypass responsibility, required Approval, result
-provenance, or transition rules.
-
-## Company WorkItem and Team Work kernel
-
-Company WorkItem (11 states) and Team Work (6 states) operate in different
-responsibility domains. Company WorkItem owns business intent, source
-provenance, and approval authority; Team Work owns execution responsibility,
-member assignment, and delivery evidence. There is no 1:1 state mapping because
-the two kernels serve different lifecycle authorities.
-
-| Company WorkItem state | Team Work state | Mapping rule |
-| --- | --- | --- |
-| `draft` | — | Not yet published to Team; no Team Work exists |
-| `submitted` | — | Company intake only; Team Work may be created as `open` when routed |
-| `triaged` | — | Routing decision; Team Work may transition |
-| `accepted` | `open` → `in_progress` | Company acceptance gates Team execution start |
-| `in_progress` | `in_progress` | Aligned execution |
-| `waiting_for_approval` | `blocked` | Company approval blocked = Team blocked |
-| `blocked` | `blocked` | Aligned blocked |
-| `in_review` | `review` | Review aligned |
-| `completed` | `done` | Host accepts → both complete |
-| `cancelled` | `cancelled` | Aligned cancellation |
-| `archived` | — | Historical only; Team Work already terminated |
-
-**Cutover authority rule:** Company WorkItem is authority for business intent
-and approval; Team Work is authority for execution responsibility. Promotion
-to Team-scoped Work requires the Company WorkItem to be in a terminal state
-(`draft` / `completed` / `cancelled` / `archived`) per the dual-lock fence
-protocol. While both Company WorkItem and Team Work are active, the
-`WorkExecutionChain` projection links them read-only; it is a bridge, not a
-write path.
-
-## All Work contract
-
-The table is the highest-density truth surface. It supports grouping by
-business line, Milestone, status, accountable owner, assignee, or Work type and
-shows at minimum:
-
-```text
-WorkItem | Type | Business line | Milestone | Status | Accountable
-Assignees | Approval | Due | Source | Execution | Updated
-```
-
-The table must support unassigned and no-Milestone rows honestly. It does not
-hide completed items by default; operators can choose an active-only saved
-view.
-
-The WorkItem row and detail surfaces must expose the native detail fields when
-present:
-
-```text
-description
-acceptance_criteria
-context_refs
-deliverable_refs
-```
-
-These fields are not document-local decoration. `description` and
-`acceptance_criteria` help Agents understand and verify the commitment;
-`context_refs` and `deliverable_refs` keep the WorkItem connected to Docs,
-Org, Finance, execution, evidence, or source/delivery records without copying
-their facts into the task row.
-
-## Milestones and workload
-
-A Milestone view shows outcome, accountable owner, target date, acceptance
-criteria, progress by WorkItem state, blockers, approval pressure, and the
-remaining critical work. Percent complete is derived and labelled; it cannot
-replace the acceptance criteria.
-
-Workload groups explicit assignments by actor. It distinguishes accountable
-ownership from execution assignment, human from Standing Agent, and temporary
-execution members from the durable organization. Capacity is advisory and may
-be unknown. An unassigned lane is always visible when applicable.
-
-## WorkItem focus
-
-The detail page preserves the full accountability chain and durable context:
-description, acceptance criteria, source and result, context refs, deliverable
-refs, submitter, requester, accountable owner, assignees,
-contributors, reviewer, approver, Milestone, business line, lifecycle history,
-Approval, artifacts, evidence, finance relations, and typed execution/delivery
-references. Activity may explain what happened but cannot establish ownership
-or acceptance by itself.
-
-## Responsive behavior
-
-Desktop keeps the navigation rail, central work surface, and optional context
-rail. Tablet collapses the context rail into a drawer. Mobile uses a compact
-view switcher and filter sheet; Board becomes horizontally scrollable status
-lanes while All Work becomes a readable item list. Responsibility and pressure
-must remain visible before secondary metadata.
-
-## Acceptance scenario
-
-The initial multi-business-line target dataset should include at least:
-
-- Brand & IP: trademark search, filing Approval, and filing evidence;
-- Content: publish and measure a video campaign;
-- Finance: review the ¥3,000 commitment and record the authorized effect;
-- Product & Engineering: implement a governed Company OS capability with Git
-  delivery references.
-
-This dataset exists to prove cross-line query and responsibility semantics.
-Generated Expected imagery remains illustrative; Actual captures must identify
-the native Store projection, project, revision, viewport, and capture run.
+The live system contains no second Company task or assignment authority. Old
+fixture data, screenshots, and historical decision records may describe the
+former design, but active APIs, schemas, CLI commands, dashboard routes,
+operator skills, and acceptance checks must use Unified Work.

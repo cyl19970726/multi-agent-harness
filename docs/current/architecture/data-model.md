@@ -112,7 +112,7 @@ flowchart TD
 `Review`, `Gap`, `Evidence`, `Decision`, `Evaluation`, and `LearningNote` may be
 used when a domain or repository gate needs them. They enrich execution proof;
 they are not mandatory levels between Wave outcome and gate. Product-specific
-WorkItems, Approvals, finance, metrics, and documents are defined by the
+TeamWorks, Approvals, finance, metrics, and documents are defined by the
 Company OS contracts rather than by a generic task graph.
 
 Retired object fields that remain in internal schemas are removal debt governed

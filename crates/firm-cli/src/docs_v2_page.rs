@@ -387,10 +387,7 @@ pub fn parse_markdown_blocks(
                             BlockKindV2::PageEmbed,
                             json!({ "target_document_id": target_id, "display": display }),
                         )
-                    } else if matches!(
-                        kind_part,
-                        "view" | "typed_record" | "work_item" | "relation"
-                    ) {
+                    } else if matches!(kind_part, "view" | "typed_record" | "work" | "relation") {
                         (
                             BlockKindV2::EntityEmbed,
                             json!({ "target": { "kind": kind_part, "id": target_id }, "display": display }),
@@ -927,7 +924,7 @@ fn legacy_block_to_v2(block: &LegacyBlock) -> BlockV2 {
         LegacyBlockKind::EmbeddedView => (BlockKindV2::EntityEmbed, entity_embed("view")),
         LegacyBlockKind::Metric => (BlockKindV2::EntityEmbed, entity_embed("typed_record")),
         LegacyBlockKind::Decision => (BlockKindV2::EntityEmbed, entity_embed("typed_record")),
-        LegacyBlockKind::WorkItem => (BlockKindV2::EntityEmbed, entity_embed("work_item")),
+        LegacyBlockKind::Work => (BlockKindV2::EntityEmbed, entity_embed("work")),
         LegacyBlockKind::RelationSummary => (
             BlockKindV2::Callout,
             json!({ "tone": "info", "title": "legacy relation summary", "text": text_fallback() }),

@@ -4,17 +4,15 @@
 //! the legacy Goal/Task ledgers and from executor-native Mission/Wave records.
 //! Reads use the repository's existing latest-row-wins projection.
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use firm_core::{
-    ActionCommand, ActionCommandStatus, ActionPolicyDefinition, ActorRef, ActorType, ActorWorkload,
-    Approval, ApprovalStatus, Assignment, AuditEvent, AuditEventKind, Block, BusinessModule,
-    Commitment, CommitmentStatus, CustomPageDefinition, CustomPagePackage, Document, EntityKind,
-    EntityRef, ExternalParticipant, HumanMember, MemberStatus, Milestone, MilestoneProgress,
-    OrgUnit, OrganizationMembership, Payment, PaymentStatus, Relation, ServiceActor, StandingAgent,
-    TypedRecord, ValidateCompanyOs, View, WorkItem, WorkItemStatus, WorkProjection, WorkQuery,
-    WorkSummary, WorkType,
+    ActionCommand, ActionCommandStatus, ActionPolicyDefinition, ActorRef, ActorType, Approval,
+    ApprovalStatus, AuditEvent, AuditEventKind, Block, BusinessModule, Commitment,
+    CommitmentStatus, CustomPageDefinition, CustomPagePackage, Document, EntityKind, EntityRef,
+    ExternalParticipant, HumanMember, MemberStatus, Milestone, OrgUnit, OrganizationMembership,
+    Payment, PaymentStatus, Relation, ServiceActor, StandingAgent, TypedRecord, ValidateCompanyOs,
+    View,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
@@ -33,8 +31,6 @@ const SERVICE_ACTORS: &str = "company_os_service_actors.jsonl";
 const ORG_UNITS: &str = "company_os_org_units.jsonl";
 const ORGANIZATION_MEMBERSHIPS: &str = "company_os_organization_memberships.jsonl";
 const MILESTONES: &str = "company_os_milestones.jsonl";
-const WORK_ITEMS: &str = "company_os_work_items.jsonl";
-const ASSIGNMENTS: &str = "company_os_assignments.jsonl";
 const APPROVALS: &str = "company_os_approvals.jsonl";
 const COMMITMENTS: &str = "company_os_commitments.jsonl";
 const PAYMENTS: &str = "company_os_payments.jsonl";
@@ -179,9 +175,7 @@ impl HarnessStore {
         OrganizationMembership,
         ORGANIZATION_MEMBERSHIPS
     );
-    company_read_api!(work_items, latest_work_items, WorkItem, WORK_ITEMS);
     company_read_api!(milestones, latest_milestones, Milestone, MILESTONES);
-    company_read_api!(assignments, latest_assignments, Assignment, ASSIGNMENTS);
     company_read_api!(approvals, latest_approvals, Approval, APPROVALS);
     company_read_api!(commitments, latest_commitments, Commitment, COMMITMENTS);
     company_read_api!(payments, latest_payments, Payment, PAYMENTS);
@@ -430,49 +424,6 @@ impl HarnessStore {
         })
     }
 
-    pub fn append_work_item(&self, value: &WorkItem) -> StoreResult<()> {
-        self.append_company_row(WORK_ITEMS, value, |store| {
-            store.require_id::<Document>(DOCUMENTS, &value.source_document_ref, "Document")?;
-            for record_id in &value.source_record_refs {
-                store.require_id::<TypedRecord>(TYPED_RECORDS, record_id, "TypedRecord")?;
-            }
-            if let Some(milestone_id) = &value.milestone_ref {
-                store.require_id::<Milestone>(MILESTONES, milestone_id, "Milestone")?;
-            }
-            if let Some(module_id) = &value.business_module_ref {
-                store.require_id::<BusinessModule>(
-                    BUSINESS_MODULES,
-                    module_id,
-                    "BusinessModule",
-                )?;
-            }
-            if let Some(document_id) = &value.result_document_ref {
-                store.require_id::<Document>(DOCUMENTS, document_id, "Document")?;
-            }
-            for record_id in &value.result_record_refs {
-                store.require_id::<TypedRecord>(TYPED_RECORDS, record_id, "TypedRecord")?;
-            }
-            store.require_actor(&value.submitted_by)?;
-            if let Some(actor) = &value.requested_by {
-                store.require_actor(actor)?;
-            }
-            store.require_actor(&value.accountable_owner)?;
-            for actor in value.assignees.iter().chain(&value.contributors) {
-                store.require_actor(actor)?;
-            }
-            if let Some(actor) = &value.reviewer {
-                store.require_actor(actor)?;
-            }
-            if let Some(actor) = &value.approver {
-                store.require_actor(actor)?;
-            }
-            for approval_id in &value.approval_refs {
-                store.require_id::<Approval>(APPROVALS, approval_id, "Approval")?;
-            }
-            Ok(())
-        })
-    }
-
     pub fn append_milestone(&self, value: &Milestone) -> StoreResult<()> {
         self.append_company_row(MILESTONES, value, |store| {
             store.require_actor(&value.accountable_owner)?;
@@ -486,18 +437,7 @@ impl HarnessStore {
                     "BusinessModule",
                 )?;
             }
-            for work_item_id in &value.work_item_refs {
-                store.require_id::<WorkItem>(WORK_ITEMS, work_item_id, "WorkItem")?;
-            }
             Ok(())
-        })
-    }
-
-    pub fn append_assignment(&self, value: &Assignment) -> StoreResult<()> {
-        self.append_company_row(ASSIGNMENTS, value, |store| {
-            store.require_id::<WorkItem>(WORK_ITEMS, &value.work_item_id, "WorkItem")?;
-            store.require_actor(&value.recipient)?;
-            store.require_actor(&value.sender)
         })
     }
 
@@ -1066,131 +1006,6 @@ impl HarnessStore {
         Ok(records)
     }
 
-    /// Build the shared, read-only Work projection used by every Work view.
-    /// Filtering never creates a second task record and unknown dimensions stay
-    /// explicitly unclassified.
-    pub fn work_projection(&self, query: &WorkQuery) -> StoreResult<WorkProjection> {
-        let work_items = self
-            .latest_work_items()?
-            .into_iter()
-            .filter(|item| work_matches(item, query))
-            .collect::<Vec<_>>();
-        let mut summary = WorkSummary::default();
-        let mut board = BTreeMap::<String, Vec<String>>::new();
-        let mut business_lines = BTreeMap::<String, Vec<String>>::new();
-        let mut work_types = BTreeMap::<String, Vec<String>>::new();
-        let mut workload = BTreeMap::<ActorRef, (u64, u64, u64, BTreeSet<String>)>::new();
-
-        for item in &work_items {
-            summary.total += 1;
-            summary.active += u64::from(work_item_is_active(item.status));
-            summary.completed += u64::from(item.status == WorkItemStatus::Completed);
-            summary.blocked += u64::from(item.status == WorkItemStatus::Blocked);
-            summary.waiting_for_approval +=
-                u64::from(item.status == WorkItemStatus::WaitingForApproval);
-            summary.unassigned += u64::from(item.assignees.is_empty());
-            summary.without_milestone += u64::from(item.milestone_ref.is_none());
-            summary.without_business_line += u64::from(item.business_module_ref.is_none());
-
-            board
-                .entry(work_status_key(item.status).into())
-                .or_default()
-                .push(item.id.clone());
-            business_lines
-                .entry(
-                    item.business_module_ref
-                        .clone()
-                        .unwrap_or_else(|| "unclassified".into()),
-                )
-                .or_default()
-                .push(item.id.clone());
-            work_types
-                .entry(work_type_key(item.work_type).into())
-                .or_default()
-                .push(item.id.clone());
-
-            let accountable = workload
-                .entry(item.accountable_owner.clone())
-                .or_insert_with(|| (0, 0, 0, BTreeSet::new()));
-            accountable.0 += 1;
-            accountable.2 += u64::from(work_item_is_active(item.status));
-            accountable.3.insert(item.id.clone());
-            for assignee in &item.assignees {
-                let assigned = workload
-                    .entry(assignee.clone())
-                    .or_insert_with(|| (0, 0, 0, BTreeSet::new()));
-                assigned.1 += 1;
-                assigned.2 += u64::from(work_item_is_active(item.status));
-                assigned.3.insert(item.id.clone());
-            }
-        }
-
-        let milestones = self
-            .latest_milestones()?
-            .into_iter()
-            .filter(|milestone| {
-                (query.milestone_refs.is_empty() || query.milestone_refs.contains(&milestone.id))
-                    && (query.business_module_refs.is_empty()
-                        || milestone
-                            .business_module_ref
-                            .as_ref()
-                            .is_some_and(|id| query.business_module_refs.contains(id)))
-            })
-            .map(|milestone| {
-                let linked = work_items
-                    .iter()
-                    .filter(|item| {
-                        item.milestone_ref.as_deref() == Some(milestone.id.as_str())
-                            || milestone.work_item_refs.contains(&item.id)
-                    })
-                    .collect::<Vec<_>>();
-                let total = linked.len() as u64;
-                let completed = linked
-                    .iter()
-                    .filter(|item| item.status == WorkItemStatus::Completed)
-                    .count() as u64;
-                MilestoneProgress {
-                    milestone,
-                    total_work_items: total,
-                    completed_work_items: completed,
-                    blocked_work_items: linked
-                        .iter()
-                        .filter(|item| item.status == WorkItemStatus::Blocked)
-                        .count() as u64,
-                    waiting_for_approval_work_items: linked
-                        .iter()
-                        .filter(|item| item.status == WorkItemStatus::WaitingForApproval)
-                        .count() as u64,
-                    progress_percent: (completed * 100).checked_div(total).unwrap_or(0) as u8,
-                }
-            })
-            .collect();
-
-        let workload = workload
-            .into_iter()
-            .map(
-                |(actor, (accountable_count, assigned_count, active_count, refs))| ActorWorkload {
-                    actor,
-                    accountable_count,
-                    assigned_count,
-                    active_count,
-                    work_item_refs: refs.into_iter().collect(),
-                },
-            )
-            .collect();
-
-        Ok(WorkProjection {
-            query: query.clone(),
-            summary,
-            work_items,
-            milestones,
-            board,
-            business_lines,
-            work_types,
-            workload,
-        })
-    }
-
     /// Resolve only the Company OS entity kinds owned by this store. Evidence
     /// and executor references remain governed by their native stores.
     pub fn company_entity_exists(&self, reference: &EntityRef) -> StoreResult<bool> {
@@ -1211,9 +1026,10 @@ impl HarnessStore {
             EntityKind::Milestone => Ok(self
                 .find_by_id::<Milestone>(MILESTONES, &reference.id)?
                 .is_some()),
-            EntityKind::WorkItem => Ok(self
-                .find_by_id::<WorkItem>(WORK_ITEMS, &reference.id)?
-                .is_some()),
+            EntityKind::Work => Ok(self
+                .latest_works()?
+                .iter()
+                .any(|work| work.id == reference.id)),
             EntityKind::Approval => Ok(self
                 .find_by_id::<Approval>(APPROVALS, &reference.id)?
                 .is_some()),
@@ -1913,8 +1729,6 @@ impl_has_id!(
     OrgUnit,
     OrganizationMembership,
     Milestone,
-    WorkItem,
-    Assignment,
     Approval,
     Commitment,
     Payment,
@@ -1946,7 +1760,7 @@ fn entity_kind(kind: EntityKind) -> &'static str {
         EntityKind::TypedRecord => "TypedRecord",
         EntityKind::BusinessModule => "BusinessModule",
         EntityKind::Milestone => "Milestone",
-        EntityKind::WorkItem => "WorkItem",
+        EntityKind::Work => "Work",
         EntityKind::Approval => "Approval",
         EntityKind::FinancialRecord => "FinancialRecord",
         EntityKind::Evidence => "Evidence",
@@ -2025,71 +1839,6 @@ fn same_action_identity(left: &ActionCommand, right: &ActionCommand) -> bool {
 
 fn refs_only_extend(previous: &[String], next: &[String]) -> bool {
     previous.iter().all(|reference| next.contains(reference))
-}
-
-fn work_matches(item: &WorkItem, query: &WorkQuery) -> bool {
-    (query.statuses.is_empty() || query.statuses.contains(&item.status))
-        && (query.work_types.is_empty() || query.work_types.contains(&item.work_type))
-        && (query.business_module_refs.is_empty()
-            || item
-                .business_module_ref
-                .as_ref()
-                .is_some_and(|id| query.business_module_refs.contains(id)))
-        && (query.milestone_refs.is_empty()
-            || item
-                .milestone_ref
-                .as_ref()
-                .is_some_and(|id| query.milestone_refs.contains(id)))
-        && query
-            .accountable_owner
-            .as_ref()
-            .is_none_or(|actor| actor == &item.accountable_owner)
-        && query
-            .assignee
-            .as_ref()
-            .is_none_or(|actor| item.assignees.contains(actor))
-}
-
-fn work_item_is_active(status: WorkItemStatus) -> bool {
-    !matches!(
-        status,
-        WorkItemStatus::Completed
-            | WorkItemStatus::Cancelled
-            | WorkItemStatus::Archived
-            | WorkItemStatus::Draft
-    )
-}
-
-fn work_status_key(status: WorkItemStatus) -> &'static str {
-    match status {
-        WorkItemStatus::Draft => "draft",
-        WorkItemStatus::Submitted => "submitted",
-        WorkItemStatus::Triaged => "triaged",
-        WorkItemStatus::Accepted => "accepted",
-        WorkItemStatus::InProgress => "in_progress",
-        WorkItemStatus::WaitingForApproval => "waiting_for_approval",
-        WorkItemStatus::Blocked => "blocked",
-        WorkItemStatus::InReview => "in_review",
-        WorkItemStatus::Completed => "completed",
-        WorkItemStatus::Cancelled => "cancelled",
-        WorkItemStatus::Archived => "archived",
-    }
-}
-
-fn work_type_key(work_type: WorkType) -> &'static str {
-    match work_type {
-        WorkType::Development => "development",
-        WorkType::Design => "design",
-        WorkType::Research => "research",
-        WorkType::Content => "content",
-        WorkType::Legal => "legal",
-        WorkType::Procurement => "procurement",
-        WorkType::Finance => "finance",
-        WorkType::Operations => "operations",
-        WorkType::Governance => "governance",
-        WorkType::HumanAction => "human_action",
-        WorkType::General => "general",
-    }
 }
 
 fn approval_transition_allowed(from: ApprovalStatus, to: ApprovalStatus) -> bool {

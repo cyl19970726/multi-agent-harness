@@ -22,8 +22,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use firm_core::{
     AgentTeamRun, MemberCoordinationStatus, MemberRun, MemberRunStatus, TeamActorKind,
-    TeamActorRef, TeamRunStatus, Work, WorkClaimMode, WorkCommandContext, WorkDelivery,
-    WorkDeliveryStatus, WorkPriority, WorkStatus,
+    TeamActorRef, TeamRunStatus, Work, WorkClaimMode, WorkCommandContext, WorkCondition,
+    WorkDelivery, WorkDeliveryStatus, WorkPhase, WorkPriority,
 };
 use firm_store::{HarnessStore, WorkDeliveryClaimResult};
 
@@ -164,11 +164,12 @@ fn base_work(run_id: &str, id: &str) -> Work {
         team_id: None,
         created_by_member_id: None,
         parent_work_id: None,
-        source_work_item_ref: None,
         title: format!("Work {id}"),
         context_markdown: "context".into(),
         completion_criteria_markdown: "criteria".into(),
-        status: WorkStatus::Open,
+        phase: WorkPhase::Open,
+        condition: WorkCondition::Normal,
+        resolution: None,
         owner_member_id: None,
         active_member_run_id: None,
         claim_mode: WorkClaimMode::TeamClaim,
@@ -316,7 +317,7 @@ fn member_with_active_work_cannot_start_or_claim_a_second_work() {
             member_context(&member_a.id, "we-start-1", "start-w1", "unix-ms:3"),
         )
         .expect("start first Work");
-    assert_eq!(started.status, WorkStatus::InProgress);
+    assert_eq!(started.phase, WorkPhase::Active);
 
     // Host assignment to a busy member is allowed; it queues a durable
     // delivery instead of interrupting the active turn.
@@ -383,7 +384,7 @@ fn member_with_active_work_cannot_start_or_claim_a_second_work() {
         .iter()
         .find(|work| work.id == "work-2")
         .expect("work-2");
-    assert_eq!(work_two.status, WorkStatus::Open);
+    assert_eq!(work_two.phase, WorkPhase::Open);
     assert_eq!(work_two.version, 1);
 }
 

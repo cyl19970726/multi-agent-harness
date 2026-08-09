@@ -156,12 +156,12 @@ function workCountsForTeam(
   };
   for (const work of works) {
     if (!runIds.has(work.team_run_id)) continue;
-    if (work.status === "open") {
+    if (work.phase === "open") {
       if (work.owner_member_id) counts.assigned += 1;
       else counts.unassigned += 1;
-    } else if (work.status === "in_progress") counts.inProgress += 1;
-    else if (work.status === "blocked") counts.blocked += 1;
-    else if (work.status === "review") counts.review += 1;
+    } else if (work.phase === "active") counts.inProgress += 1;
+    if (work.condition === "blocked") counts.blocked += 1;
+    if (work.phase === "review") counts.review += 1;
   }
   return counts;
 }

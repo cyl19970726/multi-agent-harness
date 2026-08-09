@@ -7,8 +7,7 @@ import {
 } from "./components";
 import { prototypeTrademarkOperationsProjection } from "./fixture";
 import { buildApprovalDecisionCommand } from "./approvalAction";
-import { buildWorkItemTransitionCommand } from "./workItemAction";
-import type { ActorSummary, ApprovalDecision, ApprovalDecisionCommand, OrganizationMembershipView, OrganizationUnitView, RelatedLink, StandingLinkConflict, TrademarkOperationsProjection, WorkExecutionChain, WorkItemTransitionCommand, WorkItemTransitionStatus, WorkItemView } from "./types";
+import type { ActorSummary, ApprovalDecision, ApprovalDecisionCommand, OrganizationMembershipView, OrganizationUnitView, RelatedLink, StandingLinkConflict, TrademarkOperationsProjection } from "./types";
 import { ActorAvatar } from "../visuals";
 import { ActivityStream, type WorkbenchActivityItem } from "@/components/workbench/activity/ActivityStream";
 import { ContextModule, ContextRail as WorkbenchContextRail } from "@/components/workbench/context/ContextRail";
@@ -21,10 +20,6 @@ type OperationsPageProps = { data?: TrademarkOperationsProjection };
 type ApprovalFocusProps = OperationsPageProps & {
   actionEnabled?: boolean;
   onDecision?: (command: ApprovalDecisionCommand, capabilityToken: string) => Promise<boolean>;
-};
-type WorkItemFocusProps = OperationsPageProps & {
-  actionEnabled?: boolean;
-  onTransition?: (command: WorkItemTransitionCommand, capabilityToken: string) => Promise<boolean>;
 };
 
 function projection(data?: TrademarkOperationsProjection): TrademarkOperationsProjection {
@@ -117,7 +112,7 @@ export function OrganizationPage({ data, onSelectionChange }: OperationsPageProp
   const hasGovernanceProposal = Boolean(view.governanceProposal.id)
     && !view.governanceProposal.id.startsWith("unresolved");
 
-  return <PageFrame dense eyebrow="Organization" title="Company OS" description="Exact Store-truth OrgUnit hierarchy, memberships, accountable leads, and durable execution identity bindings." action={<div className="flex flex-wrap gap-2"><button type="button" disabled title="A governed organization action requires an approved proposal." className="inline-flex min-h-10 cursor-not-allowed items-center gap-2 rounded-lg border border-primary/25 bg-primary/[0.07] px-4 py-2 text-sm font-medium text-primary"><Bot className="size-4" />Propose agent</button><button type="button" disabled title="A governed organization action requires an approved proposal." className="inline-flex min-h-10 cursor-not-allowed items-center gap-2 rounded-lg border border-border bg-card/80 px-4 py-2 text-sm font-medium text-muted-foreground"><Plus className="size-4" />Create org unit</button></div>} context={<ContextRail label="Organization truth"><PolicyNote>Hierarchy comes only from OrgUnit.parent_unit_id. Leads come only from explicit Human and Agent lead references; membership, names, runtime state, and display order never promote an actor.</PolicyNote>{explicitHumanLeads.length > 0 && <Panel title="Explicit Human leads"><div className="space-y-2">{explicitHumanLeads.map((actor) => <ActorPill key={actor.id} actor={actor} />)}</div></Panel>}<Panel title="Projection provenance"><p className="text-xs leading-5 text-muted-foreground">{view.organization.units.length} OrgUnits · {view.organization.memberships.length} memberships · {view.organization.rootUnitIds.length} roots</p></Panel><Panel title="Authority boundary"><div className="space-y-3 text-xs leading-5 text-muted-foreground"><p className="flex gap-2"><ShieldCheck className="mt-0.5 size-4 shrink-0 text-status-good" />Standing Agents may own and coordinate WorkItems only within explicit scope.</p><p className="flex gap-2"><Scale className="mt-0.5 size-4 shrink-0 text-primary" />Financial, legal, and organization-wide changes remain Human-governed.</p></div></Panel>{hasGovernanceProposal && <LinkedRecord wrapLabel recordRef={view.governanceProposal.id} label={view.governanceProposal.label} detail={view.governanceProposal.detail} icon={<Scale className="size-4" />} />}</ContextRail>}>
+  return <PageFrame dense eyebrow="Organization" title="Company OS" description="Exact Store-truth OrgUnit hierarchy, memberships, accountable leads, and durable execution identity bindings." action={<div className="flex flex-wrap gap-2"><button type="button" disabled title="A governed organization action requires an approved proposal." className="inline-flex min-h-10 cursor-not-allowed items-center gap-2 rounded-lg border border-primary/25 bg-primary/[0.07] px-4 py-2 text-sm font-medium text-primary"><Bot className="size-4" />Propose agent</button><button type="button" disabled title="A governed organization action requires an approved proposal." className="inline-flex min-h-10 cursor-not-allowed items-center gap-2 rounded-lg border border-border bg-card/80 px-4 py-2 text-sm font-medium text-muted-foreground"><Plus className="size-4" />Create org unit</button></div>} context={<ContextRail label="Organization truth"><PolicyNote>Hierarchy comes only from OrgUnit.parent_unit_id. Leads come only from explicit Human and Agent lead references; membership, names, runtime state, and display order never promote an actor.</PolicyNote>{explicitHumanLeads.length > 0 && <Panel title="Explicit Human leads"><div className="space-y-2">{explicitHumanLeads.map((actor) => <ActorPill key={actor.id} actor={actor} />)}</div></Panel>}<Panel title="Projection provenance"><p className="text-xs leading-5 text-muted-foreground">{view.organization.units.length} OrgUnits · {view.organization.memberships.length} memberships · {view.organization.rootUnitIds.length} roots</p></Panel><Panel title="Authority boundary"><div className="space-y-3 text-xs leading-5 text-muted-foreground"><p className="flex gap-2"><ShieldCheck className="mt-0.5 size-4 shrink-0 text-status-good" />Standing Agents may own and coordinate TeamWork only within explicit scope.</p><p className="flex gap-2"><Scale className="mt-0.5 size-4 shrink-0 text-primary" />Financial, legal, and organization-wide changes remain Human-governed.</p></div></Panel>{hasGovernanceProposal && <LinkedRecord wrapLabel recordRef={view.governanceProposal.id} label={view.governanceProposal.label} detail={view.governanceProposal.detail} icon={<Scale className="size-4" />} />}</ContextRail>}>
     <StandingLinkConflictBanner conflicts={standingLinkConflicts} />
     <OrganizationIntegrity findings={view.organization.integrityFindings} />
     <section aria-label="Organization forest" className="relative overflow-hidden rounded-2xl border border-border bg-card/70 p-4 shadow-sm sm:p-6" data-organization-root-count={view.organization.rootUnitIds.length}>
@@ -194,9 +189,9 @@ function OrgActorCardBody({ actor, variant, proposed }: { actor: ActorSummary; v
 
 export function HumanMemberFocus({ data }: OperationsPageProps) {
   const view = projection(data);
-  const actor = actorOr(view, "actor-human-brand-owner", view.workItem.accountableOwner);
+  const actor = view.actors["actor-human-brand-owner"] ?? view.actorList.find((candidate) => candidate.kind === "human") ?? view.approval.requiredApprover;
   return <PageFrame eyebrow="Human member" title={actor.name} description="Retains accountable human authority for governed commitments and sensitive company decisions." context={<ContextRail><Panel title="Authority"><p className="text-sm">Required human approver for governed commitments and sensitive actions.</p></Panel><Panel title="Membership"><ActorPill actor={actor} /></Panel></ContextRail>}>
-    <div className="space-y-5"><DecisionNotice><strong>Decision required.</strong> The pending {view.commitment.amount} commitment requires {actor.name} as the named human approver.</DecisionNotice><Panel title="Accountable work"><div data-company-os-ref={view.workItem.id}><WorkRoleTable workItem={view.workItem} /></div></Panel><Panel title="Owned documents"><div className="space-y-1"><LinkedRecord recordRef={view.contentPlanDocument.id} label={view.contentPlanDocument.label} detail={view.contentPlanDocument.detail} /><LinkedRecord recordRef={view.sourceDocument.id} label={view.sourceDocument.label} detail="Accountable owner · Brand & IP" /></div></Panel><Panel title="Approvals"><LinkedRecord recordRef={view.approval.id} label={view.approval.title} detail="Required approver · decision requested" /></Panel><FinancialRecordCard record={view.commitment} /></div>
+    <div className="space-y-5"><DecisionNotice><strong>Decision required.</strong> The pending {view.commitment.amount} commitment requires {actor.name} as the named human approver.</DecisionNotice>{view.linkedWork && <Panel title="Linked Work"><LinkedRecord recordRef={view.linkedWork.id} label={view.linkedWork.label} detail={view.linkedWork.detail} /></Panel>}<Panel title="Owned documents"><div className="space-y-1"><LinkedRecord recordRef={view.contentPlanDocument.id} label={view.contentPlanDocument.label} detail={view.contentPlanDocument.detail} /><LinkedRecord recordRef={view.sourceDocument.id} label={view.sourceDocument.label} detail="Accountable owner · Brand & IP" /></div></Panel><Panel title="Approvals"><LinkedRecord recordRef={view.approval.id} label={view.approval.title} detail="Required approver · decision requested" /></Panel><FinancialRecordCard record={view.commitment} /></div>
   </PageFrame>;
 }
 
@@ -222,23 +217,6 @@ export function StandingAgentFocus({ data, actorId, onSelectionChange }: Operati
   const reportsTo = membershipUnits
     .map((unit) => unit.agentLeadActorId ? view.actors[unit.agentLeadActorId] : undefined)
     .find((candidate) => candidate?.id !== actor.id);
-  const relatedItems = (view.workItems ?? [view.workItem]).filter((workItem) =>
-    workItem.assignees.some((assignee) => assignee.id === actor.id)
-    || workItem.accountableOwner.id === actor.id
-    || workItem.contributors.some((contributor) => contributor.id === actor.id)
-    || workItem.reviewer?.id === actor.id
-    || workItem.submittedBy.id === actor.id,
-  );
-  const activeRelatedItems = relatedItems.filter((workItem) =>
-    !["completed", "cancelled", "archived"].includes(workItem.status));
-  const workResponsibility = (workItem: WorkItemView) => {
-    if (workItem.accountableOwner.id === actor.id) return "Accountable";
-    if (workItem.assignees.some((assignee) => assignee.id === actor.id)) return "Assignee";
-    if (workItem.reviewer?.id === actor.id) return "Reviewer";
-    if (workItem.contributors.some((contributor) => contributor.id === actor.id)) return "Contributor";
-    return "Submitted by";
-  };
-  const actorAssignments = (view.assignments ?? []).filter((assignment) => assignment.recipient.id === actor.id);
   const linkedExecutionAssignments = actor.executionAgentMemberRef
     ? (view.standingAssignments ?? []).filter((assignment) => assignment.agentMemberId === actor.executionAgentMemberRef)
     : [];
@@ -247,7 +225,7 @@ export function StandingAgentFocus({ data, actorId, onSelectionChange }: Operati
     assignment.sourceKind === "agent_team_work"
     && Boolean(assignment.workId)
     && !["done", "cancelled"].includes(assignment.status));
-  const assignedWork = activeRelatedItems.length > 0 || activeExecutionAssignments.length > 0;
+  const assignedWork = activeExecutionAssignments.length > 0;
   const actorLinkConflicts = (view.standingAssignmentConflicts ?? []).filter((conflict) => conflict.standingAgentIds.includes(actor.id));
   const maintainedDocuments = actor.maintainedDocuments ?? (actor.maintainedDocumentRefs ?? []).map((recordRef) => {
     if (recordRef === view.sourceDocument.id) return view.sourceDocument;
@@ -265,28 +243,6 @@ export function StandingAgentFocus({ data, actorId, onSelectionChange }: Operati
       actor: actor.name,
       timestamp: displayTimestamp(assignment.lastActivityAt ?? assignment.assignedAt),
       evidenceRefs: [assignment.workId, assignment.memberRunId, assignment.nativeSession?.native_session_id].filter((value): value is string => Boolean(value)),
-    })),
-    ...actorAssignments.map((assignment) => ({
-      id: `assignment-${assignment.id}`,
-      kind: "delegation" as const,
-      glyph: "assignment" as const,
-      tone: assignment.deliveryState === "failed" ? "bad" as const : "info" as const,
-      title: `${assignment.sender.name} assigned ${assignment.assignedRole}`,
-      body: assignment.scope,
-      actor: assignment.sender.name,
-      timestamp: displayTimestamp(assignment.assignedAt),
-      evidenceRefs: [assignment.deliveryEvidenceRef, assignment.correlationId].filter((value): value is string => Boolean(value)),
-    })),
-    ...relatedItems.map((workItem) => ({
-      id: `work-${workItem.id}`,
-      kind: "action" as const,
-      glyph: workItem.status === "completed" ? "complete" as const : "start" as const,
-      tone: workItem.status === "completed" ? "good" as const : "running" as const,
-      title: workItem.title,
-      body: `${workResponsibility(workItem)} · ${humanReadable(workItem.status, workItem.status)}${workItem.outcomeSummary ? ` · ${workItem.outcomeSummary}` : ""}`,
-      actor: actor.name,
-      timestamp: displayTimestamp(workItem.updatedAt),
-      evidenceRefs: [workItem.sourceDocument.id],
     })),
     ...(authoredProposal ? [{
       id: `proposal-${authoredProposal.id}`,
@@ -358,8 +314,8 @@ export function StandingAgentFocus({ data, actorId, onSelectionChange }: Operati
       <div className="mx-auto w-full max-w-[1080px] space-y-5 px-5 py-6 sm:px-8">
         <StandingLinkConflictBanner conflicts={actorLinkConflicts} />
         <section aria-labelledby="standing-agent-current-work" className="rounded-2xl border border-border bg-card/85 p-5 shadow-sm">
-          <div className="flex items-center gap-3"><span className="grid size-9 place-items-center rounded-xl border border-primary/20 bg-primary/[0.07] text-primary"><BriefcaseBusiness className="size-4" /></span><div><h2 id="standing-agent-current-work" className="text-lg font-semibold tracking-tight">Current work</h2><p className="text-xs text-muted-foreground">Native WorkItems linked through accountable actor references</p></div></div>
-          {assignedWork ? <div className="mt-4 space-y-3">{activeExecutionAssignments.map((assignment) => <button key={assignment.id} type="button" onClick={onSelectionChange ? () => onSelectionChange({ surface: "team", teamId: assignment.teamRunId, memberRunId: assignment.memberRunId, missionId: assignment.missionId, waveId: assignment.waveId }) : undefined} className="block w-full rounded-xl border border-status-good/25 bg-status-good/[0.035] p-4 text-left transition hover:border-status-good/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><span className="text-[10px] font-semibold uppercase tracking-wider text-status-good">Agent Team Work · {humanReadable(assignment.status, assignment.status)}</span><span className="mt-1 block font-semibold">{assignment.title}</span><span className="mt-1 block text-xs text-muted-foreground">{assignment.role} · Work {assignment.workId!}</span></button>)}{activeRelatedItems.map((workItem) => <div key={workItem.id} className="rounded-xl border border-primary/20 bg-primary/[0.035] p-4" data-company-os-ref={workItem.id}><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-[10px] font-semibold uppercase tracking-wider text-primary">{workResponsibility(workItem)} · {workItem.status.replace(/_/g, " ")}</p>{onSelectionChange ? <button type="button" onClick={() => onSelectionChange({ surface: "work", workItemId: workItem.id })} className="mt-1 text-left font-semibold underline-offset-4 hover:text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{workItem.title}</button> : <h3 className="mt-1 font-semibold">{workItem.title}</h3>}{workItem.outcomeSummary && <p className="mt-1 text-xs leading-5 text-muted-foreground">{workItem.outcomeSummary}</p>}</div><StatusTag status={workItem.status} /></div><div className="mt-3"><LinkedRecord recordRef={workItem.sourceDocument.id} label={workItem.sourceDocument.label} detail={sourceDetail(workItem.sourceDocument, "Source Document")} onClick={onSelectionChange ? () => onSelectionChange({ surface: "docs", documentId: workItem.sourceDocument.id }) : undefined} /></div></div>)}</div> : <p className="mt-4 rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">No active Company WorkItem or Agent Team Work is linked. Completed Work remains in Activity and the context rail.</p>}
+          <div className="flex items-center gap-3"><span className="grid size-9 place-items-center rounded-xl border border-primary/20 bg-primary/[0.07] text-primary"><BriefcaseBusiness className="size-4" /></span><div><h2 id="standing-agent-current-work" className="text-lg font-semibold tracking-tight">Current work</h2><p className="text-xs text-muted-foreground">Authoritative TeamWork joined through explicit durable identity</p></div></div>
+          {assignedWork ? <div className="mt-4 space-y-3">{activeExecutionAssignments.map((assignment) => <button key={assignment.id} type="button" onClick={onSelectionChange ? () => onSelectionChange({ surface: "team", teamId: assignment.teamRunId, memberRunId: assignment.memberRunId, missionId: assignment.missionId, waveId: assignment.waveId }) : undefined} className="block w-full rounded-xl border border-status-good/25 bg-status-good/[0.035] p-4 text-left transition hover:border-status-good/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><span className="text-[10px] font-semibold uppercase tracking-wider text-status-good">TeamWork · {humanReadable(assignment.status, assignment.status)}</span><span className="mt-1 block font-semibold">{assignment.title}</span><span className="mt-1 block text-xs text-muted-foreground">{assignment.role} · Work {assignment.workId!}</span></button>)}</div> : <p className="mt-4 rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">No active TeamWork is linked. Similar names or providers are never used as a fallback.</p>}
         </section>
         <section aria-labelledby="standing-agent-activity" className="overflow-hidden rounded-2xl border border-border bg-card/85 shadow-sm"><header className="flex items-center justify-between gap-3 border-b border-border px-5 py-4"><div className="flex items-center gap-3"><Sparkles className="size-4 text-primary" /><div><h2 id="standing-agent-activity" className="text-lg font-semibold tracking-tight">Activity & collaboration</h2><p className="text-xs text-muted-foreground">Durable work, messages, decisions, evidence and Docs updates · never private thinking</p></div></div><Badge tone="muted">{activity.length} records</Badge></header><ActivityStream items={activity} variant="timeline" empty={<p className="text-sm text-muted-foreground">No durable activity is linked in this projection.</p>} className="px-5 py-2" /></section>
       </div>
@@ -378,142 +334,6 @@ function ReferenceList({ values, empty }: { values?: string[]; empty: string }) 
 function ReferenceGroup({ label, values }: { label: string; values?: string[] }) {
   if (!values?.length) return null;
   return <div className="mb-3 last:mb-0"><p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</p><ReferenceList values={values} empty="" /></div>;
-}
-
-export function WorkboardPage({ data }: OperationsPageProps) {
-  const view = projection(data);
-  const itemsById = new Map((view.workItems ?? []).map((item) => [item.id, item]));
-  const columns = Object.entries(view.work.board);
-  return <PageFrame eyebrow="Work" title="Milestones & WorkItems" description="One durable work ledger for development, legal, procurement, operations, and every other company commitment." context={<ContextRail label="Work context"><Panel title="Aggregate provenance"><p className="text-xs leading-5 text-muted-foreground">{view.work.provenance === "company_os.work" ? "Summary, board lanes, milestones, types, and workload come from company_os.work." : "Prototype compatibility data; no Store aggregate was supplied."}</p></Panel><Panel title="Ledger rules"><p className="text-xs leading-5 text-muted-foreground">Milestone grouping never replaces WorkItem identity. Requester, submitter, accountable owner, assignee, approval, and evidence remain separate facts.</p></Panel><Panel title="Integrity gaps"><p className="text-xs leading-5 text-muted-foreground">{view.work.summary.withoutMilestone} without Milestone · {view.work.summary.withoutBusinessLine} without business line · {view.work.summary.unassigned} unassigned</p></Panel></ContextRail>}>
-    <div className="space-y-5">
-      <section className="grid gap-3 sm:grid-cols-3"><WorkStat label="Open WorkItems" value={String(view.work.summary.active)} detail="company_os.work summary.active" tone="warm" /><WorkStat label="Waiting for approval" value={String(view.work.summary.waitingForApproval)} detail="company_os.work summary.waiting_for_approval" tone="warn" /><WorkStat label="Milestone gaps" value={String(view.work.summary.withoutMilestone)} detail={`${view.work.milestones.length} native Milestones supplied`} tone="quiet" /></section>
-      {view.work.summary.total === 0
-        ? <section className="rounded-2xl border border-dashed border-border bg-card/60 p-8 text-center"><h2 className="font-semibold">No WorkItems in aggregate truth</h2><p className="mt-2 text-sm text-muted-foreground">The UI does not fall back to a raw first row when company_os.work is empty.</p></section>
-        : <section className="grid gap-4 xl:grid-cols-3">{columns.map(([status, workItemIds]) => <BoardColumn key={status} title={humanReadable(status, status)} items={workItemIds.map((id) => itemsById.get(id)).filter((item): item is WorkItemView => Boolean(item))} />)}</section>}
-    </div>
-  </PageFrame>;
-}
-
-function WorkStat({ label, value, detail, tone }: { label: string; value: string; detail: string; tone: "warm" | "warn" | "quiet" }) {
-  return <div className={`${tone === "warm" ? "border-primary/25 bg-primary/[0.05]" : tone === "warn" ? "border-status-warn/30 bg-status-warn/[0.05]" : "border-border bg-card/70"} rounded-xl border p-4`}><p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</p><p className="company-editorial-title mt-2 text-3xl">{value}</p><p className="mt-1 text-xs text-muted-foreground">{detail}</p></div>;
-}
-
-function BoardColumn({ title, items }: { title: string; items: WorkItemView[] }) {
-  return <section className="min-h-64 rounded-lg border border-border bg-muted/35 p-3"><h2 className="mb-3 text-sm font-semibold">{title}<span className="ml-2 text-muted-foreground">{items.length}</span></h2><div className="space-y-3">{items.map((workItem) => <article key={workItem.id} data-company-os-ref={workItem.id} data-work-item-status={workItem.status} className="rounded-md border border-border bg-card p-3"><StatusTag status={workItem.status} /><h3 className="mt-3 text-sm font-semibold">{workItem.title}</h3><LinkedRecord recordRef={workItem.sourceDocument.id} label={workItem.sourceDocument.label} detail={sourceDetail(workItem.sourceDocument, "Source document")} /><dl className="mt-4 space-y-2 border-t border-border pt-3 text-sm"><BoardFact label="Requested by" actor={workItem.requestedBy} /><BoardFact label="Submitted by" actor={workItem.submittedBy} /><BoardFact label="Accountable" actor={workItem.accountableOwner} /><BoardFact label="Assignee" actor={workItem.assignees[0]} /><BoardFact label="Contributor" actor={workItem.contributors[0]} /><BoardFact label="Reviewer" actor={workItem.reviewer} /></dl></article>)}</div></section>;
-}
-
-function BoardFact({ label, actor }: { label: string; actor?: ActorSummary }) {
-  const kind = actorSemanticKind(actor);
-  return <div className="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-2"><dt className="text-xs text-muted-foreground">{label}</dt><dd className="min-w-0 break-words text-sm leading-5 text-foreground" data-company-os-ref={actor?.id} data-actor-kind={kind} data-actor-type={kind}>{actorDescriptor(actor)}</dd></div>;
-}
-
-export function WorkItemFocus({ data, actionEnabled = false, onTransition }: WorkItemFocusProps) {
-  const view = projection(data);
-  const { workItem, linkedApproval, linkedCommitment, linkedTypedRecords = [], workExecutionChains = [] } = view;
-  const approvalTitle = linkedApproval ? humanReadable(linkedApproval.title, "Approval decision") : undefined;
-  const [capabilityToken, setCapabilityToken] = useState("");
-  const [transitionNote, setTransitionNote] = useState("");
-  const [submitting, setSubmitting] = useState<WorkItemTransitionStatus | null>(null);
-  const [feedback, setFeedback] = useState<string | null>(null);
-  const intents = useRef<Partial<Record<WorkItemTransitionStatus, { id: string; transitionedAt: string }>>>({});
-  if (view.work.selection.status !== "resolved") {
-    const reason = view.work.selection.status === "not_found"
-      ? `Requested WorkItem ${view.work.selection.requestedId ?? "unknown"} is absent from company_os.work.`
-      : view.work.selection.status === "empty"
-        ? "company_os.work contains no WorkItems."
-        : "No WorkItem id was selected.";
-    return <PageFrame eyebrow="Work item" title="WorkItem unavailable" description="The detail view fails closed instead of selecting the first WorkItem row."><div role="alert" className="rounded-xl border border-status-warn/35 bg-status-warn/[0.05] p-6"><p className="text-sm font-semibold">{reason}</p><p className="mt-2 text-xs leading-5 text-muted-foreground">Return to Work and choose an explicit WorkItem id from aggregate truth.</p></div></PageFrame>;
-  }
-  const terminal = ["completed", "cancelled", "archived"].includes(workItem.status);
-  const canTransition = actionEnabled && Boolean(onTransition) && Boolean(workItem.transitionContext) && !terminal;
-  const targets: Array<{ status: WorkItemTransitionStatus; label: string }> = workItem.status === "in_progress"
-    ? [{ status: "in_review", label: "Submit result" }, { status: "blocked", label: "Mark blocked" }]
-    : workItem.status === "in_review"
-      ? [{ status: "completed", label: "Complete" }, { status: "in_progress", label: "Resume work" }]
-      : workItem.status === "completed"
-        ? []
-        : [{ status: "in_progress", label: workItem.status === "blocked" ? "Resume work" : "Start preparation" }];
-  async function transition(targetStatus: WorkItemTransitionStatus) {
-    if (!canTransition || !onTransition || !capabilityToken.trim() || !transitionNote.trim()) return;
-    const intent = intents.current[targetStatus] ?? {
-      id: `action-browser-${workItem.id}-${targetStatus}-${crypto.randomUUID()}`,
-      transitionedAt: new Date().toISOString(),
-    };
-    intents.current[targetStatus] = intent;
-    setSubmitting(targetStatus);
-    setFeedback(null);
-    try {
-      const command = buildWorkItemTransitionCommand({ workItem, targetStatus, note: transitionNote, commandId: intent.id, transitionedAt: intent.transitionedAt });
-      const accepted = await onTransition(command, capabilityToken.trim());
-      if (accepted) { setCapabilityToken(""); setTransitionNote(""); }
-      setFeedback(accepted ? `WorkItem moved to ${humanReadable(targetStatus, targetStatus)} in Store truth.` : "Transition was not applied. Review the action error above and retry with the same intent.");
-    } catch (error) {
-      setFeedback(error instanceof Error ? error.message : String(error));
-    } finally {
-      setSubmitting(null);
-    }
-  }
-  const unavailableReason = !actionEnabled
-    ? commandUnavailable
-    : !workItem.transitionContext
-      ? "The current projection does not expose a complete work_item.transition contract."
-      : terminal
-        ? `This WorkItem is ${humanReadable(workItem.status, workItem.status)} and cannot be reopened by the V1 transition contract.`
-        : !capabilityToken.trim() || !transitionNote.trim()
-          ? "Enter the session capability and a durable transition note."
-          : undefined;
-  const transitionControls = <div className="w-full max-w-lg space-y-2" aria-label="WorkItem transition controls" data-company-os-action-state={canTransition ? "available" : "unavailable"}><div className="grid gap-2 sm:grid-cols-2"><label className="text-xs font-medium text-muted-foreground">Session capability<input data-company-os-action-token type="password" autoComplete="off" value={capabilityToken} onChange={(event) => setCapabilityToken(event.target.value)} disabled={!canTransition} placeholder="Not stored" className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground disabled:bg-muted" /></label><label className="text-xs font-medium text-muted-foreground">Transition note<input data-company-os-work-note value={transitionNote} onChange={(event) => setTransitionNote(event.target.value)} disabled={!canTransition} placeholder="Required for durable outcome" className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground disabled:bg-muted" /></label></div><div className="flex flex-wrap gap-2">{targets.map((target) => { const approvalBlocked = target.status === "completed" && Boolean(linkedApproval && linkedApproval.status !== "approved"); const ready = canTransition && Boolean(capabilityToken.trim()) && Boolean(transitionNote.trim()) && !submitting && !approvalBlocked; return <GovernedActionButton key={target.status} label={submitting === target.status ? `${target.label}…` : target.label} reason={approvalBlocked ? "Every linked Approval must be approved before completion." : unavailableReason} disabled={!ready} onClick={() => void transition(target.status)} />; })}</div><p className="max-w-lg text-xs leading-5 text-muted-foreground">{feedback ?? unavailableReason ?? "The server validates lifecycle, responsibility, provenance, policy, scope and idempotency before appending the next WorkItem version."}</p></div>;
-  const stateNotice = workItem.status === "completed"
-    ? <><strong>Work completed.</strong> The durable result is linked; completion did not create a Payment or accept an execution run.</>
-    : workItem.status === "in_review"
-      ? <><strong>Result submitted for review.</strong> The accountable owner may complete it after linked approval requirements, if any, are satisfied.</>
-      : workItem.status === "in_progress"
-        ? <><strong>Work is in progress.</strong> The assignee can submit a durable result or record a blocker.</>
-        : workItem.status === "blocked"
-          ? <><strong>Work is blocked.</strong> Review its context, owner, and evidence rather than inferring an approval or financial cause.</>
-          : workItem.status === "waiting_for_approval"
-            ? linkedApproval
-              ? <><strong>Waiting for linked approval.</strong> Execution may continue only within the declared policy boundary.</>
-              : <><strong>Approval relation missing.</strong> The WorkItem says it is waiting, but no referenced Approval resolves in Store truth.</>
-            : <><strong>{humanReadable(workItem.status, workItem.status)}.</strong> This WorkItem is recorded and awaits its next governed lifecycle decision.</>;
-  return <div className="h-full min-h-0 overflow-hidden" data-company-os-ref={workItem.id} data-work-item-status={workItem.status}><PageFrame eyebrow="Work item" title={workItem.title} description="A linked business commitment with explicit responsibility, result provenance and governed lifecycle actions." action={transitionControls} context={<ContextRail><StatusTag status={workItem.status} /><Panel title="Source"><LinkedRecord recordRef={workItem.sourceDocument.id} label={workItem.sourceDocument.label} detail={sourceDetail(workItem.sourceDocument, "Durable source context")} />{linkedTypedRecords.map((record) => <LinkedRecord key={record.id} recordRef={record.id} label={record.label} detail={record.detail} />)}</Panel><Panel title="Last updated"><p className="text-sm">{displayTimestamp(workItem.updatedAt)}</p></Panel>{workItem.outcomeSummary && <Panel title="Latest outcome"><p className="text-sm leading-6">{workItem.outcomeSummary}</p></Panel>}</ContextRail>}>
-    <div className="space-y-5">
-      <DecisionNotice>{stateNotice}</DecisionNotice>
-      <Panel title="Definition"><div className="space-y-4"><div><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Objective</p><p className="mt-1 break-words text-sm leading-6">{humanReadable(workItem.objective ?? "", "No objective supplied.")}</p></div>{workItem.description && <div><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Description</p><p className="mt-1 break-words text-sm leading-6 text-muted-foreground">{workItem.description}</p></div>}<div className="grid gap-4 md:grid-cols-3"><TextList title="Acceptance" empty="No acceptance criteria supplied." items={workItem.acceptanceCriteria ?? []} /><DetailList title="Context" empty="No context refs linked." items={workItem.contextRefs ?? []} /><DetailList title="Deliverables" empty="No deliverable refs linked." items={workItem.deliverableRefs ?? []} /></div></div></Panel>
-      <Panel title="Durable Work truth"><p className="mb-3 text-xs leading-5 text-muted-foreground">These references and the lifecycle state belong to Company Store. Execution delivery, GitHub state, and passing checks do not accept or transition this WorkItem.</p><div className="space-y-1">{view.evidence.length > 0 ? view.evidence.map((evidence) => <LinkedRecord key={evidence.id} recordRef={evidence.id} label={evidence.label} detail={evidence.detail} />) : <p className="text-sm text-muted-foreground">No durable evidence reference is linked.</p>}</div></Panel>
-      <WorkExecutionEvidence chains={workExecutionChains} />
-      {linkedApproval || linkedCommitment ? <div className="grid gap-5 lg:grid-cols-2">{linkedApproval && <Panel title="Approval decision"><LinkedRecord wrapLabel recordRef={linkedApproval.id} label={approvalTitle ?? "Approval"} detail={`${humanReadable(linkedApproval.status, "Unknown")} · ${actorDescriptor(linkedApproval.requiredApprover)}`} /><p className="mt-3 break-words text-sm leading-6 text-muted-foreground">{humanReadable(linkedApproval.actionSummary, "No approval summary was supplied.")}</p></Panel>}{linkedCommitment && <Panel title="Financial relation"><FinancialRecordCard record={linkedCommitment} /></Panel>}</div> : <Panel title="Governed relations"><p className="text-sm leading-6 text-muted-foreground">No Approval or Finance record is linked to this WorkItem. The page keeps that absence visible instead of borrowing another business record.</p></Panel>}
-      <Panel title="Responsibility"><WorkRoleTable workItem={workItem} /></Panel>
-    </div>
-  </PageFrame></div>;
-}
-
-function WorkExecutionEvidence({ chains }: { chains: WorkExecutionChain[] }) {
-  return <Panel title="Computed Work execution & delivery evidence">
-    <div className="space-y-3" data-work-execution-evidence>
-      {chains.length > 0 ? chains.map((chain) => <div key={chain.assignmentId} className="rounded-md border border-border p-3" data-work-execution-chain={chain.assignmentId} data-work-id={chain.workId} data-link-status={chain.linkStatus}>
-        <div className="flex flex-wrap items-center gap-2"><strong className="text-sm">{chain.workId ?? chain.assignmentId}</strong>{chain.workState && <StatusTag status={chain.workState} />}<span className="text-xs text-muted-foreground">{humanReadable(chain.linkStatus, chain.linkStatus)}</span></div>
-        <p className="mt-2 text-xs leading-5 text-muted-foreground">{chain.detail}</p>
-        {chain.workDelivery && <p className="mt-2 text-xs">Work delivery <code>{chain.workDelivery.id}</code> · {humanReadable(chain.workDelivery.status, chain.workDelivery.status)} · attempt {chain.workDelivery.attempt}{chain.workDelivery.providerReceiptId ? ` · receipt ${chain.workDelivery.providerReceiptId}` : ""}</p>}
-        {chain.memberRun && <p className="mt-1 text-xs">MemberRun <code>{chain.memberRun.id}</code> · session {chain.memberRun.nativeSessionAvailability}{chain.memberRun.nativeSessionId ? ` (${chain.memberRun.nativeSessionId})` : ""}</p>}
-        {chain.conversations.map((message) => <details key={message.id} className="mt-2 rounded border border-border/70 bg-muted/20 px-2.5 py-1.5" data-work-conversation={message.id}><summary className="cursor-pointer select-none text-xs font-medium text-muted-foreground hover:text-foreground">Message <code>{message.id}</code> · {displayTimestamp(message.createdAt)}</summary><div className="mt-2 max-h-96 overflow-auto border-t border-border/60 pt-2"><Markdown source={message.body} compact /></div></details>)}
-        {chain.handoffs.map((handoff) => <div key={handoff.id} className="mt-2 rounded border border-border/70 p-2 text-xs" data-handoff-result={handoff.result ?? "unavailable"}><p>Handoff <code>{handoff.id}</code> · {displayTimestamp(handoff.createdAt)} · {humanReadable(handoff.result ?? "", "result unavailable")}</p><DetailList title="Handoff evidence" empty="No Handoff evidence refs." items={handoff.evidenceRefs.map((id) => ({ id, label: id }))} /><details className="mt-2 rounded border border-border/70 bg-muted/20 px-2.5 py-1.5" aria-label={`Full Handoff body ${handoff.id}`} data-handoff-body-disclosure="collapsed-default"><summary className="cursor-pointer select-none font-medium text-muted-foreground hover:text-foreground">Show full Handoff body</summary><div className="mt-2 max-h-96 overflow-auto border-t border-border/60 pt-2"><Markdown source={handoff.body} compact /></div></details></div>)}
-        {chain.externalObservations.map((observation) => <div key={observation.id} className="mt-2 rounded border border-border/70 p-2 text-xs" data-observation-freshness={observation.freshness} data-observation-repository={observation.repository} data-observation-pr={observation.pullRequestNumber}><p>{observation.label} · {humanReadable(observation.state ?? "", "state unavailable")} · {observation.freshness}</p><p className="mt-1 text-muted-foreground">{observation.repository ?? "repository unavailable"}{observation.pullRequestNumber ? ` · PR #${observation.pullRequestNumber}` : ""}{observation.headRef ? ` · ${observation.headRef}` : ""}{observation.baseRef ? ` → ${observation.baseRef}` : ""}</p>{observation.url && <p className="mt-1 break-all">{observation.url}</p>}{observation.headSha && <p className="mt-1">Head <code>{observation.headSha}</code></p>}<p className="mt-1 text-muted-foreground">Observed {observation.observedAt ? displayTimestamp(observation.observedAt) : "unavailable"} · source updated {observation.sourceUpdatedAt ? displayTimestamp(observation.sourceUpdatedAt) : "unavailable"} · source completed {observation.sourceCompletedAt ? displayTimestamp(observation.sourceCompletedAt) : "unavailable"}</p></div>)}
-      </div>) : <p className="text-sm text-muted-foreground" data-link-status="unavailable">No explicitly linked Agent Team Work execution is available. Names, providers, and timing are never used as fallback identity.</p>}
-    </div>
-  </Panel>;
-}
-
-function DetailList({ title, empty, items }: { title: string; empty: string; items: RelatedLink[] }) {
-  return <div className="rounded-md border border-border bg-background/50 p-3"><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{title}</p><div className="mt-2 space-y-1">{items.length > 0 ? items.map((item) => <LinkedRecord key={`${item.id}-${item.label}`} wrapLabel recordRef={item.id} label={item.label} detail={item.detail} />) : <p className="text-xs leading-5 text-muted-foreground">{empty}</p>}</div></div>;
-}
-
-function TextList({ title, empty, items }: { title: string; empty: string; items: string[] }) {
-  return <div className="rounded-md border border-border bg-background/50 p-3"><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{title}</p><ul className="mt-2 space-y-1">{items.length > 0 ? items.map((item, index) => <li key={`${title}-${index}`} className="text-xs leading-5 text-foreground">{item}</li>) : <li className="text-xs leading-5 text-muted-foreground">{empty}</li>}</ul></div>;
-}
-
-function WorkRoleTable({ workItem }: { workItem: WorkItemView }) {
-  return <div className="divide-y divide-border"><RoleLine label="Requested by" actor={workItem.requestedBy} /><RoleLine label="Submitted by" actor={workItem.submittedBy} /><RoleLine label="Accountable owner" actor={workItem.accountableOwner} /><RoleLine label="Assignee" actor={workItem.assignees[0]} /><RoleLine label="Contributor" actor={workItem.contributors[0]} /><RoleLine label="Reviewer" actor={workItem.reviewer} /><RoleLine label="Legal reviewer" actor={workItem.legalReviewer} /><RoleLine label="Approver" actor={workItem.approver} /></div>;
 }
 
 export function ApprovalFocus({ data, actionEnabled = false, onDecision }: ApprovalFocusProps) {
@@ -559,7 +379,7 @@ export function ApprovalFocus({ data, actionEnabled = false, onDecision }: Appro
         : !capabilityToken.trim() || !decisionNote.trim()
           ? "Enter the session capability and a durable decision note."
           : undefined;
-  const decisionControls = <div className="w-full max-w-lg space-y-2" aria-label="Approval decision controls" data-company-os-action-state={canDecide ? "available" : "unavailable"}><div className="grid gap-2 sm:grid-cols-2"><label className="text-xs font-medium text-muted-foreground">Session capability<input data-company-os-action-token type="password" autoComplete="off" value={capabilityToken} onChange={(event) => setCapabilityToken(event.target.value)} disabled={!canDecide} placeholder="Not stored" className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground disabled:bg-muted" /></label><label className="text-xs font-medium text-muted-foreground">Decision note<input data-company-os-decision-note value={decisionNote} onChange={(event) => setDecisionNote(event.target.value)} disabled={!canDecide} placeholder="Required for audit" className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground disabled:bg-muted" /></label></div><div className="flex flex-wrap gap-2"><GovernedActionButton label={submitting === "approved" ? "Approving…" : "Approve"} reason={unavailableReason} disabled={!ready} onClick={() => void decide("approved")} /><GovernedActionButton label="Request changes" reason="Request changes needs a separate native Approval status or follow-up WorkItem contract." /><GovernedActionButton label={submitting === "rejected" ? "Rejecting…" : "Reject"} reason={unavailableReason} disabled={!ready} onClick={() => void decide("rejected")} /></div><p className="max-w-lg text-xs leading-5 text-muted-foreground">{feedback ?? unavailableReason ?? "The capability remains in this browser session only. The server still validates Human identity, permission, policy, scope and idempotency."}</p></div>;
+  const decisionControls = <div className="w-full max-w-lg space-y-2" aria-label="Approval decision controls" data-company-os-action-state={canDecide ? "available" : "unavailable"}><div className="grid gap-2 sm:grid-cols-2"><label className="text-xs font-medium text-muted-foreground">Session capability<input data-company-os-action-token type="password" autoComplete="off" value={capabilityToken} onChange={(event) => setCapabilityToken(event.target.value)} disabled={!canDecide} placeholder="Not stored" className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground disabled:bg-muted" /></label><label className="text-xs font-medium text-muted-foreground">Decision note<input data-company-os-decision-note value={decisionNote} onChange={(event) => setDecisionNote(event.target.value)} disabled={!canDecide} placeholder="Required for audit" className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground disabled:bg-muted" /></label></div><div className="flex flex-wrap gap-2"><GovernedActionButton label={submitting === "approved" ? "Approving…" : "Approve"} reason={unavailableReason} disabled={!ready} onClick={() => void decide("approved")} /><GovernedActionButton label="Request changes" reason="Request changes needs a separate native Approval status or follow-up TeamWork contract." /><GovernedActionButton label={submitting === "rejected" ? "Rejecting…" : "Reject"} reason={unavailableReason} disabled={!ready} onClick={() => void decide("rejected")} /></div><p className="max-w-lg text-xs leading-5 text-muted-foreground">{feedback ?? unavailableReason ?? "The capability remains in this browser session only. The server still validates Human identity, permission, policy, scope and idempotency."}</p></div>;
   return (
     <PageFrame
       eyebrow="Approval"
@@ -571,7 +391,7 @@ export function ApprovalFocus({ data, actionEnabled = false, onDecision }: Appro
       <div className="space-y-5" data-company-os-ref={approval.id}>
         <DecisionNotice>{approval.status === "requested" ? <><strong>Human action required.</strong> {actorDescriptor(approval.requiredApprover)} is the required approver; no payment is authorized or recorded by this pending approval.</> : <><strong>Decision recorded: {approval.status}.</strong> The Approval changed state, while the linked Commitment and any future Payment remain separate governed records.</>}</DecisionNotice>
         <Panel title="Evidence"><div className="space-y-1">{view.evidence.length > 0 ? view.evidence.map((evidence) => <LinkedRecord key={evidence.id} recordRef={evidence.id} label={evidence.label} detail={evidence.detail} />) : <p className="text-sm text-muted-foreground">No evidence is linked in this projection.</p>}</div></Panel>
-        <Panel title="Proposed action"><p className="break-words text-sm leading-6">{humanReadable(approval.actionSummary, "No approval summary was supplied.")}</p><LinkedRecord recordRef={view.workItem.id} label={view.workItem.title} detail="Linked WorkItem" /><LinkedRecord recordRef={view.sourceDocument.id} label={view.sourceDocument.label} detail={sourceDetail(view.sourceDocument, "Source document")} /></Panel>
+        <Panel title="Proposed action"><p className="break-words text-sm leading-6">{humanReadable(approval.actionSummary, "No approval summary was supplied.")}</p>{view.linkedWork && <LinkedRecord recordRef={view.linkedWork.id} label={view.linkedWork.label} detail={view.linkedWork.detail ?? "Linked authoritative Work"} />}<LinkedRecord recordRef={view.sourceDocument.id} label={view.sourceDocument.label} detail={sourceDetail(view.sourceDocument, "Source document")} /></Panel>
         <Panel title="Participants"><div className="divide-y divide-border"><RoleLine label="Requested by" actor={approval.requestedBy} /><RoleLine label="Required approver" actor={approval.requiredApprover} /><RoleLine label="Finance reviewed by" actor={approval.financeReviewer} /><RoleLine label="Legal reviewed by" actor={approval.legalReviewer} /></div></Panel>
         <Panel title="Linked financial record"><FinancialRecordCard record={commitment} /></Panel>
       </div>
@@ -600,9 +420,9 @@ function FinanceRecordTable({ record, approval }: { record: TrademarkOperationsP
 
 export function GovernanceProposalFocus({ data }: OperationsPageProps) {
   const view = projection(data);
-  const proposer = actorOr(view, "actor-agent-document-architecture", view.workItem.submittedBy);
+  const proposer = view.actors["actor-agent-document-architecture"] ?? view.actorList.find((actor) => actor.kind === "standing_agent") ?? view.approval.requestedBy;
   const proposalTitle = humanReadable(view.governanceProposal.label, "Governance proposal");
-  const proposedAgent = view.workItem.assignees[0];
+  const proposedAgent = view.actorList.find((actor) => actor.kind === "standing_agent");
   const proposedHomes = proposedAgent
     ? view.organization.memberships
       .filter((membership) => membership.actorId === proposedAgent.id)
@@ -610,7 +430,7 @@ export function GovernanceProposalFocus({ data }: OperationsPageProps) {
       .filter((label): label is string => Boolean(label))
     : [];
   return <PageFrame eyebrow="Governance proposal" title={proposalTitle} description="A proposal joins document architecture, organization capacity, work and financial controls without creating authority by itself." context={<ContextRail><StatusTag status="awaiting_final_approval" /><Panel title="Proposed by"><ActorPill actor={proposer} /></Panel><Panel title="Recorded organization homes"><p className="text-sm">{proposedHomes.join(", ") || "No OrganizationMembership recorded"}</p><p className="mt-1 text-xs text-muted-foreground">Proposed role · {proposedAgent?.role ?? "No role specified"}</p></Panel></ContextRail>}>
-    <div className="space-y-5" data-company-os-ref={view.governanceProposal.id}><DecisionNotice><strong>Awaiting final approval.</strong> The module and proposed role remain governed changes. Human approval is required before any sensitive effect is authorized.</DecisionNotice><Panel title="Impact surfaces"><div className="grid gap-3 md:grid-cols-2"><ImpactSurface label="Business module" link={view.businessModule} /><ImpactSurface label="Application record" link={view.typedApplication} /><ImpactSurface label="Linked work" link={{ id: view.workItem.id, label: view.workItem.title, detail: `Assignee · ${actorDescriptor(proposedAgent)}` }} /><ImpactSurface label="Financial commitment" financialRecord={view.commitment} /></div></Panel><Panel title="Review participants"><div className="divide-y divide-border"><RoleLine label="Accountable owner" actor={view.workItem.accountableOwner} /><RoleLine label="Finance reviewer" actor={view.approval.financeReviewer} /><RoleLine label="Legal reviewer" actor={view.approval.legalReviewer} /></div></Panel><Panel title="Governed actions"><div className="flex flex-wrap gap-2"><GovernedActionButton label="Approve proposal" reason={commandUnavailable} /><GovernedActionButton label="Request changes" reason={commandUnavailable} /><GovernedActionButton label="Reject proposal" reason={commandUnavailable} /></div><p className="mt-3 text-xs leading-5 text-muted-foreground">{commandUnavailable}</p></Panel></div>
+    <div className="space-y-5" data-company-os-ref={view.governanceProposal.id}><DecisionNotice><strong>Awaiting final approval.</strong> The module and proposed role remain governed changes. Human approval is required before any sensitive effect is authorized.</DecisionNotice><Panel title="Impact surfaces"><div className="grid gap-3 md:grid-cols-2"><ImpactSurface label="Business module" link={view.businessModule} /><ImpactSurface label="Application record" link={view.typedApplication} />{view.linkedWork && <ImpactSurface label="Linked Work" link={view.linkedWork} />}<ImpactSurface label="Financial commitment" financialRecord={view.commitment} /></div></Panel><Panel title="Review participants"><div className="divide-y divide-border"><RoleLine label="Proposed agent" actor={proposedAgent} /><RoleLine label="Finance reviewer" actor={view.approval.financeReviewer} /><RoleLine label="Legal reviewer" actor={view.approval.legalReviewer} /></div></Panel><Panel title="Governed actions"><div className="flex flex-wrap gap-2"><GovernedActionButton label="Approve proposal" reason={commandUnavailable} /><GovernedActionButton label="Request changes" reason={commandUnavailable} /><GovernedActionButton label="Reject proposal" reason={commandUnavailable} /></div><p className="mt-3 text-xs leading-5 text-muted-foreground">{commandUnavailable}</p></Panel></div>
   </PageFrame>;
 }
 
@@ -633,7 +453,7 @@ export function BusinessModuleFocus({ data }: OperationsPageProps) {
         <div className="mt-4"><p className="mb-2 text-[10px] uppercase tracking-wider text-muted-foreground">Required approver</p><ActorPill actor={view.approval.requiredApprover} /></div>
         <button type="button" disabled className="mt-4 h-10 w-full cursor-not-allowed rounded-lg bg-primary text-sm font-semibold text-primary-foreground opacity-80">Review and approve</button>
       </section>
-      <Panel title="Operating team"><div className="space-y-3"><ActorPill actor={view.workItem.accountableOwner} />{view.workItem.assignees[0] && <ActorPill actor={view.workItem.assignees[0]} />}{view.workItem.reviewer && <ActorPill actor={view.workItem.reviewer} />}{view.workItem.contributors[0] && <ActorPill actor={view.workItem.contributors[0]} />}</div></Panel>
+      <Panel title="Operating team"><div className="space-y-3">{view.actorList.slice(0, 4).map((actor) => <ActorPill key={actor.id} actor={actor} />)}</div></Panel>
       <Panel title="Financial truth"><FinancialRecordCard record={view.commitment} /><p className="mt-3 text-xs text-muted-foreground">Payment · 0 recorded</p></Panel>
     </ContextRail>}
   >
@@ -643,10 +463,10 @@ export function BusinessModuleFocus({ data }: OperationsPageProps) {
         ["Prepare", true], ["Review", true], ["Approve", false], ["File", false], ["Monitor", false],
       ].map(([label, complete], index) => <div key={String(label)} className="flex min-w-0 flex-1 items-center"><div className="flex items-center gap-2"><span className={`grid size-8 place-items-center rounded-full border ${complete ? "border-status-good/40 bg-status-good/10 text-status-good" : index === 2 ? "border-primary/40 bg-primary/10 text-primary" : "border-border text-muted-foreground"}`}>{complete ? <CheckCircle2 className="size-4" /> : index === 2 ? <Clock3 className="size-4" /> : <FileCheck2 className="size-4" />}</span><span className={`hidden text-xs font-medium sm:block ${index === 2 ? "text-primary" : ""}`}>{String(label)}</span></div>{index < 4 && <span className="mx-3 h-px flex-1 bg-border" />}</div>)}</div></section>
       <Panel title="Current applications" action={<span className="text-xs text-muted-foreground">1 native record</span>}>
-        <div className="overflow-x-auto"><table className="min-w-[720px] w-full text-left text-xs"><thead className="text-[9px] uppercase tracking-wider text-muted-foreground"><tr>{["Brand / Mark", "Application", "Jurisdiction", "Stage", "Approval", "Owner"].map((label) => <th key={label} className="border-b border-border px-3 py-2 font-semibold">{label}</th>)}</tr></thead><tbody><tr data-company-os-ref={view.typedApplication.id}><td className="px-3 py-3 font-semibold">Brand A</td><td className="px-3 py-3">{view.typedApplication.label}</td><td className="px-3 py-3">China</td><td className="px-3 py-3"><StatusTag status={view.workItem.status} /></td><td className="px-3 py-3 text-status-warn">Human decision</td><td className="px-3 py-3"><ActorPill actor={view.workItem.accountableOwner} compact /></td></tr></tbody></table></div>
+        <div className="overflow-x-auto"><table className="min-w-[720px] w-full text-left text-xs"><thead className="text-[9px] uppercase tracking-wider text-muted-foreground"><tr>{["Brand / Mark", "Application", "Jurisdiction", "Work phase", "Approval", "Owner"].map((label) => <th key={label} className="border-b border-border px-3 py-2 font-semibold">{label}</th>)}</tr></thead><tbody><tr data-company-os-ref={view.typedApplication.id}><td className="px-3 py-3 font-semibold">Brand A</td><td className="px-3 py-3">{view.typedApplication.label}</td><td className="px-3 py-3">China</td><td className="px-3 py-3"><StatusTag status={view.linkedWork?.phase ?? "unlinked"} /></td><td className="px-3 py-3 text-status-warn">Human decision</td><td className="px-3 py-3">{view.approval.requiredApprover && <ActorPill actor={view.approval.requiredApprover} compact />}</td></tr></tbody></table></div>
       </Panel>
-      <Panel title="Work ledger" action={<span className="text-xs text-muted-foreground">1 linked WorkItem</span>}>
-        <article className="grid gap-3 rounded-lg border border-border bg-background/60 p-3 sm:grid-cols-[minmax(0,1fr)_9rem_11rem]" data-company-os-ref={view.workItem.id}><div><p className="text-sm font-semibold">{view.workItem.title}</p><p className="mt-1 text-xs text-muted-foreground">Legal · source-linked filing work</p></div><div><p className="text-[9px] uppercase tracking-wider text-muted-foreground">Assigned</p>{view.workItem.assignees[0] ? <ActorPill actor={view.workItem.assignees[0]} compact /> : <p className="text-xs">Unassigned</p>}</div><div className="flex items-center justify-end"><StatusTag status={view.workItem.status} /></div></article>
+      <Panel title="Work reference" action={<span className="text-xs text-muted-foreground">TeamWork authority</span>}>
+        {view.linkedWork ? <LinkedRecord recordRef={view.linkedWork.id} label={view.linkedWork.label} detail={view.linkedWork.detail} /> : <p className="text-sm text-muted-foreground">No authoritative Work is linked.</p>}
       </Panel>
       <Panel title="Knowledge & evidence" action={<Search className="size-4 text-muted-foreground" />}>
         <div className="divide-y divide-border">{view.evidence.map((record) => <div key={record.id} className="py-1.5"><LinkedRecord recordRef={record.id} label={record.label} detail={record.detail ?? "Durable execution evidence"} /></div>)}</div>

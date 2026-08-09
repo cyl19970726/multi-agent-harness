@@ -20,7 +20,7 @@
         "actor_id": { "$ref": "#/$defs/string" }
       }
     },
-    "entityKind": { "enum": ["actor", "document", "typed_record", "business_module", "work_item", "approval", "financial_record", "evidence", "execution"] },
+    "entityKind": { "enum": ["actor", "document", "typed_record", "business_module", "work", "approval", "financial_record", "evidence", "execution"] },
     "entityRef": {
       "type": "object", "additionalProperties": false,
       "required": ["kind", "id"],

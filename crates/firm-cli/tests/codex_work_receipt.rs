@@ -282,7 +282,7 @@ fn codex_disconnect_resume_continues_receipted_work_on_same_session() {
                 "{} v{} {}",
                 work["id"].as_str().unwrap_or("?"),
                 work["version"].as_u64().unwrap_or(0),
-                work["status"].as_str().unwrap_or("?")
+                work["phase"].as_str().unwrap_or("?")
             )
         })
         .collect();

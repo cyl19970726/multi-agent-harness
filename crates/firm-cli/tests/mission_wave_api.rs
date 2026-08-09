@@ -1514,7 +1514,8 @@ fn http_console_starts_native_team_run_and_streams_transient_thinking() {
             "--json",
         ],
     );
-    assert_eq!(accepted["status"].as_str(), Some("done"));
+    assert_eq!(accepted["phase"].as_str(), Some("closed"));
+    assert_eq!(accepted["resolution"].as_str(), Some("accepted"));
 
     let (status, completed) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/transition?project={project_id}"),

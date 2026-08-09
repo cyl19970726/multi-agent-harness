@@ -1,11 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://star-harness.local/schemas/company-os/work.schema.json",
-  "title": "Company OS work and approval",
+  "title": "Company OS milestone and approval references to authoritative Work",
+  "description": "Company OS does not own a second task or delivery object. Milestones and approvals reference authoritative TeamWork ids.",
   "oneOf": [
     { "$ref": "#/$defs/milestone" },
-    { "$ref": "#/$defs/workItem" },
-    { "$ref": "#/$defs/assignment" },
     { "$ref": "#/$defs/approval" }
   ],
   "$defs": {
@@ -13,7 +12,8 @@
     "refs": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/string" } },
     "actorType": { "enum": ["human", "agent", "external", "service"] },
     "actorRef": {
-      "type": "object", "additionalProperties": false,
+      "type": "object",
+      "additionalProperties": false,
       "required": ["actor_type", "actor_id"],
       "properties": {
         "actor_type": { "$ref": "#/$defs/actorType" },
@@ -22,36 +22,21 @@
     },
     "actors": { "type": "array", "items": { "$ref": "#/$defs/actorRef" } },
     "entityRef": {
-      "type": "object", "additionalProperties": false,
+      "type": "object",
+      "additionalProperties": false,
       "required": ["kind", "id"],
       "properties": {
-        "kind": { "enum": ["actor", "document", "typed_record", "business_module", "milestone", "work_item", "approval", "financial_record", "evidence", "execution"] },
+        "kind": { "enum": ["actor", "document", "typed_record", "business_module", "milestone", "work", "approval", "financial_record", "evidence", "execution"] },
         "id": { "$ref": "#/$defs/string" }
       }
     },
-    "entityRefs": {
-      "type": "array",
-      "uniqueItems": true,
-      "items": { "$ref": "#/$defs/entityRef" }
-    },
-    "executionRef": {
-      "type": "object", "additionalProperties": false,
-      "required": ["kind", "reference", "role_in_execution", "status", "started_at", "ended_at"],
-      "properties": {
-        "kind": { "enum": ["direct_human_work", "standing_agent_work", "external_engagement", "mission", "wave", "agent_team_run", "member_run", "workflow_run", "workflow_step", "host_execution"] },
-        "reference": { "$ref": "#/$defs/string" },
-        "role_in_execution": { "type": ["string", "null"], "minLength": 1 },
-        "status": { "type": ["string", "null"], "minLength": 1 },
-        "started_at": { "type": ["string", "null"], "minLength": 1 },
-        "ended_at": { "type": ["string", "null"], "minLength": 1 }
-      }
-    },
     "milestone": {
-      "type": "object", "additionalProperties": false,
+      "type": "object",
+      "additionalProperties": false,
       "required": [
         "id", "title", "outcome", "status", "accountable_owner",
         "source_document_ref", "business_module_ref", "target_at",
-        "acceptance_criteria", "work_item_refs", "created_at", "updated_at", "achieved_at"
+        "acceptance_criteria", "work_refs", "created_at", "updated_at", "achieved_at"
       ],
       "allOf": [{
         "if": { "properties": { "status": { "const": "achieved" } }, "required": ["status"] },
@@ -67,107 +52,15 @@
         "business_module_ref": { "type": ["string", "null"], "minLength": 1 },
         "target_at": { "type": ["string", "null"], "minLength": 1 },
         "acceptance_criteria": { "$ref": "#/$defs/refs" },
-        "work_item_refs": { "$ref": "#/$defs/refs" },
+        "work_refs": { "$ref": "#/$defs/refs" },
         "created_at": { "$ref": "#/$defs/string" },
         "updated_at": { "$ref": "#/$defs/string" },
         "achieved_at": { "type": ["string", "null"], "minLength": 1 }
       }
     },
-    "workItem": {
-      "type": "object", "additionalProperties": false,
-      "required": [
-        "id", "title", "objective", "status", "source_document_ref", "source_record_refs",
-        "milestone_ref", "work_type", "business_module_ref",
-        "result_document_ref", "result_record_refs", "submitted_by", "requested_by",
-        "accountable_owner", "assignees", "contributors", "reviewer", "approver",
-        "execution_mode", "execution_refs", "approval_refs", "evidence_refs", "artifact_refs",
-        "outcome_summary", "due_at", "priority", "risk_level", "created_at", "updated_at", "completed_at"
-      ],
-      "allOf": [{
-        "if": { "properties": { "status": { "const": "completed" } }, "required": ["status"] },
-        "then": {
-          "properties": {
-            "completed_at": { "$ref": "#/$defs/string" },
-            "outcome_summary": { "$ref": "#/$defs/string" }
-          },
-          "anyOf": [
-            { "properties": { "result_document_ref": { "$ref": "#/$defs/string" } } },
-            { "properties": { "result_record_refs": { "type": "array", "minItems": 1 } } }
-          ]
-        }
-      }],
-      "properties": {
-        "id": { "$ref": "#/$defs/string" },
-        "title": { "$ref": "#/$defs/string" },
-        "objective": { "$ref": "#/$defs/string" },
-        "description": { "type": ["string", "null"], "minLength": 1 },
-        "acceptance_criteria": { "$ref": "#/$defs/refs" },
-        "context_refs": { "$ref": "#/$defs/entityRefs" },
-        "deliverable_refs": { "$ref": "#/$defs/entityRefs" },
-        "status": { "enum": ["draft", "submitted", "triaged", "accepted", "in_progress", "waiting_for_approval", "blocked", "in_review", "completed", "cancelled", "archived"] },
-        "source_document_ref": { "$ref": "#/$defs/string" },
-        "source_record_refs": { "$ref": "#/$defs/refs" },
-        "milestone_ref": { "type": ["string", "null"], "minLength": 1 },
-        "work_type": { "enum": ["development", "design", "research", "content", "legal", "procurement", "finance", "operations", "governance", "human_action", "general"] },
-        "business_module_ref": { "type": ["string", "null"], "minLength": 1 },
-        "result_document_ref": { "type": ["string", "null"], "minLength": 1 },
-        "result_record_refs": { "$ref": "#/$defs/refs" },
-        "submitted_by": { "$ref": "#/$defs/actorRef" },
-        "requested_by": { "oneOf": [{ "$ref": "#/$defs/actorRef" }, { "type": "null" }] },
-        "accountable_owner": { "$ref": "#/$defs/actorRef" },
-        "assignees": { "$ref": "#/$defs/actors" },
-        "contributors": { "$ref": "#/$defs/actors" },
-        "reviewer": { "oneOf": [{ "$ref": "#/$defs/actorRef" }, { "type": "null" }] },
-        "approver": { "oneOf": [{ "$ref": "#/$defs/actorRef" }, { "type": "null" }] },
-        "execution_mode": { "enum": ["direct", "mission_wave", "agent_team", "dynamic_workflow", "host", "external", "mixed"] },
-        "execution_refs": { "type": "array", "items": { "$ref": "#/$defs/executionRef" } },
-        "approval_refs": { "$ref": "#/$defs/refs" },
-        "evidence_refs": { "$ref": "#/$defs/refs" },
-        "artifact_refs": { "$ref": "#/$defs/refs" },
-        "outcome_summary": { "type": ["string", "null"], "minLength": 1 },
-        "due_at": { "type": ["string", "null"], "minLength": 1 },
-        "priority": { "type": ["string", "null"], "minLength": 1 },
-        "risk_level": { "type": ["string", "null"], "minLength": 1 },
-        "created_at": { "$ref": "#/$defs/string" },
-        "updated_at": { "$ref": "#/$defs/string" },
-        "completed_at": { "type": ["string", "null"], "minLength": 1 }
-      }
-    },
-    "assignment": {
-      "type": "object", "additionalProperties": false,
-      "required": [
-        "id", "work_item_id", "recipient", "sender", "assigned_role", "scope",
-        "delivery_state", "delivery_policy_ref", "correlation_id", "delivery_evidence_ref",
-        "assigned_at", "delivered_at", "acknowledged_at"
-      ],
-      "allOf": [
-        {
-          "if": { "properties": { "delivery_state": { "enum": ["delivered", "acknowledged"] } }, "required": ["delivery_state"] },
-          "then": { "properties": { "delivered_at": { "$ref": "#/$defs/string" } } }
-        },
-        {
-          "if": { "properties": { "delivery_state": { "const": "acknowledged" } }, "required": ["delivery_state"] },
-          "then": { "properties": { "acknowledged_at": { "$ref": "#/$defs/string" } } }
-        }
-      ],
-      "properties": {
-        "id": { "$ref": "#/$defs/string" },
-        "work_item_id": { "$ref": "#/$defs/string" },
-        "recipient": { "$ref": "#/$defs/actorRef" },
-        "sender": { "$ref": "#/$defs/actorRef" },
-        "assigned_role": { "$ref": "#/$defs/string" },
-        "scope": { "type": ["string", "null"], "minLength": 1 },
-        "delivery_state": { "enum": ["pending", "delivered", "acknowledged", "declined", "failed", "cancelled"] },
-        "delivery_policy_ref": { "$ref": "#/$defs/string" },
-        "correlation_id": { "$ref": "#/$defs/string" },
-        "delivery_evidence_ref": { "type": ["string", "null"], "minLength": 1 },
-        "assigned_at": { "$ref": "#/$defs/string" },
-        "delivered_at": { "type": ["string", "null"], "minLength": 1 },
-        "acknowledged_at": { "type": ["string", "null"], "minLength": 1 }
-      }
-    },
     "approval": {
-      "type": "object", "additionalProperties": false,
+      "type": "object",
+      "additionalProperties": false,
       "required": [
         "id", "subject_ref", "action_summary", "requested_by", "required_approver_refs",
         "required_actor_type", "policy_ref", "status", "decided_by", "decision_note",

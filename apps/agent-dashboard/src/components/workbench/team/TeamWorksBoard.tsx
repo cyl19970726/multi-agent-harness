@@ -17,7 +17,7 @@ import {
   type TeamWorksOwnerFilter,
 } from "../../../model/teamSelectors";
 import { assignTeamWork, createTeamWork, reviewTeamWork, type ActionDescriptor } from "../../../api/actions";
-import type { MemberRun, Work, WorkDelivery, WorkEvent } from "../../../types";
+import { workIsTerminal, workLifecycleLabel, type MemberRun, type Work, type WorkDelivery, type WorkEvent } from "../../../types";
 import { formatTime, memberTone, shortId, workTone } from "./teamFormat";
 
 type WorkLane = "open" | "assigned" | "doing" | "review" | "done";
@@ -25,9 +25,9 @@ type WorkLane = "open" | "assigned" | "doing" | "review" | "done";
 const WORK_LANES: Array<{ id: WorkLane; label: string; statuses: string[]; tone: StatusTone }> = [
   { id: "open", label: "Open · unassigned", statuses: ["open"], tone: "idle" },
   { id: "assigned", label: "Open · assigned", statuses: ["open"], tone: "info" },
-  { id: "doing", label: "In progress & blocked", statuses: ["in_progress", "blocked"], tone: "running" },
+  { id: "doing", label: "Active & blocked", statuses: ["active", "blocked", "on_hold"], tone: "running" },
   { id: "review", label: "Review", statuses: ["review"], tone: "warn" },
-  { id: "done", label: "Done / cancelled", statuses: ["done", "cancelled"], tone: "good" },
+  { id: "done", label: "Closed", statuses: ["accepted", "failed", "cancelled", "closed"], tone: "good" },
 ];
 
 /** Focusable descendants used to keep Tab inside the modal Work sheet. */
@@ -42,7 +42,7 @@ function focusableWithin(root: HTMLElement): HTMLElement[] {
 /**
  * The shared Works board.
  *
- * Lanes are one projection over Work status and ownership, rendered exactly
+ * Lanes are one projection over Work lifecycle and ownership, rendered exactly
  * once: the same lane sections reflow from five desktop columns to a stacked
  * mobile status list through CSS, so a large board never duplicates its cards
  * into a second hidden container.
@@ -84,7 +84,7 @@ export function TeamWorksBoard({
   const dialogRef = useRef<HTMLElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const selected = works.find((work) => work.id === selectedWorkId);
-  const active = works.filter((work) => !["done", "cancelled"].includes(work.status)).length;
+  const active = works.filter((work) => !workIsTerminal(work)).length;
   const assignableMembers = members.filter(canMemberAcceptWork);
   const ownerFor = (work: Work) => selectWorkOwnerMember(work, members);
   const visibleWorks = selectFilteredTeamWorks(works, members, ownerFilter, attentionFilter);
@@ -154,7 +154,7 @@ export function TeamWorksBoard({
   };
 
   const laneWorksFor = (lane: (typeof WORK_LANES)[number]) => visibleWorks.filter((work) =>
-    lane.statuses.includes(work.status)
+    lane.statuses.includes(workLifecycleLabel(work))
     && (lane.id === "open"
       ? !work.owner_member_id && !work.active_member_run_id
       : lane.id === "assigned"
@@ -175,7 +175,7 @@ export function TeamWorksBoard({
           selectedWorkId === work.id ? "border-primary/40 ring-1 ring-primary/15" : "border-border/75",
         )}
       >
-        <div className="flex items-start justify-between gap-2"><Badge tone={workTone(work.status)}>{work.status.replace(/_/g, " ")}</Badge><span className="text-[9px] uppercase tracking-wider text-muted-foreground">{work.priority}</span></div>
+        <div className="flex items-start justify-between gap-2"><Badge tone={workTone(workLifecycleLabel(work))}>{workLifecycleLabel(work).replace(/_/g, " ")}</Badge><span className="text-[9px] uppercase tracking-wider text-muted-foreground">{work.priority}</span></div>
         {/* The title is the card's primary fact; a two-line clamp hid the rest
             of long Host-written titles behind an ellipsis, which read as an
             incomplete card. The full title wraps and long tokens break. */}
@@ -324,7 +324,7 @@ export function TeamWorksBoard({
             <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-border lg:hidden" />
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2"><Badge tone={workTone(selected.status)}>{selected.status.replace(/_/g, " ")}</Badge><span className="font-mono text-[9px] text-muted-foreground">{selected.id}</span></div>
+                <div className="flex flex-wrap items-center gap-2"><Badge tone={workTone(workLifecycleLabel(selected))}>{workLifecycleLabel(selected).replace(/_/g, " ")}</Badge><span className="font-mono text-[9px] text-muted-foreground">{selected.id}</span></div>
                 <h3 id="selected-work-title" className="mt-2 text-lg font-semibold text-foreground">{selected.title}</h3>
               </div>
               <button ref={closeButtonRef} type="button" className="grid size-11 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground sm:size-8" onClick={() => onSelectWork(undefined)} aria-label="Close Work details"><X className="size-4" /></button>
@@ -341,7 +341,6 @@ export function TeamWorksBoard({
                 <WorkFact label="Claim mode" value={selected.claim_mode} />
                 <WorkFact label="Priority" value={selected.priority} />
                 <WorkFact label="Parent" value={selected.parent_work_id ? shortId(selected.parent_work_id) : "None"} />
-                <WorkFact label="Source" value={selected.source_work_item_ref ? shortId(selected.source_work_item_ref) : "None"} />
                 <WorkFact label="Prerequisites" value={selected.prerequisite_work_ids?.length ? String(selected.prerequisite_work_ids.length) : "None"} />
                 <WorkFact label="Artifacts" value={String(selected.artifact_refs?.length ?? 0)} />
                 <WorkFact label="Checks" value={String(selected.check_refs?.length ?? 0)} />
@@ -354,12 +353,12 @@ export function TeamWorksBoard({
 
               <section className="space-y-2 rounded-xl border border-border/70 bg-muted/[0.16] p-3">
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Lead controls</p>
-                {selected.status === "open" && !selected.owner_member_id && !selected.active_member_run_id && <label className="block text-[10px] text-muted-foreground">Assign owner<Select className="mt-1" value="" disabled={!actionsEnabled || assignableMembers.length === 0} onChange={(event) => { if (event.target.value) onAction(assignTeamWork(teamRunId, selected.id, event.target.value, selected.version)); }}><option value="">{assignableMembers.length ? "Choose member…" : "No active members available"}</option>{assignableMembers.map((member) => <option key={member.id} value={member.id}>{member.name ?? member.id}</option>)}</Select></label>}
-                {selected.status === "review" && <><TextArea value={reviewNote} onChange={(event) => setReviewNote(event.target.value)} placeholder="Optional review note" className="min-h-16" /><div className="flex flex-wrap gap-2"><Button size="sm" className="min-h-11 sm:min-h-0" disabled={!actionsEnabled} onClick={() => onAction(reviewTeamWork(teamRunId, selected.id, selected.version, "accept", reviewNote))}><CheckCircle2 className="size-3.5" />Accept</Button><Button size="sm" variant="secondary" className="min-h-11 sm:min-h-0" disabled={!actionsEnabled || !reviewNote.trim()} onClick={() => onAction(reviewTeamWork(teamRunId, selected.id, selected.version, "request-changes", reviewNote))}>Request changes</Button></div></>}
+                {selected.phase === "open" && selected.condition === "normal" && !selected.owner_member_id && !selected.active_member_run_id && <label className="block text-[10px] text-muted-foreground">Assign owner<Select className="mt-1" value="" disabled={!actionsEnabled || assignableMembers.length === 0} onChange={(event) => { if (event.target.value) onAction(assignTeamWork(teamRunId, selected.id, event.target.value, selected.version)); }}><option value="">{assignableMembers.length ? "Choose member…" : "No active members available"}</option>{assignableMembers.map((member) => <option key={member.id} value={member.id}>{member.name ?? member.id}</option>)}</Select></label>}
+                {selected.phase === "review" && <><TextArea value={reviewNote} onChange={(event) => setReviewNote(event.target.value)} placeholder="Optional review note" className="min-h-16" /><div className="flex flex-wrap gap-2"><Button size="sm" className="min-h-11 sm:min-h-0" disabled={!actionsEnabled} onClick={() => onAction(reviewTeamWork(teamRunId, selected.id, selected.version, "accept", reviewNote))}><CheckCircle2 className="size-3.5" />Accept</Button><Button size="sm" variant="secondary" className="min-h-11 sm:min-h-0" disabled={!actionsEnabled || !reviewNote.trim()} onClick={() => onAction(reviewTeamWork(teamRunId, selected.id, selected.version, "request-changes", reviewNote))}>Request changes</Button></div></>}
                 <div className="flex flex-wrap gap-2">
                   <Button size="sm" variant="secondary" className="min-h-11 sm:min-h-0" onClick={() => onDiscuss(selected)}><MessageSquare className="size-3.5" /> Discuss Work</Button>
                   {ownerFor(selected) && <Button size="sm" variant="secondary" className="min-h-11 sm:min-h-0" onClick={() => onOpenMember(ownerFor(selected)!)}>Open member</Button>}
-                  {!['done', 'cancelled'].includes(selected.status) && <Button size="sm" variant="secondary" className="min-h-11 sm:min-h-0" disabled={!actionsEnabled} onClick={() => onAction({ method: "POST", path: `/v1/team-runs/${encodeURIComponent(teamRunId)}/works/${encodeURIComponent(selected.id)}/cancel`, body: { expected_version: selected.version, reason: "Cancelled by Host" } })}>Cancel Work</Button>}
+                  {!workIsTerminal(selected) && <Button size="sm" variant="secondary" className="min-h-11 sm:min-h-0" disabled={!actionsEnabled} onClick={() => onAction({ method: "POST", path: `/v1/team-runs/${encodeURIComponent(teamRunId)}/works/${encodeURIComponent(selected.id)}/cancel`, body: { expected_version: selected.version, reason: "Cancelled by Host" } })}>Cancel Work</Button>}
                 </div>
               </section>
 

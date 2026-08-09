@@ -80,7 +80,7 @@ offers Unassigned, Assigned, Blocked, Review, and All filters; Open, Assigned,
 In progress, Review, and Done Kanban columns; and an optional dense list.
 Blocked is a canonical Work state rendered with explicit red/amber pressure in
 the active-work region rather than a sixth ownership lane. Cards expose owner portrait, readiness,
-criteria preview, blockers, child progress, source WorkItem, unread discussion,
+criteria preview, blockers, child progress, source TeamWork, unread discussion,
 and update time. Kanban is a projection over Work, never separate state.
 
 Every Host/Member mailbox is computed from TeamMessage recipients and delivery

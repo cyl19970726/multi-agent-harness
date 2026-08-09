@@ -9,14 +9,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use harness_core::{
     ActionCommand, ActionCommandStatus, ActionEffect, ActionPolicyDefinition, ActorRef, ActorType,
-    Approval, ApprovalStatus, Assignment, AuditEvent, AuditEventKind, Block, BusinessModule,
-    Commitment, CommitmentStatus, CustomPageDefinition, CustomPagePackage, Document, DocumentKind,
-    EntityKind, LifecycleStatus, MemberStatus, Milestone, OrgUnit, OrganizationMembership, Payment,
-    PendingInteractionStatus, Relation, RiskTier, TypedRecord, ValidateCompanyOs, View, WorkItem,
-    WorkItemStatus, WorkQuery,
+    Approval, ApprovalStatus, AuditEvent, AuditEventKind, Block, BusinessModule, Commitment,
+    CommitmentStatus, CustomPageDefinition, CustomPagePackage, Document, DocumentKind, EntityKind,
+    LifecycleStatus, MemberStatus, Milestone, OrgUnit, OrganizationMembership, Payment,
+    PendingInteractionStatus, Relation, RiskTier, TypedRecord, ValidateCompanyOs, View, Work,
+    WorkCondition, WorkPhase, WorkResolution,
 };
 use harness_store::{ActionCommandClaimResult, CompanyActor, HarnessStore, StoreError};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 
 #[derive(Debug)]
@@ -110,44 +110,31 @@ fn finish(result: Result<Value, ApiError>) -> ApiResponse {
 pub fn handle_get(
     store: &HarnessStore,
     execution_store: Option<&HarnessStore>,
+    execution_spaces: Option<&[(String, HarnessStore)]>,
     path: &str,
 ) -> Option<ApiResponse> {
     if path == "/v1/company-os/snapshot" {
         return Some(finish(
-            snapshot_with_execution(store, execution_store.unwrap_or(store))
-                .map_err(ApiError::from),
+            snapshot_with_execution_spaces(
+                store,
+                execution_store.unwrap_or(store),
+                execution_spaces.unwrap_or(&[]),
+            )
+            .map_err(ApiError::from),
         ));
     }
     if path == "/v1/company-os/work-projection" {
         return Some(finish(
-            store
-                .work_projection(&WorkQuery::default())
-                .map_err(ApiError::from)
-                .and_then(|projection| {
-                    serde_json::to_value(projection)
-                        .map_err(|error| ApiError::internal(error.to_string()))
-                }),
-        ));
-    }
-    if path == "/v1/company-os/work-cutover" {
-        return Some(finish(
-            execution_store
-                .unwrap_or(store)
-                .work_cutover_report(store)
-                .map_err(ApiError::from)
-                .and_then(|report| {
-                    serde_json::to_value(report)
-                        .map_err(|error| ApiError::internal(error.to_string()))
-                }),
+            company_work_projection_from_spaces(
+                execution_store.unwrap_or(store),
+                execution_spaces.unwrap_or(&[]),
+                &CompanyWorkQuery::default(),
+            )
+            .map_err(ApiError::from),
         ));
     }
     // Read-only archived-source provenance and Docs health projections. They
     // resolve the latest ledger rows only; they never write or migrate rows.
-    if path == "/v1/company-os/work-provenance" {
-        return Some(finish(
-            work_source_provenance(store).map_err(ApiError::from),
-        ));
-    }
     if path == "/v1/company-os/organization-provenance" {
         return Some(finish(
             organization_source_provenance(store).map_err(ApiError::from),
@@ -179,17 +166,11 @@ pub fn handle_post(
     if !path.starts_with("/v1/company-os/") {
         return None;
     }
-    // Work queries are read-only projections. They accept a typed filter body
-    // but never require or consume the mutation capability token.
+    // Company Work is a read-only filter over authoritative TeamWorks. It does
+    // not create or mutate a second Company task object.
     if path == "/v1/company-os/work-query" {
-        return Some(finish(parse::<WorkQuery>(body).and_then(|query| {
-            store
-                .work_projection(&query)
-                .map_err(ApiError::from)
-                .and_then(|projection| {
-                    serde_json::to_value(projection)
-                        .map_err(|error| ApiError::internal(error.to_string()))
-                })
+        return Some(finish(parse::<CompanyWorkQuery>(body).and_then(|query| {
+            company_work_projection(store, &query).map_err(ApiError::from)
         })));
     }
     if let Err(error) = authenticate_write_transport(transport_token) {
@@ -243,14 +224,19 @@ pub fn snapshot_with_execution(
     store: &HarnessStore,
     execution_store: &HarnessStore,
 ) -> Result<Value, StoreError> {
+    snapshot_with_execution_spaces(store, execution_store, &[])
+}
+
+pub fn snapshot_with_execution_spaces(
+    store: &HarnessStore,
+    execution_store: &HarnessStore,
+    execution_spaces: &[(String, HarnessStore)],
+) -> Result<Value, StoreError> {
     let actors = normalized_actors(store.latest_actors()?);
     let StandingAssignmentProjection {
         assignments: standing_assignments,
         conflicts: standing_assignment_conflicts,
     } = standing_assignment_projection(store, execution_store)?;
-    let work_execution_chains =
-        work_execution_projection(store, execution_store, now_unix_millis())?;
-    let work_cutover = execution_store.work_cutover_report(store)?;
     let commitments = store.latest_commitments()?;
     let payments = store.latest_payments()?;
     let financial_records = commitments
@@ -294,13 +280,14 @@ pub fn snapshot_with_execution(
             .into_values()
             .collect::<Vec<_>>(),
         "milestones": store.latest_milestones()?,
-        "work_items": store.latest_work_items()?,
-        "work": store.work_projection(&WorkQuery::default())?,
-        "assignments": store.latest_assignments()?,
+        "works": company_work_records_from_spaces(execution_store, execution_spaces)?,
+        "work": company_work_projection_from_spaces(
+            execution_store,
+            execution_spaces,
+            &CompanyWorkQuery::default(),
+        )?,
         "standing_assignments": standing_assignments,
         "standing_assignment_conflicts": standing_assignment_conflicts,
-        "work_execution_chains": work_execution_chains,
-        "work_cutover": work_cutover,
         "approvals": store.latest_approvals()?,
         "financial_records": financial_records,
         "commitments": commitments,
@@ -331,229 +318,132 @@ pub fn snapshot_with_execution(
     Ok(projection)
 }
 
-fn work_execution_projection(
-    company_store: &HarnessStore,
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+struct CompanyWorkQuery {
+    team_ids: Vec<String>,
+    team_run_ids: Vec<String>,
+    phases: Vec<WorkPhase>,
+    conditions: Vec<WorkCondition>,
+    resolutions: Vec<WorkResolution>,
+    owner_member_ids: Vec<String>,
+}
+
+fn company_work_projection(
     execution_store: &HarnessStore,
-    now_ms: u128,
-) -> Result<Vec<Value>, StoreError> {
-    let assignments = company_store
-        .latest_assignments()?
-        .into_iter()
-        .map(|v| json!(v))
-        .collect();
-    let agents = company_store
-        .latest_standing_agents()?
-        .into_iter()
-        .map(|v| json!(v))
-        .collect();
-    let agent_members = execution_store
-        .members()?
-        .into_iter()
-        .fold(BTreeMap::new(), |mut m, v| {
-            m.insert(v.id.clone(), json!(v));
-            m
-        })
-        .into_values()
-        .collect();
-    let members = execution_store
-        .member_runs()?
-        .into_iter()
-        .fold(BTreeMap::new(), |mut m, v| {
-            m.insert(v.id.clone(), json!(v));
-            m
-        })
-        .into_values()
-        .collect();
-    let works = execution_store
-        .latest_works()?
-        .into_iter()
-        .map(|v| json!(v))
-        .collect();
-    let deliveries = execution_store
-        .latest_work_deliveries()?
-        .into_iter()
-        .map(|v| json!(v))
-        .collect();
-    let messages = execution_store
-        .team_messages()?
-        .into_iter()
-        .fold(BTreeMap::new(), |mut m, v| {
-            m.insert(v.id.clone(), json!(v));
-            m
-        })
-        .into_values()
-        .collect();
-    let records = company_store
-        .latest_typed_records()?
-        .into_iter()
-        .map(|v| json!(v))
-        .collect();
-    Ok(build_work_execution_chains(
-        assignments,
-        agents,
-        agent_members,
-        members,
-        works,
-        deliveries,
-        messages,
-        records,
-        now_ms,
-    ))
+    query: &CompanyWorkQuery,
+) -> Result<Value, StoreError> {
+    company_work_projection_from_spaces(execution_store, &[], query)
 }
 
-fn value_text<'a>(value: &'a Value, key: &str) -> &'a str {
-    value.get(key).and_then(Value::as_str).unwrap_or("")
-}
-
-fn record_text<'a>(value: &'a Value, key: &str) -> &'a str {
-    let direct = value_text(value, key);
-    if direct.is_empty() {
-        value
-            .get("fields")
-            .and_then(|v| v.get(key))
-            .and_then(Value::as_str)
-            .unwrap_or("")
+fn company_work_records_from_spaces(
+    selected_store: &HarnessStore,
+    execution_spaces: &[(String, HarnessStore)],
+) -> Result<Vec<Work>, StoreError> {
+    let mut works = if execution_spaces.is_empty() {
+        selected_store.latest_works()?
     } else {
-        direct
-    }
+        let mut rows = Vec::new();
+        for (_, store) in execution_spaces {
+            rows.extend(store.latest_works()?);
+        }
+        rows
+    };
+    works.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then(left.version.cmp(&right.version))
+    });
+    Ok(works)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn build_work_execution_chains(
-    assignments: Vec<Value>,
-    agents: Vec<Value>,
-    agent_members: Vec<Value>,
-    members: Vec<Value>,
-    works: Vec<Value>,
-    deliveries: Vec<Value>,
-    messages: Vec<Value>,
-    records: Vec<Value>,
-    now_ms: u128,
-) -> Vec<Value> {
-    assignments.into_iter().map(|assignment| {
-        let assignment_id = value_text(&assignment, "id");
-        let work_item_id = value_text(&assignment, "work_item_id");
-        let evidence_ref = value_text(&assignment, "delivery_evidence_ref");
-        let recipient_id = assignment.get("recipient").and_then(|v| v.get("actor_id")).and_then(Value::as_str).unwrap_or("");
-        let standing_agent = agents.iter().find(|v| value_text(v, "id") == recipient_id);
-        let agent_member_ref = standing_agent
-            .and_then(|v| v.get("execution_agent_member_ref"))
-            .and_then(Value::as_str);
-        let claimant_count = agent_member_ref.map(|id| agents.iter().filter(|v| v.get("execution_agent_member_ref").and_then(Value::as_str) == Some(id)).count()).unwrap_or(0);
-        let durable_member_count = agent_member_ref.map(|id| agent_members.iter().filter(|v| value_text(v, "id") == id).count()).unwrap_or(0);
-        let durable_agent_member = agent_member_ref.filter(|_| claimant_count == 1 && durable_member_count == 1);
-        let work = works.iter().find(|v| value_text(v, "id") == evidence_ref);
-        let work_matches_item = work
-            .map(|v| value_text(v, "source_work_item_ref") == work_item_id)
-            .unwrap_or(false);
-        let work_matches_owner = work
-            .and_then(|v| v.get("owner_member_id"))
-            .and_then(Value::as_str)
-            == durable_agent_member;
-        let active_member_run_id = work
-            .and_then(|v| v.get("active_member_run_id"))
-            .and_then(Value::as_str);
-        let member = active_member_run_id.and_then(|id| {
-            members.iter().find(|member| {
-                value_text(member, "id") == id
-                    && member.get("agent_member_id").and_then(Value::as_str)
-                        == durable_agent_member
-                    && work
-                        .map(|work| value_text(member, "team_run_id") == value_text(work, "team_run_id"))
-                        .unwrap_or(false)
-            })
-        });
-        let link_status = if evidence_ref.is_empty()
-            || work.is_none()
-            || agent_member_ref.is_none()
-            || durable_member_count == 0
-        {
-            "unavailable"
-        } else if claimant_count != 1
-            || durable_member_count != 1
-            || !work_matches_item
-            || !work_matches_owner
-            || member.is_none()
-        {
-            "mismatch"
-        } else {
-            "linked"
-        };
-        let linked_member = if link_status == "linked" { member } else { None };
-        let work_delivery = linked_member.and_then(|member| {
-            deliveries.iter().find(|delivery| {
-                value_text(delivery, "work_id") == evidence_ref
-                    && value_text(delivery, "recipient_member_run_id") == value_text(member, "id")
-            }).map(|delivery| json!({
-                "id": value_text(delivery, "id"),
-                "status": value_text(delivery, "status"),
-                "attempt": delivery.get("attempt").cloned().unwrap_or(json!(0)),
-                "provider_receipt_id": delivery.get("provider_receipt_id").cloned(),
-            }))
-        });
-        let member_run = linked_member.map(|v| {
-            let native = v.get("native_session");
-            json!({"id": value_text(v, "id"), "status": value_text(v, "status"), "native_session_id": native.and_then(|n| n.get("native_session_id")).cloned(), "native_session_availability": native.map(|n| value_text(n, "availability")).filter(|v| !v.is_empty()).unwrap_or("unavailable")})
-        });
-        let conversations = messages.iter().filter(|v| link_status == "linked" && value_text(v, "work_id") == evidence_ref && value_text(v, "kind") != "handoff").map(|v| {
-            json!({
-                "id": value_text(v, "id"),
-                "kind": value_text(v, "kind"),
-                "from_member_id": value_text(v, "from_member_id"),
-                "body": value_text(v, "body"),
-                "created_at": value_text(v, "created_at"),
-            })
-        }).collect::<Vec<_>>();
-        let handoffs = messages.iter().filter(|v| link_status == "linked" && value_text(v, "kind") == "handoff" && value_text(v, "work_id") == evidence_ref).map(|v| {
-            let body = value_text(v, "body");
-            let result = body.lines().find_map(|line| line.strip_prefix("RESULT:").map(str::trim)).unwrap_or("");
-            json!({"id": value_text(v, "id"), "result": result, "body": body, "created_at": value_text(v, "created_at"), "evidence_refs": v.get("evidence_refs").cloned().unwrap_or(json!([]))})
-        }).collect::<Vec<_>>();
-        let external_observations = records.iter().filter_map(|record| {
-            let kind = value_text(record, "record_type");
-            if kind != "github_pull_request_ref" && kind != "github_check_snapshot" { return None; }
-            if link_status != "linked" { return None; }
-            if record_text(record, "work_id") != evidence_ref { return None; }
-            if !record_text(record, "work_item_id").is_empty() && record_text(record, "work_item_id") != work_item_id { return None; }
-            let observed = record_text(record, "observed_unix_ms").parse::<u128>().ok();
-            let ttl = record_text(record, "freshness_ttl_ms").parse::<u128>().unwrap_or(3_600_000);
-            let freshness = observed.map(|at| if now_ms.saturating_sub(at) <= ttl {"fresh"} else {"stale"}).unwrap_or("unavailable");
-            Some(json!({
-                "id": value_text(record, "id"),
-                "kind": if kind == "github_check_snapshot" {"check"} else {"pull_request"},
-                "label": value_text(record, "title"),
-                "repository": record_text(record, "repository"),
-                "pull_request_number": record_text(record, "pull_request_number"),
-                "head_ref": record_text(record, "head_ref"),
-                "head_sha": record_text(record, "head_sha"),
-                "base_ref": record_text(record, "base_ref"),
-                "url": record_text(record, "url"),
-                "state": record_text(record, "state"),
-                "observed_at": record_text(record, "observed_at"),
-                "source_updated_at": record_text(record, "source_updated_at"),
-                "source_completed_at": record_text(record, "source_completed_at"),
-                "freshness": freshness
-            }))
-        }).collect::<Vec<_>>();
-        json!({
-            "assignment_id": assignment_id,
-            "work_item_id": work_item_id,
-            "work_id": work.map(|work| value_text(work, "id")),
-            "assignment_state": value_text(&assignment, "delivery_state"),
-            "work_state": work.map(|work| value_text(work, "status")),
-            "link_status": link_status,
-            "detail": match link_status {
-                "linked" => "Company Assignment resolves to exact Agent Team Work, owner MemberRun, and provider-native session binding.",
-                "mismatch" => "The linked Work does not match the Company WorkItem, Standing Agent identity, or active MemberRun.",
-                _ => "Required Work execution-link evidence is unavailable. delivery_evidence_ref must name an Agent Team Work.",
-            },
-            "work_delivery": work_delivery,
-            "member_run": member_run,
-            "conversations": conversations,
-            "handoffs": handoffs,
-            "external_observations": external_observations,
+fn company_work_projection_from_spaces(
+    selected_store: &HarnessStore,
+    execution_spaces: &[(String, HarnessStore)],
+    query: &CompanyWorkQuery,
+) -> Result<Value, StoreError> {
+    let works = company_work_records_from_spaces(selected_store, execution_spaces)?
+        .into_iter()
+        .filter(|work| {
+            (query.team_ids.is_empty()
+                || work
+                    .team_id
+                    .as_ref()
+                    .is_some_and(|id| query.team_ids.contains(id)))
+                && (query.team_run_ids.is_empty() || query.team_run_ids.contains(&work.team_run_id))
+                && (query.phases.is_empty() || query.phases.contains(&work.phase))
+                && (query.conditions.is_empty() || query.conditions.contains(&work.condition))
+                && (query.resolutions.is_empty()
+                    || work
+                        .resolution
+                        .is_some_and(|resolution| query.resolutions.contains(&resolution)))
+                && (query.owner_member_ids.is_empty()
+                    || work
+                        .owner_member_id
+                        .as_ref()
+                        .is_some_and(|id| query.owner_member_ids.contains(id)))
         })
-    }).collect()
+        .collect::<Vec<_>>();
+    let mut routes = serde_json::Map::new();
+    let mut conflicts = Vec::new();
+    if execution_spaces.is_empty() {
+        for work in &works {
+            routes.insert(
+                work.id.clone(),
+                json!({"execution_space_id": null, "command": "team-run work"}),
+            );
+        }
+    } else {
+        let mut owners = BTreeMap::<String, Vec<String>>::new();
+        for (space_id, store) in execution_spaces {
+            for work in store.latest_works()? {
+                if works.iter().any(|candidate| candidate.id == work.id) {
+                    owners.entry(work.id).or_default().push(space_id.clone());
+                }
+            }
+        }
+        for (work_id, space_ids) in owners {
+            if space_ids.len() == 1 {
+                routes.insert(
+                    work_id,
+                    json!({"execution_space_id": space_ids[0], "command": "team-run work"}),
+                );
+            } else {
+                conflicts.push(json!({
+                    "kind": "duplicate_work_id_across_execution_spaces",
+                    "work_id": work_id,
+                    "execution_space_ids": space_ids,
+                }));
+            }
+        }
+    }
+    let count =
+        |predicate: &dyn Fn(&Work) -> bool| works.iter().filter(|work| predicate(work)).count();
+    let mut board = BTreeMap::<String, Vec<String>>::new();
+    for work in &works {
+        let key = format!("{:?}", work.phase).to_lowercase();
+        board.entry(key).or_default().push(work.id.clone());
+    }
+    Ok(json!({
+        "projection_kind": "company_work_aggregate",
+        "authority": "team_work",
+        "read_only": true,
+        "scope": if execution_spaces.is_empty() { "selected_execution_space" } else { "all_execution_spaces" },
+        "query": query,
+        "summary": {
+            "total": works.len(),
+            "open": count(&|work| work.phase == WorkPhase::Open),
+            "active": count(&|work| work.phase == WorkPhase::Active),
+            "review": count(&|work| work.phase == WorkPhase::Review),
+            "closed": count(&|work| work.phase == WorkPhase::Closed),
+            "blocked": count(&|work| work.condition == WorkCondition::Blocked),
+            "on_hold": count(&|work| work.condition == WorkCondition::OnHold),
+        },
+        "board": board,
+        "works": works,
+        "routes": routes,
+        "conflicts": conflicts,
+    }))
 }
 
 /// Standing Agent participation join plus any locally degraded link conflicts.
@@ -793,7 +683,9 @@ fn standing_assignment_projection(
                     "member_run_id": member.id,
                     "title": work.title,
                     "role": member.role,
-                    "status": work.status,
+                    "phase": work.phase,
+                    "condition": work.condition,
+                    "resolution": work.resolution,
                     "assigned_at": work.created_at,
                     "last_activity_at": member.last_event_at,
                     "correlation_id": null,
@@ -889,17 +781,6 @@ fn display_money(amount: &str, currency: &str) -> String {
 // repair, or migrate anything.
 // ---------------------------------------------------------------------------
 
-/// Keep in sync with `harness_store::company_os::work_item_is_active`.
-fn work_status_is_active(status: WorkItemStatus) -> bool {
-    !matches!(
-        status,
-        WorkItemStatus::Completed
-            | WorkItemStatus::Cancelled
-            | WorkItemStatus::Archived
-            | WorkItemStatus::Draft
-    )
-}
-
 fn lifecycle_name(status: LifecycleStatus) -> &'static str {
     match status {
         LifecycleStatus::Draft => "draft",
@@ -918,53 +799,6 @@ fn member_status_name(status: MemberStatus) -> &'static str {
         MemberStatus::Ended => "ended",
         MemberStatus::Archived => "archived",
     }
-}
-
-struct ActorIndexEntry {
-    actor_type: &'static str,
-    display_name: String,
-    status: MemberStatus,
-}
-
-fn actor_index(store: &HarnessStore) -> Result<BTreeMap<String, ActorIndexEntry>, StoreError> {
-    Ok(store
-        .latest_actors()?
-        .into_iter()
-        .map(|actor| match actor {
-            CompanyActor::Human(member) => (
-                member.id.clone(),
-                ActorIndexEntry {
-                    actor_type: "human",
-                    display_name: member.display_name,
-                    status: member.status,
-                },
-            ),
-            CompanyActor::Agent(member) => (
-                member.id.clone(),
-                ActorIndexEntry {
-                    actor_type: "agent",
-                    display_name: member.display_name,
-                    status: member.status,
-                },
-            ),
-            CompanyActor::External(member) => (
-                member.id.clone(),
-                ActorIndexEntry {
-                    actor_type: "external",
-                    display_name: member.display_name_or_organization,
-                    status: member.status,
-                },
-            ),
-            CompanyActor::Service(member) => (
-                member.id.clone(),
-                ActorIndexEntry {
-                    actor_type: "service",
-                    display_name: member.display_name,
-                    status: member.status,
-                },
-            ),
-        })
-        .collect())
 }
 
 fn document_index(store: &HarnessStore) -> Result<BTreeMap<String, Document>, StoreError> {
@@ -994,90 +828,6 @@ fn document_ref_resolution(documents: &BTreeMap<String, Document>, document_id: 
             "resolution": "missing",
         }),
     }
-}
-
-fn actor_ref_resolution(actors: &BTreeMap<String, ActorIndexEntry>, reference: &ActorRef) -> Value {
-    match actors.get(&reference.actor_id) {
-        Some(actor) => json!({
-            "actor_type": actor.actor_type,
-            "actor_id": reference.actor_id,
-            "resolution": member_status_name(actor.status),
-            "display_name": actor.display_name,
-            "member_status": member_status_name(actor.status),
-        }),
-        None => json!({
-            "actor_type": reference.actor_type,
-            "actor_id": reference.actor_id,
-            "resolution": "missing",
-        }),
-    }
-}
-
-/// Read-only provenance for every WorkItem: the source/result Documents and
-/// the responsible Organization actors, resolved to active records or explicit
-/// archived history. Active Work with an archived or missing source is counted
-/// so governance can route a correction instead of degrading to a bare id.
-pub fn work_source_provenance(store: &HarnessStore) -> Result<Value, StoreError> {
-    let documents = document_index(store)?;
-    let actors = actor_index(store)?;
-    let work_items = store.latest_work_items()?;
-    let mut active = 0_u64;
-    let mut active_source_archived = 0_u64;
-    let mut active_source_missing = 0_u64;
-    let mut archived_actor_references = 0_u64;
-    let mut missing_actor_references = 0_u64;
-    let items = work_items
-        .iter()
-        .map(|item| {
-            let is_active = work_status_is_active(item.status);
-            active += u64::from(is_active);
-            let source = document_ref_resolution(&documents, &item.source_document_ref);
-            if is_active {
-                active_source_archived +=
-                    u64::from(source["resolution"].as_str() == Some("archived"));
-                active_source_missing +=
-                    u64::from(source["resolution"].as_str() == Some("missing"));
-            }
-            let responsible = std::iter::once(&item.accountable_owner).chain(item.assignees.iter());
-            let mut responsible_resolutions = Vec::new();
-            for reference in responsible {
-                let resolution = actor_ref_resolution(&actors, reference);
-                match resolution["resolution"].as_str() {
-                    Some("archived" | "ended") => archived_actor_references += 1,
-                    Some("missing") => missing_actor_references += 1,
-                    _ => {}
-                }
-                responsible_resolutions.push(resolution);
-            }
-            let accountable_owner = responsible_resolutions.remove(0);
-            json!({
-                "work_item_id": item.id,
-                "work_item_status": item.status,
-                "is_active": is_active,
-                "source": source,
-                "result": item
-                    .result_document_ref
-                    .as_deref()
-                    .map(|document_id| document_ref_resolution(&documents, document_id)),
-                "accountable_owner": accountable_owner,
-                "assignees": responsible_resolutions,
-            })
-        })
-        .collect::<Vec<_>>();
-    Ok(json!({
-        "projection_kind": "work_source_provenance",
-        "read_only": true,
-        "work_items": items,
-        "summary": {
-            "total": work_items.len(),
-            "active": active,
-            "active_source_active": active - active_source_archived - active_source_missing,
-            "active_source_archived": active_source_archived,
-            "active_source_missing": active_source_missing,
-            "archived_actor_references": archived_actor_references,
-            "missing_actor_references": missing_actor_references,
-        },
-    }))
 }
 
 /// Read-only Organization provenance: every member resolves with its durable
@@ -1193,7 +943,6 @@ pub fn docs_health_report(store: &HarnessStore) -> Result<Value, StoreError> {
     let typed_records = store.latest_typed_records()?;
     let relations = store.latest_relations()?;
     let business_modules = store.latest_business_modules()?;
-    let work_items = store.latest_work_items()?;
     let document_by_id = documents
         .iter()
         .map(|document| (document.id.as_str(), document))
@@ -1247,39 +996,6 @@ pub fn docs_health_report(store: &HarnessStore) -> Result<Value, StoreError> {
             },
         }
     }
-    for item in &work_items {
-        if item.status == WorkItemStatus::Archived {
-            continue;
-        }
-        match document_by_id.get(item.source_document_ref.as_str()) {
-            None => findings.push(json!({
-                "id": format!("missing-source-document-work:{}", item.id),
-                "kind": "work_item_source_document_missing",
-                "severity": "critical",
-                "subject": {"kind": "work_item", "id": item.id},
-                "related": {"kind": "document", "id": item.source_document_ref},
-                "recommended_action": "Restore the source Document or migrate this WorkItem to a valid source through a governed Work action."
-            })),
-            Some(document)
-                if document.lifecycle_status == LifecycleStatus::Archived
-                    && work_status_is_active(item.status) =>
-            {
-                findings.push(json!({
-                    "id": format!("archived-source-document-work:{}", item.id),
-                    "kind": "work_item_source_document_archived",
-                    "severity": "warning",
-                    "subject": {"kind": "work_item", "id": item.id},
-                    "related": {
-                        "kind": "document", "id": document.id,
-                        "title": document.title,
-                        "lifecycle_status": "archived",
-                    },
-                    "recommended_action": "The source Document is explicit archived history; keep it read-only for provenance or route a successor source through a governed Docs action."
-                }));
-            }
-            Some(_) => {}
-        }
-    }
     findings.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
     let critical = findings
         .iter()
@@ -1299,7 +1015,6 @@ pub fn docs_health_report(store: &HarnessStore) -> Result<Value, StoreError> {
             "typed_records": typed_records.len(),
             "relations": relations.len(),
             "business_modules": business_modules.len(),
-            "work_items": work_items.len(),
             "findings": findings.len(),
             "critical": critical,
             "warning": warning,
@@ -1381,177 +1096,6 @@ mod projection_tests {
         let _ = std::fs::remove_dir_all(company_root);
         let _ = std::fs::remove_dir_all(execution_root);
     }
-
-    #[test]
-    fn work_execution_chain_requires_exact_links_and_reports_freshness() {
-        let assignment = |id: &str, evidence: &str| {
-            json!({
-                "id": id, "work_item_id": "work-1", "recipient": {"actor_type": "agent", "actor_id": "standing-1"},
-                "delivery_state": "acknowledged", "correlation_id": format!("company-{id}"), "delivery_evidence_ref": evidence
-            })
-        };
-        let agents =
-            vec![json!({"id": "standing-1", "execution_agent_member_ref": "agent-member-1"})];
-        let agent_members = vec![json!({"id": "agent-member-1", "name": "Durable Builder"})];
-        let members = vec![
-            json!({"id": "member-exact", "team_run_id": "team-1", "agent_member_id": "agent-member-1", "name": "Builder", "status": "active", "native_session": {"native_session_id": "session-1"}}),
-            json!({"id": "member-name-only", "name": "Builder", "provider": "codex", "status": "active"}),
-        ];
-        let works = vec![
-            json!({"id": "agent-work-exact", "team_run_id": "team-1", "source_work_item_ref": "work-1", "owner_member_id": "agent-member-1", "active_member_run_id": "member-exact", "status": "review"}),
-            json!({"id": "agent-work-wrong-item", "team_run_id": "team-1", "source_work_item_ref": "other-work-item", "owner_member_id": "agent-member-1", "active_member_run_id": "member-exact", "status": "review"}),
-            json!({"id": "agent-work-name-only", "team_run_id": "team-1", "source_work_item_ref": "work-1", "owner_member_id": "agent-member-1", "active_member_run_id": "member-name-only", "status": "review"}),
-        ];
-        let deliveries = vec![
-            json!({"id": "delivery-exact", "work_id": "agent-work-exact", "recipient_member_run_id": "member-exact", "status": "provider_received", "attempt": 1, "provider_receipt_id": "receipt-1"}),
-        ];
-        let messages = vec![
-            json!({"id": "message-exact", "kind": "message", "work_id": "agent-work-exact", "from_member_id": "host", "body": "Please clarify the acceptance check.", "created_at": "2026-07-31T00:00:00Z"}),
-            json!({"id": "message-other-work", "kind": "message", "work_id": "agent-work-wrong-item", "from_member_id": "host", "body": "Not part of this chain.", "created_at": "2026-07-31T00:00:00Z"}),
-            json!({"id": "legacy-assignment-message", "kind": "assignment", "from_member_id": "host", "to_member_ids": ["member-exact"], "body": "Legacy ownership carrier.", "created_at": "2026-07-31T00:00:00Z"}),
-            json!({"id": "handoff-1", "kind": "handoff", "work_id": "agent-work-exact", "from_member_id": "member-exact", "body": "RESULT: completed\nDelivery evidence attached.", "created_at": "2026-07-31T00:00:00Z", "evidence_refs": ["check-1"]}),
-        ];
-        let records = vec![
-            json!({"id": "pr-fresh", "record_type": "github_pull_request_ref", "title": "PR", "fields": {"work_item_id": "work-1", "work_id": "agent-work-exact", "repository": "owner/repo", "pull_request_number": "42", "head_ref": "codex/fix", "head_sha": "abc123", "base_ref": "master", "url": "https://example.test/pr/42", "state": "open", "observed_at": "2026-07-31T00:00:00Z", "source_updated_at": "2026-07-30T23:00:00Z", "source_completed_at": "", "observed_unix_ms": "9900", "freshness_ttl_ms": "200"}}),
-            json!({"id": "check-stale", "record_type": "github_check_snapshot", "title": "CI", "fields": {"work_item_id": "work-1", "work_id": "agent-work-exact", "observed_unix_ms": "9000", "freshness_ttl_ms": "200"}}),
-            json!({"id": "check-unavailable", "record_type": "github_check_snapshot", "title": "Unknown", "fields": {"work_item_id": "work-1", "work_id": "agent-work-exact"}}),
-        ];
-        let chains = build_work_execution_chains(
-            vec![
-                assignment("assignment-exact", "agent-work-exact"),
-                assignment("assignment-wrong-item", "agent-work-wrong-item"),
-                assignment("assignment-name", "agent-work-name-only"),
-                assignment("assignment-legacy", "legacy-assignment-message"),
-            ],
-            agents,
-            agent_members,
-            members,
-            works,
-            deliveries,
-            messages,
-            records,
-            10_000,
-        );
-        assert_eq!(chains[0]["link_status"], "linked");
-        assert_eq!(chains[0]["work_id"], "agent-work-exact");
-        assert_eq!(chains[0]["work_state"], "review");
-        assert_eq!(chains[0]["work_delivery"]["id"], "delivery-exact");
-        assert_eq!(
-            chains[0]["work_delivery"]["provider_receipt_id"],
-            "receipt-1"
-        );
-        assert_eq!(chains[0]["member_run"]["native_session_id"], "session-1");
-        assert_eq!(chains[0]["conversations"][0]["id"], "message-exact");
-        assert_eq!(chains[0]["handoffs"][0]["id"], "handoff-1");
-        assert_eq!(chains[0]["handoffs"][0]["result"], "completed");
-        assert_eq!(
-            chains[0]["handoffs"][0]["evidence_refs"],
-            json!(["check-1"])
-        );
-        assert_eq!(chains[0]["external_observations"][0]["freshness"], "fresh");
-        assert_eq!(
-            chains[0]["external_observations"][0]["repository"],
-            "owner/repo"
-        );
-        assert_eq!(
-            chains[0]["external_observations"][0]["pull_request_number"],
-            "42"
-        );
-        assert_eq!(chains[0]["external_observations"][0]["base_ref"], "master");
-        assert_eq!(
-            chains[0]["external_observations"][0]["url"],
-            "https://example.test/pr/42"
-        );
-        assert_eq!(
-            chains[0]["external_observations"][0]["source_updated_at"],
-            "2026-07-30T23:00:00Z"
-        );
-        assert_eq!(chains[0]["external_observations"][1]["freshness"], "stale");
-        assert_eq!(
-            chains[0]["external_observations"][2]["freshness"],
-            "unavailable"
-        );
-        assert_eq!(chains[1]["link_status"], "mismatch");
-        assert!(chains[1]["member_run"].is_null());
-        assert_eq!(
-            chains[2]["link_status"], "mismatch",
-            "matching names/providers must not bind identity"
-        );
-        assert!(chains[2]["member_run"].is_null());
-        assert_eq!(
-            chains[3]["link_status"], "unavailable",
-            "legacy Assignment Message ids are not Work evidence"
-        );
-        assert_eq!(chains[3]["conversations"], json!([]));
-
-        let orphan = build_work_execution_chains(
-            vec![assignment("assignment-exact", "agent-work-exact")],
-            vec![json!({"id": "standing-1", "execution_agent_member_ref": "agent-member-1"})],
-            vec![],
-            vec![json!({"id": "member-exact", "agent_member_id": "agent-member-1"})],
-            vec![
-                json!({"id": "agent-work-exact", "team_run_id": "team-1", "source_work_item_ref": "work-1", "owner_member_id": "agent-member-1", "active_member_run_id": "member-exact"}),
-            ],
-            vec![],
-            vec![],
-            vec![],
-            10_000,
-        );
-        assert_eq!(
-            orphan[0]["link_status"], "unavailable",
-            "orphan AgentMember refs must never link"
-        );
-        assert!(orphan[0]["member_run"].is_null());
-
-        let duplicate_claim = build_work_execution_chains(
-            vec![assignment("assignment-exact", "agent-work-exact")],
-            vec![
-                json!({"id": "standing-1", "execution_agent_member_ref": "agent-member-1"}),
-                json!({"id": "standing-duplicate", "execution_agent_member_ref": "agent-member-1"}),
-            ],
-            vec![json!({"id": "agent-member-1"})],
-            vec![
-                json!({"id": "member-exact", "team_run_id": "team-1", "agent_member_id": "agent-member-1"}),
-            ],
-            vec![
-                json!({"id": "agent-work-exact", "team_run_id": "team-1", "source_work_item_ref": "work-1", "owner_member_id": "agent-member-1", "active_member_run_id": "member-exact"}),
-            ],
-            vec![],
-            vec![],
-            vec![],
-            10_000,
-        );
-        assert_eq!(
-            duplicate_claim[0]["link_status"], "mismatch",
-            "ambiguous StandingAgent claims must be suppressed"
-        );
-        assert!(duplicate_claim[0]["member_run"].is_null());
-
-        let duplicate_member = build_work_execution_chains(
-            vec![assignment("assignment-exact", "agent-work-exact")],
-            vec![json!({"id": "standing-1", "execution_agent_member_ref": "agent-member-1"})],
-            vec![
-                json!({"id": "agent-member-1", "name": "first"}),
-                json!({"id": "agent-member-1", "name": "duplicate"}),
-            ],
-            vec![
-                json!({"id": "member-exact", "team_run_id": "team-1", "agent_member_id": "agent-member-1"}),
-            ],
-            vec![
-                json!({"id": "agent-work-exact", "team_run_id": "team-1", "source_work_item_ref": "work-1", "owner_member_id": "agent-member-1", "active_member_run_id": "member-exact"}),
-            ],
-            vec![],
-            vec![],
-            vec![],
-            10_000,
-        );
-        assert_eq!(
-            duplicate_member[0]["link_status"], "mismatch",
-            "duplicate durable AgentMember identities must be suppressed"
-        );
-        assert!(duplicate_member[0]["member_run"].is_null());
-    }
-
     #[test]
     fn explicit_projection_is_lossless_and_never_same_id_binds() {
         let root = std::env::temp_dir().join(format!(
@@ -1605,11 +1149,12 @@ mod projection_tests {
                         team_id: None,
                         created_by_member_id: None,
                         parent_work_id: None,
-                        source_work_item_ref: None,
                         title: id.to_string(),
                         context_markdown: "projection".to_string(),
                         completion_criteria_markdown: "done".to_string(),
-                        status: harness_core::WorkStatus::Open,
+                        phase: harness_core::WorkPhase::Open,
+                        condition: harness_core::WorkCondition::Normal,
+                        resolution: None,
                         owner_member_id: Some("member-linked".to_string()),
                         active_member_run_id: Some("run-linked".to_string()),
                         claim_mode: harness_core::WorkClaimMode::HostAssign,
@@ -1665,6 +1210,11 @@ mod projection_tests {
             projected.conflicts.is_empty(),
             "a healthy store must report an empty conflict list"
         );
+        let company_work = company_work_projection(&store, &CompanyWorkQuery::default()).unwrap();
+        assert_eq!(company_work["authority"], "team_work");
+        assert_eq!(company_work["summary"]["total"], 2);
+        assert_eq!(company_work["works"][0]["id"], "work-1");
+        assert_eq!(company_work["works"][1]["id"], "work-2");
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1770,11 +1320,7 @@ mod projection_tests {
             snapshot["standing_assignments"],
             json!(projected.assignments)
         );
-        assert_eq!(snapshot["work_cutover"]["valid"], true);
-        let cutover = handle_get(&store, Some(&store), "/v1/company-os/work-cutover").unwrap();
-        assert_eq!(cutover.status, "200 OK");
-        assert_eq!(cutover.body["result"]["valid"], true);
-        let response = handle_get(&store, Some(&store), "/v1/company-os/snapshot").unwrap();
+        let response = handle_get(&store, Some(&store), None, "/v1/company-os/snapshot").unwrap();
         assert_eq!(
             response.status, "200 OK",
             "a duplicate link must not 409 the entire snapshot endpoint"
@@ -1805,8 +1351,7 @@ fn read_resource(
         "org-units" => to_values(store.latest_org_units()?)?,
         "memberships" => to_values(store.latest_organization_memberships()?)?,
         "milestones" => to_values(store.latest_milestones()?)?,
-        "work-items" => to_values(store.latest_work_items()?)?,
-        "assignments" => to_values(store.latest_assignments()?)?,
+        "works" => to_values(store.latest_works()?)?,
         "approvals" => to_values(store.latest_approvals()?)?,
         "commitments" => to_values(store.latest_commitments()?)?,
         "payments" => to_values(store.latest_payments()?)?,
@@ -1989,8 +1534,6 @@ fn append_resource(
         "org-units" => append!(OrgUnit, append_org_unit),
         "memberships" => append!(OrganizationMembership, append_organization_membership),
         "milestones" => append!(Milestone, append_milestone),
-        "work-items" => append!(WorkItem, append_work_item),
-        "assignments" => append!(Assignment, append_assignment),
         "approvals" => append!(Approval, append_approval),
         "commitments" => append!(Commitment, append_commitment),
         "payments" => {
@@ -2125,18 +1668,6 @@ fn dispatch_action(store: &HarnessStore, body: &Value) -> Result<Value, ApiError
     }
     if command.command_name == "approval.request" {
         validate_approval_request(store, &command, &record)?;
-    }
-    if command.command_name == "work_item.transition" {
-        validate_work_item_transition(store, &command, &record)?;
-    }
-    if command.command_name == "work_item.update" {
-        validate_work_item_update(store, &command, &record)?;
-    }
-    if command.command_name == "work_item.append" {
-        validate_work_item_create(store, &command, &record)?;
-    }
-    if command.command_name == "assignment.append" {
-        validate_assignment_create(store, &command, &record)?;
     }
     if command.command_name == "commitment.propose" {
         validate_commitment_proposal(store, &command, &record)?;
@@ -2421,7 +1952,7 @@ type ServerActionShape = (&'static str, RiskTier, bool, Vec<ActorType>, ActionEf
 
 fn server_action_shape(command_name: &str) -> Result<ServerActionShape, ApiError> {
     Ok(match command_name {
-        "typed_record.append" | "view.append" | "work_item.append" | "assignment.append" => (
+        "typed_record.append" | "view.append" => (
             "company.records.write",
             RiskTier::R1,
             false,
@@ -2448,20 +1979,6 @@ fn server_action_shape(command_name: &str) -> Result<ServerActionShape, ApiError
             false,
             vec![ActorType::Human, ActorType::Agent],
             ActionEffect::CreateRecord,
-        ),
-        "work_item.update" => (
-            "company.records.write",
-            RiskTier::R2,
-            false,
-            vec![ActorType::Human, ActorType::Agent],
-            ActionEffect::UpdateRecord,
-        ),
-        "work_item.transition" => (
-            "company.work.execute",
-            RiskTier::R2,
-            false,
-            vec![ActorType::Human, ActorType::Agent],
-            ActionEffect::TransitionState,
         ),
         "commitment.append" => (
             "finance.commitment.write",
@@ -2599,50 +2116,12 @@ fn validate_definition_scope(
                 .and_then(|value| serde_json::from_value::<harness_core::EntityRef>(value).ok())
                 .is_some_and(|reference| entity_in_module(store, definition, &reference, 0))
         }),
-        "work_item.append" | "work_item.update" | "work_item.transition" => {
-            serde_json::from_value::<WorkItem>(record.clone())
-                .ok()
-                .is_some_and(|item| {
-                    let subject_matches = if command.command_name == "work_item.append" {
-                        command.subject_ref.kind == EntityKind::Document
-                            && command.subject_ref.id == item.source_document_ref
-                    } else {
-                        command.subject_ref.kind == EntityKind::WorkItem
-                            && command.subject_ref.id == item.id
-                    };
-                    subject_matches
-                        && document_in_module(store, definition, &item.source_document_ref)
-                        && item
-                            .result_document_ref
-                            .as_deref()
-                            .is_none_or(|id| document_in_module(store, definition, id))
-                        && item.result_record_refs.iter().all(|id| {
-                            entity_in_module(
-                                store,
-                                definition,
-                                &harness_core::EntityRef {
-                                    kind: EntityKind::TypedRecord,
-                                    id: id.clone(),
-                                },
-                                0,
-                            )
-                        })
-                })
-        }
-        "assignment.append" => record
-            .get("work_item_id")
-            .and_then(Value::as_str)
-            .is_some_and(|id| {
-                command.subject_ref.kind == EntityKind::WorkItem
-                    && command.subject_ref.id == id
-                    && work_item_in_module(store, definition, id)
-            }),
         "approval.request" | "approval.decide" => {
             entity_in_module(store, definition, &command.subject_ref, 0)
         }
         "commitment.propose" => {
-            command.subject_ref.kind == EntityKind::WorkItem
-                && work_item_in_module(store, definition, &command.subject_ref.id)
+            command.subject_ref.kind == EntityKind::Work
+                && work_in_module(store, definition, &command.subject_ref.id)
                 && record
                     .get("source_document_id")
                     .and_then(Value::as_str)
@@ -2702,19 +2181,16 @@ fn document_in_module(
     false
 }
 
-fn work_item_in_module(
-    store: &HarnessStore,
-    definition: &CustomPageDefinition,
-    work_item_id: &str,
-) -> bool {
-    store
-        .latest_work_items()
-        .ok()
-        .and_then(|items| items.into_iter().find(|item| item.id == work_item_id))
-        .is_some_and(|item| {
-            item.business_module_ref.as_deref() == Some(definition.module_id.as_str())
-                || document_in_module(store, definition, &item.source_document_ref)
+fn work_in_module(store: &HarnessStore, definition: &CustomPageDefinition, work_id: &str) -> bool {
+    store.latest_milestones().ok().is_some_and(|milestones| {
+        milestones.into_iter().any(|milestone| {
+            milestone.business_module_ref.as_deref() == Some(definition.module_id.as_str())
+                && milestone
+                    .work_refs
+                    .iter()
+                    .any(|reference| reference == work_id)
         })
+    })
 }
 
 fn entity_in_module(
@@ -2747,7 +2223,7 @@ fn entity_in_module(
                             document_in_module(store, definition, document_id)
                         })
             }),
-        EntityKind::WorkItem => work_item_in_module(store, definition, &reference.id),
+        EntityKind::Work => work_in_module(store, definition, &reference.id),
         EntityKind::Approval => store
             .latest_approvals()
             .ok()
@@ -2774,412 +2250,6 @@ fn entity_in_module(
         }
         EntityKind::Actor | EntityKind::Evidence | EntityKind::Execution => false,
     }
-}
-
-fn validate_work_item_create(
-    store: &HarnessStore,
-    command: &ActionCommand,
-    record: &Value,
-) -> Result<(), ApiError> {
-    let item: WorkItem = parse(record)?;
-    if command.subject_ref.kind != EntityKind::Document
-        || command.subject_ref.id != item.source_document_ref
-    {
-        return Err(ApiError::forbidden(
-            "work_item.append subject must be its source Document",
-        ));
-    }
-    if store
-        .latest_work_items()?
-        .iter()
-        .any(|row| row.id == item.id)
-    {
-        return Err(ApiError::conflict(format!(
-            "WorkItem {} already exists; use work_item.transition",
-            item.id
-        )));
-    }
-    if matches!(
-        item.status,
-        WorkItemStatus::InProgress | WorkItemStatus::InReview | WorkItemStatus::Completed
-    ) {
-        return Err(ApiError::validation(
-            "new WorkItem cannot start as in_progress, in_review, or completed",
-        ));
-    }
-    Ok(())
-}
-
-/// Responsibility fields decide who may execute, review, or close a WorkItem.
-/// Rewriting one is an authority change, not an ordinary edit, so each is named
-/// explicitly rather than inferred from a diff of the whole record.
-fn changed_responsibility_fields(previous: &WorkItem, target: &WorkItem) -> Vec<&'static str> {
-    let mut changed = Vec::new();
-    if previous.accountable_owner != target.accountable_owner {
-        changed.push("accountable_owner");
-    }
-    if previous.assignees != target.assignees {
-        changed.push("assignees");
-    }
-    if previous.contributors != target.contributors {
-        changed.push("contributors");
-    }
-    if previous.reviewer != target.reviewer {
-        changed.push("reviewer");
-    }
-    if previous.approver != target.approver {
-        changed.push("approver");
-    }
-    changed
-}
-
-/// Executor standing, using the same actor set as the executor half of
-/// `validate_work_item_transition`: the Actor that may drive the WorkItem
-/// forward.
-fn is_work_item_executor(actor: &ActorRef, item: &WorkItem) -> bool {
-    *actor == item.accountable_owner || item.assignees.contains(actor)
-}
-
-/// Closer standing, using the same actor set as the closer half of
-/// `validate_work_item_transition`: the Actor that may sign the WorkItem off
-/// as completed.
-fn is_work_item_closer(actor: &ActorRef, item: &WorkItem) -> bool {
-    *actor == item.accountable_owner || item.reviewer.as_ref() == Some(actor)
-}
-
-/// Any responsibility standing at all. Contributors are deliberately excluded:
-/// a contributor can neither execute nor close, so counting one as a
-/// controller would reopen the laundering path this gate closes.
-fn controls_work_item(actor: &ActorRef, item: &WorkItem) -> bool {
-    is_work_item_executor(actor, item) || is_work_item_closer(actor, item)
-}
-
-/// The role classes the requesting Actor would gain for itself.
-///
-/// `validate_work_item_transition` splits responsibility into executor
-/// (accountable_owner or assignee) and closer (accountable_owner or reviewer).
-/// Gaining a class you did not already hold is self-elevation, and that
-/// includes an Actor which already holds the *other* class: letting an
-/// assignee take the reviewer seat would let one Actor both do and sign off
-/// its own work, which is the separation of duties `work_item.transition`
-/// exists to enforce.
-///
-/// `approver` is intentionally absent. It is gated as responsibility, but it
-/// is not a transition role: approvals authorize on
-/// `Approval.required_approver_refs`, never on `WorkItem.approver`, so naming
-/// yourself approver grants no executor or closer standing.
-fn self_elevated_roles(
-    actor: &ActorRef,
-    previous: &WorkItem,
-    target: &WorkItem,
-) -> Vec<&'static str> {
-    let mut gained = Vec::new();
-    if is_work_item_executor(actor, target) && !is_work_item_executor(actor, previous) {
-        gained.push("executor");
-    }
-    if is_work_item_closer(actor, target) && !is_work_item_closer(actor, previous) {
-        gained.push("closer");
-    }
-    gained
-}
-
-/// The responsibility fields through which the requesting Actor wrote itself
-/// in, used to make the denial name the exact seats it tried to take.
-fn self_granted_fields(
-    actor: &ActorRef,
-    previous: &WorkItem,
-    target: &WorkItem,
-) -> Vec<&'static str> {
-    let mut fields = Vec::new();
-    if target.accountable_owner == *actor && previous.accountable_owner != *actor {
-        fields.push("accountable_owner");
-    }
-    if target.assignees.contains(actor) && !previous.assignees.contains(actor) {
-        fields.push("assignees");
-    }
-    if target.reviewer.as_ref() == Some(actor) && previous.reviewer.as_ref() != Some(actor) {
-        fields.push("reviewer");
-    }
-    fields
-}
-
-/// Explicit, policy-named update authority. The Actor ledger must name this
-/// exact ActionPolicyDefinition id, or the company admin permission. The
-/// blanket `company.records.write` that every records author holds never
-/// satisfies this, which is what keeps the exemption declared in policy
-/// instead of implied by having any write permission at all.
-fn holds_named_update_authority(
-    store: &HarnessStore,
-    actor_ref: &ActorRef,
-    policy_ref: &str,
-) -> Result<bool, ApiError> {
-    let actor = store
-        .latest_actor(actor_ref)?
-        .ok_or_else(|| ApiError::not_found(format!("actor:{}", actor_ref.actor_id)))?;
-    let names = |refs: &[String]| {
-        refs.iter()
-            .any(|value| value == policy_ref || value == COMPANY_OS_ADMIN_PERMISSION)
-    };
-    Ok(match actor {
-        CompanyActor::Human(actor) => {
-            names(&actor.permission_policy_refs) || names(&actor.authority_policy_refs)
-        }
-        CompanyActor::Agent(actor) => names(&actor.permission_policy_refs),
-        CompanyActor::External(actor) => names(&actor.restricted_permission_refs),
-        CompanyActor::Service(actor) => names(&actor.permission_policy_refs),
-    })
-}
-
-fn responsibility_snapshot(item: &WorkItem) -> Value {
-    json!({
-        "accountable_owner": item.accountable_owner,
-        "assignees": item.assignees,
-        "contributors": item.contributors,
-        "reviewer": item.reviewer,
-        "approver": item.approver,
-    })
-}
-
-/// Gate every responsibility rewrite on explicit authority, and forbid
-/// self-elevation outright.
-///
-/// Two paths stay open: an Actor that already owns, is assigned to, or reviews
-/// the WorkItem may re-route it, and an Actor holding explicit policy-named
-/// update authority may perform governed routing.
-///
-/// Neither path may hand the requesting Actor an executor or closer role class
-/// it did not already hold. That check runs first and applies to controllers
-/// too, so `work_item.update` can never be used to pass a
-/// `work_item.transition` ownership check the Actor would otherwise fail — an
-/// assignee cannot take the reviewer seat and then close its own work, and a
-/// reviewer cannot take the assignee seat and then execute it.
-///
-/// Scope boundary, stated rather than implied: the policy-named path is
-/// per-definition/module, not per-record. `validate_definition_scope` only
-/// requires the WorkItem's `source_document_ref` to sit under the definition's
-/// module, so holding `page-X:work_item.update` is responsibility-rewrite
-/// authority over *every* WorkItem in module X, and `company_os.admin` is a
-/// company-wide exemption. True per-record authority needs the
-/// `ScopedPermissionGrant` broker (ADR 0047), which is not implemented.
-fn require_work_item_responsibility_authority(
-    store: &HarnessStore,
-    command: &ActionCommand,
-    previous: &WorkItem,
-    target: &WorkItem,
-) -> Result<(), ApiError> {
-    let changed = changed_responsibility_fields(previous, target);
-    if changed.is_empty() {
-        return Ok(());
-    }
-    let requester = &command.requested_by;
-    let elevated = self_elevated_roles(requester, previous, target);
-
-    // Checked before both authority paths, and applied even to an Actor that
-    // already controls the WorkItem, so routing work to someone else stays
-    // separable from taking the work.
-    if !elevated.is_empty() {
-        let seats = self_granted_fields(requester, previous, target);
-        return Err(deny_work_item_update(
-            store,
-            command,
-            previous,
-            target,
-            &changed,
-            "authority_laundering",
-            format!(
-                "Actor {} cannot use work_item.update to grant itself {} standing on \
-                 WorkItem {} by writing itself into {}: work_item.update must never \
-                 create the ownership that work_item.transition checks, and an Actor \
-                 that holds one of the executor/closer roles may not take the other",
-                requester.actor_id,
-                elevated.join(" and "),
-                previous.id,
-                seats.join(", ")
-            ),
-        ));
-    }
-    if controls_work_item(requester, previous) {
-        return Ok(());
-    }
-    if holds_named_update_authority(store, requester, &command.policy_ref)? {
-        return Ok(());
-    }
-    Err(deny_work_item_update(
-        store,
-        command,
-        previous,
-        target,
-        &changed,
-        "missing_update_authority",
-        format!(
-            "Actor {} does not own this WorkItem responsibility update: changing {} on \
-             WorkItem {} requires being its accountable_owner, an assignee, or its \
-             reviewer, or holding explicit update authority for policy {}",
-            requester.actor_id,
-            changed.join(", "),
-            previous.id,
-            command.policy_ref
-        ),
-    ))
-}
-
-/// Record a governed denial durably, then return it.
-///
-/// A refused responsibility rewrite must leave the same reconstructable trail
-/// as an executed one, so the attempt is claimed and driven to `Rejected` with
-/// a terminal AuditEvent naming the Actor, the WorkItem, the refused fields,
-/// and the previous and requested role refs.
-fn deny_work_item_update(
-    store: &HarnessStore,
-    command: &ActionCommand,
-    previous: &WorkItem,
-    target: &WorkItem,
-    changed: &[&'static str],
-    denial_kind: &str,
-    reason: String,
-) -> ApiError {
-    let detail = json!({
-        "command_name": command.command_name,
-        "policy_ref": command.policy_ref,
-        "target_id": previous.id,
-        "denial_kind": denial_kind,
-        "denied_reason": reason,
-        "requested_by": command.requested_by,
-        "required_permission": command.required_permission,
-        "rejected_fields": changed,
-        "previous_responsibility": responsibility_snapshot(previous),
-        "requested_responsibility": responsibility_snapshot(target),
-    });
-    match record_action_denial(store, command, &detail) {
-        Ok(()) => ApiError::forbidden(reason),
-        Err(error) => error,
-    }
-}
-
-/// Drive one refused ActionCommand to a durable `Rejected` terminal state with
-/// its denial AuditEvent. Replay of an already-denied command id is a no-op so
-/// the terminal row stays immutable.
-///
-/// The denial id is reserved in the same claim that records the attempt, and
-/// the terminal row plus its evidence are written through
-/// `reject_action_command_atomic`, the same all-or-nothing invariant the
-/// executed/failed path uses. A refused command therefore cannot become
-/// terminal without its denial evidence.
-fn record_action_denial(
-    store: &HarnessStore,
-    command: &ActionCommand,
-    detail: &Value,
-) -> Result<(), ApiError> {
-    let denial_audit_id = format!("{}:rejected", command.id);
-    let mut denied = command.clone();
-    denied.status = ActionCommandStatus::Requested;
-    match store.claim_action_command_with_audit_reservations(
-        &denied,
-        std::slice::from_ref(&denial_audit_id),
-    )? {
-        ActionCommandClaimResult::Claimed(_) => {}
-        ActionCommandClaimResult::Replay(existing) => {
-            if existing.status != ActionCommandStatus::Requested {
-                return Ok(());
-            }
-        }
-        ActionCommandClaimResult::Conflict(existing) => {
-            return Err(ApiError::conflict(format!(
-                "ActionCommand id {} already belongs to {}",
-                existing.id, existing.command_name
-            )))
-        }
-    }
-    let occurred_at = now_string();
-    denied.audit_event_refs.push(denial_audit_id.clone());
-    denied.status = ActionCommandStatus::Rejected;
-    denied.completed_at = Some(occurred_at.clone());
-    let event = AuditEvent {
-        id: denial_audit_id,
-        action_command_id: command.id.clone(),
-        event_kind: AuditEventKind::Failed,
-        actor_ref: command.requested_by.clone(),
-        subject_ref: command.subject_ref.clone(),
-        detail: detail.clone(),
-        evidence_refs: Vec::new(),
-        occurred_at,
-    };
-    store.reject_action_command_atomic(&denied, std::slice::from_ref(&event))?;
-    Ok(())
-}
-
-fn validate_work_item_update(
-    store: &HarnessStore,
-    command: &ActionCommand,
-    record: &Value,
-) -> Result<(), ApiError> {
-    let target: WorkItem = parse(record)?;
-    if command.subject_ref.kind != EntityKind::WorkItem || command.subject_ref.id != target.id {
-        return Err(ApiError::forbidden(
-            "work_item.update subject must be the WorkItem being updated",
-        ));
-    }
-    let previous = store
-        .latest_work_items()?
-        .into_iter()
-        .find(|candidate| candidate.id == target.id)
-        .ok_or_else(|| ApiError::not_found(format!("WorkItem:{}", target.id)))?;
-    // Authority is decided before shape. A refused responsibility rewrite must
-    // be denied and recorded even when the same payload is malformed in some
-    // other way, so the denial evidence is never lost to an earlier 409.
-    require_work_item_responsibility_authority(store, command, &previous, &target)?;
-    if previous.status != target.status {
-        return Err(ApiError::conflict(
-            "work_item.update cannot change lifecycle status; use work_item.transition",
-        ));
-    }
-    // `submitted_by` and `requested_by` are source accountability: they record
-    // who raised the work and on whose behalf. `work_item.transition` already
-    // treats both as immutable, so `work_item.update` must not become the
-    // forgery path for them.
-    if previous.created_at != target.created_at
-        || previous.completed_at != target.completed_at
-        || previous.submitted_by != target.submitted_by
-        || previous.requested_by != target.requested_by
-        || previous.result_document_ref != target.result_document_ref
-        || previous.result_record_refs != target.result_record_refs
-        || previous.approval_refs != target.approval_refs
-        || previous.evidence_refs != target.evidence_refs
-        || previous.artifact_refs != target.artifact_refs
-        || previous.outcome_summary != target.outcome_summary
-        || previous.execution_refs != target.execution_refs
-    {
-        return Err(ApiError::conflict(
-            "work_item.update cannot change request provenance, lifecycle result, approval, evidence, artifact, or execution provenance",
-        ));
-    }
-    Ok(())
-}
-
-fn validate_assignment_create(
-    store: &HarnessStore,
-    command: &ActionCommand,
-    record: &Value,
-) -> Result<(), ApiError> {
-    let assignment: Assignment = parse(record)?;
-    if command.subject_ref.kind != EntityKind::WorkItem
-        || command.subject_ref.id != assignment.work_item_id
-    {
-        return Err(ApiError::forbidden(
-            "assignment.append subject must be its WorkItem",
-        ));
-    }
-    if store
-        .latest_assignments()?
-        .iter()
-        .any(|row| row.id == assignment.id)
-    {
-        return Err(ApiError::conflict(format!(
-            "Assignment {} already exists",
-            assignment.id
-        )));
-    }
-    Ok(())
 }
 
 fn validate_commitment_proposal(
@@ -3210,14 +2280,14 @@ fn validate_commitment_proposal(
     }
     let linked_to_work = store.latest_relations()?.iter().any(|relation| {
         commitment.relation_ids.contains(&relation.id)
-            && ((relation.from_ref.kind == EntityKind::WorkItem
+            && ((relation.from_ref.kind == EntityKind::Work
                 && relation.from_ref.id == command.subject_ref.id)
-                || (relation.to_ref.kind == EntityKind::WorkItem
+                || (relation.to_ref.kind == EntityKind::Work
                     && relation.to_ref.id == command.subject_ref.id))
     });
     if !linked_to_work {
         return Err(ApiError::validation(
-            "commitment.propose requires a Relation linking the Commitment context to its WorkItem",
+            "commitment.propose requires a Relation linking the Commitment context to its Work",
         ));
     }
     Ok(())
@@ -3388,143 +2458,6 @@ fn validate_approval_decision(
     require_approval_authority(store, &command.requested_by, &approval.policy_ref)
 }
 
-fn validate_work_item_transition(
-    store: &HarnessStore,
-    command: &ActionCommand,
-    record: &Value,
-) -> Result<(), ApiError> {
-    let target: WorkItem = parse(record)?;
-    if command.subject_ref.kind != EntityKind::WorkItem || command.subject_ref.id != target.id {
-        return Err(ApiError::forbidden(
-            "work_item.transition subject must be the WorkItem being transitioned",
-        ));
-    }
-    let previous = store
-        .latest_work_items()?
-        .into_iter()
-        .find(|candidate| candidate.id == target.id)
-        .ok_or_else(|| ApiError::not_found(format!("WorkItem:{}", target.id)))?;
-    if previous.status == target.status {
-        return Err(ApiError::conflict(
-            "work_item.transition must change the WorkItem status",
-        ));
-    }
-    let allowed = matches!(
-        (previous.status, target.status),
-        (
-            WorkItemStatus::Submitted
-                | WorkItemStatus::Triaged
-                | WorkItemStatus::Accepted
-                | WorkItemStatus::Blocked,
-            WorkItemStatus::InProgress
-        ) | (
-            WorkItemStatus::InProgress,
-            WorkItemStatus::Blocked | WorkItemStatus::InReview | WorkItemStatus::WaitingForApproval
-        ) | (
-            WorkItemStatus::InReview,
-            WorkItemStatus::InProgress
-                | WorkItemStatus::WaitingForApproval
-                | WorkItemStatus::Completed
-        ) | (
-            WorkItemStatus::WaitingForApproval,
-            WorkItemStatus::InProgress | WorkItemStatus::Blocked | WorkItemStatus::Completed
-        )
-    );
-    if !allowed {
-        return Err(ApiError::conflict(format!(
-            "unsupported WorkItem transition {:?} -> {:?}",
-            previous.status, target.status
-        )));
-    }
-    let immutable_changed = previous.title != target.title
-        || previous.objective != target.objective
-        || previous.description != target.description
-        || previous.acceptance_criteria != target.acceptance_criteria
-        || previous.context_refs != target.context_refs
-        || previous.source_document_ref != target.source_document_ref
-        || previous.source_record_refs != target.source_record_refs
-        || previous.milestone_ref != target.milestone_ref
-        || previous.work_type != target.work_type
-        || previous.business_module_ref != target.business_module_ref
-        || previous.submitted_by != target.submitted_by
-        || previous.requested_by != target.requested_by
-        || previous.accountable_owner != target.accountable_owner
-        || previous.assignees != target.assignees
-        || previous.contributors != target.contributors
-        || previous.reviewer != target.reviewer
-        || previous.approver != target.approver
-        || previous.execution_mode != target.execution_mode
-        || previous.due_at != target.due_at
-        || previous.priority != target.priority
-        || previous.risk_level != target.risk_level
-        || previous.created_at != target.created_at;
-    if immutable_changed {
-        return Err(ApiError::conflict(
-            "work_item.transition cannot change business context or responsibility",
-        ));
-    }
-    let result_document_preserved = previous.result_document_ref.is_none()
-        || previous.result_document_ref == target.result_document_ref;
-    let preserves = |old: &[String], next: &[String]| old.iter().all(|item| next.contains(item));
-    if !result_document_preserved
-        || !preserves(&previous.result_record_refs, &target.result_record_refs)
-        || !preserves(&previous.approval_refs, &target.approval_refs)
-        || !preserves(&previous.evidence_refs, &target.evidence_refs)
-        || !preserves(&previous.artifact_refs, &target.artifact_refs)
-        || !previous
-            .deliverable_refs
-            .iter()
-            .all(|item| target.deliverable_refs.contains(item))
-        || !target.execution_refs.starts_with(&previous.execution_refs)
-    {
-        return Err(ApiError::conflict(
-            "work_item.transition cannot remove or replace result, evidence, artifact, or execution provenance",
-        ));
-    }
-    let executor = command.requested_by == previous.accountable_owner
-        || previous.assignees.contains(&command.requested_by);
-    let closer = command.requested_by == previous.accountable_owner
-        || previous.reviewer.as_ref() == Some(&command.requested_by);
-    if (target.status == WorkItemStatus::Completed && !closer)
-        || (target.status != WorkItemStatus::Completed && !executor)
-    {
-        return Err(ApiError::forbidden(
-            "requesting Actor does not own this WorkItem transition",
-        ));
-    }
-    if target.status == WorkItemStatus::InReview {
-        let has_result =
-            target.result_document_ref.is_some() || !target.result_record_refs.is_empty();
-        let has_evidence = !target.evidence_refs.is_empty() || !target.artifact_refs.is_empty();
-        let has_summary = target
-            .outcome_summary
-            .as_deref()
-            .is_some_and(|value| !value.trim().is_empty());
-        if !has_result || !has_evidence || !has_summary {
-            return Err(ApiError::validation(
-                "entering in_review requires a durable result destination, evidence or artifacts, and an outcome summary",
-            ));
-        }
-    }
-    if target.status == WorkItemStatus::Completed {
-        let approvals = store.latest_approvals()?;
-        if target.approval_refs.iter().any(|id| {
-            !approvals
-                .iter()
-                .any(|approval| approval.id == *id && approval.status == ApprovalStatus::Approved)
-        }) {
-            return Err(ApiError::forbidden(
-                "completed WorkItem requires every linked Approval to be approved",
-            ));
-        }
-    } else if target.completed_at.is_some() {
-        return Err(ApiError::validation(
-            "only a completed WorkItem may set completed_at",
-        ));
-    }
-    Ok(())
-}
-
 fn dispatch_declared_record(
     store: &HarnessStore,
     command: &ActionCommand,
@@ -3539,8 +2472,6 @@ fn dispatch_declared_record(
         "actor.append" => "actors",
         "org_unit.append" => "org-units",
         "membership.append" => "memberships",
-        "work_item.append" | "work_item.update" | "work_item.transition" => "work-items",
-        "assignment.append" => "assignments",
         "approval.request" | "approval.decide" => "approvals",
         "commitment.propose" | "commitment.append" => "commitments",
         "payment.append" => "payments",
@@ -3598,8 +2529,6 @@ fn resource_history(store: &HarnessStore, resource: &str) -> Result<Vec<Value>, 
         "org-units" => to_values(store.org_units()?),
         "memberships" => to_values(store.organization_memberships()?),
         "milestones" => to_values(store.milestones()?),
-        "work-items" => to_values(store.work_items()?),
-        "assignments" => to_values(store.assignments()?),
         "approvals" => to_values(store.approvals()?),
         "commitments" => to_values(store.commitments()?),
         "payments" => to_values(store.payments()?),
@@ -4200,7 +3129,7 @@ fn resolve_entity_embed_refs(store: &HarnessStore, page: &Value) -> Result<Value
     }
     let typed_records = store.latest_typed_records().map_err(ApiError::from)?;
     let views = store.latest_views().map_err(ApiError::from)?;
-    let work_items = store.latest_work_items().map_err(ApiError::from)?;
+    let works = store.latest_works().map_err(ApiError::from)?;
     let mut resolved = serde_json::Map::new();
     for (kind, id) in targets {
         let entry = match kind.as_str() {
@@ -4224,12 +3153,14 @@ fn resolve_entity_embed_refs(store: &HarnessStore, page: &Value) -> Result<Value
                     "mode": serde_json::to_value(view.mode).unwrap_or(json!(null)),
                 })
             }),
-            "work_item" => work_items.iter().find(|item| item.id == id).map(|item| {
+            "work" => works.iter().find(|work| work.id == id).map(|work| {
                 json!({
-                    "kind": "work_item",
+                    "kind": "work",
                     "found": true,
-                    "title": item.title,
-                    "status": serde_json::to_value(item.status).unwrap_or(json!(null)),
+                    "title": work.title,
+                    "phase": work.phase,
+                    "condition": work.condition,
+                    "resolution": work.resolution,
                 })
             }),
             _ => None,

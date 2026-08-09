@@ -23,7 +23,7 @@
     },
     "entityKind": {
       "enum": [
-        "actor", "document", "typed_record", "business_module", "work_item",
+        "actor", "document", "typed_record", "business_module", "work",
         "approval", "financial_record", "evidence", "execution"
       ]
     },
@@ -73,7 +73,7 @@
           "enum": [
             "rich_text", "heading", "list", "checklist", "callout", "code", "media",
             "attachment", "simple_table", "comment", "mention", "embedded_view", "metric",
-            "decision", "work_item", "relation_summary"
+            "decision", "work", "relation_summary"
           ]
         },
         "position": { "type": "integer", "minimum": 0 },

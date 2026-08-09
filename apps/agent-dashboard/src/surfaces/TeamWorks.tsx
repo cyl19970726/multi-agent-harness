@@ -10,7 +10,7 @@ import {
   type TeamWorkDemandClass,
   type TeamWorksFilters,
 } from "@/model/teamWorksSelectors";
-import type { DashboardSnapshot, Work } from "@/types";
+import { workLifecycleLabel, type DashboardSnapshot, type Work } from "@/types";
 
 interface TeamWorksProps {
   snapshot: DashboardSnapshot;
@@ -122,13 +122,14 @@ export function TeamWorks({ snapshot, selection, loading = false, onSelectionCha
 }
 
 function TeamWorkRow({ row, onOpen }: { row: ReturnType<typeof buildTeamWorksModel>["rows"][number]; onOpen: () => void }) {
-  const statusLabel = row.work.status === "review" ? "Awaiting Host acceptance" : row.work.status;
+  const lifecycle = workLifecycleLabel(row.work);
+  const statusLabel = lifecycle === "review" ? "Awaiting Host acceptance" : lifecycle;
   const created = row.work.created_at ? formatShortDate(row.work.created_at) : undefined;
   const due = row.work.due_at ? formatShortDate(row.work.due_at) : undefined;
   return (
     <button type="button" onClick={onOpen} className="group grid min-h-20 w-full gap-3 rounded-xl border border-border bg-card p-3 text-left shadow-sm transition-colors hover:border-primary/35 sm:grid-cols-[minmax(0,1fr)_auto]" data-team-work-id={row.work.id}>
       <span className="min-w-0">
-        <span className="flex flex-wrap items-center gap-2"><span className="font-semibold text-foreground">{row.work.title}</span><Badge tone={workTone(row.work.status)}>{statusLabel}</Badge><Badge tone="muted">{row.work.priority}</Badge></span>
+        <span className="flex flex-wrap items-center gap-2"><span className="font-semibold text-foreground">{row.work.title}</span><Badge tone={workTone(lifecycle)}>{statusLabel}</Badge><Badge tone="muted">{row.work.priority}</Badge></span>
         <span className="mt-1 block break-words text-xs text-muted-foreground">{row.teamPath} · {row.ownerLabel ? `Owner ${row.ownerLabel}` : "Unassigned"}{created ? ` · Created ${created}` : ""}{due ? ` · Due ${due}` : ""}</span>
         <span className="mt-1 block break-all font-mono text-[9px] text-muted-foreground">{row.work.id} · {row.sourceLabel}</span>
         {row.work.blocker_reason && <span className="mt-2 flex items-start gap-1.5 text-xs text-status-bad"><AlertTriangle className="mt-0.5 size-3.5 shrink-0" />{row.work.blocker_reason}</span>}
@@ -155,10 +156,10 @@ function isDemand(value?: string): value is TeamWorkDemandClass {
 }
 
 function workTone(status: string): "good" | "warn" | "bad" | "info" | "muted" {
-  if (status === "done") return "good";
+  if (status === "accepted") return "good";
   if (status === "blocked") return "bad";
   if (status === "review") return "warn";
-  if (status === "in_progress") return "info";
+  if (status === "active") return "info";
   return "muted";
 }
 

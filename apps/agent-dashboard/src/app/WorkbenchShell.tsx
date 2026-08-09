@@ -687,7 +687,6 @@ function AppRail({
     onSelectionChange({
       surface: id,
       documentId: undefined,
-      workItemId: undefined,
       standingAgentId: undefined,
       personId: undefined,
       proposalId: undefined,
@@ -1077,9 +1076,7 @@ function nativeContextLabel(model: WorkbenchModel, selection: SelectionState): s
       if (selection.proposalId === "governance-proposal-trademark-management") return "Create Trademark Management module";
       return selection.personId ?? selection.standingAgentId ?? selection.proposalId ?? "Mixed organization";
     case "work":
-      return selection.workItemId === "workitem-trademark-filing-brand-a"
-        ? "Trademark filing for Brand A"
-        : selection.workItemId ?? "Company work";
+      return selection.teamWorkId ?? "Company work";
     case "approvals":
       return selection.approvalId === "approval-trademark-filing-fee-cn-2026-018"
         ? "Approve trademark filing fee"

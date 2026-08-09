@@ -61,7 +61,7 @@ check(!organization.includes("canonicalFixture") && !organization.includes("/fix
 
 check(works.includes('data-team-work-demand="unassigned"') || works.includes('data-team-work-demand={group.id}'), "Team Works renders demand classes as first-class groups");
 check(works.includes("Awaiting Host acceptance") && works.includes("Delegated demand unavailable"), "Team Works uses Host acceptance wording and does not infer delegation");
-check(workSelectors.includes("source_work_item_ref") && workSelectors.includes("parent_work_id") && workSelectors.includes("team_run_id"), "Team Works aggregation derives from implemented wire fields");
+check(workSelectors.includes("parent_work_id") && workSelectors.includes("team_run_id") && workSelectors.includes("phase") && workSelectors.includes("condition"), "Team Works aggregation derives from implemented unified wire fields");
 check(!works.includes("canonicalFixture") && !workSelectors.includes("canonicalFixture"), "Team Works aggregate contains no fixture fallback");
 
 check(warRoom.includes("Organization") && warRoom.includes("data-team-child-count") && warRoom.includes("teamWorkId"), "War Room reuses the existing surface with Organization breadcrumb, child Teams, and deep-linked Work");
@@ -94,7 +94,7 @@ const durableOnlyRoot = {
   member_runs: [],
   works: [{
     id: "work-foundation", team_run_id: "run-foundation", title: "Read-model seam",
-    context_markdown: "", completion_criteria_markdown: "", status: "open",
+    context_markdown: "", completion_criteria_markdown: "", phase: "open", condition: "normal", resolution: null,
     owner_member_id: "foundation-lead", claim_mode: "host_assign", eligible_member_ids: [],
     prerequisite_work_ids: [], priority: "normal", created_by_actor: { kind: "host", id: "runtime-host" },
     artifact_refs: [], check_refs: [], version: 1, created_at: "1", updated_at: "2",

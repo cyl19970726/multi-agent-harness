@@ -759,13 +759,9 @@ export interface TeamMessage {
   created_at?: string;
 }
 
-export type WorkStatus =
-  | "open"
-  | "in_progress"
-  | "blocked"
-  | "review"
-  | "done"
-  | "cancelled";
+export type WorkPhase = "open" | "active" | "review" | "closed";
+export type WorkCondition = "normal" | "blocked" | "on_hold";
+export type WorkResolution = "accepted" | "cancelled" | "failed";
 
 export interface Work {
   id: string;
@@ -773,11 +769,12 @@ export interface Work {
   /** Durable AgentTeam scope (ADR 0052, §4.1). Absent on legacy rows. */
   team_id?: string | null;
   parent_work_id?: string | null;
-  source_work_item_ref?: string | null;
   title: string;
   context_markdown: string;
   completion_criteria_markdown: string;
-  status: WorkStatus | string;
+  phase: WorkPhase | string;
+  condition: WorkCondition | string;
+  resolution?: WorkResolution | string | null;
   owner_member_id?: string | null;
   active_member_run_id?: string | null;
   claim_mode: "host_assign" | "team_claim" | string;
@@ -794,6 +791,21 @@ export interface Work {
   updated_at: string;
   /** Optional deadline (§4.1). Rendered in the Company Work view when present. */
   due_at?: string | null;
+}
+
+export function workLifecycleLabel(work?: Work | null): string {
+  if (!work) return "unassigned";
+  if (work.condition !== "normal") return work.condition;
+  if (work.phase === "closed") return work.resolution ?? "closed";
+  return work.phase;
+}
+
+export function workIsTerminal(work: Work): boolean {
+  return work.phase === "closed";
+}
+
+export function workIsAccepted(work: Work): boolean {
+  return work.phase === "closed" && work.resolution === "accepted";
 }
 
 export interface WorkEvent {

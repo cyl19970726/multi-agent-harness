@@ -139,7 +139,7 @@ verdict.
 This is the Wave 2 scenario exactly: no proxy, blocked direct egress, provider
 answers `403`, and the identical request succeeds once the proxy is exported.
 Calling that account `unauthorized` would gate a healthy account behind a
-missing environment variable — the misdiagnosis this WorkItem exists to
+missing environment variable — the misdiagnosis this TeamWork exists to
 prevent. It would also contradict the live canary, which returns `unknown` for
 the same failure; both paths share one diagnosis string so they cannot drift.
 

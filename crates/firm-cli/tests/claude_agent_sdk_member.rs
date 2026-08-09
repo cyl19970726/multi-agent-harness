@@ -445,7 +445,7 @@ fn agent_sdk_member_consumes_a_message_that_arrives_after_the_queue_emptied() {
         1,
         "one durable Work owns the first round: {works:?}"
     );
-    assert_eq!(works[0]["status"], "review");
+    assert_eq!(works[0]["phase"], "review");
     assert_eq!(
         follow_up["work_id"], works[0]["id"],
         "the later conversation links to Work without replacing ownership"
@@ -672,7 +672,7 @@ fn a_silent_provider_turn_is_a_provider_error_and_stays_reconstructable() {
         "one Work must remain assigned: {detail_json}"
     );
     let work = &works[0];
-    assert_eq!(work["status"], serde_json::json!("open"));
+    assert_eq!(work["phase"], serde_json::json!("open"));
     assert!(
         work["id"].as_str().is_some_and(|id| !id.is_empty()),
         "the Work identity must remain reconstructable: {work}"

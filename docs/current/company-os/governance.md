@@ -99,7 +99,7 @@ An approved module design produces linked objects, not just a folder:
 ModuleDesign
   -> document hierarchy and templates
   -> typed records and relation rules
-  -> views, metrics, and WorkItem routes
+  -> views, metrics, and TeamWork routes
   -> Actor/organization responsibilities
   -> permissions, approvals, retention, and audit policy
 ```

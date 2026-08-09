@@ -14,7 +14,7 @@ in [Member Continuation Model](member-continuation-model.md). Runtime lifecycle,
 mail delivery, and continuation are related but separate contracts.
 
 Provider records are execution infrastructure. They do not own company
-identity, organization authority, WorkItem responsibility, Mission/Wave
+identity, organization authority, TeamWork responsibility, Mission/Wave
 acceptance or business results. The owning executor and product systems keep
 those truths.
 
@@ -29,7 +29,7 @@ without inventing lifecycle control.
 Final acceptance for this mechanism:
 
 ```text
-select Mission-linked execution, Host-plan context, or direct WorkItem action
+select Mission-linked execution, Host-plan context, or direct TeamWork action
   -> start or resume AgentRuntime
   -> deliver bounded Work or executor-native request
   -> bind provider-native session
@@ -42,7 +42,7 @@ select Mission-linked execution, Host-plan context, or direct WorkItem action
 
 | Question | Runtime answer |
 | --- | --- |
-| What requested execution? | Mission-linked run, Host action, Dynamic Workflow invocation, or linked WorkItem execution reference. |
+| What requested execution? | Mission-linked run, Host action, Dynamic Workflow invocation, or linked TeamWork execution reference. |
 | Who or what is acting? | A run-scoped member, Host, optional Standing Agent link, human/service actor or external provider identity. |
 | What is running? | `AgentRuntime` process/session/control endpoint and health. |
 | What did the provider do? | Provider-native session via `NativeSessionRef`; ephemeral adapter projection for UI. |
@@ -69,7 +69,7 @@ contract does.
 | incompatible or unavailable native session | keep the old binding as historical evidence and start a new native session under an explicit replacement MemberRun; never replay Harness mail as a transcript |
 
 At no point may both generations drive the same writable Workspace. Durable
-Work/WorkItem ownership, Message correlation, Standing Agent identity, and accepted
+Work/TeamWork ownership, Message correlation, Standing Agent identity, and accepted
 evidence survive the transition. Provider upgrades still require explicit
 Human confirmation under ADR 0031; an ordinary Harness build update is not
 permission to upgrade Codex, Claude Code, or Kimi.
@@ -79,7 +79,7 @@ permission to upgrade Codex, Claude Code, or Kimi.
 | Object | Owns | Refuses |
 | --- | --- | --- |
 | `AgentMember` | compatibility/runtime configuration for an addressable agent; may be explicitly linked to a Standing Agent or MemberRun | automatic company identity, organization authority, or provider transcript as identity |
-| `AgentRuntime` | lifecycle, pid/socket/control endpoint, protocol and delivery health | Work/WorkItem or acceptance ownership |
+| `AgentRuntime` | lifecycle, pid/socket/control endpoint, protocol and delivery health | Work/TeamWork or acceptance ownership |
 | `WorkDelivery` | reliable delivery of one WorkEvent and Work id/version to a Member runtime | Work ownership or authored conversation |
 | `MessageDelivery` | delivery request for authored conversation and terminal delivery state | Work ownership or status |
 | `TeamSupervisorLease` | single cross-process owner generation for TeamRun controls and delivery claims | provider transcript or proof that an uncertain claim was consumed |
@@ -188,7 +188,7 @@ WorkspaceProvider
 Codex, Claude Code, Kimi, OpenClaw, a Permission Agent, or a future cloud
 provider should implement these boundaries without changing Mission/Wave,
 executor-native records, TeamMessage, PendingInteraction, outcome, artifact,
-WorkItem, Approval, gate, or organization semantics.
+TeamWork, Approval, gate, or organization semantics.
 
 ## Queue And Context Policy
 
@@ -279,7 +279,7 @@ handle is released, so a lease/receiver race cannot silently resurrect the
 member.
 
 The delivered provider input must carry a stable Harness envelope containing
-the requesting Mission/Wave/run or WorkItem reference, sender, recipient,
+the requesting Mission/Wave/run or TeamWork reference, sender, recipient,
 delivery attempt and content as applicable. Provider-specific transcript text
 is not a substitute for this correlation envelope.
 
