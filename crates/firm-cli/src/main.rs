@@ -176,6 +176,10 @@ enum StoreSource {
 pub(crate) struct ResolvedStore {
     root: PathBuf,
     source: StoreSource,
+    /// True only when this invocation selected its Project Binding with the
+    /// global `--project` flag. Environment/current/default selections remain
+    /// ambient context and are not operator authorization for scoped writes.
+    project_selection_explicit: bool,
     pub(crate) context: Option<harness_core::ProjectContext>,
     pub(crate) company_context: Option<company_store::CompanyContext>,
     pub(crate) execution_space_context: Option<ExecutionSpace>,
@@ -192,15 +196,12 @@ impl ResolvedStore {
             .as_ref()
             .map(|context| context.id.clone())
             .or_else(|| {
-                self.execution_space_context
-                    .as_ref()
-                    .and_then(|space| space.default_project_binding_id.clone())
-            })
-            .or_else(|| {
-                project::read_metadata(&self.root)
-                    .ok()
-                    .flatten()
-                    .map(|metadata| metadata.project_id)
+                self.execution_space_context.is_none().then(|| {
+                    project::read_metadata(&self.root)
+                        .ok()
+                        .flatten()
+                        .map(|metadata| metadata.project_id)
+                })?
             })?;
         let store_id = self
             .execution_space_context
@@ -239,6 +240,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
         return Ok(ResolvedStore {
             root: PathBuf::from(path),
             source: StoreSource::StoreFlag,
+            project_selection_explicit: false,
             context: None,
             company_context: None,
             execution_space_context: None,
@@ -249,6 +251,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             return Ok(ResolvedStore {
                 root: PathBuf::from(root),
                 source: StoreSource::WorkflowChildEnv,
+                project_selection_explicit: false,
                 context: None,
                 company_context: None,
                 execution_space_context: None,
@@ -263,6 +266,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             } else {
                 StoreSource::FirmRootEnv
             },
+            project_selection_explicit: false,
             context: None,
             company_context: None,
             execution_space_context: None,
@@ -276,6 +280,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             return Ok(ResolvedStore {
                 root: PathBuf::from(".harness"),
                 source: StoreSource::CwdWalkUp,
+                project_selection_explicit: false,
                 context: None,
                 company_context: None,
                 execution_space_context: None,
@@ -298,6 +303,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             return Ok(ResolvedStore {
                 root: ctx.store_root.clone(),
                 source: selector_source,
+                project_selection_explicit: false,
                 context: None,
                 company_context: Some(ctx),
                 execution_space_context: None,
@@ -310,6 +316,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             return Ok(ResolvedStore {
                 root: ctx.store_root.clone(),
                 source: StoreSource::CompanyCurrent,
+                project_selection_explicit: false,
                 context: None,
                 company_context: Some(ctx),
                 execution_space_context: None,
@@ -326,6 +333,12 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             None => (None, StoreSource::ProjectFlag),
         },
     };
+    // Only a command-line flag is an explicit authorization for an admission
+    // scoped into an Execution Space. FIRM_PROJECT/HARNESS_PROJECT remain useful
+    // ambient selectors for ordinary commands, but are intentionally insufficient
+    // for this append-only trust decision.
+    let project_selection_explicit =
+        project_selector.is_some() && selector_source == StoreSource::ProjectFlag;
     let explicit_project_context = match project_selector.as_deref() {
         Some(selector) => Some(
             resolve_project_selector(&firm_home, selector)
@@ -358,6 +371,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
         return Ok(ResolvedStore {
             root: context.store_root.clone(),
             source,
+            project_selection_explicit,
             context: Some(context),
             company_context: None,
             execution_space_context: None,
@@ -394,6 +408,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
         return Ok(ResolvedStore {
             root: space.store_root.clone(),
             source: space_source,
+            project_selection_explicit,
             context: project_context,
             company_context: None,
             execution_space_context: Some(space),
@@ -406,6 +421,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
         return Ok(ResolvedStore {
             root: context.store_root.clone(),
             source: selector_source,
+            project_selection_explicit,
             context: Some(context),
             company_context: None,
             execution_space_context: None,
@@ -456,6 +472,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
                         return Ok(ResolvedStore {
                             root: target,
                             source: StoreSource::RegistryCurrent,
+                            project_selection_explicit: false,
                             context,
                             company_context: None,
                             execution_space_context: None,
@@ -486,6 +503,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
                         return Ok(ResolvedStore {
                             root: found,
                             source: StoreSource::CwdWalkUp,
+                            project_selection_explicit: false,
                             context: None,
                             company_context: None,
                             execution_space_context: None,
@@ -504,6 +522,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
             return Ok(ResolvedStore {
                 root: ctx.store_root.clone(),
                 source: StoreSource::RegistryCurrent,
+                project_selection_explicit: false,
                 context: Some(ctx),
                 company_context: None,
                 execution_space_context: None,
@@ -516,6 +535,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
         return Ok(ResolvedStore {
             root: ctx.store_root.clone(),
             source: StoreSource::GlobalDefault,
+            project_selection_explicit: false,
             context: Some(ctx),
             company_context: None,
             execution_space_context: None,
@@ -526,6 +546,7 @@ fn resolve_store(args: &mut Vec<String>, command: Option<&str>) -> CliResult<Res
     Ok(ResolvedStore {
         root: PathBuf::from(".harness"),
         source: StoreSource::CwdWalkUp,
+        project_selection_explicit: false,
         context: None,
         company_context: None,
         execution_space_context: None,
@@ -8161,14 +8182,14 @@ fn provider_command(
     args: &[String],
 ) -> CliResult<()> {
     if matches!(args.first().map(String::as_str), Some("help" | "--help")) {
-        println!("harness provider admit --provider <name> --execution-mode <mode> --provider-version <version> --adapter-contract-version <version> --evidence <ref> [--evidence <ref>...] [--policy strict|advisory] [--actor <id>] [--json]");
+        println!("harness [--project <id|path>] provider admit --provider <name> --execution-mode <mode> --provider-version <version> --adapter-contract-version <version> --evidence <ref> [--evidence <ref>...] [--policy strict|advisory] [--actor <id>] [--json]\n\nWhen an Execution Space is resolved, the global --project flag is required; FIRM_PROJECT and ambient defaults are not explicit admission authorization.");
         return Ok(());
     }
     require_subcommand(args, "provider admit")?;
     match args[0].as_str() {
         "admit" => provider_admit_command(store, resolved, &args[1..]),
         other => Err(CliError::Usage(format!(
-            "unknown provider command: {other}; usage: harness provider admit --provider <name> --execution-mode <mode> --provider-version <version> --adapter-contract-version <version> --evidence <ref> [--policy strict|advisory] [--actor <id>] [--json]"
+            "unknown provider command: {other}; usage: harness [--project <id|path>] provider admit --provider <name> --execution-mode <mode> --provider-version <version> --adapter-contract-version <version> --evidence <ref> [--policy strict|advisory] [--actor <id>] [--json]"
         ))),
     }
 }
@@ -8211,6 +8232,13 @@ where
             )))
         }
     };
+
+    if resolved.execution_space_context.is_some() && !resolved.project_selection_explicit {
+        return Err(CliError::Usage(
+            "provider admission into an Execution Space requires an explicit global `--project <id|path>` flag; FIRM_PROJECT, ACTIVE_PROJECT, and the space default binding are ambient selectors and cannot authorize this scoped write; no admission was written"
+                .to_string(),
+        ));
+    }
 
     let mut profile = team_member_provider_profile_for_mode(&provider, Some(&execution_mode));
     if profile.execution_mode != execution_mode {
@@ -39410,9 +39438,11 @@ fn print_help() {
   member register|list|providers [--fail-on-review]
   member preflight [--provider <name>] [--execution-mode <mode>] [--canary]
                    [--timeout-s <n>] [--fail-on-unavailable] [--fail-on-review] [--json]
-  provider admit --provider <name> --execution-mode <mode> --provider-version <version>
+  [--project <id|path>] provider admit --provider <name> --execution-mode <mode> --provider-version <version>
                  --adapter-contract-version <version> --evidence <ref>
                  [--policy strict|advisory] [--actor <id>] [--json]
+      An active/selected Execution Space requires the global --project flag;
+      FIRM_PROJECT and ambient Project Binding defaults do not authorize admission.
   company init --id <company-id> [--name <name>]
   company list | company current | company switch <company-id> | company show [company-id]
   company migrate-from-project --from-project <project-id|path> --id <company-id> [--name <name>] [--force]
@@ -45226,6 +45256,7 @@ package:com.tencent.mm
         let resolved = ResolvedStore {
             root: root.clone(),
             source: StoreSource::StoreFlag,
+            project_selection_explicit: false,
             context: Some(ProjectContext {
                 id: project_id.into(),
                 project_root: root.clone(),
@@ -45291,6 +45322,7 @@ package:com.tencent.mm
         let resolved = ResolvedStore {
             root: root.clone(),
             source: StoreSource::StoreFlag,
+            project_selection_explicit: false,
             context: Some(ProjectContext {
                 id: project_id.into(),
                 project_root: root.clone(),
@@ -45325,6 +45357,65 @@ package:com.tencent.mm
         assert!(error
             .to_string()
             .contains("only an actually observed review-required"));
+        assert!(store
+            .provider_compatibility_admissions()
+            .unwrap()
+            .is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn provider_admit_execution_space_omission_fails_before_probe_or_write() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let root = std::env::temp_dir().join(format!(
+            "harness-provider-admit-explicit-project-test-{}",
+            generated_id("cli")
+        ));
+        let project_id = "ambient-project";
+        let store_id = "execution-space:space-a";
+        let store =
+            HarnessStore::new(&root).with_provider_compatibility_scope(project_id, store_id);
+        let resolved = ResolvedStore {
+            root: root.clone(),
+            source: StoreSource::SpaceCurrent,
+            project_selection_explicit: false,
+            context: Some(ProjectContext {
+                id: project_id.into(),
+                project_root: root.clone(),
+                store_root: root.clone(),
+                kind: ProjectKind::Repo,
+                is_git_repo: true,
+            }),
+            company_context: None,
+            execution_space_context: Some(ExecutionSpace {
+                id: "space-a".into(),
+                name: "Space A".into(),
+                store_root: root.clone(),
+                default_project_binding_id: Some(project_id.into()),
+                company_id: None,
+            }),
+        };
+        let args = vec![
+            "--provider".into(),
+            "codex".into(),
+            "--execution-mode".into(),
+            "codex_app_server".into(),
+            "--provider-version".into(),
+            "9.9.9".into(),
+            "--adapter-contract-version".into(),
+            "codex-app-server-v1".into(),
+            "--evidence".into(),
+            "evidence:explicit-project".into(),
+        ];
+        let probed = AtomicBool::new(false);
+        let error = provider_admit_command_with_probe(&store, &resolved, &args, |_| {
+            probed.store(true, Ordering::SeqCst);
+            Ok("9.9.9".to_string())
+        })
+        .expect_err("ambient Project Binding must not authorize a space admission");
+        assert!(error.to_string().contains("explicit global `--project"));
+        assert!(!probed.load(Ordering::SeqCst));
         assert!(store
             .provider_compatibility_admissions()
             .unwrap()
@@ -47081,6 +47172,7 @@ package:com.tencent.mm
         let resolved = ResolvedStore {
             root: root.clone(),
             source: StoreSource::StoreFlag,
+            project_selection_explicit: false,
             context: None,
             company_context: None,
             execution_space_context: None,

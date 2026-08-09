@@ -118,7 +118,7 @@ adds a version to `reviewed_provider_versions` and never claims source review.
 Operators create an admission with:
 
 ```text
-harness provider admit \
+harness --project <project-binding-id-or-path> provider admit \
   --provider <name> \
   --execution-mode <mode> \
   --provider-version <installed-version> \
@@ -126,6 +126,18 @@ harness provider admit \
   --evidence <ref> \
   [--policy strict|advisory] [--actor <id>] [--json]
 ```
+
+`--project` is a global flag and must appear before `provider`. Whenever store
+resolution selects an Execution Space (through `--space`, `FIRM_SPACE`, or the
+active-space marker), this command requires that flag on the current invocation.
+`FIRM_PROJECT`, `ACTIVE_PROJECT`, and the space's default Project Binding are
+ambient execution context, not explicit authorization for an append-only trust
+decision. Omitting the flag fails before probing or writing. The resulting scope
+is exactly the flag-selected Project Binding id plus the canonical selected
+Execution Space id; the command never silently substitutes the space default.
+When no Execution Space exists and resolution lands unambiguously on a legacy
+Project Store, the existing Project Binding default remains accepted and the
+scope is `project-store:<project-id>`.
 
 `provider admit` only records an observed tuple whose refreshed compatibility
 status is `review_required`. A source-reviewed `current` tuple needs no
