@@ -33,7 +33,7 @@ dedicated CLI.
 | Standing Agent runtime | `agent create/list/show/start/health/send/route-inbox/deliver/retry-delivery/reconcile-delivery/gateway/close` | Implemented | Current standing-agent operational CLI. `route-inbox` idempotently joins stable Agent-addressed mail to one active AgentTeam MemberRun through `AgentMessageRoute`; it does not collapse Agent identity, Team participation, or Company OS authority. |
 | Dynamic Workflow | `workflow list/run/run-script/get-output/patch/gc-worktrees/reap-workers/reap` | Implemented | WorkflowRun/WorkflowStep remain their own execution truth. |
 | Dashboard | `dashboard snapshot` | Implemented | Produces operator projection. |
-| Serve/API | `serve [--addr] [--once]`, `mcp`, `daemon start/status/stop`, `hook record` | Implemented | Local HTTP/API/MCP/daemon surfaces. |
+| Serve/API | `serve [--addr] [--once]`, `mcp`, `daemon start/status/stop`, `daemon serve`, `hook record` | Implemented | Local HTTP/API/MCP/daemon surfaces. `daemon start/status/stop` controls the Claude resident child pool. `daemon serve` runs the multi-TeamRun supervisor: `team-run start` delegates through its control socket when reachable and otherwise preserves the per-run daemon fallback; `team-run status` includes the aggregate daemon view. |
 | Historical migration | `legacy-goal-task export`, `legacy-goal-task verify` | Retired compatibility | Export/verify only. Current planning must use Mission plus the Mission Log; Wave remains readable only as historical context. |
 | Retired command families | old `goal`, `phase`, `task`, proposal/review/design surfaces | Retired compatibility | These fail explicitly and must not be used for new work. |
 
