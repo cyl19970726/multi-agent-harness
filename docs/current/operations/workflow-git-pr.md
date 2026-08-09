@@ -1,107 +1,136 @@
-# Git, PR, And Review Workflow
+# Repository Development: Spec, Git, PR, And Review
 
-This document defines how execution used during a Mission integrates file
-changes with Git, worktrees, pull requests, review, and Host plan decisions.
-Git owns repository facts; Harness owns execution attribution and Wave
-plan/outcome history.
+This document defines the repository delivery contract. Notion owns product
+intent and the canonical implementation Spec; GitHub owns executable issue and
+delivery facts; Git owns source history. Product TeamWork acceptance remains a
+separate runtime contract and is not replaced by developer self-review.
 
-## Native Flow
+## Canonical Flow
 
 ```text
-Mission
-  -> ordered Host-plan Wave
-  -> Host invokes Agent Team | Dynamic Workflow | direct Host work
-  -> executor run or observable Host work
-  -> isolated or explicitly direct file changes
-  -> diff / commit / PR evidence
-  -> execution outcome
-  -> explicit Host Wave advance
-  -> next Wave or Mission closeout
+Notion discussion
+  -> frozen implementation Spec
+  -> one umbrella GitHub Issue
+  -> one Primary Codex Session claims the Development Record
+  -> clean isolated worktree and one integration branch
+  -> implementation and focused checks
+  -> one PR linked to Spec and Issue
+  -> Completion Report on the frozen Candidate SHA
+  -> final-SHA self-review and required CI
+  -> narrow Host Gate when required
+  -> merge
+  -> Notion closeout and Issue closure
 ```
 
-Merging a PR does not advance a Wave, and advancing a Wave does not merge a PR.
-The Host records what outcome and useful artifacts/checks justified the plan
-change. The Wave does not own the execution run.
+There is one accountable owner for a development Wave. Internal checkpoints
+and temporary Sub-Agents are implementation details, not separately claimable
+repository tasks. Notion cannot launch a local Codex Session; the Session is
+started externally and records its own active Session id during claim.
 
-## Executor Boundaries
+## Truth Boundaries
 
-| Executor | Ownership truth | Git integration |
+| Surface | Owns | Does not own |
 | --- | --- | --- |
-| Agent Team | Work/WorkEvent responsibility plus submitted result and Host acceptance | members use disjoint worktrees/owned paths; Host integrates reviewed results |
-| Dynamic Workflow | WorkflowRun/WorkflowStep and WorkflowPatch | isolated writable leaves produce explicit apply/reject patches |
-| Host | observable Host outcome and artifacts | normal branch/commit/PR flow; native subagents remain implementation detail |
+| Notion Spec | intent, included scope, non-goals, acceptance, amendments | runtime status or review verdict |
+| Development Record | active Session, branch, base/candidate/merge SHA, links, CI and Host Gate status | a second Work lifecycle |
+| Execution Report | high-signal findings, difficulties, decisions, verification, completion claim | Spec changes or reviewer verdict |
+| Review Report | exact-SHA review revisions, findings, acceptance matrix, Host decision | implementation transcript |
+| GitHub Issue | executable repository context and closure target | long-term product mental model |
+| Pull Request | final diff, checks, technical discussion, merge fact | replacing the canonical Spec |
 
-The Harness must not synthesize a MemberRun or Work for a provider-native
-Host child it does not control.
+## Claim And Isolation
 
-## Branch And Worktree Policy
+Before editing:
 
-- Select the project explicitly before spawning writable work.
-- The project root determines the base revision; the centralized store remains
-  separate.
-- Concurrent file-changing lanes need distinct worktrees and disjoint owned
-  paths, or an explicit serialized integration plan.
-- Read-only work may share the project root only when the provider actually
-  enforces read-only access; otherwise isolate it.
-- Do not start direct writable work on a dirty shared project root.
-- A worktree diff is evidence, not an automatic merge authorization.
+1. Read the Development Playbook, Development Record, Spec, and Issue.
+2. Confirm the record is Ready and has no Active Session.
+3. Fetch the latest remote base and create a clean isolated worktree.
+4. Record the Primary Session id, branch, exact Base SHA, Execution Report,
+   Review Report, and `In Progress` stage.
+5. Re-read the record and stop if another Session owns it.
 
-No universal Mission branch or per-Wave branch is required. A repository may
-choose one branch per Mission, Wave, or change set, but the policy must be
-declared before concurrent edits and reflected in the execution artifacts.
+Never start writable work on a dirty shared project root. Concurrent Waves use
+separate worktrees and an explicit merge order. Shared hot files require a
+declared integration fence; later work must absorb, not overwrite, the earlier
+merged invariants.
 
-## Dynamic Workflow Patches
+## Execution And Reporting
 
-For `workflow run-script`, an eligible successful writable leaf records a
-pending `WorkflowPatch`; the throwaway worktree is then removed. Apply or reject
-the patch explicitly:
+The Primary Session owns implementation, tests, documentation, PR maintenance,
+CI repair, and closeout. It records only high-signal findings: verified root
+cause, important failed approaches, scope-affecting decisions, blockers,
+handoffs, and evidence. Raw command streams, private checklists, provider
+transcripts, and Sub-Agent internals do not belong in Notion.
+
+Harness Members are not admitted for repository repair until the explicit
+dogfood admission standard passes. A bootstrap or repair Wave may use the
+Primary Codex Session and bounded temporary Sub-Agents, while honestly stating
+that this is not Harness Member execution.
+
+## Pull Request And Candidate SHA
+
+One Wave produces one integration PR. The PR links the Spec and umbrella Issue
+and states:
+
+- what changed and what deliberately did not change;
+- data, migration, compatibility-read, and dual-write policy;
+- validation performed on the Candidate SHA;
+- known risks and follow-ups.
+
+Any code change creates a new Candidate SHA and invalidates prior affected CI,
+Completion, and Review claims. A green earlier revision cannot authorize a
+later revision.
+
+## Review And Host Gate
+
+Ordinary repository work uses final-diff self-review by the Primary Session;
+there is no mandatory second reviewer queue. An independent read-only reviewer
+is used when the Spec requires it or the change affects core persistence,
+cross-module public contracts, security/permissions, or irreversible data.
+
+Review is bound to the exact Candidate SHA and records each acceptance item as
+`PASS`, `FAIL`, or `NOT PROVEN`. P0/P1 findings block merge. Later `CHANGES
+REQUIRED` supersedes an earlier PASS until a new SHA is reviewed. Host Gate is
+narrow: it authorizes merge only when the Development Record requires it; it
+does not replace product Work Gate, Acceptor, Evidence, Finding, Failure, or
+Decision semantics.
+
+## Merge And Closeout
+
+Merge only when the final SHA has required CI green, self-review passed, no
+open P0/P1, and Host approval when required. After GitHub records the merge:
+
+1. record the merge SHA and closeout evidence in Notion;
+2. clear the Active Session id but retain Session lineage in the Execution
+   Report;
+3. close only Issues whose acceptance is fully satisfied;
+4. create explicit follow-up work for remaining non-blocking risks.
+
+PR merge is a repository fact. It does not by itself accept a product Work or
+prove live Agent Team execution.
+
+## Failure Semantics
+
+- Do not make a flaky gate green by rerun, timeout inflation, or deleting the
+  assertion.
+- Do not hide partial append-only success; report the successful prefix and
+  exact failure.
+- Do not convert retryable Store contention into a permanent client error.
+- Do not claim live provider or Harness Member behavior from deterministic
+  shims.
+- When blocked, preserve the exact branch/SHA, clean-or-dirty state, completed
+  work, reproducible evidence, primary cause, remaining risk, and next action.
+
+## Required Local Gates
+
+Use focused checks during implementation. Before delivery, run the checks in
+[operations.md](operations.md) on one frozen SHA. The repository-owned clean
+archive gate is:
 
 ```bash
-firm workflow patch apply <patch-id>
-firm workflow patch reject <patch-id>
+pnpm gate:clean-archive
 ```
 
-`persist_changes="discard"` opts out of patch retention. Direct write mode is a
-separate explicit choice for small serial work and leaves the diff in the
-selected project root for normal Git review.
-
-## Pull Requests
-
-A PR should reference:
-
-- Mission and Wave ids;
-- relevant executor run id, when one exists;
-- Work id/version and accepted result for Agent Team-owned work;
-- checks and relevant artifact/diff refs; and
-- the outcome the Host may use when updating or advancing its Wave plan.
-
-Review depth is proportional to risk. A dedicated reviewer member or external
-code owner may be useful, but Proposal/Review/Decision is not a mandatory
-product chain for every Wave.
-
-Protected merge, deployment, remote deletion, payment, or other external
-effects require their own authorization. A completed executor attempt alone
-never grants it.
-
-## Retry And Failure
-
-- If the Host chooses another execution run, the earlier run remains history.
-- A rejected WorkflowPatch remains rejected history; do not mutate it into the
-  replacement patch.
-- A failed apply must leave the target branch recoverable and report the exact
-  conflict or dirty-tree condition.
-- Work outside owned paths is a blocker until reviewed or reassigned.
-- If a PR merges before Wave advance, the Host still records the explicit
-  outcome; if a Wave advances before merge, the PR still follows Git
-  protection and review rules.
-
-## Acceptance Checklist
-
-1. Mission, current Host-plan Wave, and relevant execution run are reconstructable.
-2. File-changing ownership and isolation are explicit.
-3. Diff, commit, patch, or PR evidence resolves to the actual change.
-4. Required checks and reviews are recorded.
-5. The Wave advance records the Host outcome and useful supporting evidence.
-6. The Mission closeout reflects accepted Wave outcomes.
-7. No retired coordination object or hidden provider transcript is needed to
-   explain the result.
+It requires a clean committed source tree and pnpm 9.15.4, extracts the exact
+SHA, performs the frozen install before runtime tests, then runs Rust,
+governance, and JavaScript gates from the archive.

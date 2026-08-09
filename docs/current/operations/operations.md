@@ -1,5 +1,32 @@
 # Operations
 
+## Repository Delivery Gate
+
+Repository development uses the canonical
+[Notion Spec -> Issue -> Codex -> PR flow](workflow-git-pr.md). One Primary
+Session owns a Wave end to end in a clean isolated worktree. Ordinary work uses
+final-SHA self-review rather than a mandatory second reviewer; a narrow Host
+Gate is required only when the Development Record says so. Harness Member
+dogfood remains suspended for repository repair, while product TeamWork Gate
+and acceptance semantics remain unchanged.
+
+The reproducible final gate starts from a clean committed SHA:
+
+```bash
+pnpm gate:clean-archive
+```
+
+It requires pnpm 9.15.4 and enforces this order inside a fresh archive:
+
+```text
+frozen pnpm install -> cargo fmt -> cargo clippy -> serial cargo test
+  -> governance check -> pnpm check
+```
+
+CI installs the frozen JavaScript dependency graph before Rust runtime
+integration tests because the Claude Agent SDK executable is discovered from
+the repository-owned `node_modules` tree.
+
 ## Current Gates
 
 ```bash

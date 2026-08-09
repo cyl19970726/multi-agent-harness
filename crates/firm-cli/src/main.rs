@@ -13000,6 +13000,72 @@ enum MemberRecoveryPath {
     Terminal { reason: String },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeliveryReconciliationFailure {
+    succeeded_ids: Vec<String>,
+    failed_delivery_id: String,
+    failure: String,
+}
+
+impl DeliveryReconciliationFailure {
+    fn into_cli_error(self) -> CliError {
+        let succeeded_ids = if self.succeeded_ids.is_empty() {
+            "none".to_string()
+        } else {
+            self.succeeded_ids.join(",")
+        };
+        CliError::Usage(format!(
+            "WORK_DELIVERY_RECONCILIATION_FAILED: reconciled={} succeeded_ids={} failed_delivery_id={} failure={}; member reopen/rebind fenced",
+            self.succeeded_ids.len(),
+            succeeded_ids,
+            self.failed_delivery_id,
+            self.failure
+        ))
+    }
+}
+
+/// Reconcile only stale claims owned by an earlier Supervisor generation.
+///
+/// The returned ids are persisted successes, never attempts. The first
+/// failure carries the exact successful prefix so append-only partial success
+/// remains honest and a retry can safely skip the now-queued deliveries.
+fn reconcile_stale_delivery_claims<F>(
+    deliveries: &[WorkDelivery],
+    supervisor: Option<&harness_core::TeamSupervisorLease>,
+    now: u64,
+    now_str: &str,
+    mut reconcile: F,
+) -> Result<Vec<String>, DeliveryReconciliationFailure>
+where
+    F: FnMut(&WorkDelivery, &harness_core::TeamSupervisorLease, u64, &str) -> Result<(), String>,
+{
+    let mut succeeded_ids = Vec::new();
+    let Some(lease) = supervisor else {
+        return Ok(succeeded_ids);
+    };
+    if lease.status != harness_core::TeamSupervisorLeaseStatus::Active {
+        return Ok(succeeded_ids);
+    }
+    for delivery in deliveries {
+        let is_stale_claim = delivery.status == WorkDeliveryStatus::Claimed
+            && delivery
+                .claimed_generation
+                .is_some_and(|generation| generation < lease.generation);
+        if !is_stale_claim {
+            continue;
+        }
+        if let Err(failure) = reconcile(delivery, lease, now, now_str) {
+            return Err(DeliveryReconciliationFailure {
+                succeeded_ids,
+                failed_delivery_id: delivery.id.clone(),
+                failure,
+            });
+        }
+        succeeded_ids.push(delivery.id.clone());
+    }
+    Ok(succeeded_ids)
+}
+
 /// Pure function: classify a member's recovery path. Does not perform I/O or
 /// mutation. Unit-testable across every edge case without a store.
 fn classify_member_recovery_path(
@@ -13266,32 +13332,29 @@ fn team_run_recover(
     }
 
     // ── Phase 2: reconcile stale deliveries ──────────────────────────
-    let mut reconciled = 0u64;
     let now = current_unix_ms_u64();
     let now_str = now_string();
-    for delivery in &deliveries {
-        if delivery.status != WorkDeliveryStatus::Claimed {
-            continue;
-        }
-        // Only reconcile deliveries that are stale (claimed by a previous gen).
-        if let Some(claimed_gen) = delivery.claimed_generation {
-            if let Some(ref lease) = supervisor {
-                if claimed_gen < lease.generation
-                    && lease.status == harness_core::TeamSupervisorLeaseStatus::Active
-                {
-                    let _ = store.reconcile_stale_work_delivery_claim(
-                        team_run_id,
-                        &delivery.id,
-                        &lease.supervisor_id,
-                        lease.generation,
-                        now,
-                        &now_str,
-                    );
-                    reconciled += 1;
-                }
-            }
-        }
-    }
+    let reconciled_ids = reconcile_stale_delivery_claims(
+        &deliveries,
+        supervisor.as_ref(),
+        now,
+        &now_str,
+        |delivery, lease, reconciled_at_unix_ms, reconciled_at| {
+            store
+                .reconcile_stale_work_delivery_claim(
+                    team_run_id,
+                    &delivery.id,
+                    &lease.supervisor_id,
+                    lease.generation,
+                    reconciled_at_unix_ms,
+                    reconciled_at,
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        },
+    )
+    .map_err(DeliveryReconciliationFailure::into_cli_error)?;
+    let reconciled = reconciled_ids.len() as u64;
     if !json && reconciled > 0 {
         println!("reconciled_stale_deliveries: {reconciled}");
     }
@@ -28043,13 +28106,58 @@ fn handle_http_connection(
             "200 OK",
             &serde_json::json!({"ok": true, "result": response}),
         )?,
-        Err(error) => write_http_json(
-            &mut stream,
-            "400 Bad Request",
-            &serde_json::json!({"ok": false, "error": error.to_string()}),
-        )?,
+        Err(error) => {
+            let (status, body) = http_action_error_response(error);
+            write_http_json(&mut stream, status, &body)?;
+        }
     }
     Ok(())
+}
+
+fn http_action_error_response(error: CliError) -> (&'static str, serde_json::Value) {
+    match error {
+        CliError::Store(StoreError::LockTimeout(detail)) => (
+            "503 Service Unavailable",
+            serde_json::json!({
+                "ok": false,
+                "error": "store_busy",
+                "retryable": true,
+                "detail": format!("timed out waiting for store write lock {detail}"),
+            }),
+        ),
+        other => (
+            "400 Bad Request",
+            serde_json::json!({"ok": false, "error": other.to_string()}),
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests_http_action_error_response {
+    use super::*;
+
+    #[test]
+    fn exhausted_store_contention_is_retryable_http_503() {
+        let (status, body) = http_action_error_response(CliError::Store(StoreError::LockTimeout(
+            "/tmp/store/.store.lock".into(),
+        )));
+        assert_eq!(status, "503 Service Unavailable");
+        assert_eq!(body["ok"], false);
+        assert_eq!(body["error"], "store_busy");
+        assert_eq!(body["retryable"], true);
+        assert!(body["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains(".store.lock")));
+    }
+
+    #[test]
+    fn non_contention_action_errors_remain_non_retryable_client_errors() {
+        let (status, body) = http_action_error_response(CliError::Usage("invalid request".into()));
+        assert_eq!(status, "400 Bad Request");
+        assert_eq!(body["ok"], false);
+        assert_eq!(body["error"], "invalid request");
+        assert!(body.get("retryable").is_none());
+    }
 }
 
 fn retired_http_path(path: &str) -> bool {
@@ -52521,6 +52629,29 @@ mod sse_tests {
 mod tests_team_run_recover {
     use super::*;
 
+    fn make_delivery(
+        id: &str,
+        status: WorkDeliveryStatus,
+        generation: Option<u64>,
+    ) -> WorkDelivery {
+        WorkDelivery {
+            id: id.into(),
+            work_event_id: format!("event-{id}"),
+            team_run_id: "tr-test".into(),
+            work_id: format!("work-{id}"),
+            work_version: 1,
+            recipient_member_run_id: "mr-test".into(),
+            status,
+            attempt: 1,
+            claim_id: generation.map(|_| format!("claim-{id}")),
+            claimed_by_supervisor_id: generation.map(|_| "sv-old".into()),
+            claimed_generation: generation,
+            provider_receipt_id: None,
+            failure_reason: None,
+            updated_at: "unix-ms:1".into(),
+        }
+    }
+
     fn make_member(
         status: MemberRunStatus,
         coordination_status: MemberCoordinationStatus,
@@ -52762,6 +52893,106 @@ mod tests_team_run_recover {
             expires_unix_ms: expires_ms,
             released_unix_ms: None,
         }
+    }
+
+    #[test]
+    fn stale_delivery_reconciliation_counts_only_persisted_successes() {
+        let now = current_unix_ms_u64();
+        let mut lease = make_lease(
+            harness_core::TeamSupervisorLeaseStatus::Active,
+            now + 60_000,
+            std::process::id(),
+        );
+        lease.generation = 3;
+        let deliveries = vec![
+            make_delivery("stale", WorkDeliveryStatus::Claimed, Some(2)),
+            make_delivery("current", WorkDeliveryStatus::Claimed, Some(3)),
+            make_delivery("queued", WorkDeliveryStatus::Queued, None),
+        ];
+        let mut calls = Vec::new();
+        let reconciled = reconcile_stale_delivery_claims(
+            &deliveries,
+            Some(&lease),
+            now,
+            "unix-ms:2",
+            |delivery, _, _, _| {
+                calls.push(delivery.id.clone());
+                Ok(())
+            },
+        )
+        .expect("reconcile stale prefix");
+        assert_eq!(calls, vec!["stale"]);
+        assert_eq!(reconciled, vec!["stale"]);
+    }
+
+    #[test]
+    fn stale_delivery_reconciliation_reports_partial_failure_and_fences_tail() {
+        let now = current_unix_ms_u64();
+        let mut lease = make_lease(
+            harness_core::TeamSupervisorLeaseStatus::Active,
+            now + 60_000,
+            std::process::id(),
+        );
+        lease.generation = 4;
+        let deliveries = vec![
+            make_delivery("persisted", WorkDeliveryStatus::Claimed, Some(1)),
+            make_delivery("failed", WorkDeliveryStatus::Claimed, Some(2)),
+            make_delivery("must-not-run", WorkDeliveryStatus::Claimed, Some(3)),
+        ];
+        let mut calls = Vec::new();
+        let failure = reconcile_stale_delivery_claims(
+            &deliveries,
+            Some(&lease),
+            now,
+            "unix-ms:2",
+            |delivery, _, _, _| {
+                calls.push(delivery.id.clone());
+                if delivery.id == "failed" {
+                    Err("injected store failure".into())
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .expect_err("second persisted write fails");
+        assert_eq!(calls, vec!["persisted", "failed"]);
+        assert_eq!(failure.succeeded_ids, vec!["persisted"]);
+        assert_eq!(failure.failed_delivery_id, "failed");
+        assert_eq!(failure.failure, "injected store failure");
+        let message = failure.into_cli_error().to_string();
+        assert!(message.contains("reconciled=1"));
+        assert!(message.contains("succeeded_ids=persisted"));
+        assert!(message.contains("failed_delivery_id=failed"));
+        assert!(message.contains("reopen/rebind fenced"));
+    }
+
+    #[test]
+    fn stale_delivery_reconciliation_retry_skips_already_persisted_prefix() {
+        let now = current_unix_ms_u64();
+        let mut lease = make_lease(
+            harness_core::TeamSupervisorLeaseStatus::Active,
+            now + 60_000,
+            std::process::id(),
+        );
+        lease.generation = 3;
+        let deliveries = vec![
+            make_delivery("persisted", WorkDeliveryStatus::Queued, None),
+            make_delivery("retry", WorkDeliveryStatus::Claimed, Some(2)),
+        ];
+        let mut calls = Vec::new();
+        let reconciled = reconcile_stale_delivery_claims(
+            &deliveries,
+            Some(&lease),
+            now,
+            "unix-ms:3",
+            |delivery, _, _, _| {
+                calls.push(delivery.id.clone());
+                Ok(())
+            },
+        )
+        .expect("retry remaining stale claim");
+        assert_eq!(calls, vec!["retry"]);
+        assert_eq!(reconciled, vec!["retry"]);
     }
 
     #[test]
