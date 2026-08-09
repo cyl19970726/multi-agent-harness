@@ -7842,6 +7842,15 @@ impl HarnessStore {
     }
 
     fn acquire_write_lock(&self) -> StoreResult<StoreWriteLock> {
+        let (timeout, poll_interval) = store_write_lock_policy();
+        self.acquire_write_lock_with_policy(timeout, poll_interval)
+    }
+
+    fn acquire_write_lock_with_policy(
+        &self,
+        timeout: Duration,
+        poll_interval: Duration,
+    ) -> StoreResult<StoreWriteLock> {
         let lock_path = self.root.join(".store.lock");
         let file = OpenOptions::new()
             .create(true)
@@ -7849,7 +7858,7 @@ impl HarnessStore {
             .truncate(false)
             .write(true)
             .open(&lock_path)?;
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + timeout;
         loop {
             match lock_file_exclusive(&file) {
                 Ok(()) => return Ok(StoreWriteLock { file }),
@@ -7857,7 +7866,9 @@ impl HarnessStore {
                     if Instant::now() >= deadline {
                         return Err(StoreError::LockTimeout(lock_path.display().to_string()));
                     }
-                    thread::sleep(Duration::from_millis(10));
+                    thread::sleep(
+                        poll_interval.min(deadline.saturating_duration_since(Instant::now())),
+                    );
                 }
                 Err(error) => return Err(StoreError::Io(error)),
             }
@@ -8181,6 +8192,18 @@ fn delivery_blocks_another_claim(delivery: &MessageDelivery) -> bool {
         && delivery.terminal_source != Some(MessageTerminalSource::Failed))
 }
 
+fn store_write_lock_policy() -> (Duration, Duration) {
+    #[cfg(debug_assertions)]
+    if let Ok(raw) = std::env::var("FIRM_TEST_STORE_WRITE_LOCK_TIMEOUT_MS") {
+        if let Ok(timeout_ms) = raw.parse::<u64>() {
+            if timeout_ms > 0 {
+                return (Duration::from_millis(timeout_ms), Duration::from_millis(1));
+            }
+        }
+    }
+    (Duration::from_secs(10), Duration::from_millis(10))
+}
+
 fn lock_file_exclusive(file: &File) -> std::io::Result<()> {
     let result = unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) };
     if result == -1 {
@@ -8222,7 +8245,7 @@ pub struct StoreExclusiveMigrationGuard {
 mod tests {
     use std::collections::BTreeSet;
     use std::sync::{mpsc, Arc, Barrier};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     use firm_core::{
         DelegationMode, DelegationStatus, GateEngine, GateSpec, GateVerdict, HostAttentionKind,
@@ -8239,6 +8262,74 @@ mod tests {
     };
 
     use super::*;
+
+    fn lock_policy_test_store(label: &str) -> HarnessStore {
+        let root = std::env::temp_dir().join(format!(
+            "firm-store-lock-policy-{label}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let store = HarnessStore::new(root);
+        store.init().expect("init lock-policy store");
+        store
+    }
+
+    fn hold_store_lock(store: &HarnessStore) -> File {
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .truncate(false)
+            .write(true)
+            .open(store.root().join(".store.lock"))
+            .expect("open store lock");
+        lock_file_exclusive(&file).expect("hold store lock");
+        file
+    }
+
+    #[test]
+    fn write_lock_contention_exhaustion_is_bounded_and_typed() {
+        let store = lock_policy_test_store("timeout");
+        let held = hold_store_lock(&store);
+        let started = Instant::now();
+        let error = match store
+            .acquire_write_lock_with_policy(Duration::from_millis(25), Duration::from_millis(2))
+        {
+            Ok(_) => panic!("held lock must exhaust the short test policy"),
+            Err(error) => error,
+        };
+        let elapsed = started.elapsed();
+        assert!(matches!(error, StoreError::LockTimeout(_)));
+        assert!(elapsed >= Duration::from_millis(20), "elapsed={elapsed:?}");
+        assert!(elapsed < Duration::from_millis(500), "elapsed={elapsed:?}");
+        unlock_file(&held);
+        drop(held);
+        std::fs::remove_dir_all(store.root()).expect("cleanup store");
+    }
+
+    #[test]
+    fn write_lock_contention_retries_until_the_owner_releases() {
+        let store = Arc::new(lock_policy_test_store("release"));
+        let held = hold_store_lock(&store);
+        let contender = Arc::clone(&store);
+        let waiter = std::thread::spawn(move || {
+            contender.acquire_write_lock_with_policy(
+                Duration::from_millis(500),
+                Duration::from_millis(2),
+            )
+        });
+        std::thread::sleep(Duration::from_millis(25));
+        unlock_file(&held);
+        drop(held);
+        let acquired = waiter
+            .join()
+            .expect("contention waiter")
+            .expect("waiter acquires after release");
+        drop(acquired);
+        std::fs::remove_dir_all(store.root()).expect("cleanup store");
+    }
 
     fn provider_compatibility_admission(
         id: &str,

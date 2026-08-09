@@ -19,6 +19,7 @@
     "check:company-os": "node apps/agent-dashboard/tests/company-os-docs-check.mjs && node apps/agent-dashboard/tests/company-os-docs-v2-check.mjs && node scripts/check-company-os-docs-v2-smoke.mjs && node scripts/check-company-os-docs-cli-smoke.mjs && node scripts/check-company-os-work-cli-smoke.mjs && node scripts/check-company-os-finance-cli-smoke.mjs && node scripts/check-company-os-org-cli-smoke.mjs && node scripts/check-company-os-operator-cli-smoke.mjs && node scripts/check-company-os-skill-suite.mjs && node apps/agent-dashboard/tests/company-os-operations-check.mjs && node apps/agent-dashboard/tests/company-os-runtime-check.mjs && node apps/agent-dashboard/tests/company-os-navigation-check.mjs && node apps/agent-dashboard/tests/company-os-wanchengwanling-custom-page-check.mjs && pnpm check:docs-governance",
     "check:docs-v2-live": "node scripts/check-company-os-docs-v2-api.mjs && node apps/agent-dashboard/tests/company-os-docs-v2-store-live-check.mjs",
     "check:docs-governance": "cargo run -q -p firm-cli -- governance check",
+    "gate:clean-archive": "bash scripts/clean-archive-gate.sh",
     "visual:fixture": "node scripts/materialize-workbench-layout-fixture.mjs",
     "visual:capture:workbench": "node scripts/capture-workbench-layout-v2.mjs",
     "visual:compare:company-os-v2": "node scripts/materialize-company-os-v2-comparison.mjs",

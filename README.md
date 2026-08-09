@@ -72,6 +72,24 @@ Execution tools:
 - Dynamic Workflows;
 - provider sessions, plugins, MCP, artifacts, and events.
 
+## Repository development
+
+Development intent and implementation Specs are canonical in Notion. Each
+delivery Wave is claimed by one Primary Codex Session and lands through one
+clean worktree, branch, umbrella Issue, and final PR:
+
+```text
+Notion Spec -> GitHub Issue -> Codex claim -> clean worktree -> implementation
+  -> PR -> final-SHA self-review + CI -> Host Gate when required -> merge
+  -> Notion closeout
+```
+
+Harness Members are temporarily not used for repository repair until the
+dogfood admission standard passes. Temporary Sub-Agents are internal execution
+resources, not separate owners. This developer workflow does not remove or
+weaken product TeamWork acceptance and Gate semantics. See
+[the Git/PR workflow](docs/current/operations/workflow-git-pr.md).
+
 ## Quickstart: current execution foundation
 
 ```bash

@@ -134,20 +134,22 @@ doc carries the contract behind each rule.
 
 ## Repository Execution Rules
 
-- Dogfood what you build: for meaningful product, schema, CLI, dashboard,
-  provider, adapter, or skill changes, prefer a native Mission/Wave run when
-  the needed executor path works. A bootstrap change that creates or repairs
-  the native path may use the current host/subagent mechanism, but must say so
-  and add focused acceptance for the path it creates. A small typo or
-  single-line doc fix may be Lead-local, but the final summary must say that it
-  was a Lead-local exception.
-- Non-trivial work follows the Lead sequence: inspect native state; create or
-  select the Mission and write the current Wave; run one Mission-scoped
-  TeamRun with shared Works and disjoint owned paths; keep Work events,
-  deliveries, results, checks, blockers, reviews, and control acknowledgements durable;
-  advance each Wave from an explicit Host outcome; close the Mission with an
-  explicit outcome summary. Full sequence and command reference:
-  [docs/current/product/agent-operating-rules.md](docs/current/product/agent-operating-rules.md).
+- Repository development follows the Notion-led delivery contract in
+  [docs/current/operations/workflow-git-pr.md](docs/current/operations/workflow-git-pr.md):
+  frozen Spec -> umbrella Issue -> Primary Codex claim -> clean worktree -> one
+  branch/PR -> final-SHA self-review and CI -> narrow Host Gate -> merge ->
+  Notion closeout. Ordinary changes do not require a second reviewer queue.
+- Harness Member execution is suspended for repository repair until the
+  explicit dogfood admission standard passes. A Primary Codex Session may use
+  bounded temporary Sub-Agents internally, but must not label that as Harness
+  Member or Agent Team execution. Product TeamWork acceptance, Evidence,
+  Finding, Failure, Acceptor, Gate, and Decision contracts remain intact and
+  separate from developer self-review.
+- A native Mission/Agent Team run is required when the claim under test is the
+  native runtime itself or when a Spec explicitly selects it. Such a run is
+  product evidence, not a prerequisite that silently replaces the repository
+  development record. A small typo or single-line doc fix may be owner-local,
+  but the final summary must identify the proportional exception.
 - Harness dogfood runs follow
   [docs/current/product/agent-team-dogfood-loop.md](docs/current/product/agent-team-dogfood-loop.md):
   classify defects, repair on a clean lane, rerun the original scenario, then

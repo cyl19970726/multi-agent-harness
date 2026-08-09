@@ -85,6 +85,8 @@ const state = {
   reads: [],
   boundedReads: 0,
   responsePlan: [],
+  snapshotBarriers: new Map(),
+  streamBarriers: new Map(),
   streams: new Set(),
   streamSerial: 0,
   registryEmpty: false,
@@ -149,9 +151,12 @@ const api = createHttpServer((request, response) => {
     const plan = state.responsePlan.shift() ?? { delay: 0, status: 200 };
     state.reads.push({ path: url.pathname, space, company, status: plan.status });
     if (url.pathname !== "/v1/snapshot") state.boundedReads += 1;
+    const barrier = state.snapshotBarriers.get(scopeKey(space, company));
+    barrier?.markStarted();
     const respond = () => jsonResponse(response, plan.status, plan.status === 200 ? captured : { error: "planned failure" });
-    if (plan.gate) {
-      plan.gate.then(() => { if (plan.delay) setTimeout(respond, plan.delay); else respond(); });
+    const gates = [plan.gate, barrier?.gate].filter(Boolean);
+    if (gates.length > 0) {
+      Promise.all(gates).then(() => { if (plan.delay) setTimeout(respond, plan.delay); else respond(); });
       return;
     }
     return setTimeout(respond, plan.delay);
@@ -167,12 +172,22 @@ const api = createHttpServer((request, response) => {
     });
     const stream = { response, space, company, id: ++state.streamSerial };
     state.streams.add(stream);
-    response.write(`event: snapshot\ndata: ${JSON.stringify({
-      generated_at: new Date().toISOString(),
-      execution_space_id: space,
-      company_scope_id: company,
-      stream_epoch: `epoch-${stream.id}`,
-    })}\n\n`);
+    const openStream = () => {
+      if (response.destroyed || response.writableEnded) return;
+      response.write(`event: snapshot\ndata: ${JSON.stringify({
+        generated_at: new Date().toISOString(),
+        execution_space_id: space,
+        company_scope_id: company,
+        stream_epoch: `epoch-${stream.id}`,
+      })}\n\n`);
+    };
+    const barrier = state.streamBarriers.get(scopeKey(space, company));
+    if (barrier) {
+      barrier.markStarted();
+      barrier.gate.then(openStream);
+    } else {
+      openStream();
+    }
     request.on("close", () => state.streams.delete(stream));
     return;
   }
@@ -203,11 +218,31 @@ function closeStreams(space, company) {
   }
 }
 
-function gated(delay = 0) {
-  let resolve;
-  const gate = new Promise((r) => { resolve = r; });
-  return { gate, resolve, plan: { gate, delay, status: 200 } };
+function holdScope(map, space = "space-a", company = "company-a") {
+  const key = scopeKey(space, company);
+  if (map.has(key)) throw new Error(`scope already gated: ${key}`);
+  let releaseGate;
+  let acknowledgeStart;
+  const gate = new Promise((resolveGate) => { releaseGate = resolveGate; });
+  const started = new Promise((resolveStarted) => { acknowledgeStart = resolveStarted; });
+  const barrier = {
+    gate,
+    started,
+    startedCount: 0,
+    markStarted() {
+      this.startedCount += 1;
+      acknowledgeStart();
+    },
+    release() {
+      if (map.get(key) === barrier) map.delete(key);
+      releaseGate();
+    },
+  };
+  map.set(key, barrier);
+  return barrier;
 }
+const holdSnapshots = (space, company) => holdScope(state.snapshotBarriers, space, company);
+const holdStreams = (space, company) => holdScope(state.streamBarriers, space, company);
 
 const vite = await createViteServer({
   configFile: join(dashboardRoot, "vite.config.ts"),
@@ -273,12 +308,12 @@ try {
   // and the response—not the invalidation payload—introduces the new row.
   const beforeExternal = state.reads.length;
   state.titles.set(scopeKey("space-a", "company-a"), "external Works append healed");
-  const g1 = gated();
-  state.responsePlan.push(g1.plan);
+  const g1 = holdSnapshots("space-a", "company-a");
   emitInvalidation({ revision: 1 });
+  await waitFor(() => Promise.resolve(g1.startedCount > 0), "external invalidation read held by test gate");
   await freshness(page, "stale");
   check(!(await page.locator("body").innerText()).includes("external Works append healed"), "invalidation is not synthesized as row truth");
-  g1.resolve();
+  g1.release();
   await freshness(page, "live");
   await page.getByText("external Works append healed", { exact: true }).waitFor({ timeout: 8_000 });
   check(state.reads.length === beforeExternal + 1, "one invalidation performs one authoritative read");
@@ -287,14 +322,14 @@ try {
   // captured response cannot win; pass 2 must install the newest snapshot.
   const beforeDirty = state.reads.length;
   state.titles.set(scopeKey("space-a", "company-a"), "dirty pass one");
-  const g2 = gated();
-  state.responsePlan.push(g2.plan);
+  const g2 = holdSnapshots("space-a", "company-a");
   emitInvalidation({ revision: 2 });
+  await waitFor(() => Promise.resolve(g2.startedCount > 0), "dirty refresh read held by test gate");
   await freshness(page, "stale");
   await waitFor(() => Promise.resolve(state.reads.length === beforeDirty + 1), "first dirty read started");
-  g2.resolve();
   state.titles.set(scopeKey("space-a", "company-a"), "dirty follow-up newest");
   emitInvalidation({ revision: 4 }); // intentional gap
+  g2.release();
   await freshness(page, "live");
   await page.getByText("dirty follow-up newest", { exact: true }).waitFor({ timeout: 8_000 });
   check(state.reads.length === beforeDirty + 2, "gap during fetch is coalesced into exactly one follow-up read");
@@ -303,8 +338,11 @@ try {
   const beforeFailure = state.reads.length;
   state.titles.set(scopeKey("space-a", "company-a"), "retry recovered projection");
   state.responsePlan.push({ delay: 0, status: 500 });
+  const failedReadGate = holdSnapshots("space-a", "company-a");
   emitInvalidation({ revision: 5 });
+  await waitFor(() => Promise.resolve(failedReadGate.startedCount > 0), "failed refresh read held by test gate");
   await freshness(page, "stale");
+  failedReadGate.release();
   await waitFor(() => Promise.resolve(state.reads.length >= beforeFailure + 1), "planned failed read");
   await new Promise((resolveWait) => setTimeout(resolveWait, 250));
   check(
@@ -334,16 +372,16 @@ try {
   // A quiet but healthy stream gets one probe. Successful truth restores Live;
   // silence is not treated as permanent staleness.
   const beforeQuiet = state.reads.length;
-  const g5 = gated();
-  state.responsePlan.push(g5.plan);
+  const g5 = holdSnapshots("space-a", "company-a");
   await page.evaluate(() => {
     const original = Date.now;
     const shifted = original() + 46_000;
     Date.now = () => shifted;
     window.__restoreDateNow = () => { Date.now = original; };
   });
+  await waitFor(() => Promise.resolve(g5.startedCount > 0), "quiet-stream recovery read held by test gate");
   await freshness(page, "stale");
-  g5.resolve();
+  g5.release();
   await freshness(page, "live");
   await page.evaluate(() => window.__restoreDateNow?.());
   check(state.reads.length === beforeQuiet + 1, "quiet-open stream performs one probe, then returns Live after success");
@@ -351,9 +389,21 @@ try {
   // Disconnect exposes Reconnecting and each controlled reconnect attempt gets
   // a bounded HTTP recovery read before the fresh SSE marker is trusted.
   const beforeReconnect = state.reads.length;
+  const reconnectRead = holdSnapshots("space-a", "company-a");
+  const reconnectStream = holdStreams("space-a", "company-a");
   closeStreams("space-a", "company-a");
-  await freshness(page, "reconnecting");
+  await waitFor(
+    () => Promise.resolve(reconnectRead.startedCount > 0 && reconnectStream.startedCount > 0),
+    "disconnect read and stream held by test gates",
+  );
+  await freshness(page, "stale");
+  check(
+    await page.getByText("Reconnecting", { exact: true }).count() > 0,
+    "disconnect exposes Reconnecting while test-owned recovery gates are held",
+  );
   await waitFor(() => Promise.resolve(state.reads.length > beforeReconnect), "disconnect fallback read");
+  reconnectRead.release();
+  reconnectStream.release();
   await freshness(page, "live");
   check(state.streamSerial >= 2, "EventSource reconnects with a new stream epoch");
 

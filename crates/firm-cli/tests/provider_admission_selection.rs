@@ -73,13 +73,17 @@ fn project_id_for_path(home: &TempHome, path: &Path) -> String {
 }
 
 fn install_version_probe(home: &TempHome) -> PathBuf {
+    install_version_probe_result(home, VERSION, 0)
+}
+
+fn install_version_probe_result(home: &TempHome, version: &str, exit_code: i32) -> PathBuf {
     let bin = home.base().join("fakebin-provider-admit");
     std::fs::create_dir_all(&bin).unwrap();
     let shim = bin.join("codex");
     std::fs::write(
         &shim,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo 'codex-cli {VERSION}'\n  exit 0\nfi\nexit 2\n"
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo 'codex-cli {version}'\n  exit {exit_code}\nfi\nexit 2\n"
         ),
     )
     .unwrap();
@@ -91,6 +95,45 @@ fn install_version_probe(home: &TempHome) -> PathBuf {
         std::fs::set_permissions(&shim, permissions).unwrap();
     }
     bin
+}
+
+fn project_store_ledger(home: &TempHome, project_id: &str) -> PathBuf {
+    home.projects_dir()
+        .join(project_id)
+        .join("provider_compatibility_admissions.jsonl")
+}
+
+fn admission_args_with(version: &str, policy: &str) -> Vec<String> {
+    vec![
+        "provider".into(),
+        "admit".into(),
+        "--provider".into(),
+        "codex".into(),
+        "--execution-mode".into(),
+        "codex_app_server".into(),
+        "--provider-version".into(),
+        version.into(),
+        "--adapter-contract-version".into(),
+        "codex-app-server-v1".into(),
+        "--evidence".into(),
+        "evidence:selection-regression".into(),
+        "--actor".into(),
+        "operator:test".into(),
+        "--policy".into(),
+        policy.into(),
+        "--json".into(),
+    ]
+}
+
+fn run_owned(
+    home: &TempHome,
+    cwd: &Path,
+    fake_bin: &Path,
+    args: &[String],
+    extra_env: &[(&str, &str)],
+) -> Output {
+    let borrowed = args.iter().map(String::as_str).collect::<Vec<_>>();
+    run(home, cwd, fake_bin, &borrowed, extra_env)
 }
 
 fn admission_args() -> [&'static str; 15] {
@@ -276,5 +319,123 @@ fn unambiguous_project_store_keeps_ambient_project_compatibility() {
         )
         .len(),
         1
+    );
+}
+
+#[test]
+fn real_cli_admission_matrix_is_probe_owned_policy_distinct_and_side_effect_free() {
+    let home = TempHome::new("provider-admit-real-cli-matrix");
+    let project = home.base().join("project-matrix");
+    let source = project.join("provider-source.txt");
+    let build = project.join("Cargo.toml");
+    let install = project.join("node_modules/provider-marker.txt");
+    std::fs::create_dir_all(install.parent().unwrap()).unwrap();
+    std::fs::write(&source, "source-before\n").unwrap();
+    std::fs::write(&build, "# build-before\n").unwrap();
+    std::fs::write(&install, "install-before\n").unwrap();
+
+    let fake_bin = install_version_probe(&home);
+    succeeds(run(
+        &home,
+        &project,
+        &fake_bin,
+        &["project", "add", "--switch"],
+        &[],
+    ));
+    let project_id = project_id_for_path(&home, &project);
+    let ledger = project_store_ledger(&home, &project_id);
+    let before = [
+        std::fs::read(&source).unwrap(),
+        std::fs::read(&build).unwrap(),
+        std::fs::read(&install).unwrap(),
+    ];
+
+    let mismatch = run_owned(
+        &home,
+        &project,
+        &fake_bin,
+        &admission_args_with("9.9.8", "strict"),
+        &[],
+    );
+    assert!(!mismatch.status.success());
+    assert!(String::from_utf8_lossy(&mismatch.stderr).contains("provider version mismatch"));
+    assert!(rows(&ledger).is_empty(), "mismatch wrote an admission");
+
+    let fake_bin = install_version_probe_result(&home, VERSION, 7);
+    let probe_failure = run_owned(
+        &home,
+        &project,
+        &fake_bin,
+        &admission_args_with(VERSION, "strict"),
+        &[],
+    );
+    assert!(!probe_failure.status.success());
+    assert!(
+        String::from_utf8_lossy(&probe_failure.stderr).contains("provider version probe failed")
+    );
+    assert!(rows(&ledger).is_empty(), "failed probe wrote an admission");
+
+    let fake_bin = install_version_probe_result(&home, "1.2.3", 0);
+    let spoofed_env = run_owned(
+        &home,
+        &project,
+        &fake_bin,
+        &admission_args_with(VERSION, "strict"),
+        &[("CODEX_VERSION", VERSION), ("FIRM_CODEX_VERSION", VERSION)],
+    );
+    assert!(!spoofed_env.status.success());
+    assert!(String::from_utf8_lossy(&spoofed_env.stderr).contains("installed 1.2.3"));
+    assert!(
+        rows(&ledger).is_empty(),
+        "environment spoof wrote an admission"
+    );
+
+    let fake_bin = install_version_probe(&home);
+    let strict = ok(run_owned(
+        &home,
+        &project,
+        &fake_bin,
+        &admission_args_with(VERSION, "strict"),
+        &[],
+    ));
+    assert_eq!(strict["created"], true);
+    assert_eq!(strict["admission"]["policy"], "strict");
+    let replay = ok(run_owned(
+        &home,
+        &project,
+        &fake_bin,
+        &admission_args_with(VERSION, "strict"),
+        &[],
+    ));
+    assert_eq!(replay["created"], false);
+    assert_eq!(replay["reused"], true);
+    assert_eq!(rows(&ledger).len(), 1, "idempotent replay duplicated rows");
+
+    assert_eq!(std::fs::read(&source).unwrap(), before[0]);
+    assert_eq!(std::fs::read(&build).unwrap(), before[1]);
+    assert_eq!(std::fs::read(&install).unwrap(), before[2]);
+
+    let advisory_home = TempHome::new("provider-admit-real-cli-advisory");
+    let advisory_project = advisory_home.base().join("project-advisory");
+    std::fs::create_dir_all(&advisory_project).unwrap();
+    let advisory_bin = install_version_probe(&advisory_home);
+    succeeds(run(
+        &advisory_home,
+        &advisory_project,
+        &advisory_bin,
+        &["project", "add", "--switch"],
+        &[],
+    ));
+    let advisory = ok(run_owned(
+        &advisory_home,
+        &advisory_project,
+        &advisory_bin,
+        &admission_args_with(VERSION, "advisory"),
+        &[],
+    ));
+    assert_eq!(advisory["admission"]["policy"], "advisory");
+    assert_ne!(
+        advisory["admission"]["policy"],
+        strict["admission"]["policy"]
     );
 }
