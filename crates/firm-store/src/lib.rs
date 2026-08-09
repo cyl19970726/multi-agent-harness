@@ -6950,6 +6950,64 @@ impl HarnessStore {
         Ok(value.clone())
     }
 
+    /// Persist a Host Close only when no current Supervisor generation owns
+    /// the TeamRun. The absence check and Close latch share the Store write
+    /// lock with Supervisor acquisition, closing the race where a successor
+    /// generation could acquire authority after a caller observed no lease
+    /// but before the durable Close became visible.
+    ///
+    /// A successor that acquires after this method returns will observe the
+    /// pending Close at the pre-provider-spawn fence and must not start the
+    /// member. A generation that acquires first makes this method fail closed
+    /// so the caller can route control through that exact live owner.
+    pub fn latch_team_member_close_without_current_supervisor(
+        &self,
+        value: &TeamMemberCloseRequest,
+        now_unix_ms: u64,
+    ) -> StoreResult<TeamMemberCloseRequest> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        if let Some(lease) = self.latest_lease_for_run_unlocked(&value.team_run_id)? {
+            if lease.status == TeamSupervisorLeaseStatus::Active
+                && lease.expires_unix_ms > now_unix_ms
+            {
+                return Err(StoreError::Conflict(format!(
+                    "TEAM_SUPERVISOR_LEASE_CURRENT: TeamRun {} is owned by {} generation {} until {}",
+                    value.team_run_id,
+                    lease.supervisor_id,
+                    lease.generation,
+                    lease.expires_unix_ms
+                )));
+            }
+        }
+        let member = latest_by_id(
+            self.read_jsonl::<MemberRun>("member_runs.jsonl")?,
+            |member| member.id.clone(),
+        )
+        .remove(&value.member_run_id)
+        .ok_or_else(|| {
+            StoreError::Conflict(format!("MemberRun not found: {}", value.member_run_id))
+        })?;
+        if member.team_run_id != value.team_run_id {
+            return Err(StoreError::Conflict(format!(
+                "MemberRun {} belongs to {}, not {}",
+                value.member_run_id, member.team_run_id, value.team_run_id
+            )));
+        }
+        if let Some(current) = latest_by_id(
+            self.read_jsonl::<TeamMemberCloseRequest>("team_member_close_requests.jsonl")?,
+            |request| request.member_run_id.clone(),
+        )
+        .remove(&value.member_run_id)
+        {
+            if current.status == TeamMemberCloseStatus::Pending {
+                return Ok(current);
+            }
+        }
+        self.append_jsonl_unlocked("team_member_close_requests.jsonl", value)?;
+        Ok(value.clone())
+    }
+
     /// Mark one durable Close as applied after the MemberRun is stopped.
     pub fn complete_team_member_close(
         &self,

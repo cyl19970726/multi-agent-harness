@@ -2826,6 +2826,7 @@ fn heartbeat_failure_latch_rejects_close_while_durable_lease_is_current() {
             "FIRM_TEST_SUPERVISOR_HEARTBEAT_FAIL_READY",
             heartbeat_failed_value.as_str(),
         ),
+        ("FIRM_TEST_SUPERVISOR_LEASE_LOSS_HOLD_MS", "5000"),
         ("FIRM_TEAM_SUPERVISOR_LEASE_MS", "10000"),
         ("FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS", "10000"),
     ];

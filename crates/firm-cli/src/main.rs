@@ -18073,6 +18073,14 @@ fn supervisor_test_heartbeat_failure_marker() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+fn supervisor_test_lease_loss_hold() -> Option<Duration> {
+    std::env::var("FIRM_TEST_SUPERVISOR_LEASE_LOSS_HOLD_MS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|millis| *millis > 0)
+        .map(Duration::from_millis)
+}
+
 impl Drop for LiveMemberControlRegistration {
     fn drop(&mut self) {
         LIVE_MEMBER_CONTROLS
@@ -18161,6 +18169,24 @@ fn latch_member_close(
         requested_at: now_string(),
         applied_at: None,
     }))
+}
+
+fn pending_close_request(
+    team_run_id: &str,
+    member_run_id: &str,
+    requested_by: &str,
+    reason: &str,
+) -> TeamMemberCloseRequest {
+    TeamMemberCloseRequest {
+        id: generated_id("member-close"),
+        team_run_id: team_run_id.to_string(),
+        member_run_id: member_run_id.to_string(),
+        requested_by: requested_by.to_string(),
+        reason: reason.to_string(),
+        status: TeamMemberCloseStatus::Pending,
+        requested_at: now_string(),
+        applied_at: None,
+    }
 }
 
 fn mark_member_coordination_closed(
@@ -20550,6 +20576,13 @@ pub(crate) fn drive_prepared_team_run(
     }
 
     if lease_lost {
+        // Deterministic integration seam: keep the exact failed generation's
+        // durable lease and invalid local control endpoint observable long
+        // enough to prove that control is rejected by the process-local
+        // latch. Production never sets this environment variable.
+        if let Some(hold) = supervisor_test_lease_loss_hold() {
+            std::thread::sleep(hold);
+        }
         return Err(supervisor_lease_lost_error(&run_id));
     }
 
@@ -29139,24 +29172,44 @@ fn close_team_member_value(
         }));
     }
 
-    let live_lease = store
-        .latest_team_supervisor_lease(team_run_id)?
-        .filter(is_supervisor_current);
-    // An external interactive member has no supervisor-owned runtime to
-    // dispatch control to; closing it only records the terminal status.
-    if live_lease.is_some() && !member.is_external_interactive() {
-        return dispatch_live_member_control(
-            store,
-            LiveMemberControlRequest::Close {
-                team_run_id: team_run_id.to_string(),
-                member_run_id: member_run_id.to_string(),
-                reason,
-                requested_by,
-            },
-        );
-    }
+    let close_candidate = pending_close_request(team_run_id, member_run_id, &requested_by, &reason);
+    let close = if member.is_external_interactive() {
+        latch_member_close(store, team_run_id, member_run_id, &requested_by, &reason)?
+    } else {
+        loop {
+            let live_lease = store
+                .latest_team_supervisor_lease(team_run_id)?
+                .filter(is_supervisor_current);
+            if live_lease.is_some() {
+                return dispatch_live_member_control(
+                    store,
+                    LiveMemberControlRequest::Close {
+                        team_run_id: team_run_id.to_string(),
+                        member_run_id: member_run_id.to_string(),
+                        reason,
+                        requested_by,
+                    },
+                );
+            }
 
-    let close = latch_member_close(store, team_run_id, member_run_id, &requested_by, &reason)?;
+            match store.latch_team_member_close_without_current_supervisor(
+                &close_candidate,
+                current_unix_ms_u64(),
+            ) {
+                Ok(close) => break close,
+                Err(StoreError::Conflict(message))
+                    if message.starts_with("TEAM_SUPERVISOR_LEASE_CURRENT:") =>
+                {
+                    // A successor generation won the Store lock after our
+                    // optimistic read. Re-read once through the loop and route
+                    // the Close to that exact live owner instead of reaping a
+                    // runtime under newly-acquired authority.
+                    continue;
+                }
+                Err(error) => return store_conflict_as_usage(Err(error)),
+            }
+        }
+    };
     let member = mark_member_coordination_closed(store, team_run_id, member_run_id)?;
     // Past this point no live Supervisor lease exists (the live case was
     // dispatched above) and the durable lease is the sole cross-process
@@ -44190,6 +44243,142 @@ mod tests {
             b"heartbeat failure latched"
         );
         fs::remove_file(&marker).expect("remove heartbeat failure marker");
+    }
+
+    #[test]
+    fn locally_invalid_supervisor_rejects_close_with_current_durable_generation() {
+        let (store, root) = temp_store("local-latch-close-fence");
+        let created = create_two_member_team_run(&store);
+        let member = created.member_runs[0].clone();
+        let lease = store
+            .acquire_test_supervisor_lease(
+                &created.team_run.id,
+                "supervisor-local-latch",
+                std::process::id(),
+                "tcp://127.0.0.1:1",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire current Supervisor lease");
+
+        let error = dispatch_local_live_member_control(
+            &store,
+            &lease.supervisor_id,
+            lease.generation,
+            &AtomicBool::new(false),
+            LiveMemberControlRequest::Close {
+                team_run_id: created.team_run.id.clone(),
+                member_run_id: member.id.clone(),
+                reason: "must stay fenced".into(),
+                requested_by: "test".into(),
+            },
+        )
+        .expect_err("lost local latch must reject Close");
+
+        assert!(
+            error.is_supervisor_lease_lost(),
+            "unexpected error: {error}"
+        );
+        assert!(
+            store
+                .team_member_close_requests()
+                .expect("close requests")
+                .is_empty(),
+            "locally invalid generation persisted Close"
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn close_admission_is_serialized_with_successor_supervisor_generation() {
+        let (store, root) = temp_store("successor-close-admission-fence");
+        let created = create_two_member_team_run(&store);
+        let member = created.member_runs[0].clone();
+        let first = store
+            .acquire_test_supervisor_lease(
+                &created.team_run.id,
+                "supervisor-before-close",
+                std::process::id(),
+                "tcp://127.0.0.1:1",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire first Supervisor lease");
+        let close = pending_close_request(
+            &created.team_run.id,
+            &member.id,
+            "host",
+            "close before successor provider spawn",
+        );
+
+        let current_error = store
+            .latch_team_member_close_without_current_supervisor(&close, current_unix_ms_u64())
+            .expect_err("current generation must fence stale-runtime Close");
+        assert!(
+            current_error
+                .to_string()
+                .contains("TEAM_SUPERVISOR_LEASE_CURRENT"),
+            "unexpected current-generation error: {current_error}"
+        );
+        assert!(
+            store
+                .team_member_close_requests()
+                .expect("close requests")
+                .is_empty(),
+            "fenced Close was persisted"
+        );
+
+        store
+            .release_team_supervisor_lease(
+                &created.team_run.id,
+                &first.supervisor_id,
+                first.generation,
+                current_unix_ms_u64(),
+            )
+            .expect("release first generation");
+        store
+            .latch_team_member_close_without_current_supervisor(&close, current_unix_ms_u64())
+            .expect("latch Close while no generation owns the run");
+        let successor = store
+            .acquire_test_supervisor_lease(
+                &created.team_run.id,
+                "supervisor-after-close",
+                std::process::id(),
+                "tcp://127.0.0.1:2",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire successor generation");
+        assert!(successor.generation > first.generation);
+
+        let ledger = TeamRunLedger::new(
+            &store,
+            &created.team_run.id,
+            &successor.supervisor_id,
+            successor.generation,
+            Arc::new(AtomicBool::new(true)),
+        );
+        assert!(matches!(
+            prepare_member_workspace_for_spawn(&ledger, &member, &test_workspace_snapshot(&root),)
+                .expect("successor reconciles pending Close"),
+            PreSpawnWorkspacePreparation::Superseded
+        ));
+        let latest = latest_member_runs_in_append_order(&store)
+            .expect("latest members")
+            .into_iter()
+            .find(|candidate| candidate.id == member.id)
+            .expect("member");
+        assert!(latest.coordination_is_closed());
+        assert_eq!(latest.status, MemberRunStatus::Stopped);
+        assert_eq!(
+            store
+                .latest_team_member_close_request(&member.id)
+                .expect("close request")
+                .expect("close row")
+                .status,
+            TeamMemberCloseStatus::Applied
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]

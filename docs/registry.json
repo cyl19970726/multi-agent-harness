@@ -3871,31 +3871,6 @@
       "truthRefs": []
     },
     {
-      "path": "plugins/star-harness/skills/shared-references/agent-team-mental-model.md",
-      "ownerRole": "product",
-      "status": "stable",
-      "lifecycle": "stable",
-      "canonicalFor": [
-        "Agent Team operational model — stores, events, states, wake/delivery, message push"
-      ],
-      "dependsOn": [
-        "plugins/star-harness/skills/shared-references/SKILL.md"
-      ],
-      "machineConsumers": [
-        "check-doc-governance",
-        "lead-skill",
-        "member-skill"
-      ],
-      "reviewAfter": "2026-09-07",
-      "lastVerifiedWith": [
-        "cargo run -q -p firm-cli -- governance check"
-      ],
-      "reorgTrigger": "Agent Team stores, events, states, wake/delivery, or message push model changes.",
-      "authorityClass": "implementation_reference",
-      "implementationState": "partial",
-      "truthRefs": []
-    },
-    {
       "path": "docs/decisions/0054-ai-first-docs-page-model-and-storage.md",
       "ownerRole": "product-architecture",
       "status": "stable",
