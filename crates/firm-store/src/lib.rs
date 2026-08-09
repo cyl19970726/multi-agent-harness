@@ -802,11 +802,6 @@ impl HarnessStore {
         self.append_jsonl_unlocked("teams.jsonl", value)
     }
 
-    #[deprecated(note = "use insert_agent_team_with_unique_mission")]
-    pub fn insert_agent_team(&self, value: &AgentTeam) -> StoreResult<()> {
-        self.insert_agent_team_with_unique_mission(value)
-    }
-
     /// Insert one slim, durable Organization identity under the store lock.
     /// Provider/runtime/session state belongs to MemberRun and native sessions,
     /// never to this ledger (ADR 0052).
@@ -10133,7 +10128,6 @@ mod tests {
                 desired_outcome: None,
                 status: MissionStatus::Planned,
                 wave_ids: Vec::new(),
-                agent_team_ids: Vec::new(),
                 outcome_summary: None,
                 completed_by: None,
                 created_at: "unix-ms:1".into(),
@@ -10181,7 +10175,6 @@ mod tests {
             desired_outcome: Some("A compatible, durable contract".into()),
             status: MissionStatus::Planned,
             wave_ids: vec!["wave-1".into()],
-            agent_team_ids: Vec::new(),
             outcome_summary: None,
             completed_by: None,
             created_at: "unix-ms:1".into(),
@@ -10271,7 +10264,6 @@ mod tests {
             desired_outcome: None,
             status: MissionStatus::Running,
             wave_ids: vec!["wave-legacy".into()],
-            agent_team_ids: Vec::new(),
             outcome_summary: None,
             completed_by: None,
             created_at: "unix-ms:1".into(),
@@ -10380,7 +10372,6 @@ mod tests {
                 desired_outcome: None,
                 status: MissionStatus::Planned,
                 wave_ids: Vec::new(),
-                agent_team_ids: Vec::new(),
                 outcome_summary: None,
                 completed_by: None,
                 created_at: "unix-ms:1".into(),
@@ -10456,60 +10447,7 @@ mod tests {
             "error: {error}"
         );
 
-        let wave_id = waves[0].id.clone();
-        let run_barrier = Arc::new(Barrier::new(2));
-        let run_handles = ["team-run-a", "team-run-b"].map(|id| {
-            let store = Arc::clone(&store);
-            let barrier = Arc::clone(&run_barrier);
-            let wave_id = wave_id.clone();
-            std::thread::spawn(move || {
-                barrier.wait();
-                store.insert_team_run_and_register_attempt(
-                    &AgentTeamRun {
-                        id: id.into(),
-                        definition_id: None,
-                        agent_team_id: None,
-                        previous_run_id: None,
-                        mission_id: Some("mission-concurrent".into()),
-                        wave_id: Some(wave_id),
-                        project_binding_id: Some("project-concurrent".into()),
-                        host_surface: "test".into(),
-                        host_thread_id: None,
-                        host_actor: None,
-                        host_control_mode: Default::default(),
-                        objective: "attempt".into(),
-                        execution_root: Some("/projects/concurrent".into()),
-                        status: TeamRunStatus::Planning,
-                        member_run_ids: vec![format!("member-{id}")],
-                        budget_limit_usd: None,
-                        created_at: "unix-ms:3".into(),
-                        updated_at: "unix-ms:3".into(),
-                        completed_at: None,
-                    },
-                    "unix-ms:3",
-                )
-            })
-        });
-        let run_results = run_handles
-            .into_iter()
-            .map(|handle| handle.join().expect("run thread"))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            run_results.iter().filter(|result| result.is_ok()).count(),
-            1
-        );
-        assert_eq!(
-            run_results.iter().filter(|result| result.is_err()).count(),
-            1
-        );
-        let wave = store
-            .latest_waves()
-            .expect("latest waves")
-            .into_iter()
-            .find(|wave| wave.id == wave_id)
-            .expect("attempt wave");
-        assert_eq!(wave.executor_run_ids.len(), 1);
-        let event_run_id = wave.executor_run_ids[0].clone();
+        let event_run_id = "team-run-concurrent-events".to_string();
 
         let event_barrier = Arc::new(Barrier::new(8));
         let event_handles = (0..8)
@@ -10560,7 +10498,6 @@ mod tests {
             desired_outcome: None,
             status: MissionStatus::Planned,
             wave_ids: Vec::new(),
-            agent_team_ids: Vec::new(),
             outcome_summary: None,
             completed_by: None,
             created_at: "unix-ms:1".into(),
@@ -10828,7 +10765,6 @@ mod tests {
                         desired_outcome: None,
                         status: MissionStatus::Running,
                         wave_ids: Vec::new(),
-                        agent_team_ids: Vec::new(),
                         outcome_summary: None,
                         completed_by: None,
                         created_at: "2026-05-26T00:00:00Z".into(),
@@ -10876,7 +10812,6 @@ mod tests {
             desired_outcome: None,
             status: MissionStatus::Running,
             wave_ids: Vec::new(),
-            agent_team_ids: Vec::new(),
             outcome_summary: None,
             completed_by: None,
             created_at: "2026-05-26T00:00:00Z".into(),
@@ -11024,12 +10959,10 @@ mod tests {
     ) -> (AgentTeamRun, MemberRun, Work) {
         let run = AgentTeamRun {
             id: run_id.into(),
-            definition_id: None,
-            agent_team_id: None,
+            agent_team_id: format!("team-{run_id}"),
+            execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
+            project_binding_id: "project-test".into(),
             previous_run_id: None,
-            mission_id: None,
-            wave_id: None,
-            project_binding_id: None,
             host_surface: "codex-app".into(),
             host_thread_id: host_thread_id.map(str::to_string),
             host_actor: None,
@@ -11712,12 +11645,10 @@ mod tests {
         store
             .append_team_run(&AgentTeamRun {
                 id: id.into(),
-                definition_id: None,
-                agent_team_id: None,
+                agent_team_id: format!("team-{id}"),
+                execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
+                project_binding_id: "project-test".into(),
                 previous_run_id: None,
-                mission_id: None,
-                wave_id: None,
-                project_binding_id: None,
                 host_surface: "codex-app".into(),
                 host_thread_id: None,
                 host_actor: None,
@@ -11734,6 +11665,70 @@ mod tests {
             .expect("seed run");
     }
 
+    trait TestSupervisorLeaseExt {
+        fn acquire_test_supervisor_lease(
+            &self,
+            team_run_id: &str,
+            supervisor_id: &str,
+            owner_process_id: u32,
+            owner_locator: &str,
+            now_unix_ms: u64,
+            ttl_ms: u64,
+        ) -> StoreResult<TeamSupervisorLease>;
+    }
+
+    impl TestSupervisorLeaseExt for HarnessStore {
+        fn acquire_test_supervisor_lease(
+            &self,
+            team_run_id: &str,
+            supervisor_id: &str,
+            owner_process_id: u32,
+            owner_locator: &str,
+            now_unix_ms: u64,
+            ttl_ms: u64,
+        ) -> StoreResult<TeamSupervisorLease> {
+            let run = self
+                .team_runs()?
+                .into_iter()
+                .rev()
+                .find(|run| run.id == team_run_id)
+                .ok_or_else(|| StoreError::Conflict(format!("team run not found: {team_run_id}")))?;
+            if !self
+                .latest_execution_nodes()?
+                .iter()
+                .any(|node| node.id == run.execution_node_id)
+            {
+                self.insert_execution_node(&ExecutionNode {
+                    id: run.execution_node_id.clone(),
+                    display_name: "test-node".into(),
+                    status: ExecutionNodeStatus::Active,
+                    created_at: "unix-ms:1".into(),
+                    updated_at: "unix-ms:1".into(),
+                })?;
+            }
+            let parent = self.acquire_node_daemon_lease(
+                &run.execution_node_id,
+                "daemon-test",
+                "instance-test",
+                now_unix_ms,
+                u64::MAX / 2,
+            )?;
+            self.acquire_team_supervisor_under_node_lease(
+                team_run_id,
+                &run.execution_node_id,
+                &parent.daemon_id,
+                parent.generation,
+                "space-test",
+                &run.project_binding_id,
+                supervisor_id,
+                owner_process_id,
+                owner_locator,
+                now_unix_ms,
+                ttl_ms,
+            )
+        }
+    }
+
     /// The tail-window fast path must not change which lease a reader sees,
     /// even when the target row sits far in front of the window.
     #[test]
@@ -11743,10 +11738,10 @@ mod tests {
         seed_lease_run(&store, "run-a");
         seed_lease_run(&store, "run-b");
         store
-            .acquire_team_supervisor_lease("run-a", "sup-a", 1, "a", 1_000, 15_000)
+            .acquire_test_supervisor_lease("run-a", "sup-a", 1, "a", 1_000, 15_000)
             .expect("acquire a");
         store
-            .acquire_team_supervisor_lease("run-b", "sup-b", 2, "b", 1_000, 15_000)
+            .acquire_test_supervisor_lease("run-b", "sup-b", 2, "b", 1_000, 15_000)
             .expect("acquire b");
         // Push run-a's latest row well outside the 256 KiB tail window.
         for tick in 0..4_000u64 {
@@ -11780,7 +11775,7 @@ mod tests {
         let store = HarnessStore::new(&root);
         seed_lease_run(&store, "run-a");
         store
-            .acquire_team_supervisor_lease("run-a", "sup-a", 1, "a", 1_000, 15_000)
+            .acquire_test_supervisor_lease("run-a", "sup-a", 1, "a", 1_000, 15_000)
             .expect("acquire");
         for tick in 0..20u64 {
             store
@@ -11822,7 +11817,7 @@ mod tests {
         let store = HarnessStore::new(&root);
         seed_lease_run(&store, "run-a");
         store
-            .acquire_team_supervisor_lease("run-a", "sup-1", 1, "a", 1_000, 10)
+            .acquire_test_supervisor_lease("run-a", "sup-1", 1, "a", 1_000, 10)
             .expect("acquire gen 1");
         for tick in 0..500u64 {
             store
@@ -11837,7 +11832,7 @@ mod tests {
 
         // The lease has expired, so a different Supervisor takes generation 2.
         let gen2 = store
-            .acquire_team_supervisor_lease("run-a", "sup-2", 3, "b", 900_000, 15_000)
+            .acquire_test_supervisor_lease("run-a", "sup-2", 3, "b", 900_000, 15_000)
             .expect("acquire gen 2");
         assert_eq!(gen2.generation, 2);
 
@@ -11879,17 +11874,15 @@ mod tests {
     }
 
     #[test]
-    fn append_and_read_team_run_jsonl() {
+    fn append_and_read_team_run_jsonl_rejects_legacy_sparse_rows() {
         let root = team_test_root("team-run");
         let store = HarnessStore::new(&root);
         let run = AgentTeamRun {
             id: "tr-1".into(),
-            definition_id: Some("td-1".into()),
-            agent_team_id: Some("td-1".into()),
+            agent_team_id: "td-1".into(),
+            execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
+            project_binding_id: "project-example".into(),
             previous_run_id: Some("tr-0".into()),
-            mission_id: Some("mission-1".into()),
-            wave_id: Some("wave-2".into()),
-            project_binding_id: Some("project-example".into()),
             host_surface: "codex-app".into(),
             host_thread_id: Some("thread-1".into()),
             host_actor: None,
@@ -11905,28 +11898,18 @@ mod tests {
         };
 
         store.append_team_run(&run).expect("append team run");
-        // A sparse row omitting every optional field must read back with defaults.
+        // Required Team/Node/Project authority makes legacy sparse rows unreadable
+        // after the clean cutover.
         append_sparse_row(
             &root,
             "team_runs.jsonl",
             r#"{"id":"tr-sparse","host_surface":"kimi-cli","objective":"obj","status":"planning","created_at":"unix-ms:3","updated_at":"unix-ms:3"}"#,
         );
 
-        let runs = store.team_runs().expect("read team runs");
-        assert_eq!(runs.len(), 2);
-        assert_eq!(runs[0], run);
-        let sparse = &runs[1];
-        assert_eq!(sparse.id, "tr-sparse");
-        assert!(sparse.definition_id.is_none());
-        assert!(sparse.previous_run_id.is_none());
-        assert!(sparse.mission_id.is_none());
-        assert!(sparse.wave_id.is_none());
-        assert!(sparse.project_binding_id.is_none());
-        assert!(sparse.host_thread_id.is_none());
-        assert!(sparse.execution_root.is_none());
-        assert!(sparse.member_run_ids.is_empty());
-        assert!(sparse.budget_limit_usd.is_none());
-        assert!(sparse.completed_at.is_none());
+        let error = store
+            .team_runs()
+            .expect_err("legacy sparse TeamRun must not compatibility-read");
+        assert!(matches!(error, StoreError::Json(_)));
 
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
@@ -11973,12 +11956,10 @@ mod tests {
         store
             .append_team_run(&AgentTeamRun {
                 id: "tr-1".into(),
-                definition_id: None,
-                agent_team_id: None,
+                agent_team_id: "team-tr-1".into(),
+                execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
+                project_binding_id: "project-test".into(),
                 previous_run_id: None,
-                mission_id: None,
-                wave_id: None,
-                project_binding_id: None,
                 host_surface: "test".into(),
                 host_thread_id: None,
                 host_actor: None,
@@ -12094,12 +12075,10 @@ mod tests {
         store
             .append_team_run(&AgentTeamRun {
                 id: run_id.to_string(),
-                definition_id: None,
-                agent_team_id: None,
+                agent_team_id: format!("team-{run_id}"),
+                execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
+                project_binding_id: "project-test".into(),
                 previous_run_id: None,
-                mission_id: None,
-                wave_id: None,
-                project_binding_id: None,
                 host_surface: "codex-app".into(),
                 host_thread_id: Some("host-thread".into()),
                 host_actor: None,
@@ -12315,7 +12294,7 @@ mod tests {
         );
 
         store
-            .acquire_team_supervisor_lease(
+            .acquire_test_supervisor_lease(
                 &request.team_run_id,
                 "supervisor-interaction",
                 42,
@@ -12570,7 +12549,7 @@ mod tests {
             .compare_and_append_member_run(&current, &closed)
             .expect("close member");
         store
-            .acquire_team_supervisor_lease(
+            .acquire_test_supervisor_lease(
                 &request.team_run_id,
                 "supervisor-stale-claim",
                 43,
@@ -13153,12 +13132,10 @@ mod tests {
         let store = Arc::new(HarnessStore::new(&root));
         let run = AgentTeamRun {
             id: "tr-claim".into(),
-            definition_id: None,
-            agent_team_id: None,
+            agent_team_id: "team-claim".into(),
+            execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
+            project_binding_id: "project-test".into(),
             previous_run_id: None,
-            mission_id: None,
-            wave_id: None,
-            project_binding_id: None,
             host_surface: "codex-app".into(),
             host_thread_id: Some("thread-claim".into()),
             host_actor: None,
@@ -13175,15 +13152,15 @@ mod tests {
         store.append_team_run(&run).expect("append run");
 
         let first = store
-            .acquire_team_supervisor_lease(&run.id, "supervisor-a", 101, "test:a", 100, 1_000)
+            .acquire_test_supervisor_lease(&run.id, "supervisor-a", 101, "test:a", 100, 1_000)
             .expect("first Supervisor");
         assert_eq!(first.generation, 1);
         let conflict = store
-            .acquire_team_supervisor_lease(&run.id, "supervisor-b", 202, "test:b", 101, 1_000)
+            .acquire_test_supervisor_lease(&run.id, "supervisor-b", 202, "test:b", 101, 1_000)
             .expect_err("second active Supervisor must be rejected");
         assert!(conflict.to_string().contains("supervisor-a"));
         let second = store
-            .acquire_team_supervisor_lease(&run.id, "supervisor-b", 202, "test:b", 1_101, 1_000)
+            .acquire_test_supervisor_lease(&run.id, "supervisor-b", 202, "test:b", 1_101, 1_000)
             .expect("expired lease may be replaced");
         assert_eq!(second.generation, 2);
 
@@ -13359,12 +13336,10 @@ mod tests {
         let store = HarnessStore::new(&root);
         let run = AgentTeamRun {
             id: "tr-fail-mail".into(),
-            definition_id: None,
-            agent_team_id: None,
+            agent_team_id: "team-fail-mail".into(),
+            execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
+            project_binding_id: "project-test".into(),
             previous_run_id: None,
-            mission_id: None,
-            wave_id: None,
-            project_binding_id: None,
             host_surface: "codex-app".into(),
             host_thread_id: None,
             host_actor: None,
@@ -13381,7 +13356,7 @@ mod tests {
         store.append_team_run(&run).expect("append run");
 
         let lease = store
-            .acquire_team_supervisor_lease(
+            .acquire_test_supervisor_lease(
                 &run.id,
                 "supervisor-pre-bind",
                 300,
@@ -13513,12 +13488,10 @@ mod tests {
         let store = HarnessStore::new(&root);
         let run = AgentTeamRun {
             id: "tr-close".into(),
-            definition_id: None,
-            agent_team_id: None,
+            agent_team_id: "team-close".into(),
+            execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
+            project_binding_id: "project-test".into(),
             previous_run_id: None,
-            mission_id: None,
-            wave_id: None,
-            project_binding_id: None,
             host_surface: "codex-app".into(),
             host_thread_id: Some("thread-close".into()),
             host_actor: None,
@@ -13772,12 +13745,10 @@ mod tests {
         let store = HarnessStore::new(&root);
         let run = AgentTeamRun {
             id: format!("tr-{name}"),
-            definition_id: None,
-            agent_team_id: None,
+            agent_team_id: format!("team-{name}"),
+            execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
+            project_binding_id: "project-test".into(),
             previous_run_id: None,
-            mission_id: None,
-            wave_id: None,
-            project_binding_id: None,
             host_surface: "codex-app".into(),
             host_thread_id: Some(format!("host-{name}")),
             host_actor: None,
@@ -14020,11 +13991,9 @@ mod tests {
             .expect("create open Work");
 
         let error = store
-            .compare_and_append_team_run_with_wave_status(
+            .compare_and_append_team_run_lifecycle(
                 &run,
                 &completed_team_run(&run, "unix-ms:3"),
-                WaveStatus::Waiting,
-                "unix-ms:3",
             )
             .expect_err("Store must reject completion while Work is non-terminal");
         assert!(
@@ -14061,11 +14030,9 @@ mod tests {
             let completion_barrier = Arc::clone(&barrier);
             let completion = std::thread::spawn(move || {
                 completion_barrier.wait();
-                completion_store.compare_and_append_team_run_with_wave_status(
+                completion_store.compare_and_append_team_run_lifecycle(
                     &completion_run,
                     &completed_team_run(&completion_run, "unix-ms:3"),
-                    WaveStatus::Waiting,
-                    "unix-ms:3",
                 )
             });
 
@@ -14560,11 +14527,9 @@ mod tests {
             .to_string()
             .contains("TEAM_RUN_REVISION_REQUIRES_CAS"));
         let cas_error = store
-            .compare_and_append_team_run_with_wave_status(
+            .compare_and_append_team_run_lifecycle(
                 &run,
                 &forged_run,
-                WaveStatus::Running,
-                "unix-ms:5",
             )
             .expect_err("legacy lifecycle CAS cannot extend membership");
         assert!(cas_error
@@ -15548,7 +15513,7 @@ mod tests {
             .find(|delivery| delivery.work_id == in_flight.id)
             .expect("queued delivery");
         let lease = store
-            .acquire_team_supervisor_lease(&run.id, "supervisor-1", 11, "test:release", 100, 100)
+            .acquire_test_supervisor_lease(&run.id, "supervisor-1", 11, "test:release", 100, 100)
             .expect("lease");
         let claimed = match store
             .claim_work_delivery(
@@ -15621,7 +15586,7 @@ mod tests {
             .find(|delivery| delivery.work_id == assigned.id)
             .expect("initial delivery");
         let lease = store
-            .acquire_team_supervisor_lease(&run.id, "supervisor-history", 3, "test", 100, 100)
+            .acquire_test_supervisor_lease(&run.id, "supervisor-history", 3, "test", 100, 100)
             .expect("lease");
         let claimed = match store
             .claim_work_delivery(
@@ -15782,7 +15747,7 @@ mod tests {
             .find(|delivery| delivery.work_id == assigned.id)
             .expect("initial delivery");
         let first = store
-            .acquire_team_supervisor_lease(&run.id, "supervisor-fold-1", 4, "test", 100, 10)
+            .acquire_test_supervisor_lease(&run.id, "supervisor-fold-1", 4, "test", 100, 10)
             .expect("first lease");
         let claimed = match store
             .claim_work_delivery(
@@ -15804,7 +15769,7 @@ mod tests {
         };
         assert_eq!(claimed.status, WorkDeliveryStatus::Claimed);
         let successor = store
-            .acquire_team_supervisor_lease(&run.id, "supervisor-fold-2", 5, "test", 111, 100)
+            .acquire_test_supervisor_lease(&run.id, "supervisor-fold-2", 5, "test", 111, 100)
             .expect("successor lease");
         store
             .reconcile_stale_work_delivery_claim(
@@ -15909,7 +15874,7 @@ mod tests {
             .find(|delivery| delivery.work_id == "work-reconcile")
             .expect("queued delivery");
         let first = store
-            .acquire_team_supervisor_lease(&run.id, "supervisor-1", 11, "test:first", 100, 10)
+            .acquire_test_supervisor_lease(&run.id, "supervisor-1", 11, "test:first", 100, 10)
             .expect("first lease");
         let claimed = match store
             .claim_work_delivery(
@@ -15930,7 +15895,7 @@ mod tests {
         assert_eq!(claimed.attempt, 1);
 
         let second = store
-            .acquire_team_supervisor_lease(&run.id, "supervisor-2", 22, "test:successor", 111, 100)
+            .acquire_test_supervisor_lease(&run.id, "supervisor-2", 22, "test:successor", 111, 100)
             .expect("successor lease");
         assert_eq!(second.generation, 2);
         let requeued = store
@@ -16012,7 +15977,7 @@ mod tests {
             .to_string()
             .contains("different provider receipt"));
         let third = store
-            .acquire_team_supervisor_lease(&run.id, "supervisor-3", 33, "test:third", 212, 100)
+            .acquire_test_supervisor_lease(&run.id, "supervisor-3", 33, "test:third", 212, 100)
             .expect("third lease");
         let uncertain = store
             .reconcile_stale_work_delivery_claim(
@@ -16068,7 +16033,7 @@ mod tests {
             .find(|delivery| delivery.work_id == dependent.id)
             .expect("dependent delivery");
         let lease = store
-            .acquire_team_supervisor_lease(&run.id, "supervisor-ready", 7, "test", 100, 100)
+            .acquire_test_supervisor_lease(&run.id, "supervisor-ready", 7, "test", 100, 100)
             .expect("lease");
         assert_eq!(
             store
@@ -16207,7 +16172,7 @@ mod tests {
             .find(|delivery| delivery.work_id == assigned.id)
             .expect("initial delivery");
         let lease = store
-            .acquire_team_supervisor_lease(&run.id, "supervisor-rebind", 9, "test", 100, 100)
+            .acquire_test_supervisor_lease(&run.id, "supervisor-rebind", 9, "test", 100, 100)
             .expect("lease");
         let claimed = match store
             .claim_work_delivery(
@@ -16331,12 +16296,6 @@ mod tests {
     #[test]
     fn rebind_redelivers_same_member_run_id_at_a_higher_runtime_generation() {
         let (root, store, run, member, _) = work_test_fixture("same-id-generation-rebind");
-        let mut linked_run = run.clone();
-        linked_run.agent_team_id = Some("agent-team-same-id-rebind".into());
-        linked_run.updated_at = "unix-ms:2".into();
-        store
-            .compare_and_link_team_run_agent_team(&run, &linked_run)
-            .expect("link durable AgentTeam");
         let mut assigned = unassigned_test_work(&run.id, "work-same-id-rebind");
         assigned.claim_mode = WorkClaimMode::HostAssign;
         assigned.owner_member_id = member.agent_member_id.clone();
@@ -16422,12 +16381,6 @@ mod tests {
     #[test]
     fn sparse_mixed_version_rebound_recovers_and_repersists_work_provenance() {
         let (root, store, run, member, _) = work_test_fixture("sparse-rebound-provenance");
-        let mut linked_run = run.clone();
-        linked_run.agent_team_id = Some("agent-team-sparse-rebound".into());
-        linked_run.updated_at = "unix-ms:2".into();
-        store
-            .compare_and_link_team_run_agent_team(&run, &linked_run)
-            .expect("link durable AgentTeam");
 
         let mut assigned = unassigned_test_work(&run.id, "work-sparse-rebound");
         assigned.claim_mode = WorkClaimMode::HostAssign;
@@ -16446,7 +16399,7 @@ mod tests {
             .expect("Member creates Team-scoped Work");
         assert_eq!(
             created.team_id.as_deref(),
-            Some("agent-team-sparse-rebound")
+            Some(run.agent_team_id.as_str())
         );
         assert_eq!(created.created_by_member_id, member.agent_member_id);
 
@@ -17119,26 +17072,6 @@ mod tests {
         }
     }
 
-    fn test_agent_team(
-        id: &str,
-        member_ids: &[&str],
-        parent_team_id: Option<&str>,
-        host_member_id: Option<&str>,
-    ) -> AgentTeam {
-        AgentTeam {
-            id: id.into(),
-            name: format!("{id} name"),
-            description: format!("{id} description"),
-            owner_agent_id: "host".into(),
-            status: firm_core::AgentTeamStatus::Active,
-            member_ids: member_ids.iter().map(|id| id.to_string()).collect(),
-            parent_team_id: parent_team_id.map(str::to_string),
-            host_member_id: host_member_id.map(str::to_string),
-            created_at: "unix-ms:1".into(),
-            updated_at: "unix-ms:1".into(),
-        }
-    }
-
     fn test_durable_member(id: &str) -> DurableAgentMember {
         DurableAgentMember {
             id: id.into(),
@@ -17169,141 +17102,19 @@ mod tests {
         (root, store)
     }
 
-    #[test]
-    fn insert_agent_team_persists_and_folds_latest_projection() {
-        let (root, store) = temp_store("team-topology-insert");
-        let root_team = test_agent_team("root", &["lead", "cto"], None, Some("lead"));
-        let child = test_agent_team("child", &["worker"], Some("root"), Some("cto"));
-        store.insert_agent_team(&root_team).expect("insert root");
-        store.insert_agent_team(&child).expect("insert child");
-
-        let teams = store.latest_teams().expect("latest teams");
-        assert_eq!(teams.len(), 2);
-        assert_eq!(
-            firm_core::team_subtree_ids(&teams, "root"),
-            vec!["root".to_string(), "child".to_string()]
-        );
-        assert_eq!(
-            firm_core::child_team_ids(&teams, "root"),
-            vec!["child".to_string()]
-        );
-        assert_eq!(
-            firm_core::team_ancestor_ids(&teams, "child"),
-            vec!["root".to_string()]
-        );
-
-        // A later revision of the same id folds into one latest row.
-        let mut renamed = root_team.clone();
-        renamed.name = "Root Renamed".into();
-        renamed.updated_at = "unix-ms:2".into();
-        store.append_team(&renamed).expect("append rename revision");
-        let teams = store.latest_teams().expect("latest teams after rename");
-        assert_eq!(teams.len(), 2);
-        assert_eq!(teams["root"].name, "Root Renamed");
-        std::fs::remove_dir_all(root).expect("remove temp store");
-    }
-
-    #[test]
-    fn insert_agent_team_rejects_duplicate_id_under_lock() {
-        let (root, store) = temp_store("team-topology-duplicate");
-        let team = test_agent_team("root", &[], None, None);
-        store.insert_agent_team(&team).expect("insert first");
-        let error = store
-            .insert_agent_team(&team)
-            .expect_err("duplicate id must be rejected");
-        assert!(matches!(error, StoreError::Conflict(_)));
-        assert!(error.to_string().contains("already exists"));
-        std::fs::remove_dir_all(root).expect("remove temp store");
-    }
-
-    #[test]
-    fn insert_agent_team_enforces_topology_invariants() {
-        let (root, store) = temp_store("team-topology-guard");
-        store
-            .insert_agent_team(&test_agent_team(
-                "root",
-                &["lead", "cto"],
-                None,
-                Some("lead"),
-            ))
-            .expect("insert root");
-
-        // Unknown parent.
-        let error = store
-            .insert_agent_team(&test_agent_team(
-                "orphan",
-                &[],
-                Some("missing"),
-                Some("cto"),
-            ))
-            .expect_err("unknown parent must be rejected");
-        assert!(error.to_string().contains("missing parent AgentTeam"));
-
-        // Non-root without a durable host.
-        let error = store
-            .insert_agent_team(&test_agent_team("hostless", &[], Some("root"), None))
-            .expect_err("non-root without host must be rejected");
-        assert!(error.to_string().contains("host_member_id"));
-
-        // Host that is not a direct member of the parent team.
-        let error = store
-            .insert_agent_team(&test_agent_team(
-                "stranger-hosted",
-                &[],
-                Some("root"),
-                Some("outsider"),
-            ))
-            .expect_err("host outside parent membership must be rejected");
-        assert!(error.to_string().contains("not a direct member"));
-
-        // One member hosting a second team.
-        let error = store
-            .insert_agent_team(&test_agent_team(
-                "second-child",
-                &[],
-                Some("root"),
-                Some("lead"),
-            ))
-            .expect_err("member hosting two teams must be rejected");
-        assert!(error.to_string().contains("more than one AgentTeam"));
-
-        // A valid child still inserts after all rejections, proving the failed
-        // candidates were never appended.
-        store
-            .insert_agent_team(&test_agent_team(
-                "child",
-                &["worker"],
-                Some("root"),
-                Some("cto"),
-            ))
-            .expect("valid child inserts");
-        assert_eq!(store.latest_teams().expect("latest teams").len(), 2);
-        std::fs::remove_dir_all(root).expect("remove temp store");
-    }
-
-    #[test]
-    fn insert_agent_team_rejects_cycle_candidates() {
-        let (root, store) = temp_store("team-topology-cycle");
-        store
-            .insert_agent_team(&test_agent_team("root", &["lead"], None, Some("lead")))
-            .expect("insert root");
-        // Self-parent candidate with its own distinct host: parent resolution,
-        // host presence, direct-host, and host-uniqueness all pass, so the
-        // acyclic invariant is the one that must reject it.
-        let error = store
-            .insert_agent_team(&test_agent_team(
-                "loop",
-                &["loopy"],
-                Some("loop"),
-                Some("loopy"),
-            ))
-            .expect_err("self-parent must be rejected");
-        assert!(
-            error.to_string().contains("cycle"),
-            "unexpected error: {error}"
-        );
-        assert_eq!(store.latest_teams().expect("latest teams").len(), 1);
-        std::fs::remove_dir_all(root).expect("remove temp store");
+    fn test_agent_team(id: &str, member_ids: &[&str]) -> AgentTeam {
+        AgentTeam {
+            id: id.into(),
+            name: format!("{id} name"),
+            description: format!("{id} description"),
+            mission_id: format!("mission-{id}"),
+            host_agent_id: "lead".into(),
+            node_id: "00000000-0000-4000-8000-000000000001".into(),
+            status: firm_core::AgentTeamStatus::Active,
+            member_ids: member_ids.iter().map(|id| id.to_string()).collect(),
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+        }
     }
 
     #[test]
@@ -17837,12 +17648,10 @@ mod tests {
         let store = HarnessStore::new(&root);
         let run = AgentTeamRun {
             id: "tr-work-unbound-ha".into(),
-            definition_id: None,
-            agent_team_id: None,
+            agent_team_id: "team-work-unbound-ha".into(),
+            execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
+            project_binding_id: "project-test".into(),
             previous_run_id: None,
-            mission_id: None,
-            wave_id: None,
-            project_binding_id: None,
             host_surface: "codex-app".into(),
             host_thread_id: None,
             host_actor: None,
@@ -17941,7 +17750,7 @@ mod tests {
             .find(|d| d.work_id == assigned.id)
             .expect("delivery");
         let lease = store
-            .acquire_team_supervisor_lease(&run.id, "supervisor-wdf", 7, "test", 100, 100)
+            .acquire_test_supervisor_lease(&run.id, "supervisor-wdf", 7, "test", 100, 100)
             .expect("lease");
         let claimed = match store
             .claim_work_delivery(
@@ -17988,15 +17797,26 @@ mod tests {
     fn root_lead_bootstrap_writes_one_identity_and_one_host_authority() {
         let (root, store) = temp_store("root-lead-bootstrap");
         store
-            .insert_agent_team(&test_agent_team("root", &["worker"], None, None))
-            .expect("insert compatibility root");
+            .insert_mission(&mission_log_test_mission("mission-root"))
+            .expect("insert Mission");
+        store
+            .insert_execution_node(&ExecutionNode {
+                id: "00000000-0000-4000-8000-000000000001".into(),
+                display_name: "test-node".into(),
+                status: ExecutionNodeStatus::Active,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+            })
+            .expect("insert Node");
+        store
+            .insert_agent_team_with_unique_mission(&test_agent_team("root", &["worker"]))
+            .expect("insert root Team");
         let lead = test_durable_member("lead");
         let team = store
             .bootstrap_root_lead_member("root", &lead)
             .expect("bootstrap root Lead");
-        assert_eq!(team.owner_agent_id, "lead");
-        assert_eq!(team.host_member_id.as_deref(), Some("lead"));
-        assert!(team.member_ids.iter().any(|id| id == "lead"));
+        assert_eq!(team.host_agent_id, "lead");
+        assert!(!team.member_ids.iter().any(|id| id == "lead"));
         assert_eq!(store.latest_durable_members().unwrap().len(), 1);
 
         // Same exact bootstrap is idempotent; a different identity is refused.
@@ -18005,11 +17825,11 @@ mod tests {
             .expect("repeat bootstrap");
         assert_eq!(same, team);
         assert_eq!(store.latest_durable_members().unwrap().len(), 1);
-        assert_eq!(store.teams().unwrap().len(), 2);
+        assert_eq!(store.teams().unwrap().len(), 1);
         let conflict = store
             .bootstrap_root_lead_member("root", &test_durable_member("other-lead"))
             .expect_err("second root Host must be refused");
-        assert!(conflict.to_string().contains("conflicting"));
+        assert!(conflict.to_string().contains("Host is lead"));
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 }
