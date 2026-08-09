@@ -4,7 +4,7 @@
 status: active
 date: 2026-07-28
 extends: ADR 0039 ordinary member planning and durable mailbox delivery
-implementation: exact binding and lease-aware scheduling landed; persistent Host driver remains pending
+implementation: exact binding, lease-aware scheduling, and one-shot exact-session dispatch landed; persistent daemon wiring remains pending
 ```
 
 ## Context
@@ -153,11 +153,30 @@ consumer in the same execution seam. Claims record the lease id, generation,
 and owner, so expiry, release, or takeover fences completion and stale claims
 return to actionable state rather than remaining stranded.
 
-The persistent/headless provider driver that would acquire and renew a
-Dispatcher lease, execute delivery, and return a real provider receipt remains
-issue #415/later work. Terminal accept, merge, or cancel decisions are outside
-this triage scheduler. Therefore this lease/scheduler slice must not be
-described as completing the full native Host dispatcher promised by #387.
+The CLI provides a bounded one-shot consumer:
+
+```bash
+harness team-run dispatch-host --id <run> \
+  [--min-age-s <seconds>] [--timeout-ms <milliseconds>]
+```
+
+It resolves the TeamRun's exact Project Binding, passes provider compatibility,
+acquires an exact Dispatcher lease, atomically claims the actual eligible batch,
+resumes the bound native session, and marks delivery only after a provider
+receipt. Provider failure requeues the claim and the command releases its lease
+on both success and failure. The delivered prompt is read-only triage: it may
+verify and communicate through Messages, but cannot accept, merge, cancel,
+close, reassign, or otherwise mutate Work lifecycle state.
+
+Kimi permission requests fail closed and Claude resume reapplies its read-only
+permission mode. Codex exact-session resume currently inherits the original
+session sandbox and cannot reapply `--sandbox`; the command therefore rejects
+Codex headless dispatch instead of treating a prompt prohibition as an
+enforceable permission boundary.
+
+The persistent multi-TeamRun loop remains issue #415. It should call this same
+one-shot seam rather than duplicate its claim, compatibility, identity, or
+receipt rules. Until that wiring lands, unattended dispatch is not complete.
 
 ### Codex safe-boundary delivery
 

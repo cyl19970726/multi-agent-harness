@@ -13,6 +13,42 @@ use harness_core::{
 use harness_store::{HarnessStore, StoreError};
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 
+/// Build the bounded, triage-only turn delivered to the exact bound Host
+/// session.  The provider transport is supplied by the CLI adapter layer; this
+/// module owns only the permission contract and the durable attention facts.
+pub fn build_headless_host_prompt(
+    team_run_id: &str,
+    objective: &str,
+    attentions: &[HostAttention],
+) -> String {
+    let mut prompt = format!(
+        "You are the headless triage Host for TeamRun {team_run_id}.\n\
+         Objective: {objective}\n\n\
+         This is a READ-ONLY TRIAGE turn. Inspect the durable facts below, run \
+         read-only verification, reply or request clarification through Message \
+         commands when useful, and leave terminal decisions for the interactive \
+         Host. You MUST NOT accept, merge, cancel, close, reassign, or otherwise \
+         mutate Work lifecycle state.\n\nPending Host attentions:\n"
+    );
+    for attention in attentions {
+        prompt.push_str(&format!(
+            "- id={} kind={:?} work_id={} work_version={} member_run_id={} source_event_ref={} attempt={}\n",
+            attention.id,
+            attention.kind,
+            attention.work_id,
+            attention.work_version,
+            attention.member_run_id.as_deref().unwrap_or("-"),
+            attention.source_event_ref,
+            attention.attempt,
+        ));
+    }
+    prompt.push_str(
+        "\nEnd with a concise triage report describing what you verified, what \
+         message you sent, and which decision still requires the interactive Host.",
+    );
+    prompt
+}
+
 /// Typed result of inspecting one TeamRun for Host work.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScheduleDecision {
@@ -260,6 +296,12 @@ where
         now_unix_ms,
         updated_at,
     )?;
+    if claimed.is_empty() {
+        return Err(StoreError::Conflict(format!(
+            "HOST_DISPATCH_NOTHING_CLAIMED: TeamRun {} has no eligible HostAttention after the dispatcher lease was acquired",
+            lease.team_run_id
+        )));
+    }
     match catch_unwind(AssertUnwindSafe(|| consumer(&claimed))) {
         Ok(Ok(success)) => {
             let DispatcherConsumerSuccess {
@@ -385,6 +427,38 @@ mod tests {
         };
         store.append_team_run(&run).expect("append run");
         (store, root, run)
+    }
+
+    #[test]
+    fn headless_prompt_is_bounded_and_forbids_terminal_mutations() {
+        let (_, root, run) = fixture();
+        let attention = HostAttention {
+            id: "attention-1".into(),
+            team_run_id: run.id.clone(),
+            kind: HostAttentionKind::WorkReviewRequested,
+            work_id: "work-1".into(),
+            work_version: 3,
+            source_event_ref: "work-event:3".into(),
+            member_run_id: Some("member-1".into()),
+            status: HostAttentionStatus::Actionable,
+            attempt: 0,
+            claim_id: None,
+            claimed_host_surface: None,
+            claimed_host_thread_id: None,
+            claimed_host_lease_id: None,
+            claimed_host_lease_generation: None,
+            claimed_host_lease_owner_id: None,
+            provider_receipt_id: None,
+            last_failure_reason: None,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+        };
+        let prompt = build_headless_host_prompt(&run.id, &run.objective, &[attention]);
+        assert!(prompt.contains("READ-ONLY TRIAGE"));
+        assert!(prompt.contains("MUST NOT accept, merge, cancel, close, reassign"));
+        assert!(prompt.contains("id=attention-1"));
+        assert!(prompt.contains("work_version=3"));
+        std::fs::remove_dir_all(root).expect("remove fixture");
     }
 
     #[test]
@@ -629,6 +703,26 @@ mod tests {
             delivered.provider_receipt_id.as_deref(),
             Some("provider-receipt-1")
         );
+
+        let consumer_called = std::cell::Cell::new(false);
+        let empty = claim_dispatcher_batch_with_consumer(
+            &store,
+            DispatcherBatchRequest {
+                lease: &current,
+                older_than_unix_ms: 100,
+                limit: 10,
+                claim_id: "claim-empty",
+                now_unix_ms: 114,
+                updated_at: "unix-ms:114",
+            },
+            |_| {
+                consumer_called.set(true);
+                DispatcherConsumerSuccess::new((), "impossible-receipt")
+            },
+        )
+        .expect_err("empty batch must not invoke consumer");
+        assert!(empty.to_string().contains("HOST_DISPATCH_NOTHING_CLAIMED"));
+        assert!(!consumer_called.get());
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
