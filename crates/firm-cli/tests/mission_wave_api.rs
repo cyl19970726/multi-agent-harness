@@ -1528,7 +1528,15 @@ fn http_console_delegates_native_team_run_to_node_daemon() {
                 member["id"].as_str() == Some(member_id.as_str())
                     && member["status"].as_str() == Some("idle")
             });
-        if idle {
+        let completed_turn = snapshot["member_actions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|action| {
+                action["member_run_id"].as_str() == Some(member_id.as_str())
+                    && action["action_type"].as_str() == Some("turn_completed")
+            });
+        if idle && completed_turn {
             break;
         }
         assert!(

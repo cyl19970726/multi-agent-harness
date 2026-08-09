@@ -154,7 +154,7 @@ fn handle_line(store: &HarnessStore, resolved: &ResolvedStore, line: &str) -> Op
 /// Dispatch one `tools/call`. Unknown tool names and malformed call params
 /// are JSON-RPC errors; a tool that runs and fails answers 200-style with
 /// `isError: true` so the host model sees the failure text as tool output.
-fn call_tool(
+pub(crate) fn call_tool(
     store: &HarnessStore,
     resolved: &ResolvedStore,
     params: &Value,
@@ -1103,6 +1103,10 @@ fn tool_team_run_create(
     let created = create_team_run(
         store,
         resolved.context.as_ref(),
+        resolved
+            .execution_space_context
+            .as_ref()
+            .map(|space| space.id.as_str()),
         optional_str(arguments, "execution_root")?,
         objective,
         budget_limit_usd,

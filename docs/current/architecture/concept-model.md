@@ -178,7 +178,7 @@ owned by one historical Wave.
 | `AgentTeamRun` | One Team execution with frozen Team, Node, and Project Binding. | May span Waves; every terminal run remains read-only history. |
 | `MemberRun` | One member instance inside a run: role, provider, model, status, worktree, owned paths. | Exists only for that run; it is not a durable standing employee record. |
 | `Work` | TeamRun-scoped responsibility, owner, readiness, state, criteria and result. | Assignment, claim, block, submission and acceptance are Work operations governed by ADR 0050. |
-| `WorkOperation` | Crash-atomic Store replay row containing one WorkEvent, its complete resulting Work, and delivery creates/updates. | It prevents an event and its projection from becoming independently visible; Hosts still act on Work, not WorkOperation. |
+| `WorkOperation` | Crash-atomic Store replay row containing one WorkEvent, its complete resulting Work, delivery creates/updates, and target-caused WorkDelegation revisions. | It prevents Work, delivery, and cross-Team roll-up projections from becoming independently visible; Hosts still act on Work, not WorkOperation. |
 | `WorkDelivery` | Reliable delivery of one Work version to a Member runtime. | It reuses delivery machinery but is not authored conversation or Work ownership. |
 | `TeamMessage` | Run-scoped authored conversation envelope with delivery records and optional Work link. | Questions, answers, planning and coordination live here; it is not task state or a fake live-control protocol. |
 | `ExecutionNode` / `NodeDaemonLease` | Stable machine identity and its one active daemon generation. | One NodeDaemon owns all local Teams and registered Project Bindings. |

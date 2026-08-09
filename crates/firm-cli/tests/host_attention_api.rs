@@ -411,8 +411,17 @@ fn member_resume_route_rejects_active_and_resumes_closed_member() {
         Some("supervisor_rescan"),
         "the existing NodeDaemon child supervisor owns resumed execution: {body}"
     );
-    assert!(
-        body["result"]["runtime_start"].is_null(),
-        "an already-managed TeamRun must not spawn another runtime owner: {body}"
-    );
+    let runtime_start = &body["result"]["runtime_start"];
+    if !runtime_start.is_null() {
+        assert_eq!(
+            runtime_start["team_run_id"].as_str(),
+            Some(run_id.as_str()),
+            "resume must target the same managed TeamRun: {body}"
+        );
+        assert_eq!(
+            runtime_start["daemon_response"]["reused"].as_bool(),
+            Some(true),
+            "the existing NodeDaemon child supervisor is reused, not duplicated: {body}"
+        );
+    }
 }

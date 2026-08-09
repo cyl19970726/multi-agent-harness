@@ -128,16 +128,22 @@ impl<'a> FakeCodex<'a> {
     }
 
     fn run(&self, home: &TempHome, args: &[&str]) -> std::process::Output {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_firm"));
+        command
+            .args(args)
+            .current_dir(home.base())
+            .envs(home.envs());
+        self.configure(home, &mut command);
+        command.output().expect("run harness")
+    }
+
+    fn configure(&self, home: &TempHome, command: &mut std::process::Command) {
         let path = format!(
             "{}:{}",
             self.bin.display(),
             std::env::var("PATH").unwrap_or_default()
         );
-        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_firm"));
         command
-            .args(args)
-            .current_dir(home.base())
-            .envs(home.envs())
             .env_remove("FIRM_ROOT")
             .env_remove("FIRM_PROJECT")
             .env_remove("FIRM_SPACE")
@@ -163,34 +169,36 @@ impl<'a> FakeCodex<'a> {
         if let Some(ttl) = &self.ttl_ms {
             command.env("FIRM_CAPACITY_TTL_MS", ttl);
         }
-        command.output().expect("run harness")
     }
 }
 
-/// The in-process provider fixtures still require the real parent authority:
-/// one machine NodeDaemon lease. A long scan interval keeps this authority
-/// holder from independently adopting the fixture run while the focused test
-/// drives it synchronously.
-fn spawn_node_authority(home: &TempHome) -> std::process::Child {
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_firm"))
+/// Provider preflight and execution belong to the machine NodeDaemon, so the
+/// deterministic provider environment is installed on that process rather
+/// than on the public `team-run start` request.
+fn spawn_node_authority(
+    home: &TempHome,
+    fake: &FakeCodex<'_>,
+    extra_env: &[(&str, &str)],
+) -> std::process::Child {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_firm"));
+    command
         .args([
             "daemon",
             "serve",
             "--scan-interval-secs",
-            "30",
+            "1",
             "--idle-timeout-secs",
             "60",
         ])
         .current_dir(home.base())
         .envs(home.envs())
-        .env_remove("FIRM_ROOT")
-        .env_remove("FIRM_PROJECT")
-        .env_remove("FIRM_SPACE")
-        .env_remove("FIRM_COMPANY")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn NodeDaemon authority");
+        .stderr(std::process::Stdio::null());
+    fake.configure(home, &mut command);
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
+    let mut child = command.spawn().expect("spawn NodeDaemon authority");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         let status = run_firm(home, home.base(), &["daemon", "status"]);
@@ -241,6 +249,17 @@ fn store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::
     ids.into_iter()
         .map(|id| by_id.remove(&id).unwrap())
         .collect()
+}
+
+fn wait_for_runtime_projection(description: &str, mut ready: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !ready() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {description}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
 }
 
 fn preflight_row(stdout: &[u8], provider: &str) -> serde_json::Value {
@@ -639,7 +658,6 @@ fn missing_proxy_is_diagnosed_as_runtime_context_not_an_account_limit() {
 fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
     let home = TempHome::new("capacity-start-guard-block");
     let project_id = init_project(&home, "alpha");
-    let mut daemon = spawn_node_authority(&home);
     let bin = fake_provider::install_kimi_acp_shim(home.base());
     fake_provider::install_codex_team_shim(&bin);
     let thread_marker = home.base().join("codex-threads.log");
@@ -648,6 +666,7 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
         thread_marker: Some(thread_marker.clone()),
         ..FakeCodex::new(&bin)
     };
+    let mut daemon = spawn_node_authority(&home, &fake, &[]);
     let run_id = create_single_member_run(
         &home,
         &fake,
@@ -675,6 +694,15 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
         "start failed: {}",
         String::from_utf8_lossy(&start.stderr)
     );
+    wait_for_runtime_projection("exhausted capacity refusal", || {
+        store_rows(&home, &project_id, "member_runs.jsonl")
+            .into_iter()
+            .next()
+            .is_some_and(|member| member["provider_capacity"]["state"] == "exhausted")
+            && store_rows(&home, &project_id, "member_actions.jsonl")
+                .iter()
+                .any(|action| action["action_type"] == "provider_unavailable")
+    });
 
     // 0. Identity stays reconstructable. Everything a Host needs to resume the
     //    same member — rather than create a new one — is byte-identical; only
@@ -782,6 +810,8 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
         thread_marker: Some(thread_marker.clone()),
         ..FakeCodex::new(&bin)
     };
+    stop_node_authority(&home, &mut daemon);
+    let mut daemon = spawn_node_authority(&home, &recovered, &[]);
     let restart = recovered.run(
         &home,
         &[
@@ -798,6 +828,16 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
         "restart failed: {}",
         String::from_utf8_lossy(&restart.stderr)
     );
+    wait_for_runtime_projection("recovered provider delivery", || {
+        store_rows(&home, &project_id, "member_runs.jsonl")
+            .into_iter()
+            .next()
+            .is_some_and(|member| member["provider_capacity"]["state"] == "available")
+            && work_deliveries(&home, &project_id)
+                .into_iter()
+                .next()
+                .is_some_and(|delivery| delivery["status"] == "provider_received")
+    });
     let delivery = work_deliveries(&home, &project_id)
         .into_iter()
         .next()
@@ -824,7 +864,6 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
 fn unknown_capacity_still_starts_the_member_and_delivers_work() {
     let home = TempHome::new("capacity-start-guard-unknown");
     let project_id = init_project(&home, "alpha");
-    let mut daemon = spawn_node_authority(&home);
     let bin = fake_provider::install_kimi_acp_shim(home.base());
     fake_provider::install_codex_team_shim(&bin);
     let fake = FakeCodex {
@@ -832,6 +871,7 @@ fn unknown_capacity_still_starts_the_member_and_delivers_work() {
         rate_limits_json: Some("null".to_string()),
         ..FakeCodex::new(&bin)
     };
+    let mut daemon = spawn_node_authority(&home, &fake, &[]);
     let run_id = create_single_member_run(
         &home,
         &fake,
@@ -855,6 +895,16 @@ fn unknown_capacity_still_starts_the_member_and_delivers_work() {
         "start failed: {}",
         String::from_utf8_lossy(&start.stderr)
     );
+    wait_for_runtime_projection("unknown capacity provider delivery", || {
+        store_rows(&home, &project_id, "member_runs.jsonl")
+            .into_iter()
+            .next()
+            .is_some_and(|member| member["provider_capacity"]["state"] == "unknown")
+            && work_deliveries(&home, &project_id)
+                .into_iter()
+                .next()
+                .is_some_and(|delivery| delivery["status"] != "queued")
+    });
 
     let member = store_rows(&home, &project_id, "member_runs.jsonl")
         .into_iter()
@@ -890,9 +940,13 @@ fn unknown_capacity_still_starts_the_member_and_delivers_work() {
 fn a_disabled_preflight_records_no_snapshot_and_never_blocks() {
     let home = TempHome::new("capacity-preflight-off");
     let project_id = init_project(&home, "alpha");
-    let mut daemon = spawn_node_authority(&home);
     let bin = fake_provider::install_kimi_acp_shim(home.base());
     fake_provider::install_codex_team_shim(&bin);
+    let disabled = FakeCodex {
+        rate_limits_json: Some(rate_limits_json(100, "null", false)),
+        ..FakeCodex::new(&bin)
+    };
+    let mut daemon = spawn_node_authority(&home, &disabled, &[("FIRM_CAPACITY_PREFLIGHT", "off")]);
     let path = format!(
         "{}:{}",
         bin.display(),
@@ -954,6 +1008,12 @@ fn a_disabled_preflight_records_no_snapshot_and_never_blocks() {
         "start failed: {}",
         String::from_utf8_lossy(&start.stderr)
     );
+    wait_for_runtime_projection("preflight-disabled provider delivery", || {
+        work_deliveries(&home, &project_id)
+            .into_iter()
+            .next()
+            .is_some_and(|delivery| delivery["status"] != "queued")
+    });
 
     let member = store_rows(&home, &project_id, "member_runs.jsonl")
         .into_iter()

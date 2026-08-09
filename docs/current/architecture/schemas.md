@@ -99,10 +99,13 @@ schema contracts are checked with valid and invalid fixtures.
 | Vision | [vision.schema.json](../../../schemas/vision.schema.json) |
 
 `WorkOperation` is the Store's crash-atomic replay envelope around one
-WorkEvent, its complete resulting Work, and delivery creates/updates. It is not
-a separately authored public lifecycle object and therefore has no standalone
-public JSON Schema in V1; the three public schemas above define the projections
-and semantic event/delivery records exposed by CLI/API/Dashboard.
+WorkEvent, its complete resulting Work, delivery creates/updates, and any
+`WorkDelegation` revisions caused by that exact target-Work transition. The
+embedded delegation revisions ensure HTTP, MCP, and CLI mutations cannot expose
+a newer target Work with a stale cross-Team roll-up after a crash. It is not a
+separately authored public lifecycle object and therefore has no standalone
+public JSON Schema in V1; the public schemas above define the projections and
+semantic event/delivery records exposed by CLI/API/Dashboard.
 
 ## Schema Evolution
 

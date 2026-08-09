@@ -8509,7 +8509,17 @@ fn node_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String])
                         created_at: now.clone(),
                         updated_at: now,
                     };
-                    store.register_node_project(&registration)?;
+                    let selected_space_id = resolved
+                        .execution_space_context
+                        .as_ref()
+                        .map(|space| space.id.as_str())
+                        .ok_or_else(|| {
+                            CliError::Usage(
+                                "node project mutation requires an explicitly selected --space"
+                                    .to_string(),
+                            )
+                        })?;
+                    store.register_node_project(&registration, selected_space_id)?;
                     print_json(&registration)?;
                 }
                 "unregister" => {
@@ -8527,7 +8537,17 @@ fn node_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String])
                     let mut disabled = current.clone();
                     disabled.status = NodeProjectRegistrationStatus::Disabled;
                     disabled.updated_at = now_string();
-                    store.register_node_project(&disabled)?;
+                    let selected_space_id = resolved
+                        .execution_space_context
+                        .as_ref()
+                        .map(|space| space.id.as_str())
+                        .ok_or_else(|| {
+                            CliError::Usage(
+                                "node project mutation requires an explicitly selected --space"
+                                    .to_string(),
+                            )
+                        })?;
+                    store.register_node_project(&disabled, selected_space_id)?;
                     print_json(&disabled)?;
                 }
                 other => {
@@ -11735,14 +11755,17 @@ fn ensure_legacy_unit_test_team_binding(
                     && registration.status == NodeProjectRegistrationStatus::Active
             });
     if !registration_exists {
-        store.register_node_project(&NodeProjectRegistration {
-            node_id: NODE_ID.to_string(),
-            execution_space_id: SPACE_ID.to_string(),
-            project_binding_id: PROJECT_ID.to_string(),
-            status: NodeProjectRegistrationStatus::Active,
-            created_at: now.clone(),
-            updated_at: now.clone(),
-        })?;
+        store.register_node_project(
+            &NodeProjectRegistration {
+                node_id: NODE_ID.to_string(),
+                execution_space_id: SPACE_ID.to_string(),
+                project_binding_id: PROJECT_ID.to_string(),
+                status: NodeProjectRegistrationStatus::Active,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+            },
+            SPACE_ID,
+        )?;
     }
     if !latest_teams(store)?.contains_key(TEAM_ID) {
         store.insert_agent_team_with_unique_mission(&AgentTeam {
@@ -11777,6 +11800,7 @@ fn ensure_legacy_unit_test_team_binding(
 fn create_team_run(
     store: &HarnessStore,
     project_context: Option<&ProjectContext>,
+    execution_space_id: Option<&str>,
     requested_execution_root: Option<String>,
     objective: &str,
     budget_limit_usd: Option<f64>,
@@ -11841,6 +11865,12 @@ fn create_team_run(
             .as_ref()
             .map(|(_, agent_team_id)| agent_team_id.clone())
     });
+    #[cfg(test)]
+    let execution_space_id = execution_space_id.unwrap_or("unit-test-space");
+    #[cfg(not(test))]
+    let execution_space_id = execution_space_id.ok_or_else(|| {
+        CliError::Usage("an Execution Space is required for every AgentTeamRun".to_string())
+    })?;
     let execution_root = match requested_execution_root {
         Some(root) => validate_workspace_override(project_context, &root, "execution_root")?,
         None => default_execution_root(project_context),
@@ -11937,7 +11967,7 @@ fn create_team_run(
 
     // A freshly-generated run id has no events yet, so seq starts at 1.
     let mut seq = next_team_run_seq(store, &run_id)?;
-    store_conflict_as_usage(store.create_team_run_from_agent_team(&team_run))?;
+    store_conflict_as_usage(store.create_team_run_from_agent_team(&team_run, execution_space_id))?;
     append_team_run_event(
         store,
         &run_id,
@@ -15000,8 +15030,9 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 host_work_context(args)
             };
             let now = context.created_at.clone();
+            let request_hash = content_hash_hex16(&context.idempotency_key);
             let target_work_id = value(args, "--target-work-id")
-                .unwrap_or_else(|| generated_id("delegated-work"));
+                .unwrap_or_else(|| format!("delegated-work-{request_hash}"));
             let target_work = Work {
                 id: target_work_id.clone(),
                 team_run_id: target_run.id.clone(),
@@ -15034,7 +15065,7 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             };
             let delegation = WorkDelegation {
                 id: value(args, "--delegation-id")
-                    .unwrap_or_else(|| generated_id("work-delegation")),
+                    .unwrap_or_else(|| format!("work-delegation-{request_hash}")),
                 source_work_ref: WorkRef {
                     team_run_id: source_run_id,
                     work_id: source_work_id,
@@ -16415,6 +16446,10 @@ fn team_run_command(
             let created = create_team_run(
                 store,
                 resolved.context.as_ref(),
+                resolved
+                    .execution_space_context
+                    .as_ref()
+                    .map(|space| space.id.as_str()),
                 value(args, "--execution-root"),
                 &required(args, "--objective")?,
                 budget_limit_usd,
@@ -18036,34 +18071,6 @@ fn supervisor_test_heartbeat_failure_marker() -> Option<PathBuf> {
     std::env::var_os("FIRM_TEST_SUPERVISOR_HEARTBEAT_FAIL_READY")
         .or_else(|| std::env::var_os("HARNESS_TEST_SUPERVISOR_HEARTBEAT_FAIL_READY"))
         .map(PathBuf::from)
-}
-
-fn reserve_team_supervisor(
-    store: &HarnessStore,
-    team_run_id: &str,
-) -> CliResult<TeamSupervisorRegistration> {
-    let mut supervisors = LIVE_TEAM_SUPERVISORS
-        .get_or_init(|| Mutex::new(HashSet::new()))
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    if !supervisors.insert(team_run_id.to_string()) {
-        return Err(CliError::Usage(format!(
-            "team run {team_run_id} already has a live supervisor in this Host process"
-        )));
-    }
-    drop(supervisors);
-
-    match TeamSupervisorRegistration::start(store, team_run_id, None) {
-        Ok(reg) => Ok(reg),
-        Err(error) => {
-            LIVE_TEAM_SUPERVISORS
-                .get_or_init(|| Mutex::new(HashSet::new()))
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .remove(team_run_id);
-            Err(error)
-        }
-    }
 }
 
 impl Drop for LiveMemberControlRegistration {
@@ -19967,61 +19974,6 @@ pub(crate) fn prepare_team_run_start_body(
     })
 }
 
-/// Reserve one process-scoped supervisor before any provider thread starts.
-/// A planning TeamRun transitions to running; an existing non-terminal or
-/// completed run reattaches its unclosed MemberRuns to their native sessions.
-/// The process-local reservation prevents duplicate supervisors in one Host.
-pub(crate) fn prepare_team_run_start(
-    store: &HarnessStore,
-    run_id: &str,
-    max_concurrency: usize,
-) -> CliResult<PreparedTeamRunStart> {
-    let body = prepare_team_run_start_body(store, run_id, max_concurrency)?;
-    let supervisor_registration = reserve_team_supervisor(store, run_id)?;
-    let ledger = Arc::new(TeamRunLedger::new(
-        store,
-        run_id,
-        &supervisor_registration.supervisor_id,
-        supervisor_registration.generation,
-        Arc::clone(&supervisor_registration.heartbeat_valid),
-    ));
-    let running = if body.run.status == TeamRunStatus::Planning {
-        let mut running = body.run.clone();
-        running.status = TeamRunStatus::Running;
-        running.updated_at = now_string();
-        store_conflict_as_usage(store.compare_and_append_team_run_lifecycle(&body.run, &running))?;
-        running
-    } else {
-        body.run.clone()
-    };
-    ledger.fold_event(
-        TeamRunEventSourceKind::Host,
-        None,
-        "team_run",
-        run_id,
-        "updated",
-        &format!(
-            "member supervisor {} generation {} {} ({} unclosed member(s), max-concurrency {max_concurrency})",
-            supervisor_registration.supervisor_id,
-            supervisor_registration.generation,
-            if body.run.status == TeamRunStatus::Planning {
-                "started"
-            } else {
-                "reattached"
-            },
-            body.members.len(),
-        ),
-    )?;
-    Ok(PreparedTeamRunStart {
-        run_id: body.run_id,
-        objective: body.objective,
-        running,
-        members: body.members,
-        ledger,
-        supervisor_registration,
-    })
-}
-
 /// `firm team-run start`: delegate one admitted TeamRun to the machine-scoped
 /// NodeDaemon. Public start surfaces never spawn a per-run daemon.
 pub(crate) fn team_run_start(
@@ -20033,24 +19985,7 @@ pub(crate) fn team_run_start(
 ) -> CliResult<()> {
     #[cfg(unix)]
     {
-        // The test-idle hook drives the already-admitted run synchronously so
-        // integration tests can observe bounded completion. This branch is not
-        // compiled into production and does not expose a public daemon fallback.
-        let test_idle_ms = std::env::var("FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS")
-            .or_else(|_| std::env::var("HARNESS_MEMBER_SUPERVISOR_TEST_IDLE_MS"))
-            .ok();
-        if test_idle_ms.is_some() {
-            let prepared = prepare_team_run_start(store, run_id, max_concurrency)?;
-            return drive_prepared_team_run(
-                prepared,
-                resolved.execution_space_context.clone(),
-                resolved.context.clone(),
-                max_concurrency,
-                idle_timeout,
-                None,
-            );
-        }
-
+        let _ = idle_timeout;
         let delegated = delegate_team_run_to_node_daemon(store, resolved, run_id, max_concurrency)?;
         println!(
             "team run {run_id}\tdelegated to NodeDaemon {}",
@@ -28482,7 +28417,13 @@ fn handle_http_connection(
         .firm_home
         .as_ref()
         .map(|_| projects.context_for(project_param.as_deref(), Some(&project_id), store));
-    match handle_http_action(store, project_context.as_ref(), &path_only, &body_json) {
+    match handle_http_action(
+        store,
+        project_context.as_ref(),
+        &project_id,
+        &path_only,
+        &body_json,
+    ) {
         Ok(response) => write_http_json(
             &mut stream,
             "200 OK",
@@ -28657,6 +28598,7 @@ fn query_param(target: &str, key: &str) -> Option<String> {
 fn handle_http_action(
     store: &HarnessStore,
     project_context: Option<&ProjectContext>,
+    execution_space_id: &str,
     path: &str,
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
@@ -28737,7 +28679,7 @@ fn handle_http_action(
         return Err(retired_wave_write_error("advance"));
     }
     if path == "/v1/team-runs" {
-        return create_team_run_value(store, project_context, body);
+        return create_team_run_value(store, project_context, execution_space_id, body);
     }
     if path == "/v1/work-delegations" {
         return create_work_delegation_value(store, body);
@@ -30382,8 +30324,9 @@ pub(crate) fn create_work_delegation_value(
             gates
         }
     };
-    let target_work_id =
-        json_string(body, "target_work_id").unwrap_or_else(|| generated_id("delegated-work"));
+    let request_hash = content_hash_hex16(&context.idempotency_key);
+    let target_work_id = json_string(body, "target_work_id")
+        .unwrap_or_else(|| format!("delegated-work-{request_hash}"));
     let now = context.created_at.clone();
     let target_work = Work {
         id: target_work_id.clone(),
@@ -30422,7 +30365,8 @@ pub(crate) fn create_work_delegation_value(
         updated_at: String::new(),
     };
     let delegation = WorkDelegation {
-        id: json_string(body, "delegation_id").unwrap_or_else(|| generated_id("work-delegation")),
+        id: json_string(body, "delegation_id")
+            .unwrap_or_else(|| format!("work-delegation-{request_hash}")),
         source_work_ref: WorkRef {
             team_run_id: source_run_id,
             work_id: source_work_id,
@@ -30595,6 +30539,7 @@ fn create_team_value(
 fn create_team_run_value(
     store: &HarnessStore,
     project_context: Option<&ProjectContext>,
+    execution_space_id: &str,
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
     if body.get("wave_index").is_some() {
@@ -30661,6 +30606,7 @@ fn create_team_run_value(
     let created = create_team_run(
         store,
         project_context,
+        Some(execution_space_id),
         optional_json_string(body, "execution_root")?,
         &required_json_string(body, "objective")?,
         budget_limit_usd,
@@ -45128,14 +45074,18 @@ mod tests {
         let leader_pid = child.id();
         let guard = ProviderChildGuard::new(child);
         let deadline = Instant::now() + Duration::from_secs(2);
-        while !marker.exists() && Instant::now() < deadline {
+        let descendant_pid = loop {
+            if let Ok(pid) = fs::read_to_string(&marker) {
+                if let Ok(pid) = pid.trim().parse::<u32>() {
+                    break pid;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "descendant pid marker was not populated"
+            );
             std::thread::sleep(Duration::from_millis(10));
-        }
-        let descendant_pid = fs::read_to_string(&marker)
-            .expect("descendant pid marker")
-            .trim()
-            .parse::<u32>()
-            .expect("descendant pid");
+        };
 
         drop(guard);
 
@@ -45222,6 +45172,7 @@ mod tests {
     ) -> (TeamRunLedger, MemberRun) {
         let created = create_team_run(
             store,
+            None,
             None,
             None,
             "Exercise provider callback validation",
@@ -47802,6 +47753,225 @@ package:com.tencent.mm
     }
 
     #[test]
+    fn http_and_mcp_work_mutations_share_atomic_delegation_rollup() {
+        let (store, root) = temp_store("delegation-surface-rollup");
+        let source_run = create_two_member_team_run(&store);
+        let (project_context, _) =
+            ensure_legacy_unit_test_team_binding(&store).expect("unit-test project binding");
+        store
+            .insert_mission(&Mission {
+                id: "surface-target-mission".into(),
+                title: "Surface target Mission".into(),
+                objective: "Prove every public Work surface shares delegation roll-up".into(),
+                context: String::new(),
+                desired_outcome: None,
+                status: MissionStatus::Running,
+                wave_ids: Vec::new(),
+                outcome_summary: None,
+                completed_by: None,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+                completed_at: None,
+            })
+            .expect("insert target Mission");
+        store
+            .insert_agent_team_with_unique_mission(&AgentTeam {
+                id: "surface-target-team".into(),
+                name: "Surface target Team".into(),
+                description: "Independent target Team for delegation surface tests".into(),
+                mission_id: "surface-target-mission".into(),
+                host_agent_id: "host".into(),
+                node_id: "00000000-0000-4000-8000-000000000001".into(),
+                status: AgentTeamStatus::Active,
+                member_ids: Vec::new(),
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+            })
+            .expect("insert target AgentTeam");
+        let target_run = create_team_run(
+            &store,
+            Some(&project_context),
+            Some("unit-test-space"),
+            None,
+            "Execute the delegated surface outcome",
+            None,
+            "test",
+            None,
+            None,
+            Some("surface-target-team".into()),
+            None,
+            None,
+            &[TeamMemberSpec {
+                agent_member_id: None,
+                name: "TargetBuilder".into(),
+                role: "builder".into(),
+                provider: "codex".into(),
+                execution_mode: Some("codex_app_server".into()),
+                model: None,
+                effort: None,
+                service_tier: None,
+                worktree_ref: None,
+                owned_paths: vec!["crates/target".into()],
+                resume_native_session_id: None,
+                initial_work: None,
+            }],
+        )
+        .expect("create target TeamRun");
+        let source_value = create_team_work_value(
+            &store,
+            &source_run.team_run.id,
+            &serde_json::json!({
+                "id": "surface-source-work",
+                "title": "Delegate one surface-owned outcome",
+                "completion_criteria_markdown": "Target Team reports the result"
+            }),
+        )
+        .expect("create source Work");
+        let source: Work = serde_json::from_value(source_value).expect("decode source Work");
+        let source_member_id = source_run.member_runs[0].id.clone();
+        let source = store
+            .claim_work(
+                &source.id,
+                source.version,
+                &source_member_id,
+                WorkCommandContext {
+                    event_id: "surface-source-claim".into(),
+                    performed_by_actor: TeamActorRef {
+                        kind: TeamActorKind::MemberRun,
+                        id: source_member_id.clone(),
+                        display_name: None,
+                        authn_source: Some("bound-runtime:test".into()),
+                    },
+                    authority_actor: None,
+                    causation_ref: None,
+                    idempotency_key: "surface-source-claim-command".into(),
+                    created_at: "unix-ms:3".into(),
+                    duplicate_ok: false,
+                },
+            )
+            .expect("claim source Work with a durable owner");
+        let create_request = serde_json::json!({
+            "source_team_run_id": source_run.team_run.id,
+            "source_work_id": source.id,
+            "expected_version": source.version,
+            "target_agent_team_id": target_run.team_run.agent_team_id,
+            "target_title": "Execute delegated surface outcome",
+            "target_completion_criteria_markdown": "HTTP and MCP lifecycle changes roll up",
+            "event_id": "surface-delegation-create",
+            "idempotency_key": "surface-delegation-create-command"
+        });
+        let created = create_work_delegation_value(&store, &create_request)
+            .expect("create cross-Team delegation");
+        let retried = create_work_delegation_value(&store, &create_request)
+            .expect("omitted entity ids are stable across an exact retry");
+        assert_eq!(retried, created);
+        let delegation_id = created["delegation"]["id"]
+            .as_str()
+            .expect("generated delegation id")
+            .to_string();
+        let target: Work =
+            serde_json::from_value(created["target_work"].clone()).expect("decode target Work");
+        let target_member_id = target_run.member_runs[0].id.clone();
+        let member_context = |event_id: &str, idempotency_key: &str| WorkCommandContext {
+            event_id: event_id.into(),
+            performed_by_actor: TeamActorRef {
+                kind: TeamActorKind::MemberRun,
+                id: target_member_id.clone(),
+                display_name: None,
+                authn_source: Some("bound-runtime:test".into()),
+            },
+            authority_actor: None,
+            causation_ref: None,
+            idempotency_key: idempotency_key.into(),
+            created_at: "unix-ms:4".into(),
+            duplicate_ok: false,
+        };
+        let mut target = store
+            .claim_work(
+                &target.id,
+                target.version,
+                &target_member_id,
+                member_context("surface-target-claim", "surface-target-claim-command"),
+            )
+            .expect("claim target Work");
+
+        let blocked = mutate_team_work_value(
+            &store,
+            &target.team_run_id,
+            &target.id,
+            "block",
+            &serde_json::json!({
+                "expected_version": target.version,
+                "reason": "HTTP-visible dependency",
+                "event_id": "surface-http-block",
+                "idempotency_key": "surface-http-block-command"
+            }),
+        )
+        .expect("HTTP shared mutation blocks target Work");
+        target = serde_json::from_value(blocked).expect("decode blocked target Work");
+        let delegation = store
+            .latest_work_delegations()
+            .expect("delegations after HTTP block")
+            .into_iter()
+            .find(|delegation| delegation.id == delegation_id)
+            .expect("surface delegation");
+        assert_eq!(delegation.state, WorkDelegationState::Blocked);
+
+        let resumed = mutate_team_work_value(
+            &store,
+            &target.team_run_id,
+            &target.id,
+            "resume",
+            &serde_json::json!({
+                "expected_version": target.version,
+                "resolution": "HTTP dependency resolved",
+                "event_id": "surface-http-resume",
+                "idempotency_key": "surface-http-resume-command"
+            }),
+        )
+        .expect("HTTP shared mutation resumes target Work");
+        target = serde_json::from_value(resumed).expect("decode resumed target Work");
+
+        let resolved = ResolvedStore {
+            root: root.clone(),
+            source: StoreSource::StoreFlag,
+            project_selection_explicit: false,
+            context: None,
+            company_context: None,
+            execution_space_context: None,
+        };
+        let response = mcp::call_tool(
+            &store,
+            &resolved,
+            &serde_json::json!({
+                "name": "team_run_work_block",
+                "arguments": {
+                    "team_run_id": target.team_run_id,
+                    "work_id": target.id,
+                    "expected_version": target.version,
+                    "reason": "MCP-visible dependency",
+                    "event_id": "surface-mcp-block",
+                    "idempotency_key": "surface-mcp-block-command"
+                }
+            }),
+        )
+        .expect("dispatch MCP Work block");
+        assert_eq!(response["isError"], false, "MCP response: {response}");
+        let delegation = store
+            .latest_work_delegations()
+            .expect("delegations after MCP block")
+            .into_iter()
+            .find(|delegation| delegation.id == delegation_id)
+            .expect("surface delegation");
+        assert_eq!(delegation.state, WorkDelegationState::Blocked);
+        assert_eq!(
+            delegation.blocker_reason.as_deref(),
+            Some("MCP-visible dependency")
+        );
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
     fn cli_host_review_uses_trusted_store_context_and_http_is_retired() {
         let (store, root) = temp_store("work-review-entrypoints");
         let (created, submitted) = seed_host_review_candidate(&store);
@@ -48036,6 +48206,7 @@ package:com.tencent.mm
     fn create_two_member_team_run(store: &HarnessStore) -> CreatedTeamRun {
         create_team_run(
             store,
+            None,
             None,
             None,
             "Build two independent modules",
@@ -49839,6 +50010,7 @@ package:com.tencent.mm
             &store,
             None,
             None,
+            None,
             "Verify explicit identity",
             None,
             "test",
@@ -49876,6 +50048,7 @@ package:com.tencent.mm
             &store,
             None,
             None,
+            None,
             "Verify explicit identity",
             None,
             "test",
@@ -49901,6 +50074,7 @@ package:com.tencent.mm
         store.append_member(&agent).expect("append Agent identity");
         let created = create_team_run(
             &store,
+            None,
             None,
             None,
             "Route stable Agent mail",
@@ -49998,6 +50172,7 @@ package:com.tencent.mm
             &store,
             None,
             None,
+            None,
             "First runtime",
             None,
             "test",
@@ -50011,6 +50186,7 @@ package:com.tencent.mm
         .expect("first run");
         create_team_run(
             &store,
+            None,
             None,
             None,
             "Second runtime",
@@ -50790,6 +50966,7 @@ package:com.tencent.mm
             &store,
             None,
             None,
+            None,
             "Deliver an artifact",
             None,
             "test-surface",
@@ -50831,6 +51008,7 @@ package:com.tencent.mm
         let host_thread_id = Some("thread-xyz".to_string());
         let created = create_team_run(
             &store,
+            None,
             None,
             None,
             "Deliver an artifact",
@@ -50878,6 +51056,7 @@ package:com.tencent.mm
 
         let created = create_team_run(
             &store,
+            None,
             None,
             None,
             "Deliver an artifact",
@@ -51783,6 +51962,7 @@ package:com.tencent.mm
         let (store, root) = temp_store("team-reject-codex-exec");
         let result = create_team_run(
             &store,
+            None,
             None,
             None,
             "Do interactive team work",

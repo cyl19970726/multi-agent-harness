@@ -5446,6 +5446,11 @@ pub struct WorkOperation {
     pub deliveries: Vec<WorkDelivery>,
     #[serde(default)]
     pub delivery_updates: Vec<WorkDeliveryUpdate>,
+    /// Delegation projection transitions caused by this exact Work mutation.
+    /// Keeping them in the same row closes the crash gap between target Work
+    /// state and its cross-Team responsibility projection.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delegation_revisions: Vec<WorkDelegationRevision>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -5803,6 +5808,15 @@ pub struct WorkDelegationEvent {
     pub idempotency_key: String,
     pub payload: serde_json::Value,
     pub created_at: String,
+}
+
+/// One WorkDelegation event and its resulting projection. Revisions caused by
+/// target Work mutations are embedded in the same crash-atomic WorkOperation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkDelegationRevision {
+    pub delegation: WorkDelegation,
+    pub event: WorkDelegationEvent,
 }
 
 fn validate_work_ref(reference: &WorkRef, field: &'static str) -> Result<(), ValidationError> {

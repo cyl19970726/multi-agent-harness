@@ -23,6 +23,10 @@ Run.
 Cross-Team cooperation is explicit `WorkDelegation`, not parent/child topology.
 The source remains accountable until the delegation reaches a terminal result.
 Delegation events are append-only, versioned, idempotent, and reject cycles.
+Creation idempotency fingerprints the complete delegation and target-Work
+intent; omitted entity ids are derived from the idempotency key. Target Work
+block/resume/terminal transitions embed their delegation roll-up in the same
+`WorkOperation`, so every public mutation surface observes one atomic result.
 
 ## Runtime trust
 
@@ -30,6 +34,8 @@ One NodeDaemon generation owns each registered Execution Space on the local
 Node. Each `TeamSupervisorLease` is a child of that exact NodeDaemon lease.
 Mailbox delivery, provider resume, recovery, and lifecycle writes must prove
 current parent and child generations.
+`NodeProjectRegistration` writes must match the explicitly selected Execution
+Space; a registration from one Store cannot name another Space.
 
 ## Sources of truth
 

@@ -365,6 +365,58 @@ fn team_run_start_delegates_to_node_daemon_and_is_idempotent() {
 }
 
 #[test]
+fn public_team_run_start_cannot_use_test_idle_env_to_bypass_node_daemon() {
+    let home = TempHome::new("node-daemon-no-test-bypass");
+    let fixture = bootstrap_runtime(&home, "project");
+    let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
+    let fake_path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let kimi_bin = fake_bin.join("kimi").display().to_string();
+    let provider_env = [
+        ("PATH", fake_path.as_str()),
+        ("KIMI_CODE_BIN", kimi_bin.as_str()),
+        ("FAKE_KIMI_VERSION", "0.31.0"),
+        ("FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS", "100"),
+    ];
+    let run_id = create_run(&home, &fixture, "worker", &provider_env);
+    let output = run_firm_with_env(
+        &home,
+        &fixture.project_root,
+        &[
+            "--space",
+            &fixture.execution_space_id,
+            "--project",
+            &fixture.project_id,
+            "team-run",
+            "start",
+            "--id",
+            &run_id,
+        ],
+        &provider_env,
+    );
+    assert!(
+        !output.status.success(),
+        "test-only provider timing must not become a public start bypass"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("NODE_DAEMON_UNAVAILABLE"),
+        "unexpected missing-daemon error: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let store = HarnessStore::new(home.spaces_dir().join(&fixture.execution_space_id));
+    assert!(
+        store
+            .latest_team_supervisor_lease(&run_id)
+            .expect("supervisor lease read")
+            .is_none(),
+        "public start spawned a hidden in-process supervisor"
+    );
+}
+
+#[test]
 fn daemon_rejects_second_machine_owner_and_bad_commands() {
     let home = TempHome::new("node-daemon-negative");
     let fixture = bootstrap_runtime(&home, "project");

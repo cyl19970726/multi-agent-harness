@@ -23,10 +23,11 @@ use firm_core::{
     TeamMemberCloseStatus, TeamMessage, TeamMessageKind, TeamRunEvent, TeamRunStatus,
     TeamSupervisorLease, TeamSupervisorLeaseStatus, Validate, Vision, Wave, WaveGateStatus,
     WaveStatus, Work, WorkClaimMode, WorkCommandContext, WorkCondition, WorkConditionRecord,
-    WorkDelegation, WorkDelegationEvent, WorkDelegationState, WorkDelegationTransition,
-    WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate, WorkEvent, WorkEventKind, WorkEvidence,
-    WorkGateEvaluation, WorkOperation, WorkOperationalDecision, WorkPhase, WorkRef, WorkReport,
-    WorkResolution, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
+    WorkDelegation, WorkDelegationEvent, WorkDelegationRevision, WorkDelegationState,
+    WorkDelegationTransition, WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate, WorkEvent,
+    WorkEventKind, WorkEvidence, WorkGateEvaluation, WorkOperation, WorkOperationalDecision,
+    WorkPhase, WorkRef, WorkReport, WorkResolution, WorkflowArtifactManifest, WorkflowPatch,
+    WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
@@ -245,13 +246,6 @@ struct WorkDelegationOperation {
     target_work_operation: WorkOperation,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WorkDelegationRevision {
-    delegation: WorkDelegation,
-    event: WorkDelegationEvent,
-}
-
 fn same_work_review_command(
     existing: &Review,
     work_id: &str,
@@ -270,6 +264,66 @@ fn same_work_review_command(
         && existing.evidence_ids == payload.evidence_ids
         && existing.performed_by_actor.as_ref() == Some(&context.performed_by_actor)
         && existing.authority_actor == context.authority_actor
+}
+
+/// Canonical semantic request identity for WorkDelegation creation. Entity ids
+/// are included (callers derive omitted ids from the idempotency key), while
+/// only envelope ids and timestamps are excluded. Every persisted creation
+/// field that can change responsibility or target Work intent is therefore
+/// conflict-significant.
+fn work_delegation_request_fingerprint(
+    delegation: &WorkDelegation,
+    target_work: &Work,
+    context: &WorkCommandContext,
+) -> serde_json::Value {
+    serde_json::json!({
+        "delegation": {
+            "id": delegation.id,
+            "source_work_ref": delegation.source_work_ref,
+            "source_work_version": delegation.source_work_version,
+            "source_owner_member_id": delegation.source_owner_member_id,
+            "created_by_member_run_id": delegation.created_by_member_run_id,
+            "target_agent_team_id": delegation.target_agent_team_id,
+            "target_work_ref": delegation.target_work_ref,
+            "delegated_by_actor": delegation.delegated_by_actor,
+            "state": delegation.state,
+            "resolution_summary": delegation.resolution_summary,
+            "blocker_reason": delegation.blocker_reason,
+            "version": delegation.version,
+        },
+        "target_work": {
+            "id": target_work.id,
+            "team_run_id": target_work.team_run_id,
+            "team_id": target_work.team_id,
+            "parent_work_id": target_work.parent_work_id,
+            "title": target_work.title,
+            "context_markdown": target_work.context_markdown,
+            "completion_criteria_markdown": target_work.completion_criteria_markdown,
+            "phase": target_work.phase,
+            "condition": target_work.condition,
+            "resolution": target_work.resolution,
+            "owner_member_id": target_work.owner_member_id,
+            "active_member_run_id": target_work.active_member_run_id,
+            "claim_mode": target_work.claim_mode,
+            "eligible_member_ids": target_work.eligible_member_ids,
+            "prerequisite_work_ids": target_work.prerequisite_work_ids,
+            "priority": target_work.priority,
+            "created_by_actor": target_work.created_by_actor,
+            "created_by_member_id": target_work.created_by_member_id,
+            "result_summary": target_work.result_summary,
+            "blocker_reason": target_work.blocker_reason,
+            "artifact_refs": target_work.artifact_refs,
+            "check_refs": target_work.check_refs,
+            "github_links": target_work.github_links,
+            "gates": target_work.gates,
+            "workspace": target_work.workspace,
+            "version": target_work.version,
+        },
+        "performed_by_actor": context.performed_by_actor,
+        "authority_actor": context.authority_actor,
+        "causation_ref": context.causation_ref,
+        "duplicate_ok": context.duplicate_ok,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2110,10 +2164,15 @@ impl HarnessStore {
 
     /// Create one TeamRun from its durable AgentTeam. Mission and Node cannot
     /// be supplied independently: they are derived and validated from Team.
-    pub fn create_team_run_from_agent_team(&self, value: &AgentTeamRun) -> StoreResult<()> {
+    pub fn create_team_run_from_agent_team(
+        &self,
+        value: &AgentTeamRun,
+        execution_space_id: &str,
+    ) -> StoreResult<()> {
         value
             .validate()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        require_non_empty_store(execution_space_id, "Execution Space id")?;
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let runs = latest_by_id(self.read_jsonl::<AgentTeamRun>("team_runs.jsonl")?, |run| {
@@ -2183,6 +2242,7 @@ impl HarnessStore {
             .values()
             .filter(|registration| {
                 registration.node_id == team.node_id
+                    && registration.execution_space_id == execution_space_id
                     && registration.project_binding_id == value.project_binding_id
                     && registration.status == NodeProjectRegistrationStatus::Active
             })
@@ -2778,6 +2838,7 @@ impl HarnessStore {
             decisions: Vec::new(),
             deliveries,
             delivery_updates: Vec::new(),
+            delegation_revisions: Vec::new(),
         };
         self.append_work_operation_unlocked(&operation)?;
         Ok(work)
@@ -2796,14 +2857,15 @@ impl HarnessStore {
         let _lock = self.acquire_write_lock()?;
         self.ensure_work_store_compatible_unlocked()?;
 
+        let request_fingerprint =
+            work_delegation_request_fingerprint(&delegation, &target_work, &context);
+
         if let Some(existing) = self
             .all_work_delegation_revisions_unlocked()?
             .into_iter()
             .find(|revision| revision.event.idempotency_key == context.idempotency_key)
         {
-            if existing.delegation.source_work_ref == delegation.source_work_ref
-                && existing.delegation.target_agent_team_id == delegation.target_agent_team_id
-            {
+            if existing.event.payload.get("request_fingerprint") == Some(&request_fingerprint) {
                 let target = self
                     .latest_works_unlocked()?
                     .remove(&existing.delegation.target_work_ref.work_id)
@@ -3034,6 +3096,7 @@ impl HarnessStore {
                 &context.created_at,
             )?,
             delivery_updates: Vec::new(),
+            delegation_revisions: Vec::new(),
         };
         let event = WorkDelegationEvent {
             id: context.event_id,
@@ -3045,7 +3108,7 @@ impl HarnessStore {
             performed_by_actor: context.performed_by_actor,
             causation_ref: context.causation_ref,
             idempotency_key: context.idempotency_key,
-            payload: serde_json::Value::Null,
+            payload: serde_json::json!({"request_fingerprint": request_fingerprint}),
             created_at: context.created_at,
         };
         event
@@ -4612,6 +4675,8 @@ impl HarnessStore {
                 })
             })
             .collect::<StoreResult<Vec<_>>>()?;
+        let delegation_revisions =
+            self.work_delegation_rollup_revisions_unlocked(&next, &context)?;
         let operation = WorkOperation {
             event: WorkEvent {
                 id: context.event_id,
@@ -4636,6 +4701,7 @@ impl HarnessStore {
             decisions,
             deliveries,
             delivery_updates,
+            delegation_revisions,
         };
         self.append_work_operation_unlocked(&operation)?;
         // When a work is accepted (Done), notify works that depend on it
@@ -5516,6 +5582,11 @@ impl HarnessStore {
             .collect::<Vec<_>>();
         revisions
             .extend(self.read_jsonl::<WorkDelegationRevision>("work_delegation_events.jsonl")?);
+        revisions.extend(
+            self.work_operations_unlocked()?
+                .into_iter()
+                .flat_map(|operation| operation.delegation_revisions),
+        );
         revisions.sort_by(|left, right| {
             left.delegation
                 .id
@@ -5563,6 +5634,139 @@ impl HarnessStore {
             latest.insert(revision.delegation.id.clone(), revision.delegation);
         }
         Ok(latest)
+    }
+
+    /// Compute every Delegation transition caused by one authoritative target
+    /// Work projection. Callers that are already committing a WorkOperation
+    /// embed these revisions in that same row; the public reconciler uses the
+    /// identical reducer to repair older split-ledger crash gaps.
+    fn work_delegation_rollup_revisions_unlocked(
+        &self,
+        target: &Work,
+        context: &WorkCommandContext,
+    ) -> StoreResult<Vec<WorkDelegationRevision>> {
+        let existing_revisions = self.all_work_delegation_revisions_unlocked()?;
+        let current = self
+            .latest_work_delegations_unlocked()?
+            .into_values()
+            .filter(|delegation| delegation.target_work_ref.work_id == target.id)
+            .collect::<Vec<_>>();
+        let mut revisions = Vec::new();
+        for delegation in current {
+            let desired = if target.phase == WorkPhase::Closed {
+                match target.resolution {
+                    Some(WorkResolution::Accepted) => Some((
+                        WorkDelegationState::Completed,
+                        WorkDelegationTransition::Completed,
+                        target
+                            .result_summary
+                            .clone()
+                            .unwrap_or_else(|| "target Work accepted".to_string()),
+                        None,
+                    )),
+                    Some(WorkResolution::Failed) => Some((
+                        WorkDelegationState::Failed,
+                        WorkDelegationTransition::Failed,
+                        target
+                            .result_summary
+                            .clone()
+                            .or_else(|| target.blocker_reason.clone())
+                            .unwrap_or_else(|| "target Work failed".to_string()),
+                        None,
+                    )),
+                    Some(WorkResolution::Cancelled) => Some((
+                        WorkDelegationState::Cancelled,
+                        WorkDelegationTransition::Cancelled,
+                        target
+                            .result_summary
+                            .clone()
+                            .or_else(|| target.blocker_reason.clone())
+                            .unwrap_or_else(|| "target Work cancelled".to_string()),
+                        None,
+                    )),
+                    None => None,
+                }
+            } else if target.condition == WorkCondition::Blocked {
+                Some((
+                    WorkDelegationState::Blocked,
+                    WorkDelegationTransition::Blocked,
+                    String::new(),
+                    Some(
+                        target
+                            .blocker_reason
+                            .clone()
+                            .unwrap_or_else(|| "target Work blocked".to_string()),
+                    ),
+                ))
+            } else if delegation.state == WorkDelegationState::Blocked {
+                Some((
+                    WorkDelegationState::Active,
+                    WorkDelegationTransition::Resumed,
+                    String::new(),
+                    None,
+                ))
+            } else {
+                None
+            };
+            let Some((state, transition, resolution, blocker)) = desired else {
+                continue;
+            };
+            if delegation.state == state
+                || matches!(
+                    delegation.state,
+                    WorkDelegationState::Completed
+                        | WorkDelegationState::Failed
+                        | WorkDelegationState::Cancelled
+                )
+            {
+                continue;
+            }
+            let mut next = delegation.clone();
+            next.state = state;
+            next.version = next.version.saturating_add(1);
+            next.updated_at = context.created_at.clone();
+            next.blocker_reason = blocker;
+            next.resolution_summary = if resolution.is_empty() {
+                None
+            } else {
+                Some(resolution)
+            };
+            let event = WorkDelegationEvent {
+                id: format!("{}:delegation:{}", context.event_id, delegation.id),
+                delegation_id: delegation.id.clone(),
+                sequence: next.version,
+                transition,
+                expected_version: delegation.version,
+                resulting_version: next.version,
+                performed_by_actor: context.performed_by_actor.clone(),
+                causation_ref: context.causation_ref.clone(),
+                idempotency_key: format!(
+                    "{}:delegation:{}",
+                    context.idempotency_key, delegation.id
+                ),
+                payload: serde_json::json!({"target_work_version": target.version}),
+                created_at: context.created_at.clone(),
+            };
+            next.validate()
+                .map_err(|error| StoreError::Conflict(format!("INVALID_DELEGATION: {error}")))?;
+            event.validate().map_err(|error| {
+                StoreError::Conflict(format!("INVALID_DELEGATION_EVENT: {error}"))
+            })?;
+            if existing_revisions.iter().any(|revision| {
+                revision.event.id == event.id
+                    || revision.event.idempotency_key == event.idempotency_key
+            }) {
+                return Err(StoreError::Conflict(format!(
+                    "DELEGATION_EVENT_CONFLICT: {}",
+                    event.id
+                )));
+            }
+            revisions.push(WorkDelegationRevision {
+                delegation: next,
+                event,
+            });
+        }
+        Ok(revisions)
     }
 
     fn append_work_delegation_transition_unlocked(
@@ -6350,10 +6554,21 @@ impl HarnessStore {
         self.append_jsonl_unlocked("execution_nodes.jsonl", next)
     }
 
-    pub fn register_node_project(&self, value: &NodeProjectRegistration) -> StoreResult<()> {
+    pub fn register_node_project(
+        &self,
+        value: &NodeProjectRegistration,
+        execution_space_id: &str,
+    ) -> StoreResult<()> {
         value
             .validate()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
+        require_non_empty_store(execution_space_id, "Execution Space id")?;
+        if value.execution_space_id != execution_space_id {
+            return Err(StoreError::Conflict(format!(
+                "EXECUTION_SPACE_SCOPE_MISMATCH: registration names {}, selected Store is {execution_space_id}",
+                value.execution_space_id
+            )));
+        }
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let node = latest_by_id(
@@ -7747,109 +7962,22 @@ impl HarnessStore {
             .latest_works_unlocked()?
             .remove(target_work_id)
             .ok_or_else(|| StoreError::Conflict(format!("work not found: {target_work_id}")))?;
-        let current = self
-            .latest_work_delegations_unlocked()?
-            .into_values()
-            .filter(|delegation| delegation.target_work_ref.work_id == target_work_id)
-            .collect::<Vec<_>>();
+        let revisions = self.work_delegation_rollup_revisions_unlocked(&target, &context)?;
         let mut changed = Vec::new();
-        for delegation in current {
-            let desired = if target.phase == WorkPhase::Closed {
-                match target.resolution {
-                    Some(WorkResolution::Accepted) => Some((
-                        WorkDelegationState::Completed,
-                        WorkDelegationTransition::Completed,
-                        target
-                            .result_summary
-                            .clone()
-                            .unwrap_or_else(|| "target Work accepted".to_string()),
-                        None,
-                    )),
-                    Some(WorkResolution::Failed) => Some((
-                        WorkDelegationState::Failed,
-                        WorkDelegationTransition::Failed,
-                        target
-                            .result_summary
-                            .clone()
-                            .or_else(|| target.blocker_reason.clone())
-                            .unwrap_or_else(|| "target Work failed".to_string()),
-                        None,
-                    )),
-                    Some(WorkResolution::Cancelled) => Some((
-                        WorkDelegationState::Cancelled,
-                        WorkDelegationTransition::Cancelled,
-                        target
-                            .result_summary
-                            .clone()
-                            .or_else(|| target.blocker_reason.clone())
-                            .unwrap_or_else(|| "target Work cancelled".to_string()),
-                        None,
-                    )),
-                    None => None,
-                }
-            } else if target.condition == WorkCondition::Blocked {
-                Some((
-                    WorkDelegationState::Blocked,
-                    WorkDelegationTransition::Blocked,
-                    String::new(),
-                    Some(
-                        target
-                            .blocker_reason
-                            .clone()
-                            .unwrap_or_else(|| "target Work blocked".to_string()),
-                    ),
-                ))
-            } else if delegation.state == WorkDelegationState::Blocked {
-                Some((
-                    WorkDelegationState::Active,
-                    WorkDelegationTransition::Resumed,
-                    String::new(),
-                    None,
-                ))
-            } else {
-                None
-            };
-            let Some((state, transition, resolution, blocker)) = desired else {
-                continue;
-            };
-            if delegation.state == state {
-                continue;
-            }
-            if matches!(
-                delegation.state,
-                WorkDelegationState::Completed
-                    | WorkDelegationState::Failed
-                    | WorkDelegationState::Cancelled
-            ) {
-                continue;
-            }
-            let mut next = delegation.clone();
-            next.state = state;
-            next.version = next.version.saturating_add(1);
-            next.updated_at = context.created_at.clone();
-            next.blocker_reason = blocker;
-            next.resolution_summary = if resolution.is_empty() {
-                None
-            } else {
-                Some(resolution)
-            };
-            let event = WorkDelegationEvent {
-                id: format!("{}:{}", context.event_id, delegation.id),
-                delegation_id: delegation.id.clone(),
-                sequence: next.version,
-                transition,
-                expected_version: delegation.version,
-                resulting_version: next.version,
-                performed_by_actor: context.performed_by_actor.clone(),
-                causation_ref: context.causation_ref.clone(),
-                idempotency_key: format!("{}:{}", context.idempotency_key, delegation.id),
-                payload: serde_json::json!({"target_work_version": target.version}),
-                created_at: context.created_at.clone(),
-            };
+        for revision in revisions {
+            let current = self
+                .latest_work_delegations_unlocked()?
+                .remove(&revision.delegation.id)
+                .ok_or_else(|| {
+                    StoreError::Conflict(format!(
+                        "delegation not found: {}",
+                        revision.delegation.id
+                    ))
+                })?;
             changed.push(self.append_work_delegation_transition_unlocked(
-                &delegation,
-                next,
-                event,
+                &current,
+                revision.delegation,
+                revision.event,
             )?);
         }
         Ok(changed)
@@ -14038,14 +14166,17 @@ mod tests {
             })
             .expect("insert Node");
         store
-            .register_node_project(&NodeProjectRegistration {
-                node_id: node_id.into(),
-                execution_space_id: "delegation-test-space".into(),
-                project_binding_id: "project-test".into(),
-                status: NodeProjectRegistrationStatus::Active,
-                created_at: "unix-ms:1".into(),
-                updated_at: "unix-ms:1".into(),
-            })
+            .register_node_project(
+                &NodeProjectRegistration {
+                    node_id: node_id.into(),
+                    execution_space_id: "delegation-test-space".into(),
+                    project_binding_id: "project-test".into(),
+                    status: NodeProjectRegistrationStatus::Active,
+                    created_at: "unix-ms:1".into(),
+                    updated_at: "unix-ms:1".into(),
+                },
+                "delegation-test-space",
+            )
             .expect("register project");
 
         let make_member = |team_run_id: &str, suffix: &str| MemberRun {
@@ -14130,7 +14261,7 @@ mod tests {
                 completed_at: None,
             };
             store
-                .create_team_run_from_agent_team(&run)
+                .create_team_run_from_agent_team(&run, "delegation-test-space")
                 .expect("create TeamRun");
             store.append_member_run(&member).expect("append MemberRun");
             rows.push((run, member));
@@ -14218,12 +14349,45 @@ mod tests {
         let retry = store
             .create_work_delegation_with_target_work(
                 request.clone(),
-                target_request,
-                create_context,
+                target_request.clone(),
+                create_context.clone(),
             )
             .expect("same command retry is idempotent");
         assert_eq!(retry, (created.clone(), target.clone()));
         assert_eq!(store.latest_work_delegations().unwrap().len(), 1);
+
+        let mut changed_target_intent = target_request.clone();
+        changed_target_intent.title = "different delegated outcome".into();
+        let fingerprint_conflict = store
+            .create_work_delegation_with_target_work(
+                request.clone(),
+                changed_target_intent,
+                create_context,
+            )
+            .expect_err("idempotency key cannot hide changed target Work intent");
+        assert!(fingerprint_conflict
+            .to_string()
+            .contains("IDEMPOTENCY_CONFLICT"));
+
+        let mut changed_entity_ids = request.clone();
+        changed_entity_ids.id = "different-delegation-id".into();
+        changed_entity_ids.target_work_ref.work_id = "different-target-work-id".into();
+        let mut changed_target_id = target_request;
+        changed_target_id.id = "different-target-work-id".into();
+        let identity_conflict = store
+            .create_work_delegation_with_target_work(
+                changed_entity_ids,
+                changed_target_id,
+                host_work_context(
+                    "delegation-created-retry-envelope",
+                    "delegate-source-a-to-b",
+                    "unix-ms:4",
+                ),
+            )
+            .expect_err("idempotency key cannot hide changed explicit entity ids");
+        assert!(identity_conflict
+            .to_string()
+            .contains("IDEMPOTENCY_CONFLICT"));
 
         let mut conflicting = request.clone();
         conflicting.source_work_ref.work_id = "different-source".into();
@@ -14307,16 +14471,23 @@ mod tests {
             )
             .expect("block target");
         let blocked_rollup = store
+            .latest_work_delegations()
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.id == delegation.id)
+            .expect("atomic blocked rollup");
+        assert_eq!(blocked_rollup.state, WorkDelegationState::Blocked);
+        assert_eq!(
+            blocked_rollup.blocker_reason.as_deref(),
+            Some("waiting for an external contract")
+        );
+        assert!(store
             .transition_work_and_roll_up_delegation(
                 &target.id,
                 host_work_context("rollup-blocked", "rollup-blocked-command", "unix-ms:6"),
             )
-            .expect("roll up blocker");
-        assert_eq!(blocked_rollup[0].state, WorkDelegationState::Blocked);
-        assert_eq!(
-            blocked_rollup[0].blocker_reason.as_deref(),
-            Some("waiting for an external contract")
-        );
+            .expect("already-atomic blocker reconciliation is a no-op")
+            .is_empty());
 
         let resumed = store
             .resume_work(
@@ -14333,12 +14504,12 @@ mod tests {
             )
             .expect("resume target");
         let resumed_rollup = store
-            .transition_work_and_roll_up_delegation(
-                &target.id,
-                host_work_context("rollup-resumed", "rollup-resumed-command", "unix-ms:8"),
-            )
-            .expect("roll up resume");
-        assert_eq!(resumed_rollup[0].state, WorkDelegationState::Active);
+            .latest_work_delegations()
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.id == delegation.id)
+            .expect("atomic resumed rollup");
+        assert_eq!(resumed_rollup.state, WorkDelegationState::Active);
 
         let submitted = store
             .submit_work(
@@ -14364,15 +14535,15 @@ mod tests {
             )
             .expect("accept target");
         let completed = store
-            .transition_work_and_roll_up_delegation(
-                &target.id,
-                host_work_context("rollup-completed", "rollup-completed-command", "unix-ms:11"),
-            )
-            .expect("roll up accepted target");
-        assert_eq!(completed[0].state, WorkDelegationState::Completed);
-        assert_eq!(completed[0].version, delegation.version + 3);
+            .latest_work_delegations()
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.id == delegation.id)
+            .expect("atomic completed rollup");
+        assert_eq!(completed.state, WorkDelegationState::Completed);
+        assert_eq!(completed.version, delegation.version + 3);
         assert_eq!(
-            completed[0].resolution_summary.as_deref(),
+            completed.resolution_summary.as_deref(),
             accepted.result_summary.as_deref()
         );
         assert!(store
@@ -16992,6 +17163,7 @@ mod tests {
             decisions: Vec::new(),
             deliveries: Vec::new(),
             delivery_updates: Vec::new(),
+            delegation_revisions: Vec::new(),
         };
         let refused = store
             .append_work_operation_unlocked(&sparse_operation)
@@ -18369,6 +18541,40 @@ mod tests {
             .bootstrap_root_lead_member("root", &test_durable_member("other-lead"))
             .expect_err("second root Host must be refused");
         assert!(conflict.to_string().contains("Host is lead"));
+        std::fs::remove_dir_all(root).expect("remove temp store");
+    }
+
+    #[test]
+    fn node_project_registration_is_fenced_to_selected_execution_space() {
+        let (root, store) = temp_store("node-project-space-fence");
+        let node_id = "00000000-0000-4000-8000-000000000001";
+        store
+            .insert_execution_node(&ExecutionNode {
+                id: node_id.into(),
+                display_name: "space-fenced-node".into(),
+                status: ExecutionNodeStatus::Active,
+                created_at: "unix-ms:1".into(),
+                updated_at: "unix-ms:1".into(),
+            })
+            .expect("insert Node");
+        let registration = NodeProjectRegistration {
+            node_id: node_id.into(),
+            execution_space_id: "other-space".into(),
+            project_binding_id: "project-test".into(),
+            status: NodeProjectRegistrationStatus::Active,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+        };
+        let mismatch = store
+            .register_node_project(&registration, "selected-space")
+            .expect_err("cross-space registration must be rejected");
+        assert!(mismatch
+            .to_string()
+            .contains("EXECUTION_SPACE_SCOPE_MISMATCH"));
+        assert!(store
+            .latest_node_project_registrations()
+            .unwrap()
+            .is_empty());
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 }
