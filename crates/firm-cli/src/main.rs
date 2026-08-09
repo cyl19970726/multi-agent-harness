@@ -16603,6 +16603,11 @@ fn team_run_command(
                 .count();
             let supervisor = store.latest_team_supervisor_lease(&id)?;
             let supervisor_current = supervisor.as_ref().is_some_and(is_supervisor_current);
+            #[cfg(unix)]
+            let multi_team_daemon = supervisor_daemon::daemon_status_via_socket(store)
+                .and_then(|response| serde_json::from_str::<serde_json::Value>(&response).ok());
+            #[cfg(not(unix))]
+            let multi_team_daemon: Option<serde_json::Value> = None;
             if json {
                 let members: Vec<serde_json::Value> = member_runs
                     .iter()
@@ -16634,6 +16639,7 @@ fn team_run_command(
                             })
                             .unwrap_or(0),
                     },
+                    "multi_team_daemon": multi_team_daemon,
                 }))?;
                 if unacked_messages > 0 && run.host_thread_id.is_none() {
                     eprintln!(
@@ -16713,6 +16719,12 @@ fn team_run_command(
                             ready, run.id
                         );
                     }
+                }
+                if let Some(status) = multi_team_daemon {
+                    let managed = status["runs"].as_array().map(Vec::len).unwrap_or_default();
+                    println!("multi_team_daemon: running\tmanaged_runs={managed}");
+                } else {
+                    println!("multi_team_daemon: absent");
                 }
             }
         }
@@ -20024,6 +20036,42 @@ pub(crate) fn team_run_start(
         // spawning.  The daemon will re-validate on its side, but pre-validating
         // here gives the CLI user an immediate error for unrecoverable problems.
         let _body = prepare_team_run_start_body(store, run_id, max_concurrency)?;
+
+        match crate::supervisor_daemon::try_delegate_to_daemon(store, run_id) {
+            Ok(response) => {
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&response).map_err(|error| {
+                        CliError::Usage(format!(
+                            "supervisor daemon returned invalid JSON for {run_id}: {error}"
+                        ))
+                    })?;
+                if parsed["ok"].as_bool() == Some(true) {
+                    println!("team run {run_id}\tdelegated to supervisor daemon");
+                    return Ok(());
+                }
+                return Err(CliError::Usage(format!(
+                    "supervisor daemon rejected {run_id}: {}",
+                    parsed["error"]
+                        .as_str()
+                        .unwrap_or("daemon returned no error detail")
+                )));
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                ) =>
+            {
+                eprintln!(
+                    "[star-harness] multi-team daemon unavailable ({error}); using per-run daemon"
+                );
+            }
+            Err(error) => {
+                return Err(CliError::Usage(format!(
+                    "supervisor daemon communication failed for {run_id}: {error}"
+                )));
+            }
+        }
 
         let daemon =
             match crate::supervisor_daemon::check_existing_supervisor_daemon(store, run_id)? {
@@ -27344,7 +27392,8 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
     Ok(())
 }
 
-/// `harness daemon start|status|stop`: the resident warm-child host (unix-only).
+/// `harness daemon start|status|stop`: the resident warm-child host, plus
+/// `harness daemon serve` for the multi-TeamRun supervisor (unix-only).
 ///
 /// The daemon keeps `claude` children warm across short-lived `harness deliver`
 /// invocations behind a per-workspace Unix socket under the store root. The
@@ -27352,11 +27401,49 @@ fn serve_command(store: &HarnessStore, resolved: &ResolvedStore, args: &[String]
 /// socket is present, and falls back to an inline single turn when it is not.
 #[cfg(unix)]
 fn daemon_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "daemon start|status|stop|supervisor")?;
+    require_subcommand(args, "daemon start|status|stop|supervisor|serve")?;
     let harness_root = store.root().to_path_buf();
     match args[0].as_str() {
         "supervisor" => {
             supervisor_daemon::supervisor_daemon_command(store, &args[1..])?;
+        }
+        "serve" => {
+            let max_concurrency = value(args, "--max-concurrency")
+                .map(|raw| {
+                    raw.parse::<usize>().map_err(|_| {
+                        CliError::Usage("--max-concurrency must be an integer".to_string())
+                    })
+                })
+                .transpose()?
+                .unwrap_or(4);
+            let idle_timeout_secs = value(args, "--idle-timeout-secs")
+                .map(|raw| {
+                    raw.parse::<u64>().map_err(|_| {
+                        CliError::Usage("--idle-timeout-secs must be an integer".to_string())
+                    })
+                })
+                .transpose()?
+                .unwrap_or(300);
+            let scan_interval_secs = value(args, "--scan-interval-secs")
+                .map(|raw| {
+                    raw.parse::<u64>().map_err(|_| {
+                        CliError::Usage("--scan-interval-secs must be an integer".to_string())
+                    })
+                })
+                .transpose()?
+                .unwrap_or(5);
+            if max_concurrency == 0 || idle_timeout_secs == 0 || scan_interval_secs == 0 {
+                return Err(CliError::Usage(
+                    "daemon serve concurrency and timeout/scan values must be greater than zero"
+                        .to_string(),
+                ));
+            }
+            supervisor_daemon::MultiTeamDaemon::run(
+                store.clone(),
+                max_concurrency,
+                idle_timeout_secs,
+                scan_interval_secs,
+            )?;
         }
         "start" => {
             let idle_secs = value(args, "--idle-secs")
@@ -39862,7 +39949,7 @@ fn print_help() {
   hook record --agent <agent> [--runtime <runtime>]
   serve [--addr 127.0.0.1:8787] [--once]
   mcp
-  daemon start|status|stop
+  daemon start|status|stop|serve
   cheatsheet [team|work|mission|all]
 
 Retired coordination commands fail explicitly. Historical rows are available only

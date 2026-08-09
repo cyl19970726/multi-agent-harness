@@ -5,7 +5,7 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 use std::net::TcpStream;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
@@ -561,7 +561,6 @@ pub(crate) fn supervisor_daemon_command(store: &HarnessStore, args: &[String]) -
 /// Socket path for the multi-team daemon's control socket.
 /// Uses a hash-based fallback under /tmp when the store root path exceeds
 /// the macOS AF_UNIX 104-byte limit.
-#[allow(dead_code)] // #415 owns the currently unwired multi-team daemon product path.
 pub(crate) fn multi_team_socket_path(store_root: &std::path::Path) -> PathBuf {
     let direct = store_root.join("supervisor.sock");
     let direct_str = direct.to_string_lossy();
@@ -576,7 +575,6 @@ pub(crate) fn multi_team_socket_path(store_root: &std::path::Path) -> PathBuf {
 }
 
 /// A managed team-run context inside the multi-team daemon.
-#[allow(dead_code)]
 struct MultiTeamContext {
     run_id: String,
     heartbeat_valid: Arc<AtomicBool>,
@@ -584,8 +582,20 @@ struct MultiTeamContext {
     started_at: Instant,
 }
 
+struct PendingControlConnection {
+    stream: UnixStream,
+    bytes: Vec<u8>,
+    accepted_at: Instant,
+}
+
+enum ControlReadState {
+    Pending,
+    Closed,
+    Ready(String),
+    Invalid(&'static str),
+}
+
 /// The multi-team supervisor daemon.
-#[allow(dead_code)]
 pub(crate) struct MultiTeamDaemon {
     store: HarnessStore,
     contexts: Mutex<Vec<MultiTeamContext>>,
@@ -595,7 +605,6 @@ pub(crate) struct MultiTeamDaemon {
     shutdown: Arc<AtomicBool>,
 }
 
-#[allow(dead_code)]
 impl MultiTeamDaemon {
     /// Run the multi-team daemon in the foreground. Blocks until SIGTERM/SIGINT
     /// or until the control socket receives a "stop" command.
@@ -613,7 +622,35 @@ impl MultiTeamDaemon {
         install_signal_handlers_mt(Arc::clone(&shutdown_sig));
 
         let socket_path = multi_team_socket_path(store.root());
-        let _ = std::fs::remove_file(&socket_path);
+        if socket_path.exists() {
+            match UnixStream::connect(&socket_path) {
+                Ok(_) => {
+                    return Err(CliError::Usage(format!(
+                        "multi-team supervisor daemon already serves {}",
+                        store.root().display()
+                    )))
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+                    ) =>
+                {
+                    std::fs::remove_file(&socket_path).map_err(|remove_error| {
+                        CliError::Usage(format!(
+                            "cannot remove stale supervisor socket at {}: {remove_error}",
+                            socket_path.display()
+                        ))
+                    })?;
+                }
+                Err(error) => {
+                    return Err(CliError::Usage(format!(
+                        "cannot verify supervisor socket at {}: {error}",
+                        socket_path.display()
+                    )))
+                }
+            }
+        }
 
         let listener = UnixListener::bind(&socket_path).map_err(|e| {
             CliError::Usage(format!(
@@ -636,19 +673,17 @@ impl MultiTeamDaemon {
             shutdown: shutdown_sig,
         };
 
-        // Crash recovery: adopt orphaned runs on startup.
-        daemon.recover_orphaned_runs()?;
-
-        // Main loop: scan store + poll control socket.
-        daemon.serve_loop(&listener)?;
-
-        // Graceful shutdown.
+        // Always remove the socket and drain managed supervisors, even when a
+        // store or control-loop error stops the foreground service.
+        let serve_result = daemon
+            .recover_orphaned_runs()
+            .and_then(|()| daemon.serve_loop(&listener));
         drop(listener);
         let _ = std::fs::remove_file(&socket_path);
-        daemon.graceful_shutdown()?;
+        let shutdown_result = daemon.graceful_shutdown();
 
         eprintln!("[multi-team-daemon] shutdown complete");
-        Ok(())
+        serve_result.and(shutdown_result)
     }
 
     /// Enumerate non-terminal team-runs and adopt runs whose supervisor lease
@@ -700,23 +735,19 @@ impl MultiTeamDaemon {
 
     /// Main loop: scan for new runs, reap finished contexts, poll control socket.
     fn serve_loop(&self, listener: &UnixListener) -> CliResult<()> {
-        let mut buf = String::new();
+        const CONTROL_POLL_INTERVAL: Duration = Duration::from_millis(20);
+        let mut pending = Vec::new();
+        let mut next_scan = Instant::now();
 
         while !self.shutdown.load(Ordering::SeqCst) {
-            // 1. Scan for active team-runs that aren't yet managed.
-            self.scan_and_adopt()?;
-
-            // 2. Reap finished contexts.
-            self.reap_finished()?;
-
-            // 3. Poll control socket for one command (non-blocking).
-            self.poll_control_socket(listener, &mut buf)?;
-
-            // 4. Sleep the scan interval with shutdown-aware wake-up.
-            let deadline = Instant::now() + self.scan_interval;
-            while Instant::now() < deadline && !self.shutdown.load(Ordering::SeqCst) {
-                std::thread::sleep(Duration::from_millis(100));
+            if Instant::now() >= next_scan {
+                self.scan_and_adopt()?;
+                self.reap_finished()?;
+                next_scan = Instant::now() + self.scan_interval;
             }
+
+            self.poll_control_socket(listener, &mut pending);
+            std::thread::sleep(CONTROL_POLL_INTERVAL);
         }
         Ok(())
     }
@@ -781,6 +812,11 @@ impl MultiTeamDaemon {
                 .contexts
                 .lock()
                 .map_err(|e| CliError::Usage(format!("context lock poisoned: {e}")))?;
+            if contexts.iter().any(|context| context.run_id == run_id) {
+                return Err(CliError::Usage(format!(
+                    "multi-team daemon already manages {run_id}"
+                )));
+            }
             if contexts.len() >= self.max_concurrency {
                 return Err(CliError::Usage(format!(
                     "multi-team daemon at capacity ({}/{} runs); cannot start {run_id}",
@@ -928,22 +964,107 @@ impl MultiTeamDaemon {
         Ok(())
     }
 
-    /// Poll the control socket for one incoming command (non-blocking).
-    fn poll_control_socket(&self, listener: &UnixListener, buf: &mut String) -> CliResult<()> {
-        match listener.accept() {
-            Ok((mut stream, _addr)) => {
-                buf.clear();
-                let mut reader = std::io::BufReader::new(&mut stream);
-                if reader.read_line(buf).is_ok() {
-                    self.handle_control_command(&mut stream, buf.trim())?;
+    /// Accept new control connections and advance every partial command once.
+    /// Per-client framing and I/O failures never escape into the daemon loop.
+    fn poll_control_socket(
+        &self,
+        listener: &UnixListener,
+        pending: &mut Vec<PendingControlConnection>,
+    ) {
+        loop {
+            match listener.accept() {
+                Ok((stream, _addr)) => {
+                    if let Err(error) = stream.set_nonblocking(true) {
+                        eprintln!("[multi-team-daemon] cannot configure client socket: {error}");
+                        continue;
+                    }
+                    pending.push(PendingControlConnection {
+                        stream,
+                        bytes: Vec::new(),
+                        accepted_at: Instant::now(),
+                    });
+                }
+                Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => {
+                    eprintln!("[multi-team-daemon] socket accept error: {error}");
+                    break;
                 }
             }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(e) => {
-                eprintln!("[multi-team-daemon] socket accept error: {e}");
+        }
+
+        let mut index = 0;
+        while index < pending.len() {
+            let state = Self::read_control_command(&mut pending[index]);
+            match state {
+                ControlReadState::Pending => index += 1,
+                ControlReadState::Closed => {
+                    pending.swap_remove(index);
+                }
+                ControlReadState::Ready(command) => {
+                    let mut connection = pending.swap_remove(index);
+                    if let Err(error) =
+                        self.handle_control_command(&mut connection.stream, command.trim())
+                    {
+                        eprintln!("[multi-team-daemon] control client error: {error}");
+                    }
+                }
+                ControlReadState::Invalid(error) => {
+                    let mut connection = pending.swap_remove(index);
+                    let response = serde_json::json!({"ok": false, "error": error});
+                    if let Err(write_error) =
+                        Self::write_control_response(&mut connection.stream, &response)
+                    {
+                        eprintln!("[multi-team-daemon] control client error: {write_error}");
+                    }
+                }
             }
         }
-        Ok(())
+    }
+
+    fn read_control_command(connection: &mut PendingControlConnection) -> ControlReadState {
+        const MAX_CONTROL_BYTES: usize = 64 * 1024;
+        let mut chunk = [0_u8; 4096];
+        loop {
+            match connection.stream.read(&mut chunk) {
+                Ok(0) if connection.bytes.is_empty() => return ControlReadState::Closed,
+                Ok(0) => {
+                    return ControlReadState::Invalid(
+                        "control command must be one newline-terminated JSON object",
+                    )
+                }
+                Ok(count) => {
+                    connection.bytes.extend_from_slice(&chunk[..count]);
+                    if connection.bytes.len() > MAX_CONTROL_BYTES {
+                        return ControlReadState::Invalid("control command exceeds 64 KiB");
+                    }
+                    if let Some(newline) = connection.bytes.iter().position(|byte| *byte == b'\n') {
+                        return match String::from_utf8(connection.bytes[..newline].to_vec()) {
+                            Ok(command) => ControlReadState::Ready(command),
+                            Err(_) => {
+                                ControlReadState::Invalid("control command is not valid UTF-8")
+                            }
+                        };
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if connection.accepted_at.elapsed() >= Duration::from_secs(1) {
+                        return ControlReadState::Invalid(
+                            "control command must be one newline-terminated JSON object",
+                        );
+                    }
+                    return ControlReadState::Pending;
+                }
+                Err(_) => return ControlReadState::Closed,
+            }
+        }
+    }
+
+    fn write_control_response(
+        stream: &mut UnixStream,
+        response: &serde_json::Value,
+    ) -> CliResult<()> {
+        writeln!(stream, "{response}").map_err(CliError::Io)?;
+        stream.flush().map_err(CliError::Io)
     }
 
     /// Handle a single control socket command.
@@ -951,7 +1072,11 @@ impl MultiTeamDaemon {
         let cmd: serde_json::Value = match serde_json::from_str(cmd_line) {
             Ok(v) => v,
             Err(e) => {
-                let _ = writeln!(stream, r#"{{"ok":false,"error":"invalid json: {}"}}"#, e);
+                let response = serde_json::json!({
+                    "ok": false,
+                    "error": format!("invalid json: {e}"),
+                });
+                Self::write_control_response(stream, &response)?;
                 return Ok(());
             }
         };
@@ -961,20 +1086,39 @@ impl MultiTeamDaemon {
             "start" => {
                 let run_id = cmd["run_id"].as_str().unwrap_or("");
                 if run_id.is_empty() {
-                    let _ = writeln!(stream, r#"{{"ok":false,"error":"run_id is required"}}"#);
+                    let response = serde_json::json!({"ok": false, "error": "run_id is required"});
+                    Self::write_control_response(stream, &response)?;
+                    return Ok(());
+                }
+                let already_managed = self
+                    .contexts
+                    .lock()
+                    .map_err(|e| CliError::Usage(format!("context lock poisoned: {e}")))?
+                    .iter()
+                    .any(|context| context.run_id == run_id);
+                if already_managed {
+                    let response =
+                        serde_json::json!({"ok": true, "run_id": run_id, "reused": true});
+                    Self::write_control_response(stream, &response)?;
                     return Ok(());
                 }
                 // P0-4 fix: propagate actual error, not "delegated to daemon".
                 match self.start_supervising(run_id) {
                     Ok(()) => {
-                        let _ = writeln!(stream, r#"{{"ok":true,"run_id":"{}"}}"#, run_id);
+                        let response = serde_json::json!({
+                            "ok": true,
+                            "run_id": run_id,
+                            "reused": false,
+                        });
+                        Self::write_control_response(stream, &response)?;
                     }
                     Err(e) => {
-                        let _ = writeln!(
-                            stream,
-                            r#"{{"ok":false,"run_id":"{}","error":"{}"}}"#,
-                            run_id, e
-                        );
+                        let response = serde_json::json!({
+                            "ok": false,
+                            "run_id": run_id,
+                            "error": e.to_string(),
+                        });
+                        Self::write_control_response(stream, &response)?;
                     }
                 }
             }
@@ -998,23 +1142,19 @@ impl MultiTeamDaemon {
                         .collect()
                 };
                 let resp = serde_json::json!({"ok": true, "runs": runs});
-                let _ = writeln!(
-                    stream,
-                    "{}",
-                    serde_json::to_string(&resp).unwrap_or_default()
-                );
+                Self::write_control_response(stream, &resp)?;
             }
             "stop" => {
                 // P0-1 fix: actually set shutdown, not just reply ok.
                 self.shutdown.store(true, Ordering::SeqCst);
-                let _ = writeln!(stream, r#"{{"ok":true}}"#);
+                Self::write_control_response(stream, &serde_json::json!({"ok": true}))?;
             }
             _ => {
-                let _ = writeln!(
-                    stream,
-                    r#"{{"ok":false,"error":"unknown command: {}"}}"#,
-                    cmd_name
-                );
+                let response = serde_json::json!({
+                    "ok": false,
+                    "error": format!("unknown command: {cmd_name}"),
+                });
+                Self::write_control_response(stream, &response)?;
             }
         }
         Ok(())
@@ -1081,7 +1221,6 @@ impl MultiTeamDaemon {
 // Multi-team daemon signal handling (channel-based, no static raw pointer)
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
 fn install_signal_handlers_mt(shutdown: Arc<AtomicBool>) {
     // P0-8 fix: leak the Arc to get a 'static reference for the signal
     // handler. The leaked memory is reclaimed at process exit. This avoids
@@ -1110,7 +1249,6 @@ fn install_signal_handlers_mt(shutdown: Arc<AtomicBool>) {
     }
 }
 
-#[allow(dead_code)]
 static mut MT_SIGNAL_FLAG: Option<&'static AtomicBool> = None;
 
 // ---------------------------------------------------------------------------
@@ -1119,7 +1257,6 @@ static mut MT_SIGNAL_FLAG: Option<&'static AtomicBool> = None;
 
 /// Try to send a start command to the multi-team daemon via its control socket.
 /// Returns the response line on success.
-#[allow(dead_code)]
 pub(crate) fn try_delegate_to_daemon(
     store: &HarnessStore,
     run_id: &str,
@@ -1141,11 +1278,13 @@ pub(crate) fn try_delegate_to_daemon(
 }
 
 /// Send a status request to the multi-team daemon.
-#[allow(dead_code)]
 pub(crate) fn daemon_status_via_socket(store: &HarnessStore) -> Option<String> {
     let socket_path = multi_team_socket_path(store.root());
     let mut stream = UnixStream::connect(&socket_path).ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .ok()?;
 
     let cmd = r#"{"cmd":"status"}"#;
     writeln!(stream, "{cmd}").ok()?;
