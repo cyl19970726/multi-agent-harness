@@ -168,6 +168,12 @@ on both success and failure. The delivered prompt is read-only triage: it may
 verify and communicate through Messages, but cannot accept, merge, cancel,
 close, reassign, or otherwise mutate Work lifecycle state.
 
+Kimi permission requests fail closed and Claude resume reapplies its read-only
+permission mode. Codex exact-session resume currently inherits the original
+session sandbox and cannot reapply `--sandbox`; the command therefore rejects
+Codex headless dispatch instead of treating a prompt prohibition as an
+enforceable permission boundary.
+
 The persistent multi-TeamRun loop remains issue #415. It should call this same
 one-shot seam rather than duplicate its claim, compatibility, identity, or
 receipt rules. Until that wiring lands, unattended dispatch is not complete.

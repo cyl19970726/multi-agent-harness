@@ -296,6 +296,12 @@ where
         now_unix_ms,
         updated_at,
     )?;
+    if claimed.is_empty() {
+        return Err(StoreError::Conflict(format!(
+            "HOST_DISPATCH_NOTHING_CLAIMED: TeamRun {} has no eligible HostAttention after the dispatcher lease was acquired",
+            lease.team_run_id
+        )));
+    }
     match catch_unwind(AssertUnwindSafe(|| consumer(&claimed))) {
         Ok(Ok(success)) => {
             let DispatcherConsumerSuccess {
@@ -697,6 +703,26 @@ mod tests {
             delivered.provider_receipt_id.as_deref(),
             Some("provider-receipt-1")
         );
+
+        let consumer_called = std::cell::Cell::new(false);
+        let empty = claim_dispatcher_batch_with_consumer(
+            &store,
+            DispatcherBatchRequest {
+                lease: &current,
+                older_than_unix_ms: 100,
+                limit: 10,
+                claim_id: "claim-empty",
+                now_unix_ms: 114,
+                updated_at: "unix-ms:114",
+            },
+            |_| {
+                consumer_called.set(true);
+                DispatcherConsumerSuccess::new((), "impossible-receipt")
+            },
+        )
+        .expect_err("empty batch must not invoke consumer");
+        assert!(empty.to_string().contains("HOST_DISPATCH_NOTHING_CLAIMED"));
+        assert!(!consumer_called.get());
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
