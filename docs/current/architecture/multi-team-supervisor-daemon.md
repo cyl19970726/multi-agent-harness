@@ -28,8 +28,9 @@ unreachable daemon is an explicit `NODE_DAEMON_UNAVAILABLE` failure.
 
 - `ExecutionNode` is the stable machine identity.
 - `NodeProjectRegistration` admits an Execution Space/project binding to a Node.
-- `NodeDaemonLease` gives one daemon generation authority over one registered
-  Execution Space.
+- `NodeDaemonLease` gives one daemon generation machine-scoped authority over
+  all local Teams in every Execution Space registered to that Node. It is not
+  an Execution-Space-scoped lease.
 - `TeamSupervisorLease` is a child lease fenced by Node id, daemon id, daemon
   generation, Execution Space, and project binding.
 - A stale child cannot heartbeat or write after its parent generation changes.

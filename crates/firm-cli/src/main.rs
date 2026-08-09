@@ -18073,14 +18073,6 @@ fn supervisor_test_heartbeat_failure_marker() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn supervisor_test_lease_loss_hold() -> Option<Duration> {
-    std::env::var("FIRM_TEST_SUPERVISOR_LEASE_LOSS_HOLD_MS")
-        .ok()
-        .and_then(|raw| raw.parse::<u64>().ok())
-        .filter(|millis| *millis > 0)
-        .map(Duration::from_millis)
-}
-
 impl Drop for LiveMemberControlRegistration {
     fn drop(&mut self) {
         LIVE_MEMBER_CONTROLS
@@ -18227,17 +18219,6 @@ fn dispatch_local_live_member_control(
         return Err(supervisor_lease_lost_error(&team_run_id));
     }
     require_current_supervisor_lease(store, &team_run_id, supervisor_id, generation)?;
-    if let LiveMemberControlRequest::Close {
-        reason,
-        requested_by,
-        ..
-    } = &request
-    {
-        // The durable request is written before process-local dispatch, so an
-        // acknowledged Close survives receiver loss and Supervisor restart.
-        latch_member_close(store, &team_run_id, &member_run_id, requested_by, reason)?;
-        mark_member_coordination_closed(store, &team_run_id, &member_run_id)?;
-    }
     let control = LIVE_MEMBER_CONTROLS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -18246,6 +18227,25 @@ fn dispatch_local_live_member_control(
         .cloned();
     let Some(control) = control else {
         if matches!(request, LiveMemberControlRequest::Close { .. }) {
+            if let LiveMemberControlRequest::Close {
+                reason,
+                requested_by,
+                ..
+            } = &request
+            {
+                // Authority has been fenced above and no capability check can
+                // still reject this request. Persist the admitted Close before
+                // any provider-interaction or lifecycle side effect.
+                latch_member_close(store, &team_run_id, &member_run_id, requested_by, reason)?;
+                cancel_pending_member_interactions(
+                    store,
+                    &team_run_id,
+                    &member_run_id,
+                    requested_by,
+                    reason,
+                )?;
+                mark_member_coordination_closed(store, &team_run_id, &member_run_id)?;
+            }
             return Ok(serde_json::json!({
                 "member_run_id": member_run_id,
                 "status": "close_requested",
@@ -18281,6 +18281,26 @@ fn dispatch_local_live_member_control(
             )));
         }
         _ => {}
+    }
+    if let LiveMemberControlRequest::Close {
+        reason,
+        requested_by,
+        ..
+    } = &request
+    {
+        // Every authority, ownership, and capability rejection is complete.
+        // Persist the admitted Close before provider-interaction cancellation
+        // or lifecycle writes. A rejected Close therefore has zero durable or
+        // provider side effect.
+        latch_member_close(store, &team_run_id, &member_run_id, requested_by, reason)?;
+        cancel_pending_member_interactions(
+            store,
+            &team_run_id,
+            &member_run_id,
+            requested_by,
+            reason,
+        )?;
+        mark_member_coordination_closed(store, &team_run_id, &member_run_id)?;
     }
     let (reply_tx, reply_rx) = sync_channel(1);
     let command = match request {
@@ -20576,13 +20596,6 @@ pub(crate) fn drive_prepared_team_run(
     }
 
     if lease_lost {
-        // Deterministic integration seam: keep the exact failed generation's
-        // durable lease and invalid local control endpoint observable long
-        // enough to prove that control is rejected by the process-local
-        // latch. Production never sets this environment variable.
-        if let Some(hold) = supervisor_test_lease_loss_hold() {
-            std::thread::sleep(hold);
-        }
         return Err(supervisor_lease_lost_error(&run_id));
     }
 
@@ -29104,7 +29117,6 @@ fn close_team_member_value(
             "member run {member_run_id} does not belong to team run {team_run_id}"
         )));
     }
-    cancel_pending_member_interactions(store, team_run_id, member_run_id, &requested_by, &reason)?;
     let member = latest_member_runs_in_append_order(store)?
         .into_iter()
         .find(|member| member.id == member_run_id)
@@ -29136,6 +29148,13 @@ fn close_team_member_value(
         member.status,
         MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
     ) {
+        cancel_pending_member_interactions(
+            store,
+            team_run_id,
+            member_run_id,
+            &requested_by,
+            &reason,
+        )?;
         if let Some(close) = pending_member_close(store, member_run_id)? {
             store_conflict_as_usage(store.complete_team_member_close(
                 team_run_id,
@@ -29210,6 +29229,7 @@ fn close_team_member_value(
             }
         }
     };
+    cancel_pending_member_interactions(store, team_run_id, member_run_id, &requested_by, &reason)?;
     let member = mark_member_coordination_closed(store, team_run_id, member_run_id)?;
     // Past this point no live Supervisor lease exists (the live case was
     // dispatched above) and the durable lease is the sole cross-process
@@ -44260,6 +44280,35 @@ mod tests {
                 60_000,
             )
             .expect("acquire current Supervisor lease");
+        let interaction = PendingInteraction {
+            id: "pending-close-fence".into(),
+            team_run_id: created.team_run.id.clone(),
+            member_run_id: member.id.clone(),
+            provider: "codex".into(),
+            provider_request_id: "provider-close-fence".into(),
+            method: "item/tool/requestUserInput".into(),
+            kind: PendingInteractionKind::Question,
+            route: PendingInteractionRoute::Lead,
+            status: PendingInteractionStatus::Pending,
+            title: "Pending before rejected Close".into(),
+            prompt: "Must remain pending".into(),
+            options: Vec::new(),
+            tool_call_id: None,
+            response_option_id: None,
+            response_text: None,
+            created_at: "unix-ms:close-fence".into(),
+            resolved_at: None,
+            resolved_by: None,
+        };
+        store
+            .append_pending_interaction(&interaction)
+            .expect("seed pending provider interaction");
+        let interactions_before = store
+            .pending_interactions()
+            .expect("pending interactions before rejected Close");
+        let events_before = store
+            .team_run_events()
+            .expect("events before rejected Close");
 
         let error = dispatch_local_live_member_control(
             &store,
@@ -44285,6 +44334,20 @@ mod tests {
                 .expect("close requests")
                 .is_empty(),
             "locally invalid generation persisted Close"
+        );
+        assert_eq!(
+            store
+                .pending_interactions()
+                .expect("pending interactions after rejected Close"),
+            interactions_before,
+            "authority-rejected Close cancelled a provider interaction"
+        );
+        assert_eq!(
+            store
+                .team_run_events()
+                .expect("events after rejected Close"),
+            events_before,
+            "authority-rejected Close emitted a lifecycle side effect"
         );
         std::fs::remove_dir_all(root).expect("cleanup");
     }

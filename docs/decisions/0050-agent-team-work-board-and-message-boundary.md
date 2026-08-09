@@ -1,7 +1,7 @@
 # ADR 0050: Agent Team Works And Message Boundary
 
 ```text
-status: accepted; amended by ADR 0052; breaking cutover in progress
+status: accepted; flat-Team amendment implemented by Wave 3
 owner_role: architecture
 canonical_for: Work as the Agent Team scheduling primitive, no Assignment
   Message ownership, shared Kanban, claim authority, and Mission boundary
@@ -21,21 +21,19 @@ Agent Team Shared Task List research.
 
 The product also needs one simple execution-board object that the Company
 operating surface can use. This ADR originally kept Company WorkItem as a
-permanently separate lifecycle. ADR 0052 supersedes that permanence and adopts
-one target Work responsibility kernel while preserving Approval, Finance,
-Document, Mission, and provider-native truth as distinct relations.
+permanently separate lifecycle. The Unified Work cutover removed that duplicate
+responsibility kernel while preserving Approval, Finance, Document, Mission,
+and provider-native truth as distinct relations. ADR 0052's recursive Team
+proposal is superseded historical evidence and has no active authority here.
 
 ## Decision
 
 ### Work is the base responsibility object
 
-Agent Team adds a `Work` object and a shared `Works` projection. In the initial
-implementation it is TeamRun-scoped and Company WorkItem remains a separate
-governed compatibility object. ADR 0052 changes the target scope to persistent
-AgentTeam and converges duplicate responsibility state through an explicit
-migration. Until cutover, a Team Work transition does not mutate Company
-WorkItem, Approval, Finance, or closure. Kanban is a view over Work, not another
-source of truth.
+Agent Team adds a `Work` object and a shared `Works` projection. Work is the
+authoritative Team responsibility object; Company Work is a read-only aggregate
+and owns no second task identity. Approval, Finance, and Docs remain separate
+related truth. Kanban is a view over Work, not another source of truth.
 
 ### Assignment is a Work operation
 
@@ -103,15 +101,16 @@ gate.
 
 The Team Host may manage every Work in its Team. Ordinary Members may create
 self-owned Work, unassigned Work, and child Work beneath Work they own. They
-cannot force assignment to a same-level peer. A Member allowed to create a
-child Team becomes its Host and may assign child Works there.
+cannot force assignment to a same-level peer. Cross-Team responsibility is an
+explicit `WorkDelegation` from source Work to target Work in another flat Team;
+it never creates parent/child Team authority.
 
-### Mission remains optional and distinct
+### Mission owns exactly one flat Team and remains distinct from Work
 
-Mission owns durable outcome and shared context. Wave owns versioned Host
-judgment and material re-plan. Works own current execution demand, ownership,
-and state. Standalone Teams need no Mission; multi-team or long-horizon outcomes
-may use Mission and Wave.
+Mission owns durable outcome, shared context, and exactly one flat AgentTeam.
+Wave owns versioned Host judgment and material re-plan. Works own current
+execution demand, ownership, and state. Cross-Team or cross-machine cooperation
+uses WorkDelegation without merging Mission or Team identity.
 
 Works remove task enumeration from Wave and replace Assignment-message
 ownership. They do not replace Mission closeout or Wave decision history.
@@ -125,8 +124,8 @@ ownership. They do not replace Mission closeout or Wave decision history.
   separate and observable.
 - Dashboard adds Works as a primary Team surface and task state no longer has
   to be inferred from Activity.
-- Organization becomes a recursive projection of persistent AgentTeams under
-  ADR 0052; the current StandingAgent join remains compatibility truth only.
+- Organization projects multiple flat AgentTeams; the current StandingAgent
+  join remains compatibility truth only.
 - Current Company WorkItem can link execution Works during transition, but the
   target does not retain two responsibility lifecycles.
 - Existing Assignment-message schemas, CLI writes, projections, warnings,
@@ -151,8 +150,8 @@ Rejected. It keeps discovery and task creation serialized through the Host.
 ### Let every Member assign peers
 
 Rejected. It permits silent responsibility transfer and makes peer ownership
-unstable. Members create eligible unassigned Work or delegate through a child
-Team they Host.
+unstable. Members create eligible unassigned Work; cross-Team transfer requires
+an explicit WorkDelegation owned by the relevant Hosts.
 
 ### Replace Mission with the board
 
@@ -193,4 +192,5 @@ The decision becomes operational only after:
 6. Team Workbench proves assigned, unassigned, ready, blocked, review, child,
    and Message-linked states; and
 7. TeamRun completion atomically rejects every non-terminal Work state; and
-8. mixed-provider dogfood proves standalone and Mission-scoped Teams.
+8. mixed-provider dogfood proves Mission-scoped flat Teams and explicit
+   cross-Team WorkDelegation.

@@ -118,3 +118,24 @@ context_markers = [
     "retired",
     "superseded",
 ]
+
+[[document_invariants]]
+name = "flat-agent-team-authority"
+paths = [
+    "AGENTS.md",
+    "docs/mental/agent-firm-mental-model.md",
+]
+required_terms = [
+    "flat AgentTeams",
+    "exactly one Mission",
+    "immutable `node_id`",
+    "one machine-scoped NodeDaemon",
+]
+forbidden_terms = [
+    "recursive AgentTeams",
+    "recursive AgentTeam Organization",
+    "Mission <-> independent AgentTeam",
+    "zero or more Agent Teams",
+    "optional `machine_id`",
+    "`machine_id` field on Agent Teams",
+]

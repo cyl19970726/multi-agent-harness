@@ -3107,7 +3107,7 @@
       "canonicalFor": [
         "Agent Team Work, shared Kanban, assignment and atomic claim",
         "WorkEvent, WorkDelivery and authored TeamMessage boundary",
-        "child Team delegation and Mission/Wave relationship"
+        "flat cross-Team WorkDelegation and Mission-Team one-to-one relationship"
       ],
       "dependsOn": [
         "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
@@ -3126,7 +3126,7 @@
         "official Claude Code Agent Teams documentation",
         "npx pnpm@9.15.4 check:docs-governance"
       ],
-      "reorgTrigger": "Work schema, lifecycle axes, claim, delivery, creation authority, child delegation, Team Workbench, Company aggregation, or Mission boundary changes.",
+      "reorgTrigger": "Work schema, lifecycle axes, claim, delivery, creation authority, flat cross-Team delegation, Team Workbench, Company aggregation, or Mission boundary changes.",
       "authorityClass": "canonical_contract",
       "implementationState": "design_only",
       "truthRefs": [
@@ -3167,7 +3167,7 @@
         "native TeamRun forensic snapshot 2026-08-02",
         "npx pnpm@9.15.4 check:docs-governance"
       ],
-      "reorgTrigger": "Work/Message ownership, claim, delivery, child delegation, Company aggregation, or Mission boundary changes.",
+      "reorgTrigger": "Work/Message ownership, claim, delivery, flat cross-Team delegation, Company aggregation, or Mission boundary changes.",
       "authorityClass": "canonical_contract",
       "implementationState": "design_only",
       "truthRefs": [
@@ -3537,8 +3537,8 @@
     {
       "path": "docs/decisions/0052-nested-agent-teams-are-the-agent-organization.md",
       "ownerRole": "product-architecture",
-      "status": "stable",
-      "lifecycle": "stable",
+      "status": "deprecated",
+      "lifecycle": "archival",
       "canonicalFor": [
         "AgentMember as durable Organization agent identity",
         "recursive AgentTeam topology and unified Work target decision"
@@ -3558,15 +3558,15 @@
         "npx pnpm@9.15.4 check:docs-governance"
       ],
       "reorgTrigger": "The durable Agent identity, recursive Team hierarchy, Work kernel, local Host authority, or Supervising Operator boundary changes.",
-      "authorityClass": "canonical_contract",
+      "authorityClass": "historical_evidence",
       "implementationState": "design_only",
       "truthRefs": []
     },
     {
       "path": "specs/nested-agent-team-organization/requirements.md",
       "ownerRole": "product-architecture",
-      "status": "planned",
-      "lifecycle": "volatile",
+      "status": "deprecated",
+      "lifecycle": "archival",
       "canonicalFor": [
         "nested Agent Team Organization product requirements and acceptance"
       ],
@@ -3582,7 +3582,7 @@
         "npx pnpm@9.15.4 check:docs-governance"
       ],
       "reorgTrigger": "Product behavior, actors, Work authority, recursive delegation, UI acceptance, or non-goals change.",
-      "authorityClass": "design_intent",
+      "authorityClass": "historical_evidence",
       "implementationState": "design_only",
       "truthRefs": [
         {
@@ -3594,8 +3594,8 @@
     {
       "path": "specs/nested-agent-team-organization/design.md",
       "ownerRole": "product-architecture",
-      "status": "planned",
-      "lifecycle": "volatile",
+      "status": "deprecated",
+      "lifecycle": "archival",
       "canonicalFor": [
         "nested Agent Team Organization technical design and migration boundary"
       ],
@@ -3612,15 +3612,15 @@
         "npx pnpm@9.15.4 check:docs-governance"
       ],
       "reorgTrigger": "Target schemas, authority table, delivery, recovery, CLI/API, UI, migration, or tests change.",
-      "authorityClass": "design_intent",
+      "authorityClass": "historical_evidence",
       "implementationState": "design_only",
       "truthRefs": []
     },
     {
       "path": "specs/nested-agent-team-organization/tasks.md",
       "ownerRole": "product-architecture",
-      "status": "planned",
-      "lifecycle": "volatile",
+      "status": "deprecated",
+      "lifecycle": "archival",
       "canonicalFor": [
         "nested Agent Team Organization implementation and dogfood task sequence"
       ],
@@ -3634,7 +3634,7 @@
         "npx pnpm@9.15.4 check:docs-governance"
       ],
       "reorgTrigger": "Implementation sequencing, migration gates, UI contract, provider recovery acceptance, or dogfood scope changes.",
-      "authorityClass": "implementation_reference",
+      "authorityClass": "historical_evidence",
       "implementationState": "design_only",
       "truthRefs": []
     },
@@ -3956,7 +3956,8 @@
         "agent-firm-mental-model"
       ],
       "dependsOn": [
-        "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
+        "docs/current/architecture/concept-model.md",
+        "docs/current/architecture/multi-team-supervisor-daemon.md"
       ],
       "machineConsumers": [
         "firm-cli",
@@ -3973,8 +3974,12 @@
       "implementationState": "partial",
       "truthRefs": [
         {
-          "kind": "decision",
-          "ref": "docs/decisions/0050-agent-team-work-board-and-message-boundary.md"
+          "kind": "test",
+          "ref": "crates/firm-core/tests/schema_fixture_parity.rs"
+        },
+        {
+          "kind": "store",
+          "ref": "crates/firm-store/src/lib.rs"
         }
       ]
     },
