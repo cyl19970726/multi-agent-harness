@@ -1794,7 +1794,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_message_acknowledge",
-            "description": "Acknowledge one delivery of a ProviderDispatchEnvelope for an explicit member or the reserved host recipient.",
+            "description": "Acknowledge one delivery of a TeamMessageProjection for an explicit member or the reserved host recipient.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1877,7 +1877,7 @@ fn tool_definitions() -> Value {
                     "body": {"type": "string"},
                     "work_id": {"type": "string", "description": "Optional Work discussed by this message. It must belong to the same TeamRun."},
                     "correlation_id": {"type": "string", "description": "Optional existing conversation correlation to reuse."},
-                    "causation_id": {"type": "string", "description": "Optional earlier ProviderDispatchEnvelope id in this team run. When paired with correlation_id, it must carry that same correlation."}
+                    "causation_id": {"type": "string", "description": "Optional earlier TeamMessageProjection id in this team run. When paired with correlation_id, it must carry that same correlation."}
                     ,"source_plan_ref": {"type": "string", "description": "Optional Host-plan provenance only; never a lifecycle boundary."}
                     ,"response_intent": {"type": "string", "enum": ["informational", "response_required"], "description": "Explicit response intent (ADR 0046 §4). Omit for the kind+sender default: handoff/control always require a response round; ordinary message mail from the coordination plane (host/operator/service) requires one too, while peer member-to-member message mail stays informational and never starts a provider round on its own."}
                 },
@@ -1886,7 +1886,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_reconcile_delivery",
-            "description": "Resolve one ProviderDispatchEnvelope delivery left in claimed state after a Supervisor crash. This never guesses provider consumption: choose provider_accepted=true with an audited provider_receipt_id, or requeue=true.",
+            "description": "Resolve one TeamMessageProjection delivery left in claimed state after a Supervisor crash. This never guesses provider consumption: choose provider_accepted=true with an audited provider_receipt_id, or requeue=true.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1904,7 +1904,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_resolve_interaction",
-            "description": "Resolve a provider-originated interaction by legacy PendingInteraction id or provider_interaction_request ProviderDispatchEnvelope id. New responses are strict correlated TeamMessages, atomically ACK the request, and enter the provider only through an Inject delivery. Questions/reviews require host|lead, unknown requests operator|human, and tool/reject-only requests policy.",
+            "description": "Resolve a provider-originated interaction by legacy PendingInteraction id or provider_interaction_request TeamMessageProjection id. New responses are strict correlated TeamMessages, atomically ACK the request, and enter the provider only through an Inject delivery. Questions/reviews require host|lead, unknown requests operator|human, and tool/reject-only requests policy.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

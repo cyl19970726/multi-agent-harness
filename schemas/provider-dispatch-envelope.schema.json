@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agent-harness.local/schemas/provider-dispatch-envelope.schema.json",
-  "title": "ProviderDispatchEnvelope",
+  "title": "TeamMessageProjection",
   "description": "Internal target-NodeDaemon output only; never a public authoring or claim input.",
   "type": "object",
   "additionalProperties": false,

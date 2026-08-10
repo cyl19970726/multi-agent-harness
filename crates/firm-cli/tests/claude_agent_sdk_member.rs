@@ -5,7 +5,7 @@
 //! session" — which has no coverage anywhere else in the repo.
 //!
 //! `claude_cli` cannot satisfy it by construction: its loop ends the member the
-//! instant `queued_messages_for` returns empty, so a ProviderDispatchEnvelope that arrives a
+//! instant `queued_messages_for` returns empty, so a TeamMessageProjection that arrives a
 //! moment later has no recipient. Reproducing "arrives *after* the queue was
 //! already empty" as a wall-clock race would be flaky, so the fake runner does
 //! it itself: it emits `turn_complete`, and only then shells out to
@@ -84,7 +84,7 @@ enum FakeTurnShape {
 /// Write a fake runner speaking the NDJSON protocol in
 /// `apps/claude-member-runner/src/protocol.mjs`.
 ///
-/// `follow_up_after_first_turn` makes it send one ProviderDispatchEnvelope back into the
+/// `follow_up_after_first_turn` makes it send one TeamMessageProjection back into the
 /// ledger *after* reporting turn 1, which is the case the mode exists for.
 /// `shape` selects the turn outcome: a normal report, the classified SDK error
 /// result (issue #293 — subtype stays "success" while `isError` carries the

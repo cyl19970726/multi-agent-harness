@@ -6,7 +6,7 @@ import type {
   MemberRun,
   Mission,
   PendingInteraction,
-  ProviderDispatchEnvelope,
+  TeamMessageProjection,
   ProviderDispatchAttempt,
   TeamRun,
   TeamRunEvent,
@@ -43,7 +43,7 @@ export type ActivityOrder = "asc" | "desc";
 
 export interface TeamRunNeedsYou {
   /** @deprecated Conversation messages are not responsibility or review truth. */
-  approvals: ProviderDispatchEnvelope[];
+  approvals: TeamMessageProjection[];
   waitingMembers: MemberRun[];
   blockedMembers: MemberRun[];
   /**
@@ -58,7 +58,7 @@ export interface TeamRunNeedsYou {
   workDeliveryPressure: WorkDelivery[];
   /** @deprecated Ordinary message delivery is conversation state, not operator work. */
   unacknowledgedDeliveries: Array<{
-    message: ProviderDispatchEnvelope;
+    message: TeamMessageProjection;
     delivery: ProviderDispatchAttempt;
   }>;
   total: number;
@@ -72,7 +72,7 @@ export type StableTeamActivity =
       atMs: number;
       seq?: number;
       sourceMemberRunId?: string;
-      message: ProviderDispatchEnvelope;
+      message: TeamMessageProjection;
     }
   | {
       id: string;
@@ -119,7 +119,7 @@ export interface TeamRunContext {
   attempts: TeamRun[];
   members: MemberRun[];
   memberById: Map<string, MemberRun>;
-  messages: ProviderDispatchEnvelope[];
+  messages: TeamMessageProjection[];
   actions: MemberAction[];
   interactions: PendingInteraction[];
   delegations: DelegationRun[];
@@ -147,7 +147,7 @@ export interface MemberRunContext extends TeamRunContext {
   /** Compatibility alias for `eligibleReadyWorks`. */
   eligibleWorks: Work[];
   /** Messages which involve this member, oldest first. */
-  messagesForMember: ProviderDispatchEnvelope[];
+  messagesForMember: TeamMessageProjection[];
   actionsForMember: MemberAction[];
   delegationsForMember: DelegationRun[];
   eventsForMember: TeamRunEvent[];
@@ -383,7 +383,7 @@ export function selectMemberRunContext(
 /** First-class operator signals for a single attempt. */
 export function selectTeamRunNeedsYou(
   members: MemberRun[],
-  messages: ProviderDispatchEnvelope[],
+  messages: TeamMessageProjection[],
   interactions: PendingInteraction[] = [],
   runStatus?: string | null,
   works: Work[] = [],
@@ -394,7 +394,7 @@ export function selectTeamRunNeedsYou(
   // responsibility from `kind=blocker|review_request`.
   void messages;
   const terminalRun = runStatus === "completed" || runStatus === "cancelled";
-  const approvals: ProviderDispatchEnvelope[] = [];
+  const approvals: TeamMessageProjection[] = [];
   const waitingMembers: MemberRun[] = [];
   const unfinishedWorks = terminalRun
     ? sortWorks(works.filter((work) => !workIsTerminal(work)))
@@ -451,7 +451,7 @@ export function selectStableTeamActivity({
   workDeliveries = [],
   order = "asc",
 }: {
-  messages?: ProviderDispatchEnvelope[];
+  messages?: TeamMessageProjection[];
   actions?: MemberAction[];
   events?: TeamRunEvent[];
   workEvents?: WorkEvent[];
@@ -542,7 +542,7 @@ function compareActivity(left: StableTeamActivity, right: StableTeamActivity): n
   return stableIdCompare(left.id, right.id);
 }
 
-function sortMessages(messages: ProviderDispatchEnvelope[]): ProviderDispatchEnvelope[] {
+function sortMessages(messages: TeamMessageProjection[]): TeamMessageProjection[] {
   return [...messages].sort(
     (left, right) =>
       parseTeamTimestamp(left.created_at) - parseTeamTimestamp(right.created_at) ||

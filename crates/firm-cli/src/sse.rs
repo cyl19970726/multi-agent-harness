@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use crossbeam::channel::{bounded, Receiver, Sender};
 use harness_core::{
-    AgentTeamRun, MemberAction, Mission, PendingInteraction, ProviderDispatchEnvelope,
-    ProviderDispatchEvent, ProviderRuntimeProjection, RegistryMessage, TeamMemberCloseRequest,
+    AgentTeamRun, MemberAction, Mission, PendingInteraction, ProviderDispatchEvent,
+    ProviderRuntimeProjection, RegistryMessage, TeamMemberCloseRequest, TeamMessageProjection,
     TeamRunEvent, TeamSupervisorLease, Wave, WorkflowRun, WorkflowStep,
 };
 
@@ -46,7 +46,7 @@ pub enum SseEventFrame {
     /// An Agent Team member's durable run state changed.
     ProviderRuntimeProjection(Box<ProviderRuntimeProjection>),
     /// A routed Agent Team message was created or its delivery state changed.
-    ProviderDispatchEnvelope(ProviderDispatchEnvelope),
+    TeamMessageProjection(TeamMessageProjection),
     /// Durable ownership of one TeamRun's provider-native controls.
     TeamSupervisorLease(TeamSupervisorLease),
     /// Durable Host Close latch for one ProviderRuntimeProjection.
@@ -773,9 +773,9 @@ fn poll_project(
         "team_messages.jsonl",
         consumed_offsets,
         |line| {
-            serde_json::from_str::<ProviderDispatchEnvelope>(line)
+            serde_json::from_str::<TeamMessageProjection>(line)
                 .ok()
-                .map(SseEventFrame::ProviderDispatchEnvelope)
+                .map(SseEventFrame::TeamMessageProjection)
                 .into_iter()
                 .collect()
         },

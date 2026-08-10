@@ -4,7 +4,7 @@ import { Markdown } from "@/components/workbench/Markdown";
 import type { WorkbenchActivityItem } from "@/components/workbench/activity/ActivityStream";
 
 import type { StableTeamActivity } from "../../../model/teamSelectors";
-import type { MemberRun, PendingInteraction, ProviderDispatchEnvelope } from "../../../types";
+import type { MemberRun, PendingInteraction, TeamMessageProjection } from "../../../types";
 import { effectiveTeamMessageResponseIntent } from "../../../types";
 import {
   formatTime,
@@ -64,7 +64,7 @@ export function teamMessageGlyph(kind?: string | null, hasEvidence = false): Wor
   }
 }
 
-export function summarizeDeliveries(message: ProviderDispatchEnvelope, members: Map<string, MemberRun>): string | undefined {
+export function summarizeDeliveries(message: TeamMessageProjection, members: Map<string, MemberRun>): string | undefined {
   const deliveries = message.deliveries ?? [];
   if (!deliveries.length) return undefined;
   const acknowledged = deliveries.filter((delivery) => delivery.status === "acknowledged").length;

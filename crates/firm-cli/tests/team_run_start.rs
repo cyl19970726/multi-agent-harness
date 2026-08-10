@@ -423,7 +423,7 @@ fn seed_historical_wave(home: &TempHome, project_id: &str, id: &str, mission_id:
 }
 
 /// Read an append-only ledger when that object class is optional for the
-/// scenario. A Work-only provider round correctly creates no ProviderDispatchEnvelope
+/// scenario. A Work-only provider round correctly creates no TeamMessageProjection
 /// ledger at all.
 fn optional_store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::Value> {
     let path = home.spaces_dir().join(project_id).join(file);
@@ -1335,7 +1335,7 @@ fn kimi_question_waits_for_lead_resolution_and_resumes_same_turn() {
     }
     assert!(
         interaction_path.exists(),
-        "Kimi request must create a provider interaction ProviderDispatchEnvelope"
+        "Kimi request must create a provider interaction TeamMessageProjection"
     );
     let messages = store_rows(&home, &project_id, "team_messages.jsonl");
     let pending = messages
@@ -1462,7 +1462,7 @@ fn kimi_question_waits_for_lead_resolution_and_resumes_same_turn() {
                     .is_some_and(|value| value.contains("response received"))
                 && action["provider_call_id"].is_null()
         }),
-        "ProviderDispatchEnvelope response is authoritative; MemberAction records only the coordination projection: {actions:?}"
+        "TeamMessageProjection response is authoritative; MemberAction records only the coordination projection: {actions:?}"
     );
 }
 
@@ -1676,7 +1676,7 @@ fn assert_kimi_permission_request_fails_closed(
         }
         assert!(
             std::time::Instant::now() < waiting_deadline,
-            "provider request ProviderDispatchEnvelope must project ProviderRuntimeProjection waiting; latest={members:?}"
+            "provider request TeamMessageProjection must project ProviderRuntimeProjection waiting; latest={members:?}"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
     }

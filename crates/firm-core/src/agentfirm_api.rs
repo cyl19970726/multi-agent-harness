@@ -88,13 +88,13 @@ pub enum NativeSessionAvailability {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentSessionStatus {
-    Starting,
+    Cold,
     Idle,
-    Running,
+    Active,
     Waiting,
-    Disconnected,
-    Stopped,
-    Failed,
+    Interrupted,
+    RecoveryRequired,
+    Closed,
 }
 
 /// One machine-local provider session owned by an exact NodeDaemon generation.
@@ -109,24 +109,39 @@ pub struct AgentSession {
     pub execution_space_id: String,
     pub node_daemon_id: String,
     pub node_daemon_generation: u64,
-    pub provider: String,
+    pub provider_kind: String,
     pub provider_profile_ref: String,
+    pub permission_envelope_ref: String,
     pub effective_permission_ceiling: PermissionCeiling,
-    pub status: AgentSessionStatus,
-    pub generation: u64,
+    pub lifecycle: AgentSessionStatus,
+    pub runtime_generation: u64,
     #[serde(default)]
-    pub native_session: Option<NativeSessionRef>,
+    pub native_session_ref: Option<NativeSessionRef>,
+    #[serde(default)]
+    pub current_turn_id: Option<String>,
+    pub queued_input_count: u64,
     pub version: u64,
-    pub created_at: String,
-    pub updated_at: String,
+    pub opened_at: String,
+    pub last_active_at: String,
+    #[serde(default)]
+    pub closed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TeamMembershipStatus {
+    Invited,
     Active,
-    Left,
-    Revoked,
+    Leaving,
+    Inactive,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamMembershipRole {
+    Host,
+    Member,
+    Observer,
 }
 
 /// Collaboration membership. It binds a stable identity to one Team, not a
@@ -136,24 +151,29 @@ pub enum TeamMembershipStatus {
 pub struct TeamMembership {
     pub id: String,
     pub team_id: String,
-    pub team_run_id: String,
     pub agent_identity_id: String,
     pub node_id: String,
-    pub role_snapshot: String,
-    pub status: TeamMembershipStatus,
-    pub version: u64,
+    pub role: TeamMembershipRole,
+    pub state: TeamMembershipStatus,
+    pub membership_generation: u64,
+    #[serde(default)]
+    pub default_subscription_refs: Vec<String>,
+    pub created_by: ActorRef,
+    pub revision: u64,
     pub joined_at: String,
     #[serde(default)]
-    pub ended_at: Option<String>,
+    pub left_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkExecutionBindingStatus {
+    Offered,
+    Accepted,
     Active,
     Released,
     Completed,
-    Cancelled,
+    Invalidated,
 }
 
 /// Exact accountable binding from Work to identity + membership + current
@@ -165,15 +185,47 @@ pub struct WorkExecutionBinding {
     pub id: String,
     pub work_id: String,
     pub work_revision: u64,
+    pub team_id: String,
     pub team_membership_id: String,
     pub agent_identity_id: String,
     pub agent_session_id: String,
     pub agent_session_generation: u64,
+    pub delivery_id: String,
+    pub binding_generation: u64,
     pub status: WorkExecutionBindingStatus,
     pub version: u64,
+    pub created_by: ActorRef,
     pub bound_at: String,
     #[serde(default)]
     pub ended_at: Option<String>,
+}
+
+/// Identity-first Work delivery. Unlike the retired run-addressed projection,
+/// this record freezes the explicit binding and current session generation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CanonicalWorkDelivery {
+    pub id: String,
+    pub work_id: String,
+    pub work_revision: u64,
+    pub work_execution_binding_id: String,
+    pub recipient_identity_id: String,
+    pub recipient_session_id: String,
+    pub recipient_session_generation: u64,
+    pub target_node_id: String,
+    pub status: WorkDeliveryStatus,
+    pub attempt: u32,
+    #[serde(default)]
+    pub claim_id: Option<String>,
+    #[serde(default)]
+    pub claimed_node_daemon_generation: Option<u64>,
+    #[serde(default)]
+    pub provider_receipt_id: Option<String>,
+    #[serde(default)]
+    pub failure_code: Option<String>,
+    pub version: u64,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -299,6 +351,16 @@ pub enum MessageKind {
 pub enum MessageRecipientKind {
     AgentIdentity,
     Team,
+    ControlPlaneActor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageAddressKind {
+    DirectAgent,
+    TeamChannel,
+    Topic,
+    AuthorizedBroadcast,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -314,11 +376,47 @@ pub struct MessageRecipientRef {
 #[serde(deny_unknown_fields)]
 pub struct Message {
     pub id: String,
-    pub execution_space_id: String,
-    pub author_node_id: String,
-    pub author_node_daemon_id: String,
-    pub author_node_daemon_generation: u64,
-    pub sender_identity_id: String,
+    pub source_execution_space_id: String,
+    pub source_node_id: String,
+    pub source_node_daemon_id: String,
+    pub source_authority_generation: u64,
+    pub sender_actor_ref: ActorRef,
+    #[serde(default)]
+    pub sender_agent_id: Option<String>,
+    #[serde(default)]
+    pub sender_session_id: Option<String>,
+    pub address_kind: MessageAddressKind,
+    pub target_ref: MessageRecipientRef,
+    pub recipients: Vec<MessageRecipientRef>,
+    #[serde(default)]
+    pub team_id: Option<String>,
+    #[serde(default)]
+    pub team_run_id: Option<String>,
+    #[serde(default)]
+    pub work_id: Option<String>,
+    pub kind: MessageKind,
+    pub body: String,
+    pub body_digest: String,
+    pub correlation_id: String,
+    #[serde(default)]
+    pub causation_id: Option<String>,
+    pub response_intent: ResponseIntent,
+    #[serde(default)]
+    pub evidence_refs: Vec<String>,
+    pub content_fingerprint: String,
+    pub schema_version: u64,
+    pub idempotency_key: String,
+    pub created_at: String,
+}
+
+/// Caller-visible message intent. Source Node/daemon/session identity,
+/// timestamps, digests, and fingerprints are intentionally absent and are
+/// resolved by the source NodeDaemon.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessageDraft {
+    pub address_kind: MessageAddressKind,
+    pub target_ref: MessageRecipientRef,
     pub recipients: Vec<MessageRecipientRef>,
     #[serde(default)]
     pub team_id: Option<String>,
@@ -334,22 +432,32 @@ pub struct Message {
     pub response_intent: ResponseIntent,
     #[serde(default)]
     pub evidence_refs: Vec<String>,
-    pub content_fingerprint: String,
-    pub created_at: String,
+    pub schema_version: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageSubscriptionKind {
-    Direct,
+    Agent,
     Team,
+    Channel,
+    AllAuthorized,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageSubscriptionStatus {
     Active,
+    Paused,
     Revoked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageHistoryPolicy {
+    FromJoin,
+    Latest,
+    AuthorizedHistory,
 }
 
 /// Durable routing policy. Consumption progress is held separately in
@@ -358,27 +466,34 @@ pub enum MessageSubscriptionStatus {
 #[serde(deny_unknown_fields)]
 pub struct MessageSubscription {
     pub id: String,
-    pub recipient_identity_id: String,
+    pub subscriber_agent_id: String,
     pub execution_space_id: String,
-    pub kind: MessageSubscriptionKind,
+    pub source_kind: MessageSubscriptionKind,
+    pub source_ref: String,
+    pub delivery_mode: RuntimeDispatchMode,
+    pub history_policy: MessageHistoryPolicy,
     #[serde(default)]
-    pub team_membership_id: Option<String>,
-    #[serde(default)]
-    pub team_id: Option<String>,
+    pub membership_ref: Option<String>,
+    pub authorization_policy_ref: String,
+    pub policy_revision: u64,
+    pub policy_digest: String,
     pub status: MessageSubscriptionStatus,
-    pub version: u64,
+    pub revision: u64,
+    pub created_by: ActorRef,
     pub created_at: String,
-    pub updated_at: String,
+    #[serde(default)]
+    pub revoked_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubscriptionCursor {
-    pub id: String,
     pub subscription_id: String,
-    pub recipient_identity_id: String,
-    pub last_message_sequence: u64,
-    pub version: u64,
+    pub recipient_agent_id: String,
+    pub last_visible_store_sequence: u64,
+    pub last_delivered_store_sequence: u64,
+    pub last_read_store_sequence: u64,
+    pub cursor_revision: u64,
     pub updated_at: String,
 }
 
@@ -455,6 +570,7 @@ pub struct MessageRouteJournal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeCommandKind {
+    AuthorMessage,
     StartSession,
     StopSession,
     ResumeSession,
@@ -494,7 +610,7 @@ pub struct ControlCommandEnvelope {
 /// author or claim it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ProviderDispatchEnvelope {
+pub struct ProviderInvocation {
     pub id: String,
     pub source_plane: String,
     pub source_record_id: String,
@@ -510,6 +626,58 @@ pub struct ProviderDispatchEnvelope {
     pub content: String,
     pub content_fingerprint: String,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeCommandStatus {
+    Requested,
+    Accepted,
+    Quiesced,
+    Applied,
+    Failed,
+    RecoveryRequired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeEffectCertainty {
+    None,
+    NotApplied,
+    Applied,
+    Unknown,
+}
+
+/// Durable machine-local command journal. The NodeDaemon records acceptance
+/// before touching a provider and records the observed effect afterwards.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeCommandRecord {
+    pub id: String,
+    pub execution_space_id: String,
+    pub target_node_id: String,
+    pub target_node_daemon_id: String,
+    pub target_node_daemon_generation: u64,
+    pub authenticated_actor: ActorRef,
+    pub command: RuntimeCommandKind,
+    pub required_capability: String,
+    pub idempotency_key: String,
+    pub request_fingerprint: String,
+    pub status: RuntimeCommandStatus,
+    pub effect_certainty: RuntimeEffectCertainty,
+    #[serde(default)]
+    pub target_session_id: Option<String>,
+    #[serde(default)]
+    pub target_session_generation: Option<u64>,
+    #[serde(default)]
+    pub source_record_id: Option<String>,
+    #[serde(default)]
+    pub result: Option<serde_json::Value>,
+    #[serde(default)]
+    pub failure_code: Option<String>,
+    pub version: u64,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

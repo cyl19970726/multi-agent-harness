@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Avatar } from "@/components/workbench/Avatar";
 import type { StatusTone } from "@/components/workbench/atoms";
 
-import type { MemberRun, ProviderDispatchEnvelope } from "../../../types";
+import type { MemberRun, TeamMessageProjection } from "../../../types";
 import { effectiveTeamMessageResponseIntent } from "../../../types";
 import {
   formatTime,
@@ -23,7 +23,7 @@ import {
 /**
  * Coordination-pressure band for the Team War Room.
  *
- * Mailboxes are read-model projections over ProviderDispatchEnvelope recipients and
+ * Mailboxes are read-model projections over TeamMessageProjection recipients and
  * delivery rows, never a separate stored object, and the Host mailbox exists
  * without fabricating a Host MemberRun.
  */
@@ -35,7 +35,7 @@ export function TeamCoordinationPressure({
   className,
 }: {
   members: MemberRun[];
-  messages: ProviderDispatchEnvelope[];
+  messages: TeamMessageProjection[];
   pendingInteractions: number;
   onOpenActivity: () => void;
   className?: string;
@@ -72,7 +72,7 @@ export function TeamMailboxStrip({
   onOpenMember,
 }: {
   members: MemberRun[];
-  messages: ProviderDispatchEnvelope[];
+  messages: TeamMessageProjection[];
   selectedId: string;
   selectedMemberId?: string;
   showAllMembers: boolean;
@@ -192,11 +192,11 @@ export function LeadInbox({
   onAnswer,
   onAcknowledge,
 }: {
-  messages: ProviderDispatchEnvelope[];
+  messages: TeamMessageProjection[];
   members: Map<string, MemberRun>;
   actionsEnabled: boolean;
-  onAnswer: (message: ProviderDispatchEnvelope) => void;
-  onAcknowledge: (message: ProviderDispatchEnvelope) => void;
+  onAnswer: (message: TeamMessageProjection) => void;
+  onAcknowledge: (message: TeamMessageProjection) => void;
 }) {
   return (
     <section aria-label="Lead Inbox" className="py-2">

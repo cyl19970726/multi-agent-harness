@@ -788,7 +788,7 @@ fn team_run_cli_create_list_status_send_events() {
     assert_eq!(
         member_detail["mailbox"]["inbox"].as_array().map(Vec::len),
         Some(0),
-        "Work ownership is not duplicated into ProviderDispatchEnvelope"
+        "Work ownership is not duplicated into TeamMessageProjection"
     );
     let store = HarnessStore::new(home.spaces_dir().join(&project_id));
     let works = store.latest_works().expect("latest Works");
@@ -3294,7 +3294,7 @@ fn codex_app_server_post_handoff_steer_is_independent_and_converges_before_follo
             .join(&project_id)
             .join("team_messages.jsonl"),
     )
-    .expect("read physical ProviderDispatchEnvelope rows")
+    .expect("read physical TeamMessageProjection rows")
     .lines()
     .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
     .filter(|message| message["id"].as_str() == Some(steer_message_id.as_str()))
@@ -5237,7 +5237,7 @@ fn codex_app_server_multi_question_fails_closed_without_interaction_rows() {
                 message["kind"].as_str() != Some("provider_interaction_request")
                     || message["sender_runtime_id"].as_str() != Some(member_id.as_str())
             }),
-        "unsupported multi-question request became a ProviderDispatchEnvelope"
+        "unsupported multi-question request became a TeamMessageProjection"
     );
     assert!(snapshot["pending_interactions"]
         .as_array()

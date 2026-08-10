@@ -9,10 +9,10 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use harness_core::{
     MemberCoordinationStatus, MemberRunStatus, NativeSessionAvailability, NativeSessionRef,
-    ProviderDispatchAttempt, ProviderDispatchEnvelope, ProviderDispatchIntent,
-    ProviderInteractionMessageOption, ProviderInteractionRequestBody, ProviderInteractionType,
-    ProviderResponseIntent, ProviderWorkDispatchStatus, TeamActorKind, TeamActorRef,
-    TeamDeliveryPolicy, TeamDeliveryStatus, TeamRecipientKind, TeamRecipientRef,
+    ProviderDispatchAttempt, ProviderDispatchIntent, ProviderInteractionMessageOption,
+    ProviderInteractionRequestBody, ProviderInteractionType, ProviderResponseIntent,
+    ProviderWorkDispatchStatus, TeamActorKind, TeamActorRef, TeamDeliveryPolicy,
+    TeamDeliveryStatus, TeamMessageProjection, TeamRecipientKind, TeamRecipientRef,
 };
 use harness_store::{HarnessStore, WorkDeliveryClaimResult};
 
@@ -433,7 +433,7 @@ fn mcp_resolves_provider_request_messages_and_keeps_legacy_ledger_empty() {
         generation: member.runtime_generation,
     };
     let created_at = "unix-ms:mcp-provider-request".to_string();
-    let request = ProviderDispatchEnvelope {
+    let request = TeamMessageProjection {
         id: "tmsg-mcp-provider-request".into(),
         team_run_id: run_id.clone(),
         work_id: None,
@@ -1079,7 +1079,7 @@ fn mcp_stdio_agent_team_tools() {
     // identity. It then appears in the Host-native inbox exposed by MCP.
     let host_message = "tmsg-provider-bound-question".to_string();
     store
-        .append_team_message(&ProviderDispatchEnvelope {
+        .append_team_message(&TeamMessageProjection {
             id: host_message.clone(),
             team_run_id: team_run_id.clone(),
             work_id: Some(initial_work_id.clone()),

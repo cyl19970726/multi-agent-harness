@@ -630,7 +630,7 @@ export interface LiveMemberActivity {
   expires_at: string;
 }
 
-/** Delivery of a {@link ProviderDispatchEnvelope} to one recipient. */
+/** Delivery of a {@link TeamMessageProjection} to one recipient. */
 export interface ProviderDispatchAttempt {
   member_id?: string;
   policy?: string;
@@ -659,7 +659,7 @@ export interface TeamRecipientRef {
   id: string;
 }
 
-/** Kind of a {@link ProviderDispatchEnvelope} (open enum; rendered as a colored pill). */
+/** Kind of a {@link TeamMessageProjection} (open enum; rendered as a colored pill). */
 export type ProviderDispatchIntent =
   | "message"
   | "control"
@@ -667,7 +667,7 @@ export type ProviderDispatchIntent =
   | "provider_interaction_response";
 
 /**
- * Explicit response intent on a {@link ProviderDispatchEnvelope} (ADR 0046 §4).
+ * Explicit response intent on a {@link TeamMessageProjection} (ADR 0046 §4).
  * `informational` mail is durable and correlated but never starts a provider
  * round on its own; `response_required` asks the recipient for a semantic
  * reply and wakes an idle provider member.
@@ -678,10 +678,10 @@ export type ProviderResponseIntent = "informational" | "response_required";
  * Effective response intent: the explicit field wins; otherwise kind AND
  * sender decide — control always requires a response round,
  * and ordinary message mail requires one unless a peer member sent it
- * (mirrors the Rust `ProviderDispatchEnvelope::effective_response_intent` contract).
+ * (mirrors the Rust `TeamMessageProjection::effective_response_intent` contract).
  */
 export function effectiveTeamMessageResponseIntent(
-  message: Pick<ProviderDispatchEnvelope, "kind" | "response_intent" | "sender" | "sender_runtime_id">,
+  message: Pick<TeamMessageProjection, "kind" | "response_intent" | "sender" | "sender_runtime_id">,
 ): ProviderResponseIntent {
   if (message.response_intent === "informational" || message.response_intent === "response_required") {
     return message.response_intent;
@@ -698,7 +698,7 @@ export function effectiveTeamMessageResponseIntent(
  * coordination plane (Host, Operator, Service). Historical rows carry no typed
  * `sender`, so they fall back to the reserved `"host"` `sender_runtime_id`.
  */
-function sentByPeerMember(message: Pick<ProviderDispatchEnvelope, "sender" | "sender_runtime_id">): boolean {
+function sentByPeerMember(message: Pick<TeamMessageProjection, "sender" | "sender_runtime_id">): boolean {
   const senderKind = message.sender?.kind;
   if (senderKind === "member_run" || senderKind === "agent_member") {
     return true;
@@ -714,7 +714,7 @@ function sentByPeerMember(message: Pick<ProviderDispatchEnvelope, "sender" | "se
  * member run id; `deliveries` tracks per-recipient ack state (an unacknowledged
  * delivery is a needs-you signal for the operator).
  */
-export interface ProviderDispatchEnvelope {
+export interface TeamMessageProjection {
   id: string;
   team_run_id?: string;
   /** Optional conversational link. Work remains the responsibility source. */
@@ -1123,7 +1123,7 @@ export interface DashboardSnapshot {
   /** Agent Team runs (team-console): host-orchestrated member groups. */
   team_runs?: TeamRun[];
   member_runs?: MemberRun[];
-  team_messages?: ProviderDispatchEnvelope[];
+  team_messages?: TeamMessageProjection[];
   /** Wave 4C canonical runtime/message fabric. Legacy `team_messages` is read-only history. */
   agent_identities?: AgentIdentity[];
   agent_sessions?: AgentSession[];

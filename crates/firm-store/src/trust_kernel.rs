@@ -3,16 +3,17 @@ use firm_core::agentfirm_api::{
     integration_plan_module_v1, ActorKind, ActorRef, AgentIdentity, AgentMember,
     AgentMemberOrganizationStatus, AgentSession, AgentSessionStatus, CanonicalMessageDelivery,
     CanonicalMessageDeliveryStatus, CanonicalMutationEvent, CanonicalOperation,
-    ControlCommandEnvelope, DeliveryClaim, DeliveryReconcileOutcome, FailureAnalysis,
-    GateEvaluation, GateRequirement, GateRequirementSource, GateVerdict, GateWaiver,
-    GateWaiverState, MemberCoordinationStatus, MemberRun, MemberRuntimeStatus,
+    CanonicalWorkDelivery, ControlCommandEnvelope, DeliveryClaim, DeliveryReconcileOutcome,
+    FailureAnalysis, GateEvaluation, GateRequirement, GateRequirementSource, GateVerdict,
+    GateWaiver, GateWaiverState, MemberCoordinationStatus, MemberRun, MemberRuntimeStatus,
     MemberWorkspaceBinding, Message, MessageDelivery, MessageDeliveryStatus, MessageRecipientKind,
     MessageRouteJournal, MessageSubscription, MessageSubscriptionKind, MessageSubscriptionStatus,
-    MutationContext, ProviderDispatchEnvelope as CanonicalProviderDispatchEnvelope,
-    ProviderReceipt, RouteJournalStatus, SubscriptionCursor, TeamMembership, TeamMembershipStatus,
-    TeamMessage, TrustError, TrustErrorCode, WorkDelivery, WorkDeliveryStatus,
-    WorkExecutionBinding, WorkExecutionBindingStatus, WorkFinding, WorkModuleBinding, WorkReport,
-    WorkReportKind, WorkspaceLifecycle, WorkspaceMode, WorkspaceOwnership, WorkspaceSafetyProof,
+    MutationContext, ProviderInvocation, ProviderReceipt, RouteJournalStatus, RuntimeCommandRecord,
+    RuntimeCommandStatus, RuntimeEffectCertainty, SubscriptionCursor, TeamMembership,
+    TeamMembershipStatus, TeamMessage, TrustError, TrustErrorCode, WorkDelivery,
+    WorkDeliveryStatus, WorkExecutionBinding, WorkExecutionBindingStatus, WorkFinding,
+    WorkModuleBinding, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
+    WorkspaceOwnership, WorkspaceSafetyProof,
 };
 use firm_core::{TeamActorKind, TeamActorRef, Work, WorkCommandContext, WorkDelegationRevision};
 use serde::{Deserialize, Serialize};
@@ -3984,7 +3985,7 @@ impl HarnessStore {
         required(&session.id, "AgentSession.id")?;
         required(&session.agent_identity_id, "AgentSession.agent_identity_id")?;
         required(&session.node_id, "AgentSession.node_id")?;
-        required(&session.provider, "AgentSession.provider")?;
+        required(&session.provider_kind, "AgentSession.provider_kind")?;
         if session.execution_space_id != context.execution_space_id || session.version != 1 {
             return Err(trust_error(
                 TrustErrorCode::VersionConflict,
@@ -4021,13 +4022,7 @@ impl HarnessStore {
             .into_iter()
             .filter(|row| {
                 row.agent_identity_id == session.agent_identity_id
-                    && matches!(
-                        row.status,
-                        AgentSessionStatus::Starting
-                            | AgentSessionStatus::Idle
-                            | AgentSessionStatus::Running
-                            | AgentSessionStatus::Waiting
-                    )
+                    && row.lifecycle != AgentSessionStatus::Closed
             })
             .count();
         if current_count != 0 {
@@ -4070,25 +4065,24 @@ impl HarnessStore {
         let _lock = self.acquire_write_lock()?;
         required(&membership.id, "TeamMembership.id")?;
         required(&membership.team_id, "TeamMembership.team_id")?;
-        required(&membership.team_run_id, "TeamMembership.team_run_id")?;
         required(
             &membership.agent_identity_id,
             "TeamMembership.agent_identity_id",
         )?;
-        if membership.version != 1 || membership.status != TeamMembershipStatus::Active {
+        if membership.revision != 1 || membership.state != TeamMembershipStatus::Active {
             return Err(trust_error(
                 TrustErrorCode::InvalidStateTransition,
                 "new TeamMembership must be active at version 1",
                 "team_membership",
                 &membership.id,
-                Some(membership.version),
+                Some(membership.revision),
             ));
         }
         let run = self
             .team_runs()?
             .into_iter()
             .rev()
-            .find(|run| run.id == membership.team_run_id)
+            .find(|run| run.agent_team_id == membership.team_id)
             .ok_or_else(|| {
                 trust_error(
                     TrustErrorCode::InvalidStateTransition,
@@ -4098,7 +4092,7 @@ impl HarnessStore {
                     None,
                 )
             })?;
-        if run.agent_team_id != membership.team_id || run.execution_node_id != membership.node_id {
+        if run.execution_node_id != membership.node_id {
             return Err(trust_error(
                 TrustErrorCode::UnauthorizedActor,
                 "TeamMembership must remain on the TeamRun's one pinned machine",
@@ -4122,27 +4116,49 @@ impl HarnessStore {
         }
         let direct = MessageSubscription {
             id: format!("direct:{}:{}", membership.agent_identity_id, membership.id),
-            recipient_identity_id: membership.agent_identity_id.clone(),
+            subscriber_agent_id: membership.agent_identity_id.clone(),
             execution_space_id: context.execution_space_id.clone(),
-            kind: MessageSubscriptionKind::Direct,
-            team_membership_id: Some(membership.id.clone()),
-            team_id: None,
+            source_kind: MessageSubscriptionKind::Agent,
+            source_ref: "active_team_members".into(),
+            delivery_mode: firm_core::agentfirm_api::RuntimeDispatchMode::QueueOnly,
+            history_policy: firm_core::agentfirm_api::MessageHistoryPolicy::FromJoin,
+            membership_ref: Some(membership.id.clone()),
+            authorization_policy_ref: "team.direct.active-members".into(),
+            policy_revision: 1,
+            policy_digest: canonical_json_fingerprint(
+                &serde_json::json!({"team_id": membership.team_id, "kind": "direct_from_active_team_members"}),
+            ),
             status: MessageSubscriptionStatus::Active,
-            version: 1,
+            revision: 1,
+            created_by: membership.created_by.clone(),
             created_at: membership.joined_at.clone(),
-            updated_at: membership.joined_at.clone(),
+            revoked_at: None,
         };
         let team = MessageSubscription {
             id: format!("team:{}:{}", membership.team_id, membership.id),
-            recipient_identity_id: membership.agent_identity_id.clone(),
+            subscriber_agent_id: membership.agent_identity_id.clone(),
             execution_space_id: context.execution_space_id.clone(),
-            kind: MessageSubscriptionKind::Team,
-            team_membership_id: Some(membership.id.clone()),
-            team_id: Some(membership.team_id.clone()),
+            source_kind: MessageSubscriptionKind::Team,
+            source_ref: membership.team_id.clone(),
+            delivery_mode: if membership.role
+                == firm_core::agentfirm_api::TeamMembershipRole::Observer
+            {
+                firm_core::agentfirm_api::RuntimeDispatchMode::QueueOnly
+            } else {
+                firm_core::agentfirm_api::RuntimeDispatchMode::StartIfIdle
+            },
+            history_policy: firm_core::agentfirm_api::MessageHistoryPolicy::FromJoin,
+            membership_ref: Some(membership.id.clone()),
+            authorization_policy_ref: "team.channel.membership".into(),
+            policy_revision: 1,
+            policy_digest: canonical_json_fingerprint(
+                &serde_json::json!({"team_id": membership.team_id, "kind": "team_channel"}),
+            ),
             status: MessageSubscriptionStatus::Active,
-            version: 1,
+            revision: 1,
+            created_by: membership.created_by.clone(),
             created_at: membership.joined_at.clone(),
-            updated_at: membership.joined_at.clone(),
+            revoked_at: None,
         };
         self.commit_trust_projection_unlocked(
             context,
@@ -4190,13 +4206,13 @@ impl HarnessStore {
                 )
             })
             .and_then(|envelope| event_projection::<TeamMembership>(&envelope))?;
-        if membership.status != TeamMembershipStatus::Active {
+        if membership.state != TeamMembershipStatus::Active {
             return Err(trust_error(
                 TrustErrorCode::InvalidStateTransition,
                 "only an active TeamMembership can leave",
                 "team_membership",
                 membership_id,
-                Some(membership.version),
+                Some(membership.revision),
             ));
         }
         let active_bindings = self
@@ -4217,7 +4233,7 @@ impl HarnessStore {
                 ),
                 "team_membership",
                 membership_id,
-                Some(membership.version),
+                Some(membership.revision),
             ));
         }
         if context.authenticated_actor.kind != ActorKind::AgentMember
@@ -4228,26 +4244,26 @@ impl HarnessStore {
                 "TeamMembership leave requires the exact stable AgentIdentity",
                 "team_membership",
                 membership_id,
-                Some(membership.version),
+                Some(membership.revision),
             ));
         }
         let revoked = self
             .fabric_message_subscriptions(&context.execution_space_id)?
             .into_iter()
             .filter(|subscription| {
-                subscription.team_membership_id.as_deref() == Some(membership_id)
+                subscription.membership_ref.as_deref() == Some(membership_id)
                     && subscription.status == MessageSubscriptionStatus::Active
             })
             .map(|mut subscription| {
                 subscription.status = MessageSubscriptionStatus::Revoked;
-                subscription.version += 1;
-                subscription.updated_at = ended_at.to_string();
+                subscription.revision += 1;
+                subscription.revoked_at = Some(ended_at.to_string());
                 serde_json::to_value(subscription)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        membership.status = TeamMembershipStatus::Left;
-        membership.version += 1;
-        membership.ended_at = Some(ended_at.to_string());
+        membership.state = TeamMembershipStatus::Inactive;
+        membership.revision += 1;
+        membership.left_at = Some(ended_at.to_string());
         self.commit_trust_projection_unlocked(
             context,
             "team_membership",
@@ -4292,45 +4308,98 @@ impl HarnessStore {
             session_id,
         )?;
         let allowed = matches!(
-            (session.status, next_status),
-            (AgentSessionStatus::Starting, AgentSessionStatus::Idle)
-                | (AgentSessionStatus::Starting, AgentSessionStatus::Failed)
-                | (AgentSessionStatus::Idle, AgentSessionStatus::Running)
-                | (AgentSessionStatus::Idle, AgentSessionStatus::Stopped)
-                | (AgentSessionStatus::Running, AgentSessionStatus::Waiting)
-                | (AgentSessionStatus::Running, AgentSessionStatus::Idle)
+            (session.lifecycle, next_status),
+            (AgentSessionStatus::Cold, AgentSessionStatus::Idle)
                 | (
-                    AgentSessionStatus::Running,
-                    AgentSessionStatus::Disconnected
+                    AgentSessionStatus::Cold,
+                    AgentSessionStatus::RecoveryRequired
                 )
-                | (AgentSessionStatus::Running, AgentSessionStatus::Failed)
-                | (AgentSessionStatus::Waiting, AgentSessionStatus::Running)
+                | (AgentSessionStatus::Idle, AgentSessionStatus::Active)
+                | (AgentSessionStatus::Idle, AgentSessionStatus::Closed)
+                | (AgentSessionStatus::Active, AgentSessionStatus::Waiting)
+                | (AgentSessionStatus::Active, AgentSessionStatus::Idle)
+                | (AgentSessionStatus::Active, AgentSessionStatus::Interrupted)
+                | (
+                    AgentSessionStatus::Active,
+                    AgentSessionStatus::RecoveryRequired
+                )
+                | (AgentSessionStatus::Waiting, AgentSessionStatus::Active)
                 | (AgentSessionStatus::Waiting, AgentSessionStatus::Idle)
-                | (AgentSessionStatus::Waiting, AgentSessionStatus::Stopped)
-                | (
-                    AgentSessionStatus::Disconnected,
-                    AgentSessionStatus::Starting
-                )
-                | (
-                    AgentSessionStatus::Disconnected,
-                    AgentSessionStatus::Stopped
-                )
+                | (AgentSessionStatus::Waiting, AgentSessionStatus::Closed)
+                | (AgentSessionStatus::Interrupted, AgentSessionStatus::Cold)
+                | (AgentSessionStatus::Interrupted, AgentSessionStatus::Closed)
         );
         if !allowed {
             return Err(trust_error(
                 TrustErrorCode::InvalidStateTransition,
                 format!(
                     "invalid AgentSession transition {:?}->{next_status:?}",
-                    session.status
+                    session.lifecycle
                 ),
                 "agent_session",
                 session_id,
                 Some(session.version),
             ));
         }
-        session.status = next_status;
+        if matches!(
+            next_status,
+            AgentSessionStatus::Closed | AgentSessionStatus::Interrupted
+        ) {
+            let active_work = self
+                .fabric_work_execution_bindings(&context.execution_space_id)?
+                .into_iter()
+                .any(|binding| {
+                    binding.agent_session_id == session.id
+                        && binding.agent_session_generation == session.runtime_generation
+                        && binding.status == WorkExecutionBindingStatus::Active
+                });
+            let uncertain_command = self
+                .runtime_commands(&context.execution_space_id)?
+                .into_iter()
+                .any(|command| {
+                    command.target_session_id.as_deref() == Some(session.id.as_str())
+                        && command.target_session_generation == Some(session.runtime_generation)
+                        && matches!(
+                            command.status,
+                            RuntimeCommandStatus::Accepted
+                                | RuntimeCommandStatus::Quiesced
+                                | RuntimeCommandStatus::RecoveryRequired
+                        )
+                        && command.effect_certainty == RuntimeEffectCertainty::Unknown
+                });
+            if active_work || uncertain_command {
+                return Err(trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    if active_work {
+                        "AgentSession cannot close or interrupt while an active WorkExecutionBinding exists; release or atomically rebind it first"
+                    } else {
+                        "AgentSession cannot close or interrupt while a RuntimeCommand effect is ambiguous; reconcile it first"
+                    },
+                    "agent_session",
+                    session_id,
+                    Some(session.version),
+                ));
+            }
+        }
+        session.lifecycle = next_status;
         session.version += 1;
-        session.updated_at = updated_at.to_string();
+        session.last_active_at = updated_at.to_string();
+        match next_status {
+            AgentSessionStatus::Active => {
+                session.current_turn_id =
+                    Some(format!("provider-turn:{}:{}", session.id, session.version));
+                session.queued_input_count = session.queued_input_count.saturating_sub(1);
+            }
+            AgentSessionStatus::Idle
+            | AgentSessionStatus::Waiting
+            | AgentSessionStatus::Interrupted
+            | AgentSessionStatus::RecoveryRequired
+            | AgentSessionStatus::Closed => session.current_turn_id = None,
+            AgentSessionStatus::Cold => {}
+        }
+        if next_status == AgentSessionStatus::Closed {
+            session.closed_at = Some(updated_at.to_string());
+        }
         self.commit_trust_projection_unlocked(
             context,
             "agent_session",
@@ -4351,6 +4420,224 @@ impl HarnessStore {
             .values()
             .map(event_projection)
             .collect()
+    }
+
+    pub fn fabric_work_deliveries(
+        &self,
+        execution_space_id: &str,
+    ) -> StoreResult<Vec<CanonicalWorkDelivery>> {
+        Ok(self
+            .latest_fabric_side_records_unlocked(
+                execution_space_id,
+                |row: &CanonicalWorkDelivery| row.id.clone(),
+            )?
+            .into_values()
+            .collect())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn claim_work_for_provider(
+        &self,
+        context: &MutationContext,
+        delivery_id: &str,
+        node_id: &str,
+        daemon_id: &str,
+        daemon_generation: u64,
+        claim_id: &str,
+        dispatch_mode: firm_core::agentfirm_api::RuntimeDispatchMode,
+        updated_at: &str,
+    ) -> StoreResult<CanonicalMutationResult<ProviderInvocation>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.require_current_node_daemon_unlocked(
+            &context.execution_space_id,
+            node_id,
+            daemon_id,
+            daemon_generation,
+            &context.authenticated_actor,
+            "work_delivery",
+            delivery_id,
+        )?;
+        let mut delivery = self
+            .latest_fabric_side_records_unlocked(
+                &context.execution_space_id,
+                |row: &CanonicalWorkDelivery| row.id.clone(),
+            )?
+            .remove(delivery_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "WorkDelivery not found",
+                    "work_delivery",
+                    delivery_id,
+                    None,
+                )
+            })?;
+        let binding = self
+            .fabric_work_execution_bindings(&context.execution_space_id)?
+            .into_iter()
+            .find(|binding| binding.id == delivery.work_execution_binding_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "WorkDelivery binding is missing",
+                    "work_delivery",
+                    delivery_id,
+                    Some(delivery.version),
+                )
+            })?;
+        let session = self
+            .fabric_agent_sessions(&context.execution_space_id)?
+            .into_iter()
+            .find(|session| session.id == delivery.recipient_session_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::MemberRunGenerationFenced,
+                    "WorkDelivery session is missing",
+                    "work_delivery",
+                    delivery_id,
+                    Some(delivery.version),
+                )
+            })?;
+        let work = self
+            .latest_works_unlocked()?
+            .remove(&delivery.work_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::WorkRevisionStale,
+                    "WorkDelivery Work is missing",
+                    "work_delivery",
+                    delivery_id,
+                    Some(delivery.version),
+                )
+            })?;
+        if delivery.status != WorkDeliveryStatus::Queued
+            || delivery.target_node_id != node_id
+            || binding.status != WorkExecutionBindingStatus::Active
+            || binding.work_revision != work.version
+            || delivery.work_revision != work.version
+            || session.agent_identity_id != delivery.recipient_identity_id
+            || session.runtime_generation != delivery.recipient_session_generation
+            || session.node_daemon_id != daemon_id
+            || session.node_daemon_generation != daemon_generation
+            || session.lifecycle == AgentSessionStatus::Closed
+        {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "WorkDelivery no longer matches its exact active binding, Work revision, session, or NodeDaemon generation",
+                "work_delivery",
+                delivery_id,
+                Some(delivery.version),
+            ));
+        }
+        delivery.status = WorkDeliveryStatus::Claimed;
+        delivery.claim_id = Some(claim_id.to_string());
+        delivery.claimed_node_daemon_generation = Some(daemon_generation);
+        delivery.version += 1;
+        delivery.updated_at = updated_at.to_string();
+        let content = serde_json::to_string(&serde_json::json!({
+            "work_id": work.id,
+            "work_revision": work.version,
+            "title": work.title,
+            "context_markdown": work.context_markdown,
+            "completion_criteria_markdown": work.completion_criteria_markdown,
+        }))?;
+        let invocation = ProviderInvocation {
+            id: format!("provider-invocation:{}:{}", delivery.id, delivery.attempt),
+            source_plane: "work_delivery".into(),
+            source_record_id: delivery.id.clone(),
+            recipient_identity_id: delivery.recipient_identity_id.clone(),
+            recipient_session_id: delivery.recipient_session_id.clone(),
+            recipient_session_generation: delivery.recipient_session_generation,
+            node_id: node_id.to_string(),
+            node_daemon_id: daemon_id.to_string(),
+            node_daemon_generation: daemon_generation,
+            provider: session.provider_kind,
+            dispatch_mode,
+            permission_ceiling: session.effective_permission_ceiling,
+            content_fingerprint: canonical_json_fingerprint(
+                &serde_json::json!({"content": content}),
+            ),
+            content,
+            created_at: updated_at.to_string(),
+        };
+        self.commit_trust_projection_unlocked(
+            context,
+            "provider_invocation",
+            &invocation.id,
+            "prepared_from_work_delivery",
+            serde_json::json!({"delivery_id": delivery_id, "claim_id": claim_id}),
+            &invocation,
+            vec![serde_json::to_value(delivery)?],
+            Vec::new(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_work_provider_receipt(
+        &self,
+        context: &MutationContext,
+        delivery_id: &str,
+        node_id: &str,
+        daemon_id: &str,
+        daemon_generation: u64,
+        claim_id: &str,
+        provider_receipt_id: &str,
+        updated_at: &str,
+    ) -> StoreResult<CanonicalMutationResult<CanonicalWorkDelivery>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.require_current_node_daemon_unlocked(
+            &context.execution_space_id,
+            node_id,
+            daemon_id,
+            daemon_generation,
+            &context.authenticated_actor,
+            "work_delivery",
+            delivery_id,
+        )?;
+        let mut delivery = self
+            .latest_fabric_side_records_unlocked(
+                &context.execution_space_id,
+                |row: &CanonicalWorkDelivery| row.id.clone(),
+            )?
+            .remove(delivery_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "WorkDelivery not found",
+                    "work_delivery",
+                    delivery_id,
+                    None,
+                )
+            })?;
+        if delivery.status != WorkDeliveryStatus::Claimed
+            || delivery.claim_id.as_deref() != Some(claim_id)
+            || delivery.claimed_node_daemon_generation != Some(daemon_generation)
+            || delivery.target_node_id != node_id
+        {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "provider receipt does not match the exact WorkDelivery claim",
+                "work_delivery",
+                delivery_id,
+                Some(delivery.version),
+            ));
+        }
+        delivery.status = WorkDeliveryStatus::ProviderReceived;
+        delivery.provider_receipt_id = Some(provider_receipt_id.to_string());
+        delivery.version += 1;
+        delivery.updated_at = updated_at.to_string();
+        self.commit_trust_projection_unlocked(
+            context,
+            "work_delivery_receipt",
+            delivery_id,
+            "provider_received",
+            serde_json::json!({"claim_id": claim_id, "provider_receipt_id": provider_receipt_id}),
+            &delivery,
+            vec![serde_json::to_value(&delivery)?],
+            Vec::new(),
+        )
     }
 
     pub fn bind_work_execution(
@@ -4407,21 +4694,15 @@ impl HarnessStore {
                     None,
                 )
             })?;
-        if membership.status != TeamMembershipStatus::Active
+        if membership.state != TeamMembershipStatus::Active
             || membership.agent_identity_id != binding.agent_identity_id
             || session.agent_identity_id != binding.agent_identity_id
             || session.node_id != membership.node_id
-            || session.generation != binding.agent_session_generation
-            || !matches!(
-                session.status,
-                AgentSessionStatus::Starting
-                    | AgentSessionStatus::Idle
-                    | AgentSessionStatus::Running
-                    | AgentSessionStatus::Waiting
-            )
+            || session.runtime_generation != binding.agent_session_generation
+            || session.lifecycle == AgentSessionStatus::Closed
             || work.version != binding.work_revision
             || work.team_id.as_deref() != Some(membership.team_id.as_str())
-            || work.team_run_id != membership.team_run_id
+            || binding.team_id != membership.team_id
         {
             return Err(trust_error(
                 TrustErrorCode::UnauthorizedActor,
@@ -4453,7 +4734,28 @@ impl HarnessStore {
             "bound",
             serde_json::to_value(&binding)?,
             &binding,
-            Vec::new(),
+            vec![serde_json::to_value(CanonicalWorkDelivery {
+                id: format!(
+                    "work-delivery:{}:{}",
+                    binding.work_id, binding.binding_generation
+                ),
+                work_id: binding.work_id.clone(),
+                work_revision: binding.work_revision,
+                work_execution_binding_id: binding.id.clone(),
+                recipient_identity_id: binding.agent_identity_id.clone(),
+                recipient_session_id: binding.agent_session_id.clone(),
+                recipient_session_generation: binding.agent_session_generation,
+                target_node_id: session.node_id.clone(),
+                status: WorkDeliveryStatus::Queued,
+                attempt: 1,
+                claim_id: None,
+                claimed_node_daemon_generation: None,
+                provider_receipt_id: None,
+                failure_code: None,
+                version: 1,
+                created_at: binding.bound_at.clone(),
+                updated_at: binding.bound_at.clone(),
+            })?],
             Vec::new(),
         )
     }
@@ -4546,9 +4848,10 @@ impl HarnessStore {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         required(&message.id, "Message.id")?;
-        required(&message.sender_identity_id, "Message.sender_identity_id")?;
+        required(&message.sender_actor_ref.id, "Message.sender_actor_ref.id")?;
         required(&message.body, "Message.body")?;
-        if message.execution_space_id != context.execution_space_id || message.recipients.is_empty()
+        if message.source_execution_space_id != context.execution_space_id
+            || message.recipients.is_empty()
         {
             return Err(trust_error(
                 TrustErrorCode::InvalidStateTransition,
@@ -4560,49 +4863,62 @@ impl HarnessStore {
         }
         self.require_current_node_daemon_unlocked(
             &context.execution_space_id,
-            &message.author_node_id,
-            &message.author_node_daemon_id,
-            message.author_node_daemon_generation,
+            &message.source_node_id,
+            &message.source_node_daemon_id,
+            message.source_authority_generation,
             &context.authenticated_actor,
             "message",
             &message.id,
         )?;
-        let sender_sessions = self
-            .fabric_agent_sessions(&context.execution_space_id)?
-            .into_iter()
-            .filter(|session| {
-                session.agent_identity_id == message.sender_identity_id
-                    && session.node_id == message.author_node_id
-                    && session.node_daemon_generation == message.author_node_daemon_generation
-                    && matches!(
-                        session.status,
-                        AgentSessionStatus::Idle
-                            | AgentSessionStatus::Running
-                            | AgentSessionStatus::Waiting
-                    )
-            })
-            .count();
-        if sender_sessions != 1 {
+        if let Some(sender_agent_id) = message.sender_agent_id.as_deref() {
+            let sender_sessions = self
+                .fabric_agent_sessions(&context.execution_space_id)?
+                .into_iter()
+                .filter(|session| {
+                    session.agent_identity_id == sender_agent_id
+                        && session.node_id == message.source_node_id
+                        && session.node_daemon_generation == message.source_authority_generation
+                        && session.lifecycle != AgentSessionStatus::Closed
+                        && message.sender_session_id.as_deref() == Some(session.id.as_str())
+                })
+                .count();
+            if sender_sessions != 1 || message.sender_actor_ref.id != sender_agent_id {
+                return Err(trust_error(
+                    TrustErrorCode::UnauthorizedActor,
+                    "Agent Message author must resolve to the exact current local AgentSession",
+                    "message",
+                    &message.id,
+                    None,
+                ));
+            }
+        } else if context.authority_actor.as_ref() != Some(&message.sender_actor_ref) {
             return Err(trust_error(
                 TrustErrorCode::UnauthorizedActor,
-                "Message author must resolve to exactly one current local AgentSession",
+                "Human/Service Message actor must be server-resolved as command authority",
                 "message",
                 &message.id,
                 None,
             ));
         }
         let expected_fingerprint = canonical_json_fingerprint(&serde_json::json!({
-            "sender_identity_id": message.sender_identity_id,
+            "sender_actor_ref": message.sender_actor_ref,
+            "sender_agent_id": message.sender_agent_id,
+            "sender_session_id": message.sender_session_id,
+            "address_kind": message.address_kind,
+            "target_ref": message.target_ref,
             "recipients": message.recipients,
             "team_id": message.team_id,
             "team_run_id": message.team_run_id,
             "work_id": message.work_id,
             "kind": message.kind,
             "body": message.body,
+            "body_digest": message.body_digest,
             "correlation_id": message.correlation_id,
             "causation_id": message.causation_id,
             "response_intent": message.response_intent,
             "evidence_refs": message.evidence_refs,
+            "schema_version": message.schema_version,
+            "idempotency_key": message.idempotency_key,
         }));
         if message.content_fingerprint != expected_fingerprint {
             return Err(trust_error(
@@ -4616,6 +4932,26 @@ impl HarnessStore {
         let subscriptions = self.fabric_message_subscriptions(&context.execution_space_id)?;
         let sessions = self.fabric_agent_sessions(&context.execution_space_id)?;
         let memberships = self.fabric_team_memberships(&context.execution_space_id)?;
+        if let Some(team_id) = message.team_id.as_deref() {
+            let sender_is_member = message.sender_agent_id.as_deref().is_some_and(|sender| {
+                memberships.iter().any(|membership| {
+                    membership.team_id == team_id
+                        && membership.agent_identity_id == sender
+                        && membership.state == TeamMembershipStatus::Active
+                })
+            });
+            let control_plane_sender = message.sender_agent_id.is_none()
+                && context.authority_actor.as_ref() == Some(&message.sender_actor_ref);
+            if !sender_is_member && !control_plane_sender {
+                return Err(trust_error(
+                    TrustErrorCode::UnauthorizedActor,
+                    "Message sender is not an active member or server-resolved control-plane actor for the Team",
+                    "message",
+                    &message.id,
+                    None,
+                ));
+            }
+        }
         let mut delivery_rows = Vec::new();
         let mut delivered_identities = BTreeSet::new();
         for recipient in &message.recipients {
@@ -4623,30 +4959,41 @@ impl HarnessStore {
                 subscription.status == MessageSubscriptionStatus::Active
                     && match recipient.kind {
                         MessageRecipientKind::AgentIdentity => {
-                            subscription.kind == MessageSubscriptionKind::Direct
-                                && subscription.recipient_identity_id == recipient.id
+                            subscription.source_kind == MessageSubscriptionKind::Agent
+                                && subscription.subscriber_agent_id == recipient.id
+                                && if let Some(team_id) = message.team_id.as_deref() {
+                                    subscription.membership_ref.as_deref().is_some_and(
+                                        |membership_id| {
+                                            memberships.iter().any(|membership| {
+                                                membership.id == membership_id
+                                                    && membership.state
+                                                        == TeamMembershipStatus::Active
+                                                    && membership.team_id == team_id
+                                            })
+                                        },
+                                    )
+                                } else {
+                                    subscription.membership_ref.is_none()
+                                        && message.sender_agent_id.as_deref()
+                                            == Some(subscription.source_ref.as_str())
+                                }
                         }
                         MessageRecipientKind::Team => {
-                            subscription.kind == MessageSubscriptionKind::Team
-                                && subscription.team_id.as_deref() == Some(recipient.id.as_str())
+                            subscription.source_kind == MessageSubscriptionKind::Team
+                                && subscription.source_ref == recipient.id
                         }
+                        MessageRecipientKind::ControlPlaneActor => false,
                     }
             });
             for subscription in matching {
-                if !delivered_identities.insert(subscription.recipient_identity_id.clone()) {
+                if !delivered_identities.insert(subscription.subscriber_agent_id.clone()) {
                     continue;
                 }
                 let current = sessions
                     .iter()
                     .filter(|session| {
-                        session.agent_identity_id == subscription.recipient_identity_id
-                            && matches!(
-                                session.status,
-                                AgentSessionStatus::Starting
-                                    | AgentSessionStatus::Idle
-                                    | AgentSessionStatus::Running
-                                    | AgentSessionStatus::Waiting
-                            )
+                        session.agent_identity_id == subscription.subscriber_agent_id
+                            && session.lifecycle != AgentSessionStatus::Closed
                     })
                     .collect::<Vec<_>>();
                 if current.len() > 1 {
@@ -4654,7 +5001,7 @@ impl HarnessStore {
                         TrustErrorCode::InvalidStateTransition,
                         "recipient identity has multiple current AgentSessions",
                         "agent_identity",
-                        &subscription.recipient_identity_id,
+                        &subscription.subscriber_agent_id,
                         None,
                     ));
                 }
@@ -4663,7 +5010,7 @@ impl HarnessStore {
                     .map(|session| session.node_id.clone())
                     .or_else(|| {
                         subscription
-                            .team_membership_id
+                            .membership_ref
                             .as_ref()
                             .and_then(|membership_id| {
                                 memberships
@@ -4677,15 +5024,15 @@ impl HarnessStore {
                             TrustErrorCode::InvalidStateTransition,
                             "recipient identity has no routable Node placement",
                             "agent_identity",
-                            &subscription.recipient_identity_id,
+                            &subscription.subscriber_agent_id,
                             None,
                         )
                     })?;
                 delivery_rows.push(CanonicalMessageDelivery {
-                    id: format!("{}:{}", message.id, subscription.recipient_identity_id),
+                    id: format!("{}:{}", message.id, subscription.subscriber_agent_id),
                     message_id: message.id.clone(),
                     subscription_id: subscription.id.clone(),
-                    recipient_identity_id: subscription.recipient_identity_id.clone(),
+                    recipient_identity_id: subscription.subscriber_agent_id.clone(),
                     target_node_id,
                     recipient_session_id: None,
                     recipient_session_generation: None,
@@ -4702,7 +5049,12 @@ impl HarnessStore {
                 });
             }
         }
-        if delivery_rows.is_empty() {
+        if delivery_rows.is_empty()
+            && !message
+                .recipients
+                .iter()
+                .all(|recipient| recipient.kind == MessageRecipientKind::ControlPlaneActor)
+        {
             return Err(trust_error(
                 TrustErrorCode::InvalidStateTransition,
                 "Message recipients resolved to no active subscription",
@@ -4736,7 +5088,7 @@ impl HarnessStore {
         claim_id: &str,
         dispatch_mode: firm_core::agentfirm_api::RuntimeDispatchMode,
         updated_at: &str,
-    ) -> StoreResult<CanonicalMutationResult<CanonicalProviderDispatchEnvelope>> {
+    ) -> StoreResult<CanonicalMutationResult<ProviderInvocation>> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         self.require_current_node_daemon_unlocked(
@@ -4782,12 +5134,7 @@ impl HarnessStore {
                     && session.node_id == node_id
                     && session.node_daemon_id == daemon_id
                     && session.node_daemon_generation == daemon_generation
-                    && matches!(
-                        session.status,
-                        AgentSessionStatus::Idle
-                            | AgentSessionStatus::Running
-                            | AgentSessionStatus::Waiting
-                    )
+                    && session.lifecycle != AgentSessionStatus::Closed
             })
             .collect::<Vec<_>>();
         if current.len() != 1 {
@@ -4819,22 +5166,22 @@ impl HarnessStore {
             .and_then(|envelope| event_projection::<Message>(&envelope))?;
         delivery.status = CanonicalMessageDeliveryStatus::Claimed;
         delivery.recipient_session_id = Some(session.id.clone());
-        delivery.recipient_session_generation = Some(session.generation);
+        delivery.recipient_session_generation = Some(session.runtime_generation);
         delivery.claim_id = Some(claim_id.to_string());
         delivery.claimed_node_daemon_generation = Some(daemon_generation);
         delivery.version += 1;
         delivery.updated_at = updated_at.to_string();
-        let dispatch = CanonicalProviderDispatchEnvelope {
+        let dispatch = ProviderInvocation {
             id: format!("provider-dispatch:{}:{}", delivery.id, delivery.attempt),
             source_plane: "message".into(),
             source_record_id: message.id,
             recipient_identity_id: delivery.recipient_identity_id.clone(),
             recipient_session_id: session.id.clone(),
-            recipient_session_generation: session.generation,
+            recipient_session_generation: session.runtime_generation,
             node_id: node_id.to_string(),
             node_daemon_id: daemon_id.to_string(),
             node_daemon_generation: daemon_generation,
-            provider: session.provider.clone(),
+            provider: session.provider_kind.clone(),
             dispatch_mode,
             permission_ceiling: session.effective_permission_ceiling,
             content: message.body,
@@ -4929,7 +5276,7 @@ impl HarnessStore {
                     Some(delivery.version),
                 )
             })?;
-        if Some(current.generation) != delivery.recipient_session_generation
+        if Some(current.runtime_generation) != delivery.recipient_session_generation
             || current.node_daemon_generation != daemon_generation
         {
             return Err(trust_error(
@@ -5004,16 +5351,23 @@ impl HarnessStore {
             .map(|envelope| event_projection::<SubscriptionCursor>(&envelope))
             .transpose()?;
         let cursor = SubscriptionCursor {
-            id: delivery.subscription_id.clone(),
             subscription_id: delivery.subscription_id.clone(),
-            recipient_identity_id: delivery.recipient_identity_id.clone(),
-            last_message_sequence: current_cursor
+            recipient_agent_id: delivery.recipient_identity_id.clone(),
+            last_visible_store_sequence: current_cursor
                 .as_ref()
-                .map(|cursor| cursor.last_message_sequence.saturating_add(1))
+                .map(|cursor| cursor.last_visible_store_sequence.saturating_add(1))
                 .unwrap_or(1),
-            version: current_cursor
+            last_delivered_store_sequence: current_cursor
                 .as_ref()
-                .map(|cursor| cursor.version + 1)
+                .map(|cursor| cursor.last_delivered_store_sequence.saturating_add(1))
+                .unwrap_or(1),
+            last_read_store_sequence: current_cursor
+                .as_ref()
+                .map(|cursor| cursor.last_read_store_sequence.saturating_add(1))
+                .unwrap_or(1),
+            cursor_revision: current_cursor
+                .as_ref()
+                .map(|cursor| cursor.cursor_revision + 1)
                 .unwrap_or(1),
             updated_at: updated_at.to_string(),
         };
@@ -5056,7 +5410,7 @@ impl HarnessStore {
             .fabric_messages(&context.execution_space_id)?
             .iter()
             .any(|message| {
-                message.id == route.message_id && message.author_node_id == route.source_node_id
+                message.id == route.message_id && message.source_node_id == route.source_node_id
             })
         {
             return Err(trust_error(
@@ -5131,6 +5485,214 @@ impl HarnessStore {
             },
             "runtime_command",
             &command.id,
+        )
+    }
+
+    pub fn runtime_commands(
+        &self,
+        execution_space_id: &str,
+    ) -> StoreResult<Vec<RuntimeCommandRecord>> {
+        self.latest_trust_envelopes_unlocked(execution_space_id, "runtime_command")?
+            .values()
+            .map(event_projection)
+            .collect()
+    }
+
+    /// Persist command admission before a provider or process effect. Replay is
+    /// resolved by the canonical operation ledger before current-state checks,
+    /// while ambiguous prior effects fail closed as RecoveryRequired.
+    pub fn prepare_runtime_command(
+        &self,
+        context: &MutationContext,
+        command: &ControlCommandEnvelope,
+        now_unix_ms: u64,
+        now: &str,
+    ) -> StoreResult<CanonicalMutationResult<RuntimeCommandRecord>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.validate_runtime_command(command, now_unix_ms)?;
+        if command.execution_space_id != context.execution_space_id
+            || command.authenticated_actor
+                != context
+                    .authority_actor
+                    .clone()
+                    .unwrap_or_else(|| context.authenticated_actor.clone())
+            || command.payload_fingerprint
+                != context.request_fingerprint.clone().unwrap_or_default()
+        {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "RuntimeCommand authority or fingerprint was not server-bound",
+                "runtime_command",
+                &command.id,
+                None,
+            ));
+        }
+        let target_session_id = command.payload["session_id"].as_str().map(str::to_string);
+        let target_session_generation = command.payload["session_generation"].as_u64();
+        if let Some(session_id) = target_session_id.as_deref() {
+            let session = self
+                .fabric_agent_sessions(&context.execution_space_id)?
+                .into_iter()
+                .find(|session| session.id == session_id)
+                .ok_or_else(|| {
+                    trust_error(
+                        TrustErrorCode::InvalidStateTransition,
+                        "RuntimeCommand target AgentSession does not exist",
+                        "runtime_command",
+                        &command.id,
+                        None,
+                    )
+                })?;
+            if session.node_id != command.target_node_id
+                || session.node_daemon_id != command.target_node_daemon_id
+                || session.node_daemon_generation != command.target_node_daemon_generation
+                || target_session_generation != Some(session.runtime_generation)
+            {
+                return Err(trust_error(
+                    TrustErrorCode::MemberRunGenerationFenced,
+                    "RuntimeCommand does not bind the exact current AgentSession and NodeDaemon generation",
+                    "runtime_command",
+                    &command.id,
+                    Some(session.version),
+                ));
+            }
+            let ambiguous = self
+                .runtime_commands(&context.execution_space_id)?
+                .into_iter()
+                .any(|prior| {
+                    prior.id != command.id
+                        && prior.target_session_id.as_deref() == Some(session_id)
+                        && matches!(
+                            prior.status,
+                            RuntimeCommandStatus::Accepted
+                                | RuntimeCommandStatus::Quiesced
+                                | RuntimeCommandStatus::RecoveryRequired
+                        )
+                        && prior.effect_certainty == RuntimeEffectCertainty::Unknown
+                });
+            if ambiguous {
+                return Err(trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "AgentSession has an ambiguous in-flight RuntimeCommand; reconciliation is required",
+                    "runtime_command",
+                    &command.id,
+                    None,
+                ));
+            }
+        }
+        let record = RuntimeCommandRecord {
+            id: command.id.clone(),
+            execution_space_id: command.execution_space_id.clone(),
+            target_node_id: command.target_node_id.clone(),
+            target_node_daemon_id: command.target_node_daemon_id.clone(),
+            target_node_daemon_generation: command.target_node_daemon_generation,
+            authenticated_actor: command.authenticated_actor.clone(),
+            command: command.command,
+            required_capability: command.required_capability.clone(),
+            idempotency_key: command.idempotency_key.clone(),
+            request_fingerprint: command.payload_fingerprint.clone(),
+            status: RuntimeCommandStatus::Accepted,
+            effect_certainty: RuntimeEffectCertainty::Unknown,
+            target_session_id,
+            target_session_generation,
+            source_record_id: command.payload["delivery_id"].as_str().map(str::to_string),
+            result: None,
+            failure_code: None,
+            version: 1,
+            created_at: now.to_string(),
+            updated_at: now.to_string(),
+        };
+        self.commit_trust_projection_unlocked(
+            context,
+            "runtime_command",
+            &record.id,
+            "accepted",
+            serde_json::to_value(command)?,
+            &record,
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn settle_runtime_command(
+        &self,
+        context: &MutationContext,
+        command_id: &str,
+        status: RuntimeCommandStatus,
+        effect_certainty: RuntimeEffectCertainty,
+        result: Option<Value>,
+        failure_code: Option<String>,
+        now: &str,
+    ) -> StoreResult<CanonicalMutationResult<RuntimeCommandRecord>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut record = self
+            .latest_trust_envelopes_unlocked(&context.execution_space_id, "runtime_command")?
+            .remove(command_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "RuntimeCommand was not durably accepted",
+                    "runtime_command",
+                    command_id,
+                    None,
+                )
+            })
+            .and_then(|envelope| event_projection::<RuntimeCommandRecord>(&envelope))?;
+        if record.target_node_daemon_id != context.authenticated_actor.id
+            || context.authenticated_actor.kind != ActorKind::Service
+            || !matches!(
+                record.status,
+                RuntimeCommandStatus::Accepted
+                    | RuntimeCommandStatus::Quiesced
+                    | RuntimeCommandStatus::RecoveryRequired
+            )
+        {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "only the exact target NodeDaemon can settle an admitted RuntimeCommand",
+                "runtime_command",
+                command_id,
+                Some(record.version),
+            ));
+        }
+        if !matches!(
+            status,
+            RuntimeCommandStatus::Applied
+                | RuntimeCommandStatus::Failed
+                | RuntimeCommandStatus::RecoveryRequired
+                | RuntimeCommandStatus::Quiesced
+        ) {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "invalid RuntimeCommand settlement",
+                "runtime_command",
+                command_id,
+                Some(record.version),
+            ));
+        }
+        record.status = status;
+        record.effect_certainty = effect_certainty;
+        record.result = result;
+        record.failure_code = failure_code;
+        record.version += 1;
+        record.updated_at = now.to_string();
+        self.commit_trust_projection_unlocked(
+            context,
+            "runtime_command",
+            command_id,
+            "settled",
+            serde_json::json!({
+                "status": status,
+                "effect_certainty": effect_certainty,
+                "result": record.result,
+                "failure_code": record.failure_code,
+            }),
+            &record,
+            Vec::new(),
+            Vec::new(),
         )
     }
 }
@@ -5263,15 +5825,19 @@ mod tests {
             execution_space_id: "space-test".into(),
             node_daemon_id: "daemon-1".into(),
             node_daemon_generation: 1,
-            provider: "codex".into(),
+            provider_kind: "codex".into(),
             provider_profile_ref: "codex-default".into(),
+            permission_envelope_ref: "permission-default".into(),
             effective_permission_ceiling: PermissionCeiling::WorkspaceWrite,
-            status: AgentSessionStatus::Idle,
-            generation: 1,
-            native_session: None,
+            lifecycle: AgentSessionStatus::Idle,
+            runtime_generation: 1,
+            native_session_ref: None,
+            current_turn_id: None,
+            queued_input_count: 0,
             version: 1,
-            created_at: "t1".into(),
-            updated_at: "t1".into(),
+            opened_at: "t1".into(),
+            last_active_at: "t1".into(),
+            closed_at: None,
         }
     }
 
@@ -5345,15 +5911,21 @@ mod tests {
 
         let subscription = MessageSubscription {
             id: "direct-recipient".into(),
-            recipient_identity_id: "recipient".into(),
+            subscriber_agent_id: "recipient".into(),
             execution_space_id: "space-test".into(),
-            kind: MessageSubscriptionKind::Direct,
-            team_membership_id: None,
-            team_id: None,
+            source_kind: MessageSubscriptionKind::Agent,
+            source_ref: "sender".into(),
+            delivery_mode: firm_core::agentfirm_api::RuntimeDispatchMode::StartIfIdle,
+            history_policy: firm_core::agentfirm_api::MessageHistoryPolicy::FromJoin,
+            membership_ref: None,
+            authorization_policy_ref: "direct.test".into(),
+            policy_revision: 1,
+            policy_digest: canonical_json_fingerprint(&serde_json::json!({"direct": true})),
             status: MessageSubscriptionStatus::Active,
-            version: 1,
+            revision: 1,
+            created_by: actor("host"),
             created_at: "t1".into(),
-            updated_at: "t1".into(),
+            revoked_at: None,
         };
         {
             let _lock = store.acquire_write_lock().unwrap();
@@ -5374,40 +5946,61 @@ mod tests {
             kind: MessageRecipientKind::AgentIdentity,
             id: "recipient".into(),
         }];
+        let body_digest = format!("sha256:{:x}", Sha256::digest(b"hello"));
         let fingerprint = canonical_json_fingerprint(&serde_json::json!({
-            "sender_identity_id": "sender",
+            "sender_actor_ref": {"kind": "agent_member", "id": "sender"},
+            "sender_agent_id": "sender",
+            "sender_session_id": "session-sender",
+            "address_kind": "direct_agent",
+            "target_ref": {"kind": "agent_identity", "id": "recipient"},
             "recipients": recipients,
             "team_id": null,
             "team_run_id": null,
             "work_id": null,
             "kind": firm_core::agentfirm_api::MessageKind::Message,
             "body": "hello",
+            "body_digest": body_digest,
             "correlation_id": "corr-1",
             "causation_id": null,
             "response_intent": firm_core::agentfirm_api::ResponseIntent::Informational,
             "evidence_refs": Vec::<String>::new(),
+            "schema_version": 1,
+            "idempotency_key": "message-1",
         }));
         let authored = store
             .author_message(
                 &service_context("message.author", "message-1", 0),
                 Message {
                     id: "message-1".into(),
-                    execution_space_id: "space-test".into(),
-                    author_node_id: "11111111-1111-4111-8111-111111111111".into(),
-                    author_node_daemon_id: "daemon-1".into(),
-                    author_node_daemon_generation: 1,
-                    sender_identity_id: "sender".into(),
+                    source_execution_space_id: "space-test".into(),
+                    source_node_id: "11111111-1111-4111-8111-111111111111".into(),
+                    source_node_daemon_id: "daemon-1".into(),
+                    source_authority_generation: 1,
+                    sender_actor_ref: ActorRef {
+                        kind: ActorKind::AgentMember,
+                        id: "sender".into(),
+                    },
+                    sender_agent_id: Some("sender".into()),
+                    sender_session_id: Some("session-sender".into()),
+                    address_kind: firm_core::agentfirm_api::MessageAddressKind::DirectAgent,
+                    target_ref: firm_core::agentfirm_api::MessageRecipientRef {
+                        kind: MessageRecipientKind::AgentIdentity,
+                        id: "recipient".into(),
+                    },
                     recipients,
                     team_id: None,
                     team_run_id: None,
                     work_id: None,
                     kind: firm_core::agentfirm_api::MessageKind::Message,
                     body: "hello".into(),
+                    body_digest,
                     correlation_id: "corr-1".into(),
                     causation_id: None,
                     response_intent: firm_core::agentfirm_api::ResponseIntent::Informational,
                     evidence_refs: Vec::new(),
                     content_fingerprint: fingerprint.clone(),
+                    schema_version: 1,
+                    idempotency_key: "message-1".into(),
                     created_at: "t2".into(),
                 },
             )
@@ -5454,6 +6047,100 @@ mod tests {
             store.canonical_operations().unwrap().len(),
             operations_before
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn runtime_command_replay_and_ambiguous_effect_fail_closed() {
+        let (store, root) = fabric_store();
+        store
+            .create_agent_identity(
+                &context("host", "identity.create", "identity-runtime", 0),
+                identity("runtime-agent"),
+            )
+            .unwrap();
+        store
+            .create_agent_session(
+                &service_context("session.create", "runtime-session", 0),
+                session("session-runtime", "runtime-agent"),
+            )
+            .unwrap();
+        let payload = serde_json::json!({
+            "session_id": "session-runtime",
+            "session_generation": 1,
+        });
+        let fingerprint = canonical_json_fingerprint(&payload);
+        let command = ControlCommandEnvelope {
+            id: "runtime-command-1".into(),
+            execution_space_id: "space-test".into(),
+            target_node_id: "11111111-1111-4111-8111-111111111111".into(),
+            target_node_daemon_id: "daemon-1".into(),
+            target_node_daemon_generation: 1,
+            authenticated_actor: actor("host"),
+            command: firm_core::agentfirm_api::RuntimeCommandKind::StopSession,
+            required_capability: "agent_session.stop".into(),
+            idempotency_key: "runtime-command-1".into(),
+            expected_version: 0,
+            expires_unix_ms: current_unix_ms() + 60_000,
+            payload,
+            payload_fingerprint: fingerprint.clone(),
+            issued_at: "t2".into(),
+        };
+        let admission_context = MutationContext {
+            execution_space_id: "space-test".into(),
+            authenticated_actor: ActorRef {
+                kind: ActorKind::Service,
+                id: "daemon-1".into(),
+            },
+            authority_actor: Some(actor("host")),
+            command_name: "runtime.stop".into(),
+            idempotency_key: "runtime-command-1".into(),
+            expected_version: 0,
+            request_fingerprint: Some(fingerprint),
+        };
+        let accepted = store
+            .prepare_runtime_command(&admission_context, &command, current_unix_ms(), "t2")
+            .unwrap();
+        assert_eq!(accepted.projection.status, RuntimeCommandStatus::Accepted);
+        assert_eq!(
+            accepted.projection.effect_certainty,
+            RuntimeEffectCertainty::Unknown
+        );
+        let replay = store
+            .prepare_runtime_command(&admission_context, &command, current_unix_ms(), "t2")
+            .unwrap();
+        assert!(replay.replayed);
+
+        let mut second = command.clone();
+        second.id = "runtime-command-2".into();
+        second.idempotency_key = "runtime-command-2".into();
+        let before = store.canonical_operations().unwrap().len();
+        let mut second_context = admission_context.clone();
+        second_context.idempotency_key = "runtime-command-2".into();
+        let error = store
+            .prepare_runtime_command(&second_context, &second, current_unix_ms(), "t3")
+            .expect_err("ambiguous accepted command fences a successor");
+        assert!(error.to_string().contains("reconciliation is required"));
+        assert_eq!(store.canonical_operations().unwrap().len(), before);
+
+        let settle_context = MutationContext {
+            command_name: "runtime.stop.settle".into(),
+            idempotency_key: "runtime-command-1:settle".into(),
+            expected_version: 1,
+            authority_actor: Some(actor("host")),
+            ..service_context("unused", "unused", 0)
+        };
+        store
+            .settle_runtime_command(
+                &settle_context,
+                "runtime-command-1",
+                RuntimeCommandStatus::RecoveryRequired,
+                RuntimeEffectCertainty::Unknown,
+                None,
+                Some("PROVIDER_EFFECT_AMBIGUOUS".into()),
+                "t4",
+            )
+            .unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 }
