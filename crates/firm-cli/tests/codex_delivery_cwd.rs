@@ -4,7 +4,7 @@
 //! A persistent Codex worker must run from the SELECTED project's `project_root`
 //! (where its `AGENTS.md` lives), NOT the long-running harness process cwd — a
 //! `serve` that switched projects never `cd`s. When the member is pinned to a
-//! specific `worktree_ref`, that pin still wins.
+//! specific `provider_cwd_hint`, that pin still wins.
 //!
 //! These tests run the real `harness` binary FROM A CWD DIFFERENT FROM THE
 //! PROJECT ROOT, with a fake `codex` on PATH that records the cwd it was spawned
@@ -77,7 +77,7 @@ fn codex_delivery_with_worktree_keeps_the_pinned_workspace() {
     assert_eq!(
         recorded,
         canon(&pinned),
-        "member.worktree_ref must pin the workspace and win over project_root"
+        "member.provider_cwd_hint must pin the workspace and win over project_root"
     );
     assert_ne!(
         recorded,

@@ -303,7 +303,7 @@ fn pi_rpc_team_member_completes_work_then_host_follow_up_without_disconnect() {
     let member = store_rows(&home, &project_id, "member_runs.jsonl")
         .into_iter()
         .find(|member| member["team_run_id"] == run_id)
-        .expect("Pi MemberRun");
+        .expect("Pi ProviderRuntimeProjection");
     let member_id = member["id"].as_str().expect("member id").to_string();
     let work_list_out = run_with_fake_pi(
         &home,
@@ -411,7 +411,7 @@ fn pi_rpc_team_member_completes_work_then_host_follow_up_without_disconnect() {
         member_actions
             .iter()
             .all(|action| action["action_type"] != "disconnected"),
-        "a follow-up must not re-complete the original WorkDelivery: {member_actions:?}"
+        "a follow-up must not re-complete the original ProviderWorkDispatch: {member_actions:?}"
     );
 
     let work_show_out = run_with_fake_pi(
@@ -448,7 +448,7 @@ fn pi_rpc_team_member_completes_work_then_host_follow_up_without_disconnect() {
     let member = store_rows(&home, &project_id, "member_runs.jsonl")
         .into_iter()
         .find(|member| member["id"] == member_id)
-        .expect("latest Pi MemberRun");
+        .expect("latest Pi ProviderRuntimeProjection");
     assert_eq!(member["native_session"]["provider"], "pi");
     assert_eq!(member["native_session"]["execution_mode"], "pi_rpc");
     assert_eq!(

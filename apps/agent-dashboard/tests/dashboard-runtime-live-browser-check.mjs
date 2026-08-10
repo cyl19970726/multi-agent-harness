@@ -158,6 +158,7 @@ runHarness(["company", "switch", "company-a"], env, projectRoot);
 const apiPort = await freePort();
 const apiBase = `http://127.0.0.1:${apiPort}`;
 let runtime = null;
+const runtimePids = [];
 const runtimeLogs = [];
 function startRuntime() {
   runtime = spawn(harness, ["serve", "--addr", `127.0.0.1:${apiPort}`, "--no-truncate"], {
@@ -165,9 +166,19 @@ function startRuntime() {
     env,
     stdio: ["ignore", "pipe", "pipe"],
   });
+  runtimePids.push(runtime.pid);
   runtime.stdout.on("data", (chunk) => runtimeLogs.push(chunk.toString()));
   runtime.stderr.on("data", (chunk) => runtimeLogs.push(chunk.toString()));
 }
+
+// A test runner may terminate this Node process before the async finally block
+// executes. Always forward process termination to the exact child we own so a
+// Wave check cannot leave `firm serve` orphaned under launchd.
+process.once("exit", () => {
+  if (runtime && runtime.exitCode === null && runtime.signalCode === null) {
+    runtime.kill("SIGTERM");
+  }
+});
 async function stopRuntime() {
   if (!runtime || runtime.exitCode !== null || runtime.signalCode !== null) return;
   const child = runtime;
@@ -484,6 +495,14 @@ try {
   await browser.close();
   await vite.close();
   await stopRuntime();
+  for (const pid of runtimePids) {
+    try {
+      process.kill(pid, 0);
+      throw new Error(`owned Runtime process ${pid} survived test cleanup`);
+    } catch (error) {
+      if (error?.code !== "ESRCH") throw error;
+    }
+  }
   if (failed > 0) console.error(runtimeLogs.slice(-20).join(""));
   await rm(temporaryRoot, { recursive: true, force: true });
 }

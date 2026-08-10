@@ -328,6 +328,88 @@ pub struct TrustCommandResult {
     pub replayed: bool,
 }
 
+fn unauthorized(resource_kind: &str, resource_id: &str, message: &str) -> StoreError {
+    StoreError::Conflict(
+        serde_json::to_string(&harness_core::agentfirm_api::TrustError {
+            code: harness_core::agentfirm_api::TrustErrorCode::UnauthorizedActor,
+            message: message.to_string(),
+            retryable: false,
+            resource_kind: resource_kind.to_string(),
+            resource_id: resource_id.to_string(),
+            current_version: None,
+        })
+        .expect("TrustError serializes"),
+    )
+}
+
+fn member_run_owned_by(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    member_run_id: &str,
+    agent_member_id: &str,
+) -> Result<bool, StoreError> {
+    Ok(store
+        .trust_member_runs(execution_space_id)?
+        .into_iter()
+        .any(|run| run.id == member_run_id && run.agent_member_id == agent_member_id))
+}
+
+/// The transport proves who the caller is; this boundary decides what that
+/// identity may mutate. Wave 4A deliberately keeps the policy small: Human
+/// and Service actors operate the control plane, while AgentMember/External
+/// actors may author execution evidence and conversation. An AgentMember may
+/// additionally control only its own MemberRun/native session.
+fn authorize(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    actor: &ActorRef,
+    command: &TrustCommand,
+) -> Result<(), StoreError> {
+    if matches!(actor.kind, ActorKind::Human | ActorKind::Service) {
+        return Ok(());
+    }
+
+    let execution_authoring = matches!(
+        command,
+        TrustCommand::CreateTeamMessage { .. }
+            | TrustCommand::CreateWorkReport { .. }
+            | TrustCommand::CreateWorkFinding { .. }
+            | TrustCommand::CreateFailureAnalysis { .. }
+            | TrustCommand::EvaluateGate { .. }
+    );
+    if execution_authoring {
+        return Ok(());
+    }
+
+    if actor.kind == ActorKind::AgentMember {
+        let own_run = match command {
+            TrustCommand::CloseMemberRun { member_run_id, .. }
+            | TrustCommand::ReopenMemberRun { member_run_id, .. }
+            | TrustCommand::RetireMemberRun { member_run_id, .. }
+            | TrustCommand::ResumeNativeSession { member_run_id, .. }
+            | TrustCommand::TransitionWorkspace { member_run_id, .. } => Some(member_run_id),
+            TrustCommand::ProvisionWorkspace { binding } => Some(&binding.member_run_id),
+            _ => None,
+        };
+        if let Some(member_run_id) = own_run {
+            if member_run_owned_by(store, execution_space_id, member_run_id, &actor.id)? {
+                return Ok(());
+            }
+            return Err(unauthorized(
+                "member_run",
+                member_run_id,
+                "AgentMember may mutate only its own MemberRun",
+            ));
+        }
+    }
+
+    Err(unauthorized(
+        "command",
+        command.name(),
+        "authenticated actor is not authorized for this mutation",
+    ))
+}
+
 fn result<T: Serialize>(
     mutation: CanonicalMutationResult<T>,
 ) -> Result<TrustCommandResult, StoreError> {
@@ -347,6 +429,7 @@ pub fn execute(
     auth: AuthenticatedMutation,
     command: TrustCommand,
 ) -> Result<TrustCommandResult, StoreError> {
+    authorize(store, &auth.execution_space_id, &auth.actor, &command)?;
     let context = MutationContext {
         execution_space_id: auth.execution_space_id,
         authenticated_actor: auth.actor.clone(),
@@ -578,5 +661,54 @@ pub fn execute(
             waiver_id,
             revoked_at,
         } => result(store.revoke_trust_gate_waiver(&context, &waiver_id, &revoked_at)?),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store() -> (std::path::PathBuf, HarnessStore) {
+        let root = std::env::temp_dir().join(format!(
+            "agentfirm-auth-policy-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("create test root");
+        let store = HarnessStore::new(&root);
+        (root, store)
+    }
+
+    #[test]
+    fn transport_actor_policy_is_fail_closed_and_self_scoped() {
+        let (_root, store) = store();
+        let external = ActorRef {
+            kind: ActorKind::External,
+            id: "external-1".into(),
+        };
+        let member = ActorRef {
+            kind: ActorKind::AgentMember,
+            id: "member-1".into(),
+        };
+        let service = ActorRef {
+            kind: ActorKind::Service,
+            id: "node-daemon".into(),
+        };
+        let privileged = TrustCommand::PauseAgentMember {
+            member_id: "member-1".into(),
+            updated_at: "unix-ms:1".into(),
+        };
+        assert!(authorize(&store, "space", &external, &privileged).is_err());
+        assert!(authorize(&store, "space", &member, &privileged).is_err());
+        assert!(authorize(&store, "space", &service, &privileged).is_ok());
+
+        let self_control = TrustCommand::CloseMemberRun {
+            member_run_id: "run-not-owned".into(),
+            updated_at: "unix-ms:2".into(),
+        };
+        assert!(authorize(&store, "space", &member, &self_control).is_err());
     }
 }

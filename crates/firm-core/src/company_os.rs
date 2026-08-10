@@ -781,7 +781,7 @@ pub enum ExecutionKind {
     Mission,
     Wave,
     AgentTeamRun,
-    MemberRun,
+    ProviderRuntimeProjection,
     WorkflowRun,
     WorkflowStep,
     HostExecution,

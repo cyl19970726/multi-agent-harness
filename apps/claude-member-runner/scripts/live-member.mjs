@@ -27,7 +27,7 @@ const done = runner.start();
 const waitTurns = (n) => new Promise(r => { const i=setInterval(()=>{ if(turns.length>=n){clearInterval(i);r();} },200); });
 
 console.log("→ 投递 durable Work");
-runner.deliver({ id:"work-1", kind:"work", from_member_id:"host",
+runner.deliver({ id:"work-1", kind:"work", sender_runtime_id:"host",
                  body:"You are RuntimeBuilder. Reply with exactly: WORK-ACK" });
 await waitTurns(1);
 
@@ -36,7 +36,7 @@ await new Promise(r=>setTimeout(r,3000));
 console.log(`   mailbox.pending=${runner.mailbox.pending} closed=${runner.mailbox.closed}`);
 
 console.log("→ 空档后再投一条 peer 消息");
-runner.deliver({ id:"m2", kind:"message", from_member_id:"peer-Dashboard", work_id:"work-1", correlation_id:"corr-1",
+runner.deliver({ id:"m2", kind:"message", sender_runtime_id:"peer-Dashboard", work_id:"work-1", correlation_id:"corr-1",
                  body:"Peer here. Reply with exactly: SECOND-TURN-OK" });
 await waitTurns(2);
 

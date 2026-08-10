@@ -132,7 +132,7 @@ export class Mailbox {
  * this runner does not copy or advance that state machine.
  */
 export function renderTeamMessage(message) {
-  const header = `--- ${message.from_member_id} (${message.kind}) ---`;
+  const header = `--- ${message.sender_runtime_id} (${message.kind}) ---`;
   const lineage = message.correlation_id
     ? `correlation: ${message.correlation_id}`
     : "correlation: (none)";

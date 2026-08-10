@@ -1,4 +1,4 @@
-//! Integration coverage for the Codex WorkDelivery receipt contract:
+//! Integration coverage for the Codex ProviderWorkDispatch receipt contract:
 //! the provider receipt is recorded at turn/start acceptance — the earliest
 //! honest evidence — not after the whole turn. The fake app-server never
 //! completes the first turn (no FAKE_CODEX_AUTO_COMPLETE), so any receipt

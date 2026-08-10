@@ -284,7 +284,7 @@ while IFS= read -r line; do
       fi
       if [ "${FAKE_KIMI_MESSAGE_DURING_TURN:-0}" = "1" ]; then
         # Give the Harness reader a deterministic chance to consume the first
-        # ACP frame and publish its WorkDelivery receipt before this bound
+        # ACP frame and publish its ProviderWorkDispatch receipt before this bound
         # member authors a Work-linked conversation message from the turn.
         sleep 0.1
         work_id=$("$FIRM_BIN" --project "$FIRM_PROJECT_ID" team-run work list \

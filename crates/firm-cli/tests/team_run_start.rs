@@ -371,7 +371,7 @@ fn seed_historical_wave(home: &TempHome, project_id: &str, id: &str, mission_id:
 }
 
 /// Read an append-only ledger when that object class is optional for the
-/// scenario. A Work-only provider round correctly creates no TeamMessage
+/// scenario. A Work-only provider round correctly creates no ProviderDispatchEnvelope
 /// ledger at all.
 fn optional_store_rows(home: &TempHome, project_id: &str, file: &str) -> Vec<serde_json::Value> {
     let path = home.spaces_dir().join(project_id).join(file);
@@ -531,12 +531,12 @@ fn team_run_start_leaves_kimi_members_idle_until_host_close() {
             "last_event_at set: {member:?}"
         );
         assert_eq!(
-            member["workspace_snapshot"]["cwd"].as_str(),
+            member["provider_environment_observation"]["cwd"].as_str(),
             Some(expected_cwd.as_str()),
             "actual spawn cwd is durably snapshotted"
         );
-        assert!(member["workspace_snapshot"]["instruction_roots"].is_array());
-        assert!(member["workspace_snapshot"]["skill_roots"].is_array());
+        assert!(member["provider_environment_observation"]["instruction_roots"].is_array());
+        assert!(member["provider_environment_observation"]["skill_roots"].is_array());
         for prohibited in [
             "config_contents",
             "credentials",
@@ -545,13 +545,15 @@ fn team_run_start_leaves_kimi_members_idle_until_host_close() {
             "thinking",
         ] {
             assert!(
-                member["workspace_snapshot"].get(prohibited).is_none(),
+                member["provider_environment_observation"]
+                    .get(prohibited)
+                    .is_none(),
                 "snapshot must not persist {prohibited}: {member:?}"
             );
         }
     }
 
-    // Work is the durable responsibility and WorkDelivery is the adapter
+    // Work is the durable responsibility and ProviderWorkDispatch is the adapter
     // receipt. A terminal provider report does not fabricate a Handoff.
     let works = latest_works(&home, &project_id);
     assert_eq!(works.len(), 2, "initial Works: {works:?}");
@@ -690,19 +692,21 @@ fn kimi_can_send_work_linked_progress_after_first_acp_acceptance() {
     let delivery = deliveries
         .iter()
         .find(|delivery| delivery["recipient_member_run_id"] == *member_id)
-        .expect("member WorkDelivery");
+        .expect("member ProviderWorkDispatch");
     assert_eq!(delivery["status"], "provider_received");
     assert!(
         delivery["provider_receipt_id"]
             .as_str()
             .is_some_and(|receipt| receipt.starts_with("kimi-acp-prompt:")),
-        "WorkDelivery must be backed by the active ACP prompt: {delivery:?}"
+        "ProviderWorkDispatch must be backed by the active ACP prompt: {delivery:?}"
     );
 
     let messages = optional_store_rows(&home, &project_id, "team_messages.jsonl");
     let progress = messages
         .iter()
-        .filter(|message| message["kind"] == "message" && message["from_member_id"] == *member_id)
+        .filter(|message| {
+            message["kind"] == "message" && message["sender_runtime_id"] == *member_id
+        })
         .collect::<Vec<_>>();
     assert_eq!(
         progress.len(),
@@ -1180,7 +1184,7 @@ fn team_run_start_completes_mixed_codex_kimi_without_persisting_reasoning() {
     assert_eq!(
         deliveries.len(),
         2,
-        "one WorkDelivery per member: {deliveries:?}"
+        "one ProviderWorkDispatch per member: {deliveries:?}"
     );
     assert!(deliveries
         .iter()
@@ -1279,7 +1283,7 @@ fn kimi_question_waits_for_lead_resolution_and_resumes_same_turn() {
     }
     assert!(
         interaction_path.exists(),
-        "Kimi request must create a provider interaction TeamMessage"
+        "Kimi request must create a provider interaction ProviderDispatchEnvelope"
     );
     let messages = store_rows(&home, &project_id, "team_messages.jsonl");
     let pending = messages
@@ -1290,8 +1294,8 @@ fn kimi_question_waits_for_lead_resolution_and_resumes_same_turn() {
         serde_json::from_str(pending["body"].as_str().expect("canonical request body"))
             .expect("request body JSON");
     assert_eq!(request_body["type"].as_str(), Some("question"));
-    assert_eq!(pending["from_member_id"], request_body["member"]);
-    assert_eq!(pending["to_member_ids"][0].as_str(), Some("host"));
+    assert_eq!(pending["sender_runtime_id"], request_body["member"]);
+    assert_eq!(pending["recipient_runtime_ids"][0].as_str(), Some("host"));
     assert_eq!(
         pending["deliveries"][0]["policy"].as_str(),
         Some("manual_ack")
@@ -1406,7 +1410,7 @@ fn kimi_question_waits_for_lead_resolution_and_resumes_same_turn() {
                     .is_some_and(|value| value.contains("response received"))
                 && action["provider_call_id"].is_null()
         }),
-        "TeamMessage response is authoritative; MemberAction records only the coordination projection: {actions:?}"
+        "ProviderDispatchEnvelope response is authoritative; MemberAction records only the coordination projection: {actions:?}"
     );
 }
 
@@ -1481,7 +1485,7 @@ fn kimi_full_access_tool_permissions_acknowledge_without_pending_interactions() 
     assert_eq!(
         controls.len(),
         1,
-        "repeated safe approvals converge to one bounded receipt per MemberRun: {actions:?}"
+        "repeated safe approvals converge to one bounded receipt per ProviderRuntimeProjection: {actions:?}"
     );
     assert!(controls.iter().all(|action| {
         action["status"].as_str() == Some("succeeded")
@@ -1620,7 +1624,7 @@ fn assert_kimi_permission_request_fails_closed(
         }
         assert!(
             std::time::Instant::now() < waiting_deadline,
-            "provider request TeamMessage must project MemberRun waiting; latest={members:?}"
+            "provider request ProviderDispatchEnvelope must project ProviderRuntimeProjection waiting; latest={members:?}"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
@@ -1774,7 +1778,7 @@ fn blocked_provider_outcome_leaves_member_idle_and_supervisor_can_reattach() {
     );
     assert!(
         reattach.status.success(),
-        "service recovery should reattach the unclosed MemberRun: {reattach:?}"
+        "service recovery should reattach the unclosed ProviderRuntimeProjection: {reattach:?}"
     );
     assert_eq!(
         store_rows(&home, &project_id, "team_runs.jsonl")[0]["status"].as_str(),

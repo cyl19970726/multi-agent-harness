@@ -124,8 +124,8 @@ fn seed_team_run(serve: &ServeHandle, team_id: &str) -> (String, String) {
     let (status, sent) = serve.post_json(
         &format!("/v1/team-runs/{team_run_id}/messages"),
         &serde_json::json!({
-            "from_member_id": "host",
-            "to_member_ids": [member_id],
+            "sender_runtime_id": "host",
+            "recipient_runtime_ids": [member_id],
             "kind": "message",
             "body": "checking in",
         }),

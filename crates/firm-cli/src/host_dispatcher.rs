@@ -25,7 +25,7 @@ pub fn build_headless_host_prompt(
         "You are the headless triage Host for TeamRun {team_run_id}.\n\
          Objective: {objective}\n\n\
          This is a READ-ONLY TRIAGE turn. Inspect the durable facts below, run \
-         read-only verification, reply or request clarification through Message \
+         read-only verification, reply or request clarification through RegistryMessage \
          commands when useful, and leave terminal decisions for the interactive \
          Host. You MUST NOT accept, merge, cancel, close, reassign, or otherwise \
          mutate Work lifecycle state.\n\nPending Host attentions:\n"

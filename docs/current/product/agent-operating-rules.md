@@ -264,7 +264,7 @@ the registered Git repository/directory where providers execute and discover
 instructions, Skills, plugins, and MCP configuration. Selecting `--project`
 never switches the coordination store.
 
-Agent Team provider cwd resolves as member `worktree_ref` > TeamRun
+Agent Team provider cwd resolves as member `provider_cwd_hint` > TeamRun
 `execution_root` > Project Binding `project_root`, never an Execution Space,
 Company Store, or compatibility store root. Overrides must be the binding root
 or a Git worktree sharing its Git common directory; external Codex worktrees

@@ -169,7 +169,7 @@ session continue.
   round.
 - Accepting a prerequisite Work may make another Work ready. The Host may
   assign it, or an eligible Member may atomically claim it.
-- `origin_wave_id` is optional navigation metadata.
+- `source_plan_ref` is optional navigation metadata.
 - Host and members can query inbox/status projections without reading provider
   transcripts.
 - One machine NodeDaemon generation owns every local TeamRun. Each Team

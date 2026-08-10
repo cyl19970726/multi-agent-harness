@@ -1,5 +1,5 @@
 import type { StatusTone } from "@/components/workbench/atoms";
-import type { MemberRun, TeamMessage } from "../../../types";
+import type { MemberRun, ProviderDispatchEnvelope } from "../../../types";
 
 /**
  * Presentation helpers shared by the Team War Room composition and its
@@ -142,24 +142,24 @@ export function attemptNumber(attempts: Array<{ id: string }>, id: string): numb
   return Math.max(1, attempts.findIndex((attempt) => attempt.id === id) + 1);
 }
 
-export function teamMessageActorLabel(message: TeamMessage, members: Map<string, MemberRun>): string {
+export function teamMessageActorLabel(message: ProviderDispatchEnvelope, members: Map<string, MemberRun>): string {
   if (message.sender?.display_name) return message.sender.display_name;
   if (message.sender?.kind === "operator") return "Operator";
   if (message.sender?.kind === "service") return `Service · ${message.sender.id}`;
   if (message.sender?.kind === "agent_member") return `Agent · ${message.sender.id}`;
-  return memberLabel(members, message.from_member_id ?? message.sender?.id ?? "host");
+  return memberLabel(members, message.sender_runtime_id ?? message.sender?.id ?? "host");
 }
 
-export function messageSenderParticipantId(message: TeamMessage): string | undefined {
+export function messageSenderParticipantId(message: ProviderDispatchEnvelope): string | undefined {
   if (message.sender?.kind === "operator" || message.sender?.kind === "service") return undefined;
   if (message.sender?.kind === "host") return "host";
-  return message.from_member_id;
+  return message.sender_runtime_id;
 }
 
-export function hostDelivery(message: TeamMessage) {
+export function hostDelivery(message: ProviderDispatchEnvelope) {
   return message.deliveries?.find((delivery) => delivery.member_id === "host");
 }
 
-export function hostDeliveryStatus(message: TeamMessage): string | undefined {
+export function hostDeliveryStatus(message: ProviderDispatchEnvelope): string | undefined {
   return hostDelivery(message)?.status;
 }

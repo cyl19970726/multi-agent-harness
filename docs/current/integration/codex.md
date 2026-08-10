@@ -227,7 +227,7 @@ implicit MemberRun or claim lifecycle control it does not possess.
 Provider cwd resolves in this order:
 
 ```text
-MemberRun.worktree_ref
+MemberRun.provider_cwd_hint
   > AgentTeamRun.execution_root
   > registered project_root
 ```

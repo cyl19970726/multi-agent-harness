@@ -149,18 +149,18 @@ async function main() {
     "Member Focus target is running and linked to provider-native runtime context",
   );
   check(
-    currentMember?.worktree_ref === currentMember?.workspace_snapshot?.cwd
-      && !currentMember.worktree_ref.startsWith(currentRun.execution_root)
-      && currentMember.workspace_snapshot.git_head
-      && currentMember.workspace_snapshot.git_branch
-      && currentMember.workspace_snapshot.instruction_roots.length > 0
-      && currentMember.workspace_snapshot.skill_roots.length > 0,
+    currentMember?.provider_cwd_hint === currentMember?.provider_environment_observation?.cwd
+      && !currentMember.provider_cwd_hint.startsWith(currentRun.execution_root)
+      && currentMember.provider_environment_observation.git_head
+      && currentMember.provider_environment_observation.git_branch
+      && currentMember.provider_environment_observation.instruction_roots.length > 0
+      && currentMember.provider_environment_observation.skill_roots.length > 0,
     "Member fixture distinguishes an out-of-project worktree override from TeamRun execution root and snapshots actual cwd plus Git/path-root context",
   );
   check(
-    members.every((item) => item.workspace_snapshot
-      && Array.isArray(item.workspace_snapshot.instruction_roots)
-      && Array.isArray(item.workspace_snapshot.skill_roots)),
+    members.every((item) => item.provider_environment_observation
+      && Array.isArray(item.provider_environment_observation.instruction_roots)
+      && Array.isArray(item.provider_environment_observation.skill_roots)),
     "Every current MemberRun fixture snapshots non-secret discovered instruction and skill root paths",
   );
   check(members.some((item) => item.status === "blocked") && members.some((item) => item.status === "reviewing"), "Member states include blocked and reviewing pressure");
@@ -224,7 +224,7 @@ async function main() {
   check(!actionsSource.includes(duplicateWaveField) && !typesSource.includes(duplicateWaveField), "AgentTeamRun API and type contracts do not carry a duplicate Wave index");
   check(
     typesSource.includes("execution_root?: string | null")
-      && typesSource.includes("workspace_snapshot?: MemberWorkspaceSnapshot | null")
+      && typesSource.includes("provider_environment_observation?: MemberWorkspaceSnapshot | null")
       && typesSource.includes("instruction_roots: string[]")
       && typesSource.includes("skill_roots: string[]"),
     "Dashboard types mirror the backward-compatible TeamRun and MemberRun workspace wire contract",

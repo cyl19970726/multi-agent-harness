@@ -121,7 +121,7 @@ switch the active Execution Space or Company Store.
 ### Provider cwd precedence
 
 ```text
-MemberRun.worktree_ref
+MemberRun.provider_cwd_hint
   > AgentTeamRun.execution_root
   > ProjectBinding.project_root
 ```

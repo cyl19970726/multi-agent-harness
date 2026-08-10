@@ -4,7 +4,7 @@
 //! A persistent Claude worker must run from the SELECTED project's `project_root`
 //! (where its `CLAUDE.md` / `.claude/` live and Claude Code keys per-project
 //! memory), NOT the long-running harness process cwd — a `serve` that switched
-//! projects never `cd`s. When the member is pinned to a `worktree_ref`, that pin
+//! projects never `cd`s. When the member is pinned to a `provider_cwd_hint`, that pin
 //! still wins.
 //!
 //! These tests run the real `harness` binary FROM A CWD DIFFERENT FROM THE
@@ -78,7 +78,7 @@ fn claude_delivery_with_worktree_keeps_the_pinned_workspace() {
     assert_eq!(
         recorded,
         canon(&pinned),
-        "member.worktree_ref must pin the workspace and win over project_root"
+        "member.provider_cwd_hint must pin the workspace and win over project_root"
     );
     assert_ne!(
         recorded,

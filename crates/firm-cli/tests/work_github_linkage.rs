@@ -145,7 +145,7 @@ fn host_firm_json(home: &TempHome, project_id: &str, args: &[&str]) -> serde_jso
     })
 }
 
-/// Member-side harness command with the bound MemberRun/TeamRun environment.
+/// Member-side harness command with the bound ProviderRuntimeProjection/TeamRun environment.
 fn member_firm_json(
     home: &TempHome,
     project_id: &str,

@@ -201,7 +201,7 @@ Member Continuation Model and
 Provider cwd resolves as:
 
 ```text
-MemberRun.worktree_ref > AgentTeamRun.execution_root > project_root
+MemberRun.provider_cwd_hint > AgentTeamRun.execution_root > project_root
 ```
 
 It never resolves to `store_root`. Changing cwd changes which project

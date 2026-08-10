@@ -19,9 +19,8 @@ use harness_core::{
     ExecutionSpace, GitHubLink, GitHubLinkKind, HostAttention, HostAttentionStatus,
     HostBindingLease, HostBindingLeaseOwnerKind, HostControlMode, HostDispatchConfig, LaunchMcp,
     LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus, MemberCoordinationStatus,
-    MemberExecutionDriver, MemberRun, MemberRunStatus, MemberWorkspaceSnapshot, Message,
-    MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Mission,
-    MissionLogEntry, MissionLogEntryKind, MissionStatus, NativeSessionAvailability,
+    MemberExecutionDriver, MemberRunStatus, MemberWorkspaceSnapshot, MessageTerminalSource,
+    Mission, MissionLogEntry, MissionLogEntryKind, MissionStatus, NativeSessionAvailability,
     NativeSessionRef, NodeDaemonLeaseStatus, NodeProjectRegistration,
     NodeProjectRegistrationStatus, OrdinaryMessageBoundary, PendingInteraction,
     PendingInteractionKind, PendingInteractionRoute, PendingInteractionStatus, ProjectContext,
@@ -30,21 +29,23 @@ use harness_core::{
     ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
     ProviderCompatibilityAdmissionPolicy, ProviderCompatibilityBlockBoundary,
     ProviderCompatibilityBlockCause, ProviderCompatibilityBlockSource, ProviderCompatibilityStatus,
-    ProviderControlValue, ProviderDispatchEvent, ProviderEventFidelity, ProviderExecutionControls,
+    ProviderControlValue, ProviderDispatchAttempt, ProviderDispatchEnvelope, ProviderDispatchEvent,
+    ProviderDispatchIntent, ProviderEventFidelity, ProviderExecutionControls,
     ProviderExecutionStatus, ProviderFeatureMode, ProviderIntegrationProfile,
     ProviderInteractionMessageOption, ProviderInteractionMode, ProviderInteractionRequestBody,
     ProviderInteractionResponseBody, ProviderInteractionType, ProviderLaunchConfig,
     ProviderLaunchProfile, ProviderLaunchStatus, ProviderProcess, ProviderProcessHealth,
-    ProviderProcessStatus, ProviderRuntimeContextFact, Review, SenderKind, TeamActorKind,
-    TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
-    TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind,
-    TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
-    TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Validate, Wave, Work,
+    ProviderProcessStatus, ProviderResponseIntent, ProviderRuntimeContextFact,
+    ProviderRuntimeProjection, ProviderWorkDispatch, ProviderWorkDispatchStatus,
+    RegistryDeliveryAttempt, RegistryDeliveryStatus, RegistryMessage, RegistryMessageIntent,
+    Review, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus,
+    TeamMemberCloseRequest, TeamMemberCloseStatus, TeamRecipientKind, TeamRecipientRef,
+    TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Validate, Wave, Work,
     WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkCondition, WorkDelegation,
-    WorkDelegationState, WorkDelivery, WorkDeliveryStatus, WorkPhase, WorkPriority, WorkRef,
-    WorkResolution, WorkflowArtifactFile, WorkflowArtifactManifest, WorkflowArtifactManifestStatus,
-    WorkflowPatch, WorkflowPatchStatus, WorkflowRun, WorkflowRunStatus, WorkflowStep,
-    WorkflowStepStatus, WorkflowTerminalReason, EXECUTION_MODE_EXTERNAL_INTERACTIVE,
+    WorkDelegationState, WorkPhase, WorkPriority, WorkRef, WorkResolution, WorkflowArtifactFile,
+    WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus,
+    WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
+    EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
     canonical_surface, HarnessStore, HostAttentionClaimResult, MessageDeliveryClaimResult,
@@ -104,7 +105,7 @@ impl CliError {
 /// injected, failed, expired, and already-acknowledged deliveries. A message is
 /// counted once when at least one recipient has a `manual_ack` delivery that has
 /// reached `delivered`.
-pub(crate) fn has_actionable_delivered_manual_ack(message: &TeamMessage) -> bool {
+pub(crate) fn has_actionable_delivered_manual_ack(message: &ProviderDispatchEnvelope) -> bool {
     message.deliveries.iter().any(|delivery| {
         delivery.policy == TeamDeliveryPolicy::ManualAck
             && delivery.status == TeamDeliveryStatus::Delivered
@@ -3034,7 +3035,7 @@ fn company_org_transition_actor_command(store: &HarnessStore, args: &[String]) -
         }
     } else if value(args, "--availability").is_some() {
         return Err(CliError::Usage(
-            "Agent Membership has no independent availability; inspect the canonical AgentMember/MemberRun projection"
+            "Agent Membership has no independent availability; inspect the canonical AgentMember/ProviderRuntimeProjection projection"
                 .to_string(),
         ));
     }
@@ -8638,7 +8639,7 @@ fn latest_wave(store: &HarnessStore, id: &str) -> CliResult<Wave> {
 // cannot diverge (same pattern as the WP-ii entity helpers). The `start` arm
 // is the v0 orchestrator (see the "team-run start orchestration" block below);
 // create/send only journal planning rows — a handoff/blocker message sent via
-// `send` is only folded into the event log, the MemberRun row is untouched.
+// `send` is only folded into the event log, the ProviderRuntimeProjection row is untouched.
 // ---------------------------------------------------------------------------
 
 /// Next event seq for a team run: max existing seq + 1 (1 when the run has no
@@ -8725,7 +8726,7 @@ struct TeamMemberSpec {
     model: Option<String>,
     effort: Option<String>,
     service_tier: Option<String>,
-    worktree_ref: Option<String>,
+    provider_cwd_hint: Option<String>,
     owned_paths: Vec<String>,
     resume_native_session_id: Option<String>,
     /// This member's own brief. `objective` is the run-level intent; when every
@@ -8772,7 +8773,7 @@ fn team_member_specs_from_definition(
                 model: member.model_preference.clone(),
                 effort: None,
                 service_tier: None,
-                worktree_ref: None,
+                provider_cwd_hint: None,
                 owned_paths: Vec::new(),
                 resume_native_session_id: None,
                 initial_work: None,
@@ -9164,12 +9165,12 @@ fn apply_provider_version(
 /// its version-specific compatibility snapshot without touching its native
 /// session. The caller decides whether and how to journal the refreshed row.
 fn refreshed_team_member_provider_profile(
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
 ) -> CliResult<(ProviderIntegrationProfile, Option<String>)> {
     // Base the refresh on the CURRENT adapter registry, not the stored
     // profile. The stored profile's reviewed_provider_versions is frozen at
     // member-creation time, so a registry update could never unblock an
-    // existing durable MemberRun. The gate persists the refreshed profile
+    // existing durable ProviderRuntimeProjection. The gate persists the refreshed profile
     // back, so existing members can self-heal on the next boundary.
     let stored_mode = member
         .provider_profile
@@ -9186,7 +9187,7 @@ fn refreshed_team_member_provider_profile(
 /// Stage a refreshed compatibility snapshot without creating an in-memory
 /// revision that was never persisted. Callers CAS only when this returns true.
 fn apply_refreshed_provider_profile(
-    member: &mut MemberRun,
+    member: &mut ProviderRuntimeProjection,
     profile: ProviderIntegrationProfile,
 ) -> bool {
     if member.provider_profile.as_ref() == Some(&profile) {
@@ -9219,7 +9220,7 @@ const PROVIDER_COMPATIBILITY_BLOCK_SCHEMA: &str = "provider_compatibility_block/
 
 impl ProviderCompatibilityBlockProvenance {
     fn for_refusal(
-        member: &MemberRun,
+        member: &ProviderRuntimeProjection,
         profile: &ProviderIntegrationProfile,
         resolution: &ProviderCompatibilityResolution,
         boundary: &str,
@@ -9335,7 +9336,7 @@ fn resolve_provider_compatibility(
 }
 
 fn provider_compatibility_block_reason(
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     profile: &ProviderIntegrationProfile,
     resolution: &ProviderCompatibilityResolution,
     boundary: &str,
@@ -9352,7 +9353,7 @@ fn provider_compatibility_block_reason(
 }
 
 fn provider_compatibility_block_cause(
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     profile: &ProviderIntegrationProfile,
     resolution: &ProviderCompatibilityResolution,
     boundary: ProviderCompatibilityBlockBoundary,
@@ -9388,7 +9389,7 @@ fn provider_compatibility_block_cause(
 
 fn compatibility_recovery_status(
     store: &HarnessStore,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
 ) -> CliResult<MemberRunStatus> {
     if member.native_session.is_some() {
         return Ok(MemberRunStatus::Disconnected);
@@ -9399,7 +9400,7 @@ fn compatibility_recovery_status(
                 || work.owner_member_id.as_deref() == Some(member.agent_member_id.as_str()))
     });
     Ok(
-        if member.workspace_snapshot.is_some() || has_assigned_work {
+        if member.provider_environment_observation.is_some() || has_assigned_work {
             MemberRunStatus::Queued
         } else {
             MemberRunStatus::Idle
@@ -9409,7 +9410,7 @@ fn compatibility_recovery_status(
 
 #[cfg(test)]
 fn compatibility_block_matches_current_tuple(
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     profile: &ProviderIntegrationProfile,
 ) -> bool {
     member.status == MemberRunStatus::Blocked
@@ -9436,7 +9437,7 @@ fn compatibility_block_matches_current_tuple(
 /// durable blocked outcome instead of entering the transport recovery loop.
 fn provider_compatibility_start_gate(
     ledger: &TeamRunLedger,
-    member: &mut MemberRun,
+    member: &mut ProviderRuntimeProjection,
     boundary: ProviderCompatibilityBlockBoundary,
 ) -> CliResult<Option<MemberOutcome>> {
     if member.is_external_interactive() {
@@ -9517,7 +9518,7 @@ fn provider_compatibility_start_gate(
 }
 
 fn native_session_ref(
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     native_session_id: impl Into<String>,
     native_locator_kind: &str,
 ) -> NativeSessionRef {
@@ -10370,7 +10371,7 @@ fn reconcile_recorded_capacity(
 /// recovered account is not gated by yesterday's 403.
 fn capacity_from_recorded_provider_errors(
     ledger: &TeamRunLedger,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     execution_mode: &str,
     now_unix_ms: u64,
     ttl_ms: u64,
@@ -10439,7 +10440,7 @@ fn parse_unix_ms_timestamp(raw: &str) -> Option<u64> {
 
 /// Clear only the Blocked projection that this capacity gate itself authored.
 /// Other Blocked reasons deliberately survive a successful capacity probe.
-fn recover_capacity_origin_block(member: &mut MemberRun) {
+fn recover_capacity_origin_block(member: &mut ProviderRuntimeProjection) {
     let was_capacity_blocked = member.status == MemberRunStatus::Blocked
         && member
             .provider_capacity
@@ -10456,7 +10457,7 @@ fn recover_capacity_origin_block(member: &mut MemberRun) {
 }
 
 fn apply_nonblocking_capacity_observation(
-    member: &mut MemberRun,
+    member: &mut ProviderRuntimeProjection,
     snapshot: ProviderCapacitySnapshot,
 ) {
     // Recovery provenance lives on the previous observation. Clear the
@@ -10469,7 +10470,7 @@ fn apply_nonblocking_capacity_observation(
 
 fn reconcile_pending_close_during_capacity_recovery(
     ledger: &TeamRunLedger,
-    member: &mut MemberRun,
+    member: &mut ProviderRuntimeProjection,
 ) -> CliResult<Option<MemberOutcome>> {
     if let Some(close) = pending_member_close(&ledger.store, &member.id)? {
         for _ in 0..PROVIDER_MEMBER_CAS_RETRIES {
@@ -10526,7 +10527,7 @@ fn reconcile_pending_close_during_capacity_recovery(
 /// its queued Assignment untouched and re-deliverable.
 fn provider_capacity_start_gate(
     ledger: &TeamRunLedger,
-    member: &mut MemberRun,
+    member: &mut ProviderRuntimeProjection,
     cwd: &Path,
 ) -> CliResult<Option<MemberOutcome>> {
     provider_capacity_start_gate_with_hook(ledger, member, cwd, |_, _| Ok(()))
@@ -10534,9 +10535,9 @@ fn provider_capacity_start_gate(
 
 fn provider_capacity_start_gate_with_hook(
     ledger: &TeamRunLedger,
-    member: &mut MemberRun,
+    member: &mut ProviderRuntimeProjection,
     cwd: &Path,
-    before_capacity_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
+    before_capacity_cas: impl FnMut(usize, &ProviderRuntimeProjection) -> CliResult<()>,
 ) -> CliResult<Option<MemberOutcome>> {
     if !capacity_preflight_enabled() {
         return Ok(None);
@@ -10596,7 +10597,7 @@ fn provider_capacity_start_gate_with_hook(
     member.provider_capacity = Some(snapshot.clone());
     member.last_event_at = Some(now_string());
     // Blocked: record provider_unavailable and stop. Nothing above this point
-    // claimed, delivered, or consumed a TeamMessage.
+    // claimed, delivered, or consumed a ProviderDispatchEnvelope.
     //
     // Every write below is BEST EFFORT and this function still returns the
     // blocking outcome. A `?` here would turn a journal failure into `Err`,
@@ -10687,10 +10688,10 @@ fn provider_capacity_start_gate_with_hook(
 /// re-read after a successful CAS so Close wins the latch-before-CAS window.
 fn persist_capacity_recovery_with_hook(
     ledger: &TeamRunLedger,
-    anchor: &MemberRun,
-    member: &mut MemberRun,
+    anchor: &ProviderRuntimeProjection,
+    member: &mut ProviderRuntimeProjection,
     snapshot: ProviderCapacitySnapshot,
-    before_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
+    before_cas: impl FnMut(usize, &ProviderRuntimeProjection) -> CliResult<()>,
 ) -> CliResult<Option<MemberOutcome>> {
     persist_capacity_recovery_with_hooks(
         ledger,
@@ -10704,11 +10705,11 @@ fn persist_capacity_recovery_with_hook(
 
 fn persist_capacity_recovery_with_hooks(
     ledger: &TeamRunLedger,
-    anchor: &MemberRun,
-    member: &mut MemberRun,
+    anchor: &ProviderRuntimeProjection,
+    member: &mut ProviderRuntimeProjection,
     snapshot: ProviderCapacitySnapshot,
-    mut before_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
-    mut after_successful_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
+    mut before_cas: impl FnMut(usize, &ProviderRuntimeProjection) -> CliResult<()>,
+    mut after_successful_cas: impl FnMut(usize, &ProviderRuntimeProjection) -> CliResult<()>,
 ) -> CliResult<Option<MemberOutcome>> {
     let mut expected = anchor.clone();
     for attempt in 0..PROVIDER_MEMBER_CAS_RETRIES {
@@ -10774,10 +10775,10 @@ fn persist_capacity_recovery_with_hooks(
 /// the same active runtime generation may be rebased, and retries are bounded.
 fn persist_capacity_block_with_hook(
     ledger: &TeamRunLedger,
-    anchor: &MemberRun,
-    member: &mut MemberRun,
+    anchor: &ProviderRuntimeProjection,
+    member: &mut ProviderRuntimeProjection,
     snapshot: ProviderCapacitySnapshot,
-    mut before_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
+    mut before_cas: impl FnMut(usize, &ProviderRuntimeProjection) -> CliResult<()>,
 ) -> CliResult<Option<MemberOutcome>> {
     let mut expected = anchor.clone();
     for attempt in 0..PROVIDER_MEMBER_CAS_RETRIES {
@@ -10785,7 +10786,7 @@ fn persist_capacity_block_with_hook(
         before_cas(attempt, &expected)?;
         match ledger.save_member_run(&expected, member) {
             Ok(()) => {
-                // A Close latch does not mutate MemberRun until its control
+                // A Close latch does not mutate ProviderRuntimeProjection until its control
                 // path marks coordination Closed, so it can land immediately
                 // before this CAS without causing a conflict. Mirror the
                 // provider-start claim fence: re-read the latch after the
@@ -11096,7 +11097,7 @@ fn parse_team_member_spec(raw: &str) -> CliResult<TeamMemberSpec> {
             .filter(|model| !model.is_empty()),
         effort: None,
         service_tier: None,
-        worktree_ref: None,
+        provider_cwd_hint: None,
         owned_paths,
         resume_native_session_id: None,
         initial_work: inline_work,
@@ -11201,7 +11202,7 @@ fn default_execution_root(project_context: Option<&ProjectContext>) -> String {
 /// render it.
 struct CreatedTeamRun {
     team_run: AgentTeamRun,
-    member_runs: Vec<MemberRun>,
+    member_runs: Vec<ProviderRuntimeProjection>,
     works: Vec<Work>,
 }
 
@@ -11209,7 +11210,7 @@ fn build_member_run_for_team(
     project_context: Option<&ProjectContext>,
     team_run_id: &str,
     member: &TeamMemberSpec,
-) -> CliResult<MemberRun> {
+) -> CliResult<ProviderRuntimeProjection> {
     let profile =
         team_member_provider_profile_for_mode(&member.provider, member.execution_mode.as_deref());
     let native_session =
@@ -11237,7 +11238,7 @@ fn build_member_run_for_team(
                 last_verified_at: None,
                 parent_native_session_id: Some(session_id.clone()),
             });
-    Ok(MemberRun {
+    Ok(ProviderRuntimeProjection {
         id: generated_id("member-run"),
         team_run_id: team_run_id.to_string(),
         slot_id: None,
@@ -11260,12 +11261,14 @@ fn build_member_run_for_team(
         runtime_generation: 1,
         status: MemberRunStatus::Idle,
         native_session,
-        worktree_ref: member
-            .worktree_ref
+        provider_cwd_hint: member
+            .provider_cwd_hint
             .as_deref()
-            .map(|value| validate_workspace_override(project_context, value, "member worktree_ref"))
+            .map(|value| {
+                validate_workspace_override(project_context, value, "member provider_cwd_hint")
+            })
             .transpose()?,
-        workspace_snapshot: None,
+        provider_environment_observation: None,
         owned_paths: member.owned_paths.clone(),
         started_at: now_string(),
         last_event_at: None,
@@ -11278,7 +11281,7 @@ fn build_member_run_for_team(
 fn materialize_canonical_member_run(
     store: &HarnessStore,
     execution_space_id: &str,
-    runtime: &MemberRun,
+    runtime: &ProviderRuntimeProjection,
 ) -> CliResult<()> {
     let native_session = runtime.native_session.as_ref().map(|session| {
         harness_core::agentfirm_api::NativeSessionRef {
@@ -11376,7 +11379,7 @@ fn created_team_run_json(created: &CreatedTeamRun) -> serde_json::Value {
 }
 
 /// Persist a new team run: the AgentTeamRun (status planning), one idle
-/// MemberRun per member, an optional initial Work for each explicitly supplied
+/// ProviderRuntimeProjection per member, an optional initial Work for each explicitly supplied
 /// member brief, and a folded TeamRunEvent per created entity. A run-level
 /// objective is context, never an implicit duplicate assignment to every
 /// member. Shared by the `team-run create` CLI
@@ -11664,8 +11667,12 @@ fn create_team_run(
                 member.name
             )));
         }
-        if let Some(worktree_ref) = member.worktree_ref.as_deref() {
-            validate_workspace_override(project_context, worktree_ref, "member worktree_ref")?;
+        if let Some(provider_cwd_hint) = member.provider_cwd_hint.as_deref() {
+            validate_workspace_override(
+                project_context,
+                provider_cwd_hint,
+                "member provider_cwd_hint",
+            )?;
         }
         validate_team_member_identity(store, member)?;
         validate_team_member_execution_mode(member)?;
@@ -11756,7 +11763,7 @@ fn create_team_run(
 
     let mut works = Vec::new();
     // `member_runs` is built from `members` in order above, so zip pairs each
-    // MemberRun with the spec that produced it and its optional initial Work.
+    // ProviderRuntimeProjection with the spec that produced it and its optional initial Work.
     for (member, member_run) in members.iter().zip(&member_runs) {
         store.materialize_initial_member_run(member_run)?;
         materialize_canonical_member_run(store, execution_space_id, member_run)?;
@@ -11846,8 +11853,8 @@ fn add_team_run_member(
     team_run_id: &str,
     member: &TeamMemberSpec,
     initial_work: Option<&str>,
-    origin_wave_id: Option<String>,
-) -> CliResult<(AgentTeamRun, MemberRun, Option<Work>)> {
+    source_plan_ref: Option<String>,
+) -> CliResult<(AgentTeamRun, ProviderRuntimeProjection, Option<Work>)> {
     validate_team_member_identity(store, member)?;
     validate_team_member_execution_mode(member)?;
     if initial_work.is_some_and(|value| value.trim().is_empty()) {
@@ -11904,7 +11911,7 @@ fn add_team_run_member(
                         created_by_member_id: None,
                         parent_work_id: None,
                         title: format!("{}: {}", member_run.name, member_run.role),
-                        context_markdown: origin_wave_id
+                        context_markdown: source_plan_ref
                             .as_deref()
                             .map(|wave| format!("Origin Wave: `{wave}`"))
                             .unwrap_or_default(),
@@ -11949,7 +11956,7 @@ fn rename_team_run_member(
     team_run_id: &str,
     member_run_id: &str,
     name: &str,
-) -> CliResult<MemberRun> {
+) -> CliResult<ProviderRuntimeProjection> {
     if name.trim().is_empty() {
         return Err(CliError::Usage(
             "member display name must not be empty".to_string(),
@@ -12004,7 +12011,7 @@ fn deactivate_team_run_member(
     team_run_id: &str,
     member_run_id: &str,
     reason: &str,
-) -> CliResult<MemberRun> {
+) -> CliResult<ProviderRuntimeProjection> {
     if reason.trim().is_empty() {
         return Err(CliError::Usage(
             "member deactivation reason must not be empty".to_string(),
@@ -12072,7 +12079,7 @@ fn compatibility_team_actor(id: &str, authn_source: &str) -> TeamActorRef {
         } else if id.starts_with("agent-member:") {
             TeamActorKind::AgentMember
         } else {
-            TeamActorKind::MemberRun
+            TeamActorKind::ProviderRuntimeProjection
         },
         id: id.to_string(),
         display_name: None,
@@ -12087,14 +12094,14 @@ fn compatibility_team_recipient(id: &str) -> TeamRecipientRef {
         } else if id.starts_with("agent-member:") {
             TeamRecipientKind::AgentMember
         } else {
-            TeamRecipientKind::MemberRun
+            TeamRecipientKind::ProviderRuntimeProjection
         },
         id: id.to_string(),
     }
 }
 
-fn queued_team_delivery(member_id: &str) -> TeamMessageDelivery {
-    TeamMessageDelivery {
+fn queued_team_delivery(member_id: &str) -> ProviderDispatchAttempt {
+    ProviderDispatchAttempt {
         member_id: member_id.to_string(),
         policy: TeamDeliveryPolicy::Queue,
         status: TeamDeliveryStatus::Queued,
@@ -12121,13 +12128,15 @@ fn parse_team_actor_kind(value: &str) -> CliResult<TeamActorKind> {
 fn team_event_source_for_actor(actor: &TeamActorRef) -> TeamRunEventSourceKind {
     match actor.kind {
         TeamActorKind::Host => TeamRunEventSourceKind::Host,
-        TeamActorKind::MemberRun | TeamActorKind::AgentMember => TeamRunEventSourceKind::Member,
+        TeamActorKind::ProviderRuntimeProjection | TeamActorKind::AgentMember => {
+            TeamRunEventSourceKind::Member
+        }
         TeamActorKind::Operator => TeamRunEventSourceKind::Operator,
         TeamActorKind::Service => TeamRunEventSourceKind::Service,
     }
 }
 
-fn ensure_member_coordination_open(member: &MemberRun) -> CliResult<()> {
+fn ensure_member_coordination_open(member: &ProviderRuntimeProjection) -> CliResult<()> {
     if !member.coordination_is_active()
         || matches!(
             member.status,
@@ -12153,38 +12162,38 @@ enum TeamMessageDeliveryMode {
 /// Route a message inside a team run and fold it into the event log. Shared
 /// by the `team-run send` CLI arm and POST /v1/team-runs/{id}/messages. v0
 /// does not drive the member state machine: a handoff/blocker from a member is
-/// only recorded as an event — the member's MemberRun row is left untouched.
+/// only recorded as an event — the member's ProviderRuntimeProjection row is left untouched.
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 fn send_team_message(
     store: &HarnessStore,
     team_run_id: &str,
-    from_member_id: &str,
-    to_member_ids: Vec<String>,
-    kind: TeamMessageKind,
+    sender_runtime_id: &str,
+    recipient_runtime_ids: Vec<String>,
+    kind: ProviderDispatchIntent,
     body: &str,
     correlation_id: Option<String>,
     causation_id: Option<String>,
-    origin_wave_id: Option<String>,
-    response_intent: Option<TeamMessageResponseIntent>,
-) -> CliResult<TeamMessage> {
+    source_plan_ref: Option<String>,
+    response_intent: Option<ProviderResponseIntent>,
+) -> CliResult<ProviderDispatchEnvelope> {
     send_team_message_as(
         store,
         team_run_id,
         compatibility_team_actor(
-            from_member_id,
-            if from_member_id == "host" {
+            sender_runtime_id,
+            if sender_runtime_id == "host" {
                 "host_cli"
             } else {
                 "member_runtime"
             },
         ),
-        to_member_ids,
+        recipient_runtime_ids,
         kind,
         body,
         correlation_id,
         causation_id,
-        origin_wave_id,
+        source_plan_ref,
         response_intent,
     )
 }
@@ -12195,25 +12204,25 @@ fn send_team_message_as(
     store: &HarnessStore,
     team_run_id: &str,
     sender: TeamActorRef,
-    to_member_ids: Vec<String>,
-    kind: TeamMessageKind,
+    recipient_runtime_ids: Vec<String>,
+    kind: ProviderDispatchIntent,
     body: &str,
     correlation_id: Option<String>,
     causation_id: Option<String>,
-    origin_wave_id: Option<String>,
-    response_intent: Option<TeamMessageResponseIntent>,
-) -> CliResult<TeamMessage> {
+    source_plan_ref: Option<String>,
+    response_intent: Option<ProviderResponseIntent>,
+) -> CliResult<ProviderDispatchEnvelope> {
     send_team_message_as_work(
         store,
         team_run_id,
         sender,
-        to_member_ids,
+        recipient_runtime_ids,
         kind,
         body,
         None,
         correlation_id,
         causation_id,
-        origin_wave_id,
+        source_plan_ref,
         response_intent,
     )
 }
@@ -12223,26 +12232,26 @@ fn send_team_message_as_work(
     store: &HarnessStore,
     team_run_id: &str,
     sender: TeamActorRef,
-    to_member_ids: Vec<String>,
-    kind: TeamMessageKind,
+    recipient_runtime_ids: Vec<String>,
+    kind: ProviderDispatchIntent,
     body: &str,
     work_id: Option<String>,
     correlation_id: Option<String>,
     causation_id: Option<String>,
-    origin_wave_id: Option<String>,
-    response_intent: Option<TeamMessageResponseIntent>,
-) -> CliResult<TeamMessage> {
+    source_plan_ref: Option<String>,
+    response_intent: Option<ProviderResponseIntent>,
+) -> CliResult<ProviderDispatchEnvelope> {
     let message = prepare_team_message_as(
         store,
         team_run_id,
         &sender,
-        to_member_ids,
+        recipient_runtime_ids,
         kind,
         body,
         work_id,
         correlation_id,
         causation_id,
-        origin_wave_id,
+        source_plan_ref,
         TeamMessageDeliveryMode::Routed,
         response_intent,
     )?;
@@ -12254,16 +12263,16 @@ fn prepare_team_message_as(
     store: &HarnessStore,
     team_run_id: &str,
     sender: &TeamActorRef,
-    to_member_ids: Vec<String>,
-    kind: TeamMessageKind,
+    recipient_runtime_ids: Vec<String>,
+    kind: ProviderDispatchIntent,
     body: &str,
     work_id: Option<String>,
     correlation_id: Option<String>,
     causation_id: Option<String>,
-    origin_wave_id: Option<String>,
+    source_plan_ref: Option<String>,
     delivery_mode: TeamMessageDeliveryMode,
-    response_intent: Option<TeamMessageResponseIntent>,
-) -> CliResult<TeamMessage> {
+    response_intent: Option<ProviderResponseIntent>,
+) -> CliResult<ProviderDispatchEnvelope> {
     // Fail fast on an unknown run id rather than journaling an orphan message.
     let run = latest_team_run(store, team_run_id)?;
     if body.trim().is_empty() {
@@ -12276,7 +12285,7 @@ fn prepare_team_message_as(
         .into_iter()
         .filter(|member| member.team_run_id == team_run_id)
         .collect::<Vec<_>>();
-    let from_member_id = match sender.kind {
+    let sender_runtime_id = match sender.kind {
         TeamActorKind::Host => {
             if sender.id != "host"
                 && run
@@ -12291,7 +12300,7 @@ fn prepare_team_message_as(
             }
             "host".to_string()
         }
-        TeamActorKind::MemberRun => {
+        TeamActorKind::ProviderRuntimeProjection => {
             let member = member_runs
                 .iter()
                 .find(|member| member.id == sender.id)
@@ -12316,7 +12325,7 @@ fn prepare_team_message_as(
                 }
                 [] => {
                     return Err(CliError::Usage(format!(
-                        "Agent identity {} has no MemberRun in team run {team_run_id}",
+                        "Agent identity {} has no ProviderRuntimeProjection in team run {team_run_id}",
                         sender.id
                     )))
                 }
@@ -12331,13 +12340,13 @@ fn prepare_team_message_as(
         TeamActorKind::Operator => format!("operator:{}", sender.id),
         TeamActorKind::Service => format!("service:{}", sender.id),
     };
-    if to_member_ids.is_empty() {
+    if recipient_runtime_ids.is_empty() {
         return Err(CliError::Usage(
             "team message requires at least one recipient".to_string(),
         ));
     }
     let mut recipients = std::collections::HashSet::new();
-    for recipient in &to_member_ids {
+    for recipient in &recipient_runtime_ids {
         if !valid_member(recipient) {
             return Err(CliError::Usage(format!(
                 "message recipient {recipient} does not belong to team run {team_run_id}"
@@ -12354,18 +12363,18 @@ fn prepare_team_message_as(
                 .find(|member| member.id == recipient.as_str())
                 .ok_or_else(|| {
                     CliError::Usage(format!(
-                        "message recipient {recipient} has no MemberRun projection in team run {team_run_id}"
+                        "message recipient {recipient} has no ProviderRuntimeProjection projection in team run {team_run_id}"
                     ))
                 })?;
             ensure_member_coordination_open(member)?;
         }
     }
-    if let Some(origin_wave_id) = origin_wave_id.as_deref() {
+    if let Some(source_plan_ref) = source_plan_ref.as_deref() {
         let mission_id = team_run_mission_id(store, &run)?;
-        let wave = latest_wave(store, origin_wave_id)?;
+        let wave = latest_wave(store, source_plan_ref)?;
         if wave.mission_id != mission_id {
             return Err(CliError::Usage(format!(
-                "origin Wave {origin_wave_id} belongs to Mission {}, not TeamRun Mission {mission_id}",
+                "origin Wave {source_plan_ref} belongs to Mission {}, not TeamRun Mission {mission_id}",
                 wave.mission_id
             )));
         }
@@ -12385,27 +12394,27 @@ fn prepare_team_message_as(
     }
     let (correlation_id, causation_id) =
         resolve_team_message_lineage(store, team_run_id, &kind, correlation_id, causation_id)?;
-    let message = TeamMessage {
+    let message = ProviderDispatchEnvelope {
         id: generated_id("tmsg"),
         team_run_id: team_run_id.to_string(),
         work_id,
-        origin_wave_id,
+        source_plan_ref,
         sender: Some(sender.clone()),
-        from_member_id: from_member_id.clone(),
-        recipients: to_member_ids
+        sender_runtime_id: sender_runtime_id.clone(),
+        recipients: recipient_runtime_ids
             .iter()
             .map(|member_id| compatibility_team_recipient(member_id))
             .collect(),
-        to_member_ids: to_member_ids.clone(),
+        recipient_runtime_ids: recipient_runtime_ids.clone(),
         kind,
         body: body.to_string(),
         correlation_id,
         causation_id,
         response_intent,
         evidence_refs: Vec::new(),
-        deliveries: to_member_ids
+        deliveries: recipient_runtime_ids
             .iter()
-            .map(|member_id| TeamMessageDelivery {
+            .map(|member_id| ProviderDispatchAttempt {
                 member_id: member_id.clone(),
                 // The Host control plane receives member-originated mail at
                 // creation time. Provider members, by contrast, consume
@@ -12455,8 +12464,8 @@ fn prepare_team_message_as(
 fn publish_team_message(
     store: &HarnessStore,
     sender: &TeamActorRef,
-    message: TeamMessage,
-) -> CliResult<TeamMessage> {
+    message: ProviderDispatchEnvelope,
+) -> CliResult<ProviderDispatchEnvelope> {
     store_conflict_as_usage(store.append_team_message_checked(&message))?;
     let seq = next_team_run_seq(store, &message.team_run_id)?;
     append_team_run_event(
@@ -12466,9 +12475,9 @@ fn publish_team_message(
         team_event_source_for_actor(sender),
         matches!(
             sender.kind,
-            TeamActorKind::MemberRun | TeamActorKind::AgentMember
+            TeamActorKind::ProviderRuntimeProjection | TeamActorKind::AgentMember
         )
-        .then(|| message.from_member_id.clone()),
+        .then(|| message.sender_runtime_id.clone()),
         "message",
         &message.id,
         "created",
@@ -12476,7 +12485,7 @@ fn publish_team_message(
             "{} from {} to [{}]",
             team_message_kind_label(&message.kind),
             sender.id,
-            message.to_member_ids.join(",")
+            message.recipient_runtime_ids.join(",")
         ),
     )?;
     Ok(message)
@@ -12485,7 +12494,7 @@ fn publish_team_message(
 fn active_member_runs_for_agent(
     store: &HarnessStore,
     agent_member_id: &str,
-) -> CliResult<Vec<MemberRun>> {
+) -> CliResult<Vec<ProviderRuntimeProjection>> {
     Ok(latest_member_runs_in_append_order(store)?
         .into_iter()
         .filter(|member| member.agent_member_id == agent_member_id)
@@ -12510,7 +12519,7 @@ pub(crate) fn team_run_inbox(
     team_run_id: &str,
     member_run_id: &str,
     include_all: bool,
-) -> CliResult<Vec<TeamMessage>> {
+) -> CliResult<Vec<ProviderDispatchEnvelope>> {
     let run = latest_team_run(store, team_run_id)?;
     if member_run_id != "host" {
         if !run
@@ -12535,7 +12544,7 @@ pub(crate) fn team_run_inbox(
         .filter(|message| message.team_run_id == team_run_id)
         .filter(|message| {
             message
-                .to_member_ids
+                .recipient_runtime_ids
                 .iter()
                 .any(|recipient| recipient == member_run_id)
                 && message.deliveries.iter().any(|delivery| {
@@ -12607,7 +12616,7 @@ pub(crate) fn host_inbox_for_native_thread(
 fn resolve_team_message_lineage(
     store: &HarnessStore,
     team_run_id: &str,
-    _kind: &TeamMessageKind,
+    _kind: &ProviderDispatchIntent,
     supplied_correlation_id: Option<String>,
     supplied_causation_id: Option<String>,
 ) -> CliResult<(String, Option<String>)> {
@@ -12723,7 +12732,7 @@ fn parse_team_run_status(s: &str) -> CliResult<TeamRunStatus> {
 /// attempt is the explicit rejection path that permits a later retry without
 /// falsely making the failed attempt acceptance-eligible. Anything else is a usage error
 /// (HTTP 400) so an attempt cannot skip review or resurrect after termination.
-/// Completing a running TeamRun deliberately does not close any MemberRun:
+/// Completing a running TeamRun deliberately does not close any ProviderRuntimeProjection:
 /// persistent member runtimes may carry work into a later run of the same Team. A running attempt
 /// still cannot be status-cancelled until provider execution has a real
 /// cooperative interruption path.
@@ -12835,14 +12844,19 @@ impl DeliveryReconciliationFailure {
 /// failure carries the exact successful prefix so append-only partial success
 /// remains honest and a retry can safely skip the now-queued deliveries.
 fn reconcile_stale_delivery_claims<F>(
-    deliveries: &[WorkDelivery],
+    deliveries: &[ProviderWorkDispatch],
     supervisor: Option<&harness_core::TeamSupervisorLease>,
     now: u64,
     now_str: &str,
     mut reconcile: F,
 ) -> Result<Vec<String>, DeliveryReconciliationFailure>
 where
-    F: FnMut(&WorkDelivery, &harness_core::TeamSupervisorLease, u64, &str) -> Result<(), String>,
+    F: FnMut(
+        &ProviderWorkDispatch,
+        &harness_core::TeamSupervisorLease,
+        u64,
+        &str,
+    ) -> Result<(), String>,
 {
     let mut succeeded_ids = Vec::new();
     let Some(lease) = supervisor else {
@@ -12852,7 +12866,7 @@ where
         return Ok(succeeded_ids);
     }
     for delivery in deliveries {
-        let is_stale_claim = delivery.status == WorkDeliveryStatus::Claimed
+        let is_stale_claim = delivery.status == ProviderWorkDispatchStatus::Claimed
             && delivery
                 .claimed_generation
                 .is_some_and(|generation| generation < lease.generation);
@@ -12874,7 +12888,7 @@ where
 /// Pure function: classify a member's recovery path. Does not perform I/O or
 /// mutation. Unit-testable across every edge case without a store.
 fn classify_member_recovery_path(
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     supervisor_current: bool,
 ) -> MemberRecoveryPath {
     // Retired members are permanently dead.
@@ -12965,7 +12979,7 @@ fn team_run_recover(
     json: bool,
 ) -> CliResult<serde_json::Value> {
     let run = latest_team_run(store, team_run_id)?;
-    let mut members: Vec<MemberRun> = latest_member_runs_in_append_order(store)?
+    let mut members: Vec<ProviderRuntimeProjection> = latest_member_runs_in_append_order(store)?
         .into_iter()
         .filter(|member| member.team_run_id == team_run_id)
         .collect();
@@ -12974,7 +12988,7 @@ fn team_run_recover(
         .into_iter()
         .filter(|work| work.team_run_id == team_run_id)
         .collect();
-    let deliveries: Vec<WorkDelivery> = store
+    let deliveries: Vec<ProviderWorkDispatch> = store
         .latest_work_deliveries()?
         .into_iter()
         .filter(|delivery| delivery.team_run_id == team_run_id)
@@ -12995,7 +13009,7 @@ fn team_run_recover(
         println!();
     }
 
-    // Recovery must not mutate a MemberRun generation, reconcile a delivery,
+    // Recovery must not mutate a ProviderRuntimeProjection generation, reconcile a delivery,
     // or rebound Work until every candidate that would reopen/rebind has an
     // adapter-reviewed installed version. Historical native-session locators
     // remain untouched even when this gate records a refreshed profile.
@@ -13097,7 +13111,7 @@ fn team_run_recover(
     }
 
     // ── Gather recovery plan ─────────────────────────────────────────
-    let recovery_plan: Vec<(&MemberRun, MemberRecoveryPath)> = members
+    let recovery_plan: Vec<(&ProviderRuntimeProjection, MemberRecoveryPath)> = members
         .iter()
         .map(|member| {
             (
@@ -13423,18 +13437,18 @@ fn recover_interrupted_team_run(
 }
 
 /// Parse a team message kind from its snake_case wire name.
-fn parse_team_message_kind(s: &str) -> CliResult<TeamMessageKind> {
+fn parse_team_message_kind(s: &str) -> CliResult<ProviderDispatchIntent> {
     let kind = serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
         CliError::Usage(format!(
-            "unknown team message kind `{s}` (message|handoff|control)"
+            "unknown provider dispatch intent `{s}` (message|control)"
         ))
     })?;
     if !matches!(
         kind,
-        TeamMessageKind::Message | TeamMessageKind::Handoff | TeamMessageKind::Control
+        ProviderDispatchIntent::Message | ProviderDispatchIntent::Control
     ) {
         return Err(CliError::Usage(format!(
-            "team message kind `{s}` is historical and read-only; use message|handoff|control"
+            "provider interaction intents are runtime-owned; use message|control"
         )));
     }
     Ok(kind)
@@ -13443,7 +13457,7 @@ fn parse_team_message_kind(s: &str) -> CliResult<TeamMessageKind> {
 /// Parse an explicit team message response intent from its snake_case wire
 /// name (HTTP API and MCP tool surface; the CLI spells the same two values as
 /// --response-required and --informational).
-fn parse_team_message_response_intent(s: &str) -> CliResult<TeamMessageResponseIntent> {
+fn parse_team_message_response_intent(s: &str) -> CliResult<ProviderResponseIntent> {
     serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
         CliError::Usage(format!(
             "unknown team message response intent `{s}` (informational|response_required)"
@@ -13451,24 +13465,12 @@ fn parse_team_message_response_intent(s: &str) -> CliResult<TeamMessageResponseI
     })
 }
 
-fn team_message_kind_label(kind: &TeamMessageKind) -> &'static str {
+fn team_message_kind_label(kind: &ProviderDispatchIntent) -> &'static str {
     match kind {
-        TeamMessageKind::Message => "message",
-        TeamMessageKind::PlanRequest => "plan_request",
-        TeamMessageKind::PlanProposal => "plan_proposal",
-        TeamMessageKind::PlanFeedback => "plan_feedback",
-        TeamMessageKind::PlanApproval => "plan_approval",
-        TeamMessageKind::Question => "question",
-        TeamMessageKind::Answer => "answer",
-        TeamMessageKind::Progress => "progress",
-        TeamMessageKind::Blocker => "blocker",
-        TeamMessageKind::Handoff => "handoff",
-        TeamMessageKind::ReviewRequest => "review_request",
-        TeamMessageKind::ReviewResult => "review_result",
-        TeamMessageKind::Control => "control",
-        TeamMessageKind::ProviderInteractionRequest => "provider_interaction_request",
-        TeamMessageKind::ProviderInteractionResponse => "provider_interaction_response",
-        TeamMessageKind::Broadcast => "broadcast",
+        ProviderDispatchIntent::Message => "message",
+        ProviderDispatchIntent::Control => "control",
+        ProviderDispatchIntent::ProviderInteractionRequest => "provider_interaction_request",
+        ProviderDispatchIntent::ProviderInteractionResponse => "provider_interaction_response",
     }
 }
 
@@ -13590,7 +13592,7 @@ fn member_work_context(
         })?;
     if bound_member != member_run_id {
         return Err(CliError::Usage(format!(
-            "bound MemberRun is {bound_member}, not {member_run_id}"
+            "bound ProviderRuntimeProjection is {bound_member}, not {member_run_id}"
         )));
     }
     if let Ok(bound_team) =
@@ -13605,7 +13607,7 @@ fn member_work_context(
     Ok(WorkCommandContext {
         event_id: value(args, "--event-id").unwrap_or_else(|| generated_id("work-event")),
         performed_by_actor: TeamActorRef {
-            kind: TeamActorKind::MemberRun,
+            kind: TeamActorKind::ProviderRuntimeProjection,
             id: member_run_id.to_string(),
             display_name: None,
             authn_source: Some("bound_runtime_env".to_string()),
@@ -13695,7 +13697,7 @@ fn work_operation_cursors(
 }
 
 /// Bucket one member into the `board-summary` per-member line. Reads BOTH
-/// signals the summary promises: owned Work content and MemberRun process
+/// signals the summary promises: owned Work content and ProviderRuntimeProjection process
 /// state.
 ///
 /// A member owning any Work in `review` is `awaiting-review` -- a submission
@@ -13707,7 +13709,7 @@ fn work_operation_cursors(
 /// `idle`: none of those states are "a Host decision is pending on this
 /// member" and the summary has only three buckets to spend.
 fn member_board_state<'a>(
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     owned_works: impl Iterator<Item = &'a Work>,
 ) -> &'static str {
     let mut awaiting_review = false;
@@ -13777,7 +13779,7 @@ fn team_run_board_summary_text(store: &HarnessStore, team_run_id: &str) -> CliRe
         .filter(|work| work.is_claim_ready(&works))
         .count();
 
-    let members: Vec<MemberRun> = latest_member_runs_in_append_order(store)?
+    let members: Vec<ProviderRuntimeProjection> = latest_member_runs_in_append_order(store)?
         .into_iter()
         .filter(|member| member.team_run_id == team_run_id && member.coordination_is_active())
         .collect();
@@ -15207,7 +15209,7 @@ fn synthetic_headless_host_member(
         prompt_ref: None,
         skill_refs: Vec::new(),
         workspace_policy: Some("read_only".to_string()),
-        worktree_ref: None,
+        provider_cwd_hint: None,
         permission_profile: Some("read_only".to_string()),
         runtime_workspace_roots: Vec::new(),
         status: ProviderLaunchStatus::Idle,
@@ -15352,14 +15354,14 @@ fn dispatch_headless_host_once(
                     .iter()
                     .map(|attention| attention.id.clone())
                     .collect::<Vec<_>>();
-                let message = Message {
+                let message = RegistryMessage {
                     id: delivery_id.clone(),
                     task_id: None,
                     from_agent_id: "system:host-dispatcher".to_string(),
                     to_agent_id: Some(member.id.clone()),
                     channel: Some("host-triage".to_string()),
-                    kind: MessageKind::Message,
-                    delivery_status: MessageDeliveryStatus::Acknowledged,
+                    kind: RegistryMessageIntent::Message,
+                    delivery_status: RegistryDeliveryStatus::Acknowledged,
                     content: host_dispatcher::build_headless_host_prompt(
                         &run.id,
                         &run.objective,
@@ -15584,7 +15586,7 @@ fn team_run_command(
                 member.resume_native_session_id = Some(session_id.to_string());
             }
             for override_spec in many(args, "--member-worktree") {
-                let (name, worktree_ref) = override_spec.split_once(':').ok_or_else(|| {
+                let (name, provider_cwd_hint) = override_spec.split_once(':').ok_or_else(|| {
                     CliError::Usage("--member-worktree expects name:path".to_string())
                 })?;
                 let member = members
@@ -15593,7 +15595,7 @@ fn team_run_command(
                     .ok_or_else(|| {
                         CliError::Usage(format!("--member-worktree names unknown member {name}"))
                     })?;
-                member.worktree_ref = Some(worktree_ref.to_string());
+                member.provider_cwd_hint = Some(provider_cwd_hint.to_string());
             }
             for override_spec in many(args, "--member-owned-path") {
                 let (name, owned_path) = override_spec.split_once(':').ok_or_else(|| {
@@ -15827,10 +15829,11 @@ fn team_run_command(
         "status" => {
             let id = required(args, "--id")?;
             let run = latest_team_run(store, &id)?;
-            let member_runs: Vec<MemberRun> = latest_member_runs_in_append_order(store)?
-                .into_iter()
-                .filter(|member| member.team_run_id == id)
-                .collect();
+            let member_runs: Vec<ProviderRuntimeProjection> =
+                latest_member_runs_in_append_order(store)?
+                    .into_iter()
+                    .filter(|member| member.team_run_id == id)
+                    .collect();
             let actions = visible_member_actions_in_append_order(store)?;
             let messages = latest_team_messages_in_append_order(store)?;
             let works: Vec<Work> = store
@@ -15997,7 +16000,7 @@ fn team_run_command(
                             "{}\t{}\tfrom={}\t{}",
                             run_id,
                             message["id"].as_str().unwrap_or("?"),
-                            message["from_member_id"].as_str().unwrap_or("?"),
+                            message["sender_runtime_id"].as_str().unwrap_or("?"),
                             message["body"]
                                 .as_str()
                                 .unwrap_or_default()
@@ -16138,7 +16141,7 @@ fn team_run_command(
                         "{}\t{}\tfrom={}\t{}\t{}",
                         message.id,
                         team_message_kind_label(&message.kind),
-                        message.from_member_id,
+                        message.sender_runtime_id,
                         delivery,
                         message.body.lines().next().unwrap_or_default()
                     );
@@ -16238,13 +16241,13 @@ fn team_run_command(
             }
         }
         "send" => {
-            let to_member_ids: Vec<String> = required(args, "--to")?
+            let recipient_runtime_ids: Vec<String> = required(args, "--to")?
                 .split(',')
                 .map(str::trim)
                 .filter(|id| !id.is_empty())
                 .map(str::to_string)
                 .collect();
-            if to_member_ids.is_empty() {
+            if recipient_runtime_ids.is_empty() {
                 return Err(CliError::Usage(
                     "--to must name at least one member id".to_string(),
                 ));
@@ -16268,8 +16271,8 @@ fn team_run_command(
                             .to_string(),
                     ))
                 }
-                (true, false) => Some(TeamMessageResponseIntent::ResponseRequired),
-                (false, true) => Some(TeamMessageResponseIntent::Informational),
+                (true, false) => Some(ProviderResponseIntent::ResponseRequired),
+                (false, true) => Some(ProviderResponseIntent::Informational),
                 (false, false) => None,
             };
             let message = if let Some(actor_kind) = value(args, "--actor-kind") {
@@ -16282,7 +16285,7 @@ fn team_run_command(
                         display_name: value(args, "--actor-name"),
                         authn_source: Some("local_cli_explicit".to_string()),
                     },
-                    to_member_ids,
+                    recipient_runtime_ids,
                     kind,
                     &body,
                     value(args, "--work-id"),
@@ -16305,7 +16308,7 @@ fn team_run_command(
                             "member_runtime"
                         },
                     ),
-                    to_member_ids,
+                    recipient_runtime_ids,
                     kind,
                     &body,
                     value(args, "--work-id"),
@@ -16608,7 +16611,9 @@ fn member_run_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             } else {
                 let member = detail
                     .get("member_run")
-                    .and_then(|value| serde_json::from_value::<MemberRun>(value.clone()).ok())
+                    .and_then(|value| {
+                        serde_json::from_value::<ProviderRuntimeProjection>(value.clone()).ok()
+                    })
                     .ok_or_else(|| CliError::Usage("invalid member detail projection".into()))?;
                 let inbox_count = detail
                     .pointer("/mailbox/inbox")
@@ -16688,7 +16693,7 @@ fn member_run_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 /// Resolve an explicit provider-owned UI target without changing the native
 /// session binding. Claude Desktop imports SDK/CLI sessions through this deep
 /// link and deterministically exposes them as `local_<native-id>`.
-fn native_session_open_target(member: &MemberRun) -> CliResult<serde_json::Value> {
+fn native_session_open_target(member: &ProviderRuntimeProjection) -> CliResult<serde_json::Value> {
     let session = member.native_session.as_ref().ok_or_else(|| {
         CliError::Usage(format!(
             "member run {} has no bound provider-native session",
@@ -16765,12 +16770,17 @@ fn member_run_detail_json(
         .collect::<Vec<_>>();
     let inbox = messages
         .iter()
-        .filter(|message| message.to_member_ids.iter().any(|id| id == member_run_id))
+        .filter(|message| {
+            message
+                .recipient_runtime_ids
+                .iter()
+                .any(|id| id == member_run_id)
+        })
         .cloned()
         .collect::<Vec<_>>();
     let outbox = messages
         .iter()
-        .filter(|message| message.from_member_id == member_run_id)
+        .filter(|message| message.sender_runtime_id == member_run_id)
         .cloned()
         .collect::<Vec<_>>();
     let works = store
@@ -16789,7 +16799,7 @@ fn member_run_detail_json(
     let latest_handoff = outbox
         .iter()
         .rev()
-        .find(|message| message.kind == TeamMessageKind::Handoff);
+        .find(|message| message.kind == ProviderDispatchIntent::Message);
     let actions = visible_member_actions_in_append_order(store)?
         .into_iter()
         .filter(|action| {
@@ -16828,7 +16838,7 @@ fn member_run_detail_json(
         "mission_id": team_run_mission_id(store, &team_run)?,
         "agent_team_id": team_run.agent_team_id,
         "works": works,
-        "workspace": member.workspace_snapshot,
+        "workspace": member.provider_environment_observation,
         "provider_profile": member.provider_profile,
         "native_session": member.native_session,
         "mailbox": {
@@ -16927,7 +16937,7 @@ static LIVE_MEMBER_ACTIVITY_REVISION: AtomicU64 = AtomicU64::new(1);
 static LIVE_MEMBER_ACTIVITY_INGRESS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
 
 /// Process-local control plane for provider sessions started by `serve` or the
-/// MCP server. The durable TeamMessage remains the conversation record; this
+/// MCP server. The durable ProviderDispatchEnvelope remains the conversation record; this
 /// registry is only the live transport into the currently running provider
 /// turn and is deliberately not reconstructed after process restart.
 static LIVE_MEMBER_CONTROLS: OnceLock<Mutex<HashMap<String, LiveMemberControl>>> = OnceLock::new();
@@ -17022,7 +17032,7 @@ enum MemberControlCommand {
 enum IdleMemberWake {
     Work(Box<ClaimedWork>),
     ActiveWorkContinuation(Box<Work>),
-    Messages(Vec<TeamMessage>),
+    Messages(Vec<ProviderDispatchEnvelope>),
     Closed,
     TestRetired,
     Degraded(String),
@@ -17053,8 +17063,8 @@ fn canonical_delivery_context(
 
 fn claim_canonical_messages_for_member(
     ledger: &TeamRunLedger,
-    member: &MemberRun,
-) -> CliResult<Vec<TeamMessage>> {
+    member: &ProviderRuntimeProjection,
+) -> CliResult<Vec<ProviderDispatchEnvelope>> {
     let Some(execution_space_id) = ledger.store.trust_member_run_scope(&member.id)? else {
         return Ok(Vec::new());
     };
@@ -17078,7 +17088,7 @@ fn claim_canonical_messages_for_member(
     for delivery in queued {
         let source = messages.get(&delivery.message_id).ok_or_else(|| {
             CliError::Usage(format!(
-                "canonical MessageDelivery {} references missing TeamMessage {}",
+                "canonical RegistryDeliveryAttempt {} references missing ProviderDispatchEnvelope {}",
                 delivery.id, delivery.message_id
             ))
         })?;
@@ -17128,37 +17138,39 @@ fn claim_canonical_messages_for_member(
                 authn_source: Some("canonical_trust_kernel".into()),
             },
         };
-        claimed_messages.push(TeamMessage {
+        claimed_messages.push(ProviderDispatchEnvelope {
             id: source.id.clone(),
             team_run_id: source.team_run_id.clone(),
             work_id: source.work_id.clone(),
-            origin_wave_id: None,
+            source_plan_ref: None,
             sender: Some(sender),
-            from_member_id: source.sender.id.clone(),
+            sender_runtime_id: source.sender.id.clone(),
             recipients: vec![TeamRecipientRef {
-                kind: TeamRecipientKind::MemberRun,
+                kind: TeamRecipientKind::ProviderRuntimeProjection,
                 id: member.id.clone(),
             }],
-            to_member_ids: vec![member.id.clone()],
+            recipient_runtime_ids: vec![member.id.clone()],
             kind: match source.kind {
                 harness_core::agentfirm_api::TeamMessageKind::ProviderInteractionRequest => {
-                    TeamMessageKind::ProviderInteractionRequest
+                    ProviderDispatchIntent::ProviderInteractionRequest
                 }
                 harness_core::agentfirm_api::TeamMessageKind::ProviderInteractionResponse => {
-                    TeamMessageKind::ProviderInteractionResponse
+                    ProviderDispatchIntent::ProviderInteractionResponse
                 }
                 harness_core::agentfirm_api::TeamMessageKind::Control
-                | harness_core::agentfirm_api::TeamMessageKind::Message => TeamMessageKind::Message,
+                | harness_core::agentfirm_api::TeamMessageKind::Message => {
+                    ProviderDispatchIntent::Message
+                }
             },
             body: source.body.clone(),
             correlation_id: source.correlation_id.clone(),
             causation_id: source.causation_id.clone(),
             response_intent: Some(match source.response_intent {
                 harness_core::agentfirm_api::ResponseIntent::Informational => {
-                    TeamMessageResponseIntent::Informational
+                    ProviderResponseIntent::Informational
                 }
                 harness_core::agentfirm_api::ResponseIntent::ResponseRequired => {
-                    TeamMessageResponseIntent::ResponseRequired
+                    ProviderResponseIntent::ResponseRequired
                 }
             }),
             evidence_refs: source
@@ -17170,7 +17182,7 @@ fn claim_canonical_messages_for_member(
                     format!("{CANONICAL_MESSAGE_DELIVERY_REF}{}", delivery.id),
                 ])
                 .collect(),
-            deliveries: vec![TeamMessageDelivery {
+            deliveries: vec![ProviderDispatchAttempt {
                 member_id: member.id.clone(),
                 policy: TeamDeliveryPolicy::Inject,
                 status: TeamDeliveryStatus::Claimed,
@@ -17497,7 +17509,7 @@ impl Drop for LiveMemberControlRegistration {
 }
 
 fn register_live_member_control(
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     capacity: usize,
 ) -> (
     ControlReceiver<MemberControlCommand>,
@@ -17625,7 +17637,7 @@ fn mark_member_coordination_closed(
     store: &HarnessStore,
     team_run_id: &str,
     member_run_id: &str,
-) -> CliResult<MemberRun> {
+) -> CliResult<ProviderRuntimeProjection> {
     let mut member = latest_member_runs_in_append_order(store)?
         .into_iter()
         .find(|member| member.id == member_run_id && member.team_run_id == team_run_id)
@@ -17750,7 +17762,7 @@ where
     match request.requirement() {
         LiveMemberControlRequirement::Steer if !control.supports_steer => {
             return Err(CliError::Usage(format!(
-                "{} does not support mid-turn steer; send a queued TeamMessage instead",
+                "{} does not support mid-turn steer; send a queued ProviderDispatchEnvelope instead",
                 control.execution_mode
             )));
         }
@@ -17993,13 +18005,13 @@ struct TeamRunLedger {
 #[derive(Debug, Clone)]
 struct ClaimedWork {
     work: Work,
-    delivery: WorkDelivery,
+    delivery: ProviderWorkDispatch,
     canonical_execution_space_id: Option<String>,
 }
 
 fn claim_canonical_work_for_member(
     ledger: &TeamRunLedger,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
 ) -> CliResult<Option<ClaimedWork>> {
     let Some(execution_space_id) = ledger.store.trust_member_run_scope(&member.id)? else {
         return Ok(None);
@@ -18058,14 +18070,14 @@ fn claim_canonical_work_for_member(
         )?;
         return Ok(Some(ClaimedWork {
             work: work.clone(),
-            delivery: WorkDelivery {
+            delivery: ProviderWorkDispatch {
                 id: delivery.id,
                 work_event_id: delivery.work_event_id,
                 team_run_id: ledger.run_id.clone(),
                 work_id: delivery.work_id,
                 work_version: delivery.work_revision,
                 recipient_member_run_id: delivery.recipient_member_run_id,
-                status: WorkDeliveryStatus::Claimed,
+                status: ProviderWorkDispatchStatus::Claimed,
                 attempt: delivery.attempt,
                 claim_id: Some(claim_id),
                 claimed_by_supervisor_id: Some(ledger.supervisor_id.clone()),
@@ -18305,7 +18317,7 @@ impl TeamRunLedger {
         Ok(action)
     }
 
-    /// Append at most one durable `provider_control` receipt per MemberRun
+    /// Append at most one durable `provider_control` receipt per ProviderRuntimeProjection
     /// and receipt identity. The convergence key is the stable
     /// (member_run_id, "provider_control", title) triple, so an unrelated
     /// provider_control row never suppresses a distinct receipt. The first
@@ -18316,7 +18328,7 @@ impl TeamRunLedger {
     /// when this call wrote the receipt.
     fn append_provider_control_receipt_once(
         &self,
-        expected_member: &MemberRun,
+        expected_member: &ProviderRuntimeProjection,
         title: &str,
         summary: &str,
     ) -> CliResult<bool> {
@@ -18327,7 +18339,7 @@ impl TeamRunLedger {
 
     fn append_provider_control_receipt_once_with_hook<F>(
         &self,
-        expected_member: &MemberRun,
+        expected_member: &ProviderRuntimeProjection,
         title: &str,
         summary: &str,
         before_atomic_append: F,
@@ -18368,26 +18380,33 @@ impl TeamRunLedger {
             .append_member_action_if_member_run_current(expected_member, &action)?)
     }
 
-    fn save_member_run(&self, expected: &MemberRun, next: &MemberRun) -> CliResult<()> {
+    fn save_member_run(
+        &self,
+        expected: &ProviderRuntimeProjection,
+        next: &ProviderRuntimeProjection,
+    ) -> CliResult<()> {
         let _guard = self.write_lock();
         Ok(self.store.compare_and_append_member_run(expected, next)?)
     }
 
-    fn latest_member_run(&self, member_run_id: &str) -> CliResult<Option<MemberRun>> {
+    fn latest_member_run(
+        &self,
+        member_run_id: &str,
+    ) -> CliResult<Option<ProviderRuntimeProjection>> {
         Ok(latest_member_runs_in_append_order(&self.store)?
             .into_iter()
             .find(|member| member.id == member_run_id))
     }
 
     /// Latest-wins messages of this run, in append order.
-    fn team_messages(&self) -> CliResult<Vec<TeamMessage>> {
+    fn team_messages(&self) -> CliResult<Vec<ProviderDispatchEnvelope>> {
         Ok(latest_team_messages_in_append_order(&self.store)?
             .into_iter()
             .filter(|message| message.team_run_id == self.run_id)
             .collect())
     }
 
-    fn queued_works_for(&self, member_id: &str) -> CliResult<Vec<(Work, WorkDelivery)>> {
+    fn queued_works_for(&self, member_id: &str) -> CliResult<Vec<(Work, ProviderWorkDispatch)>> {
         let works = self
             .store
             .latest_works()?
@@ -18402,7 +18421,7 @@ impl TeamRunLedger {
             .filter(|delivery| {
                 delivery.team_run_id == self.run_id
                     && delivery.recipient_member_run_id == member_id
-                    && delivery.status == WorkDeliveryStatus::Queued
+                    && delivery.status == ProviderWorkDispatchStatus::Queued
             })
             .filter_map(|delivery| {
                 let work = works.get(&delivery.work_id)?;
@@ -18451,7 +18470,7 @@ impl TeamRunLedger {
     /// Return the member's sole durable active Work, or the next ready shared-
     /// pool Work it is eligible to claim, when no ownership delivery exists.
     /// This drives another provider-native cycle without fabricating a
-    /// WorkDelivery: self-claim is discovered from the shared board and the
+    /// ProviderWorkDispatch: self-claim is discovered from the shared board and the
     /// Member must perform the explicit atomic claim itself.
     fn active_work_continuation_for(&self, member_id: &str) -> CliResult<Option<Work>> {
         let all_works = self.store.latest_works()?;
@@ -18530,7 +18549,7 @@ impl TeamRunLedger {
             .any(|delivery| {
                 delivery.team_run_id == self.run_id
                     && delivery.recipient_member_run_id == member_id
-                    && delivery.status == WorkDeliveryStatus::Claimed
+                    && delivery.status == ProviderWorkDispatchStatus::Claimed
                     && delivery
                         .claimed_generation
                         .is_some_and(|generation| generation < self.supervisor_generation)
@@ -18562,7 +18581,7 @@ impl TeamRunLedger {
                             && delivery.work_id == work.id
                             && delivery.work_version == work.version
                             && delivery.recipient_member_run_id == member_id
-                            && delivery.status == WorkDeliveryStatus::ProviderReceived
+                            && delivery.status == ProviderWorkDispatchStatus::ProviderReceived
                     })
             })
             .cloned()
@@ -18579,7 +18598,7 @@ impl TeamRunLedger {
         self.require_supervisor_lease()?;
         let claim_id = claimed.delivery.claim_id.as_deref().ok_or_else(|| {
             CliError::Usage(format!(
-                "WorkDelivery {} has no durable claim",
+                "ProviderWorkDispatch {} has no durable claim",
                 claimed.delivery.id
             ))
         })?;
@@ -18591,7 +18610,7 @@ impl TeamRunLedger {
                 .find(|delivery| delivery.id == claimed.delivery.id)
                 .ok_or_else(|| {
                     CliError::Usage(format!(
-                        "canonical WorkDelivery disappeared before provider receipt: {}",
+                        "canonical ProviderWorkDispatch disappeared before provider receipt: {}",
                         claimed.delivery.id
                     ))
                 })?;
@@ -18672,7 +18691,7 @@ impl TeamRunLedger {
             .filter(|delivery| {
                 delivery.team_run_id == self.run_id
                     && delivery.recipient_member_run_id == member_id
-                    && delivery.status == WorkDeliveryStatus::Claimed
+                    && delivery.status == ProviderWorkDispatchStatus::Claimed
                     && delivery.claimed_by_supervisor_id.as_deref() == Some(&self.supervisor_id)
                     && delivery.claimed_generation == Some(self.supervisor_generation)
                     && delivery.provider_receipt_id.is_none()
@@ -18696,7 +18715,7 @@ impl TeamRunLedger {
         Ok(())
     }
 
-    /// Fail every TeamMessage delivery for `member_id` that is still
+    /// Fail every ProviderDispatchEnvelope delivery for `member_id` that is still
     /// `Queued` or `Claimed`.
     ///
     /// Pre-bind failures never claim a message, so `Queued` deliveries
@@ -18772,11 +18791,11 @@ impl TeamRunLedger {
 
     /// Messages with a still-queued delivery to `member_id` (excluding the
     /// member's own sends, which it obviously already "has").
-    fn queued_messages_for(&self, member_id: &str) -> CliResult<Vec<TeamMessage>> {
+    fn queued_messages_for(&self, member_id: &str) -> CliResult<Vec<ProviderDispatchEnvelope>> {
         Ok(self
             .team_messages()?
             .into_iter()
-            .filter(|message| message.from_member_id != member_id)
+            .filter(|message| message.sender_runtime_id != member_id)
             .filter(|message| {
                 message.deliveries.iter().any(|delivery| {
                     delivery.member_id == member_id
@@ -18787,7 +18806,11 @@ impl TeamRunLedger {
             .collect())
     }
 
-    fn claim_message(&self, message_id: &str, member_id: &str) -> CliResult<Option<TeamMessage>> {
+    fn claim_message(
+        &self,
+        message_id: &str,
+        member_id: &str,
+    ) -> CliResult<Option<ProviderDispatchEnvelope>> {
         self.require_supervisor_lease()?;
         let claim_id = generated_id("delivery-claim");
         match store_conflict_as_usage(self.store.claim_team_message_delivery(
@@ -18808,7 +18831,7 @@ impl TeamRunLedger {
 
     fn complete_provider_interaction_response(
         &self,
-        message: &TeamMessage,
+        message: &ProviderDispatchEnvelope,
         member_id: &str,
         provider_receipt_id: &str,
     ) -> CliResult<()> {
@@ -18846,9 +18869,9 @@ impl TeamRunLedger {
     /// Claim queued terminal-work notifications for an idle member.
     ///
     /// When a Work the member owns reaches a terminal status (Done or
-    /// Cancelled), the store may hold a queued [`WorkDelivery`] for that
+    /// Cancelled), the store may hold a queued [`ProviderWorkDispatch`] for that
     /// transition. This method claims those notification deliveries and
-    /// converts each into an informational [`TeamMessage`] from the Host
+    /// converts each into an informational [`ProviderDispatchEnvelope`] from the Host
     /// so the member sees the transition as mail rather than as a new
     /// work assignment.
     ///
@@ -18859,7 +18882,7 @@ impl TeamRunLedger {
     fn claim_terminal_work_notifications_for(
         &self,
         member_id: &str,
-    ) -> CliResult<Vec<TeamMessage>> {
+    ) -> CliResult<Vec<ProviderDispatchEnvelope>> {
         self.require_supervisor_lease()?;
 
         let works = self
@@ -18877,7 +18900,7 @@ impl TeamRunLedger {
             .filter(|d| {
                 d.team_run_id == self.run_id
                     && d.recipient_member_run_id == member_id
-                    && d.status == WorkDeliveryStatus::Queued
+                    && d.status == ProviderWorkDispatchStatus::Queued
             })
             .filter(|d| {
                 works.get(&d.work_id).is_some_and(|w| {
@@ -18920,14 +18943,14 @@ impl TeamRunLedger {
                 &self.run_id,
                 &sender,
                 vec![member_id.to_string()],
-                TeamMessageKind::Message,
+                ProviderDispatchIntent::Message,
                 &body,
                 Some(work.id.clone()),
                 None,
                 None,
                 None,
                 TeamMessageDeliveryMode::Routed,
-                Some(TeamMessageResponseIntent::Informational),
+                Some(ProviderResponseIntent::Informational),
             )?;
             let message = publish_team_message(&self.store, &sender, message)?;
             let receipt_id = message.id.clone();
@@ -18954,9 +18977,15 @@ impl TeamRunLedger {
     /// claimed in order so the whole batch is delivered exactly once with
     /// that round's provider receipt. Informational-only mail stays queued
     /// and durable without starting a round, which bounds peer convergence.
-    fn claim_round_triggering_messages_for(&self, member_id: &str) -> CliResult<Vec<TeamMessage>> {
+    fn claim_round_triggering_messages_for(
+        &self,
+        member_id: &str,
+    ) -> CliResult<Vec<ProviderDispatchEnvelope>> {
         let queued = self.queued_messages_for(member_id)?;
-        if !queued.iter().any(TeamMessage::requires_response) {
+        if !queued
+            .iter()
+            .any(ProviderDispatchEnvelope::requires_response)
+        {
             return Ok(Vec::new());
         }
         let mut claimed = Vec::with_capacity(queued.len());
@@ -18975,7 +19004,10 @@ const PROVIDER_MEMBER_CAS_RETRIES: usize = 3;
 /// `last_event_at` fields while a round is in flight.  Accepting any other
 /// drift here would let a stale transport overwrite lifecycle authority,
 /// runtime generation, native-session provenance, or operator changes.
-fn validate_provider_callback_drift(supplied: &MemberRun, latest: &MemberRun) -> CliResult<()> {
+fn validate_provider_callback_drift(
+    supplied: &ProviderRuntimeProjection,
+    latest: &ProviderRuntimeProjection,
+) -> CliResult<()> {
     // Name/profile/capacity may be refreshed by same-generation operator and
     // probe paths while the provider is paused. Those fields are intentionally
     // rebased from `latest`. Everything that establishes execution identity,
@@ -18992,8 +19024,8 @@ fn validate_provider_callback_drift(supplied: &MemberRun, latest: &MemberRun) ->
         || latest.coordination_status != supplied.coordination_status
         || latest.runtime_generation != supplied.runtime_generation
         || latest.native_session != supplied.native_session
-        || latest.worktree_ref != supplied.worktree_ref
-        || latest.workspace_snapshot != supplied.workspace_snapshot
+        || latest.provider_cwd_hint != supplied.provider_cwd_hint
+        || latest.provider_environment_observation != supplied.provider_environment_observation
         || latest.owned_paths != supplied.owned_paths
         || latest.zero_output_streak != supplied.zero_output_streak
         || latest.last_consumed_work_version != supplied.last_consumed_work_version
@@ -19001,7 +19033,7 @@ fn validate_provider_callback_drift(supplied: &MemberRun, latest: &MemberRun) ->
         || latest.finished_at != supplied.finished_at
     {
         return Err(CliError::Usage(format!(
-            "provider callback for MemberRun {} crossed identity, provenance, lifecycle, native-session, or provider-control authority",
+            "provider callback for ProviderRuntimeProjection {} crossed identity, provenance, lifecycle, native-session, or provider-control authority",
             supplied.id
         )));
     }
@@ -19010,7 +19042,7 @@ fn validate_provider_callback_drift(supplied: &MemberRun, latest: &MemberRun) ->
 
 #[allow(clippy::large_enum_variant)]
 enum ProviderInteractionMemberTransition {
-    Applied(MemberRun),
+    Applied(ProviderRuntimeProjection),
     LifecycleSuperseded,
 }
 
@@ -19021,7 +19053,7 @@ enum ProviderInteractionMemberTransition {
 /// generation and every non-transient mutation fail closed.
 fn transition_provider_interaction_member(
     ledger: &TeamRunLedger,
-    supplied: &MemberRun,
+    supplied: &ProviderRuntimeProjection,
     desired: MemberRunStatus,
 ) -> CliResult<ProviderInteractionMemberTransition> {
     transition_provider_interaction_member_with_hook(ledger, supplied, desired, |_, _| Ok(()))
@@ -19029,9 +19061,9 @@ fn transition_provider_interaction_member(
 
 fn transition_provider_interaction_member_with_hook(
     ledger: &TeamRunLedger,
-    supplied: &MemberRun,
+    supplied: &ProviderRuntimeProjection,
     desired: MemberRunStatus,
-    mut before_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
+    mut before_cas: impl FnMut(usize, &ProviderRuntimeProjection) -> CliResult<()>,
 ) -> CliResult<ProviderInteractionMemberTransition> {
     for attempt in 0..PROVIDER_MEMBER_CAS_RETRIES {
         let latest = ledger
@@ -19039,7 +19071,7 @@ fn transition_provider_interaction_member_with_hook(
             .ok_or_else(|| CliError::Usage(format!("member run {} not found", supplied.id)))?;
         if latest.runtime_generation != supplied.runtime_generation {
             return Err(CliError::Usage(format!(
-                "provider callback for MemberRun {} belongs to runtime generation {}, latest is {}",
+                "provider callback for ProviderRuntimeProjection {} belongs to runtime generation {}, latest is {}",
                 supplied.id, supplied.runtime_generation, latest.runtime_generation
             )));
         }
@@ -19053,7 +19085,7 @@ fn transition_provider_interaction_member_with_hook(
                 return Ok(ProviderInteractionMemberTransition::LifecycleSuperseded);
             }
             return Err(CliError::Usage(format!(
-                "provider callback for MemberRun {} was superseded by coordination lifecycle {:?}",
+                "provider callback for ProviderRuntimeProjection {} was superseded by coordination lifecycle {:?}",
                 supplied.id, latest.coordination_status
             )));
         }
@@ -19071,7 +19103,7 @@ fn transition_provider_interaction_member_with_hook(
         };
         if !valid_status {
             return Err(CliError::Usage(format!(
-                "provider interaction cannot transition MemberRun {} from {:?} to {:?}",
+                "provider interaction cannot transition ProviderRuntimeProjection {} from {:?} to {:?}",
                 supplied.id, latest.status, desired
             )));
         }
@@ -19089,7 +19121,7 @@ fn transition_provider_interaction_member_with_hook(
             Err(error) => return Err(error),
         }
     }
-    unreachable!("bounded provider MemberRun CAS loop returns on every path")
+    unreachable!("bounded provider ProviderRuntimeProjection CAS loop returns on every path")
 }
 
 /// Refresh the outer provider driver after all blocking callbacks have
@@ -19098,8 +19130,8 @@ fn transition_provider_interaction_member_with_hook(
 /// be overwritten by an outer Idle/Stopped write.
 fn refresh_member_after_provider_callbacks(
     ledger: &TeamRunLedger,
-    round_start: &MemberRun,
-) -> CliResult<MemberRun> {
+    round_start: &ProviderRuntimeProjection,
+) -> CliResult<ProviderRuntimeProjection> {
     let latest = ledger
         .latest_member_run(&round_start.id)?
         .ok_or_else(|| CliError::Usage(format!("member run {} not found", round_start.id)))?;
@@ -19113,19 +19145,19 @@ fn refresh_member_after_provider_callbacks(
             });
         let messages = ledger.team_messages()?;
         let message_unresolved = messages.iter().any(|request| {
-            request.kind == TeamMessageKind::ProviderInteractionRequest
-                && request.from_member_id == latest.id
+            request.kind == ProviderDispatchIntent::ProviderInteractionRequest
+                && request.sender_runtime_id == latest.id
                 && request.deliveries.iter().any(|delivery| {
                     delivery.member_id == "host" && delivery.status == TeamDeliveryStatus::Delivered
                 })
                 && !messages.iter().any(|response| {
-                    response.kind == TeamMessageKind::ProviderInteractionResponse
+                    response.kind == ProviderDispatchIntent::ProviderInteractionResponse
                         && response.causation_id.as_deref() == Some(request.id.as_str())
                 })
         });
         if legacy_unresolved || message_unresolved {
             return Err(CliError::Usage(format!(
-                "provider round for MemberRun {} cannot finalize while an interaction remains pending",
+                "provider round for ProviderRuntimeProjection {} cannot finalize while an interaction remains pending",
                 latest.id
             )));
         }
@@ -19144,7 +19176,7 @@ fn pending_member_close(
 
 fn stop_member_for_latched_close(
     ledger: &TeamRunLedger,
-    member_row: &mut MemberRun,
+    member_row: &mut ProviderRuntimeProjection,
     close: &TeamMemberCloseRequest,
 ) -> CliResult<()> {
     if close.team_run_id != ledger.run_id {
@@ -19211,7 +19243,7 @@ fn stop_member_for_latched_close(
 #[allow(clippy::too_many_arguments)]
 fn wait_for_idle_member_wake(
     ledger: &TeamRunLedger,
-    member_row: &mut MemberRun,
+    member_row: &mut ProviderRuntimeProjection,
     controls: &ControlReceiver<MemberControlCommand>,
     mut ensure_transport_alive: impl FnMut() -> CliResult<()>,
     zero_output_streak: u32,
@@ -19277,7 +19309,7 @@ fn wait_for_idle_member_wake(
                 }
                 MemberControlCommand::Steer { reply, .. } => {
                     let _ = reply.send(Err(CliError::Usage(
-                        "member is idle; assign Work or send a response-required TeamMessage to start a new turn"
+                        "member is idle; assign Work or send a response-required ProviderDispatchEnvelope to start a new turn"
                             .to_string(),
                     )));
                 }
@@ -19464,7 +19496,7 @@ fn wait_for_idle_member_wake(
 /// Build a pure `MemberWakeView` from store reads.
 fn build_member_wake_view(
     ledger: &TeamRunLedger,
-    member_row: &MemberRun,
+    member_row: &ProviderRuntimeProjection,
     zero_output_streak: u32,
     last_consumed_work_version: Option<u64>,
 ) -> CliResult<supervisor_wake::MemberWakeView> {
@@ -19500,7 +19532,7 @@ fn build_member_wake_view(
 /// Build a pure `BoardWakeView` from store reads.
 fn build_board_wake_view(
     ledger: &TeamRunLedger,
-    member_row: &MemberRun,
+    member_row: &ProviderRuntimeProjection,
 ) -> CliResult<supervisor_wake::BoardWakeView> {
     let all_works = ledger.store.latest_works()?;
     let stable_member_id = member_row.agent_member_id.as_str();
@@ -19616,7 +19648,7 @@ impl Drop for ProviderChildGuard {
 }
 
 impl MemberOutcome {
-    fn new(member: &MemberRun, status: MemberRunStatus, summary: String) -> Self {
+    fn new(member: &ProviderRuntimeProjection, status: MemberRunStatus, summary: String) -> Self {
         Self {
             name: member.name.clone(),
             role: member.role.clone(),
@@ -19631,14 +19663,14 @@ pub(crate) struct PreparedTeamRunBody {
     run_id: String,
     objective: String,
     run: AgentTeamRun,
-    members: Vec<MemberRun>,
+    members: Vec<ProviderRuntimeProjection>,
 }
 
 pub(crate) struct PreparedTeamRunStart {
     run_id: String,
     objective: String,
     running: AgentTeamRun,
-    members: Vec<MemberRun>,
+    members: Vec<ProviderRuntimeProjection>,
     ledger: Arc<TeamRunLedger>,
     supervisor_registration: TeamSupervisorRegistration,
 }
@@ -19658,7 +19690,7 @@ pub(crate) fn prepare_team_run_start_body(
             serde_snake_label(&run.status)
         )));
     }
-    let mut members: Vec<MemberRun> = latest_member_runs_in_append_order(store)?
+    let mut members: Vec<ProviderRuntimeProjection> = latest_member_runs_in_append_order(store)?
         .into_iter()
         .filter(|member| member.team_run_id == run_id && member.coordination_is_active())
         .filter(|member| {
@@ -19671,7 +19703,7 @@ pub(crate) fn prepare_team_run_start_body(
     // Fail the whole start/reattach before reserving a Supervisor or moving the
     // TeamRun to running when any persistent adapter version is unreviewed.
     // The refreshed profile is still durable operator evidence; native-session
-    // locators and Work/WorkDelivery rows are intentionally untouched.
+    // locators and Work/ProviderWorkDispatch rows are intentionally untouched.
     for member in &mut members {
         if member.is_external_interactive() {
             continue;
@@ -19810,22 +19842,22 @@ pub(crate) fn delegate_team_run_to_node_daemon_in_space(
 /// Publish the workspace facts at the last boundary before a provider thread
 /// is created. The prepared roster may be arbitrarily stale: Close and Reopen
 /// are durable concurrent operations, so neither can be overwritten by a
-/// starter that still holds the old MemberRun version.
+/// starter that still holds the old ProviderRuntimeProjection version.
 fn prepare_member_workspace_for_spawn(
     ledger: &TeamRunLedger,
-    prepared: &MemberRun,
-    workspace_snapshot: &MemberWorkspaceSnapshot,
+    prepared: &ProviderRuntimeProjection,
+    provider_environment_observation: &MemberWorkspaceSnapshot,
 ) -> CliResult<PreSpawnWorkspacePreparation> {
     prepare_member_workspace_for_spawn_with_hook(
         ledger,
         prepared,
-        workspace_snapshot,
+        provider_environment_observation,
         |_, _| Ok(()),
     )
 }
 
 enum PreSpawnWorkspacePreparation {
-    Ready(Box<MemberRun>),
+    Ready(Box<ProviderRuntimeProjection>),
     Superseded,
     Retry,
 }
@@ -19836,8 +19868,8 @@ enum PreSpawnWorkspacePreparation {
 /// must never be started a second time.
 fn successor_may_take_over_active_member(
     ledger: &TeamRunLedger,
-    takeover_anchor: &MemberRun,
-    latest: &MemberRun,
+    takeover_anchor: &ProviderRuntimeProjection,
+    latest: &ProviderRuntimeProjection,
 ) -> CliResult<bool> {
     if ledger.supervisor_generation <= 1
         || takeover_anchor.status != latest.status
@@ -19868,9 +19900,9 @@ fn successor_may_take_over_active_member(
 
 fn prepare_member_workspace_for_spawn_with_hook(
     ledger: &TeamRunLedger,
-    prepared: &MemberRun,
-    workspace_snapshot: &MemberWorkspaceSnapshot,
-    mut before_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
+    prepared: &ProviderRuntimeProjection,
+    provider_environment_observation: &MemberWorkspaceSnapshot,
+    mut before_cas: impl FnMut(usize, &ProviderRuntimeProjection) -> CliResult<()>,
 ) -> CliResult<PreSpawnWorkspacePreparation> {
     for attempt in 0..PROVIDER_MEMBER_CAS_RETRIES {
         ledger.require_supervisor_lease()?;
@@ -19922,7 +19954,7 @@ fn prepare_member_workspace_for_spawn_with_hook(
             || latest.runtime_generation != prepared.runtime_generation
             || latest.status != prepared.status
             || latest.native_session != prepared.native_session
-            || latest.worktree_ref != prepared.worktree_ref
+            || latest.provider_cwd_hint != prepared.provider_cwd_hint
             || latest.owned_paths != prepared.owned_paths
             || latest.zero_output_streak != prepared.zero_output_streak
             || latest.last_consumed_work_version != prepared.last_consumed_work_version
@@ -19932,7 +19964,7 @@ fn prepare_member_workspace_for_spawn_with_hook(
             return Ok(PreSpawnWorkspacePreparation::Superseded);
         }
         let expected = latest.clone();
-        latest.workspace_snapshot = Some(workspace_snapshot.clone());
+        latest.provider_environment_observation = Some(provider_environment_observation.clone());
         before_cas(attempt, &expected)?;
         match ledger.save_member_run(&expected, &latest) {
             Ok(()) => return Ok(PreSpawnWorkspacePreparation::Ready(Box::new(latest))),
@@ -19944,7 +19976,7 @@ fn prepare_member_workspace_for_spawn_with_hook(
             Err(error) => return Err(error),
         }
     }
-    unreachable!("bounded pre-spawn MemberRun CAS loop returns on every path")
+    unreachable!("bounded pre-spawn ProviderRuntimeProjection CAS loop returns on every path")
 }
 
 pub(crate) fn drive_prepared_team_run(
@@ -20051,14 +20083,14 @@ pub(crate) fn drive_prepared_team_run(
                 }
                 let member_objective = objective.clone();
                 let cwd = member_spawn_cwd(project_context.as_ref(), &running, &member);
-                let workspace_snapshot = snapshot_member_workspace(
+                let provider_environment_observation = snapshot_member_workspace(
                     &cwd,
                     project_context.as_ref().map(|context| context.id.as_str()),
                     project_context
                         .as_ref()
                         .map(|context| context.project_root.as_path()),
                     if member
-                        .worktree_ref
+                        .provider_cwd_hint
                         .as_deref()
                         .is_some_and(|value| !value.is_empty())
                     {
@@ -20078,7 +20110,7 @@ pub(crate) fn drive_prepared_team_run(
                 let published_member = match prepare_member_workspace_for_spawn(
                     &member_ledger,
                     &member,
-                    &workspace_snapshot,
+                    &provider_environment_observation,
                 )? {
                     PreSpawnWorkspacePreparation::Ready(member) => *member,
                     PreSpawnWorkspacePreparation::Superseded => {
@@ -20101,7 +20133,7 @@ pub(crate) fn drive_prepared_team_run(
                     Some(member.id.clone()),
                     "member_run",
                     &member.id,
-                    "workspace_snapshot",
+                    "provider_environment_observation",
                     &format!("member workspace resolved to {}", cwd.display()),
                 )?;
                 let handle_member = member.clone();
@@ -20310,12 +20342,15 @@ pub(crate) fn drive_prepared_team_run(
 }
 
 enum MemberProviderStartClaim {
-    Claimed(MemberRun),
-    Superseded(MemberRun),
+    Claimed(ProviderRuntimeProjection),
+    Superseded(ProviderRuntimeProjection),
     Retry,
 }
 
-fn member_requested_controls_match(anchor: &MemberRun, candidate: &MemberRun) -> bool {
+fn member_requested_controls_match(
+    anchor: &ProviderRuntimeProjection,
+    candidate: &ProviderRuntimeProjection,
+) -> bool {
     anchor.provider_controls.model.requested == candidate.provider_controls.model.requested
         && anchor.provider_controls.reasoning_effort.requested
             == candidate.provider_controls.reasoning_effort.requested
@@ -20323,7 +20358,10 @@ fn member_requested_controls_match(anchor: &MemberRun, candidate: &MemberRun) ->
             == candidate.provider_controls.service_tier.requested
 }
 
-fn member_runtime_anchor_matches(anchor: &MemberRun, candidate: &MemberRun) -> bool {
+fn member_runtime_anchor_matches(
+    anchor: &ProviderRuntimeProjection,
+    candidate: &ProviderRuntimeProjection,
+) -> bool {
     candidate.id == anchor.id
         && candidate.team_run_id == anchor.team_run_id
         && candidate.slot_id == anchor.slot_id
@@ -20333,15 +20371,15 @@ fn member_runtime_anchor_matches(anchor: &MemberRun, candidate: &MemberRun) -> b
         && candidate.model == anchor.model
         && member_requested_controls_match(anchor, candidate)
         && candidate.runtime_generation == anchor.runtime_generation
-        && candidate.worktree_ref == anchor.worktree_ref
+        && candidate.provider_cwd_hint == anchor.provider_cwd_hint
         && candidate.owned_paths == anchor.owned_paths
         && candidate.started_at == anchor.started_at
 }
 
 fn member_runtime_progress_matches(
-    anchor: &MemberRun,
-    accepted: &MemberRun,
-    candidate: &MemberRun,
+    anchor: &ProviderRuntimeProjection,
+    accepted: &ProviderRuntimeProjection,
+    candidate: &ProviderRuntimeProjection,
     allow_owned_initial_bind: bool,
 ) -> bool {
     member_runtime_anchor_matches(anchor, candidate)
@@ -20368,7 +20406,7 @@ fn member_runtime_progress_matches(
 /// newly owned transport.
 fn claim_member_provider_start(
     ledger: &TeamRunLedger,
-    scheduled: &MemberRun,
+    scheduled: &ProviderRuntimeProjection,
 ) -> CliResult<MemberProviderStartClaim> {
     claim_member_provider_start_with_takeover_anchor_and_hook(
         ledger,
@@ -20381,8 +20419,8 @@ fn claim_member_provider_start(
 #[cfg(test)]
 fn claim_member_provider_start_with_hook(
     ledger: &TeamRunLedger,
-    scheduled: &MemberRun,
-    mut before_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
+    scheduled: &ProviderRuntimeProjection,
+    mut before_cas: impl FnMut(usize, &ProviderRuntimeProjection) -> CliResult<()>,
 ) -> CliResult<MemberProviderStartClaim> {
     claim_member_provider_start_with_takeover_anchor_and_hook(
         ledger,
@@ -20394,9 +20432,9 @@ fn claim_member_provider_start_with_hook(
 
 fn claim_member_provider_start_with_takeover_anchor_and_hook(
     ledger: &TeamRunLedger,
-    scheduled: &MemberRun,
-    takeover_anchor: &MemberRun,
-    mut before_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
+    scheduled: &ProviderRuntimeProjection,
+    takeover_anchor: &ProviderRuntimeProjection,
+    mut before_cas: impl FnMut(usize, &ProviderRuntimeProjection) -> CliResult<()>,
 ) -> CliResult<MemberProviderStartClaim> {
     for attempt in 0..PROVIDER_MEMBER_CAS_RETRIES {
         ledger.require_supervisor_lease()?;
@@ -20430,7 +20468,7 @@ fn claim_member_provider_start_with_takeover_anchor_and_hook(
             || latest.provider != scheduled.provider
             || latest.model != scheduled.model
             || latest.provider_controls != scheduled.provider_controls
-            || latest.worktree_ref != scheduled.worktree_ref
+            || latest.provider_cwd_hint != scheduled.provider_cwd_hint
             || latest.owned_paths != scheduled.owned_paths
             || (!matches!(
                 latest.status,
@@ -20478,7 +20516,7 @@ fn claim_member_provider_start_with_takeover_anchor_and_hook(
 
 fn reconcile_member_lifecycle_after_provider_error(
     ledger: &TeamRunLedger,
-    member: &mut MemberRun,
+    member: &mut ProviderRuntimeProjection,
 ) -> CliResult<bool> {
     if let Some(close) = pending_member_close(&ledger.store, &member.id)? {
         stop_member_for_latched_close(ledger, member, &close)?;
@@ -20494,14 +20532,14 @@ fn reconcile_member_lifecycle_after_provider_error(
 }
 
 /// One persistent member supervisor. Provider transports and turns are
-/// disposable generations beneath the durable MemberRun/native-session
+/// disposable generations beneath the durable ProviderRuntimeProjection/native-session
 /// binding. A transport that disappears after binding is journaled as
 /// disconnected and resumed; it does not silently turn the Member into a
 /// terminal failure.
 fn run_member_orchestration(
     ledger: &TeamRunLedger,
     objective: &str,
-    member: MemberRun,
+    member: ProviderRuntimeProjection,
     context: MemberRuntimeContext,
 ) -> MemberOutcome {
     // Belt and braces: the supervisor drain already skips declared external
@@ -20579,7 +20617,7 @@ fn run_member_orchestration(
         // fresh row and therefore loses to Close or any later mutation.
         accepted = current.clone();
         // Re-probe every transport generation. This is the last fence before
-        // capacity checks, WorkDelivery claim, process spawn, or native-session
+        // capacity checks, ProviderWorkDispatch claim, process spawn, or native-session
         // attach, so a binary upgraded to an unreviewed version cannot fall
         // into the reconnect loop or replay a rebound Work.
         let compatibility_boundary = if current.native_session.is_some() {
@@ -20771,7 +20809,7 @@ fn run_member_orchestration(
                         &latest,
                         MemberRunStatus::Failed,
                         format!(
-                            "provider transport disconnected, but its queued TeamMessage could not be failed safely: {failure_error}"
+                            "provider transport disconnected, but its queued ProviderDispatchEnvelope could not be failed safely: {failure_error}"
                         ),
                     );
                 }
@@ -20793,7 +20831,7 @@ fn run_member_orchestration(
 fn run_codex_member(
     ledger: &TeamRunLedger,
     objective: &str,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     context: &MemberRuntimeContext,
 ) -> CliResult<MemberOutcome> {
     ledger.require_supervisor_lease()?;
@@ -20900,7 +20938,7 @@ fn run_codex_member(
     let mut prompt_text;
     let mut accepted_messages = Vec::new();
     let mut active_work: Option<ClaimedWork> = None;
-    let mut active_assignment: Option<TeamMessage> = None;
+    let mut active_assignment: Option<ProviderDispatchEnvelope> = None;
     let mut final_summary = String::new();
     // Supervisor wake-policy tracking.
     let wake_policy = supervisor_wake::WakePolicy::default();
@@ -20928,7 +20966,7 @@ fn run_codex_member(
             MemberActionStatus::Progress,
             "Codex runtime resumed active Work",
             &format!(
-                "Work {} remains bound to this MemberRun; continue through native session {} without replaying ownership delivery",
+                "Work {} remains bound to this ProviderRuntimeProjection; continue through native session {} without replaying ownership delivery",
                 work.id,
                 member_row
                     .native_session
@@ -20998,7 +21036,7 @@ fn run_codex_member(
             for message in &messages {
                 prompt_text.push_str(&format!(
                     "--- {} ({}, correlation_id={}) ---\n{}\n\n",
-                    message.from_member_id,
+                    message.sender_runtime_id,
                     team_message_kind_label(&message.kind),
                     message.correlation_id,
                     message.body
@@ -21062,7 +21100,7 @@ fn run_codex_member(
             )?
         };
         // Fence the caller as well: no native-session, Handoff, action, or
-        // MemberRun write may follow a terminal transport result from a stale
+        // ProviderRuntimeProjection write may follow a terminal transport result from a stale
         // Supervisor generation.
         ledger.require_supervisor_lease()?;
         member_row = refresh_member_after_provider_callbacks(ledger, &expected_round)?;
@@ -21233,7 +21271,7 @@ fn run_codex_member(
                 for message in &messages {
                     prompt_text.push_str(&format!(
                         "--- {} ({}, correlation_id={}) ---\n{}\n\n",
-                        message.from_member_id,
+                        message.sender_runtime_id,
                         team_message_kind_label(&message.kind),
                         message.correlation_id,
                         message.body
@@ -21280,12 +21318,12 @@ struct CodexTeamTurn {
 }
 
 struct CodexTeamTurnContext<'a> {
-    member: &'a MemberRun,
+    member: &'a ProviderRuntimeProjection,
     idle_timeout: Duration,
     live_sink: Option<LiveMemberActivitySink>,
     ledger: &'a TeamRunLedger,
     controls: &'a ControlReceiver<MemberControlCommand>,
-    accepted_messages: &'a [TeamMessage],
+    accepted_messages: &'a [ProviderDispatchEnvelope],
     /// Work claim carried by this turn, when the turn exists to deliver one.
     /// Its provider receipt is recorded at turn/start acceptance (the earliest
     /// honest evidence), never at end of turn.
@@ -21295,7 +21333,7 @@ struct CodexTeamTurnContext<'a> {
 
 fn project_codex_team_event_live(
     ledger: &TeamRunLedger,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     raw: &serde_json::Value,
     live_sink: Option<&LiveMemberActivitySink>,
 ) {
@@ -21424,7 +21462,7 @@ fn run_codex_app_server_turn(
     // The turn/start response is authoritative. A prior interrupted turn may
     // still flush item activity after the next turn has started; rebinding on
     // that stale item would make the real turn/completed look foreign and
-    // strand the MemberRun as running. Provider-native Goal/Plan continuation
+    // strand the ProviderRuntimeProjection as running. Provider-native Goal/Plan continuation
     // may move work to another turn, but only an explicit turn/started frame
     // is allowed to change this active scope.
     let mut active_turn_id = turn_id.clone();
@@ -21696,12 +21734,12 @@ fn codex_frame_matches_active_turn(
 /// The provider-owned `~/.claude/projects/**/<session>.jsonl` remains the
 /// execution history; Harness stores only the session locator, assignment,
 /// handoff, and explicit round outcome.
-#[cfg(any())] // retired with Assignment Message; bounded Claude CLI belongs to Workflow
+#[cfg(any())] // retired with Assignment RegistryMessage; bounded Claude CLI belongs to Workflow
 fn run_claude_team_member(
     ledger: &TeamRunLedger,
     objective: &str,
     project_id: Option<&str>,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     cwd: &Path,
     idle_timeout: Duration,
     live_sink: Option<LiveMemberActivitySink>,
@@ -21783,17 +21821,17 @@ fn run_claude_team_member(
         ));
         ledger.save_member_run(&expected, &member_row)?;
 
-        let handoff = TeamMessage {
+        let handoff = ProviderDispatchEnvelope {
             id: generated_id("tmsg"),
             team_run_id: ledger.run_id.clone(),
-            origin_wave_id: assignment
+            source_plan_ref: assignment
                 .as_ref()
-                .and_then(|message| message.origin_wave_id.clone()),
+                .and_then(|message| message.source_plan_ref.clone()),
             sender: Some(compatibility_team_actor(&member.id, "member_runtime")),
-            from_member_id: member.id.clone(),
+            sender_runtime_id: member.id.clone(),
             recipients: vec![compatibility_team_recipient("host")],
-            to_member_ids: vec!["host".to_string()],
-            kind: TeamMessageKind::Handoff,
+            recipient_runtime_ids: vec!["host".to_string()],
+            kind: ProviderDispatchIntent::Message,
             body: turn.final_text.clone(),
             correlation_id: assignment
                 .as_ref()
@@ -21802,7 +21840,7 @@ fn run_claude_team_member(
             causation_id: assignment.as_ref().map(|message| message.id.clone()),
             response_intent: None,
             evidence_refs: turn.evidence_refs,
-            deliveries: vec![TeamMessageDelivery {
+            deliveries: vec![ProviderDispatchAttempt {
                 member_id: "host".to_string(),
                 policy: TeamDeliveryPolicy::ManualAck,
                 status: TeamDeliveryStatus::Delivered,
@@ -21885,7 +21923,7 @@ fn run_claude_team_member(
         for message in &queued {
             follow_up.push_str(&format!(
                 "--- {} ({}) ---\n{}\n\n",
-                message.from_member_id,
+                message.sender_runtime_id,
                 team_message_kind_label(&message.kind),
                 message.body
             ));
@@ -21982,7 +22020,7 @@ fn claude_agent_sdk_runner_path_from(
 fn run_claude_agent_sdk_team_member(
     ledger: &TeamRunLedger,
     objective: &str,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     context: &MemberRuntimeContext,
 ) -> CliResult<MemberOutcome> {
     use std::io::Write as _;
@@ -22084,11 +22122,11 @@ fn run_claude_agent_sdk_team_member(
             .map_err(|error| CliError::Usage(format!("runner stdin write failed: {error}")))
     };
 
-    let mut inflight_messages = HashMap::<String, TeamMessage>::new();
+    let mut inflight_messages = HashMap::<String, ProviderDispatchEnvelope>::new();
     let mut inflight_works = HashMap::<String, ClaimedWork>::new();
     let mut delivered_works = HashMap::<String, ClaimedWork>::new();
     let mut delivered_message_ids = HashSet::<String>::new();
-    let mut delivered_messages = HashMap::<String, TeamMessage>::new();
+    let mut delivered_messages = HashMap::<String, ProviderDispatchEnvelope>::new();
     let mut handoffs_before_by_message = HashMap::<String, HashSet<String>>::new();
 
     send(serde_json::json!({
@@ -22130,7 +22168,7 @@ fn run_claude_agent_sdk_team_member(
             MemberActionStatus::Progress,
             "Claude runtime resumed active Work",
             &format!(
-                "Work {} remains bound to this MemberRun; continue through native session {} without replaying ownership delivery",
+                "Work {} remains bound to this ProviderRuntimeProjection; continue through native session {} without replaying ownership delivery",
                 work.id,
                 member_row
                     .native_session
@@ -22161,7 +22199,7 @@ fn run_claude_agent_sdk_team_member(
             "payload": {
                 "id": generated_id("active-work-continuation"),
                 "kind": "work_continuation",
-                "from_member_id": "host",
+                "sender_runtime_id": "host",
                 "correlation_id": work.id,
                 "body": active_work_continuation_prompt(objective, &member_row, &work, &work_envelope),
             }
@@ -22182,7 +22220,7 @@ fn run_claude_agent_sdk_team_member(
             "payload": {
                 "id": claimed.delivery.id,
                 "kind": "work",
-                "from_member_id": "host",
+                "sender_runtime_id": "host",
                 "correlation_id": claimed.work.id,
                 "body": work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope),
             }
@@ -22204,7 +22242,7 @@ fn run_claude_agent_sdk_team_member(
                 "payload": {
                     "id": generated_id("active-work-continuation"),
                     "kind": "work_continuation",
-                    "from_member_id": "host",
+                    "sender_runtime_id": "host",
                     "correlation_id": work.id,
                     "body": active_work_continuation_prompt(objective, &member_row, &work, &work_envelope),
                 }
@@ -22311,7 +22349,7 @@ fn run_claude_agent_sdk_team_member(
                 }
                 MemberControlCommand::Steer { reply, .. } => {
                     let _ = reply.send(Err(CliError::Usage(
-                        "claude_agent_sdk does not expose content steer; send a TeamMessage"
+                        "claude_agent_sdk does not expose content steer; send a ProviderDispatchEnvelope"
                             .to_string(),
                     )));
                 }
@@ -22606,7 +22644,7 @@ fn run_claude_agent_sdk_team_member(
                     "payload": {
                         "id": claimed.delivery.id,
                         "kind": "work",
-                        "from_member_id": "host",
+                        "sender_runtime_id": "host",
                         "correlation_id": claimed.work.id,
                         "body": work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope),
                     }
@@ -22632,7 +22670,7 @@ fn run_claude_agent_sdk_team_member(
                         "payload": {
                             "id": generated_id("active-work-continuation"),
                             "kind": "work_continuation",
-                            "from_member_id": "host",
+                            "sender_runtime_id": "host",
                             "correlation_id": work.id,
                             "body": active_work_continuation_prompt(objective, &member_row, &work, &work_envelope),
                         }
@@ -22659,7 +22697,7 @@ fn run_claude_agent_sdk_team_member(
                 "payload": {
                     "id": message.id,
                     "kind": team_message_kind_label(&message.kind),
-                    "from_member_id": message.from_member_id,
+                    "sender_runtime_id": message.sender_runtime_id,
                     "correlation_id": message.correlation_id,
                     "body": message.body,
                 }
@@ -22740,9 +22778,9 @@ fn run_claude_agent_sdk_team_member(
 }
 
 fn active_assignment_for_round(
-    current: Option<&TeamMessage>,
-    accepted_messages: &[TeamMessage],
-) -> Option<TeamMessage> {
+    current: Option<&ProviderDispatchEnvelope>,
+    accepted_messages: &[ProviderDispatchEnvelope],
+) -> Option<ProviderDispatchEnvelope> {
     accepted_messages
         .iter()
         .rev()
@@ -22756,7 +22794,8 @@ fn member_handoff_ids(ledger: &TeamRunLedger, member_run_id: &str) -> CliResult<
         .team_messages()?
         .into_iter()
         .filter(|message| {
-            message.from_member_id == member_run_id && message.kind == TeamMessageKind::Handoff
+            message.sender_runtime_id == member_run_id
+                && message.kind == ProviderDispatchIntent::Message
         })
         .map(|message| message.id)
         .collect())
@@ -22770,8 +22809,8 @@ struct MemberTurnLineage<'a> {
 }
 
 fn handoff_has_valid_turn_lineage(
-    messages: &[TeamMessage],
-    message: &TeamMessage,
+    messages: &[ProviderDispatchEnvelope],
+    message: &ProviderDispatchEnvelope,
     member_run_id: &str,
     lineage: &MemberTurnLineage<'_>,
 ) -> bool {
@@ -22781,8 +22820,8 @@ fn handoff_has_valid_turn_lineage(
     ) else {
         return false;
     };
-    if message.from_member_id != member_run_id
-        || message.kind != TeamMessageKind::Handoff
+    if message.sender_runtime_id != member_run_id
+        || message.kind != ProviderDispatchIntent::Message
         || message.correlation_id != correlation_id
         || lineage.handoffs_before_round.contains(&message.id)
     {
@@ -22796,7 +22835,7 @@ fn handoff_has_valid_turn_lineage(
     }
     let Some(control) = messages.iter().find(|candidate| {
         candidate.id == causation_id
-            && candidate.kind == TeamMessageKind::Control
+            && candidate.kind == ProviderDispatchIntent::Control
             && candidate.correlation_id == correlation_id
             && candidate.deliveries.iter().any(|delivery| {
                 delivery.member_id == member_run_id
@@ -22815,8 +22854,8 @@ fn handoff_has_valid_turn_lineage(
     control_cause_id == trigger_id
         || messages.iter().any(|candidate| {
             candidate.id == control_cause_id
-                && candidate.from_member_id == member_run_id
-                && candidate.kind == TeamMessageKind::Handoff
+                && candidate.sender_runtime_id == member_run_id
+                && candidate.kind == ProviderDispatchIntent::Message
                 && candidate.correlation_id == correlation_id
                 && candidate.causation_id.as_deref() == Some(trigger_id)
                 && !lineage.handoffs_before_round.contains(&candidate.id)
@@ -22827,7 +22866,7 @@ fn latest_member_handoff_for_turn(
     ledger: &TeamRunLedger,
     member_run_id: &str,
     lineage: &MemberTurnLineage<'_>,
-) -> CliResult<Option<TeamMessage>> {
+) -> CliResult<Option<ProviderDispatchEnvelope>> {
     let messages = ledger.team_messages()?;
     Ok(messages
         .iter()
@@ -22836,10 +22875,10 @@ fn latest_member_handoff_for_turn(
         .cloned())
 }
 
-#[cfg(any())] // retired with Assignment Message
+#[cfg(any())] // retired with Assignment RegistryMessage
 struct MemberRoundRecord<'a> {
-    assignment: Option<&'a TeamMessage>,
-    trigger: Option<&'a TeamMessage>,
+    assignment: Option<&'a ProviderDispatchEnvelope>,
+    trigger: Option<&'a ProviderDispatchEnvelope>,
     final_text: &'a str,
     evidence_refs: &'a [String],
     round: u32,
@@ -22853,9 +22892,9 @@ struct MemberRoundRecord<'a> {
     provider_terminal: Option<&'a ProviderTerminalFailure>,
 }
 
-#[cfg(any())] // retired with Assignment Message
+#[cfg(any())] // retired with Assignment RegistryMessage
 enum RoundHandoffRecord {
-    Recorded(Box<TeamMessage>),
+    Recorded(Box<ProviderDispatchEnvelope>),
     Deferred {
         pending_count: usize,
     },
@@ -22866,13 +22905,13 @@ enum RoundHandoffRecord {
     EmptyProviderRound,
 }
 
-#[cfg(any())] // retired with Assignment Message
+#[cfg(any())] // retired with Assignment RegistryMessage
 fn record_round_handoff(
     ledger: &TeamRunLedger,
-    member_row: &MemberRun,
+    member_row: &ProviderRuntimeProjection,
     record: &MemberRoundRecord<'_>,
 ) -> CliResult<RoundHandoffRecord> {
-    let (origin_wave_id, correlation_id, causation_id) =
+    let (source_plan_ref, correlation_id, causation_id) =
         member_round_lineage(record.assignment, record.trigger);
     let pending = ledger.pending_messages_for_correlation(&member_row.id, &correlation_id)?;
     if !pending.is_empty() {
@@ -22924,16 +22963,16 @@ fn record_round_handoff(
     {
         return Ok(RoundHandoffRecord::EmptyProviderRound);
     }
-    let handoff = TeamMessage {
+    let handoff = ProviderDispatchEnvelope {
         id: generated_id("tmsg"),
         team_run_id: ledger.run_id.clone(),
         work_id: None,
-        origin_wave_id,
+        source_plan_ref,
         sender: Some(compatibility_team_actor(&member_row.id, "member_runtime")),
-        from_member_id: member_row.id.clone(),
+        sender_runtime_id: member_row.id.clone(),
         recipients: vec![compatibility_team_recipient("host")],
-        to_member_ids: vec!["host".to_string()],
-        kind: TeamMessageKind::Handoff,
+        recipient_runtime_ids: vec!["host".to_string()],
+        kind: ProviderDispatchIntent::Message,
         // Provider streams may contain several ordinary assistant messages
         // before the terminal structured report. Harness owns the explicit
         // outcome, not a mirror of that provider narration.
@@ -22942,7 +22981,7 @@ fn record_round_handoff(
         causation_id,
         response_intent: None,
         evidence_refs: record.evidence_refs.to_vec(),
-        deliveries: vec![TeamMessageDelivery {
+        deliveries: vec![ProviderDispatchAttempt {
             member_id: "host".to_string(),
             policy: TeamDeliveryPolicy::ManualAck,
             status: TeamDeliveryStatus::Delivered,
@@ -22977,10 +23016,10 @@ fn record_round_handoff(
 
 /// Record a round the provider failed: a failed `provider_error` action, no
 /// handoff, and a member that stays `idle` and re-deliverable.
-#[cfg(any())] // retired with Assignment Message
+#[cfg(any())] // retired with Assignment RegistryMessage
 fn record_provider_error_round(
     ledger: &TeamRunLedger,
-    member_row: &mut MemberRun,
+    member_row: &mut ProviderRuntimeProjection,
     record: &MemberRoundRecord<'_>,
     provider_error: &str,
 ) -> CliResult<(MemberRunStatus, String)> {
@@ -23019,10 +23058,10 @@ fn record_provider_error_round(
 
 /// Ledger writes for one completed member round: handoff to Host, action row,
 /// and member status.
-#[cfg(any())] // retired with Assignment Message
+#[cfg(any())] // retired with Assignment RegistryMessage
 fn record_member_round(
     ledger: &TeamRunLedger,
-    member_row: &mut MemberRun,
+    member_row: &mut ProviderRuntimeProjection,
     record: &MemberRoundRecord<'_>,
 ) -> CliResult<(MemberRunStatus, String)> {
     // A provider-error round produced no member report: the provider itself
@@ -23116,7 +23155,7 @@ fn claude_team_permission_mode() -> &'static str {
 fn run_claude_team_turn(
     prompt: &str,
     cwd: &Path,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     idle_timeout: Duration,
     live_sink: Option<LiveMemberActivitySink>,
     ledger: &TeamRunLedger,
@@ -23255,7 +23294,7 @@ fn run_claude_team_turn(
 #[allow(dead_code)] // historical claude_cli projection helper
 fn project_claude_team_event_live(
     ledger: &TeamRunLedger,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     raw: &serde_json::Value,
     live_sink: Option<&LiveMemberActivitySink>,
 ) {
@@ -23349,7 +23388,7 @@ fn kimi_error_looks_quota_like(error: &str) -> bool {
 fn run_kimi_member(
     ledger: &TeamRunLedger,
     objective: &str,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     context: &MemberRuntimeContext,
 ) -> CliResult<MemberOutcome> {
     ledger.require_supervisor_lease()?;
@@ -23373,7 +23412,7 @@ fn run_kimi_member(
         ),
     )?;
 
-    let mut active_assignment: Option<TeamMessage> = None;
+    let mut active_assignment: Option<ProviderDispatchEnvelope> = None;
     let envelope = member_work_collaboration_envelope(
         ledger,
         context.execution_space_id.as_deref(),
@@ -23424,7 +23463,7 @@ fn run_kimi_member(
         // A model switch may intentionally discard the previous model's
         // thinking option when set_config_option does not return refreshed
         // model-specific controls. Reinitialize the durable projection too:
-        // a resumed MemberRun must not keep an old model's effective effort,
+        // a resumed ProviderRuntimeProjection must not keep an old model's effective effort,
         // status, or receipt note merely because the new client has no
         // evidence to replace it.
         let requested = member_row
@@ -23494,7 +23533,7 @@ fn run_kimi_member(
             MemberActionStatus::Progress,
             "Kimi runtime resumed active Work",
             &format!(
-                "Work {} remains bound to this MemberRun; continue through native session {} without replaying ownership delivery",
+                "Work {} remains bound to this ProviderRuntimeProjection; continue through native session {} without replaying ownership delivery",
                 work.id,
                 member_row
                     .native_session
@@ -23541,8 +23580,8 @@ fn run_kimi_member(
             prompt_text =
                 work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope);
             last_consumed_work_version = Some(claimed.work.version);
-            active_work =
-                (claimed.delivery.status == WorkDeliveryStatus::Claimed).then_some(*claimed);
+            active_work = (claimed.delivery.status == ProviderWorkDispatchStatus::Claimed)
+                .then_some(*claimed);
             active_assignment = None;
         }
         IdleMemberWake::ActiveWorkContinuation(work) => {
@@ -23572,7 +23611,7 @@ fn run_kimi_member(
             for message in &messages {
                 prompt_text.push_str(&format!(
                     "--- {} ({}) ---\n{}\n\n",
-                    message.from_member_id,
+                    message.sender_runtime_id,
                     team_message_kind_label(&message.kind),
                     message.body
                 ));
@@ -23615,7 +23654,7 @@ fn run_kimi_member(
         let outcome = {
             let _turn_lease = turn_leases.acquire();
             ledger.require_supervisor_lease()?;
-            let claimed_reverse_response = Arc::new(Mutex::new(None::<TeamMessage>));
+            let claimed_reverse_response = Arc::new(Mutex::new(None::<ProviderDispatchEnvelope>));
             let claimed_for_request = Arc::clone(&claimed_reverse_response);
             let claimed_after_write = Arc::clone(&claimed_reverse_response);
             client.prompt(
@@ -23926,8 +23965,8 @@ fn run_kimi_member(
                 prompt_text =
                     work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope);
                 last_consumed_work_version = Some(claimed.work.version);
-                active_work =
-                    (claimed.delivery.status == WorkDeliveryStatus::Claimed).then_some(*claimed);
+                active_work = (claimed.delivery.status == ProviderWorkDispatchStatus::Claimed)
+                    .then_some(*claimed);
                 active_assignment = None;
                 accepted_messages.clear();
             }
@@ -23954,7 +23993,7 @@ fn run_kimi_member(
                 for message in &messages {
                     prompt_text.push_str(&format!(
                         "--- {} ({}) ---\n{}\n\n",
-                        message.from_member_id,
+                        message.sender_runtime_id,
                         team_message_kind_label(&message.kind),
                         message.body
                     ));
@@ -24027,7 +24066,7 @@ fn resolve_pi_bin() -> String {
 fn run_pi_team_member(
     ledger: &TeamRunLedger,
     objective: &str,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     context: &MemberRuntimeContext,
 ) -> CliResult<MemberOutcome> {
     ledger.require_supervisor_lease()?;
@@ -24205,7 +24244,7 @@ fn run_pi_team_member(
             for message in &messages {
                 prompt_text.push_str(&format!(
                     "--- {} ({}, correlation_id={}) ---\n{}\n\n",
-                    message.from_member_id,
+                    message.sender_runtime_id,
                     team_message_kind_label(&message.kind),
                     message.correlation_id,
                     message.body
@@ -24439,7 +24478,7 @@ fn run_pi_team_member(
                 for message in &messages {
                     prompt_text.push_str(&format!(
                         "--- {} ({}, correlation_id={}) ---\n{}\n\n",
-                        message.from_member_id,
+                        message.sender_runtime_id,
                         team_message_kind_label(&message.kind),
                         message.correlation_id,
                         message.body
@@ -24475,7 +24514,11 @@ fn run_pi_team_member(
 
 /// Journal a member failure on any error path (best-effort: we are already on
 /// the failure path, so secondary journaling errors are dropped).
-fn journal_member_failure(ledger: &TeamRunLedger, member: &MemberRun, reason: &str) {
+fn journal_member_failure(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+    reason: &str,
+) {
     let mut failed = ledger
         .latest_member_run(&member.id)
         .ok()
@@ -24505,7 +24548,7 @@ fn journal_member_failure(ledger: &TeamRunLedger, member: &MemberRun, reason: &s
 
 fn journal_member_disconnected(
     ledger: &TeamRunLedger,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     generation: u64,
     reason: &str,
 ) {
@@ -24544,13 +24587,13 @@ fn journal_member_disconnected(
 
 /// The most recent Assignment message with a still-queued delivery to
 /// `member_id` (append order is chronological under the single-writer v0).
-#[cfg(any())] // retired with Assignment Message
+#[cfg(any())] // retired with Assignment RegistryMessage
 fn latest_queued_assignment(
     ledger: &TeamRunLedger,
     member_id: &str,
-) -> CliResult<Option<TeamMessage>> {
+) -> CliResult<Option<ProviderDispatchEnvelope>> {
     let candidate = ledger.team_messages()?.into_iter().rfind(|message| {
-        message.kind == TeamMessageKind::Assignment
+        message.kind == ProviderDispatchIntent::Message
             && message.deliveries.iter().any(|delivery| {
                 delivery.member_id == member_id && delivery.status == TeamDeliveryStatus::Queued
             })
@@ -24561,22 +24604,22 @@ fn latest_queued_assignment(
     }
 }
 
-#[cfg(any())] // retired with Assignment Message
+#[cfg(any())] // retired with Assignment RegistryMessage
 fn assignment_for_correlation(
     ledger: &TeamRunLedger,
     correlation_id: &str,
-) -> CliResult<Option<TeamMessage>> {
+) -> CliResult<Option<ProviderDispatchEnvelope>> {
     Ok(ledger.team_messages()?.into_iter().rfind(|message| {
-        message.kind == TeamMessageKind::Assignment && message.correlation_id == correlation_id
+        message.kind == ProviderDispatchIntent::Message && message.correlation_id == correlation_id
     }))
 }
 
 /// Flip every queued delivery of `message` addressed to `member_id` to
-/// delivered (append a new TeamMessage row — the store is latest-wins) and
+/// delivered (append a new ProviderDispatchEnvelope row — the store is latest-wins) and
 /// fold the delivery event.
 fn mark_message_delivered(
     ledger: &TeamRunLedger,
-    message: &TeamMessage,
+    message: &ProviderDispatchEnvelope,
     member_id: &str,
     member_name: &str,
     provider_receipt_id: &str,
@@ -24600,22 +24643,22 @@ fn mark_message_delivered(
             .find(|delivery| delivery.id == delivery_id)
             .ok_or_else(|| {
                 CliError::Usage(format!(
-                    "canonical MessageDelivery disappeared before provider receipt: {delivery_id}"
+                    "canonical RegistryDeliveryAttempt disappeared before provider receipt: {delivery_id}"
                 ))
             })?;
         let claim_id = claimed.claim_id.clone().ok_or_else(|| {
             CliError::Usage(format!(
-                "canonical MessageDelivery {delivery_id} has no active claim"
+                "canonical RegistryDeliveryAttempt {delivery_id} has no active claim"
             ))
         })?;
         let member_generation = claimed.claimed_member_generation.ok_or_else(|| {
             CliError::Usage(format!(
-                "canonical MessageDelivery {delivery_id} has no member generation"
+                "canonical RegistryDeliveryAttempt {delivery_id} has no member generation"
             ))
         })?;
         let supervisor_generation = claimed.claimed_supervisor_generation.ok_or_else(|| {
             CliError::Usage(format!(
-                "canonical MessageDelivery {delivery_id} has no supervisor generation"
+                "canonical RegistryDeliveryAttempt {delivery_id} has no supervisor generation"
             ))
         })?;
         let received = ledger.store.receive_trust_message_delivery(
@@ -24655,7 +24698,7 @@ fn mark_message_delivered(
             delivery_id,
             "acknowledged",
             &format!(
-                "canonical TeamMessage {} accepted by provider for {} ({provider_receipt_id})",
+                "canonical ProviderDispatchEnvelope {} accepted by provider for {} ({provider_receipt_id})",
                 message.id, member_name
             ),
         )?;
@@ -24713,7 +24756,7 @@ pub(crate) fn acknowledge_team_message(
     store: &HarnessStore,
     message_id: &str,
     member_id: &str,
-) -> CliResult<TeamMessage> {
+) -> CliResult<ProviderDispatchEnvelope> {
     let message = latest_team_messages_in_append_order(store)?
         .into_iter()
         .find(|message| message.id == message_id)
@@ -24780,9 +24823,9 @@ pub(crate) fn acknowledge_team_message(
 fn member_spawn_cwd(
     project_context: Option<&ProjectContext>,
     run: &AgentTeamRun,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
 ) -> PathBuf {
-    if let Some(worktree) = &member.worktree_ref {
+    if let Some(worktree) = &member.provider_cwd_hint {
         if !worktree.is_empty() {
             return PathBuf::from(worktree);
         }
@@ -24910,21 +24953,21 @@ fn kimi_interaction_prompt(frame: &serde_json::Value) -> String {
 #[derive(Debug)]
 struct ProviderInteractionReply {
     result: serde_json::Value,
-    claimed_response: Option<TeamMessage>,
+    claimed_response: Option<ProviderDispatchEnvelope>,
 }
 
 fn provider_interaction_request_message(
     ledger: &TeamRunLedger,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     provider_request_id: &str,
     method: &str,
     interaction_type: ProviderInteractionType,
     prompt: String,
     options: Vec<ProviderInteractionMessageOption>,
-) -> CliResult<(TeamMessage, bool)> {
+) -> CliResult<(ProviderDispatchEnvelope, bool)> {
     let native_session = member.native_session.as_ref().ok_or_else(|| {
         CliError::Usage(format!(
-            "MemberRun {} has no native session for provider interaction",
+            "ProviderRuntimeProjection {} has no native session for provider interaction",
             member.id
         ))
     })?;
@@ -24946,7 +24989,7 @@ fn provider_interaction_request_message(
         .into_iter()
         .filter(|message| {
             message.team_run_id == ledger.run_id
-                && message.kind == TeamMessageKind::ProviderInteractionRequest
+                && message.kind == ProviderDispatchIntent::ProviderInteractionRequest
                 && message.correlation_id == correlation_id
         })
         .collect::<Vec<_>>();
@@ -24961,30 +25004,30 @@ fn provider_interaction_request_message(
 
     let created_at = now_string();
     let sender = TeamActorRef {
-        kind: TeamActorKind::MemberRun,
+        kind: TeamActorKind::ProviderRuntimeProjection,
         id: member.id.clone(),
         display_name: Some(member.name.clone()),
         authn_source: Some("provider_reverse_request".to_string()),
     };
-    let request = TeamMessage {
+    let request = ProviderDispatchEnvelope {
         id: format!(
             "tmsg-provider-request-{}",
             content_hash_hex16(&correlation_id)
         ),
         team_run_id: ledger.run_id.clone(),
         work_id: None,
-        origin_wave_id: None,
+        source_plan_ref: None,
         sender: Some(sender.clone()),
-        from_member_id: member.id.clone(),
+        sender_runtime_id: member.id.clone(),
         recipients: vec![compatibility_team_recipient("host")],
-        to_member_ids: vec!["host".to_string()],
-        kind: TeamMessageKind::ProviderInteractionRequest,
+        recipient_runtime_ids: vec!["host".to_string()],
+        kind: ProviderDispatchIntent::ProviderInteractionRequest,
         body: canonical_body,
         correlation_id,
         causation_id: None,
-        response_intent: Some(TeamMessageResponseIntent::ResponseRequired),
+        response_intent: Some(ProviderResponseIntent::ResponseRequired),
         evidence_refs: Vec::new(),
-        deliveries: vec![TeamMessageDelivery {
+        deliveries: vec![ProviderDispatchAttempt {
             member_id: "host".to_string(),
             policy: TeamDeliveryPolicy::ManualAck,
             status: TeamDeliveryStatus::Delivered,
@@ -25018,9 +25061,14 @@ fn provider_interaction_request_message(
 
 fn wait_for_provider_interaction_response(
     ledger: &TeamRunLedger,
-    member: &MemberRun,
-    request: &TeamMessage,
-) -> CliResult<Option<(ProviderInteractionResponseBody, Option<TeamMessage>)>> {
+    member: &ProviderRuntimeProjection,
+    request: &ProviderDispatchEnvelope,
+) -> CliResult<
+    Option<(
+        ProviderInteractionResponseBody,
+        Option<ProviderDispatchEnvelope>,
+    )>,
+> {
     loop {
         ledger.require_supervisor_lease()?;
         let latest_member = ledger
@@ -25043,7 +25091,7 @@ fn wait_for_provider_interaction_response(
         let response = messages
             .iter()
             .find(|message| {
-                message.kind == TeamMessageKind::ProviderInteractionResponse
+                message.kind == ProviderDispatchIntent::ProviderInteractionResponse
                     && message.causation_id.as_deref() == Some(request.id.as_str())
             })
             .cloned();
@@ -25107,7 +25155,7 @@ fn complete_provider_interaction_reply(
 
 fn handle_codex_provider_request(
     ledger: &TeamRunLedger,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     frame: &serde_json::Value,
 ) -> CliResult<ProviderInteractionReply> {
     let supplied_member = member;
@@ -25340,7 +25388,7 @@ fn handle_codex_provider_request(
 
 fn handle_kimi_provider_request(
     ledger: &TeamRunLedger,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     frame: &serde_json::Value,
 ) -> CliResult<ProviderInteractionReply> {
     let supplied_member = member;
@@ -25401,7 +25449,7 @@ fn handle_kimi_provider_request(
         })
         .unwrap_or_else(|| generated_id("provider-request"));
     let prompt = kimi_interaction_prompt(frame);
-    // Re-read and validate the canonical MemberRun before any callback branch
+    // Re-read and validate the canonical ProviderRuntimeProjection before any callback branch
     // can acknowledge provider work. In particular, the bounded full-access
     // receipt below must never be written from a stale callback snapshot.
     let member = ledger
@@ -25415,7 +25463,7 @@ fn handle_kimi_provider_request(
     // it directly and retain only a bounded control receipt; persisting a
     // synthetic pending -> approved pair floods the Lead inbox and falsely
     // implies that a Human or policy decision was required. The receipt is
-    // bounded to the first safe acknowledgement per MemberRun: one durable row
+    // bounded to the first safe acknowledgement per ProviderRuntimeProjection: one durable row
     // proves the policy became active, later per-tool prompts are answered the
     // same way without new rows, and no tool title or command text is logged.
     if interaction_type == ProviderInteractionType::ToolApproval {
@@ -25454,7 +25502,7 @@ fn handle_kimi_provider_request(
     // ACP can only answer `session/request_permission` with a provider option.
     // An unknown request with no options has no recoverable native responder;
     // fail closed in-process instead of creating a durable request that no
-    // valid TeamMessage response could ever deliver.
+    // valid ProviderDispatchEnvelope response could ever deliver.
     if interaction_type == ProviderInteractionType::Unknown {
         return Ok(ProviderInteractionReply {
             result: serde_json::json!({"outcome": {"outcome": "cancelled"}}),
@@ -25544,7 +25592,7 @@ fn handle_kimi_provider_request(
 /// without changing this ledger contract.
 struct MemberUpdateMapper<'a> {
     ledger: &'a TeamRunLedger,
-    member: MemberRun,
+    member: ProviderRuntimeProjection,
     live_sink: Option<LiveMemberActivitySink>,
     last_live_activity_at: Instant,
     text: String,
@@ -25556,7 +25604,7 @@ struct MemberUpdateMapper<'a> {
 impl<'a> MemberUpdateMapper<'a> {
     fn new(
         ledger: &'a TeamRunLedger,
-        member: MemberRun,
+        member: ProviderRuntimeProjection,
         live_sink: Option<LiveMemberActivitySink>,
     ) -> Self {
         Self {
@@ -25660,7 +25708,7 @@ impl<'a> MemberUpdateMapper<'a> {
         &self.text
     }
 
-    fn into_member(self) -> MemberRun {
+    fn into_member(self) -> ProviderRuntimeProjection {
         self.member
     }
 }
@@ -25752,8 +25800,8 @@ struct MemberCollaborationEnvelope {
     member_run_id: String,
     work_id: Option<String>,
     work_version: Option<u64>,
-    origin_wave_id: Option<String>,
-    roster: Vec<MemberRun>,
+    source_plan_ref: Option<String>,
+    roster: Vec<ProviderRuntimeProjection>,
 }
 
 impl MemberCollaborationEnvelope {
@@ -25779,7 +25827,7 @@ impl MemberCollaborationEnvelope {
             ("PROJECT_ID", self.project_id.as_deref()),
             ("MISSION_ID", self.mission_id.as_deref()),
             ("WORK_ID", self.work_id.as_deref()),
-            ("ORIGIN_WAVE_ID", self.origin_wave_id.as_deref()),
+            ("ORIGIN_WAVE_ID", self.source_plan_ref.as_deref()),
         ] {
             if let Some(value) = value {
                 values.push((format!("FIRM_{suffix}"), value.to_string()));
@@ -25799,7 +25847,7 @@ fn member_collaboration_envelope(
     execution_space_id: Option<&str>,
     project_id: Option<&str>,
     project_selector: Option<&str>,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
 ) -> CliResult<MemberCollaborationEnvelope> {
     let run = latest_team_run(&ledger.store, &ledger.run_id)?;
     let roster = latest_member_runs_in_append_order(&ledger.store)?
@@ -25818,7 +25866,7 @@ fn member_collaboration_envelope(
         member_run_id: member.id.clone(),
         work_id: None,
         work_version: None,
-        origin_wave_id: None,
+        source_plan_ref: None,
         roster,
     })
 }
@@ -25828,7 +25876,7 @@ fn member_work_collaboration_envelope(
     execution_space_id: Option<&str>,
     project_id: Option<&str>,
     project_selector: Option<&str>,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     work: Option<&Work>,
 ) -> CliResult<MemberCollaborationEnvelope> {
     let mut envelope = member_collaboration_envelope(
@@ -25845,7 +25893,7 @@ fn member_work_collaboration_envelope(
 
 fn work_contract_prompt(
     objective: &str,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     work: &Work,
     envelope: &MemberCollaborationEnvelope,
 ) -> String {
@@ -25870,7 +25918,7 @@ fn work_contract_prompt(
          \n\
          CURRENT WORK (the Works board is the sole ownership authority)\n\
          - TeamRun: {team_run_id}\n\
-         - MemberRun: {member_run_id}\n\
+         - ProviderRuntimeProjection: {member_run_id}\n\
          - Work: {work_id} version {work_version}\n\
          - Title: {title}\n\
          - Context:\n{work_context}\n\
@@ -25884,7 +25932,7 @@ fn work_contract_prompt(
            \"$HARNESS_BIN\" team-run work start --team-run-id {team_run_id} --work-id {work_id} --member-run-id {member_run_id} --expected-version {work_version}\n\
          - Read the board: \"$HARNESS_BIN\" team-run work list --team-run-id {team_run_id}\n\
          - Inspect the latest version before every transition: \"$HARNESS_BIN\" team-run work show --work-id {work_id}\n\
-         - Ordinary TeamMessage is conversation only. Link discussion with --work-id {work_id}; never create or transfer ownership through chat.\n\
+         - Ordinary ProviderDispatchEnvelope is conversation only. Link discussion with --work-id {work_id}; never create or transfer ownership through chat.\n\
          - Ask Host: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to host --kind message --work-id {work_id} --body \"QUESTION: <question and recommendation>\" --json\n\
          - Ask a peer to act: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to <peer-member-run-id> --kind message --work-id {work_id} --response-required --body \"COORDINATION: <request>\" --json\n\
          - If blocked, run team-run work block with team/member/work ids, the latest expected version, and a reason; then send a concise Work-linked message explaining the decision needed.\n\
@@ -25907,7 +25955,7 @@ fn work_contract_prompt(
 
 fn active_work_continuation_prompt(
     objective: &str,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     work: &Work,
     envelope: &MemberCollaborationEnvelope,
 ) -> String {
@@ -25917,7 +25965,7 @@ fn active_work_continuation_prompt(
     {
         return format!(
             "SHARED WORK AVAILABLE\n\
-             Work {work_id} version {work_version} is ready on the Team Works board and this Member is eligible to claim it. No WorkDelivery or Assignment Message was created. Inspect the latest board, then use the bound member CLI to claim it atomically before doing any work; if the claim loses a race, refresh the board and do not duplicate effects.\n\n{}",
+             Work {work_id} version {work_version} is ready on the Team Works board and this Member is eligible to claim it. No ProviderWorkDispatch or Assignment RegistryMessage was created. Inspect the latest board, then use the bound member CLI to claim it atomically before doing any work; if the claim loses a race, refresh the board and do not duplicate effects.\n\n{}",
             work_contract_prompt(objective, member, work, envelope),
             work_id = work.id,
             work_version = work.version,
@@ -25925,7 +25973,7 @@ fn active_work_continuation_prompt(
     }
     format!(
         "ACTIVE WORK CONTINUATION\n\
-         Work {work_id} version {work_version} is still assigned to this MemberRun and has not reached review or a terminal state. No new WorkDelivery or TeamMessage was created: continue the same durable responsibility in the same provider-native session. Inspect the native session and Workspace before acting so you do not duplicate completed effects.\n\n{}",
+         Work {work_id} version {work_version} is still assigned to this ProviderRuntimeProjection and has not reached review or a terminal state. No new ProviderWorkDispatch or ProviderDispatchEnvelope was created: continue the same durable responsibility in the same provider-native session. Inspect the native session and Workspace before acting so you do not duplicate completed effects.\n\n{}",
         work_contract_prompt(objective, member, work, envelope),
         work_id = work.id,
         work_version = work.version,
@@ -25935,7 +25983,7 @@ fn active_work_continuation_prompt(
 #[cfg(any())] // delete after the Work-first provider prompt migration is fully green
 fn contract_prompt(
     objective: &str,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     assignment_body: &str,
     envelope: &MemberCollaborationEnvelope,
 ) -> String {
@@ -25969,17 +26017,17 @@ fn contract_prompt(
         .as_deref()
         .unwrap_or("none");
     let mission_id = envelope.mission_id.as_deref().unwrap_or("none");
-    let origin_wave_id = envelope.origin_wave_id.as_deref().unwrap_or("none");
+    let source_plan_ref = envelope.source_plan_ref.as_deref().unwrap_or("none");
     format!(
         "You are {name}, the {role} member of agent team run \"{objective}\".\n\
          \n\
          COORDINATION IDENTITY\n\
          - Mission: {mission_id}\n\
          - TeamRun: {team_run_id}\n\
-         - MemberRun: {member_run_id}\n\
+         - ProviderRuntimeProjection: {member_run_id}\n\
          - Assignment message: {assignment_id}\n\
          - Assignment correlation: {correlation_id}\n\
-         - Origin Wave (Host-plan provenance only): {origin_wave_id}\n\
+         - Origin Wave (Host-plan provenance only): {source_plan_ref}\n\
          \n\
          TEAM ROSTER\n\
          {roster}\n\
@@ -25989,7 +26037,7 @@ fn contract_prompt(
          - Definition of done: {assignment_body}\n\
          - Evidence: every claim in your report must be backed by something another agent can re-run (commands, tests, file diffs).\n\
          - Permission boundary: the provider currently has full local execution permission, but owned paths and this Assignment remain the product/acceptance boundary. Do NOT deploy, push, merge, or delete anything; do not modify files outside owned paths. Sensitive or ambiguous external actions must be escalated to Host/Policy/Human.\n\
-         - You may use provider-native subagents freely inside your own plan. They are your implementation detail: do not create an implicit MemberRun, and keep responsibility, permissions, and evidence under this MemberRun.\n\
+         - You may use provider-native subagents freely inside your own plan. They are your implementation detail: do not create an implicit ProviderRuntimeProjection, and keep responsibility, permissions, and evidence under this ProviderRuntimeProjection.\n\
          - You own this Assignment across multiple turns until Host explicitly accepts your handoff. Ask questions and coordinate early rather than silently guessing.\n\
          - PLANNING: Present plans as ordinary Markdown messages to Host. Do NOT use EnterPlanMode, ExitPlanMode, or any provider-native plan/gate approval feature — they block you indefinitely in headless team context (the approval UI auto-dismisses and creates a loop). Harness has no Plan Gate. Write the plan as text, then send it to Host as a message.\n\
          \n\
@@ -25998,7 +26046,7 @@ fn contract_prompt(
          - Read actionable inbox: \"$HARNESS_BIN\" team-run inbox --id {team_run_id} --member-run-id {member_run_id} --json\n\
          - Read all received coordination messages (latest stored state): \"$HARNESS_BIN\" team-run inbox --id {team_run_id} --member-run-id {member_run_id} --all --json\n\
          - Ask Host: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to host --kind message --body \"QUESTION: <question and recommendation>\" --correlation-id {correlation_id} --causation-id {assignment_id} --json\n\
-         - Message a peer: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to <peer-member-run-id> --kind message --body \"COORDINATION: <what the peer needs>\" --correlation-id {correlation_id} --json\n\
+         - RegistryMessage a peer: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to <peer-member-run-id> --kind message --body \"COORDINATION: <what the peer needs>\" --correlation-id {correlation_id} --json\n\
          - Response intent: mail to Host is response-required by default, so your questions, blockers, and plans always reach Host. Ordinary message mail to a PEER member is informational by default — durable and correlated, but it never wakes that idle peer into a new provider round, so acknowledgement-only peer notes converge instead of ping-ponging. Add --response-required when you need a peer to act and reply (QUESTION, BLOCKER, review request); add --informational when a note to Host is genuinely FYI-only.\n\
          - Submit handoff: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to host --kind handoff --body \"<result and evidence>\" --correlation-id {correlation_id} --causation-id {assignment_id} --json\n\
          - Submit a requested plan/revision: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to host --kind message --body \"<Markdown plan>\" --correlation-id {correlation_id} --causation-id <host-message-id> --json\n\
@@ -26622,7 +26670,7 @@ fn handle_sse_stream(
                             }
                         }
                     }
-                    sse::SseEventFrame::Message(msg) => {
+                    sse::SseEventFrame::RegistryMessage(msg) => {
                         if let Ok(json) = serde_json::to_value(&msg) {
                             if sse::write_sse_frame(&mut stream, "message", &json).is_err() {
                                 break; // Client disconnected
@@ -26674,14 +26722,14 @@ fn handle_sse_stream(
                             }
                         }
                     }
-                    sse::SseEventFrame::MemberRun(member) => {
+                    sse::SseEventFrame::ProviderRuntimeProjection(member) => {
                         if let Ok(json) = serde_json::to_value(&member) {
                             if sse::write_sse_frame(&mut stream, "member_run", &json).is_err() {
                                 break;
                             }
                         }
                     }
-                    sse::SseEventFrame::TeamMessage(message) => {
+                    sse::SseEventFrame::ProviderDispatchEnvelope(message) => {
                         if let Ok(json) = serde_json::to_value(&message) {
                             if sse::write_sse_frame(&mut stream, "team_message", &json).is_err() {
                                 break;
@@ -28243,7 +28291,7 @@ fn handle_http_connection(
     }
 
     // POST /v1/team-runs/{id}/members/{member-id}/reopen — reactivate the same
-    // MemberRun and, when no Supervisor currently owns the run, start one so a
+    // ProviderRuntimeProjection and, when no Supervisor currently owns the run, start one so a
     // managed adapter process resumes the recorded provider-native session.
     if let Some(rest) = path_only.strip_prefix("/v1/team-runs/") {
         let parts = rest.split('/').collect::<Vec<_>>();
@@ -28688,7 +28736,7 @@ fn handle_http_action(
             model: optional_json_string(body, "model")?,
             effort: optional_json_string(body, "effort")?,
             service_tier: optional_json_string(body, "service_tier")?,
-            worktree_ref: optional_json_string(body, "worktree_ref")?,
+            provider_cwd_hint: optional_json_string(body, "provider_cwd_hint")?,
             owned_paths: optional_json_string_array(body, "owned_paths")?,
             resume_native_session_id: optional_json_string(body, "resume_native_session_id")?,
             initial_work: None,
@@ -28700,7 +28748,7 @@ fn handle_http_action(
             team_run_id,
             &member,
             initial_work.as_deref(),
-            optional_json_string(body, "origin_wave_id")?,
+            optional_json_string(body, "source_plan_ref")?,
         )?;
         return Ok(serde_json::json!({
             "team_run": run,
@@ -28815,12 +28863,12 @@ fn steer_team_member_value(
         team_run_id,
         &sender,
         vec![member_run_id.to_string()],
-        TeamMessageKind::Control,
+        ProviderDispatchIntent::Control,
         &content,
         None,
         correlation_id,
         causation_id,
-        json_string(body, "origin_wave_id"),
+        json_string(body, "source_plan_ref"),
         TeamMessageDeliveryMode::InjectDelivered,
         None,
     )?;
@@ -28894,15 +28942,15 @@ fn cancel_pending_member_interactions(
     requested_by: &str,
     reason: &str,
 ) -> CliResult<()> {
-    // Message-bridged provider requests have no PendingInteraction row. ACK
+    // RegistryMessage-bridged provider requests have no PendingInteraction row. ACK
     // the delivered Host request without fabricating an answer; the blocked
     // provider callback observes the ACK and returns a native cancellation.
     for request in latest_team_messages_in_append_order(store)?
         .into_iter()
         .filter(|message| {
             message.team_run_id == team_run_id
-                && message.kind == TeamMessageKind::ProviderInteractionRequest
-                && message.from_member_id == member_run_id
+                && message.kind == ProviderDispatchIntent::ProviderInteractionRequest
+                && message.sender_runtime_id == member_run_id
                 && message.deliveries.iter().any(|delivery| {
                     delivery.member_id == "host" && delivery.status == TeamDeliveryStatus::Delivered
                 })
@@ -29213,7 +29261,7 @@ pub(crate) fn reopen_team_member_value(
         .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
     if member.coordination_is_retired() {
         return Err(CliError::Usage(format!(
-            "member run {member_run_id} is retired; create a new MemberRun instead"
+            "member run {member_run_id} is retired; create a new ProviderRuntimeProjection instead"
         )));
     }
     if member.coordination_is_active() {
@@ -29539,7 +29587,7 @@ fn resolve_provider_interaction_message_value(
         .find(|message| message.id == request_id)
         .ok_or_else(|| CliError::Usage(format!("interaction not found: {request_id}")))?;
     if request.team_run_id != team_run_id
-        || request.kind != TeamMessageKind::ProviderInteractionRequest
+        || request.kind != ProviderDispatchIntent::ProviderInteractionRequest
     {
         return Err(CliError::Usage(format!(
             "interaction {request_id} is not a provider request in team run {team_run_id}"
@@ -29604,30 +29652,30 @@ fn resolve_provider_interaction_message_value(
     let existed = latest_team_messages_in_append_order(store)?
         .into_iter()
         .any(|message| {
-            message.kind == TeamMessageKind::ProviderInteractionResponse
+            message.kind == ProviderDispatchIntent::ProviderInteractionResponse
                 && message.causation_id.as_deref() == Some(request_id)
         });
-    let response = TeamMessage {
+    let response = ProviderDispatchEnvelope {
         id: response_id,
         team_run_id: team_run_id.to_string(),
         work_id: request.work_id.clone(),
-        origin_wave_id: request.origin_wave_id.clone(),
+        source_plan_ref: request.source_plan_ref.clone(),
         sender: Some(sender.clone()),
-        from_member_id: match sender.kind {
+        sender_runtime_id: match sender.kind {
             TeamActorKind::Host => "host".to_string(),
             TeamActorKind::Operator => format!("operator:{}", sender.id),
             TeamActorKind::Service => format!("service:{}", sender.id),
             _ => unreachable!("provider response authority is coordination-plane only"),
         },
         recipients: vec![compatibility_team_recipient(&request_body.member)],
-        to_member_ids: vec![request_body.member.clone()],
-        kind: TeamMessageKind::ProviderInteractionResponse,
+        recipient_runtime_ids: vec![request_body.member.clone()],
+        kind: ProviderDispatchIntent::ProviderInteractionResponse,
         body: response_json,
         correlation_id: request.correlation_id.clone(),
         causation_id: Some(request.id.clone()),
-        response_intent: Some(TeamMessageResponseIntent::Informational),
+        response_intent: Some(ProviderResponseIntent::Informational),
         evidence_refs: Vec::new(),
-        deliveries: vec![TeamMessageDelivery {
+        deliveries: vec![ProviderDispatchAttempt {
             member_id: request_body.member.clone(),
             policy: TeamDeliveryPolicy::Inject,
             status: TeamDeliveryStatus::Queued,
@@ -29964,7 +30012,7 @@ fn create_message_value(
     if let Some(member) = target.as_ref() {
         ensure_member_accepts_delivery(member)?;
     }
-    let message = Message {
+    let message = RegistryMessage {
         id: json_string(body, "id").unwrap_or_else(|| generated_id("msg")),
         task_id: json_string(body, "task_id").or_else(|| json_string(body, "task")),
         from_agent_id: required_json_string(body, "from_agent_id")
@@ -29972,7 +30020,7 @@ fn create_message_value(
         to_agent_id,
         channel: json_string(body, "channel"),
         kind: parse_message_kind(json_string(body, "kind").as_deref().unwrap_or("message"))?,
-        delivery_status: MessageDeliveryStatus::Queued,
+        delivery_status: RegistryDeliveryStatus::Queued,
         content: required_json_string(body, "content")?,
         evidence_ids: json_string_array(body, "evidence_ids"),
         created_at: now_string(),
@@ -29990,7 +30038,7 @@ fn create_message_value(
             member.provider_runtime_id.as_deref(),
             message.task_id.as_deref(),
             "message_queued",
-            "Message queued for Agent Member",
+            "RegistryMessage queued for Agent Member",
             None,
         )?;
     }
@@ -30463,7 +30511,7 @@ fn create_team_run_value(
             model: optional_json_string(member, "model")?,
             effort: optional_json_string(member, "effort")?,
             service_tier: optional_json_string(member, "service_tier")?,
-            worktree_ref: optional_json_string(member, "worktree_ref")?,
+            provider_cwd_hint: optional_json_string(member, "provider_cwd_hint")?,
             owned_paths,
             resume_native_session_id: optional_json_string(member, "resume_native_session_id")?,
             initial_work: optional_json_string(member, "initial_work")?,
@@ -30521,22 +30569,22 @@ fn send_team_message_value(
     team_run_id: &str,
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
-    let to_member_ids = json_string_array(body, "to_member_ids");
-    if to_member_ids.is_empty() {
+    let recipient_runtime_ids = json_string_array(body, "recipient_runtime_ids");
+    if recipient_runtime_ids.is_empty() {
         return Err(CliError::Usage(
-            "missing JSON field: to_member_ids".to_string(),
+            "missing JSON field: recipient_runtime_ids".to_string(),
         ));
     }
     // Bare Dashboard writes default to the Operator control plane, which is
     // response-required under the sender-aware default (ADR 0012: the
     // Dashboard is a control plane, so an Operator reply must wake an idle
     // member). An HTTP caller speaking FOR a member must say so explicitly
-    // with `sender_kind`/`sender_id`; `from_member_id` alone is a historical
+    // with `sender_kind`/`sender_id`; `sender_runtime_id` alone is a historical
     // projection field and does not carry provenance.
     let sender_kind = json_string(body, "sender_kind").unwrap_or_else(|| "operator".to_string());
     let sender_id = json_string(body, "sender_id").unwrap_or_else(|| {
         if sender_kind == "host" || sender_kind == "member_run" {
-            json_string(body, "from_member_id").unwrap_or_else(|| "operator".to_string())
+            json_string(body, "sender_runtime_id").unwrap_or_else(|| "operator".to_string())
         } else {
             "operator".to_string()
         }
@@ -30550,13 +30598,13 @@ fn send_team_message_value(
             display_name: json_string(body, "sender_name"),
             authn_source: Some("http_request".to_string()),
         },
-        to_member_ids,
+        recipient_runtime_ids,
         parse_team_message_kind(&required_json_string(body, "kind")?)?,
         &required_json_string(body, "body")?,
         json_string(body, "work_id"),
         json_string(body, "correlation_id"),
         json_string(body, "causation_id"),
-        json_string(body, "origin_wave_id"),
+        json_string(body, "source_plan_ref"),
         // Strict: a present-but-not-a-string `response_intent` is a caller
         // error, never a silent fall-through to the default.
         optional_json_string(body, "response_intent")?
@@ -30876,7 +30924,7 @@ fn workflow_effective_effort<'a>(
 }
 
 /// The REAL agent-step driver. Drives one provider delivery through the neutral
-/// seam: (1) queue a Message addressed to the member, (2) deliver exactly that
+/// seam: (1) queue a RegistryMessage addressed to the member, (2) deliver exactly that
 /// message via `deliver_agent_messages_value` (which claims + runs
 /// `run_provider_delivery`), and (3) reduce the explicit provider outcome into
 /// a [`workflow::StepResult`]. Provider history remains in its native session.
@@ -31342,7 +31390,7 @@ fn workflow_repo_root(project: &ProjectContext) -> PathBuf {
 
 /// Resolve the cwd a PERSISTENT provider delivery (codex / claude) runs from
 /// (goal-multi-project P3, Stage 3). Precedence:
-///   1. `member.worktree_ref` — an explicitly pinned workspace always wins.
+///   1. `member.provider_cwd_hint` — an explicitly pinned workspace always wins.
 ///   2. `project.project_root` — the SELECTED project's root, so the worker reads
 ///      the right `CLAUDE.md` / `AGENTS.md` / `.claude/` even when a long-running
 ///      `serve` switched projects and never `cd`d.
@@ -31353,7 +31401,7 @@ fn workflow_repo_root(project: &ProjectContext) -> PathBuf {
 /// Returns a display string (the `Command::current_dir` callers already pass a
 /// string) defaulting to `"."` only if even the process cwd is unreadable.
 fn delivery_worker_cwd(member: &ProviderLaunchProfile, project: &ProjectContext) -> String {
-    if let Some(worktree) = member.worktree_ref.clone() {
+    if let Some(worktree) = member.provider_cwd_hint.clone() {
         return worktree;
     }
     let project_root = project.project_root.as_path();
@@ -34959,10 +35007,10 @@ fn deliver_agent_messages_value(
             member.id
         )));
     }
-    let queued: Vec<Message> = latest_messages_in_append_order(store)?
+    let queued: Vec<RegistryMessage> = latest_messages_in_append_order(store)?
         .into_iter()
         .filter(|message| message.to_agent_id.as_deref() == Some(agent_id.as_str()))
-        .filter(|message| message.delivery_status == MessageDeliveryStatus::Queued)
+        .filter(|message| message.delivery_status == RegistryDeliveryStatus::Queued)
         .filter(|message| {
             message_filter
                 .as_ref()
@@ -35137,7 +35185,7 @@ fn deliver_agent_messages_value(
         let delivery_unresolved = provider_status_blocks_delivery(&delivery.status);
         let mut delivered_message = latest_message(store, &claimed_message.id)?;
         delivered_message.delivery_status = message_status_for_delivery(&delivery.status);
-        delivered_message.delivery = Some(MessageDelivery {
+        delivered_message.delivery = Some(RegistryDeliveryAttempt {
             delivery_id: Some(delivery_id.clone()),
             execution_status: Some(delivery.status.clone()),
             native_session: delivery.native_session.clone(),
@@ -35154,14 +35202,14 @@ fn deliver_agent_messages_value(
         });
         store.append_message(&delivered_message)?;
         if !delivery_unresolved {
-            let report = Message {
+            let report = RegistryMessage {
                 id: generated_id("msg"),
                 task_id: delivered_message.task_id.clone(),
                 from_agent_id: member.id.clone(),
                 to_agent_id: None,
                 channel: Some("provider-report".into()),
-                kind: MessageKind::Report,
-                delivery_status: MessageDeliveryStatus::Delivered,
+                kind: RegistryMessageIntent::Report,
+                delivery_status: RegistryDeliveryStatus::Delivered,
                 content: delivery.summary.clone(),
                 evidence_ids: delivery.evidence_ids.clone(),
                 created_at: now_string(),
@@ -35265,7 +35313,7 @@ fn provider_gateway_tick_value(
     let expired_claims = expire_safe_delivery_claims_value(store, options.claim_ttl_ms)?;
     let mut agent_ids = Vec::new();
     for message in latest_messages_in_append_order(store)? {
-        if message.delivery_status == MessageDeliveryStatus::Queued {
+        if message.delivery_status == RegistryDeliveryStatus::Queued {
             if let Some(agent_id) = message.to_agent_id {
                 if !agent_ids.contains(&agent_id) {
                     agent_ids.push(agent_id);
@@ -35317,7 +35365,7 @@ fn expire_safe_delivery_claims_value(
     let messages = latest_messages(store)?;
     let mut expired = Vec::new();
     for message in messages.values() {
-        if message.delivery_status != MessageDeliveryStatus::Acknowledged {
+        if message.delivery_status != RegistryDeliveryStatus::Acknowledged {
             continue;
         }
         let Some(delivery) = message.delivery.as_ref() else {
@@ -35380,10 +35428,10 @@ fn claim_message_for_delivery(
     store: &HarnessStore,
     member: &ProviderLaunchProfile,
     _runtime: Option<&ProviderProcess>,
-    message: &Message,
+    message: &RegistryMessage,
     delivery_id: &str,
-) -> CliResult<Option<Message>> {
-    let delivery = MessageDelivery {
+) -> CliResult<Option<RegistryMessage>> {
+    let delivery = RegistryDeliveryAttempt {
         delivery_id: Some(delivery_id.to_string()),
         execution_status: Some(ProviderExecutionStatus::Running),
         native_session: member.native_session.clone(),
@@ -35458,7 +35506,7 @@ fn retry_delivery_value(
         &format!("delivery-attempt:{delivery_id}"),
         reason,
     )?;
-    message.delivery_status = MessageDeliveryStatus::Queued;
+    message.delivery_status = RegistryDeliveryStatus::Queued;
     message.delivery = None;
     store.append_message(&message)?;
     append_agent_event(
@@ -35508,7 +35556,7 @@ fn record_operator_evidence(
 fn record_claimed_delivery_terminal(
     store: &HarnessStore,
     delivery_id: &str,
-    message: &Message,
+    message: &RegistryMessage,
     _status: ProviderExecutionStatus,
     _provider_thread_id: Option<String>,
     _provider_turn_id: Option<String>,
@@ -35535,23 +35583,23 @@ fn record_claimed_delivery_terminal(
     Ok(vec![evidence_id])
 }
 
-fn message_status_for_delivery(status: &ProviderExecutionStatus) -> MessageDeliveryStatus {
+fn message_status_for_delivery(status: &ProviderExecutionStatus) -> RegistryDeliveryStatus {
     message_status_for_terminal(status, None)
 }
 
 fn message_status_for_terminal(
     status: &ProviderExecutionStatus,
     terminal_source: Option<&MessageTerminalSource>,
-) -> MessageDeliveryStatus {
+) -> RegistryDeliveryStatus {
     match status {
-        ProviderExecutionStatus::Succeeded => MessageDeliveryStatus::Delivered,
-        ProviderExecutionStatus::Running => MessageDeliveryStatus::Acknowledged,
+        ProviderExecutionStatus::Succeeded => RegistryDeliveryStatus::Delivered,
+        ProviderExecutionStatus::Running => RegistryDeliveryStatus::Acknowledged,
         ProviderExecutionStatus::Stale
             if terminal_source != Some(&MessageTerminalSource::Failed) =>
         {
-            MessageDeliveryStatus::Acknowledged
+            RegistryDeliveryStatus::Acknowledged
         }
-        _ => MessageDeliveryStatus::Failed,
+        _ => RegistryDeliveryStatus::Failed,
     }
 }
 
@@ -35587,7 +35635,7 @@ fn provider_developer_instructions(member: &ProviderLaunchProfile) -> String {
 // Test-only helper: builds the codex app-server turn input envelope. Exercised by
 // unit tests; not yet wired into the live delivery path (kept for the WP that lands it).
 #[cfg(test)]
-fn build_turn_input(message: &Message, delivery_attempt_id: &str) -> serde_json::Value {
+fn build_turn_input(message: &RegistryMessage, delivery_attempt_id: &str) -> serde_json::Value {
     serde_json::json!([{
         "type": "text",
         "text": format!(
@@ -35629,7 +35677,7 @@ fn reconcile_running_delivery_attempts(
         .into_iter()
         .filter(|message| {
             message.to_agent_id.as_deref() == Some(agent_member_id)
-                && message.delivery_status == MessageDeliveryStatus::Acknowledged
+                && message.delivery_status == RegistryDeliveryStatus::Acknowledged
                 && task_id.is_none_or(|task_id| message.task_id.as_deref() == Some(task_id))
                 && message.delivery.as_ref().is_some_and(|delivery| {
                     matches!(
@@ -35646,7 +35694,7 @@ fn reconcile_running_delivery_attempts(
                 })
         })
     {
-        message.delivery_status = MessageDeliveryStatus::Delivered;
+        message.delivery_status = RegistryDeliveryStatus::Delivered;
         if let Some(delivery) = message.delivery.as_mut() {
             delivery.execution_status = Some(ProviderExecutionStatus::Succeeded);
             delivery.terminal_source = Some(terminal_source.clone());
@@ -35668,14 +35716,14 @@ fn reconcile_running_delivery_attempts(
             .as_ref()
             .and_then(|delivery| delivery.delivery_id.as_deref())
             .unwrap_or("unknown");
-        store.append_message(&Message {
+        store.append_message(&RegistryMessage {
             id: generated_id("msg"),
             task_id: message.task_id.clone(),
             from_agent_id: agent_member_id.into(),
             to_agent_id: None,
             channel: Some("provider-report".into()),
-            kind: MessageKind::Report,
-            delivery_status: MessageDeliveryStatus::Delivered,
+            kind: RegistryMessageIntent::Report,
+            delivery_status: RegistryDeliveryStatus::Delivered,
             content: format!("Delivery {delivery_id} completed from provider-native activity"),
             evidence_ids: message.evidence_ids.clone(),
             created_at: now_string(),
@@ -36041,7 +36089,7 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
             let queued_count = messages
                 .iter()
                 .filter(|message| message.to_agent_id.as_ref() == Some(&member.id))
-                .filter(|message| message.delivery_status == MessageDeliveryStatus::Queued)
+                .filter(|message| message.delivery_status == RegistryDeliveryStatus::Queued)
                 .count();
             let child_thread_count = provider_child_threads
                 .iter()
@@ -36315,13 +36363,13 @@ fn latest_member(store: &HarnessStore, member_id: &str) -> CliResult<ProviderLau
         .ok_or_else(|| CliError::Usage(format!("agent member not found: {member_id}")))
 }
 
-fn latest_message(store: &HarnessStore, message_id: &str) -> CliResult<Message> {
+fn latest_message(store: &HarnessStore, message_id: &str) -> CliResult<RegistryMessage> {
     latest_messages(store)?
         .remove(message_id)
         .ok_or_else(|| CliError::Usage(format!("message not found: {message_id}")))
 }
 
-fn latest_messages(store: &HarnessStore) -> CliResult<BTreeMap<String, Message>> {
+fn latest_messages(store: &HarnessStore) -> CliResult<BTreeMap<String, RegistryMessage>> {
     let mut messages = BTreeMap::new();
     for message in store.messages()? {
         messages.insert(message.id.clone(), message);
@@ -36359,7 +36407,9 @@ fn latest_team_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec<Agent
     Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
 }
 
-fn latest_member_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec<MemberRun>> {
+fn latest_member_runs_in_append_order(
+    store: &HarnessStore,
+) -> CliResult<Vec<ProviderRuntimeProjection>> {
     let mut ids = Vec::new();
     let mut by_id = BTreeMap::new();
     for run in store.member_runs()? {
@@ -36370,7 +36420,9 @@ fn latest_member_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec<Mem
     Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
 }
 
-fn latest_team_messages_in_append_order(store: &HarnessStore) -> CliResult<Vec<TeamMessage>> {
+fn latest_team_messages_in_append_order(
+    store: &HarnessStore,
+) -> CliResult<Vec<ProviderDispatchEnvelope>> {
     let mut ids = Vec::new();
     let mut by_id = BTreeMap::new();
     for message in store.team_messages()? {
@@ -36922,7 +36974,7 @@ fn latest_workflow_steps_in_append_order(store: &HarnessStore) -> CliResult<Vec<
     Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
 }
 
-fn latest_messages_in_append_order(store: &HarnessStore) -> CliResult<Vec<Message>> {
+fn latest_messages_in_append_order(store: &HarnessStore) -> CliResult<Vec<RegistryMessage>> {
     let mut message_ids = Vec::new();
     let mut messages_by_id = BTreeMap::new();
     for message in store.messages()? {
@@ -37059,7 +37111,7 @@ trait ProviderAdapter: Sync {
     ///
     /// `project` is the selected [`ProjectContext`] (goal-multi-project P3): the
     /// worker's cwd derives from `project.project_root` when the member is not
-    /// pinned to a specific `worktree_ref`, so a long-running `serve` that switched
+    /// pinned to a specific `provider_cwd_hint`, so a long-running `serve` that switched
     /// projects (and never `cd`d) still spawns the worker in the right tree where
     /// its `CLAUDE.md` / `AGENTS.md` live.
     #[allow(clippy::too_many_arguments)]
@@ -37068,7 +37120,7 @@ trait ProviderAdapter: Sync {
         store: &HarnessStore,
         member: &ProviderLaunchProfile,
         runtime: &ProviderProcess,
-        message: &Message,
+        message: &RegistryMessage,
         delivery_id: &str,
         timeout_ms: u64,
         project: &ProjectContext,
@@ -37117,7 +37169,7 @@ impl ProviderAdapter for CodexAdapter {
         store: &HarnessStore,
         member: &ProviderLaunchProfile,
         runtime: &ProviderProcess,
-        message: &Message,
+        message: &RegistryMessage,
         delivery_id: &str,
         timeout_ms: u64,
         project: &ProjectContext,
@@ -37189,7 +37241,7 @@ impl ProviderAdapter for ClaudeAdapter {
         store: &HarnessStore,
         member: &ProviderLaunchProfile,
         runtime: &ProviderProcess,
-        message: &Message,
+        message: &RegistryMessage,
         delivery_id: &str,
         timeout_ms: u64,
         project: &ProjectContext,
@@ -37514,7 +37566,7 @@ fn start_kimi_runtime(
 fn run_kimi_exec_delivery_real(
     session_dir: &Path,
     member: &ProviderLaunchProfile,
-    message: &Message,
+    message: &RegistryMessage,
     timeout_ms: u64,
     project: &ProjectContext,
 ) -> CliResult<ClaudeDeliveryRun> {
@@ -37593,7 +37645,7 @@ fn run_kimi_delivery(
     store: &HarnessStore,
     member: &ProviderLaunchProfile,
     _runtime: &ProviderProcess,
-    message: &Message,
+    message: &RegistryMessage,
     delivery_id: &str,
     timeout_ms: u64,
     project: &ProjectContext,
@@ -37706,7 +37758,7 @@ impl ProviderAdapter for KimiAdapter {
         store: &HarnessStore,
         member: &ProviderLaunchProfile,
         runtime: &ProviderProcess,
-        message: &Message,
+        message: &RegistryMessage,
         delivery_id: &str,
         timeout_ms: u64,
         project: &ProjectContext,
@@ -37789,7 +37841,7 @@ impl ProviderAdapter for PiAdapter {
         _store: &HarnessStore,
         _member: &ProviderLaunchProfile,
         _runtime: &ProviderProcess,
-        _message: &Message,
+        _message: &RegistryMessage,
         _delivery_id: &str,
         _timeout_ms: u64,
         _project: &ProjectContext,
@@ -38261,7 +38313,7 @@ fn write_temp_mcp_config(mcp: Option<&LaunchMcp>) -> CliResult<Option<String>> {
 fn run_codex_exec_process(
     session_dir: &Path,
     member: &ProviderLaunchProfile,
-    message: &Message,
+    message: &RegistryMessage,
     delivery_id: &str,
     timeout_ms: u64,
     project: &ProjectContext,
@@ -38278,7 +38330,7 @@ fn run_codex_exec_process(
     );
 
     let developer_instructions = provider_developer_instructions(member);
-    // cwd precedence (P3, Stage 3): member.worktree_ref → selected
+    // cwd precedence (P3, Stage 3): member.provider_cwd_hint → selected
     // project.project_root → process cwd. Codex discovers AGENTS.md from its cwd,
     // so a `serve` that switched projects must still spawn here in the project root.
     let cwd = delivery_worker_cwd(member, project);
@@ -38425,7 +38477,7 @@ fn codex_mcp_id_key(id: &str) -> String {
 // session truth. The provider owns the transcript, tool history, and resume data.
 struct ExecDeliverySessionRecord<'a> {
     delivery_id: &'a str,
-    message: &'a Message,
+    message: &'a RegistryMessage,
     provider_thread_id: Option<String>,
 }
 
@@ -38461,7 +38513,7 @@ fn run_codex_exec_delivery(
     store: &HarnessStore,
     member: &ProviderLaunchProfile,
     _runtime: &ProviderProcess,
-    message: &Message,
+    message: &RegistryMessage,
     delivery_id: &str,
     timeout_ms: u64,
     project: &ProjectContext,
@@ -38558,7 +38610,7 @@ fn run_provider_delivery(
     store: &HarnessStore,
     member: &ProviderLaunchProfile,
     runtime: &ProviderProcess,
-    message: &Message,
+    message: &RegistryMessage,
     delivery_id: &str,
     timeout_ms: u64,
     project: &ProjectContext,
@@ -38694,7 +38746,7 @@ fn run_claude_delivery(
     store: &HarnessStore,
     member: &ProviderLaunchProfile,
     _runtime: &ProviderProcess,
-    message: &Message,
+    message: &RegistryMessage,
     delivery_id: &str,
     timeout_ms: u64,
     project: &ProjectContext,
@@ -38788,7 +38840,7 @@ fn run_claude_delivery(
 fn run_claude_exec_delivery_real(
     session_dir: &Path,
     member: &ProviderLaunchProfile,
-    message: &Message,
+    message: &RegistryMessage,
     timeout_ms: u64,
     project: &ProjectContext,
 ) -> CliResult<ClaudeDeliveryRun> {
@@ -38805,7 +38857,7 @@ fn run_claude_exec_delivery_real(
     // Compose system prompt (developer instructions from member prompt_ref).
     let system_prompt = provider_developer_instructions(member);
 
-    // cwd precedence (P3, Stage 3): member.worktree_ref → selected
+    // cwd precedence (P3, Stage 3): member.provider_cwd_hint → selected
     // project.project_root → process cwd. Claude Code discovers CLAUDE.md /
     // .claude/ (and keys per-project memory) from its cwd, so a `serve` that
     // switched projects must still spawn here in the selected project root.
@@ -38920,13 +38972,13 @@ fn apply_claude_output_schema_arg(cmd: &mut Command, spec: &LaunchSpec) {
 /// flag (only `-p <prompt>` becomes `--input-format stream-json`).
 fn build_resident_config(
     member: &ProviderLaunchProfile,
-    message: &Message,
+    message: &RegistryMessage,
     project: &ProjectContext,
 ) -> resident::ResidentConfig {
     let spec = build_launch_spec(member, message);
     let system_prompt = provider_developer_instructions(member);
     // Same cwd precedence as the default Claude path (P3, Stage 3):
-    // member.worktree_ref → selected project.project_root → process cwd.
+    // member.provider_cwd_hint → selected project.project_root → process cwd.
     let cwd = delivery_worker_cwd(member, project);
 
     let mcp_config_path = write_temp_mcp_config(spec.mcp.as_ref()).ok().flatten();
@@ -38969,7 +39021,7 @@ fn build_resident_config(
 fn run_claude_resident_delivery_real(
     session_dir: &Path,
     member: &ProviderLaunchProfile,
-    message: &Message,
+    message: &RegistryMessage,
     timeout_ms: u64,
     project: &ProjectContext,
 ) -> CliResult<ClaudeDeliveryRun> {
@@ -39210,22 +39262,20 @@ fn has_flag(args: &[String], name: &str) -> bool {
     args.iter().any(|arg| arg == name)
 }
 
-fn parse_message_kind(value: &str) -> CliResult<MessageKind> {
+fn parse_message_kind(value: &str) -> CliResult<RegistryMessageIntent> {
     match value {
-        "message" => Ok(MessageKind::Message),
-        "assignment" => Ok(MessageKind::Assignment),
-        "report" => Ok(MessageKind::Report),
+        "message" => Ok(RegistryMessageIntent::Message),
+        "report" => Ok(RegistryMessageIntent::Report),
         other => Err(CliError::Usage(format!("unknown message kind: {other}"))),
     }
 }
 
 // Test-only helper: only referenced by build_turn_input (also #[cfg(test)]).
 #[cfg(test)]
-fn message_kind_label(kind: &MessageKind) -> &'static str {
+fn message_kind_label(kind: &RegistryMessageIntent) -> &'static str {
     match kind {
-        MessageKind::Message => "message",
-        MessageKind::Assignment => "assignment",
-        MessageKind::Report => "report",
+        RegistryMessageIntent::Message => "message",
+        RegistryMessageIntent::Report => "report",
     }
 }
 
@@ -43903,8 +43953,12 @@ mod tests {
             Arc::new(AtomicBool::new(true)),
         );
         assert!(matches!(
-            prepare_member_workspace_for_spawn(&ledger, &member, &test_workspace_snapshot(&root),)
-                .expect("successor reconciles pending Close"),
+            prepare_member_workspace_for_spawn(
+                &ledger,
+                &member,
+                &test_provider_environment_observation(&root),
+            )
+            .expect("successor reconciles pending Close"),
             PreSpawnWorkspacePreparation::Superseded
         ));
         let latest = latest_member_runs_in_append_order(&store)
@@ -44637,8 +44691,12 @@ mod tests {
         );
     }
 
-    fn native_open_test_member(provider: &str, mode: &str, session_id: &str) -> MemberRun {
-        MemberRun {
+    fn native_open_test_member(
+        provider: &str,
+        mode: &str,
+        session_id: &str,
+    ) -> ProviderRuntimeProjection {
+        ProviderRuntimeProjection {
             id: "member-native-open".into(),
             team_run_id: "team-native-open".into(),
             slot_id: None,
@@ -44666,8 +44724,8 @@ mod tests {
                 last_verified_at: None,
                 parent_native_session_id: None,
             }),
-            worktree_ref: None,
-            workspace_snapshot: None,
+            provider_cwd_hint: None,
+            provider_environment_observation: None,
             owned_paths: Vec::new(),
             started_at: "unix-ms:1".into(),
             last_event_at: None,
@@ -44682,7 +44740,7 @@ mod tests {
         provider: &str,
         mode: &str,
         session_id: &str,
-    ) -> (TeamRunLedger, MemberRun) {
+    ) -> (TeamRunLedger, ProviderRuntimeProjection) {
         let created = create_team_run(
             store,
             None,
@@ -44705,7 +44763,7 @@ mod tests {
                 model: None,
                 effort: None,
                 service_tier: None,
-                worktree_ref: None,
+                provider_cwd_hint: None,
                 owned_paths: Vec::new(),
                 resume_native_session_id: None,
                 initial_work: None,
@@ -44931,7 +44989,7 @@ mod tests {
         assert_eq!(
             receipts.len(),
             1,
-            "receipts must converge to one per MemberRun: {receipts:?}"
+            "receipts must converge to one per ProviderRuntimeProjection: {receipts:?}"
         );
         let receipt = &receipts[0];
         assert_eq!(
@@ -44959,7 +45017,7 @@ mod tests {
         let (ledger, member) =
             persisted_native_test_member(&store, "kimi", "kimi_acp", "session-receipt-identity");
 
-        // An unrelated provider_control row for the same MemberRun must not
+        // An unrelated provider_control row for the same ProviderRuntimeProjection must not
         // suppress the bounded Kimi receipt: the convergence key is the
         // stable (member_run_id, action_type, title) identity, not the bare
         // action type.
@@ -45319,15 +45377,15 @@ package:com.tencent.mm
         assert!(parse_team_message_kind("assignment").is_err());
         assert!(matches!(
             parse_team_message_kind("message"),
-            Ok(TeamMessageKind::Message)
+            Ok(ProviderDispatchIntent::Message)
         ));
         assert!(matches!(
             parse_team_message_kind("handoff"),
-            Ok(TeamMessageKind::Handoff)
+            Ok(ProviderDispatchIntent::Message)
         ));
         assert!(matches!(
             parse_team_message_kind("control"),
-            Ok(TeamMessageKind::Control)
+            Ok(ProviderDispatchIntent::Control)
         ));
 
         for historical in [
@@ -45626,7 +45684,7 @@ package:com.tencent.mm
     }
 
     fn compatibility_block_action(
-        member: &MemberRun,
+        member: &ProviderRuntimeProjection,
         profile: &ProviderIntegrationProfile,
         seq: u64,
     ) -> MemberAction {
@@ -45666,7 +45724,7 @@ package:com.tencent.mm
     }
 
     fn compatibility_test_cause(
-        member: &MemberRun,
+        member: &ProviderRuntimeProjection,
         profile: &ProviderIntegrationProfile,
     ) -> ProviderCompatibilityBlockCause {
         ProviderCompatibilityBlockCause {
@@ -45763,7 +45821,8 @@ package:com.tencent.mm
                 "unix-ms:1",
             )
             .expect("seed compatibility-owned Blocked member");
-        blocked.workspace_snapshot = Some(test_workspace_snapshot(&root));
+        blocked.provider_environment_observation =
+            Some(test_provider_environment_observation(&root));
         let before_workspace = store.member_runs().unwrap().last().unwrap().clone();
         store
             .compare_and_append_member_run(&before_workspace, &blocked)
@@ -46000,7 +46059,7 @@ package:com.tencent.mm
             prompt_ref: None,
             skill_refs: Vec::new(),
             workspace_policy: None,
-            worktree_ref: None,
+            provider_cwd_hint: None,
             permission_profile: None,
             runtime_workspace_roots: Vec::new(),
             status: ProviderLaunchStatus::Idle,
@@ -46027,18 +46086,18 @@ package:com.tencent.mm
         turn_id: Option<&str>,
     ) {
         store
-            .append_message(&Message {
+            .append_message(&RegistryMessage {
                 id: generated_id("message"),
                 task_id: task_id.map(str::to_string),
                 from_agent_id: "lead-1".into(),
                 to_agent_id: Some(agent_id.into()),
                 channel: Some("assignment".into()),
-                kind: MessageKind::Assignment,
-                delivery_status: MessageDeliveryStatus::Acknowledged,
+                kind: RegistryMessageIntent::Message,
+                delivery_status: RegistryDeliveryStatus::Acknowledged,
                 content: "test delivery".into(),
                 evidence_ids: Vec::new(),
                 created_at: "unix-ms:1".into(),
-                delivery: Some(MessageDelivery {
+                delivery: Some(RegistryDeliveryAttempt {
                     delivery_id: Some("delivery-1".into()),
                     execution_status: Some(status),
                     native_session: None,
@@ -46160,15 +46219,15 @@ package:com.tencent.mm
     fn running_delivery_is_acknowledged_not_delivered() {
         assert_eq!(
             message_status_for_delivery(&ProviderExecutionStatus::Running),
-            MessageDeliveryStatus::Acknowledged
+            RegistryDeliveryStatus::Acknowledged
         );
         assert_eq!(
             message_status_for_delivery(&ProviderExecutionStatus::Succeeded),
-            MessageDeliveryStatus::Delivered
+            RegistryDeliveryStatus::Delivered
         );
         assert_eq!(
             message_status_for_delivery(&ProviderExecutionStatus::Failed),
-            MessageDeliveryStatus::Failed
+            RegistryDeliveryStatus::Failed
         );
     }
 
@@ -46236,14 +46295,14 @@ package:com.tencent.mm
                 checked_at: None,
             },
         };
-        let message = Message {
+        let message = RegistryMessage {
             id: "message-claude".into(),
             task_id: None,
             from_agent_id: "lead-1".into(),
             to_agent_id: Some(member.id.clone()),
             channel: Some("agent-direct".into()),
-            kind: MessageKind::Message,
-            delivery_status: MessageDeliveryStatus::Queued,
+            kind: RegistryMessageIntent::Message,
+            delivery_status: RegistryDeliveryStatus::Queued,
             content: "Hello".into(),
             evidence_ids: Vec::new(),
             created_at: "unix-ms:1".into(),
@@ -46331,18 +46390,18 @@ package:com.tencent.mm
         member.current_task_id = None;
         store.append_member(&member).expect("append member");
         store
-            .append_message(&Message {
+            .append_message(&RegistryMessage {
                 id: "message-1".into(),
                 task_id: None,
                 from_agent_id: "lead-1".into(),
                 to_agent_id: Some("agent-1".into()),
                 channel: Some("direct".into()),
-                kind: MessageKind::Message,
-                delivery_status: MessageDeliveryStatus::Acknowledged,
+                kind: RegistryMessageIntent::Message,
+                delivery_status: RegistryDeliveryStatus::Acknowledged,
                 content: "Direct message".into(),
                 evidence_ids: Vec::new(),
                 created_at: "unix-ms:1".into(),
-                delivery: Some(MessageDelivery {
+                delivery: Some(RegistryDeliveryAttempt {
                     delivery_id: Some("delivery-1".into()),
                     execution_status: Some(ProviderExecutionStatus::Running),
                     native_session: None,
@@ -46373,14 +46432,14 @@ package:com.tencent.mm
         let latest_message = latest_message(&store, "message-1").expect("latest message");
         assert_eq!(
             latest_message.delivery_status,
-            MessageDeliveryStatus::Delivered
+            RegistryDeliveryStatus::Delivered
         );
         let report = store
             .messages()
             .expect("messages")
             .into_iter()
             .find(|message| {
-                message.kind == MessageKind::Report
+                message.kind == RegistryMessageIntent::Report
                     && message.channel.as_deref() == Some("provider-report")
                     && message.delivery.as_ref().is_some_and(|delivery| {
                         delivery.delivery_id.as_deref() == Some("delivery-1")
@@ -46421,7 +46480,7 @@ package:com.tencent.mm
             .into_iter()
             .find(|message| message.to_agent_id.as_deref() == Some("agent-1"))
             .expect("latest delivery message");
-        assert_eq!(latest.delivery_status, MessageDeliveryStatus::Failed);
+        assert_eq!(latest.delivery_status, RegistryDeliveryStatus::Failed);
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -46454,18 +46513,18 @@ package:com.tencent.mm
         member.current_task_id = Some("task-1".into());
         store.append_member(&member).expect("append member");
         store
-            .append_message(&Message {
+            .append_message(&RegistryMessage {
                 id: "message-1".into(),
                 task_id: Some("task-1".into()),
                 from_agent_id: "lead-1".into(),
                 to_agent_id: Some("agent-1".into()),
                 channel: Some("assignment".into()),
-                kind: MessageKind::Assignment,
-                delivery_status: MessageDeliveryStatus::Acknowledged,
+                kind: RegistryMessageIntent::Message,
+                delivery_status: RegistryDeliveryStatus::Acknowledged,
                 content: "Do the task".into(),
                 evidence_ids: Vec::new(),
                 created_at: "unix-ms:1".into(),
-                delivery: Some(MessageDelivery {
+                delivery: Some(RegistryDeliveryAttempt {
                     delivery_id: Some("delivery-1".into()),
                     execution_status: Some(ProviderExecutionStatus::Stale),
                     native_session: None,
@@ -46492,7 +46551,7 @@ package:com.tencent.mm
         let latest_message = latest_message(&store, "message-1").expect("latest message");
         assert_eq!(
             latest_message.delivery_status,
-            MessageDeliveryStatus::Failed
+            RegistryDeliveryStatus::Failed
         );
         let latest_member = latest_member(&store, "agent-1").expect("latest member");
         assert_eq!(latest_member.status, ProviderLaunchStatus::Idle);
@@ -46558,7 +46617,7 @@ package:com.tencent.mm
             .into_iter()
             .find(|message| message.to_agent_id.as_deref() == Some("agent-1"))
             .expect("latest delivery message");
-        assert_eq!(latest.delivery_status, MessageDeliveryStatus::Delivered);
+        assert_eq!(latest.delivery_status, RegistryDeliveryStatus::Delivered);
         assert_eq!(
             latest
                 .delivery
@@ -46627,7 +46686,7 @@ package:com.tencent.mm
             .into_iter()
             .find(|message| message.to_agent_id.as_deref() == Some("agent-1"))
             .expect("latest delivery message");
-        assert_eq!(latest.delivery_status, MessageDeliveryStatus::Delivered);
+        assert_eq!(latest.delivery_status, RegistryDeliveryStatus::Delivered);
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -46637,14 +46696,14 @@ package:com.tencent.mm
         let root =
             std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("messages")));
         let store = HarnessStore::new(&root);
-        let mut message = Message {
+        let mut message = RegistryMessage {
             id: "message-1".into(),
             task_id: Some("task-1".into()),
             from_agent_id: "leader".into(),
             to_agent_id: Some("agent-1".into()),
             channel: Some("assignment".into()),
-            kind: MessageKind::Assignment,
-            delivery_status: MessageDeliveryStatus::Queued,
+            kind: RegistryMessageIntent::Message,
+            delivery_status: RegistryDeliveryStatus::Queued,
             content: "Assign task".into(),
             evidence_ids: Vec::new(),
             created_at: "unix-ms:1".into(),
@@ -46654,7 +46713,7 @@ package:com.tencent.mm
         store
             .append_message(&message)
             .expect("append queued message");
-        message.delivery_status = MessageDeliveryStatus::Acknowledged;
+        message.delivery_status = RegistryDeliveryStatus::Acknowledged;
         store
             .append_message(&message)
             .expect("append acknowledged message");
@@ -46683,14 +46742,14 @@ package:com.tencent.mm
         store
             .append_member(&make_member("agent-1"))
             .expect("append member");
-        let mut message = Message {
+        let mut message = RegistryMessage {
             id: "message-1".into(),
             task_id: Some("task-1".into()),
             from_agent_id: "leader".into(),
             to_agent_id: Some("agent-1".into()),
             channel: Some("assignment".into()),
-            kind: MessageKind::Assignment,
-            delivery_status: MessageDeliveryStatus::Queued,
+            kind: RegistryMessageIntent::Message,
+            delivery_status: RegistryDeliveryStatus::Queued,
             content: "Assign task".into(),
             evidence_ids: Vec::new(),
             created_at: "unix-ms:1".into(),
@@ -46698,7 +46757,7 @@ package:com.tencent.mm
             sender_kind: SenderKind::Agent,
         };
         store.append_message(&message).expect("append queued");
-        message.delivery_status = MessageDeliveryStatus::Acknowledged;
+        message.delivery_status = RegistryDeliveryStatus::Acknowledged;
         store.append_message(&message).expect("append acknowledged");
 
         deliver_agent_messages(
@@ -46709,12 +46768,12 @@ package:com.tencent.mm
         .expect("deliver should not redeliver stale queued row");
 
         let latest = latest_message(&store, "message-1").expect("latest message");
-        assert_eq!(latest.delivery_status, MessageDeliveryStatus::Acknowledged);
+        assert_eq!(latest.delivery_status, RegistryDeliveryStatus::Acknowledged);
         assert!(store
             .messages()
             .expect("messages")
             .iter()
-            .all(|message| message.kind != MessageKind::Report));
+            .all(|message| message.kind != RegistryMessageIntent::Report));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -46729,14 +46788,14 @@ package:com.tencent.mm
             .append_member(&make_member("agent-1"))
             .expect("append member");
         store
-            .append_message(&Message {
+            .append_message(&RegistryMessage {
                 id: "message-1".into(),
                 task_id: Some("task-1".into()),
                 from_agent_id: "leader".into(),
                 to_agent_id: Some("agent-1".into()),
                 channel: Some("assignment".into()),
-                kind: MessageKind::Assignment,
-                delivery_status: MessageDeliveryStatus::Queued,
+                kind: RegistryMessageIntent::Message,
+                delivery_status: RegistryDeliveryStatus::Queued,
                 content: "Assign task".into(),
                 evidence_ids: Vec::new(),
                 created_at: "unix-ms:1".into(),
@@ -46753,7 +46812,7 @@ package:com.tencent.mm
         .expect("dry-run delivery");
 
         let latest = latest_message(&store, "message-1").expect("latest message");
-        assert_eq!(latest.delivery_status, MessageDeliveryStatus::Delivered);
+        assert_eq!(latest.delivery_status, RegistryDeliveryStatus::Delivered);
         let delivery = latest.delivery.expect("delivery");
         assert!(delivery.delivery_id.is_some());
         assert_eq!(
@@ -46774,7 +46833,7 @@ package:com.tencent.mm
             .messages()
             .expect("messages")
             .into_iter()
-            .filter(|message| message.kind == MessageKind::Report)
+            .filter(|message| message.kind == RegistryMessageIntent::Report)
             .collect();
         assert_eq!(reports.len(), 1);
         assert!(!reports[0].evidence_ids.is_empty());
@@ -46788,14 +46847,14 @@ package:com.tencent.mm
         let store = HarnessStore::new(&root);
         let member = make_member("agent-1");
         store.append_member(&member).expect("append member");
-        let message = Message {
+        let message = RegistryMessage {
             id: "message-1".into(),
             task_id: Some("task-1".into()),
             from_agent_id: "leader".into(),
             to_agent_id: Some("agent-1".into()),
             channel: Some("assignment".into()),
-            kind: MessageKind::Assignment,
-            delivery_status: MessageDeliveryStatus::Queued,
+            kind: RegistryMessageIntent::Message,
+            delivery_status: RegistryDeliveryStatus::Queued,
             content: "Assign task".into(),
             evidence_ids: Vec::new(),
             created_at: "unix-ms:1".into(),
@@ -46820,7 +46879,7 @@ package:com.tencent.mm
         let latest_message = latest_message(&store, "message-1").expect("latest message");
         assert_eq!(
             latest_message.delivery_status,
-            MessageDeliveryStatus::Queued
+            RegistryDeliveryStatus::Queued
         );
         assert!(latest_message.delivery.is_none());
         assert!(
@@ -46838,14 +46897,14 @@ package:com.tencent.mm
         let store = HarnessStore::new(&root);
         let member = make_member("agent-1");
         store.append_member(&member).expect("append member");
-        let message = Message {
+        let message = RegistryMessage {
             id: "message-1".into(),
             task_id: Some("task-1".into()),
             from_agent_id: "leader".into(),
             to_agent_id: Some("agent-1".into()),
             channel: Some("assignment".into()),
-            kind: MessageKind::Assignment,
-            delivery_status: MessageDeliveryStatus::Queued,
+            kind: RegistryMessageIntent::Message,
+            delivery_status: RegistryDeliveryStatus::Queued,
             content: "Assign task".into(),
             evidence_ids: Vec::new(),
             created_at: "unix-ms:1".into(),
@@ -46880,7 +46939,7 @@ package:com.tencent.mm
         let latest_message = latest_message(&store, "message-1").expect("latest message");
         assert_eq!(
             latest_message.delivery_status,
-            MessageDeliveryStatus::Failed
+            RegistryDeliveryStatus::Failed
         );
         assert!(!store.root().join("provider_sessions.jsonl").exists());
 
@@ -46900,14 +46959,14 @@ package:com.tencent.mm
             .expect("append member 2");
         for agent_id in ["agent-1", "agent-2"] {
             store
-                .append_message(&Message {
+                .append_message(&RegistryMessage {
                     id: format!("message-{agent_id}"),
                     task_id: Some(format!("task-{agent_id}")),
                     from_agent_id: "leader".into(),
                     to_agent_id: Some(agent_id.into()),
                     channel: Some("assignment".into()),
-                    kind: MessageKind::Assignment,
-                    delivery_status: MessageDeliveryStatus::Queued,
+                    kind: RegistryMessageIntent::Message,
+                    delivery_status: RegistryDeliveryStatus::Queued,
                     content: "Assign task".into(),
                     evidence_ids: Vec::new(),
                     created_at: "unix-ms:1".into(),
@@ -46933,7 +46992,7 @@ package:com.tencent.mm
         for agent_id in ["agent-1", "agent-2"] {
             let latest =
                 latest_message(&store, &format!("message-{agent_id}")).expect("latest message");
-            assert_eq!(latest.delivery_status, MessageDeliveryStatus::Delivered);
+            assert_eq!(latest.delivery_status, RegistryDeliveryStatus::Delivered);
             assert!(latest
                 .delivery
                 .and_then(|delivery| delivery.delivery_id)
@@ -46953,14 +47012,14 @@ package:com.tencent.mm
         member.status = ProviderLaunchStatus::Closed;
         store.append_member(&member).expect("append member");
         store
-            .append_message(&Message {
+            .append_message(&RegistryMessage {
                 id: "message-1".into(),
                 task_id: Some("task-1".into()),
                 from_agent_id: "leader".into(),
                 to_agent_id: Some("agent-1".into()),
                 channel: Some("assignment".into()),
-                kind: MessageKind::Assignment,
-                delivery_status: MessageDeliveryStatus::Queued,
+                kind: RegistryMessageIntent::Message,
+                delivery_status: RegistryDeliveryStatus::Queued,
                 content: "Assign task".into(),
                 evidence_ids: Vec::new(),
                 created_at: "unix-ms:1".into(),
@@ -46977,7 +47036,7 @@ package:com.tencent.mm
 
         assert!(result.is_err());
         let latest = latest_message(&store, "message-1").expect("latest message");
-        assert_eq!(latest.delivery_status, MessageDeliveryStatus::Queued);
+        assert_eq!(latest.delivery_status, RegistryDeliveryStatus::Queued);
         assert!(latest.delivery.is_none());
         assert!(!store.root().join("provider_sessions.jsonl").exists());
 
@@ -46986,14 +47045,14 @@ package:com.tencent.mm
 
     #[test]
     fn turn_input_uses_stable_harness_envelope() {
-        let message = Message {
+        let message = RegistryMessage {
             id: "message-1".into(),
             task_id: Some("task-1".into()),
             from_agent_id: "leader".into(),
             to_agent_id: Some("agent-1".into()),
             channel: Some("assignment".into()),
-            kind: MessageKind::Assignment,
-            delivery_status: MessageDeliveryStatus::Acknowledged,
+            kind: RegistryMessageIntent::Message,
+            delivery_status: RegistryDeliveryStatus::Acknowledged,
             content: "Do the task".into(),
             evidence_ids: Vec::new(),
             created_at: "unix-ms:1".into(),
@@ -47032,7 +47091,7 @@ package:com.tencent.mm
             let projection = canonical
                 .iter()
                 .find(|candidate| candidate.id == runtime.id)
-                .expect("runtime has canonical MemberRun projection");
+                .expect("runtime has canonical ProviderRuntimeProjection projection");
             assert_eq!(projection.agent_member_id, runtime.agent_member_id);
             assert_eq!(projection.team_run_id, created.team_run.id);
             assert_eq!(projection.runtime_generation, runtime.runtime_generation);
@@ -47095,7 +47154,7 @@ package:com.tencent.mm
                 },
                 "unix-ms:3",
             )
-            .expect("create canonical TeamMessage and delivery");
+            .expect("create canonical ProviderDispatchEnvelope and delivery");
 
         let claimed = claim_canonical_messages_for_member(&ledger, &member)
             .expect("supervisor claim")
@@ -47160,7 +47219,7 @@ package:com.tencent.mm
                     created_by_member_id: None,
                     parent_work_id: None,
                     title: "Deliver canonical Work".into(),
-                    context_markdown: "Exercise NodeDaemon WorkDelivery wiring".into(),
+                    context_markdown: "Exercise NodeDaemon ProviderWorkDispatch wiring".into(),
                     completion_criteria_markdown: "Provider receipt is canonical".into(),
                     phase: WorkPhase::Open,
                     condition: WorkCondition::Normal,
@@ -47211,7 +47270,7 @@ package:com.tencent.mm
                 std::slice::from_ref(&member.id),
                 "unix-ms:4",
             )
-            .expect("create canonical WorkDelivery");
+            .expect("create canonical ProviderWorkDispatch");
         let lease = store
             .acquire_test_supervisor_lease(
                 &created.team_run.id,
@@ -47237,7 +47296,7 @@ package:com.tencent.mm
             .expect("record canonical provider receipt");
         let delivery = store
             .trust_work_deliveries("unit-test-space")
-            .expect("canonical WorkDelivery ledger")
+            .expect("canonical ProviderWorkDispatch ledger")
             .into_iter()
             .find(|delivery| delivery.work_id == work.id)
             .expect("canonical delivery");
@@ -47310,7 +47369,7 @@ package:com.tencent.mm
                 model: None,
                 effort: None,
                 service_tier: None,
-                worktree_ref: None,
+                provider_cwd_hint: None,
                 owned_paths: vec!["crates/target".into()],
                 resume_native_session_id: None,
                 initial_work: None,
@@ -47337,7 +47396,7 @@ package:com.tencent.mm
                 WorkCommandContext {
                     event_id: "surface-source-claim".into(),
                     performed_by_actor: TeamActorRef {
-                        kind: TeamActorKind::MemberRun,
+                        kind: TeamActorKind::ProviderRuntimeProjection,
                         id: source_member_id.clone(),
                         display_name: None,
                         authn_source: Some("bound-runtime:test".into()),
@@ -47375,7 +47434,7 @@ package:com.tencent.mm
         let member_context = |event_id: &str, idempotency_key: &str| WorkCommandContext {
             event_id: event_id.into(),
             performed_by_actor: TeamActorRef {
-                kind: TeamActorKind::MemberRun,
+                kind: TeamActorKind::ProviderRuntimeProjection,
                 id: target_member_id.clone(),
                 display_name: None,
                 authn_source: Some("bound-runtime:test".into()),
@@ -47495,7 +47554,7 @@ package:com.tencent.mm
                     model: None,
                     effort: None,
                     service_tier: None,
-                    worktree_ref: None,
+                    provider_cwd_hint: None,
                     owned_paths: vec!["crates/a".into()],
                     resume_native_session_id: None,
                     initial_work: None,
@@ -47509,7 +47568,7 @@ package:com.tencent.mm
                     model: None,
                     effort: None,
                     service_tier: None,
-                    worktree_ref: None,
+                    provider_cwd_hint: None,
                     owned_paths: vec!["crates/b".into()],
                     resume_native_session_id: None,
                     initial_work: None,
@@ -47696,7 +47755,7 @@ package:com.tencent.mm
         );
 
         // A reopened generation is different execution authority. The old
-        // callback cannot resume it even when the stable MemberRun id is reused.
+        // callback cannot resume it even when the stable ProviderRuntimeProjection id is reused.
         let mut reopened = closed.clone();
         reopened.coordination_status = MemberCoordinationStatus::Active;
         reopened.runtime_generation += 1;
@@ -47827,7 +47886,9 @@ package:com.tencent.mm
                 intent: Some("answer".into()),
             }],
         )
-        .expect_err("a new MemberRun generation cannot consume the old reverse request");
+        .expect_err(
+            "a new ProviderRuntimeProjection generation cannot consume the old reverse request",
+        );
         assert!(stale_replay
             .to_string()
             .contains("replayed with different semantics"));
@@ -47957,7 +48018,7 @@ package:com.tencent.mm
         let response_message = messages
             .iter()
             .find(|message| {
-                message.kind == TeamMessageKind::ProviderInteractionResponse
+                message.kind == ProviderDispatchIntent::ProviderInteractionResponse
                     && message.causation_id.as_deref() == Some(request.id.as_str())
             })
             .expect("response message");
@@ -47971,7 +48032,9 @@ package:com.tencent.mm
         assert_eq!(
             messages
                 .iter()
-                .filter(|message| { message.kind == TeamMessageKind::ProviderInteractionRequest })
+                .filter(|message| {
+                    message.kind == ProviderDispatchIntent::ProviderInteractionRequest
+                })
                 .count(),
             1,
             "provider replay must reuse the request message"
@@ -47979,7 +48042,7 @@ package:com.tencent.mm
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
-    fn test_workspace_snapshot(root: &Path) -> MemberWorkspaceSnapshot {
+    fn test_provider_environment_observation(root: &Path) -> MemberWorkspaceSnapshot {
         snapshot_member_workspace(root, None, None, "explicit_unbound")
     }
 
@@ -48072,7 +48135,10 @@ package:com.tencent.mm
         let _ = std::fs::remove_dir_all(root);
     }
 
-    fn seed_capacity_blocked_member(store: &HarnessStore, initial: &MemberRun) -> MemberRun {
+    fn seed_capacity_blocked_member(
+        store: &HarnessStore,
+        initial: &ProviderRuntimeProjection,
+    ) -> ProviderRuntimeProjection {
         let mut blocked = initial.clone();
         blocked.status = MemberRunStatus::Blocked;
         blocked.provider_capacity = Some(capacity_test_snapshot(ProviderCapacityState::Exhausted));
@@ -48123,7 +48189,7 @@ package:com.tencent.mm
                         &created.team_run.id,
                         &blocked.id,
                         "host",
-                        "close lands without mutating MemberRun",
+                        "close lands without mutating ProviderRuntimeProjection",
                     )?;
                 }
                 Ok(())
@@ -48357,7 +48423,7 @@ package:com.tencent.mm
                         &created.team_run.id,
                         &initial.id,
                         "host",
-                        "close lands without mutating MemberRun",
+                        "close lands without mutating ProviderRuntimeProjection",
                     )?;
                 }
                 Ok(())
@@ -48457,7 +48523,7 @@ package:com.tencent.mm
                 60_000,
             )
             .expect("acquire Supervisor lease");
-        let snapshot = test_workspace_snapshot(&root);
+        let snapshot = test_provider_environment_observation(&root);
         let barrier = Arc::new(std::sync::Barrier::new(2));
         let worker_barrier = Arc::clone(&barrier);
         let store_root = store.root().to_path_buf();
@@ -48548,7 +48614,7 @@ package:com.tencent.mm
             Arc::new(AtomicBool::new(true)),
         );
         let first = created.member_runs[0].clone();
-        let snapshot = test_workspace_snapshot(&root);
+        let snapshot = test_provider_environment_observation(&root);
         let published = match prepare_member_workspace_for_spawn_with_hook(
             &ledger,
             &first,
@@ -48570,7 +48636,10 @@ package:com.tencent.mm
             _ => panic!("member remains spawnable"),
         };
         assert_eq!(published.name, "BenignRename");
-        assert_eq!(published.workspace_snapshot.as_ref(), Some(&snapshot));
+        assert_eq!(
+            published.provider_environment_observation.as_ref(),
+            Some(&snapshot)
+        );
 
         let second = created.member_runs[1].clone();
         let mut new_generation = second.clone();
@@ -48601,7 +48670,7 @@ package:com.tencent.mm
             .expect("member exists");
         assert_eq!(latest.runtime_generation, new_generation.runtime_generation);
         assert_eq!(latest.native_session, new_generation.native_session);
-        assert!(latest.workspace_snapshot.is_none());
+        assert!(latest.provider_environment_observation.is_none());
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
@@ -48627,7 +48696,7 @@ package:com.tencent.mm
             Arc::new(AtomicBool::new(true)),
         );
         let member = created.member_runs[0].clone();
-        let snapshot = test_workspace_snapshot(&root);
+        let snapshot = test_provider_environment_observation(&root);
         let mut conflicts = 0usize;
         let result = prepare_member_workspace_for_spawn_with_hook(
             &ledger,
@@ -48649,7 +48718,7 @@ package:com.tencent.mm
             .expect("latest member")
             .expect("member exists");
         assert_eq!(latest.name, "conflict-3");
-        assert!(latest.workspace_snapshot.is_none());
+        assert!(latest.provider_environment_observation.is_none());
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
@@ -48701,7 +48770,7 @@ package:com.tencent.mm
             successor_lease.generation,
             Arc::new(AtomicBool::new(true)),
         );
-        let snapshot = test_workspace_snapshot(&root);
+        let snapshot = test_provider_environment_observation(&root);
 
         let published = match prepare_member_workspace_for_spawn(&ledger, &stale_running, &snapshot)
             .expect("successor publishes workspace before attaching stale runtime")
@@ -49008,18 +49077,18 @@ package:com.tencent.mm
         store: &HarnessStore,
         created: &CreatedTeamRun,
         member_index: usize,
-    ) -> TeamMessage {
+    ) -> ProviderDispatchEnvelope {
         send_team_message(
             store,
             &created.team_run.id,
             "host",
             vec![created.member_runs[member_index].id.clone()],
-            TeamMessageKind::Message,
+            ProviderDispatchIntent::Message,
             "Coordination context",
             None,
             None,
             None,
-            Some(TeamMessageResponseIntent::ResponseRequired),
+            Some(ProviderResponseIntent::ResponseRequired),
         )
         .expect("seed conversation")
     }
@@ -49035,14 +49104,14 @@ package:com.tencent.mm
             model: Some("gpt-5.6-sol".into()),
             effort: Some("max".into()),
             service_tier: Some("priority".into()),
-            worktree_ref: None,
+            provider_cwd_hint: None,
             owned_paths: Vec::new(),
             resume_native_session_id: None,
             initial_work: None,
         };
 
-        let run =
-            build_member_run_for_team(None, "team-run-controls", &member).expect("build MemberRun");
+        let run = build_member_run_for_team(None, "team-run-controls", &member)
+            .expect("build ProviderRuntimeProjection");
 
         assert_eq!(run.model.as_deref(), Some("gpt-5.6-sol"));
         assert_eq!(
@@ -49073,7 +49142,7 @@ package:com.tencent.mm
 
     #[test]
     fn close_without_live_supervisor_reaps_stale_running_row_and_allows_reopen() {
-        // Wedge regression: a crashed Supervisor leaves a Running MemberRun
+        // Wedge regression: a crashed Supervisor leaves a Running ProviderRuntimeProjection
         // behind and its lease expires. Close must reap the stale row
         // immediately (no live Supervisor can ever apply a latch), and Reopen
         // must stay possible afterwards.
@@ -49110,10 +49179,10 @@ package:com.tencent.mm
             Some("stale_runtime_reaped")
         );
         let stopped = latest_member_runs_in_append_order(&store)
-            .expect("read MemberRun")
+            .expect("read ProviderRuntimeProjection")
             .into_iter()
             .find(|row| row.id == member.id)
-            .expect("MemberRun");
+            .expect("ProviderRuntimeProjection");
         assert_eq!(stopped.status, MemberRunStatus::Stopped);
         assert!(stopped.coordination_is_closed());
         assert_eq!(
@@ -49190,7 +49259,7 @@ package:com.tencent.mm
             .claim_next_work_for(&member.id)
             .expect("claim scan")
             .expect("queued delivery for the member");
-        assert_eq!(claimed.delivery.status, WorkDeliveryStatus::Claimed);
+        assert_eq!(claimed.delivery.status, ProviderWorkDispatchStatus::Claimed);
         assert!(claimed.delivery.provider_receipt_id.is_none());
 
         let close = latch_member_close(&store, &run.id, &member.id, "host", "lane accepted")
@@ -49205,7 +49274,7 @@ package:com.tencent.mm
             .into_iter()
             .find(|delivery| delivery.id == claimed.delivery.id)
             .expect("delivery row");
-        assert_eq!(delivery.status, WorkDeliveryStatus::Failed);
+        assert_eq!(delivery.status, ProviderWorkDispatchStatus::Failed);
         assert!(delivery.provider_receipt_id.is_none());
         assert!(
             delivery
@@ -49270,7 +49339,7 @@ package:com.tencent.mm
             model: None,
             effort: None,
             service_tier: None,
-            worktree_ref: None,
+            provider_cwd_hint: None,
             owned_paths: Vec::new(),
             resume_native_session_id: None,
             initial_work: None,
@@ -49361,7 +49430,7 @@ package:com.tencent.mm
             &created.team_run.id,
             &second.id,
             vec![first.id.clone()],
-            TeamMessageKind::Progress,
+            ProviderDispatchIntent::Message,
             "Peer API is ready",
             Some(assignment.correlation_id.clone()),
             None,
@@ -49386,7 +49455,7 @@ package:com.tencent.mm
             &created.team_run.id,
             &first.id,
             vec!["host".into()],
-            TeamMessageKind::Handoff,
+            ProviderDispatchIntent::Message,
             "Module A complete",
             Some(assignment.correlation_id.clone()),
             Some(assignment.id.clone()),
@@ -49428,7 +49497,7 @@ package:com.tencent.mm
             &created.team_run.id,
             "host",
             vec![member.id.clone()],
-            TeamMessageKind::Message,
+            ProviderDispatchIntent::Message,
             "Continue with the reviewed adjustment",
             Some(assignment.correlation_id.clone()),
             Some(assignment.id.clone()),
@@ -49437,9 +49506,9 @@ package:com.tencent.mm
         )
         .expect("follow-up");
 
-        let (origin_wave_id, correlation_id, causation_id) =
+        let (source_plan_ref, correlation_id, causation_id) =
             member_round_lineage(Some(assignment), Some(&follow_up));
-        assert_eq!(origin_wave_id, assignment.origin_wave_id);
+        assert_eq!(source_plan_ref, assignment.source_plan_ref);
         assert_eq!(correlation_id, assignment.correlation_id);
         assert_eq!(causation_id.as_deref(), Some(follow_up.id.as_str()));
 
@@ -49448,7 +49517,7 @@ package:com.tencent.mm
             &created.team_run.id,
             "host",
             vec![member.id.clone()],
-            TeamMessageKind::Assignment,
+            ProviderDispatchIntent::Message,
             "Own the next independent lane",
             None,
             None,
@@ -49477,7 +49546,7 @@ package:com.tencent.mm
         let created = create_two_member_team_run(&store);
         let member = &created.member_runs[0];
         let mut assignment = created.assignment_messages[0].clone();
-        let deliver = |store: &HarnessStore, message: &mut TeamMessage| {
+        let deliver = |store: &HarnessStore, message: &mut ProviderDispatchEnvelope| {
             let delivery = message
                 .deliveries
                 .iter_mut()
@@ -49498,7 +49567,7 @@ package:com.tencent.mm
             &created.team_run.id,
             "host",
             vec![member.id.clone()],
-            TeamMessageKind::Message,
+            ProviderDispatchIntent::Message,
             "Older same-correlation context",
             Some(assignment.correlation_id.clone()),
             Some(assignment.id.clone()),
@@ -49512,7 +49581,7 @@ package:com.tencent.mm
             &created.team_run.id,
             "host",
             vec![member.id.clone()],
-            TeamMessageKind::Message,
+            ProviderDispatchIntent::Message,
             "Exact message consumed for this turn",
             Some(assignment.correlation_id.clone()),
             Some(older.id.clone()),
@@ -49526,7 +49595,7 @@ package:com.tencent.mm
             &created.team_run.id,
             "host",
             vec![member.id.clone()],
-            TeamMessageKind::Assignment,
+            ProviderDispatchIntent::Message,
             "Another delivered Assignment must not own the active turn",
             None,
             None,
@@ -49544,7 +49613,7 @@ package:com.tencent.mm
             &created.team_run.id,
             &member.id,
             vec!["host".into()],
-            TeamMessageKind::Handoff,
+            ProviderDispatchIntent::Message,
             "Wrong Assignment result",
             Some(other_assignment.correlation_id.clone()),
             Some(other_assignment.id.clone()),
@@ -49557,7 +49626,7 @@ package:com.tencent.mm
             &created.team_run.id,
             &member.id,
             vec!["host".into()],
-            TeamMessageKind::Handoff,
+            ProviderDispatchIntent::Message,
             "Stale same-correlation result",
             Some(assignment.correlation_id.clone()),
             Some(older.id.clone()),
@@ -49617,7 +49686,7 @@ package:com.tencent.mm
             &created.team_run.id,
             &first.id,
             vec!["host".into()],
-            TeamMessageKind::Question,
+            ProviderDispatchIntent::Message,
             "Need a product decision",
             Some(correlation.clone()),
             Some(seed.id.clone()),
@@ -49640,7 +49709,7 @@ package:com.tencent.mm
             &created.team_run.id,
             &first.id,
             vec![second.id.clone()],
-            TeamMessageKind::Progress,
+            ProviderDispatchIntent::Message,
             "Shared interface is ready",
             Some(correlation.clone()),
             None,
@@ -49657,7 +49726,7 @@ package:com.tencent.mm
             &created.team_run.id,
             "host",
             vec![first.id.clone()],
-            TeamMessageKind::Answer,
+            ProviderDispatchIntent::Message,
             "Use the stable interface",
             Some(correlation),
             Some(host_mail.id),
@@ -49688,7 +49757,7 @@ package:com.tencent.mm
             &created.team_run.id,
             "host",
             vec![member.id.clone()],
-            TeamMessageKind::Message,
+            ProviderDispatchIntent::Message,
             "Return a Markdown plan before implementation. Do not execute yet.",
             Some(assignment.correlation_id.clone()),
             Some(assignment.id.clone()),
@@ -49701,7 +49770,7 @@ package:com.tencent.mm
             &created.team_run.id,
             &member.id,
             vec!["host".into()],
-            TeamMessageKind::Message,
+            ProviderDispatchIntent::Message,
             "1. Inspect\n2. Implement\n3. Verify",
             Some(assignment.correlation_id.clone()),
             Some(request.id.clone()),
@@ -49714,7 +49783,7 @@ package:com.tencent.mm
             &created.team_run.id,
             "host",
             vec![member.id.clone()],
-            TeamMessageKind::Message,
+            ProviderDispatchIntent::Message,
             "Add rollback and integration checks",
             Some(assignment.correlation_id.clone()),
             Some(proposal_one.id.clone()),
@@ -49728,7 +49797,7 @@ package:com.tencent.mm
             &created.team_run.id,
             &member.id,
             vec!["host".into()],
-            TeamMessageKind::Message,
+            ProviderDispatchIntent::Message,
             "1. Inspect\n2. Implement\n3. Integrate\n4. Roll back if checks fail",
             Some(assignment.correlation_id.clone()),
             Some(feedback.id),
@@ -49741,7 +49810,7 @@ package:com.tencent.mm
             &created.team_run.id,
             "host",
             vec![member.id.clone()],
-            TeamMessageKind::Message,
+            ProviderDispatchIntent::Message,
             "Plan reviewed. Execute revision 2.",
             Some(assignment.correlation_id.clone()),
             Some(proposal_two.id),
@@ -49772,7 +49841,7 @@ package:com.tencent.mm
             &bound.id,
             &member.id,
             vec!["host".into()],
-            TeamMessageKind::Message,
+            ProviderDispatchIntent::Message,
             "QUESTION: choose interface A or B",
             Some(assignment.correlation_id.clone()),
             Some(assignment.id.clone()),
@@ -49820,7 +49889,7 @@ package:com.tencent.mm
             &bound.id,
             &member.id,
             vec!["host".into()],
-            TeamMessageKind::Message,
+            ProviderDispatchIntent::Message,
             "QUESTION: test surface normalization",
             Some(assignment.correlation_id.clone()),
             Some(assignment.id.clone()),
@@ -49864,7 +49933,7 @@ package:com.tencent.mm
             &bound.id,
             &member.id,
             vec!["host".into()],
-            TeamMessageKind::Message,
+            ProviderDispatchIntent::Message,
             "QUESTION: reverse normalization check",
             Some(assignment.correlation_id.clone()),
             Some(assignment.id.clone()),
@@ -49969,7 +50038,7 @@ package:com.tencent.mm
         let start_ctx = WorkCommandContext {
             event_id: generated_id("work-event-start"),
             performed_by_actor: TeamActorRef {
-                kind: TeamActorKind::MemberRun,
+                kind: TeamActorKind::ProviderRuntimeProjection,
                 id: member.id.clone(),
                 display_name: None,
                 authn_source: Some("bound-runtime:test".into()),
@@ -49988,7 +50057,7 @@ package:com.tencent.mm
         let submit_ctx = WorkCommandContext {
             event_id: generated_id("work-event-submit"),
             performed_by_actor: TeamActorRef {
-                kind: TeamActorKind::MemberRun,
+                kind: TeamActorKind::ProviderRuntimeProjection,
                 id: member.id.clone(),
                 display_name: None,
                 authn_source: Some("bound-runtime:test".into()),
@@ -50083,7 +50152,7 @@ package:com.tencent.mm
                 model: None,
                 effort: None,
                 service_tier: None,
-                worktree_ref: None,
+                provider_cwd_hint: None,
                 owned_paths: vec![],
                 resume_native_session_id: None,
                 initial_work: None,
@@ -50127,7 +50196,7 @@ package:com.tencent.mm
                 model: None,
                 effort: None,
                 service_tier: None,
-                worktree_ref: None,
+                provider_cwd_hint: None,
                 owned_paths: vec![],
                 resume_native_session_id: None,
                 initial_work: None,
@@ -50175,7 +50244,7 @@ package:com.tencent.mm
                 model: None,
                 effort: None,
                 service_tier: None,
-                worktree_ref: None,
+                provider_cwd_hint: None,
                 owned_paths: vec![],
                 resume_native_session_id: None,
                 initial_work: None,
@@ -51081,7 +51150,7 @@ package:com.tencent.mm
                 model: None,
                 effort: None,
                 service_tier: None,
-                worktree_ref: None,
+                provider_cwd_hint: None,
                 owned_paths: Vec::new(),
                 resume_native_session_id: None,
                 initial_work: None,
@@ -51110,7 +51179,7 @@ package:com.tencent.mm
                 model: None,
                 effort: None,
                 service_tier: None,
-                worktree_ref: None,
+                provider_cwd_hint: None,
                 owned_paths: Vec::new(),
                 resume_native_session_id: None,
                 initial_work: None,
@@ -52137,7 +52206,7 @@ mod sse_tests {
             kind: ProjectKind::Repo,
             is_git_repo: true,
         };
-        let mut member = MemberRun {
+        let mut member = ProviderRuntimeProjection {
             id: "member-cwd".into(),
             team_run_id: "team-cwd".into(),
             slot_id: None,
@@ -52154,8 +52223,8 @@ mod sse_tests {
             runtime_generation: 1,
             status: MemberRunStatus::Idle,
             native_session: None,
-            worktree_ref: None,
-            workspace_snapshot: None,
+            provider_cwd_hint: None,
+            provider_environment_observation: None,
             owned_paths: Vec::new(),
             started_at: now_string(),
             last_event_at: None,
@@ -52188,7 +52257,7 @@ mod sse_tests {
             execution_root
         );
         assert_ne!(member_spawn_cwd(Some(&context), &run, &member), store_root);
-        member.worktree_ref = Some(worktree_root.display().to_string());
+        member.provider_cwd_hint = Some(worktree_root.display().to_string());
         assert_eq!(
             member_spawn_cwd(Some(&context), &run, &member),
             worktree_root
@@ -52451,10 +52520,10 @@ mod tests_team_run_recover {
 
     fn make_delivery(
         id: &str,
-        status: WorkDeliveryStatus,
+        status: ProviderWorkDispatchStatus,
         generation: Option<u64>,
-    ) -> WorkDelivery {
-        WorkDelivery {
+    ) -> ProviderWorkDispatch {
+        ProviderWorkDispatch {
             id: id.into(),
             work_event_id: format!("event-{id}"),
             team_run_id: "tr-test".into(),
@@ -52479,13 +52548,13 @@ mod tests_team_run_recover {
         session_supports_resume: bool,
         session_availability: NativeSessionAvailability,
         is_external: bool,
-    ) -> MemberRun {
+    ) -> ProviderRuntimeProjection {
         let execution_mode = if is_external {
             EXECUTION_MODE_EXTERNAL_INTERACTIVE.to_string()
         } else {
             "codex_app_server".to_string()
         };
-        MemberRun {
+        ProviderRuntimeProjection {
             id: "mr-test".into(),
             team_run_id: "tr-test".into(),
             slot_id: Some("slot-test".into()),
@@ -52546,8 +52615,8 @@ mod tests_team_run_recover {
             } else {
                 None
             },
-            worktree_ref: None,
-            workspace_snapshot: None,
+            provider_cwd_hint: None,
+            provider_environment_observation: None,
             owned_paths: Vec::new(),
             started_at: "unix-ms:1".into(),
             last_event_at: None,
@@ -52730,9 +52799,9 @@ mod tests_team_run_recover {
         );
         lease.generation = 3;
         let deliveries = vec![
-            make_delivery("stale", WorkDeliveryStatus::Claimed, Some(2)),
-            make_delivery("current", WorkDeliveryStatus::Claimed, Some(3)),
-            make_delivery("queued", WorkDeliveryStatus::Queued, None),
+            make_delivery("stale", ProviderWorkDispatchStatus::Claimed, Some(2)),
+            make_delivery("current", ProviderWorkDispatchStatus::Claimed, Some(3)),
+            make_delivery("queued", ProviderWorkDispatchStatus::Queued, None),
         ];
         let mut calls = Vec::new();
         let reconciled = reconcile_stale_delivery_claims(
@@ -52760,9 +52829,9 @@ mod tests_team_run_recover {
         );
         lease.generation = 4;
         let deliveries = vec![
-            make_delivery("persisted", WorkDeliveryStatus::Claimed, Some(1)),
-            make_delivery("failed", WorkDeliveryStatus::Claimed, Some(2)),
-            make_delivery("must-not-run", WorkDeliveryStatus::Claimed, Some(3)),
+            make_delivery("persisted", ProviderWorkDispatchStatus::Claimed, Some(1)),
+            make_delivery("failed", ProviderWorkDispatchStatus::Claimed, Some(2)),
+            make_delivery("must-not-run", ProviderWorkDispatchStatus::Claimed, Some(3)),
         ];
         let mut calls = Vec::new();
         let failure = reconcile_stale_delivery_claims(
@@ -52801,8 +52870,8 @@ mod tests_team_run_recover {
         );
         lease.generation = 3;
         let deliveries = vec![
-            make_delivery("persisted", WorkDeliveryStatus::Queued, None),
-            make_delivery("retry", WorkDeliveryStatus::Claimed, Some(2)),
+            make_delivery("persisted", ProviderWorkDispatchStatus::Queued, None),
+            make_delivery("retry", ProviderWorkDispatchStatus::Claimed, Some(2)),
         ];
         let mut calls = Vec::new();
         let reconciled = reconcile_stale_delivery_claims(

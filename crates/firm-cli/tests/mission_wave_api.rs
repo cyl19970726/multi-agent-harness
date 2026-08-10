@@ -96,7 +96,7 @@ fn force_team_run_reviewing(home: &TempHome, project_id: &str, run_id: &str, mis
 
 /// Seed one historical Wave row directly, bypassing the retired `wave
 /// create` write path (ADR 0051), so tests can prove reads,
-/// `origin_wave_id` navigation, and existing cross-Mission/executor-kind
+/// `source_plan_ref` navigation, and existing cross-Mission/executor-kind
 /// validation still resolve a pre-cutover Wave row without exercising a
 /// live write. Every field with `#[serde(default)]` is omitted;
 /// `executor_kind`/`created_at`/`updated_at` have no default and are set
@@ -350,7 +350,7 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
     assert_eq!(
         membership_projections.len(),
         1,
-        "only a MemberRun carrying the canonical AgentMember identity may appear"
+        "only a ProviderRuntimeProjection carrying the canonical AgentMember identity may appear"
     );
     assert_eq!(
         membership_projections[0]["agent_member_id"].as_str(),
@@ -394,7 +394,7 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
     );
     assert_eq!(judgment_2["revision"].as_u64(), Some(2));
     // wave-plan-2 is seeded as a historical row (not created -- `wave create`
-    // is retired) purely so the origin_wave_id navigation check below has a
+    // is retired) purely so the source_plan_ref navigation check below has a
     // real pre-cutover Wave id to cite.
     seed_historical_wave(
         &home,
@@ -505,7 +505,7 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
     assert_eq!(
         builder["member_run"]["native_session"]["native_session_id"].as_str(),
         Some("codex-session-1"),
-        "Recording Mission Log judgment must not replace the MemberRun or provider-native session"
+        "Recording Mission Log judgment must not replace the ProviderRuntimeProjection or provider-native session"
     );
 
     // Explicit retry lineage cannot jump to another stable Team or Mission.
@@ -567,7 +567,7 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
         String::from_utf8_lossy(&cross_team_retry.stderr).contains("not for the same agent team")
     );
 
-    // Seeded historical, not created -- proves origin_wave_id cross-Mission
+    // Seeded historical, not created -- proves source_plan_ref cross-Mission
     // validation still works against a pre-cutover row.
     seed_historical_wave(&home, &project_id, "wave-other", "mission-other", 1, "host");
     let cross_mission_origin = run_firm(
@@ -1135,10 +1135,10 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{attempt_a}/messages"),
         &serde_json::json!({
-            "from_member_id": "host",
+            "sender_runtime_id": "host",
             "sender_kind": "host",
             "sender_id": "host",
-            "to_member_ids": [member_id],
+            "recipient_runtime_ids": [member_id],
             "kind": "message",
             "body": "Please execute the linked Work.",
             "work_id": work_id,
@@ -1159,10 +1159,10 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{attempt_a}/messages"),
         &serde_json::json!({
-            "from_member_id": "operator-test",
+            "sender_runtime_id": "operator-test",
             "sender_kind": "operator",
             "sender_id": "operator-test",
-            "to_member_ids": ["host"],
+            "recipient_runtime_ids": ["host"],
             "kind": "handoff",
             "body": "implementation handoff",
             "work_id": work_id,
@@ -1186,8 +1186,8 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{attempt_a}/messages"),
         &serde_json::json!({
-            "from_member_id": "host",
-            "to_member_ids": [member_id],
+            "sender_runtime_id": "host",
+            "recipient_runtime_ids": [member_id],
             "kind": "message",
             "body": "accepted",
             "causation_id": handoff_id,
@@ -1226,7 +1226,7 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
             "--kind",
             "replan",
             "--body",
-            "First attempt failed in review; retry with a fresh MemberRun.",
+            "First attempt failed in review; retry with a fresh ProviderRuntimeProjection.",
             "--json",
         ],
     );

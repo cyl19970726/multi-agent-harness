@@ -949,7 +949,7 @@ fn tool_team_run_create(
             model: optional_str(member, "model")?,
             effort: optional_str(member, "effort")?,
             service_tier: optional_str(member, "service_tier")?,
-            worktree_ref: optional_str(member, "worktree_ref")?,
+            provider_cwd_hint: optional_str(member, "provider_cwd_hint")?,
             owned_paths,
             resume_native_session_id: optional_str(member, "resume_native_session_id")?,
             initial_work: optional_str(member, "initial_work")?,
@@ -1034,7 +1034,7 @@ fn tool_team_run_add_member(
         model: optional_str(&Value::Object(member.clone()), "model")?,
         effort: optional_str(&Value::Object(member.clone()), "effort")?,
         service_tier: optional_str(&Value::Object(member.clone()), "service_tier")?,
-        worktree_ref: optional_str(&Value::Object(member.clone()), "worktree_ref")?,
+        provider_cwd_hint: optional_str(&Value::Object(member.clone()), "provider_cwd_hint")?,
         owned_paths,
         resume_native_session_id: optional_str(
             &Value::Object(member.clone()),
@@ -1048,7 +1048,7 @@ fn tool_team_run_add_member(
         team_run_id,
         &member,
         initial_work.as_deref(),
-        optional_str(arguments, "origin_wave_id")?,
+        optional_str(arguments, "source_plan_ref")?,
     )
     .map_err(|error| error.to_string())?;
     Ok(json!({
@@ -1220,20 +1220,20 @@ fn tool_team_run_status(
 }
 
 /// `team_run_send_message` — route one message inside a run and fold it into
-/// the event log. `from_member_id` may be the reserved sender `host`.
+/// the event log. `sender_runtime_id` may be the reserved sender `host`.
 fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
     let team_run_id = required_str(arguments, "team_run_id")?;
-    let from_member_id = required_str(arguments, "from_member_id")?;
-    let to_member_ids: Vec<String> = arguments
-        .get("to_member_ids")
+    let sender_runtime_id = required_str(arguments, "sender_runtime_id")?;
+    let recipient_runtime_ids: Vec<String> = arguments
+        .get("recipient_runtime_ids")
         .and_then(Value::as_array)
-        .ok_or_else(|| "missing required array argument `to_member_ids`".to_string())?
+        .ok_or_else(|| "missing required array argument `recipient_runtime_ids`".to_string())?
         .iter()
         .filter_map(Value::as_str)
         .map(str::to_string)
         .collect();
-    if to_member_ids.is_empty() {
-        return Err("`to_member_ids` must name at least one member id".to_string());
+    if recipient_runtime_ids.is_empty() {
+        return Err("`recipient_runtime_ids` must name at least one member id".to_string());
     }
     let kind = parse_team_message_kind(required_str(arguments, "kind")?)
         .map_err(|error| error.to_string())?;
@@ -1247,7 +1247,7 @@ fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result
         .and_then(Value::as_str)
         .map(str::to_string);
     let sender_kind = optional_str(arguments, "sender_kind")?.unwrap_or_else(|| {
-        if from_member_id == "host" {
+        if sender_runtime_id == "host" {
             "host".to_string()
         } else {
             "member_run".to_string()
@@ -1255,11 +1255,11 @@ fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result
     });
     let sender_kind = parse_team_actor_kind(&sender_kind).map_err(|error| error.to_string())?;
     let sender_id =
-        optional_str(arguments, "sender_id")?.unwrap_or_else(|| from_member_id.to_string());
+        optional_str(arguments, "sender_id")?.unwrap_or_else(|| sender_runtime_id.to_string());
     let mut authn_source = "mcp".to_string();
     if matches!(
         sender_kind,
-        TeamActorKind::MemberRun | TeamActorKind::AgentMember
+        TeamActorKind::ProviderRuntimeProjection | TeamActorKind::AgentMember
     ) {
         // The unbound-client impersonation invariant holds for driven
         // members: their mail must originate from the bound provider runtime.
@@ -1271,7 +1271,7 @@ fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result
             .into_iter()
             .filter(|member| member.team_run_id == team_run_id)
             .find(|member| match sender_kind {
-                TeamActorKind::MemberRun => member.id == sender_id,
+                TeamActorKind::ProviderRuntimeProjection => member.id == sender_id,
                 TeamActorKind::AgentMember => member.agent_member_id == sender_id,
                 _ => false,
             });
@@ -1298,7 +1298,7 @@ fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result
             }
             _ => {
                 return Err(
-                    "unbound MCP connections may not author MemberRun or AgentMember messages; \
+                    "unbound MCP connections may not author ProviderRuntimeProjection or AgentMember messages; \
                      member-originated messages must come from that member's bound provider runtime \
                      (declared external_interactive members excepted)"
                         .to_string(),
@@ -1306,8 +1306,8 @@ fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result
             }
         }
     }
-    if sender_kind == TeamActorKind::Host && from_member_id != "host" {
-        return Err("sender_kind=host requires from_member_id=host".to_string());
+    if sender_kind == TeamActorKind::Host && sender_runtime_id != "host" {
+        return Err("sender_kind=host requires sender_runtime_id=host".to_string());
     }
     let message = send_team_message_as_work(
         store,
@@ -1318,13 +1318,13 @@ fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result
             display_name: optional_str(arguments, "sender_name")?,
             authn_source: Some(authn_source),
         },
-        to_member_ids,
+        recipient_runtime_ids,
         kind,
         body,
         optional_str(arguments, "work_id")?,
         correlation_id,
         causation_id,
-        optional_str(arguments, "origin_wave_id")?,
+        optional_str(arguments, "source_plan_ref")?,
         optional_str(arguments, "response_intent")?
             .map(|intent| parse_team_message_response_intent(&intent))
             .transpose()
@@ -1557,7 +1557,7 @@ fn tool_definitions() -> Value {
                                 "model": {"type": "string", "minLength": 1, "description": "Optional provider model override."},
                                 "effort": {"type": "string", "minLength": 1, "description": "Optional provider-neutral reasoning-effort request. The adapter must record the provider-confirmed effective value or an unsupported/review_required status."},
                                 "service_tier": {"type": "string", "minLength": 1, "description": "Optional provider-neutral latency/service profile request, such as priority. This is not a universal fast boolean."},
-                                "worktree_ref": {"type": "string", "minLength": 1, "description": "Optional member workspace override. Must be the selected project_root or a Git worktree sharing its git common directory, including external Codex worktrees."},
+                                "provider_cwd_hint": {"type": "string", "minLength": 1, "description": "Optional member workspace override. Must be the selected project_root or a Git worktree sharing its git common directory, including external Codex worktrees."},
                                 "owned_paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Paths this member exclusively owns."},
                                 "initial_work": {"type": "string", "minLength": 1, "description": "Optional completion criteria for one initial Host-assigned Work. Omit to create the member idle."},
                                 "resume_native_session_id": {"type": "string", "minLength": 1, "description": "Explicit provider-owned session to resume. Never inferred from recent local history."}
@@ -1599,7 +1599,7 @@ fn tool_definitions() -> Value {
                     "title": {"type": "string", "minLength": 1},
                     "context_markdown": {"type": "string"},
                     "completion_criteria_markdown": {"type": "string", "minLength": 1},
-                    "owner_member_run_id": {"type": "string", "minLength": 1, "description": "Optional concrete MemberRun to receive the first WorkDelivery; stable AgentMember ownership is derived by the store."},
+                    "owner_member_run_id": {"type": "string", "minLength": 1, "description": "Optional concrete ProviderRuntimeProjection to receive the first ProviderWorkDispatch; stable AgentMember ownership is derived by the store."},
                     "claim_mode": {"type": "string", "enum": ["host_assign", "team_claim"]},
                     "eligible_member_ids": {"type": "array", "items": {"type": "string", "minLength": 1}},
                     "parent_work_id": {"type": "string", "minLength": 1},
@@ -1618,7 +1618,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_work_rebind",
-            "description": "Host preserves the Work's stable AgentMember owner while moving its active runtime binding to another active MemberRun for that same identity, for example after a runtime replacement or crash recovery.",
+            "description": "Host preserves the Work's stable AgentMember owner while moving its active runtime binding to another active ProviderRuntimeProjection for that same identity, for example after a runtime replacement or crash recovery.",
             "inputSchema": {"type": "object", "properties": {"team_run_id": {"type": "string"}, "work_id": {"type": "string"}, "member_run_id": {"type": "string"}, "expected_version": {"type": "integer", "minimum": 0}, "caused_by_message_id": {"type": "string"}, "idempotency_key": {"type": "string"}}, "required": ["team_run_id", "work_id", "member_run_id", "expected_version"]}
         },
         {
@@ -1628,7 +1628,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_work_resume",
-            "description": "Host resumes blocked Work after recording how the blocker was resolved; the latest owner is woken through WorkDelivery.",
+            "description": "Host resumes blocked Work after recording how the blocker was resolved; the latest owner is woken through ProviderWorkDispatch.",
             "inputSchema": {"type": "object", "properties": {"team_run_id": {"type": "string"}, "work_id": {"type": "string"}, "expected_version": {"type": "integer", "minimum": 0}, "resolution": {"type": "string", "minLength": 1}, "caused_by_message_id": {"type": "string"}, "idempotency_key": {"type": "string"}}, "required": ["team_run_id", "work_id", "expected_version", "resolution"]}
         },
         {
@@ -1648,7 +1648,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_work_reconcile_delivery",
-            "description": "A successor Supervisor explicitly requeues one stale claimed WorkDelivery after a crash. The caller must name the successor Supervisor id and generation; this never guesses provider consumption or changes Work responsibility.",
+            "description": "A successor Supervisor explicitly requeues one stale claimed ProviderWorkDispatch after a crash. The caller must name the successor Supervisor id and generation; this never guesses provider consumption or changes Work responsibility.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1716,13 +1716,13 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_add_member",
-            "description": "Add one idle member to an active planning/running/waiting TeamRun and optionally create a first Work. origin_wave_id is Host-plan provenance only.",
+            "description": "Add one idle member to an active planning/running/waiting TeamRun and optionally create a first Work. source_plan_ref is Host-plan provenance only.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "team_run_id": {"type": "string"},
                     "initial_work": {"type": "string", "minLength": 1},
-                    "origin_wave_id": {"type": "string", "description": "Optional Host-plan provenance only."},
+                    "source_plan_ref": {"type": "string", "description": "Optional Host-plan provenance only."},
                     "member": {
                         "type": "object",
                         "properties": {
@@ -1733,7 +1733,7 @@ fn tool_definitions() -> Value {
                             "model": {"type": "string", "minLength": 1},
                             "effort": {"type": "string", "minLength": 1},
                             "service_tier": {"type": "string", "minLength": 1},
-                            "worktree_ref": {"type": "string", "minLength": 1},
+                            "provider_cwd_hint": {"type": "string", "minLength": 1},
                             "owned_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
                             "resume_native_session_id": {"type": "string", "minLength": 1}
                         },
@@ -1745,7 +1745,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_rename_member",
-            "description": "Rename one MemberRun for future coordination and Dashboard display without replacing its provider-native session or historical id.",
+            "description": "Rename one ProviderRuntimeProjection for future coordination and Dashboard display without replacing its provider-native session or historical id.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1758,7 +1758,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_deactivate_member",
-            "description": "Deactivate an idle, queued, waiting, reviewing, or blocked MemberRun while preserving its history. An active provider turn must be interrupted first.",
+            "description": "Deactivate an idle, queued, waiting, reviewing, or blocked ProviderRuntimeProjection while preserving its history. An active provider turn must be interrupted first.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1793,7 +1793,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_message_acknowledge",
-            "description": "Acknowledge one delivery of a TeamMessage for an explicit member or the reserved host recipient.",
+            "description": "Acknowledge one delivery of a ProviderDispatchEnvelope for an explicit member or the reserved host recipient.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1849,12 +1849,12 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_inbox",
-            "description": "Read latest-wins Harness coordination mail addressed to one MemberRun (or the reserved host recipient). By default returns actionable queued/delivered messages; all=true returns every received message at its latest stored state, not raw append revisions. Provider-native transcript and tool history are intentionally excluded.",
+            "description": "Read latest-wins Harness coordination mail addressed to one ProviderRuntimeProjection (or the reserved host recipient). By default returns actionable queued/delivered messages; all=true returns every received message at its latest stored state, not raw append revisions. Provider-native transcript and tool history are intentionally excluded.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "team_run_id": {"type": "string"},
-                    "member_run_id": {"type": "string", "description": "MemberRun id, or `host` for the Lead inbox."},
+                    "member_run_id": {"type": "string", "description": "ProviderRuntimeProjection id, or `host` for the Lead inbox."},
                     "all": {"type": "boolean", "default": false}
                 },
                 "required": ["team_run_id", "member_run_id"]
@@ -1862,30 +1862,30 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_send_message",
-            "description": "Route one conversation message inside a team run and fold it into the run's event log. Durable responsibility lives on Work; pass work_id only to link the discussion. MCP Host calls default to sender_kind=host; external gateways must identify operator/service explicitly and may not impersonate a driven MemberRun. Omit lineage fields for a fresh conversation correlation.",
+            "description": "Route one conversation message inside a team run and fold it into the run's event log. Durable responsibility lives on Work; pass work_id only to link the discussion. MCP Host calls default to sender_kind=host; external gateways must identify operator/service explicitly and may not impersonate a driven ProviderRuntimeProjection. Omit lineage fields for a fresh conversation correlation.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "team_run_id": {"type": "string"},
-                    "from_member_id": {"type": "string", "description": "Compatibility sender projection. Use `host` for MCP Host calls; operator/service gateways provide their stable id here."},
-                    "sender_kind": {"type": "string", "enum": ["host", "operator", "service", "member_run", "agent_member"], "description": "Authenticated MCP actor provenance. Unbound MCP cannot author MemberRun or AgentMember messages for driven members; those originate from the bound provider runtime. The declared exception is a non-driven external_interactive member, whose user-driven session may self-author here and is recorded with authn_source=mcp:external_interactive."},
-                    "sender_id": {"type": "string", "description": "Stable id of the typed sender; defaults to from_member_id."},
+                    "sender_runtime_id": {"type": "string", "description": "Compatibility sender projection. Use `host` for MCP Host calls; operator/service gateways provide their stable id here."},
+                    "sender_kind": {"type": "string", "enum": ["host", "operator", "service", "member_run", "agent_member"], "description": "Authenticated MCP actor provenance. Unbound MCP cannot author ProviderRuntimeProjection or AgentMember messages for driven members; those originate from the bound provider runtime. The declared exception is a non-driven external_interactive member, whose user-driven session may self-author here and is recorded with authn_source=mcp:external_interactive."},
+                    "sender_id": {"type": "string", "description": "Stable id of the typed sender; defaults to sender_runtime_id."},
                     "sender_name": {"type": "string"},
-                    "to_member_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}, "description": "One or more recipient member run ids, or the reserved host recipient."},
+                    "recipient_runtime_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}, "description": "One or more recipient member run ids, or the reserved host recipient."},
                     "kind": {"type": "string", "enum": ["message", "handoff", "control"], "description": "Use `message` for planning, questions, answers, progress, blockers, review, broadcasts, and peer coordination. Work owns assignment and lifecycle."},
                     "body": {"type": "string"},
                     "work_id": {"type": "string", "description": "Optional Work discussed by this message. It must belong to the same TeamRun."},
                     "correlation_id": {"type": "string", "description": "Optional existing conversation correlation to reuse."},
-                    "causation_id": {"type": "string", "description": "Optional earlier TeamMessage id in this team run. When paired with correlation_id, it must carry that same correlation."}
-                    ,"origin_wave_id": {"type": "string", "description": "Optional Host-plan provenance only; never a lifecycle boundary."}
+                    "causation_id": {"type": "string", "description": "Optional earlier ProviderDispatchEnvelope id in this team run. When paired with correlation_id, it must carry that same correlation."}
+                    ,"source_plan_ref": {"type": "string", "description": "Optional Host-plan provenance only; never a lifecycle boundary."}
                     ,"response_intent": {"type": "string", "enum": ["informational", "response_required"], "description": "Explicit response intent (ADR 0046 §4). Omit for the kind+sender default: handoff/control always require a response round; ordinary message mail from the coordination plane (host/operator/service) requires one too, while peer member-to-member message mail stays informational and never starts a provider round on its own."}
                 },
-                "required": ["team_run_id", "from_member_id", "to_member_ids", "kind", "body"]
+                "required": ["team_run_id", "sender_runtime_id", "recipient_runtime_ids", "kind", "body"]
             }
         },
         {
             "name": "team_run_reconcile_delivery",
-            "description": "Resolve one TeamMessage delivery left in claimed state after a Supervisor crash. This never guesses provider consumption: choose provider_accepted=true with an audited provider_receipt_id, or requeue=true.",
+            "description": "Resolve one ProviderDispatchEnvelope delivery left in claimed state after a Supervisor crash. This never guesses provider consumption: choose provider_accepted=true with an audited provider_receipt_id, or requeue=true.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1903,7 +1903,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_resolve_interaction",
-            "description": "Resolve a provider-originated interaction by legacy PendingInteraction id or provider_interaction_request TeamMessage id. New responses are strict correlated TeamMessages, atomically ACK the request, and enter the provider only through an Inject delivery. Questions/reviews require host|lead, unknown requests operator|human, and tool/reject-only requests policy.",
+            "description": "Resolve a provider-originated interaction by legacy PendingInteraction id or provider_interaction_request ProviderDispatchEnvelope id. New responses are strict correlated TeamMessages, atomically ACK the request, and enter the provider only through an Inject delivery. Questions/reviews require host|lead, unknown requests operator|human, and tool/reject-only requests policy.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1946,7 +1946,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_close_member",
-            "description": "Explicitly close one Member runtime while preserving the same MemberRun, native-session binding, and frozen mailbox for a later reopen. Managed adapters release their Harness-owned process; external_interactive only closes Harness coordination because its process is user-owned. The live request must be sent through the same Host server process that started the TeamRun.",
+            "description": "Explicitly close one Member runtime while preserving the same ProviderRuntimeProjection, native-session binding, and frozen mailbox for a later reopen. Managed adapters release their Harness-owned process; external_interactive only closes Harness coordination because its process is user-owned. The live request must be sent through the same Host server process that started the TeamRun.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1960,7 +1960,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_reopen_member",
-            "description": "Reopen a closed MemberRun in place. Managed adapters increment runtime_generation, start a new adapter process, and resume the exact provider-native session; Harness never reconstructs a transcript or silently starts fresh. external_interactive reopens only the coordination binding because its process and conversation are user-owned. Retired members cannot reopen.",
+            "description": "Reopen a closed ProviderRuntimeProjection in place. Managed adapters increment runtime_generation, start a new adapter process, and resume the exact provider-native session; Harness never reconstructs a transcript or silently starts fresh. external_interactive reopens only the coordination binding because its process and conversation are user-owned. Retired members cannot reopen.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

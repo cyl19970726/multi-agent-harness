@@ -9,23 +9,24 @@ use firm_core::{
     content_hash_hex16, provider_interaction_response_id, AgentTeam, AgentTeamRun, Decision,
     DelegationRun, Evidence, ExecutionNode, ExecutionNodeStatus, Gap, GitHubLink, HostAttention,
     HostAttentionInbox, HostAttentionKind, HostAttentionStatus, HostBindingLease,
-    HostBindingLeaseOwnerKind, HostBindingLeaseStatus, MemberAction, MemberRun, Message,
-    MessageDelivery, MessageDeliveryStatus, MessageTerminalSource, Mission, MissionLogEntry,
-    MissionStatus, NodeDaemonLease, NodeDaemonLeaseStatus, NodeProjectRegistration,
-    NodeProjectRegistrationStatus, PendingInteraction, Proposal, ProviderChildThread,
-    ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
+    HostBindingLeaseOwnerKind, HostBindingLeaseStatus, MemberAction, MessageTerminalSource,
+    Mission, MissionLogEntry, MissionStatus, NodeDaemonLease, NodeDaemonLeaseStatus,
+    NodeProjectRegistration, NodeProjectRegistrationStatus, PendingInteraction, Proposal,
+    ProviderChildThread, ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
     ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
-    ProviderCompatibilityStatus, ProviderDispatchEvent, ProviderExecutionStatus,
-    ProviderIntegrationProfile, ProviderInteractionRequestBody, ProviderInteractionResponseBody,
-    ProviderLaunchProfile, ProviderProcess, Review, TeamActorKind, TeamDeliveryPolicy,
-    TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage,
-    TeamMessageKind, TeamRunEvent, TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus,
-    Validate, Vision, Wave, WaveGateStatus, WaveStatus, Work, WorkClaimMode, WorkCommandContext,
-    WorkCondition, WorkConditionRecord, WorkDelegation, WorkDelegationEvent,
-    WorkDelegationRevision, WorkDelegationState, WorkDelegationTransition, WorkDelivery,
-    WorkDeliveryStatus, WorkDeliveryUpdate, WorkEvent, WorkEventKind, WorkEvidence, WorkOperation,
-    WorkOperationalDecision, WorkPhase, WorkRef, WorkReport, WorkResolution,
-    WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
+    ProviderCompatibilityStatus, ProviderDispatchEnvelope, ProviderDispatchEvent,
+    ProviderDispatchIntent, ProviderExecutionStatus, ProviderIntegrationProfile,
+    ProviderInteractionRequestBody, ProviderInteractionResponseBody, ProviderLaunchProfile,
+    ProviderProcess, ProviderRuntimeProjection, ProviderWorkDispatch, ProviderWorkDispatchStatus,
+    ProviderWorkDispatchUpdate, RegistryDeliveryAttempt, RegistryDeliveryStatus, RegistryMessage,
+    Review, TeamActorKind, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
+    TeamMemberCloseStatus, TeamRunEvent, TeamRunStatus, TeamSupervisorLease,
+    TeamSupervisorLeaseStatus, Validate, Vision, Wave, WaveGateStatus, WaveStatus, Work,
+    WorkClaimMode, WorkCommandContext, WorkCondition, WorkConditionRecord, WorkDelegation,
+    WorkDelegationEvent, WorkDelegationRevision, WorkDelegationState, WorkDelegationTransition,
+    WorkEvent, WorkEventKind, WorkEvidence, WorkOperation, WorkOperationalDecision, WorkPhase,
+    WorkRef, WorkReport, WorkResolution, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun,
+    WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
@@ -294,21 +295,22 @@ fn work_delegation_request_fingerprint(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageDeliveryClaimResult {
-    Claimed(Box<Message>),
+    Claimed(Box<RegistryMessage>),
     NotQueued,
     BlockedByDelivery(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TeamMessageDeliveryClaimResult {
-    Claimed(Box<TeamMessage>),
+    Claimed(Box<ProviderDispatchEnvelope>),
     NotQueued,
 }
 
-fn reject_raw_provider_interaction_append(value: &TeamMessage) -> StoreResult<()> {
+fn reject_raw_provider_interaction_append(value: &ProviderDispatchEnvelope) -> StoreResult<()> {
     if matches!(
         value.kind,
-        TeamMessageKind::ProviderInteractionRequest | TeamMessageKind::ProviderInteractionResponse
+        ProviderDispatchIntent::ProviderInteractionRequest
+            | ProviderDispatchIntent::ProviderInteractionResponse
     ) {
         return Err(StoreError::Conflict(
             "PROVIDER_INTERACTION_RAW_APPEND_FORBIDDEN: use append_team_message_checked for requests or record_provider_interaction_response for responses"
@@ -318,14 +320,17 @@ fn reject_raw_provider_interaction_append(value: &TeamMessage) -> StoreResult<()
     Ok(())
 }
 
-fn same_provider_interaction_response(existing: &TeamMessage, retry: &TeamMessage) -> bool {
+fn same_provider_interaction_response(
+    existing: &ProviderDispatchEnvelope,
+    retry: &ProviderDispatchEnvelope,
+) -> bool {
     existing.team_run_id == retry.team_run_id
         && existing.work_id == retry.work_id
-        && existing.origin_wave_id == retry.origin_wave_id
+        && existing.source_plan_ref == retry.source_plan_ref
         && existing.sender == retry.sender
-        && existing.from_member_id == retry.from_member_id
+        && existing.sender_runtime_id == retry.sender_runtime_id
         && existing.recipients == retry.recipients
-        && existing.to_member_ids == retry.to_member_ids
+        && existing.recipient_runtime_ids == retry.recipient_runtime_ids
         && existing.kind == retry.kind
         && existing.body == retry.body
         && existing.correlation_id == retry.correlation_id
@@ -344,7 +349,7 @@ fn same_provider_interaction_response(existing: &TeamMessage, retry: &TeamMessag
 
 /// Returns true when the request row changed and must be appended.
 fn acknowledge_provider_interaction_request(
-    request: &mut TeamMessage,
+    request: &mut ProviderDispatchEnvelope,
     acknowledged_at: &str,
 ) -> StoreResult<bool> {
     let host_deliveries = request
@@ -378,7 +383,7 @@ fn acknowledge_provider_interaction_request(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkDeliveryClaimResult {
-    Claimed(Box<WorkDelivery>),
+    Claimed(Box<ProviderWorkDispatch>),
     NotQueued,
 }
 
@@ -1068,7 +1073,7 @@ impl HarnessStore {
         self.append_jsonl("proposals.jsonl", value)
     }
 
-    pub fn append_message(&self, value: &Message) -> StoreResult<()> {
+    pub fn append_message(&self, value: &RegistryMessage) -> StoreResult<()> {
         self.append_jsonl("messages.jsonl", value)
     }
 
@@ -1380,7 +1385,7 @@ impl HarnessStore {
     /// Runtime integration must derive `attention.id` from the causal event
     /// (for example `host-attention-<work-event-id>`). Replaying the same event
     /// returns the latest delivery/intake projection instead of resetting it
-    /// to `actionable` or fabricating a TeamMessage.
+    /// to `actionable` or fabricating a ProviderDispatchEnvelope.
     pub fn ensure_host_attention(&self, attention: &HostAttention) -> StoreResult<HostAttention> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
@@ -1912,26 +1917,26 @@ impl HarnessStore {
         self.append_jsonl_unlocked("missions.jsonl", &mission)
     }
 
-    pub fn append_member_run(&self, value: &MemberRun) -> StoreResult<()> {
+    pub fn append_member_run(&self, value: &ProviderRuntimeProjection) -> StoreResult<()> {
         value
             .validate()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
         if value.provider_compatibility_block_cause.is_some() {
             return Err(StoreError::Conflict(
-                "PROVIDER_COMPATIBILITY_BLOCK_AUTHORITY_REQUIRED: initial MemberRun append cannot set a typed compatibility cause"
+                "PROVIDER_COMPATIBILITY_BLOCK_AUTHORITY_REQUIRED: initial ProviderRuntimeProjection append cannot set a typed compatibility cause"
                     .to_string(),
             ));
         }
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        let rows = self.read_jsonl::<MemberRun>("member_runs.jsonl")?;
+        let rows = self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?;
         let current = latest_by_id(rows, |row| row.id.clone()).remove(&value.id);
         if let Some(current) = current {
             if current == *value {
                 return Ok(());
             }
             return Err(StoreError::Conflict(format!(
-                "MEMBER_REVISION_REQUIRES_CAS: MemberRun {} already exists; use compare_and_append_member_run",
+                "MEMBER_REVISION_REQUIRES_CAS: ProviderRuntimeProjection {} already exists; use compare_and_append_member_run",
                 value.id
             )));
         } else {
@@ -1948,7 +1953,7 @@ impl HarnessStore {
                 })?;
             if !first_run.member_run_ids.iter().any(|id| id == &value.id) {
                 return Err(StoreError::Conflict(format!(
-                    "MEMBER_ADMISSION_REQUIRED: MemberRun {} was not declared by initial TeamRun {}",
+                    "MEMBER_ADMISSION_REQUIRED: ProviderRuntimeProjection {} was not declared by initial TeamRun {}",
                     value.id, value.team_run_id
                 )));
             }
@@ -1958,24 +1963,25 @@ impl HarnessStore {
         self.append_jsonl_unlocked("member_runs.jsonl", value)
     }
 
-    /// Compare-and-append one existing MemberRun revision. Raw append cannot
+    /// Compare-and-append one existing ProviderRuntimeProjection revision. Raw append cannot
     /// mutate lifecycle authority; all legitimate close/reopen/runtime updates
     /// must prove the exact revision they observed.
     pub fn compare_and_append_member_run(
         &self,
-        expected: &MemberRun,
-        next: &MemberRun,
+        expected: &ProviderRuntimeProjection,
+        next: &ProviderRuntimeProjection,
     ) -> StoreResult<()> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        let current = latest_by_id(self.read_jsonl::<MemberRun>("member_runs.jsonl")?, |row| {
-            row.id.clone()
-        })
+        let current = latest_by_id(
+            self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
+            |row| row.id.clone(),
+        )
         .remove(&expected.id)
         .ok_or_else(|| StoreError::Conflict(format!("member run not found: {}", expected.id)))?;
         if current != *expected {
             return Err(StoreError::Conflict(format!(
-                "MemberRun {} changed concurrently; retry the operation",
+                "ProviderRuntimeProjection {} changed concurrently; retry the operation",
                 expected.id
             )));
         }
@@ -1991,24 +1997,25 @@ impl HarnessStore {
     /// Store API allowed to introduce a typed compatibility cause.
     pub fn block_member_run_for_provider_compatibility(
         &self,
-        expected: &MemberRun,
+        expected: &ProviderRuntimeProjection,
         profile: &ProviderIntegrationProfile,
         cause: ProviderCompatibilityBlockCause,
         last_event_at: &str,
-    ) -> StoreResult<MemberRun> {
+    ) -> StoreResult<ProviderRuntimeProjection> {
         cause
             .validate()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        let current = latest_by_id(self.read_jsonl::<MemberRun>("member_runs.jsonl")?, |row| {
-            row.id.clone()
-        })
+        let current = latest_by_id(
+            self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
+            |row| row.id.clone(),
+        )
         .remove(&expected.id)
         .ok_or_else(|| StoreError::Conflict(format!("member run not found: {}", expected.id)))?;
         if current != *expected {
             return Err(StoreError::Conflict(format!(
-                "MemberRun {} changed concurrently; retry the operation",
+                "ProviderRuntimeProjection {} changed concurrently; retry the operation",
                 expected.id
             )));
         }
@@ -2025,13 +2032,13 @@ impl HarnessStore {
             )
         {
             return Err(StoreError::Conflict(format!(
-                "PROVIDER_COMPATIBILITY_BLOCK_LIFECYCLE_INVALID: MemberRun {} must have active coordination, unfinished runtime, and idle, queued, or disconnected status",
+                "PROVIDER_COMPATIBILITY_BLOCK_LIFECYCLE_INVALID: ProviderRuntimeProjection {} must have active coordination, unfinished runtime, and idle, queued, or disconnected status",
                 current.id
             )));
         }
         if current.provider_compatibility_block_cause.is_some() {
             return Err(StoreError::Conflict(format!(
-                "PROVIDER_COMPATIBILITY_BLOCK_ALREADY_OWNED: MemberRun {} already has a typed cause",
+                "PROVIDER_COMPATIBILITY_BLOCK_ALREADY_OWNED: ProviderRuntimeProjection {} already has a typed cause",
                 current.id
             )));
         }
@@ -2058,22 +2065,23 @@ impl HarnessStore {
     /// tuple is either source-reviewed or covered by an active admission.
     pub fn recover_member_run_from_provider_compatibility_block(
         &self,
-        expected: &MemberRun,
+        expected: &ProviderRuntimeProjection,
         profile: &ProviderIntegrationProfile,
         boundary: ProviderCompatibilityBlockBoundary,
         recovery_status: firm_core::MemberRunStatus,
         last_event_at: &str,
-    ) -> StoreResult<MemberRun> {
+    ) -> StoreResult<ProviderRuntimeProjection> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        let current = latest_by_id(self.read_jsonl::<MemberRun>("member_runs.jsonl")?, |row| {
-            row.id.clone()
-        })
+        let current = latest_by_id(
+            self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
+            |row| row.id.clone(),
+        )
         .remove(&expected.id)
         .ok_or_else(|| StoreError::Conflict(format!("member run not found: {}", expected.id)))?;
         if current != *expected {
             return Err(StoreError::Conflict(format!(
-                "MemberRun {} changed concurrently; retry the operation",
+                "ProviderRuntimeProjection {} changed concurrently; retry the operation",
                 expected.id
             )));
         }
@@ -2082,7 +2090,7 @@ impl HarnessStore {
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
         if !current.coordination_is_active() || current.finished_at.is_some() {
             return Err(StoreError::Conflict(format!(
-                "PROVIDER_COMPATIBILITY_RECOVERY_LIFECYCLE_INVALID: MemberRun {} must have active coordination and unfinished runtime",
+                "PROVIDER_COMPATIBILITY_RECOVERY_LIFECYCLE_INVALID: ProviderRuntimeProjection {} must have active coordination and unfinished runtime",
                 current.id
             )));
         }
@@ -2091,19 +2099,19 @@ impl HarnessStore {
             .as_ref()
             .ok_or_else(|| {
                 StoreError::Conflict(format!(
-                    "PROVIDER_COMPATIBILITY_BLOCK_CAUSE_REQUIRED: MemberRun {} has no typed compatibility cause",
+                    "PROVIDER_COMPATIBILITY_BLOCK_CAUSE_REQUIRED: ProviderRuntimeProjection {} has no typed compatibility cause",
                     current.id
                 ))
             })?;
         if current.status != firm_core::MemberRunStatus::Blocked {
             return Err(StoreError::Conflict(format!(
-                "PROVIDER_COMPATIBILITY_BLOCK_STATE_MISMATCH: MemberRun {} is not Blocked",
+                "PROVIDER_COMPATIBILITY_BLOCK_STATE_MISMATCH: ProviderRuntimeProjection {} is not Blocked",
                 current.id
             )));
         }
         let blocked_profile = current.provider_profile.as_ref().ok_or_else(|| {
             StoreError::Conflict(format!(
-                "PROVIDER_COMPATIBILITY_BLOCK_PROFILE_REQUIRED: MemberRun {} has no durable blocked provider profile",
+                "PROVIDER_COMPATIBILITY_BLOCK_PROFILE_REQUIRED: ProviderRuntimeProjection {} has no durable blocked provider profile",
                 current.id
             ))
         })?;
@@ -2165,7 +2173,7 @@ impl HarnessStore {
         };
         if !authorized {
             return Err(StoreError::Conflict(format!(
-                "PROVIDER_COMPATIBILITY_RECOVERY_NOT_AUTHORIZED: exact tuple for MemberRun {} is not source-reviewed or actively admitted",
+                "PROVIDER_COMPATIBILITY_RECOVERY_NOT_AUTHORIZED: exact tuple for ProviderRuntimeProjection {} is not source-reviewed or actively admitted",
                 current.id
             )));
         }
@@ -2182,10 +2190,13 @@ impl HarnessStore {
         Ok(next)
     }
 
-    /// Materialize one MemberRun already declared by the immutable first
+    /// Materialize one ProviderRuntimeProjection already declared by the immutable first
     /// TeamRun row. This is the compatibility path for initial team creation;
     /// later membership changes must use [`Self::admit_member_run`].
-    pub fn materialize_initial_member_run(&self, value: &MemberRun) -> StoreResult<()> {
+    pub fn materialize_initial_member_run(
+        &self,
+        value: &ProviderRuntimeProjection,
+    ) -> StoreResult<()> {
         value
             .validate()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
@@ -2198,7 +2209,7 @@ impl HarnessStore {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         if self
-            .read_jsonl::<MemberRun>("member_runs.jsonl")?
+            .read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?
             .iter()
             .any(|row| row.id == value.id)
         {
@@ -2216,7 +2227,7 @@ impl HarnessStore {
             })?;
         if !first_run.member_run_ids.iter().any(|id| id == &value.id) {
             return Err(StoreError::Conflict(format!(
-                "MEMBER_ADMISSION_REQUIRED: MemberRun {} was not declared by initial TeamRun {}",
+                "MEMBER_ADMISSION_REQUIRED: ProviderRuntimeProjection {} was not declared by initial TeamRun {}",
                 value.id, value.team_run_id
             )));
         }
@@ -2225,7 +2236,7 @@ impl HarnessStore {
         self.append_jsonl_unlocked("member_runs.jsonl", value)
     }
 
-    /// Atomically admit exactly one new MemberRun and publish the matching
+    /// Atomically admit exactly one new ProviderRuntimeProjection and publish the matching
     /// TeamRun membership revision. This Store API is an in-process authority
     /// boundary; callers at HTTP/MCP/provider transports must authenticate
     /// before invoking it.
@@ -2233,7 +2244,7 @@ impl HarnessStore {
         &self,
         expected: &AgentTeamRun,
         next: &AgentTeamRun,
-        member: &MemberRun,
+        member: &ProviderRuntimeProjection,
     ) -> StoreResult<()> {
         member
             .validate()
@@ -2259,7 +2270,7 @@ impl HarnessStore {
         }
         ensure_team_run_admission_revision(&current, next, member)?;
         if self
-            .read_jsonl::<MemberRun>("member_runs.jsonl")?
+            .read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?
             .iter()
             .any(|row| row.id == member.id)
         {
@@ -2358,21 +2369,21 @@ impl HarnessStore {
                 .is_some_and(|owner| owner != stable_identity)
             {
                 return Err(StoreError::Conflict(
-                    "owner_member_id does not match active MemberRun stable identity".to_string(),
+                    "owner_member_id does not match active ProviderRuntimeProjection stable identity".to_string(),
                 ));
             }
             work.owner_member_id = Some(stable_identity);
         }
         work.created_by_actor = context.performed_by_actor.clone();
         match context.performed_by_actor.kind {
-            firm_core::TeamActorKind::MemberRun => {
+            firm_core::TeamActorKind::ProviderRuntimeProjection => {
                 let member = self.require_member_run_unlocked(
                     &context.performed_by_actor.id,
                     &work.team_run_id,
                 )?;
                 if !member.coordination_is_active() {
                     return Err(StoreError::Conflict(
-                        "only an active MemberRun may create Work".to_string(),
+                        "only an active ProviderRuntimeProjection may create Work".to_string(),
                     ));
                 }
                 let own_identity = member_identity(&member);
@@ -2382,7 +2393,7 @@ impl HarnessStore {
                     .is_some_and(|creator| creator != own_identity)
                 {
                     return Err(StoreError::Conflict(
-                        "created_by_member_id does not match creator MemberRun stable identity"
+                        "created_by_member_id does not match creator ProviderRuntimeProjection stable identity"
                             .to_string(),
                     ));
                 }
@@ -2406,7 +2417,8 @@ impl HarnessStore {
                 require_host_actor(&context.performed_by_actor)?;
                 if work.created_by_member_id.is_some() {
                     return Err(StoreError::Conflict(
-                        "only a MemberRun actor may set created_by_member_id".to_string(),
+                        "only a ProviderRuntimeProjection actor may set created_by_member_id"
+                            .to_string(),
                     ));
                 }
             }
@@ -2503,7 +2515,7 @@ impl HarnessStore {
         }
         match context.performed_by_actor.kind {
             TeamActorKind::Host | TeamActorKind::Operator | TeamActorKind::Service => {}
-            TeamActorKind::MemberRun => {
+            TeamActorKind::ProviderRuntimeProjection => {
                 let member = self.require_member_run_unlocked(
                     &context.performed_by_actor.id,
                     &source.team_run_id,
@@ -2764,8 +2776,8 @@ impl HarnessStore {
     /// Rebind non-terminal Work to a replacement runtime generation of the
     /// same stable member identity. This is the sole safe Host primitive after
     /// a runtime dies: the version bump fences the old runtime, the Rebound
-    /// event records both bindings, and a fresh WorkDelivery targets the new
-    /// MemberRun.
+    /// event records both bindings, and a fresh ProviderWorkDispatch targets the new
+    /// ProviderRuntimeProjection.
     ///
     /// A still-claimed delivery is an uncertain handoff and must first be
     /// completed, failed by its current lease owner, or reconciled by a
@@ -2803,7 +2815,7 @@ impl HarnessStore {
         })?;
         let (previous, replacement) = if old_member_run_id == new_member_run_id {
             let revisions = self
-                .read_jsonl::<MemberRun>("member_runs.jsonl")?
+                .read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?
                 .into_iter()
                 .filter(|member| {
                     member.id == old_member_run_id && member.team_run_id == current.team_run_id
@@ -2816,7 +2828,7 @@ impl HarnessStore {
                 != std::cmp::Ordering::Greater
             {
                 return Err(StoreError::Conflict(format!(
-                    "WORK_ALREADY_BOUND: MemberRun {new_member_run_id} generation {} does not postdate Work version {}",
+                    "WORK_ALREADY_BOUND: ProviderRuntimeProjection {new_member_run_id} generation {} does not postdate Work version {}",
                     replacement.runtime_generation, current.version
                 )));
             }
@@ -2828,7 +2840,7 @@ impl HarnessStore {
                 .cloned()
                 .ok_or_else(|| {
                     StoreError::Conflict(format!(
-                        "WORK_ALREADY_BOUND: MemberRun {new_member_run_id} has no higher replacement runtime generation"
+                        "WORK_ALREADY_BOUND: ProviderRuntimeProjection {new_member_run_id} has no higher replacement runtime generation"
                     ))
                 })?;
             (previous, replacement)
@@ -2847,14 +2859,15 @@ impl HarnessStore {
             )
         {
             return Err(StoreError::Conflict(format!(
-                "OLD_RUNTIME_ACTIVE: MemberRun {old_member_run_id} must be closed or terminal before Work rebind"
+                "OLD_RUNTIME_ACTIVE: ProviderRuntimeProjection {old_member_run_id} must be closed or terminal before Work rebind"
             )));
         }
         if self
             .latest_work_deliveries_unlocked()?
             .values()
             .any(|delivery| {
-                delivery.work_id == work_id && delivery.status == WorkDeliveryStatus::Claimed
+                delivery.work_id == work_id
+                    && delivery.status == ProviderWorkDispatchStatus::Claimed
             })
         {
             return Err(StoreError::Conflict(
@@ -2865,7 +2878,7 @@ impl HarnessStore {
         let replacement_identity = member_identity(&replacement);
         if replacement_identity != owner_member_id {
             return Err(StoreError::Conflict(format!(
-                "OWNER_MISMATCH: replacement MemberRun {new_member_run_id} belongs to {replacement_identity}, expected {owner_member_id}"
+                "OWNER_MISMATCH: replacement ProviderRuntimeProjection {new_member_run_id} belongs to {replacement_identity}, expected {owner_member_id}"
             )));
         }
 
@@ -3033,7 +3046,7 @@ impl HarnessStore {
                 )
             {
                 return Err(StoreError::Conflict(format!(
-                    "OLD_RUNTIME_ACTIVE: MemberRun {previous_member_run_id} must be closed or terminal before execution retarget"
+                    "OLD_RUNTIME_ACTIVE: ProviderRuntimeProjection {previous_member_run_id} must be closed or terminal before execution retarget"
                 )));
             }
         }
@@ -3041,7 +3054,8 @@ impl HarnessStore {
             .latest_work_deliveries_unlocked()?
             .values()
             .any(|delivery| {
-                delivery.work_id == work_id && delivery.status == WorkDeliveryStatus::Claimed
+                delivery.work_id == work_id
+                    && delivery.status == ProviderWorkDispatchStatus::Claimed
             })
         {
             return Err(StoreError::Conflict(
@@ -3068,7 +3082,7 @@ impl HarnessStore {
                 let successor_identity = member_identity(&member);
                 if successor_identity != owner_id {
                     return Err(StoreError::Conflict(format!(
-                        "OWNER_MISMATCH: successor MemberRun {member_run_id} belongs to {successor_identity}, expected {owner_id}"
+                        "OWNER_MISMATCH: successor ProviderRuntimeProjection {member_run_id} belongs to {successor_identity}, expected {owner_id}"
                     )));
                 }
                 Some(member.id)
@@ -3132,7 +3146,7 @@ impl HarnessStore {
         ) || !member.coordination_is_active()
         {
             return Err(StoreError::Conflict(format!(
-                "MEMBER_BUSY: MemberRun {member_run_id} is not available and active"
+                "MEMBER_BUSY: ProviderRuntimeProjection {member_run_id} is not available and active"
             )));
         }
         let owner_id = member_identity(&member);
@@ -3157,7 +3171,7 @@ impl HarnessStore {
                 && work.active_member_run_id.as_deref() == Some(member_run_id)
         }) {
             return Err(StoreError::Conflict(format!(
-                "MEMBER_BUSY: MemberRun {member_run_id} already has active Work"
+                "MEMBER_BUSY: ProviderRuntimeProjection {member_run_id} already has active Work"
             )));
         }
         let mut next = current.clone();
@@ -3195,7 +3209,7 @@ impl HarnessStore {
             || current.active_member_run_id.as_deref() != Some(member_run_id)
         {
             return Err(StoreError::Conflict(format!(
-                "MemberRun {member_run_id} does not own open work {work_id}"
+                "ProviderRuntimeProjection {member_run_id} does not own open work {work_id}"
             )));
         }
         let member = self.require_member_run_unlocked(member_run_id, &current.team_run_id)?;
@@ -3205,7 +3219,7 @@ impl HarnessStore {
         ) || !member.coordination_is_active()
         {
             return Err(StoreError::Conflict(format!(
-                "MEMBER_BUSY: MemberRun {member_run_id} is not available and active"
+                "MEMBER_BUSY: ProviderRuntimeProjection {member_run_id} is not available and active"
             )));
         }
         let works = self
@@ -3222,7 +3236,7 @@ impl HarnessStore {
                 && work.active_member_run_id.as_deref() == Some(member_run_id)
         }) {
             return Err(StoreError::Conflict(format!(
-                "MEMBER_BUSY: MemberRun {member_run_id} already has active Work"
+                "MEMBER_BUSY: ProviderRuntimeProjection {member_run_id} already has active Work"
             )));
         }
         let mut next = current.clone();
@@ -3857,10 +3871,10 @@ impl HarnessStore {
             || current.active_member_run_id.as_deref() != Some(member_run_id)
         {
             return Err(StoreError::Conflict(format!(
-                "MemberRun {member_run_id} does not own active work {work_id} in required state"
+                "ProviderRuntimeProjection {member_run_id} does not own active work {work_id} in required state"
             )));
         }
-        // A Closed or Retired MemberRun no longer mutates its owned Work:
+        // A Closed or Retired ProviderRuntimeProjection no longer mutates its owned Work:
         // unfinished Work moves only via Host reassign/cancel or after an
         // explicit Reopen (docs/product/agent-team-works.md). This aligns
         // member-side transitions with insert/claim/start/receive, which
@@ -3868,7 +3882,7 @@ impl HarnessStore {
         let member = self.require_member_run_unlocked(member_run_id, &current.team_run_id)?;
         if !member.coordination_is_active() {
             return Err(StoreError::Conflict(format!(
-                "MEMBER_UNAVAILABLE: MemberRun {member_run_id} coordination is {:?}; Reopen before mutating owned Work",
+                "MEMBER_UNAVAILABLE: ProviderRuntimeProjection {member_run_id} coordination is {:?}; Reopen before mutating owned Work",
                 member.coordination_status
             )));
         }
@@ -3977,7 +3991,7 @@ impl HarnessStore {
                 require_member_actor(&context.performed_by_actor, member_run_id)?;
                 if current.active_member_run_id.as_deref() != Some(member_run_id) {
                     return Err(StoreError::Conflict(format!(
-                        "MemberRun {member_run_id} does not own open work {work_id}"
+                        "ProviderRuntimeProjection {member_run_id} does not own open work {work_id}"
                     )));
                 }
             }
@@ -4070,16 +4084,16 @@ impl HarnessStore {
             .into_values()
             .filter(|delivery| {
                 delivery.work_id == current.id
-                    && delivery.status == WorkDeliveryStatus::Queued
+                    && delivery.status == ProviderWorkDispatchStatus::Queued
                     && delivery.work_version < next.version
             })
             .map(|delivery| {
                 let update_sequence = next_delivery_update_sequence;
                 next_delivery_update_sequence = next_delivery_update_sequence.saturating_add(1);
-                WorkDeliveryUpdate {
+                ProviderWorkDispatchUpdate {
                     delivery_id: delivery.id,
                     update_sequence,
-                    status: WorkDeliveryStatus::Invalidated,
+                    status: ProviderWorkDispatchStatus::Invalidated,
                     attempt: delivery.attempt,
                     claim_id: delivery.claim_id,
                     claimed_by_supervisor_id: delivery.claimed_by_supervisor_id,
@@ -4165,7 +4179,7 @@ impl HarnessStore {
                                 .ensure_member_can_receive_work_unlocked(&member)
                                 .is_ok()
                             {
-                                let dep_delivery = WorkDelivery {
+                                let dep_delivery = ProviderWorkDispatch {
                                     id: format!(
                                         "work-delivery-prereq-{}-{}",
                                         prereq_event_id, dependent_work.id
@@ -4175,7 +4189,7 @@ impl HarnessStore {
                                     work_id: dependent_work.id.clone(),
                                     work_version: dependent_work.version,
                                     recipient_member_run_id: owner_member_id.to_string(),
-                                    status: WorkDeliveryStatus::Queued,
+                                    status: ProviderWorkDispatchStatus::Queued,
                                     attempt: 0,
                                     claim_id: None,
                                     claimed_by_supervisor_id: None,
@@ -4225,10 +4239,10 @@ impl HarnessStore {
     }
 
     fn ensure_work_store_compatible_unlocked(&self) -> StoreResult<()> {
-        // `assignment` is no longer a TeamMessageKind, so a legacy row fails
+        // `assignment` is no longer a ProviderDispatchIntent, so a legacy row fails
         // deserialization before any Work mutation can be accepted. We do not
         // migrate or reinterpret that history: use a fresh Execution Space.
-        let _ = self.read_jsonl::<TeamMessage>("team_messages.jsonl")?;
+        let _ = self.read_jsonl::<ProviderDispatchEnvelope>("team_messages.jsonl")?;
         Ok(())
     }
 
@@ -4685,33 +4699,35 @@ impl HarnessStore {
         &self,
         member_run_id: &str,
         team_run_id: &str,
-    ) -> StoreResult<MemberRun> {
-        let member = latest_by_id(self.read_jsonl::<MemberRun>("member_runs.jsonl")?, |row| {
-            row.id.clone()
-        })
+    ) -> StoreResult<ProviderRuntimeProjection> {
+        let member = latest_by_id(
+            self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
+            |row| row.id.clone(),
+        )
         .remove(member_run_id)
         .ok_or_else(|| StoreError::Conflict(format!("member run not found: {member_run_id}")))?;
         if member.team_run_id != team_run_id {
             return Err(StoreError::Conflict(format!(
-                "MemberRun {member_run_id} does not belong to TeamRun {team_run_id}"
+                "ProviderRuntimeProjection {member_run_id} does not belong to TeamRun {team_run_id}"
             )));
         }
         Ok(member)
     }
 
     /// Resolve a runtime only when the latest TeamRun explicitly names it as a
-    /// member. A same-team MemberRun row is not membership authority: the
+    /// member. A same-team ProviderRuntimeProjection row is not membership authority: the
     /// append-only ledger can contain stale or forged rows that were never
     /// admitted to the TeamRun.
     fn ensure_unique_member_identity_unlocked(
         &self,
         team_run: &AgentTeamRun,
-        proposed: &MemberRun,
+        proposed: &ProviderRuntimeProjection,
     ) -> StoreResult<()> {
         let identity = member_identity(proposed);
-        let members = latest_by_id(self.read_jsonl::<MemberRun>("member_runs.jsonl")?, |row| {
-            row.id.clone()
-        });
+        let members = latest_by_id(
+            self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
+            |row| row.id.clone(),
+        );
         if let Some(existing) = team_run
             .member_run_ids
             .iter()
@@ -4719,7 +4735,7 @@ impl HarnessStore {
             .find(|member| member_identity(member) == identity)
         {
             return Err(StoreError::Conflict(format!(
-                "MEMBER_IDENTITY_CONFLICT: stable identity {identity} is already admitted as MemberRun {}",
+                "MEMBER_IDENTITY_CONFLICT: stable identity {identity} is already admitted as ProviderRuntimeProjection {}",
                 existing.id
             )));
         }
@@ -4729,12 +4745,13 @@ impl HarnessStore {
     fn ensure_member_admission_identity_unlocked(
         &self,
         team_run: &AgentTeamRun,
-        proposed: &MemberRun,
+        proposed: &ProviderRuntimeProjection,
     ) -> StoreResult<()> {
         let identity = member_identity(proposed);
-        let members = latest_by_id(self.read_jsonl::<MemberRun>("member_runs.jsonl")?, |row| {
-            row.id.clone()
-        });
+        let members = latest_by_id(
+            self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
+            |row| row.id.clone(),
+        );
         let candidates = team_run
             .member_run_ids
             .iter()
@@ -4768,7 +4785,7 @@ impl HarnessStore {
 
     /// A stable reviewer identity is trustworthy only when it resolves to one
     /// exact runtime in the latest TeamRun membership. Reject duplicate stable
-    /// identities instead of choosing whichever MemberRun happened to be
+    /// identities instead of choosing whichever ProviderRuntimeProjection happened to be
     /// loaded first.
     fn validate_work_relations_unlocked(&self, work: &Work) -> StoreResult<()> {
         let works = self.latest_works_unlocked()?;
@@ -4799,7 +4816,7 @@ impl HarnessStore {
             self.ensure_member_can_receive_work_unlocked(&member)?;
             if work.owner_member_id.as_deref() != Some(member_identity(&member).as_str()) {
                 return Err(StoreError::Conflict(
-                    "owner_member_id does not match active MemberRun stable identity".to_string(),
+                    "owner_member_id does not match active ProviderRuntimeProjection stable identity".to_string(),
                 ));
             }
         } else if work.owner_member_id.is_some() {
@@ -4810,7 +4827,10 @@ impl HarnessStore {
         Ok(())
     }
 
-    fn ensure_member_can_receive_work_unlocked(&self, member: &MemberRun) -> StoreResult<()> {
+    fn ensure_member_can_receive_work_unlocked(
+        &self,
+        member: &ProviderRuntimeProjection,
+    ) -> StoreResult<()> {
         if !member.coordination_is_active()
             || matches!(
                 member.status,
@@ -4818,7 +4838,7 @@ impl HarnessStore {
             )
         {
             return Err(StoreError::Conflict(format!(
-                "MEMBER_UNAVAILABLE: MemberRun {} cannot receive Work while {:?}/{:?}",
+                "MEMBER_UNAVAILABLE: ProviderRuntimeProjection {} cannot receive Work while {:?}/{:?}",
                 member.id, member.coordination_status, member.status
             )));
         }
@@ -4830,7 +4850,7 @@ impl HarnessStore {
         work: &Work,
         event_id: &str,
         updated_at: &str,
-    ) -> StoreResult<Vec<WorkDelivery>> {
+    ) -> StoreResult<Vec<ProviderWorkDispatch>> {
         let Some(member_run_id) = work.active_member_run_id.as_deref() else {
             return Ok(Vec::new());
         };
@@ -4852,14 +4872,14 @@ impl HarnessStore {
                 }
             }
         }
-        Ok(vec![WorkDelivery {
+        Ok(vec![ProviderWorkDispatch {
             id: format!("work-delivery-{event_id}-{member_run_id}"),
             work_event_id: event_id.to_string(),
             team_run_id: work.team_run_id.clone(),
             work_id: work.id.clone(),
             work_version: work.version,
             recipient_member_run_id: member_run_id.to_string(),
-            status: WorkDeliveryStatus::Queued,
+            status: ProviderWorkDispatchStatus::Queued,
             attempt: 0,
             claim_id: None,
             claimed_by_supervisor_id: None,
@@ -4895,7 +4915,8 @@ impl HarnessStore {
                         == Some(delivery.recipient_member_run_id.as_str())
                     && matches!(
                         delivery.status,
-                        WorkDeliveryStatus::Claimed | WorkDeliveryStatus::ProviderReceived
+                        ProviderWorkDispatchStatus::Claimed
+                            | ProviderWorkDispatchStatus::ProviderReceived
                     )
             })
         {
@@ -5428,7 +5449,7 @@ impl HarnessStore {
             .max()
             .unwrap_or(0);
         let standalone_max = self
-            .read_jsonl::<WorkDeliveryUpdate>("work_delivery_updates.jsonl")?
+            .read_jsonl::<ProviderWorkDispatchUpdate>("work_delivery_updates.jsonl")?
             .into_iter()
             .map(|update| update.update_sequence)
             .max()
@@ -5457,7 +5478,7 @@ impl HarnessStore {
 
     fn latest_work_deliveries_unlocked(
         &self,
-    ) -> StoreResult<std::collections::BTreeMap<String, WorkDelivery>> {
+    ) -> StoreResult<std::collections::BTreeMap<String, ProviderWorkDispatch>> {
         let mut deliveries = std::collections::BTreeMap::new();
         let mut legacy_updates = Vec::new();
         let mut sequenced_updates = Vec::new();
@@ -5475,7 +5496,9 @@ impl HarnessStore {
                 }
             }
         }
-        for update in self.read_jsonl::<WorkDeliveryUpdate>("work_delivery_updates.jsonl")? {
+        for update in
+            self.read_jsonl::<ProviderWorkDispatchUpdate>("work_delivery_updates.jsonl")?
+        {
             if update.update_sequence == 0 {
                 legacy_updates.push((update.updated_at.clone(), legacy_order, update));
                 legacy_order = legacy_order.saturating_add(1);
@@ -5503,26 +5526,26 @@ impl HarnessStore {
         Ok(deliveries)
     }
 
-    pub fn append_team_message(&self, value: &TeamMessage) -> StoreResult<()> {
+    pub fn append_team_message(&self, value: &ProviderDispatchEnvelope) -> StoreResult<()> {
         reject_raw_provider_interaction_append(value)?;
         self.append_jsonl("team_messages.jsonl", value)
     }
 
-    /// Append a manually-authored TeamMessage under the global lock.
-    pub fn append_team_message_checked(&self, value: &TeamMessage) -> StoreResult<()> {
+    /// Append a manually-authored ProviderDispatchEnvelope under the global lock.
+    pub fn append_team_message_checked(&self, value: &ProviderDispatchEnvelope) -> StoreResult<()> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         value
             .validate_provider_interaction_contract()
             .map_err(StoreError::Conflict)?;
-        if value.kind == TeamMessageKind::ProviderInteractionResponse {
+        if value.kind == ProviderDispatchIntent::ProviderInteractionResponse {
             return Err(StoreError::Conflict(
                 "PROVIDER_INTERACTION_RESPONSE_REQUIRES_ATOMIC_RECORD: use record_provider_interaction_response"
                     .to_string(),
             ));
         }
         let messages = latest_by_id(
-            self.read_jsonl::<TeamMessage>("team_messages.jsonl")?,
+            self.read_jsonl::<ProviderDispatchEnvelope>("team_messages.jsonl")?,
             |message| message.id.clone(),
         );
         if messages.contains_key(&value.id) {
@@ -5531,19 +5554,19 @@ impl HarnessStore {
                 value.id
             )));
         }
-        if value.kind == TeamMessageKind::ProviderInteractionRequest {
+        if value.kind == ProviderDispatchIntent::ProviderInteractionRequest {
             let body = ProviderInteractionRequestBody::parse_canonical_json(&value.body)
                 .map_err(StoreError::Conflict)?;
             let member = self.require_member_run_unlocked(&body.member, &value.team_run_id)?;
             if !member.coordination_is_active() || member.runtime_generation != body.generation {
                 return Err(StoreError::Conflict(format!(
-                    "provider interaction request generation {} is not active on MemberRun {} generation {}",
+                    "provider interaction request generation {} is not active on ProviderRuntimeProjection {} generation {}",
                     body.generation, body.member, member.runtime_generation,
                 )));
             }
             let native_session = member.native_session.as_ref().ok_or_else(|| {
                 StoreError::Conflict(format!(
-                    "provider interaction request MemberRun {} has no native session",
+                    "provider interaction request ProviderRuntimeProjection {} has no native session",
                     body.member
                 ))
             })?;
@@ -5552,7 +5575,7 @@ impl HarnessStore {
                 || native_session.native_session_id != body.session
             {
                 return Err(StoreError::Conflict(format!(
-                    "provider interaction request does not match MemberRun {} provider/native session",
+                    "provider interaction request does not match ProviderRuntimeProjection {} provider/native session",
                     body.member
                 )));
             }
@@ -5588,13 +5611,13 @@ impl HarnessStore {
                 )));
             }
         }
-        if value.kind == TeamMessageKind::Handoff {
+        if value.kind == ProviderDispatchIntent::Message {
             let existing_handoffs = messages
                 .values()
                 .filter(|message| {
                     message.team_run_id == value.team_run_id
-                        && message.from_member_id == value.from_member_id
-                        && message.kind == TeamMessageKind::Handoff
+                        && message.sender_runtime_id == value.sender_runtime_id
+                        && message.kind == ProviderDispatchIntent::Message
                         && message.correlation_id == value.correlation_id
                 })
                 .collect::<Vec<_>>();
@@ -5607,10 +5630,10 @@ impl HarnessStore {
                 value.causation_id.as_deref().is_some_and(|causation_id| {
                     messages.get(causation_id).is_some_and(|control| {
                         control.team_run_id == value.team_run_id
-                            && control.kind == TeamMessageKind::Control
+                            && control.kind == ProviderDispatchIntent::Control
                             && control.correlation_id == value.correlation_id
                             && control.deliveries.iter().any(|delivery| {
-                                delivery.member_id == value.from_member_id
+                                delivery.member_id == value.sender_runtime_id
                                     && delivery.policy == TeamDeliveryPolicy::Inject
                                     && matches!(
                                         delivery.status,
@@ -5630,8 +5653,8 @@ impl HarnessStore {
                 });
             if duplicate_trigger || duplicate_inject_continuation {
                 return Err(StoreError::Conflict(format!(
-                    "MemberRun {} already handed off correlation `{}` for this provider turn",
-                    value.from_member_id, value.correlation_id
+                    "ProviderRuntimeProjection {} already handed off correlation `{}` for this provider turn",
+                    value.sender_runtime_id, value.correlation_id
                 )));
             }
         }
@@ -5640,14 +5663,14 @@ impl HarnessStore {
         // acknowledgement-only mail does not start rounds, so it must not
         // fence either — otherwise a Handoff would deadlock behind mail that
         // is intentionally never driven on its own (ADR 0046 §4).
-        if value.kind == firm_core::TeamMessageKind::Handoff
+        if value.kind == firm_core::ProviderDispatchIntent::Message
             && messages.values().any(|message| {
                 message.team_run_id == value.team_run_id
                     && message.correlation_id == value.correlation_id
-                    && message.from_member_id != value.from_member_id
+                    && message.sender_runtime_id != value.sender_runtime_id
                     && message.requires_response()
                     && message.deliveries.iter().any(|delivery| {
-                        delivery.member_id == value.from_member_id
+                        delivery.member_id == value.sender_runtime_id
                             && matches!(
                                 delivery.status,
                                 TeamDeliveryStatus::Queued | TeamDeliveryStatus::Claimed
@@ -5656,8 +5679,8 @@ impl HarnessStore {
             })
         {
             return Err(StoreError::Conflict(format!(
-                "MemberRun {} cannot hand off correlation `{}` while newer inbound mail is queued or claimed",
-                value.from_member_id, value.correlation_id
+                "ProviderRuntimeProjection {} cannot hand off correlation `{}` while newer inbound mail is queued or claimed",
+                value.sender_runtime_id, value.correlation_id
             )));
         }
         self.append_jsonl_unlocked("team_messages.jsonl", value)
@@ -5673,15 +5696,15 @@ impl HarnessStore {
     /// completes the ACK; it can never append a second semantic answer.
     pub fn record_provider_interaction_response(
         &self,
-        response: &TeamMessage,
+        response: &ProviderDispatchEnvelope,
         acknowledged_at: &str,
-    ) -> StoreResult<TeamMessage> {
+    ) -> StoreResult<ProviderDispatchEnvelope> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         response
             .validate_provider_interaction_contract()
             .map_err(StoreError::Conflict)?;
-        if response.kind != TeamMessageKind::ProviderInteractionResponse {
+        if response.kind != ProviderDispatchIntent::ProviderInteractionResponse {
             return Err(StoreError::Conflict(
                 "provider interaction atomic response boundary requires provider_interaction_response"
                     .to_string(),
@@ -5695,7 +5718,7 @@ impl HarnessStore {
             )
         })?;
         let messages = latest_by_id(
-            self.read_jsonl::<TeamMessage>("team_messages.jsonl")?,
+            self.read_jsonl::<ProviderDispatchEnvelope>("team_messages.jsonl")?,
             |message| message.id.clone(),
         );
         let mut request = messages.get(request_id).cloned().ok_or_else(|| {
@@ -5711,7 +5734,7 @@ impl HarnessStore {
                 response.id
             )));
         }
-        if request.kind != TeamMessageKind::ProviderInteractionRequest {
+        if request.kind != ProviderDispatchIntent::ProviderInteractionRequest {
             return Err(StoreError::Conflict(format!(
                 "provider interaction response causation {request_id} is not a request"
             )));
@@ -5733,7 +5756,7 @@ impl HarnessStore {
         let prior_response = messages
             .values()
             .find(|message| {
-                message.kind == TeamMessageKind::ProviderInteractionResponse
+                message.kind == ProviderDispatchIntent::ProviderInteractionResponse
                     && message.causation_id.as_deref() == Some(request_id)
             })
             .cloned();
@@ -5768,9 +5791,9 @@ impl HarnessStore {
 
     fn validate_provider_interaction_response_pair(
         &self,
-        request: &TeamMessage,
+        request: &ProviderDispatchEnvelope,
         request_body: &ProviderInteractionRequestBody,
-        response: &TeamMessage,
+        response: &ProviderDispatchEnvelope,
         response_body: &ProviderInteractionResponseBody,
     ) -> StoreResult<()> {
         if response.team_run_id != request.team_run_id
@@ -5814,13 +5837,13 @@ impl HarnessStore {
             .filter(|delivery| delivery.member_id == request_body.member)
             .collect::<Vec<_>>();
         if !response
-            .to_member_ids
+            .recipient_runtime_ids
             .iter()
             .any(|member| member == &request_body.member)
             || target_deliveries.len() != 1
         {
             return Err(StoreError::Conflict(format!(
-                "provider interaction response requires exactly one delivery to MemberRun {}",
+                "provider interaction response requires exactly one delivery to ProviderRuntimeProjection {}",
                 request_body.member
             )));
         }
@@ -5843,7 +5866,7 @@ impl HarnessStore {
                 .as_ref()
                 .is_some_and(|sender| match sender.kind {
                     TeamActorKind::Host => {
-                        response.from_member_id == "host"
+                        response.sender_runtime_id == "host"
                             && (sender.id == "host"
                                 || run
                                     .host_actor
@@ -5851,12 +5874,12 @@ impl HarnessStore {
                                     .is_some_and(|actor| actor.id == sender.id))
                     }
                     TeamActorKind::Operator => {
-                        response.from_member_id == format!("operator:{}", sender.id)
+                        response.sender_runtime_id == format!("operator:{}", sender.id)
                     }
                     TeamActorKind::Service => {
-                        response.from_member_id == format!("service:{}", sender.id)
+                        response.sender_runtime_id == format!("service:{}", sender.id)
                     }
-                    TeamActorKind::MemberRun | TeamActorKind::AgentMember => false,
+                    TeamActorKind::ProviderRuntimeProjection | TeamActorKind::AgentMember => false,
                 });
         if !coordination_sender {
             return Err(StoreError::Conflict(
@@ -5869,7 +5892,7 @@ impl HarnessStore {
 
     fn validate_provider_interaction_live_member(
         &self,
-        request: &TeamMessage,
+        request: &ProviderDispatchEnvelope,
         request_body: &ProviderInteractionRequestBody,
     ) -> StoreResult<()> {
         let member =
@@ -5883,7 +5906,7 @@ impl HarnessStore {
             });
         if !same_live_generation {
             return Err(StoreError::Conflict(format!(
-                "provider interaction request is stale for MemberRun {} generation/session",
+                "provider interaction request is stale for ProviderRuntimeProjection {} generation/session",
                 request_body.member
             )));
         }
@@ -6318,16 +6341,19 @@ impl HarnessStore {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let member = latest_by_id(
-            self.read_jsonl::<MemberRun>("member_runs.jsonl")?,
+            self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
             |member| member.id.clone(),
         )
         .remove(&value.member_run_id)
         .ok_or_else(|| {
-            StoreError::Conflict(format!("MemberRun not found: {}", value.member_run_id))
+            StoreError::Conflict(format!(
+                "ProviderRuntimeProjection not found: {}",
+                value.member_run_id
+            ))
         })?;
         if member.team_run_id != value.team_run_id {
             return Err(StoreError::Conflict(format!(
-                "MemberRun {} belongs to {}, not {}",
+                "ProviderRuntimeProjection {} belongs to {}, not {}",
                 value.member_run_id, member.team_run_id, value.team_run_id
             )));
         }
@@ -6402,16 +6428,19 @@ impl HarnessStore {
             )));
         }
         let member = latest_by_id(
-            self.read_jsonl::<MemberRun>("member_runs.jsonl")?,
+            self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
             |member| member.id.clone(),
         )
         .remove(&value.member_run_id)
         .ok_or_else(|| {
-            StoreError::Conflict(format!("MemberRun not found: {}", value.member_run_id))
+            StoreError::Conflict(format!(
+                "ProviderRuntimeProjection not found: {}",
+                value.member_run_id
+            ))
         })?;
         if member.team_run_id != value.team_run_id {
             return Err(StoreError::Conflict(format!(
-                "MemberRun {} belongs to {}, not {}",
+                "ProviderRuntimeProjection {} belongs to {}, not {}",
                 value.member_run_id, member.team_run_id, value.team_run_id
             )));
         }
@@ -6460,16 +6489,19 @@ impl HarnessStore {
             }
         }
         let member = latest_by_id(
-            self.read_jsonl::<MemberRun>("member_runs.jsonl")?,
+            self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
             |member| member.id.clone(),
         )
         .remove(&value.member_run_id)
         .ok_or_else(|| {
-            StoreError::Conflict(format!("MemberRun not found: {}", value.member_run_id))
+            StoreError::Conflict(format!(
+                "ProviderRuntimeProjection not found: {}",
+                value.member_run_id
+            ))
         })?;
         if member.team_run_id != value.team_run_id {
             return Err(StoreError::Conflict(format!(
-                "MemberRun {} belongs to {}, not {}",
+                "ProviderRuntimeProjection {} belongs to {}, not {}",
                 value.member_run_id, member.team_run_id, value.team_run_id
             )));
         }
@@ -6487,7 +6519,7 @@ impl HarnessStore {
         Ok(value.clone())
     }
 
-    /// Mark one durable Close as applied after the MemberRun is stopped.
+    /// Mark one durable Close as applied after the ProviderRuntimeProjection is stopped.
     pub fn complete_team_member_close(
         &self,
         team_run_id: &str,
@@ -6504,12 +6536,12 @@ impl HarnessStore {
         .remove(member_run_id)
         .ok_or_else(|| {
             StoreError::Conflict(format!(
-                "MemberRun {member_run_id} has no durable Close request"
+                "ProviderRuntimeProjection {member_run_id} has no durable Close request"
             ))
         })?;
         if request.team_run_id != team_run_id || request.id != request_id {
             return Err(StoreError::Conflict(format!(
-                "Close request {request_id} does not own MemberRun {member_run_id} in TeamRun {team_run_id}"
+                "Close request {request_id} does not own ProviderRuntimeProjection {member_run_id} in TeamRun {team_run_id}"
             )));
         }
         if request.status == TeamMemberCloseStatus::Applied {
@@ -6521,7 +6553,7 @@ impl HarnessStore {
         Ok(request)
     }
 
-    /// Claim one queued TeamMessage delivery under the same durable lock used
+    /// Claim one queued ProviderDispatchEnvelope delivery under the same durable lock used
     /// for the Supervisor lease. A claim must be completed with a real provider
     /// receipt or explicitly reconciled; it is never auto-requeued on expiry.
     #[allow(clippy::too_many_arguments)]
@@ -6559,7 +6591,7 @@ impl HarnessStore {
             )));
         }
         let mut message = match latest_by_id(
-            self.read_jsonl::<TeamMessage>("team_messages.jsonl")?,
+            self.read_jsonl::<ProviderDispatchEnvelope>("team_messages.jsonl")?,
             |message| message.id.clone(),
         )
         .remove(message_id)
@@ -6567,7 +6599,7 @@ impl HarnessStore {
             Some(message) if message.team_run_id == team_run_id => message,
             _ => return Ok(TeamMessageDeliveryClaimResult::NotQueued),
         };
-        if message.kind == TeamMessageKind::ProviderInteractionResponse {
+        if message.kind == ProviderDispatchIntent::ProviderInteractionResponse {
             let body = ProviderInteractionResponseBody::parse_canonical_json(&message.body)
                 .map_err(StoreError::Conflict)?;
             let member = self.require_member_run_unlocked(&body.member, team_run_id)?;
@@ -6579,7 +6611,7 @@ impl HarnessStore {
                     .is_some_and(|native| native.native_session_id == body.session);
             if !same_live_generation {
                 return Err(StoreError::Conflict(format!(
-                    "provider interaction response is stale for MemberRun {} generation/session",
+                    "provider interaction response is stale for ProviderRuntimeProjection {} generation/session",
                     body.member
                 )));
             }
@@ -6619,10 +6651,11 @@ impl HarnessStore {
         provider_receipt_id: &str,
         now_unix_ms: u64,
         updated_at: &str,
-    ) -> StoreResult<TeamMessage> {
+    ) -> StoreResult<ProviderDispatchEnvelope> {
         if provider_receipt_id.trim().is_empty() {
             return Err(StoreError::Conflict(
-                "provider receipt id is required to complete a TeamMessage delivery".to_string(),
+                "provider receipt id is required to complete a ProviderDispatchEnvelope delivery"
+                    .to_string(),
             ));
         }
         self.init()?;
@@ -6647,7 +6680,7 @@ impl HarnessStore {
             )));
         }
         let mut message = latest_by_id(
-            self.read_jsonl::<TeamMessage>("team_messages.jsonl")?,
+            self.read_jsonl::<ProviderDispatchEnvelope>("team_messages.jsonl")?,
             |message| message.id.clone(),
         )
         .remove(message_id)
@@ -6693,7 +6726,7 @@ impl HarnessStore {
         Ok(message)
     }
 
-    /// Atomically acknowledge one already-delivered TeamMessage recipient.
+    /// Atomically acknowledge one already-delivered ProviderDispatchEnvelope recipient.
     ///
     /// ACK does not require a live Supervisor because the Host or operator may
     /// read and acknowledge mail while the provider runtime is idle or down.
@@ -6705,11 +6738,11 @@ impl HarnessStore {
         message_id: &str,
         member_run_id: &str,
         updated_at: &str,
-    ) -> StoreResult<TeamMessage> {
+    ) -> StoreResult<ProviderDispatchEnvelope> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let mut message = latest_by_id(
-            self.read_jsonl::<TeamMessage>("team_messages.jsonl")?,
+            self.read_jsonl::<ProviderDispatchEnvelope>("team_messages.jsonl")?,
             |message| message.id.clone(),
         )
         .remove(message_id)
@@ -6763,11 +6796,11 @@ impl HarnessStore {
         provider_accepted: bool,
         provider_receipt_id: Option<&str>,
         updated_at: &str,
-    ) -> StoreResult<TeamMessage> {
+    ) -> StoreResult<ProviderDispatchEnvelope> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let mut message = latest_by_id(
-            self.read_jsonl::<TeamMessage>("team_messages.jsonl")?,
+            self.read_jsonl::<ProviderDispatchEnvelope>("team_messages.jsonl")?,
             |message| message.id.clone(),
         )
         .remove(message_id)
@@ -6816,7 +6849,7 @@ impl HarnessStore {
         Ok(message)
     }
 
-    /// Fail a TeamMessage delivery that can never be completed because the
+    /// Fail a ProviderDispatchEnvelope delivery that can never be completed because the
     /// target member has stopped / failed / been retired.
     ///
     /// Transitions from `Queued` (pre-bind failure) or `Claimed` (transport
@@ -6833,10 +6866,10 @@ impl HarnessStore {
         reason: &str,
         now_unix_ms: u64,
         updated_at: &str,
-    ) -> StoreResult<TeamMessage> {
+    ) -> StoreResult<ProviderDispatchEnvelope> {
         if reason.trim().is_empty() {
             return Err(StoreError::Conflict(
-                "TeamMessage delivery failure reason is required".to_string(),
+                "ProviderDispatchEnvelope delivery failure reason is required".to_string(),
             ));
         }
         self.init()?;
@@ -6859,7 +6892,7 @@ impl HarnessStore {
         }
 
         let mut message = latest_by_id(
-            self.read_jsonl::<TeamMessage>("team_messages.jsonl")?,
+            self.read_jsonl::<ProviderDispatchEnvelope>("team_messages.jsonl")?,
             |message| message.id.clone(),
         )
         .remove(message_id)
@@ -6939,7 +6972,7 @@ impl HarnessStore {
         self.append_jsonl("member_actions.jsonl", value)
     }
 
-    /// Append a provider/control receipt only while the exact MemberRun
+    /// Append a provider/control receipt only while the exact ProviderRuntimeProjection
     /// generation and native-session snapshot observed by the caller remains
     /// current. The full-row equality check intentionally binds generation and
     /// session without copying those runtime fields into `MemberAction`.
@@ -6951,28 +6984,31 @@ impl HarnessStore {
     /// check/append gap.
     pub fn append_member_action_if_member_run_current(
         &self,
-        expected_member: &MemberRun,
+        expected_member: &ProviderRuntimeProjection,
         action: &MemberAction,
     ) -> StoreResult<bool> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let current = latest_by_id(
-            self.read_jsonl::<MemberRun>("member_runs.jsonl")?,
+            self.read_jsonl::<ProviderRuntimeProjection>("member_runs.jsonl")?,
             |member| member.id.clone(),
         )
         .remove(&expected_member.id)
         .ok_or_else(|| {
-            StoreError::Conflict(format!("MemberRun not found: {}", expected_member.id))
+            StoreError::Conflict(format!(
+                "ProviderRuntimeProjection not found: {}",
+                expected_member.id
+            ))
         })?;
         if &current != expected_member {
             return Err(StoreError::Conflict(format!(
-                "MemberRun {} changed concurrently; provider receipt was not appended",
+                "ProviderRuntimeProjection {} changed concurrently; provider receipt was not appended",
                 expected_member.id
             )));
         }
         if !member_is_active_reviewer_runtime(&current) || current.native_session.is_none() {
             return Err(StoreError::Conflict(format!(
-                "MemberRun {} is not active in a native session; provider receipt was not appended",
+                "ProviderRuntimeProjection {} is not active in a native session; provider receipt was not appended",
                 current.id
             )));
         }
@@ -6983,13 +7019,13 @@ impl HarnessStore {
             .any(|member| member == &current.id)
         {
             return Err(StoreError::Conflict(format!(
-                "MemberRun {} is not admitted to TeamRun {}",
+                "ProviderRuntimeProjection {} is not admitted to TeamRun {}",
                 current.id, current.team_run_id
             )));
         }
         if action.team_run_id != current.team_run_id || action.member_run_id != current.id {
             return Err(StoreError::Conflict(format!(
-                "MemberAction {} is not bound to MemberRun {} in TeamRun {}",
+                "MemberAction {} is not bound to ProviderRuntimeProjection {} in TeamRun {}",
                 action.id, current.id, current.team_run_id
             )));
         }
@@ -7152,15 +7188,15 @@ impl HarnessStore {
         &self,
         agent_member_id: &str,
         message_id: &str,
-        delivery: MessageDelivery,
+        delivery: RegistryDeliveryAttempt,
     ) -> StoreResult<MessageDeliveryClaimResult> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
 
-        let latest_messages =
-            latest_by_id(self.read_jsonl::<Message>("messages.jsonl")?, |message| {
-                message.id.clone()
-            });
+        let latest_messages = latest_by_id(
+            self.read_jsonl::<RegistryMessage>("messages.jsonl")?,
+            |message| message.id.clone(),
+        );
         if let Some(active) = latest_messages.values().find(|message| {
             message.to_agent_id.as_deref() == Some(agent_member_id)
                 && message
@@ -7179,12 +7215,12 @@ impl HarnessStore {
             return Ok(MessageDeliveryClaimResult::NotQueued);
         };
         if message.to_agent_id.as_deref() != Some(agent_member_id)
-            || message.delivery_status != MessageDeliveryStatus::Queued
+            || message.delivery_status != RegistryDeliveryStatus::Queued
         {
             return Ok(MessageDeliveryClaimResult::NotQueued);
         }
 
-        message.delivery_status = MessageDeliveryStatus::Acknowledged;
+        message.delivery_status = RegistryDeliveryStatus::Acknowledged;
         message.delivery = Some(delivery);
         self.append_jsonl_unlocked("messages.jsonl", &message)?;
 
@@ -7349,7 +7385,7 @@ impl HarnessStore {
         self.read_jsonl("proposals.jsonl")
     }
 
-    pub fn messages(&self) -> StoreResult<Vec<Message>> {
+    pub fn messages(&self) -> StoreResult<Vec<RegistryMessage>> {
         self.read_jsonl("messages.jsonl")
     }
 
@@ -7432,8 +7468,8 @@ impl HarnessStore {
         .collect())
     }
 
-    pub fn member_runs(&self) -> StoreResult<Vec<MemberRun>> {
-        let rows: Vec<MemberRun> = self.read_jsonl("member_runs.jsonl")?;
+    pub fn member_runs(&self) -> StoreResult<Vec<ProviderRuntimeProjection>> {
+        let rows: Vec<ProviderRuntimeProjection> = self.read_jsonl("member_runs.jsonl")?;
         for row in &rows {
             row.validate()
                 .map_err(|error| StoreError::Conflict(error.to_string()))?;
@@ -7441,7 +7477,7 @@ impl HarnessStore {
         Ok(rows)
     }
 
-    pub fn team_messages(&self) -> StoreResult<Vec<TeamMessage>> {
+    pub fn team_messages(&self) -> StoreResult<Vec<ProviderDispatchEnvelope>> {
         self.read_jsonl("team_messages.jsonl")
     }
 
@@ -7549,7 +7585,7 @@ impl HarnessStore {
             TeamActorKind::Host | TeamActorKind::Operator | TeamActorKind::Service => {}
             TeamActorKind::AgentMember
                 if context.performed_by_actor.id == current.source_owner_member_id => {}
-            TeamActorKind::MemberRun => {
+            TeamActorKind::ProviderRuntimeProjection => {
                 let member = self.require_member_run_unlocked(
                     &context.performed_by_actor.id,
                     &current.source_work_ref.team_run_id,
@@ -7629,7 +7665,7 @@ impl HarnessStore {
             .collect())
     }
 
-    pub fn latest_work_deliveries(&self) -> StoreResult<Vec<WorkDelivery>> {
+    pub fn latest_work_deliveries(&self) -> StoreResult<Vec<ProviderWorkDispatch>> {
         Ok(self
             .latest_work_deliveries_unlocked()?
             .into_values()
@@ -7677,7 +7713,7 @@ impl HarnessStore {
             || delivery.recipient_member_run_id != member_run_id
             || !matches!(
                 delivery.status,
-                WorkDeliveryStatus::Queued | WorkDeliveryStatus::Failed
+                ProviderWorkDispatchStatus::Queued | ProviderWorkDispatchStatus::Failed
             )
         {
             return Ok(WorkDeliveryClaimResult::NotQueued);
@@ -7717,8 +7753,8 @@ impl HarnessStore {
                                 && existing.recipient_member_run_id == member_run_id
                                 && matches!(
                                     existing.status,
-                                    WorkDeliveryStatus::Claimed
-                                        | WorkDeliveryStatus::ProviderReceived
+                                    ProviderWorkDispatchStatus::Claimed
+                                        | ProviderWorkDispatchStatus::ProviderReceived
                                 )
                         })))
         }) {
@@ -7731,7 +7767,7 @@ impl HarnessStore {
         {
             return Ok(WorkDeliveryClaimResult::NotQueued);
         }
-        delivery.status = WorkDeliveryStatus::Claimed;
+        delivery.status = ProviderWorkDispatchStatus::Claimed;
         delivery.attempt = delivery.attempt.saturating_add(1);
         delivery.claim_id = Some(claim_id.to_string());
         delivery.claimed_by_supervisor_id = Some(supervisor_id.to_string());
@@ -7742,7 +7778,7 @@ impl HarnessStore {
         let update_sequence = self.next_work_delivery_update_sequence_unlocked()?;
         self.append_jsonl_unlocked(
             "work_delivery_updates.jsonl",
-            &WorkDeliveryUpdate {
+            &ProviderWorkDispatchUpdate {
                 delivery_id: delivery.id.clone(),
                 update_sequence,
                 status: delivery.status,
@@ -7758,13 +7794,13 @@ impl HarnessStore {
         Ok(WorkDeliveryClaimResult::Claimed(Box::new(delivery)))
     }
 
-    /// Claim a queued WorkDelivery for a terminal work notification.
+    /// Claim a queued ProviderWorkDispatch for a terminal work notification.
     ///
     /// Like [`claim_work_delivery`] but permits terminal (Accepted /
     /// Cancelled) works, skips the prerequisite-satisfied check, and does not
     /// fence on another active work occupying the member slot. A terminal-work
     /// notification is informational (the supervisor turns it into a
-    /// TeamMessage), not an execution assignment.
+    /// ProviderDispatchEnvelope), not an execution assignment.
     #[allow(clippy::too_many_arguments)]
     pub fn claim_work_notification(
         &self,
@@ -7806,7 +7842,7 @@ impl HarnessStore {
             || delivery.recipient_member_run_id != member_run_id
             || !matches!(
                 delivery.status,
-                WorkDeliveryStatus::Queued | WorkDeliveryStatus::Failed
+                ProviderWorkDispatchStatus::Queued | ProviderWorkDispatchStatus::Failed
             )
         {
             return Ok(WorkDeliveryClaimResult::NotQueued);
@@ -7816,7 +7852,7 @@ impl HarnessStore {
             return Ok(WorkDeliveryClaimResult::NotQueued);
         };
         // Terminal works are allowed; the supervisor will turn this delivery
-        // into a TeamMessage, not a work-assignment prompt.
+        // into a ProviderDispatchEnvelope, not a work-assignment prompt.
         if work.team_run_id != team_run_id
             || work.version != delivery.work_version
             || work.active_member_run_id.as_deref() != Some(member_run_id)
@@ -7826,7 +7862,7 @@ impl HarnessStore {
         }
         // No slot-occupancy fence: a terminal-work notification never blocks
         // an active execution assignment.
-        delivery.status = WorkDeliveryStatus::Claimed;
+        delivery.status = ProviderWorkDispatchStatus::Claimed;
         delivery.attempt = delivery.attempt.saturating_add(1);
         delivery.claim_id = Some(claim_id.to_string());
         delivery.claimed_by_supervisor_id = Some(supervisor_id.to_string());
@@ -7837,7 +7873,7 @@ impl HarnessStore {
         let update_sequence = self.next_work_delivery_update_sequence_unlocked()?;
         self.append_jsonl_unlocked(
             "work_delivery_updates.jsonl",
-            &WorkDeliveryUpdate {
+            &ProviderWorkDispatchUpdate {
                 delivery_id: delivery.id.clone(),
                 update_sequence,
                 status: delivery.status,
@@ -7865,7 +7901,7 @@ impl HarnessStore {
         provider_receipt_id: &str,
         now_unix_ms: u64,
         updated_at: &str,
-    ) -> StoreResult<WorkDelivery> {
+    ) -> StoreResult<ProviderWorkDispatch> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let lease = latest_by_id(
@@ -7891,36 +7927,36 @@ impl HarnessStore {
             .latest_work_deliveries_unlocked()?
             .remove(delivery_id)
             .ok_or_else(|| {
-                StoreError::Conflict(format!("WorkDelivery not found: {delivery_id}"))
+                StoreError::Conflict(format!("ProviderWorkDispatch not found: {delivery_id}"))
             })?;
         let owns_claim = delivery.team_run_id == team_run_id
             && delivery.recipient_member_run_id == member_run_id
             && delivery.claim_id.as_deref() == Some(claim_id)
             && delivery.claimed_by_supervisor_id.as_deref() == Some(supervisor_id)
             && delivery.claimed_generation == Some(supervisor_generation);
-        if delivery.status == WorkDeliveryStatus::ProviderReceived && owns_claim {
+        if delivery.status == ProviderWorkDispatchStatus::ProviderReceived && owns_claim {
             if delivery.provider_receipt_id.as_deref() != Some(provider_receipt_id) {
                 return Err(StoreError::Conflict(format!(
-                    "WorkDelivery claim {claim_id} was already completed with a different provider receipt"
+                    "ProviderWorkDispatch claim {claim_id} was already completed with a different provider receipt"
                 )));
             }
             return Ok(delivery);
         }
         if !owns_claim
             || delivery.recipient_member_run_id != member_run_id
-            || delivery.status != WorkDeliveryStatus::Claimed
+            || delivery.status != ProviderWorkDispatchStatus::Claimed
         {
             return Err(StoreError::Conflict(format!(
-                "WorkDelivery claim {claim_id} no longer owns {delivery_id}"
+                "ProviderWorkDispatch claim {claim_id} no longer owns {delivery_id}"
             )));
         }
-        delivery.status = WorkDeliveryStatus::ProviderReceived;
+        delivery.status = ProviderWorkDispatchStatus::ProviderReceived;
         delivery.provider_receipt_id = Some(provider_receipt_id.to_string());
         delivery.updated_at = updated_at.to_string();
         let update_sequence = self.next_work_delivery_update_sequence_unlocked()?;
         self.append_jsonl_unlocked(
             "work_delivery_updates.jsonl",
-            &WorkDeliveryUpdate {
+            &ProviderWorkDispatchUpdate {
                 delivery_id: delivery.id.clone(),
                 update_sequence,
                 status: delivery.status,
@@ -7936,7 +7972,7 @@ impl HarnessStore {
         Ok(delivery)
     }
 
-    /// Fail the currently-owned WorkDelivery claim. Only the Supervisor that
+    /// Fail the currently-owned ProviderWorkDispatch claim. Only the Supervisor that
     /// owns the current, unexpired TeamRun lease and the exact durable claim
     /// may write this terminal delivery outcome. The failure reason is control
     /// evidence, not a copy of provider output.
@@ -7952,10 +7988,10 @@ impl HarnessStore {
         reason: &str,
         now_unix_ms: u64,
         updated_at: &str,
-    ) -> StoreResult<WorkDelivery> {
+    ) -> StoreResult<ProviderWorkDispatch> {
         if reason.trim().is_empty() {
             return Err(StoreError::Conflict(
-                "WorkDelivery failure reason is required".to_string(),
+                "ProviderWorkDispatch failure reason is required".to_string(),
             ));
         }
         self.init()?;
@@ -7981,35 +8017,35 @@ impl HarnessStore {
             .latest_work_deliveries_unlocked()?
             .remove(delivery_id)
             .ok_or_else(|| {
-                StoreError::Conflict(format!("WorkDelivery not found: {delivery_id}"))
+                StoreError::Conflict(format!("ProviderWorkDispatch not found: {delivery_id}"))
             })?;
         let owns_claim = delivery.team_run_id == team_run_id
             && delivery.recipient_member_run_id == member_run_id
             && delivery.claim_id.as_deref() == Some(claim_id)
             && delivery.claimed_by_supervisor_id.as_deref() == Some(supervisor_id)
             && delivery.claimed_generation == Some(supervisor_generation);
-        if delivery.status == WorkDeliveryStatus::Failed && owns_claim {
+        if delivery.status == ProviderWorkDispatchStatus::Failed && owns_claim {
             if delivery.failure_reason.as_deref() != Some(reason) {
                 return Err(StoreError::Conflict(format!(
-                    "WorkDelivery claim {claim_id} was already failed with a different reason"
+                    "ProviderWorkDispatch claim {claim_id} was already failed with a different reason"
                 )));
             }
             return Ok(delivery);
         }
-        if delivery.status != WorkDeliveryStatus::Claimed || !owns_claim {
+        if delivery.status != ProviderWorkDispatchStatus::Claimed || !owns_claim {
             return Err(StoreError::Conflict(format!(
-                "WorkDelivery claim {claim_id} no longer owns {delivery_id}"
+                "ProviderWorkDispatch claim {claim_id} no longer owns {delivery_id}"
             )));
         }
 
-        delivery.status = WorkDeliveryStatus::Failed;
+        delivery.status = ProviderWorkDispatchStatus::Failed;
         delivery.provider_receipt_id = None;
         delivery.failure_reason = Some(reason.to_string());
         delivery.updated_at = updated_at.to_string();
         let update_sequence = self.next_work_delivery_update_sequence_unlocked()?;
         self.append_jsonl_unlocked(
             "work_delivery_updates.jsonl",
-            &WorkDeliveryUpdate {
+            &ProviderWorkDispatchUpdate {
                 delivery_id: delivery.id.clone(),
                 update_sequence,
                 status: delivery.status,
@@ -8046,7 +8082,7 @@ impl HarnessStore {
         Ok(delivery)
     }
 
-    /// Requeue a WorkDelivery claim abandoned by an older Supervisor
+    /// Requeue a ProviderWorkDispatch claim abandoned by an older Supervisor
     /// generation. This is intentionally explicit: an expired lease alone is
     /// not proof that the provider did not receive the Work.
     ///
@@ -8062,7 +8098,7 @@ impl HarnessStore {
         supervisor_generation: u64,
         now_unix_ms: u64,
         updated_at: &str,
-    ) -> StoreResult<WorkDelivery> {
+    ) -> StoreResult<ProviderWorkDispatch> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let lease = self
@@ -8086,15 +8122,15 @@ impl HarnessStore {
             .latest_work_deliveries_unlocked()?
             .remove(delivery_id)
             .ok_or_else(|| {
-                StoreError::Conflict(format!("WorkDelivery not found: {delivery_id}"))
+                StoreError::Conflict(format!("ProviderWorkDispatch not found: {delivery_id}"))
             })?;
         if delivery.team_run_id != team_run_id {
             return Err(StoreError::Conflict(format!(
-                "WorkDelivery {delivery_id} belongs to {}, not {team_run_id}",
+                "ProviderWorkDispatch {delivery_id} belongs to {}, not {team_run_id}",
                 delivery.team_run_id
             )));
         }
-        if delivery.status == WorkDeliveryStatus::Queued
+        if delivery.status == ProviderWorkDispatchStatus::Queued
             && delivery.claim_id.is_none()
             && delivery.claimed_by_supervisor_id.is_none()
             && delivery.claimed_generation.is_none()
@@ -8102,29 +8138,29 @@ impl HarnessStore {
         {
             return Ok(delivery);
         }
-        if delivery.status != WorkDeliveryStatus::Claimed {
+        if delivery.status != ProviderWorkDispatchStatus::Claimed {
             return Err(StoreError::Conflict(format!(
-                "RECONCILIATION_REQUIRED: WorkDelivery {delivery_id} is {:?} and cannot be requeued",
+                "RECONCILIATION_REQUIRED: ProviderWorkDispatch {delivery_id} is {:?} and cannot be requeued",
                 delivery.status
             )));
         }
         if delivery.provider_receipt_id.is_some() {
             return Err(StoreError::Conflict(format!(
-                "RECONCILIATION_REQUIRED: WorkDelivery {delivery_id} has a provider receipt"
+                "RECONCILIATION_REQUIRED: ProviderWorkDispatch {delivery_id} has a provider receipt"
             )));
         }
         let claimed_generation = delivery.claimed_generation.ok_or_else(|| {
             StoreError::Conflict(format!(
-                "RECONCILIATION_REQUIRED: WorkDelivery {delivery_id} has no claimed generation"
+                "RECONCILIATION_REQUIRED: ProviderWorkDispatch {delivery_id} has no claimed generation"
             ))
         })?;
         if claimed_generation >= supervisor_generation {
             return Err(StoreError::Conflict(format!(
-                "WorkDelivery {delivery_id} is not a stale claim from a predecessor Supervisor generation"
+                "ProviderWorkDispatch {delivery_id} is not a stale claim from a predecessor Supervisor generation"
             )));
         }
 
-        delivery.status = WorkDeliveryStatus::Queued;
+        delivery.status = ProviderWorkDispatchStatus::Queued;
         delivery.claim_id = None;
         delivery.claimed_by_supervisor_id = None;
         delivery.claimed_generation = None;
@@ -8134,7 +8170,7 @@ impl HarnessStore {
         let update_sequence = self.next_work_delivery_update_sequence_unlocked()?;
         self.append_jsonl_unlocked(
             "work_delivery_updates.jsonl",
-            &WorkDeliveryUpdate {
+            &ProviderWorkDispatchUpdate {
                 delivery_id: delivery.id.clone(),
                 update_sequence,
                 status: delivery.status,
@@ -8442,11 +8478,11 @@ fn normalize_work_title(title: &str) -> String {
     words.join(" ")
 }
 
-fn member_identity(member: &MemberRun) -> String {
+fn member_identity(member: &ProviderRuntimeProjection) -> String {
     member.agent_member_id.clone()
 }
 
-fn member_is_active_reviewer_runtime(member: &MemberRun) -> bool {
+fn member_is_active_reviewer_runtime(member: &ProviderRuntimeProjection) -> bool {
     member.coordination_is_active()
         && !matches!(
             member.status,
@@ -8456,7 +8492,10 @@ fn member_is_active_reviewer_runtime(member: &MemberRun) -> bool {
         )
 }
 
-fn ensure_member_provenance_unchanged(current: &MemberRun, next: &MemberRun) -> StoreResult<()> {
+fn ensure_member_provenance_unchanged(
+    current: &ProviderRuntimeProjection,
+    next: &ProviderRuntimeProjection,
+) -> StoreResult<()> {
     if next.id != current.id
         || next.team_run_id != current.team_run_id
         || next.slot_id != current.slot_id
@@ -8465,25 +8504,28 @@ fn ensure_member_provenance_unchanged(current: &MemberRun, next: &MemberRun) -> 
         || next.provider != current.provider
     {
         return Err(StoreError::Conflict(format!(
-            "MEMBER_PROVENANCE_IMMUTABLE: MemberRun {} cannot change its team, stable identity, role, or provider",
+            "MEMBER_PROVENANCE_IMMUTABLE: ProviderRuntimeProjection {} cannot change its team, stable identity, role, or provider",
             current.id
         )));
     }
     Ok(())
 }
 
-fn ensure_member_lifecycle_revision(current: &MemberRun, next: &MemberRun) -> StoreResult<()> {
+fn ensure_member_lifecycle_revision(
+    current: &ProviderRuntimeProjection,
+    next: &ProviderRuntimeProjection,
+) -> StoreResult<()> {
     if next.runtime_generation < current.runtime_generation
         || next.runtime_generation > current.runtime_generation.saturating_add(1)
     {
         return Err(StoreError::Conflict(format!(
-            "MEMBER_GENERATION_INVALID: MemberRun {} generation must remain {} or advance exactly once",
+            "MEMBER_GENERATION_INVALID: ProviderRuntimeProjection {} generation must remain {} or advance exactly once",
             current.id, current.runtime_generation
         )));
     }
     if current.coordination_is_retired() && !next.coordination_is_retired() {
         return Err(StoreError::Conflict(format!(
-            "MEMBER_RETIRED: MemberRun {} cannot leave retired coordination",
+            "MEMBER_RETIRED: ProviderRuntimeProjection {} cannot leave retired coordination",
             current.id
         )));
     }
@@ -8496,7 +8538,7 @@ fn ensure_member_lifecycle_revision(current: &MemberRun, next: &MemberRun) -> St
         && next.runtime_generation != current.runtime_generation.saturating_add(1)
     {
         return Err(StoreError::Conflict(format!(
-            "MEMBER_REOPEN_REQUIRES_NEW_GENERATION: MemberRun {} must advance runtime_generation when reactivated",
+            "MEMBER_REOPEN_REQUIRES_NEW_GENERATION: ProviderRuntimeProjection {} must advance runtime_generation when reactivated",
             current.id
         )));
     }
@@ -8504,12 +8546,12 @@ fn ensure_member_lifecycle_revision(current: &MemberRun, next: &MemberRun) -> St
 }
 
 fn ensure_provider_compatibility_cause_unchanged(
-    current: &MemberRun,
-    next: &MemberRun,
+    current: &ProviderRuntimeProjection,
+    next: &ProviderRuntimeProjection,
 ) -> StoreResult<()> {
     if current.provider_compatibility_block_cause != next.provider_compatibility_block_cause {
         return Err(StoreError::Conflict(format!(
-            "PROVIDER_COMPATIBILITY_BLOCK_AUTHORITY_REQUIRED: generic MemberRun CAS cannot set, replace, or clear the typed compatibility cause for {}",
+            "PROVIDER_COMPATIBILITY_BLOCK_AUTHORITY_REQUIRED: generic ProviderRuntimeProjection CAS cannot set, replace, or clear the typed compatibility cause for {}",
             current.id
         )));
     }
@@ -8517,7 +8559,7 @@ fn ensure_provider_compatibility_cause_unchanged(
 }
 
 fn ensure_compatibility_cause_matches_profile(
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     profile: &ProviderIntegrationProfile,
     cause: &ProviderCompatibilityBlockCause,
 ) -> StoreResult<()> {
@@ -8540,7 +8582,7 @@ fn ensure_compatibility_cause_matches_profile(
             )
     {
         return Err(StoreError::Conflict(format!(
-            "PROVIDER_COMPATIBILITY_BLOCK_TUPLE_MISMATCH: typed cause does not match MemberRun {} and its observed provider profile",
+            "PROVIDER_COMPATIBILITY_BLOCK_TUPLE_MISMATCH: typed cause does not match ProviderRuntimeProjection {} and its observed provider profile",
             member.id
         )));
     }
@@ -8550,11 +8592,11 @@ fn ensure_compatibility_cause_matches_profile(
 fn ensure_team_run_admission_revision(
     current: &AgentTeamRun,
     next: &AgentTeamRun,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
 ) -> StoreResult<()> {
     if member.team_run_id != current.id {
         return Err(StoreError::Conflict(format!(
-            "TEAM_SCOPE_MISMATCH: MemberRun {} belongs to {}, not {}",
+            "TEAM_SCOPE_MISMATCH: ProviderRuntimeProjection {} belongs to {}, not {}",
             member.id, member.team_run_id, current.id
         )));
     }
@@ -8568,7 +8610,7 @@ fn ensure_team_run_admission_revision(
     expected_ids.push(member.id.clone());
     if next.member_run_ids != expected_ids {
         return Err(StoreError::Conflict(
-            "MEMBER_ADMISSION_INVALID: TeamRun revision must append exactly the admitted MemberRun id"
+            "MEMBER_ADMISSION_INVALID: TeamRun revision must append exactly the admitted ProviderRuntimeProjection id"
                 .to_string(),
         ));
     }
@@ -8643,7 +8685,10 @@ fn same_team_run_event_semantics(left: &TeamRunEvent, right: &TeamRunEvent) -> b
         && left.summary == right.summary
 }
 
-fn apply_work_delivery_update(delivery: &mut WorkDelivery, update: WorkDeliveryUpdate) {
+fn apply_work_delivery_update(
+    delivery: &mut ProviderWorkDispatch,
+    update: ProviderWorkDispatchUpdate,
+) {
     delivery.status = update.status;
     delivery.attempt = update.attempt;
     delivery.claim_id = update.claim_id;
@@ -8678,16 +8723,18 @@ fn require_host_actor(actor: &firm_core::TeamActorRef) -> StoreResult<()> {
 }
 
 fn require_member_actor(actor: &firm_core::TeamActorRef, member_run_id: &str) -> StoreResult<()> {
-    if actor.kind == firm_core::TeamActorKind::MemberRun && actor.id == member_run_id {
+    if actor.kind == firm_core::TeamActorKind::ProviderRuntimeProjection
+        && actor.id == member_run_id
+    {
         Ok(())
     } else {
         Err(StoreError::Conflict(format!(
-            "trusted MemberRun actor {member_run_id} is required"
+            "trusted ProviderRuntimeProjection actor {member_run_id} is required"
         )))
     }
 }
 
-fn delivery_blocks_another_claim(delivery: &MessageDelivery) -> bool {
+fn delivery_blocks_another_claim(delivery: &RegistryDeliveryAttempt) -> bool {
     matches!(
         delivery.execution_status,
         Some(ProviderExecutionStatus::Queued | ProviderExecutionStatus::Running)
@@ -8752,15 +8799,16 @@ mod tests {
 
     use firm_core::{
         DelegationMode, DelegationStatus, HostAttentionKind, MemberActionStatus,
-        MemberExecutionDriver, MemberRunStatus, MemberWorkspaceSnapshot, MessageKind, Mission,
-        MissionLogEntry, MissionLogEntryKind, MissionStatus, NativeSessionAvailability,
-        NativeSessionRef, OrdinaryMessageBoundary, ProviderCompatibilityBlockBoundary,
-        ProviderCompatibilityBlockSource, ProviderEventFidelity, ProviderFeatureMode,
-        ProviderInteractionMessageOption, ProviderInteractionMode, ProviderInteractionRequestBody,
-        ProviderInteractionResponseBody, ProviderInteractionType, SenderKind, TeamActorKind,
-        TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessageDelivery, TeamMessageKind,
-        TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEventSourceKind,
-        TeamRunStatus, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, WorkPriority,
+        MemberExecutionDriver, MemberRunStatus, MemberWorkspaceSnapshot, Mission, MissionLogEntry,
+        MissionLogEntryKind, MissionStatus, NativeSessionAvailability, NativeSessionRef,
+        OrdinaryMessageBoundary, ProviderCompatibilityBlockBoundary,
+        ProviderCompatibilityBlockSource, ProviderDispatchAttempt, ProviderDispatchIntent,
+        ProviderEventFidelity, ProviderFeatureMode, ProviderInteractionMessageOption,
+        ProviderInteractionMode, ProviderInteractionRequestBody, ProviderInteractionResponseBody,
+        ProviderInteractionType, ProviderResponseIntent, RegistryMessageIntent, SenderKind,
+        TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamRecipientKind,
+        TeamRecipientRef, TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind,
+        WaveGateStatus, WaveStatus, WorkPriority,
     };
 
     use super::*;
@@ -10564,7 +10612,7 @@ mod tests {
             .expect("latest message");
         assert_eq!(
             latest_message.delivery_status,
-            MessageDeliveryStatus::Acknowledged
+            RegistryDeliveryStatus::Acknowledged
         );
         assert_eq!(
             latest_message
@@ -10621,7 +10669,7 @@ mod tests {
             .expect("acknowledged message row survives reopen");
         assert_eq!(
             message.delivery_status,
-            MessageDeliveryStatus::Acknowledged,
+            RegistryDeliveryStatus::Acknowledged,
             "acknowledged status must survive a restart so the message is not re-delivered"
         );
 
@@ -10662,7 +10710,7 @@ mod tests {
         store: &HarnessStore,
         run_id: &str,
         host_thread_id: Option<&str>,
-    ) -> (AgentTeamRun, MemberRun, Work) {
+    ) -> (AgentTeamRun, ProviderRuntimeProjection, Work) {
         let run = AgentTeamRun {
             id: run_id.into(),
             agent_team_id: format!("team-{run_id}"),
@@ -10683,7 +10731,7 @@ mod tests {
             completed_at: None,
         };
         store.append_team_run(&run).expect("seed TeamRun");
-        let member = MemberRun {
+        let member = ProviderRuntimeProjection {
             id: format!("member-{run_id}"),
             team_run_id: run_id.into(),
             slot_id: None,
@@ -10700,8 +10748,8 @@ mod tests {
             runtime_generation: 1,
             status: MemberRunStatus::Idle,
             native_session: None,
-            worktree_ref: None,
-            workspace_snapshot: None,
+            provider_cwd_hint: None,
+            provider_environment_observation: None,
             owned_paths: Vec::new(),
             started_at: "unix-ms:1".into(),
             last_event_at: None,
@@ -10709,7 +10757,9 @@ mod tests {
             zero_output_streak: 0,
             last_consumed_work_version: None,
         };
-        store.append_member_run(&member).expect("seed MemberRun");
+        store
+            .append_member_run(&member)
+            .expect("seed ProviderRuntimeProjection");
         let work = store
             .insert_work(
                 Work {
@@ -10767,7 +10817,7 @@ mod tests {
     fn seed_test_host_attention(
         store: &HarnessStore,
         run: &AgentTeamRun,
-        member: &MemberRun,
+        member: &ProviderRuntimeProjection,
         work: &Work,
         id: &str,
         created_at: &str,
@@ -11079,7 +11129,7 @@ mod tests {
             .expect("append attention");
         assert!(
             store.team_messages().expect("messages").is_empty(),
-            "Work state attention must not fabricate TeamMessage conversation"
+            "Work state attention must not fabricate ProviderDispatchEnvelope conversation"
         );
         let unbound = store
             .host_attention_inbox_for_team_run(&run.id, false)
@@ -11624,7 +11674,7 @@ mod tests {
     fn append_and_read_member_run_jsonl() {
         let root = team_test_root("member-run");
         let store = HarnessStore::new(&root);
-        let member_run = MemberRun {
+        let member_run = ProviderRuntimeProjection {
             id: "mr-1".into(),
             team_run_id: "tr-1".into(),
             slot_id: Some("slot-1".into()),
@@ -11641,8 +11691,8 @@ mod tests {
             runtime_generation: 1,
             status: MemberRunStatus::Running,
             native_session: None,
-            worktree_ref: Some("/projects/example/worktrees/worker-1".into()),
-            workspace_snapshot: Some(MemberWorkspaceSnapshot {
+            provider_cwd_hint: Some("/projects/example/worktrees/worker-1".into()),
+            provider_environment_observation: Some(MemberWorkspaceSnapshot {
                 cwd: "/projects/example/worktrees/worker-1".into(),
                 project_binding_id: Some("project-example".into()),
                 resolution_source: Some("member_worktree".into()),
@@ -11690,9 +11740,9 @@ mod tests {
             r#"{"id":"mr-sparse","team_run_id":"tr-1","name":"w","role":"worker","provider":"codex","status":"idle","started_at":"unix-ms:3"}"#,
         );
 
-        let error = store
-            .member_runs()
-            .expect_err("MemberRun without agent_member_id must not compatibility-read");
+        let error = store.member_runs().expect_err(
+            "ProviderRuntimeProjection without agent_member_id must not compatibility-read",
+        );
         assert!(matches!(error, StoreError::Json(_)));
 
         std::fs::remove_dir_all(root).expect("remove temp store");
@@ -11702,25 +11752,25 @@ mod tests {
     fn append_and_read_team_message_jsonl() {
         let root = team_test_root("team-message");
         let store = HarnessStore::new(&root);
-        let message = TeamMessage {
+        let message = ProviderDispatchEnvelope {
             id: "tm-1".into(),
             team_run_id: "tr-1".into(),
             work_id: None,
-            origin_wave_id: Some("wave-2".into()),
+            source_plan_ref: Some("wave-2".into()),
             sender: None,
-            from_member_id: "host".into(),
+            sender_runtime_id: "host".into(),
             recipients: vec![TeamRecipientRef {
                 kind: TeamRecipientKind::Host,
                 id: "host".into(),
             }],
-            to_member_ids: vec!["mr-1".into()],
-            kind: TeamMessageKind::Message,
+            recipient_runtime_ids: vec!["mr-1".into()],
+            kind: ProviderDispatchIntent::Message,
             body: "Please review task-1".into(),
             correlation_id: "corr-1".into(),
             causation_id: None,
             response_intent: None,
             evidence_refs: vec!["ev-1".into()],
-            deliveries: vec![TeamMessageDelivery {
+            deliveries: vec![ProviderDispatchAttempt {
                 member_id: "mr-1".into(),
                 policy: TeamDeliveryPolicy::Inject,
                 status: TeamDeliveryStatus::Delivered,
@@ -11743,7 +11793,7 @@ mod tests {
         append_sparse_row(
             &root,
             "team_messages.jsonl",
-            r#"{"id":"tm-sparse","team_run_id":"tr-1","from_member_id":"host","kind":"broadcast","body":"hi","correlation_id":"corr-2","created_at":"unix-ms:3"}"#,
+            r#"{"id":"tm-sparse","team_run_id":"tr-1","sender_runtime_id":"host","kind":"broadcast","body":"hi","correlation_id":"corr-2","created_at":"unix-ms:3"}"#,
         );
 
         let messages = store.team_messages().expect("read team messages");
@@ -11751,8 +11801,8 @@ mod tests {
         assert_eq!(messages[0], message);
         let sparse = &messages[1];
         assert_eq!(sparse.id, "tm-sparse");
-        assert_eq!(sparse.kind, TeamMessageKind::Broadcast);
-        assert!(sparse.to_member_ids.is_empty());
+        assert_eq!(sparse.kind, ProviderDispatchIntent::Message);
+        assert!(sparse.recipient_runtime_ids.is_empty());
         assert!(sparse.causation_id.is_none());
         assert!(sparse.evidence_refs.is_empty());
         assert!(sparse.deliveries.is_empty());
@@ -11763,7 +11813,7 @@ mod tests {
     fn seed_provider_interaction_bridge(
         store: &HarnessStore,
         run_id: &str,
-    ) -> (ProviderInteractionRequestBody, TeamMessage) {
+    ) -> (ProviderInteractionRequestBody, ProviderDispatchEnvelope) {
         let member_id = format!("member-{run_id}");
         let session_id = format!("session-{run_id}");
         store
@@ -11788,7 +11838,7 @@ mod tests {
             })
             .expect("seed TeamRun");
         store
-            .append_member_run(&MemberRun {
+            .append_member_run(&ProviderRuntimeProjection {
                 id: member_id.clone(),
                 team_run_id: run_id.to_string(),
                 slot_id: None,
@@ -11816,8 +11866,8 @@ mod tests {
                     last_verified_at: None,
                     parent_native_session_id: None,
                 }),
-                worktree_ref: None,
-                workspace_snapshot: None,
+                provider_cwd_hint: None,
+                provider_environment_observation: None,
                 owned_paths: Vec::new(),
                 zero_output_streak: 0,
                 last_consumed_work_version: None,
@@ -11825,7 +11875,7 @@ mod tests {
                 last_event_at: Some("unix-ms:2".into()),
                 finished_at: None,
             })
-            .expect("seed MemberRun");
+            .expect("seed ProviderRuntimeProjection");
         let body = ProviderInteractionRequestBody {
             interaction_type: ProviderInteractionType::Question,
             prompt: "Select a safe action".into(),
@@ -11848,30 +11898,30 @@ mod tests {
             member: member_id.clone(),
             generation: 2,
         };
-        let request = TeamMessage {
+        let request = ProviderDispatchEnvelope {
             id: format!("request-{run_id}"),
             team_run_id: run_id.to_string(),
             work_id: None,
-            origin_wave_id: None,
+            source_plan_ref: None,
             sender: Some(TeamActorRef {
-                kind: TeamActorKind::MemberRun,
+                kind: TeamActorKind::ProviderRuntimeProjection,
                 id: member_id.clone(),
                 display_name: None,
                 authn_source: Some("provider_reverse_rpc".into()),
             }),
-            from_member_id: member_id,
+            sender_runtime_id: member_id,
             recipients: vec![TeamRecipientRef {
                 kind: TeamRecipientKind::Host,
                 id: "host".into(),
             }],
-            to_member_ids: vec!["host".into()],
-            kind: TeamMessageKind::ProviderInteractionRequest,
+            recipient_runtime_ids: vec!["host".into()],
+            kind: ProviderDispatchIntent::ProviderInteractionRequest,
             body: body.to_canonical_json().expect("request body"),
             correlation_id: body.correlation_id(),
             causation_id: None,
-            response_intent: Some(TeamMessageResponseIntent::ResponseRequired),
+            response_intent: Some(ProviderResponseIntent::ResponseRequired),
             evidence_refs: Vec::new(),
-            deliveries: vec![TeamMessageDelivery {
+            deliveries: vec![ProviderDispatchAttempt {
                 member_id: "host".into(),
                 policy: TeamDeliveryPolicy::ManualAck,
                 status: TeamDeliveryStatus::Delivered,
@@ -11895,9 +11945,9 @@ mod tests {
 
     fn provider_interaction_response(
         request_body: &ProviderInteractionRequestBody,
-        request: &TeamMessage,
+        request: &ProviderDispatchEnvelope,
         choice: &str,
-    ) -> TeamMessage {
+    ) -> ProviderDispatchEnvelope {
         let body = ProviderInteractionResponseBody {
             interaction_type: request_body.interaction_type,
             choice: Some(choice.to_string()),
@@ -11906,30 +11956,30 @@ mod tests {
             member: request_body.member.clone(),
             generation: request_body.generation,
         };
-        TeamMessage {
+        ProviderDispatchEnvelope {
             id: provider_interaction_response_id(&request.id).expect("stable response id"),
             team_run_id: request.team_run_id.clone(),
             work_id: None,
-            origin_wave_id: None,
+            source_plan_ref: None,
             sender: Some(TeamActorRef {
                 kind: TeamActorKind::Host,
                 id: "host".into(),
                 display_name: None,
                 authn_source: Some("test_host".into()),
             }),
-            from_member_id: "host".into(),
+            sender_runtime_id: "host".into(),
             recipients: vec![TeamRecipientRef {
-                kind: TeamRecipientKind::MemberRun,
+                kind: TeamRecipientKind::ProviderRuntimeProjection,
                 id: request_body.member.clone(),
             }],
-            to_member_ids: vec![request_body.member.clone()],
-            kind: TeamMessageKind::ProviderInteractionResponse,
+            recipient_runtime_ids: vec![request_body.member.clone()],
+            kind: ProviderDispatchIntent::ProviderInteractionResponse,
             body: body.to_canonical_json().expect("response body"),
             correlation_id: request.correlation_id.clone(),
             causation_id: Some(request.id.clone()),
-            response_intent: Some(TeamMessageResponseIntent::Informational),
+            response_intent: Some(ProviderResponseIntent::Informational),
             evidence_refs: Vec::new(),
-            deliveries: vec![TeamMessageDelivery {
+            deliveries: vec![ProviderDispatchAttempt {
                 member_id: request_body.member.clone(),
                 policy: TeamDeliveryPolicy::Inject,
                 status: TeamDeliveryStatus::Queued,
@@ -11982,7 +12032,9 @@ mod tests {
         assert_eq!(
             messages
                 .values()
-                .filter(|message| message.kind == TeamMessageKind::ProviderInteractionResponse)
+                .filter(
+                    |message| message.kind == ProviderDispatchIntent::ProviderInteractionResponse
+                )
                 .count(),
             1
         );
@@ -12095,8 +12147,10 @@ mod tests {
             .to_string()
             .contains("Inject+Queued"));
         let mut extra_route = provider_interaction_response(&request_body, &request, "continue");
-        extra_route.to_member_ids.push("other-member".into());
-        extra_route.deliveries.push(TeamMessageDelivery {
+        extra_route
+            .recipient_runtime_ids
+            .push("other-member".into());
+        extra_route.deliveries.push(ProviderDispatchAttempt {
             member_id: "other-member".into(),
             policy: TeamDeliveryPolicy::Inject,
             status: TeamDeliveryStatus::Queued,
@@ -12135,7 +12189,9 @@ mod tests {
                 .team_messages()
                 .expect("messages")
                 .iter()
-                .filter(|message| message.kind == TeamMessageKind::ProviderInteractionResponse)
+                .filter(
+                    |message| message.kind == ProviderDispatchIntent::ProviderInteractionResponse
+                )
                 .count(),
             0,
             "failed ACK must not leave a partial response row"
@@ -12212,7 +12268,9 @@ mod tests {
                 .team_messages()
                 .expect("messages")
                 .iter()
-                .filter(|message| message.kind == TeamMessageKind::ProviderInteractionResponse)
+                .filter(
+                    |message| message.kind == ProviderDispatchIntent::ProviderInteractionResponse
+                )
                 .count(),
             1
         );
@@ -12305,7 +12363,7 @@ mod tests {
         let expected = latest_by_id(store.member_runs().expect("members"), |member| {
             member.id.clone()
         })
-        .remove(&request.from_member_id)
+        .remove(&request.sender_runtime_id)
         .expect("member");
         let action = provider_control_action(&request.team_run_id, &expected.id);
         let barrier = Arc::new(Barrier::new(3));
@@ -12347,7 +12405,7 @@ mod tests {
             let expected = latest_by_id(store.member_runs().expect("members"), |member| {
                 member.id.clone()
             })
-            .remove(&request.from_member_id)
+            .remove(&request.sender_runtime_id)
             .expect("member");
             let action = provider_control_action(&request.team_run_id, &expected.id);
             assert!(store
@@ -12390,24 +12448,24 @@ mod tests {
     fn handoff_is_fenced_until_newer_same_correlation_mail_reaches_provider() {
         let root = team_test_root("handoff-mail-fence");
         let store = HarnessStore::new(&root);
-        let correction = TeamMessage {
+        let correction = ProviderDispatchEnvelope {
             id: "tm-correction".into(),
             team_run_id: "tr-fence".into(),
             work_id: None,
-            origin_wave_id: None,
+            source_plan_ref: None,
             sender: None,
-            from_member_id: "host".into(),
+            sender_runtime_id: "host".into(),
             recipients: Vec::new(),
-            to_member_ids: vec!["mr-kimi".into()],
-            kind: TeamMessageKind::Message,
+            recipient_runtime_ids: vec!["mr-kimi".into()],
+            kind: ProviderDispatchIntent::Message,
             body: "Use the corrected requirement".into(),
             correlation_id: "corr-fence".into(),
             causation_id: Some("tm-assignment".into()),
             // Explicit response intent: this correction must reach the
             // provider before any Handoff, so it fences (ADR 0046 §4).
-            response_intent: Some(TeamMessageResponseIntent::ResponseRequired),
+            response_intent: Some(ProviderResponseIntent::ResponseRequired),
             evidence_refs: Vec::new(),
-            deliveries: vec![TeamMessageDelivery {
+            deliveries: vec![ProviderDispatchAttempt {
                 member_id: "mr-kimi".into(),
                 policy: TeamDeliveryPolicy::Queue,
                 status: TeamDeliveryStatus::Queued,
@@ -12426,22 +12484,22 @@ mod tests {
         store
             .append_team_message_checked(&correction)
             .expect("append correction");
-        let handoff = TeamMessage {
+        let handoff = ProviderDispatchEnvelope {
             id: "tm-handoff".into(),
             team_run_id: "tr-fence".into(),
             work_id: None,
-            origin_wave_id: None,
+            source_plan_ref: None,
             sender: None,
-            from_member_id: "mr-kimi".into(),
+            sender_runtime_id: "mr-kimi".into(),
             recipients: Vec::new(),
-            to_member_ids: vec!["host".into()],
-            kind: TeamMessageKind::Handoff,
+            recipient_runtime_ids: vec!["host".into()],
+            kind: ProviderDispatchIntent::Message,
             body: "done".into(),
             correlation_id: "corr-fence".into(),
             causation_id: Some("tm-assignment".into()),
             response_intent: None,
             evidence_refs: Vec::new(),
-            deliveries: vec![TeamMessageDelivery {
+            deliveries: vec![ProviderDispatchAttempt {
                 member_id: "host".into(),
                 policy: TeamDeliveryPolicy::ManualAck,
                 status: TeamDeliveryStatus::Delivered,
@@ -12493,22 +12551,22 @@ mod tests {
         let store = HarnessStore::new(&root);
         // Acknowledgement-only peer mail: kind `message` with no explicit
         // intent is informational by default (ADR 0046 §4).
-        let ack_only = TeamMessage {
+        let ack_only = ProviderDispatchEnvelope {
             id: "tm-ack".into(),
             team_run_id: "tr-info".into(),
             work_id: None,
-            origin_wave_id: None,
+            source_plan_ref: None,
             sender: None,
-            from_member_id: "mr-peer".into(),
+            sender_runtime_id: "mr-peer".into(),
             recipients: Vec::new(),
-            to_member_ids: vec!["mr-kimi".into()],
-            kind: TeamMessageKind::Message,
+            recipient_runtime_ids: vec!["mr-kimi".into()],
+            kind: ProviderDispatchIntent::Message,
             body: "ACK: noted, no reply needed".into(),
             correlation_id: "corr-info".into(),
             causation_id: Some("tm-assignment".into()),
             response_intent: None,
             evidence_refs: Vec::new(),
-            deliveries: vec![TeamMessageDelivery {
+            deliveries: vec![ProviderDispatchAttempt {
                 member_id: "mr-kimi".into(),
                 policy: TeamDeliveryPolicy::Queue,
                 status: TeamDeliveryStatus::Queued,
@@ -12528,22 +12586,22 @@ mod tests {
         store
             .append_team_message_checked(&ack_only)
             .expect("append informational mail");
-        let handoff = TeamMessage {
+        let handoff = ProviderDispatchEnvelope {
             id: "tm-handoff".into(),
             team_run_id: "tr-info".into(),
             work_id: None,
-            origin_wave_id: None,
+            source_plan_ref: None,
             sender: None,
-            from_member_id: "mr-kimi".into(),
+            sender_runtime_id: "mr-kimi".into(),
             recipients: Vec::new(),
-            to_member_ids: vec!["host".into()],
-            kind: TeamMessageKind::Handoff,
+            recipient_runtime_ids: vec!["host".into()],
+            kind: ProviderDispatchIntent::Message,
             body: "done".into(),
             correlation_id: "corr-info".into(),
             causation_id: Some("tm-assignment".into()),
             response_intent: None,
             evidence_refs: Vec::new(),
-            deliveries: vec![TeamMessageDelivery {
+            deliveries: vec![ProviderDispatchAttempt {
                 member_id: "host".into(),
                 policy: TeamDeliveryPolicy::ManualAck,
                 status: TeamDeliveryStatus::Delivered,
@@ -12567,11 +12625,11 @@ mod tests {
             .expect("informational mail must not fence handoff");
 
         // The same pending delivery with explicit response intent fences.
-        let question = TeamMessage {
+        let question = ProviderDispatchEnvelope {
             id: "tm-question".into(),
             correlation_id: "corr-info-q".into(),
             causation_id: None,
-            response_intent: Some(TeamMessageResponseIntent::ResponseRequired),
+            response_intent: Some(ProviderResponseIntent::ResponseRequired),
             created_at: "unix-ms:3".into(),
             ..ack_only.clone()
         };
@@ -12579,7 +12637,7 @@ mod tests {
         store
             .append_team_message_checked(&question)
             .expect("append response-required question");
-        let fenced = TeamMessage {
+        let fenced = ProviderDispatchEnvelope {
             id: "tm-handoff-q".into(),
             correlation_id: "corr-info-q".into(),
             causation_id: Some("tm-assignment-q".into()),
@@ -12596,9 +12654,9 @@ mod tests {
         // response-required, so it MUST still fence a same-correlation Handoff
         // — otherwise a member could hand off work that never absorbed the
         // correction.
-        let host_correction = TeamMessage {
+        let host_correction = ProviderDispatchEnvelope {
             id: "tm-host-correction".into(),
-            from_member_id: "host".into(),
+            sender_runtime_id: "host".into(),
             correlation_id: "corr-info-host".into(),
             causation_id: None,
             response_intent: None,
@@ -12613,7 +12671,7 @@ mod tests {
         store
             .append_team_message_checked(&host_correction)
             .expect("append host correction");
-        let stale = TeamMessage {
+        let stale = ProviderDispatchEnvelope {
             id: "tm-handoff-host".into(),
             correlation_id: "corr-info-host".into(),
             causation_id: Some("tm-assignment-host".into()),
@@ -12632,22 +12690,22 @@ mod tests {
     fn concurrent_same_turn_handoffs_allow_exactly_one_append() {
         let root = team_test_root("same-turn-handoff");
         let store = Arc::new(HarnessStore::new(&root));
-        let assignment = TeamMessage {
+        let assignment = ProviderDispatchEnvelope {
             id: "tm-assignment".into(),
             team_run_id: "tr-converge".into(),
             work_id: None,
-            origin_wave_id: None,
+            source_plan_ref: None,
             sender: None,
-            from_member_id: "host".into(),
+            sender_runtime_id: "host".into(),
             recipients: Vec::new(),
-            to_member_ids: vec!["mr-codex".into()],
-            kind: TeamMessageKind::Message,
+            recipient_runtime_ids: vec!["mr-codex".into()],
+            kind: ProviderDispatchIntent::Message,
             body: "Review the convergence fix".into(),
             correlation_id: "corr-converge".into(),
             causation_id: None,
             response_intent: None,
             evidence_refs: Vec::new(),
-            deliveries: vec![TeamMessageDelivery {
+            deliveries: vec![ProviderDispatchAttempt {
                 member_id: "mr-codex".into(),
                 policy: TeamDeliveryPolicy::Queue,
                 status: TeamDeliveryStatus::Delivered,
@@ -12666,22 +12724,22 @@ mod tests {
         store
             .append_team_message_checked(&assignment)
             .expect("append conversation anchor");
-        let handoff = TeamMessage {
+        let handoff = ProviderDispatchEnvelope {
             id: "tm-handoff-a".into(),
             team_run_id: assignment.team_run_id.clone(),
             work_id: None,
-            origin_wave_id: None,
+            source_plan_ref: None,
             sender: None,
-            from_member_id: "mr-codex".into(),
+            sender_runtime_id: "mr-codex".into(),
             recipients: Vec::new(),
-            to_member_ids: vec!["host".into()],
-            kind: TeamMessageKind::Handoff,
+            recipient_runtime_ids: vec!["host".into()],
+            kind: ProviderDispatchIntent::Message,
             body: "## RESULT\ndone".into(),
             correlation_id: assignment.correlation_id.clone(),
             causation_id: Some(assignment.id.clone()),
             response_intent: None,
             evidence_refs: Vec::new(),
-            deliveries: vec![TeamMessageDelivery {
+            deliveries: vec![ProviderDispatchAttempt {
                 member_id: "host".into(),
                 policy: TeamDeliveryPolicy::ManualAck,
                 status: TeamDeliveryStatus::Delivered,
@@ -12726,7 +12784,7 @@ mod tests {
                 .team_messages()
                 .expect("messages")
                 .into_iter()
-                .filter(|message| message.kind == TeamMessageKind::Handoff)
+                .filter(|message| message.kind == ProviderDispatchIntent::Message)
                 .count(),
             1
         );
@@ -12772,22 +12830,22 @@ mod tests {
             .expect("expired lease may be replaced");
         assert_eq!(second.generation, 2);
 
-        let message = TeamMessage {
+        let message = ProviderDispatchEnvelope {
             id: "tm-claim".into(),
             team_run_id: run.id.clone(),
             work_id: None,
-            origin_wave_id: None,
+            source_plan_ref: None,
             sender: None,
-            from_member_id: "host".into(),
+            sender_runtime_id: "host".into(),
             recipients: Vec::new(),
-            to_member_ids: vec!["mr-claim".into()],
-            kind: TeamMessageKind::Message,
+            recipient_runtime_ids: vec!["mr-claim".into()],
+            kind: ProviderDispatchIntent::Message,
             body: "only once".into(),
             correlation_id: "corr-claim".into(),
             causation_id: None,
             response_intent: None,
             evidence_refs: Vec::new(),
-            deliveries: vec![TeamMessageDelivery {
+            deliveries: vec![ProviderDispatchAttempt {
                 member_id: "mr-claim".into(),
                 policy: TeamDeliveryPolicy::Queue,
                 status: TeamDeliveryStatus::Queued,
@@ -12936,7 +12994,7 @@ mod tests {
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
-    /// When a member fails before binding (pre-bind), queued TeamMessage deliveries
+    /// When a member fails before binding (pre-bind), queued ProviderDispatchEnvelope deliveries
     /// transition to Failed so they do not stay permanently actionable in the inbox.
     #[test]
     fn fail_queued_delivery_clears_pre_bind_mail_and_is_idempotent() {
@@ -12974,22 +13032,22 @@ mod tests {
             )
             .expect("acquire Supervisor lease");
 
-        let message = TeamMessage {
+        let message = ProviderDispatchEnvelope {
             id: "tm-orphan".into(),
             team_run_id: run.id.clone(),
             work_id: None,
-            origin_wave_id: None,
+            source_plan_ref: None,
             sender: None,
-            from_member_id: "host".into(),
+            sender_runtime_id: "host".into(),
             recipients: Vec::new(),
-            to_member_ids: vec!["mr-orphan".into()],
-            kind: TeamMessageKind::Message,
+            recipient_runtime_ids: vec!["mr-orphan".into()],
+            kind: ProviderDispatchIntent::Message,
             body: "orphaned work assignment".into(),
             correlation_id: "corr-orphan".into(),
             causation_id: None,
             response_intent: None,
             evidence_refs: Vec::new(),
-            deliveries: vec![TeamMessageDelivery {
+            deliveries: vec![ProviderDispatchAttempt {
                 member_id: "mr-orphan".into(),
                 policy: TeamDeliveryPolicy::Queue,
                 status: TeamDeliveryStatus::Queued,
@@ -13074,7 +13132,7 @@ mod tests {
             .expect_err("different failure reason must be rejected");
         assert!(conflict.to_string().contains("different reason"));
 
-        // Message survives store reopen.
+        // RegistryMessage survives store reopen.
         drop(store);
         let reopened = HarnessStore::new(&root);
         let msgs_after = reopened.team_messages().expect("read after reopen");
@@ -13113,7 +13171,7 @@ mod tests {
             updated_at: "unix-ms:1".into(),
             completed_at: None,
         };
-        let member = MemberRun {
+        let member = ProviderRuntimeProjection {
             id: "mr-close".into(),
             team_run_id: run.id.clone(),
             slot_id: None,
@@ -13130,8 +13188,8 @@ mod tests {
             runtime_generation: 1,
             status: MemberRunStatus::Running,
             native_session: None,
-            worktree_ref: None,
-            workspace_snapshot: None,
+            provider_cwd_hint: None,
+            provider_environment_observation: None,
             owned_paths: Vec::new(),
             started_at: "unix-ms:1".into(),
             last_event_at: None,
@@ -13348,7 +13406,13 @@ mod tests {
 
     fn work_test_fixture(
         name: &str,
-    ) -> (PathBuf, HarnessStore, AgentTeamRun, MemberRun, MemberRun) {
+    ) -> (
+        PathBuf,
+        HarnessStore,
+        AgentTeamRun,
+        ProviderRuntimeProjection,
+        ProviderRuntimeProjection,
+    ) {
         let root = team_test_root(name);
         let store = HarnessStore::new(&root);
         let run = AgentTeamRun {
@@ -13370,7 +13434,7 @@ mod tests {
             updated_at: "unix-ms:1".into(),
             completed_at: None,
         };
-        let member = |suffix: &str| MemberRun {
+        let member = |suffix: &str| ProviderRuntimeProjection {
             id: format!("mr-{name}-{suffix}"),
             team_run_id: run.id.clone(),
             slot_id: Some(format!("slot-{suffix}")),
@@ -13387,8 +13451,8 @@ mod tests {
             runtime_generation: 1,
             status: MemberRunStatus::Idle,
             native_session: None,
-            worktree_ref: None,
-            workspace_snapshot: None,
+            provider_cwd_hint: None,
+            provider_environment_observation: None,
             owned_paths: Vec::new(),
             started_at: "unix-ms:1".into(),
             last_event_at: None,
@@ -13430,7 +13494,7 @@ mod tests {
         WorkCommandContext {
             event_id: id.into(),
             performed_by_actor: firm_core::TeamActorRef {
-                kind: firm_core::TeamActorKind::MemberRun,
+                kind: firm_core::TeamActorKind::ProviderRuntimeProjection,
                 id: member_run_id.into(),
                 display_name: None,
                 authn_source: Some("bound-runtime:test".into()),
@@ -13443,7 +13507,7 @@ mod tests {
         }
     }
 
-    fn admit_replacement_for_test(store: &HarnessStore, member: &MemberRun) {
+    fn admit_replacement_for_test(store: &HarnessStore, member: &ProviderRuntimeProjection) {
         let current = store
             .team_runs()
             .expect("TeamRun history")
@@ -13497,9 +13561,9 @@ mod tests {
         PathBuf,
         HarnessStore,
         AgentTeamRun,
-        MemberRun,
+        ProviderRuntimeProjection,
         AgentTeamRun,
-        MemberRun,
+        ProviderRuntimeProjection,
     ) {
         let root = team_test_root(name);
         let store = HarnessStore::new(&root);
@@ -13528,7 +13592,7 @@ mod tests {
             )
             .expect("register project");
 
-        let make_member = |team_run_id: &str, suffix: &str| MemberRun {
+        let make_member = |team_run_id: &str, suffix: &str| ProviderRuntimeProjection {
             id: format!("member-{name}-{suffix}"),
             team_run_id: team_run_id.to_string(),
             slot_id: Some(format!("slot-{suffix}")),
@@ -13545,8 +13609,8 @@ mod tests {
             runtime_generation: 1,
             status: MemberRunStatus::Idle,
             native_session: None,
-            worktree_ref: None,
-            workspace_snapshot: None,
+            provider_cwd_hint: None,
+            provider_environment_observation: None,
             owned_paths: Vec::new(),
             started_at: "unix-ms:1".into(),
             last_event_at: None,
@@ -13612,7 +13676,9 @@ mod tests {
             store
                 .create_team_run_from_agent_team(&run, "delegation-test-space")
                 .expect("create TeamRun");
-            store.append_member_run(&member).expect("append MemberRun");
+            store
+                .append_member_run(&member)
+                .expect("append ProviderRuntimeProjection");
             rows.push((run, member));
         }
         let (run_a, member_a) = rows.remove(0);
@@ -13620,7 +13686,11 @@ mod tests {
         (root, store, run_a, member_a, run_b, member_b)
     }
 
-    fn assigned_delegation_work(run: &AgentTeamRun, member: &MemberRun, id: &str) -> Work {
+    fn assigned_delegation_work(
+        run: &AgentTeamRun,
+        member: &ProviderRuntimeProjection,
+        id: &str,
+    ) -> Work {
         let mut work = unassigned_test_work(&run.id, id);
         work.claim_mode = WorkClaimMode::HostAssign;
         work.owner_member_id = Some(member.agent_member_id.clone());
@@ -14223,7 +14293,7 @@ mod tests {
             .any(|delivery| {
                 delivery.work_id == resumed.id
                     && delivery.work_version == resumed.version
-                    && delivery.status == WorkDeliveryStatus::Queued
+                    && delivery.status == ProviderWorkDispatchStatus::Queued
             }));
 
         let blocked_by_host = store
@@ -14276,7 +14346,7 @@ mod tests {
             .iter()
             .any(|delivery| {
                 delivery.work_id == released.id
-                    && delivery.status == WorkDeliveryStatus::Invalidated
+                    && delivery.status == ProviderWorkDispatchStatus::Invalidated
             }));
 
         let mut in_flight = unassigned_test_work(&run.id, "work-release-in-flight");
@@ -14447,7 +14517,7 @@ mod tests {
             .iter()
             .any(|candidate| {
                 candidate.id == delivery.id
-                    && candidate.status == WorkDeliveryStatus::ProviderReceived
+                    && candidate.status == ProviderWorkDispatchStatus::ProviderReceived
                     && candidate.provider_receipt_id.as_deref() == Some("native-receipt-history")
             }));
         let reassigned_delivery = store
@@ -14549,7 +14619,7 @@ mod tests {
             WorkDeliveryClaimResult::Claimed(delivery) => delivery,
             WorkDeliveryClaimResult::NotQueued => panic!("delivery must be claimed"),
         };
-        assert_eq!(claimed.status, WorkDeliveryStatus::Claimed);
+        assert_eq!(claimed.status, ProviderWorkDispatchStatus::Claimed);
         let successor = store
             .acquire_test_supervisor_lease(&run.id, "supervisor-fold-2", 5, "test", 111, 100)
             .expect("successor lease");
@@ -14577,9 +14647,9 @@ mod tests {
             .into_iter()
             .find(|candidate| candidate.id == delivery.id)
             .expect("delivery remains as evidence");
-        assert_eq!(projected.status, WorkDeliveryStatus::Invalidated);
+        assert_eq!(projected.status, ProviderWorkDispatchStatus::Invalidated);
         let standalone_updates = store
-            .read_jsonl::<WorkDeliveryUpdate>("work_delivery_updates.jsonl")
+            .read_jsonl::<ProviderWorkDispatchUpdate>("work_delivery_updates.jsonl")
             .expect("standalone updates");
         let embedded_updates = store
             .work_operations()
@@ -14690,7 +14760,7 @@ mod tests {
                 "unix-ms:4",
             )
             .expect("successor reconciles stale claim");
-        assert_eq!(requeued.status, WorkDeliveryStatus::Queued);
+        assert_eq!(requeued.status, ProviderWorkDispatchStatus::Queued);
         assert_eq!(requeued.attempt, 1);
         assert!(requeued.claim_id.is_none());
 
@@ -14725,7 +14795,10 @@ mod tests {
                 "unix-ms:6",
             )
             .expect("record provider receipt");
-        assert_eq!(received.status, WorkDeliveryStatus::ProviderReceived);
+        assert_eq!(
+            received.status,
+            ProviderWorkDispatchStatus::ProviderReceived
+        );
         assert_eq!(
             store
                 .complete_work_delivery_claim(
@@ -14886,7 +14959,7 @@ mod tests {
                 "unix-ms:9",
             )
             .expect("current lease fails claim");
-        assert_eq!(failed.status, WorkDeliveryStatus::Failed);
+        assert_eq!(failed.status, ProviderWorkDispatchStatus::Failed);
         assert_eq!(
             failed.failure_reason.as_deref(),
             Some("provider transport exited before receipt")
@@ -14925,7 +14998,7 @@ mod tests {
                 panic!("failed pre-receipt delivery must be retryable")
             }
         };
-        assert_eq!(retried.status, WorkDeliveryStatus::Claimed);
+        assert_eq!(retried.status, ProviderWorkDispatchStatus::Claimed);
         assert_eq!(retried.attempt, 2);
         assert_eq!(
             retried.claim_id.as_deref(),
@@ -15034,7 +15107,7 @@ mod tests {
         let deliveries = store.latest_work_deliveries().expect("deliveries");
         assert!(deliveries.iter().any(|candidate| {
             candidate.id == delivery.id
-                && candidate.status == WorkDeliveryStatus::ProviderReceived
+                && candidate.status == ProviderWorkDispatchStatus::ProviderReceived
                 && candidate.provider_receipt_id.as_deref() == Some("provider-receipt-before-crash")
         }));
         let replacement_delivery = deliveries
@@ -15140,7 +15213,7 @@ mod tests {
                 delivery.work_id == rebound.id
                     && delivery.work_version == rebound.version
                     && delivery.recipient_member_run_id == replacement.id
-                    && delivery.status == WorkDeliveryStatus::Queued
+                    && delivery.status == ProviderWorkDispatchStatus::Queued
             }));
         assert!(store
             .rebind_work(
@@ -15631,22 +15704,22 @@ mod tests {
                 host_work_context("we-discussed", "create-discussed", "unix-ms:2"),
             )
             .expect("create discussed Work");
-        let message = TeamMessage {
+        let message = ProviderDispatchEnvelope {
             id: "tm-work-discussion".into(),
             team_run_id: run.id.clone(),
             work_id: Some(work.id.clone()),
-            origin_wave_id: None,
+            source_plan_ref: None,
             sender: None,
-            from_member_id: "host".into(),
+            sender_runtime_id: "host".into(),
             recipients: Vec::new(),
-            to_member_ids: vec![member.id.clone()],
-            kind: TeamMessageKind::Message,
+            recipient_runtime_ids: vec![member.id.clone()],
+            kind: ProviderDispatchIntent::Message,
             body: "Clarify the evidence for this Work.".into(),
             correlation_id: "corr-work-discussion".into(),
             causation_id: None,
-            response_intent: Some(TeamMessageResponseIntent::ResponseRequired),
+            response_intent: Some(ProviderResponseIntent::ResponseRequired),
             evidence_refs: Vec::new(),
-            deliveries: vec![TeamMessageDelivery {
+            deliveries: vec![ProviderDispatchAttempt {
                 member_id: member.id.clone(),
                 policy: TeamDeliveryPolicy::Queue,
                 status: TeamDeliveryStatus::Queued,
@@ -15687,7 +15760,7 @@ mod tests {
             &root,
             "team_messages.jsonl",
             &format!(
-                r#"{{"id":"legacy-assignment","team_run_id":"{}","from_member_id":"host","kind":"assignment","body":"legacy","correlation_id":"legacy","created_at":"unix-ms:1"}}"#,
+                r#"{{"id":"legacy-assignment","team_run_id":"{}","sender_runtime_id":"host","kind":"assignment","body":"legacy","correlation_id":"legacy","created_at":"unix-ms:1"}}"#,
                 run.id
             ),
         );
@@ -15822,15 +15895,15 @@ mod tests {
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
-    fn test_message(id: &str, agent_id: &str) -> Message {
-        Message {
+    fn test_message(id: &str, agent_id: &str) -> RegistryMessage {
+        RegistryMessage {
             id: id.into(),
             task_id: Some("task-1".into()),
             from_agent_id: "leader".into(),
             to_agent_id: Some(agent_id.into()),
             channel: Some("assignment".into()),
-            kind: MessageKind::Assignment,
-            delivery_status: MessageDeliveryStatus::Queued,
+            kind: RegistryMessageIntent::Message,
+            delivery_status: RegistryDeliveryStatus::Queued,
             content: "Do the task".into(),
             evidence_ids: Vec::new(),
             created_at: "unix-ms:1".into(),
@@ -15839,8 +15912,8 @@ mod tests {
         }
     }
 
-    fn test_delivery(delivery_id: &str) -> MessageDelivery {
-        MessageDelivery {
+    fn test_delivery(delivery_id: &str) -> RegistryDeliveryAttempt {
+        RegistryDeliveryAttempt {
             delivery_id: Some(delivery_id.into()),
             execution_status: Some(ProviderExecutionStatus::Running),
             native_session: None,
@@ -16405,7 +16478,7 @@ mod tests {
             completed_at: None,
         };
         store.append_team_run(&run).expect("append unbound run");
-        let member = MemberRun {
+        let member = ProviderRuntimeProjection {
             id: "mr-work-unbound-ha".into(),
             team_run_id: run.id.clone(),
             slot_id: Some("slot-unbound".into()),
@@ -16422,8 +16495,8 @@ mod tests {
             runtime_generation: 1,
             status: MemberRunStatus::Idle,
             native_session: None,
-            worktree_ref: None,
-            workspace_snapshot: None,
+            provider_cwd_hint: None,
+            provider_environment_observation: None,
             owned_paths: Vec::new(),
             started_at: "unix-ms:1".into(),
             last_event_at: None,
@@ -16520,7 +16593,7 @@ mod tests {
                 "unix-ms:4",
             )
             .expect("fail delivery");
-        assert_eq!(failed.status, WorkDeliveryStatus::Failed);
+        assert_eq!(failed.status, ProviderWorkDispatchStatus::Failed);
         let attentions = store.host_attentions().expect("host attentions");
         let wdf = attentions
             .iter()

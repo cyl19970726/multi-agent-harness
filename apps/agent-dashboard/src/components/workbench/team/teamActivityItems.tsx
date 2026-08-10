@@ -4,7 +4,7 @@ import { Markdown } from "@/components/workbench/Markdown";
 import type { WorkbenchActivityItem } from "@/components/workbench/activity/ActivityStream";
 
 import type { StableTeamActivity } from "../../../model/teamSelectors";
-import type { MemberRun, PendingInteraction, TeamMessage } from "../../../types";
+import type { MemberRun, PendingInteraction, ProviderDispatchEnvelope } from "../../../types";
 import { effectiveTeamMessageResponseIntent } from "../../../types";
 import {
   formatTime,
@@ -64,7 +64,7 @@ export function teamMessageGlyph(kind?: string | null, hasEvidence = false): Wor
   }
 }
 
-export function summarizeDeliveries(message: TeamMessage, members: Map<string, MemberRun>): string | undefined {
+export function summarizeDeliveries(message: ProviderDispatchEnvelope, members: Map<string, MemberRun>): string | undefined {
   const deliveries = message.deliveries ?? [];
   if (!deliveries.length) return undefined;
   const acknowledged = deliveries.filter((delivery) => delivery.status === "acknowledged").length;
@@ -152,10 +152,10 @@ export function toActivityItems(
     if (item.kind === "message") {
       const message = item.message;
       const messageActor = teamMessageActorLabel(message, members);
-      const recipients = (message.to_member_ids ?? []).map((id) => memberLabel(members, id)).join(", ") || "team";
+      const recipients = (message.recipient_runtime_ids ?? []).map((id) => memberLabel(members, id)).join(", ") || "team";
       const evidenceRefs = message.evidence_refs ?? [];
       const actorMember = message.sender?.kind === "member_run" || !message.sender
-        ? (message.from_member_id ? members.get(message.from_member_id) : undefined)
+        ? (message.sender_runtime_id ? members.get(message.sender_runtime_id) : undefined)
         : undefined;
       const deliverySummary = summarizeDeliveries(message, members);
       return {
@@ -181,15 +181,15 @@ export function toActivityItems(
         actorTone: actorMember ? memberTone(actorMember.status) : "info",
         onActorClick: actorMember ? () => onOpenMember(actorMember) : undefined,
         relatedMemberIds: [
-          ...(message.from_member_id ? [message.from_member_id] : []),
-          ...(message.to_member_ids ?? []),
+          ...(message.sender_runtime_id ? [message.sender_runtime_id] : []),
+          ...(message.recipient_runtime_ids ?? []),
         ],
         rawText: `${message.kind ?? ""} ${message.body ?? ""} ${messageActor} ${recipients} ${message.correlation_id ?? ""} ${message.causation_id ?? ""}`,
         actorLabel: messageActor,
         statusLabel: deliverySummary,
         messageKind: message.kind ?? "message",
         bodySource: message.body ?? undefined,
-        recipientLabels: (message.to_member_ids ?? []).map((id) => memberLabel(members, id)),
+        recipientLabels: (message.recipient_runtime_ids ?? []).map((id) => memberLabel(members, id)),
         workId: message.work_id ?? undefined,
         prominence: KEY_ACTIVITY_MESSAGE_KINDS.has(message.kind ?? "")
           ? "primary"

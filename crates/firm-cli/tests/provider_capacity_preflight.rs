@@ -720,7 +720,7 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
         "provider",
         "model",
         "owned_paths",
-        "worktree_ref",
+        "provider_cwd_hint",
         "native_session",
         "started_at",
     ] {
@@ -739,13 +739,13 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
         Some("current")
     );
 
-    // 1. WorkDelivery was never claimed: it is still queued and deliverable.
+    // 1. ProviderWorkDispatch was never claimed: it is still queued and deliverable.
     let deliveries = work_deliveries(&home, &project_id);
-    let delivery = deliveries.first().expect("WorkDelivery");
+    let delivery = deliveries.first().expect("ProviderWorkDispatch");
     assert_eq!(
         delivery["status"],
         serde_json::json!("queued"),
-        "a blocked start must not consume the WorkDelivery: {delivery}"
+        "a blocked start must not consume the ProviderWorkDispatch: {delivery}"
     );
     assert_eq!(delivery["attempt"], serde_json::json!(0));
     assert_eq!(delivery["claim_id"], serde_json::Value::Null);
@@ -778,7 +778,7 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
         .next()
         .expect("member run");
     assert_eq!(member["status"], serde_json::json!("blocked"));
-    // 4. The snapshot is durable on the MemberRun, so the Dashboard sees it
+    // 4. The snapshot is durable on the ProviderRuntimeProjection, so the Dashboard sees it
     //    without a second probe, and it stays distinct from compatibility.
     assert_eq!(
         member["provider_capacity"]["state"],
@@ -841,7 +841,7 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
     let delivery = work_deliveries(&home, &project_id)
         .into_iter()
         .next()
-        .expect("WorkDelivery");
+        .expect("ProviderWorkDispatch");
     assert_eq!(
         delivery["status"],
         serde_json::json!("provider_received"),
@@ -923,11 +923,11 @@ fn unknown_capacity_still_starts_the_member_and_delivers_work() {
             .any(|action| action["action_type"].as_str() == Some("provider_unavailable")),
         "unknown capacity must not record provider_unavailable: {actions:?}"
     );
-    // WorkDelivery was consumed by a real round, proving the guard opened.
+    // ProviderWorkDispatch was consumed by a real round, proving the guard opened.
     let delivery = work_deliveries(&home, &project_id)
         .into_iter()
         .next()
-        .expect("WorkDelivery");
+        .expect("ProviderWorkDispatch");
     assert_ne!(
         delivery["status"],
         serde_json::json!("queued"),

@@ -90,7 +90,7 @@ fn wave_three_identity_and_runtime_fixtures_match_rust_contracts() {
 fn team_message_fixtures_match_canonical_rust_wire_contract() {
     let root = fixture_root().join("team-message");
     for path in json_files(&root.join("valid")) {
-        let bytes = fs::read(&path).expect("read valid TeamMessage fixture");
+        let bytes = fs::read(&path).expect("read valid ProviderDispatchEnvelope fixture");
         let _: TeamMessage = serde_json::from_slice(&bytes)
             .unwrap_or_else(|error| panic!("Rust rejected {}: {error}", path.display()));
     }
@@ -110,14 +110,18 @@ fn team_message_fixtures_match_canonical_rust_wire_contract() {
 #[test]
 fn team_message_wire_rejects_unknown_fields_at_every_closed_layer() {
     let fixture = fixture_root().join("team-message/valid/basic.json");
-    let bytes = fs::read(&fixture).expect("basic TeamMessage fixture");
+    let bytes = fs::read(&fixture).expect("basic ProviderDispatchEnvelope fixture");
     let base: serde_json::Value = serde_json::from_slice(&bytes).expect("valid fixture JSON");
 
-    let cases = ["TeamMessage", "SenderActorRef", "RecipientActorRef"];
+    let cases = [
+        "ProviderDispatchEnvelope",
+        "SenderActorRef",
+        "RecipientActorRef",
+    ];
     for label in cases {
         let mut value = base.clone();
         match label {
-            "TeamMessage" => {
+            "ProviderDispatchEnvelope" => {
                 value["unknown_top_level"] = serde_json::json!(true);
             }
             "SenderActorRef" => {

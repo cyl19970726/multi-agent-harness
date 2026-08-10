@@ -157,7 +157,7 @@ fn root_lead_bootstrap_separates_durable_identity_from_runtime_and_cuts_over_aut
     assert_eq!(audit["durable_member_count"], 1);
 
     // Durable identities can Host a peer flat Team without inventing a
-    // MemberRun, Session, or parent/child topology.
+    // ProviderRuntimeProjection, Session, or parent/child topology.
     run_json(
         &home,
         &project_id,

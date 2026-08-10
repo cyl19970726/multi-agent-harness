@@ -98,10 +98,10 @@ product copy should say **Execution Space** and **Project**.
 
 The selected Execution Space store contains Harness JSONL coordination ledgers.
 Provider processes do not run there. Their cwd is selected in this order:
-member `worktree_ref`,
+member `provider_cwd_hint`,
 TeamRun `execution_root`, then selected Workspace `project_root`; the Host cwd
 is only the creation default for an unrouted legacy raw-store invocation.
-`team_run_create` exposes `execution_root` and `members[].worktree_ref` through
+`team_run_create` exposes `execution_root` and `members[].provider_cwd_hint` through
 CLI (`--execution-root`, `--member-worktree name:path`,
 `--member-owned-path name:path`), HTTP, and MCP. An
 override must be the selected project root or a Git worktree sharing its Git

@@ -20,8 +20,8 @@ use firm_core::agentfirm_api::{
     WorkspaceLifecycle, WorkspaceMode, WorkspaceOwnership, WorkspaceSafetyProof,
 };
 use firm_core::{
-    AgentTeam, AgentTeamRun, AgentTeamStatus, ExecutionNode, ExecutionNodeStatus,
-    MemberRun as RuntimeMemberRun, MemberRunStatus, Mission, MissionStatus, TeamActorKind,
+    AgentTeam, AgentTeamRun, AgentTeamStatus, ExecutionNode, ExecutionNodeStatus, MemberRunStatus,
+    Mission, MissionStatus, ProviderRuntimeProjection as RuntimeMemberRun, TeamActorKind,
     TeamActorRef, TeamRunStatus, Work, WorkClaimMode, WorkCommandContext, WorkCondition, WorkPhase,
     WorkPriority,
 };
@@ -296,8 +296,8 @@ fn seed_active_team_work(store: &HarnessStore, label: &str, work_id: &str) -> St
             runtime_generation: 1,
             status: MemberRunStatus::Idle,
             native_session: None,
-            worktree_ref: None,
-            workspace_snapshot: None,
+            provider_cwd_hint: None,
+            provider_environment_observation: None,
             owned_paths: Vec::new(),
             zero_output_streak: 0,
             last_consumed_work_version: None,
@@ -337,7 +337,7 @@ fn seed_active_team_work(store: &HarnessStore, label: &str, work_id: &str) -> St
             WorkCommandContext {
                 event_id: format!("start-{work_id}"),
                 performed_by_actor: TeamActorRef {
-                    kind: TeamActorKind::MemberRun,
+                    kind: TeamActorKind::ProviderRuntimeProjection,
                     id: runtime_id.into(),
                     display_name: None,
                     authn_source: Some("test".into()),

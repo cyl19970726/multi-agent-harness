@@ -840,7 +840,7 @@ mod projection_tests {
             PermissionCeiling,
         },
         AgentMembership, AgentTeam, AgentTeamRun, AgentTeamStatus, ExecutionNode,
-        ExecutionNodeStatus, MemberRun, Mission, MissionStatus,
+        ExecutionNodeStatus, Mission, MissionStatus, ProviderRuntimeProjection,
     };
 
     fn insert_projection_team(store: &HarnessStore, team_id: &str, mission_id: &str) {

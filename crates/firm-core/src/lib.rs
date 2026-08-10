@@ -58,7 +58,7 @@ pub struct ProviderLaunchConfig {
 /// Provider launch configuration used only at the adapter boundary.
 ///
 /// This row is not an identity object. Canonical identity is always the
-/// `agentfirm_api::AgentMember` referenced by a `MemberRun`.
+/// `agentfirm_api::AgentMember` referenced by a `ProviderRuntimeProjection`.
 pub struct ProviderLaunchProfile {
     pub id: String,
     pub name: String,
@@ -75,7 +75,7 @@ pub struct ProviderLaunchProfile {
     pub skill_refs: Vec<String>,
     pub workspace_policy: Option<String>,
     #[serde(default)]
-    pub worktree_ref: Option<String>,
+    pub provider_cwd_hint: Option<String>,
     #[serde(default)]
     pub permission_profile: Option<String>,
     #[serde(default)]
@@ -172,7 +172,7 @@ pub struct LaunchMcp {
 /// This is the launch-spec table in
 /// [docs/agent-integration-model.md](../../../docs/agent-integration-model.md).
 /// The harness builds it from the member (Pillars 1–2) and the claimed
-/// [`Message`] via [`build_launch_spec`]; each provider adapter (Pillar 3) then
+/// [`RegistryMessage`] via [`build_launch_spec`]; each provider adapter (Pillar 3) then
 /// maps it onto its own CLI/SDK call. It is the seam that keeps the operator
 /// composer and Dashboard uniform across Codex, Claude, and future platforms.
 ///
@@ -188,7 +188,7 @@ pub struct LaunchSpec {
     /// has no role prompt.
     #[serde(default)]
     pub prompt_ref: Option<String>,
-    /// The turn input: the claimed [`Message`] envelope + content.
+    /// The turn input: the claimed [`RegistryMessage`] envelope + content.
     pub message_content: String,
     /// Model selection (Pillar 1). `None` = provider default.
     #[serde(default)]
@@ -278,13 +278,13 @@ fn permission_from_sandbox_policy(policy: Option<&str>) -> LaunchPermission {
     }
 }
 
-/// Compose the neutral turn-input envelope for a claimed [`Message`].
+/// Compose the neutral turn-input envelope for a claimed [`RegistryMessage`].
 ///
 /// This mirrors the harness message-envelope shape the CLI provider layer
 /// already hands to a turn (message id / kind / task / routing + content) but
 /// keeps it provider-neutral text: the adapter decides how to deliver it (Codex
 /// `input` item, Claude `-p`, …).
-fn compose_message_content(message: &Message) -> String {
+fn compose_message_content(message: &RegistryMessage) -> String {
     format!(
         "Harness message envelope:\nmessage_id: {}\nkind: {}\ntask_id: {}\nfrom_agent_id: {}\nto_agent_id: {}\nchannel: {}\ncontent:\n{}",
         message.id,
@@ -297,16 +297,15 @@ fn compose_message_content(message: &Message) -> String {
     )
 }
 
-fn message_kind_wire(kind: &MessageKind) -> &'static str {
+fn message_kind_wire(kind: &RegistryMessageIntent) -> &'static str {
     match kind {
-        MessageKind::Message => "message",
-        MessageKind::Assignment => "assignment",
-        MessageKind::Report => "report",
+        RegistryMessageIntent::Message => "message",
+        RegistryMessageIntent::Report => "report",
     }
 }
 
 /// Build the provider-neutral [`LaunchSpec`] for one turn from a member and the
-/// claimed [`Message`].
+/// claimed [`RegistryMessage`].
 ///
 /// This is the additive composition seam (ADR 0018 WP-1). It reads the existing
 /// `ProviderLaunchProfile` / `ProviderLaunchConfig` fields — including the Codex-flavored
@@ -314,7 +313,7 @@ fn message_kind_wire(kind: &MessageKind) -> &'static str {
 /// `writable_roots` are abstracted out of the Codex `workspaceWrite` vocabulary,
 /// and no Codex wire names appear on the result (ADR 0011). It does not perform
 /// any delivery side effect and does not require a live provider binary.
-pub fn build_launch_spec(member: &ProviderLaunchProfile, message: &Message) -> LaunchSpec {
+pub fn build_launch_spec(member: &ProviderLaunchProfile, message: &RegistryMessage) -> LaunchSpec {
     let permission =
         permission_from_sandbox_policy(member.provider_config.sandbox_policy.as_deref());
 
@@ -349,7 +348,7 @@ pub fn build_launch_spec(member: &ProviderLaunchProfile, message: &Message) -> L
         // field; left empty until the tool contract lands (Pillar 1/3). Adapters
         // apply their own default meanwhile.
         tools: Vec::new(),
-        workspace: member.worktree_ref.clone(),
+        workspace: member.provider_cwd_hint.clone(),
         // MCP from provider_config (Pillar 2); now available.
         mcp: member.provider_config.mcp.clone(),
         skill_refs: member.skill_refs.clone(),
@@ -461,7 +460,7 @@ pub struct AgentTeam {
     pub mission_id: String,
     /// Durable identity of the Host Agent that coordinates the Team.
     pub host_agent_id: String,
-    /// Immutable placement fence. Every MemberRun of this Team executes on
+    /// Immutable placement fence. Every ProviderRuntimeProjection of this Team executes on
     /// this Node; cross-machine collaboration is cross-Team delegation.
     pub node_id: String,
     #[serde(default = "default_agent_team_status")]
@@ -473,17 +472,14 @@ pub struct AgentTeam {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum MessageKind {
+pub enum RegistryMessageIntent {
     Message,
-    /// Legacy registry inbox ownership. Agent Team ownership uses `Work` and
-    /// never maps this variant into `TeamMessageKind`.
-    Assignment,
     Report,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum MessageDeliveryStatus {
+pub enum RegistryDeliveryStatus {
     Queued,
     Delivered,
     Acknowledged,
@@ -501,7 +497,7 @@ pub enum ProviderExecutionStatus {
     Stale,
 }
 
-/// Identity class of a [`Message`] sender. Distinguishes harness-managed agents
+/// Identity class of a [`RegistryMessage`] sender. Distinguishes harness-managed agents
 /// from external operators (humans / external agents acting on their own behalf)
 /// and system-emitted messages, so an operator-authored message is never
 /// rendered as if it came from the Lead agent. Provider-neutral.
@@ -527,7 +523,7 @@ pub enum MessageTerminalSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MessageDelivery {
+pub struct RegistryDeliveryAttempt {
     /// Harness-owned id of this delivery attempt. It coordinates claim/control
     /// lifecycle and is not a provider session id.
     #[serde(default)]
@@ -818,19 +814,19 @@ pub struct Proposal {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Message {
+pub struct RegistryMessage {
     pub id: String,
     pub task_id: Option<String>,
     pub from_agent_id: String,
     pub to_agent_id: Option<String>,
     pub channel: Option<String>,
-    pub kind: MessageKind,
-    pub delivery_status: MessageDeliveryStatus,
+    pub kind: RegistryMessageIntent,
+    pub delivery_status: RegistryDeliveryStatus,
     pub content: String,
     pub evidence_ids: Vec<String>,
     pub created_at: String,
     #[serde(default)]
-    pub delivery: Option<MessageDelivery>,
+    pub delivery: Option<RegistryDeliveryAttempt>,
     /// Identity class of the sender. Defaults to [`SenderKind::Agent`] so existing
     /// records (which omit the field) deserialize unchanged. When
     /// [`SenderKind::Operator`], `from_agent_id` uses the reserved `"operator"` id
@@ -917,7 +913,7 @@ impl From<ReviewVerdict> for String {
     }
 }
 
-/// First-class evaluator/critic output. Today an unstructured report Message; the
+/// First-class evaluator/critic output. Today an unstructured report RegistryMessage; the
 /// Review object captures verdict + findings + residual risk as structured data.
 ///
 /// Concept-model invariant: a Review is *evidence for* a Decision, not the global
@@ -1016,7 +1012,7 @@ pub struct Vision {
 // A Mission owns durable intent, context, one flat AgentTeam, and outcome.
 // Each historical Wave is one versioned Host plan/judgment memo. Execution
 // records remain independently addressable and are related through Mission,
-// assignment messages, correlations, and optional origin_wave_id.
+// assignment messages, correlations, and optional source_plan_ref.
 // ---------------------------------------------------------------------------
 
 /// Lifecycle of a [`Mission`]. Execution progress belongs to the selected
@@ -1222,12 +1218,12 @@ impl Validate for AgentTeam {
     }
 }
 
-impl Validate for Message {
+impl Validate for RegistryMessage {
     fn validate(&self) -> Result<(), ValidationError> {
-        require_non_empty(&self.id, "Message.id")?;
-        require_non_empty(&self.from_agent_id, "Message.from_agent_id")?;
-        require_non_empty(&self.content, "Message.content")?;
-        require_non_empty(&self.created_at, "Message.created_at")
+        require_non_empty(&self.id, "RegistryMessage.id")?;
+        require_non_empty(&self.from_agent_id, "RegistryMessage.from_agent_id")?;
+        require_non_empty(&self.content, "RegistryMessage.content")?;
+        require_non_empty(&self.created_at, "RegistryMessage.created_at")
     }
 }
 
@@ -1779,8 +1775,8 @@ impl Validate for WorkflowArtifactManifest {
 // Agent Team v0 runtime ledger objects
 //
 // A team run is one execution of an agent team against an objective, hosted on
-// a single host surface (codex-app / kimi-cli / claude-cli). `MemberRun`s are
-// the per-member session rows inside it; `TeamMessage`s the routed mail;
+// a single host surface (codex-app / kimi-cli / claude-cli). `ProviderRuntimeProjection`s are
+// the per-member session rows inside it; `ProviderDispatchEnvelope`s the routed mail;
 // `MemberAction`s the fine-grained action journal; `DelegationRun`s the
 // provider-native / harness-worker / dynamic-workflow child runs; and
 // `TeamRunEvent` the folded per-run event log. All journal to their own
@@ -2008,7 +2004,7 @@ pub enum TeamMemberCloseStatus {
     Applied,
 }
 
-/// Durable Host request to end one MemberRun runtime. The owning Supervisor
+/// Durable Host request to end one ProviderRuntimeProjection runtime. The owning Supervisor
 /// applies the latest pending row before starting or resuming provider work.
 /// Latest row wins by `member_run_id`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2052,7 +2048,7 @@ pub struct MemberWorkspaceSnapshot {
     pub skill_roots: Vec<String>,
 }
 
-/// Lifecycle of a [`MemberRun`].
+/// Lifecycle of a [`ProviderRuntimeProjection`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemberRunStatus {
@@ -2061,7 +2057,7 @@ pub enum MemberRunStatus {
     Queued,
     Running,
     Waiting,
-    /// The durable MemberRun and native-session binding still exist, but the
+    /// The durable ProviderRuntimeProjection and native-session binding still exist, but the
     /// Supervisor currently has no healthy provider transport. This is
     /// recoverable and intentionally distinct from `Failed` or `Stopped`.
     Disconnected,
@@ -2176,7 +2172,7 @@ impl Validate for ProviderCompatibilityBlockCause {
     }
 }
 
-/// Durable coordination lifecycle of one MemberRun, separate from its
+/// Durable coordination lifecycle of one ProviderRuntimeProjection, separate from its
 /// provider runtime/work status. Close is reversible; Retire is permanent.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -2525,7 +2521,7 @@ pub fn parse_harness_unix_ms(raw: &str) -> Option<u64> {
     raw.strip_prefix("unix-ms:")?.trim().parse::<u64>().ok()
 }
 
-/// Whether a MemberRun may claim and consume its Assignment.
+/// Whether a ProviderRuntimeProjection may claim and consume its Assignment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "decision")]
 pub enum ProviderCapacityStartDecision {
@@ -2612,7 +2608,7 @@ pub fn provider_capacity_start_decision(
 /// provider-owned execution record; Harness owns only the surrounding
 /// coordination state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MemberRun {
+pub struct ProviderRuntimeProjection {
     pub id: String,
     pub team_run_id: String,
     #[serde(default)]
@@ -2639,7 +2635,7 @@ pub struct MemberRun {
     #[serde(default)]
     pub provider_capacity: Option<ProviderCapacitySnapshot>,
     /// Present only while the Store's provider-compatibility transition owns
-    /// this MemberRun's Blocked state. Generic MemberRun CAS cannot set or
+    /// this ProviderRuntimeProjection's Blocked state. Generic ProviderRuntimeProjection CAS cannot set or
     /// clear it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_compatibility_block_cause: Option<ProviderCompatibilityBlockCause>,
@@ -2648,18 +2644,18 @@ pub struct MemberRun {
     #[serde(default)]
     pub coordination_status: MemberCoordinationStatus,
     /// Monotonic activation generation. Explicit Reopen increments this so a
-    /// live Supervisor can start a new process for the same MemberRun id.
+    /// live Supervisor can start a new process for the same ProviderRuntimeProjection id.
     #[serde(default = "default_member_runtime_generation")]
     pub runtime_generation: u64,
     pub status: MemberRunStatus,
     #[serde(default)]
     pub native_session: Option<NativeSessionRef>,
     #[serde(default)]
-    pub worktree_ref: Option<String>,
+    pub provider_cwd_hint: Option<String>,
     /// Facts actually observed from the spawned member's working directory and
     /// non-secret instruction/skill roots discovered from that environment.
     #[serde(default)]
-    pub workspace_snapshot: Option<MemberWorkspaceSnapshot>,
+    pub provider_environment_observation: Option<MemberWorkspaceSnapshot>,
     #[serde(default)]
     pub owned_paths: Vec<String>,
     /// Consecutive provider turns where the member produced no tool calls
@@ -2679,7 +2675,7 @@ pub struct MemberRun {
     pub finished_at: Option<String>,
 }
 
-impl MemberRun {
+impl ProviderRuntimeProjection {
     pub fn coordination_is_active(&self) -> bool {
         self.coordination_status == MemberCoordinationStatus::Active
     }
@@ -2927,46 +2923,52 @@ impl Validate for MemberWorkspaceSnapshot {
     }
 }
 
-impl Validate for MemberRun {
+impl Validate for ProviderRuntimeProjection {
     fn validate(&self) -> Result<(), ValidationError> {
-        require_non_empty(&self.id, "MemberRun.id")?;
-        require_non_empty(&self.team_run_id, "MemberRun.team_run_id")?;
-        require_non_empty(&self.agent_member_id, "MemberRun.agent_member_id")?;
-        require_non_empty(&self.name, "MemberRun.name")?;
-        require_non_empty(&self.role, "MemberRun.role")?;
-        require_non_empty(&self.provider, "MemberRun.provider")?;
-        require_non_empty(&self.started_at, "MemberRun.started_at")?;
+        require_non_empty(&self.id, "ProviderRuntimeProjection.id")?;
+        require_non_empty(&self.team_run_id, "ProviderRuntimeProjection.team_run_id")?;
+        require_non_empty(
+            &self.agent_member_id,
+            "ProviderRuntimeProjection.agent_member_id",
+        )?;
+        require_non_empty(&self.name, "ProviderRuntimeProjection.name")?;
+        require_non_empty(&self.role, "ProviderRuntimeProjection.role")?;
+        require_non_empty(&self.provider, "ProviderRuntimeProjection.provider")?;
+        require_non_empty(&self.started_at, "ProviderRuntimeProjection.started_at")?;
         if self.runtime_generation == 0 {
             return Err(ValidationError::Invalid {
-                field: "MemberRun.runtime_generation",
+                field: "ProviderRuntimeProjection.runtime_generation",
                 reason: "must be at least 1",
             });
         }
-        if let Some(worktree_ref) = &self.worktree_ref {
-            require_non_empty(worktree_ref, "MemberRun.worktree_ref")?;
+        if let Some(provider_cwd_hint) = &self.provider_cwd_hint {
+            require_non_empty(
+                provider_cwd_hint,
+                "ProviderRuntimeProjection.provider_cwd_hint",
+            )?;
         }
-        if let Some(snapshot) = &self.workspace_snapshot {
+        if let Some(snapshot) = &self.provider_environment_observation {
             snapshot.validate()?;
         }
         if let Some(cause) = &self.provider_compatibility_block_cause {
             cause.validate()?;
             if self.status != MemberRunStatus::Blocked {
                 return Err(ValidationError::Invalid {
-                    field: "MemberRun.provider_compatibility_block_cause",
+                    field: "ProviderRuntimeProjection.provider_compatibility_block_cause",
                     reason: "typed compatibility cause requires Blocked status",
                 });
             }
             if cause.member_run_id != self.id || cause.provider != self.provider {
                 return Err(ValidationError::Invalid {
-                    field: "MemberRun.provider_compatibility_block_cause",
-                    reason: "typed compatibility cause does not match MemberRun identity",
+                    field: "ProviderRuntimeProjection.provider_compatibility_block_cause",
+                    reason: "typed compatibility cause does not match ProviderRuntimeProjection identity",
                 });
             }
             let profile = self
                 .provider_profile
                 .as_ref()
                 .ok_or(ValidationError::Invalid {
-                    field: "MemberRun.provider_compatibility_block_cause",
+                    field: "ProviderRuntimeProjection.provider_compatibility_block_cause",
                     reason: "typed compatibility cause requires the observed provider profile",
                 })?;
             if cause.compatibility_status != profile.compatibility_status
@@ -2982,7 +2984,7 @@ impl Validate for MemberRun {
                     )
             {
                 return Err(ValidationError::Invalid {
-                    field: "MemberRun.provider_compatibility_block_cause",
+                    field: "ProviderRuntimeProjection.provider_compatibility_block_cause",
                     reason: "typed compatibility cause does not match the observed provider tuple",
                 });
             }
@@ -3007,7 +3009,7 @@ pub struct ProviderIntegrationProfile {
     pub provider: String,
     pub execution_mode: String,
     /// The exclusive owner allowed to start top-level provider execution
-    /// cycles for this MemberRun. Agent Team modes currently default to
+    /// cycles for this ProviderRuntimeProjection. Agent Team modes currently default to
     /// Harness-owned mailbox delivery; provider-owned continuation must be
     /// reviewed explicitly before it can be selected.
     #[serde(default)]
@@ -3242,7 +3244,7 @@ pub enum ProviderEventFidelity {
     Structured,
 }
 
-/// A provider-originated request that pauses or blocks a MemberRun until an
+/// A provider-originated request that pauses or blocks a ProviderRuntimeProjection until an
 /// authorized actor responds. It is product state; unlike thinking it is
 /// durable, replayable, and visible to the Host/Dashboard.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3310,47 +3312,24 @@ pub enum PendingInteractionStatus {
     Cancelled,
 }
 
-/// Kind of a routed [`TeamMessage`].
+/// Kind of a routed [`ProviderDispatchEnvelope`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TeamMessageKind {
-    /// Ordinary correlated conversation. Planning requests and responses use
-    /// this kind; providers may use native planning internally, but Harness
-    /// does not create a Plan lifecycle or gate.
+pub enum ProviderDispatchIntent {
     Message,
-    /// Historical compatibility labels. They remain readable but have no
-    /// special validation, permission, or runtime semantics after ADR 0039.
-    PlanRequest,
-    PlanProposal,
-    PlanFeedback,
-    PlanApproval,
-    /// Historical intent labels; new writes use `Message` with a readable
-    /// first-line intent such as QUESTION, PROGRESS, or BLOCKER.
-    Question,
-    Answer,
-    Progress,
-    Blocker,
-    /// Explicit completion proposal with outcome/evidence for Host review.
-    Handoff,
-    /// Historical review intent labels; new writes use `Message`.
-    ReviewRequest,
-    ReviewResult,
     /// A real runtime control record, not ordinary chat.
     Control,
     /// A provider-native turn is paused and has emitted a strictly typed,
     /// canonical JSON request for Host/Operator input. This is an additive
     /// message bridge; historical [`PendingInteraction`] rows remain valid.
     ProviderInteractionRequest,
-    /// The correlated answer to one [`TeamMessageKind::ProviderInteractionRequest`].
+    /// The correlated answer to one [`ProviderDispatchIntent::ProviderInteractionRequest`].
     /// Its `causation_id` must point directly at the request message.
     ProviderInteractionResponse,
-    /// Historical fan-out label; new writes use one `Message` with multiple
-    /// recipients.
-    Broadcast,
 }
 
 /// Closed semantic type carried inside a provider-interaction message body.
-/// Request/response phase is represented by [`TeamMessageKind`], never by this
+/// Request/response phase is represented by [`ProviderDispatchIntent`], never by this
 /// field. `Unknown` is an explicit fail-safe route, not an open string escape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -3374,7 +3353,7 @@ pub struct ProviderInteractionMessageOption {
     pub intent: Option<String>,
 }
 
-/// Canonical JSON body of a provider-interaction request TeamMessage.
+/// Canonical JSON body of a provider-interaction request ProviderDispatchEnvelope.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderInteractionRequestBody {
@@ -3390,7 +3369,7 @@ pub struct ProviderInteractionRequestBody {
     pub generation: u64,
 }
 
-/// Canonical JSON body of a provider-interaction response TeamMessage.
+/// Canonical JSON body of a provider-interaction response ProviderDispatchEnvelope.
 /// Exactly one of `choice` and `text` is present. Choice answers are checked
 /// against the request's option ids by the Store's atomic response boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3550,7 +3529,7 @@ pub fn provider_interaction_response_id(request_message_id: &str) -> Result<Stri
 #[serde(rename_all = "snake_case")]
 pub enum TeamActorKind {
     Host,
-    MemberRun,
+    ProviderRuntimeProjection,
     AgentMember,
     Operator,
     Service,
@@ -3574,7 +3553,7 @@ pub struct TeamActorRef {
 #[serde(rename_all = "snake_case")]
 pub enum TeamRecipientKind {
     Host,
-    MemberRun,
+    ProviderRuntimeProjection,
     AgentMember,
 }
 
@@ -3585,7 +3564,7 @@ pub struct TeamRecipientRef {
     pub id: String,
 }
 
-/// How a [`TeamMessage`] should be delivered to one recipient.
+/// How a [`ProviderDispatchEnvelope`] should be delivered to one recipient.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TeamDeliveryPolicy {
@@ -3595,7 +3574,7 @@ pub enum TeamDeliveryPolicy {
     ManualAck,
 }
 
-/// Per-recipient delivery state of a [`TeamMessage`].
+/// Per-recipient delivery state of a [`ProviderDispatchEnvelope`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TeamDeliveryStatus {
@@ -3607,14 +3586,14 @@ pub enum TeamDeliveryStatus {
     Expired,
 }
 
-/// Explicit response intent carried by a [`TeamMessage`] (ADR 0046 §4). A
+/// Explicit response intent carried by a [`ProviderDispatchEnvelope`] (ADR 0046 §4). A
 /// transport delivery and a semantic reply are distinct facts: mail that only
 /// informs or acknowledges must stay durable and correlated without starting
 /// another provider round, so two Agents can converge instead of bouncing
 /// acknowledgement-only mail back and forth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TeamMessageResponseIntent {
+pub enum ProviderResponseIntent {
     /// Durable, correlated mail that does not by itself start a provider
     /// round. It is batched into the next round some response-required
     /// message triggers, and it never fences a same-correlation Handoff.
@@ -3625,10 +3604,10 @@ pub enum TeamMessageResponseIntent {
     ResponseRequired,
 }
 
-/// One recipient's delivery record inside a [`TeamMessage`].
+/// One recipient's delivery record inside a [`ProviderDispatchEnvelope`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TeamMessageDelivery {
+pub struct ProviderDispatchAttempt {
     pub member_id: String,
     pub policy: TeamDeliveryPolicy,
     pub status: TeamDeliveryStatus,
@@ -3655,12 +3634,12 @@ pub struct TeamMessageDelivery {
     pub updated_at: String,
 }
 
-/// A routed message inside an [`AgentTeamRun`]. `from_member_id` is either the
-/// reserved `"host"` id or a `MemberRun` id. `correlation_id` groups a message
+/// A routed message inside an [`AgentTeamRun`]. `sender_runtime_id` is either the
+/// reserved `"host"` id or a `ProviderRuntimeProjection` id. `correlation_id` groups a message
 /// with its replies; `causation_id` points at the message this one answers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TeamMessage {
+pub struct ProviderDispatchEnvelope {
     pub id: String,
     pub team_run_id: String,
     /// Optional Work discussed by this message. The relation is navigational
@@ -3672,36 +3651,36 @@ pub struct TeamMessage {
     /// It is navigation metadata only and never controls message or member
     /// lifecycle.
     #[serde(default)]
-    pub origin_wave_id: Option<String>,
+    pub source_plan_ref: Option<String>,
     /// Typed provenance for new writes. Historical rows infer it from
-    /// `from_member_id`.
+    /// `sender_runtime_id`.
     #[serde(default)]
     pub sender: Option<TeamActorRef>,
-    pub from_member_id: String,
-    /// Typed recipients for new writes. `to_member_ids` remains the historical
+    pub sender_runtime_id: String,
+    /// Typed recipients for new writes. `recipient_runtime_ids` remains the historical
     /// TeamRun projection.
     #[serde(default)]
     pub recipients: Vec<TeamRecipientRef>,
     #[serde(default)]
-    pub to_member_ids: Vec<String>,
-    pub kind: TeamMessageKind,
+    pub recipient_runtime_ids: Vec<String>,
+    pub kind: ProviderDispatchIntent,
     pub body: String,
     pub correlation_id: String,
     #[serde(default)]
     pub causation_id: Option<String>,
     /// Explicit response intent. Absent on historical rows; the effective
     /// intent then derives from `kind` (see
-    /// [`TeamMessage::effective_response_intent`]).
+    /// [`ProviderDispatchEnvelope::effective_response_intent`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub response_intent: Option<TeamMessageResponseIntent>,
+    pub response_intent: Option<ProviderResponseIntent>,
     #[serde(default)]
     pub evidence_refs: Vec<String>,
     #[serde(default)]
-    pub deliveries: Vec<TeamMessageDelivery>,
+    pub deliveries: Vec<ProviderDispatchAttempt>,
     pub created_at: String,
 }
 
-impl TeamMessage {
+impl ProviderDispatchEnvelope {
     /// Effective response intent: the explicit field always wins; otherwise
     /// kind **and sender** decide (ADR 0046 §4).
     ///
@@ -3718,68 +3697,73 @@ impl TeamMessage {
     /// - a peer member sender is confirming or informing another member, so it
     ///   defaults to `informational` and the team converges without
     ///   confirmation ping-pong.
-    pub fn effective_response_intent(&self) -> TeamMessageResponseIntent {
+    pub fn effective_response_intent(&self) -> ProviderResponseIntent {
         if let Some(intent) = self.response_intent {
             return intent;
         }
         match self.kind {
-            TeamMessageKind::Handoff
-            | TeamMessageKind::Control
-            | TeamMessageKind::ProviderInteractionRequest => {
-                TeamMessageResponseIntent::ResponseRequired
+            ProviderDispatchIntent::Message if self.sent_by_peer_member() => {
+                ProviderResponseIntent::Informational
             }
-            TeamMessageKind::ProviderInteractionResponse => {
-                TeamMessageResponseIntent::Informational
+            ProviderDispatchIntent::Message
+            | ProviderDispatchIntent::Control
+            | ProviderDispatchIntent::ProviderInteractionRequest => {
+                ProviderResponseIntent::ResponseRequired
             }
-            _ if self.sent_by_peer_member() => TeamMessageResponseIntent::Informational,
-            _ => TeamMessageResponseIntent::ResponseRequired,
+            ProviderDispatchIntent::ProviderInteractionResponse => {
+                ProviderResponseIntent::Informational
+            }
         }
     }
 
     /// True when this message was authored by another team member rather than
     /// by the coordination plane (Host, Operator, Service). Historical rows
     /// carry no typed `sender`, so they fall back to the reserved `"host"`
-    /// `from_member_id` convention.
+    /// `sender_runtime_id` convention.
     fn sent_by_peer_member(&self) -> bool {
         match self.sender.as_ref().map(|sender| sender.kind) {
-            Some(TeamActorKind::MemberRun) | Some(TeamActorKind::AgentMember) => true,
+            Some(TeamActorKind::ProviderRuntimeProjection) | Some(TeamActorKind::AgentMember) => {
+                true
+            }
             Some(TeamActorKind::Host)
             | Some(TeamActorKind::Operator)
             | Some(TeamActorKind::Service) => false,
-            None => self.from_member_id != "host",
+            None => self.sender_runtime_id != "host",
         }
     }
 
     /// True when this message may trigger a new provider round for an idle
     /// recipient and fences a same-correlation Handoff while still pending.
     pub fn requires_response(&self) -> bool {
-        self.effective_response_intent() == TeamMessageResponseIntent::ResponseRequired
+        self.effective_response_intent() == ProviderResponseIntent::ResponseRequired
     }
 
     /// Validate only the additive provider-interaction envelope. Ordinary and
     /// historical TeamMessages remain byte-for-byte compatible.
     pub fn validate_provider_interaction_contract(&self) -> Result<(), String> {
         match self.kind {
-            TeamMessageKind::ProviderInteractionRequest => {
+            ProviderDispatchIntent::ProviderInteractionRequest => {
                 let body = ProviderInteractionRequestBody::parse_canonical_json(&self.body)?;
-                if self.response_intent == Some(TeamMessageResponseIntent::Informational) {
+                if self.response_intent == Some(ProviderResponseIntent::Informational) {
                     return Err("provider interaction request must require a response".to_string());
                 }
-                if body.member != self.from_member_id {
+                if body.member != self.sender_runtime_id {
                     return Err(
-                        "provider interaction request member must match from_member_id".to_string(),
+                        "provider interaction request member must match sender_runtime_id"
+                            .to_string(),
                     );
                 }
                 if !matches!(
                     self.sender.as_ref(),
                     Some(TeamActorRef {
-                        kind: TeamActorKind::MemberRun,
+                        kind: TeamActorKind::ProviderRuntimeProjection,
                         id,
                         ..
                     }) if id == &body.member
                 ) {
                     return Err(
-                        "provider interaction request sender must be its MemberRun".to_string()
+                        "provider interaction request sender must be its ProviderRuntimeProjection"
+                            .to_string(),
                     );
                 }
                 if self.recipients.as_slice()
@@ -3787,7 +3771,7 @@ impl TeamMessage {
                         kind: TeamRecipientKind::Host,
                         id: "host".to_string(),
                     }]
-                    || self.to_member_ids.as_slice() != ["host"]
+                    || self.recipient_runtime_ids.as_slice() != ["host"]
                     || self.deliveries.len() != 1
                     || self.deliveries[0].member_id != "host"
                 {
@@ -3806,9 +3790,9 @@ impl TeamMessage {
                     );
                 }
             }
-            TeamMessageKind::ProviderInteractionResponse => {
+            ProviderDispatchIntent::ProviderInteractionResponse => {
                 let body = ProviderInteractionResponseBody::parse_canonical_json(&self.body)?;
-                if self.response_intent == Some(TeamMessageResponseIntent::ResponseRequired) {
+                if self.response_intent == Some(ProviderResponseIntent::ResponseRequired) {
                     return Err("provider interaction response must be informational".to_string());
                 }
                 if self.causation_id.as_deref().is_none_or(str::is_empty) {
@@ -3819,13 +3803,13 @@ impl TeamMessage {
                 let canonical_sender = match self.sender.as_ref() {
                     Some(sender) if sender.id.trim().is_empty() => false,
                     Some(sender) if sender.kind == TeamActorKind::Host => {
-                        self.from_member_id == "host"
+                        self.sender_runtime_id == "host"
                     }
                     Some(sender) if sender.kind == TeamActorKind::Operator => {
-                        self.from_member_id == format!("operator:{}", sender.id)
+                        self.sender_runtime_id == format!("operator:{}", sender.id)
                     }
                     Some(sender) if sender.kind == TeamActorKind::Service => {
-                        self.from_member_id == format!("service:{}", sender.id)
+                        self.sender_runtime_id == format!("service:{}", sender.id)
                     }
                     _ => false,
                 };
@@ -3837,15 +3821,15 @@ impl TeamMessage {
                 }
                 if self.recipients.as_slice()
                     != [TeamRecipientRef {
-                        kind: TeamRecipientKind::MemberRun,
+                        kind: TeamRecipientKind::ProviderRuntimeProjection,
                         id: body.member.clone(),
                     }]
-                    || self.to_member_ids.as_slice() != [body.member.as_str()]
+                    || self.recipient_runtime_ids.as_slice() != [body.member.as_str()]
                     || self.deliveries.len() != 1
                     || self.deliveries[0].member_id != body.member
                 {
                     return Err(
-                        "provider interaction response must route only to its MemberRun"
+                        "provider interaction response must route only to its ProviderRuntimeProjection"
                             .to_string(),
                     );
                 }
@@ -4300,7 +4284,7 @@ pub struct Work {
     pub created_by_actor: TeamActorRef,
     /// Durable ProviderLaunchProfile identity of the creator (ADR 0052 provenance).
     /// `None` for Host, Supervising Operator, or external intake; populated
-    /// from the bound MemberRun's stable identity when a Member creates Work.
+    /// from the bound ProviderRuntimeProjection's stable identity when a Member creates Work.
     #[serde(default)]
     pub created_by_member_id: Option<String>,
     #[serde(default)]
@@ -4544,7 +4528,7 @@ pub struct WorkEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkDeliveryStatus {
+pub enum ProviderWorkDispatchStatus {
     Queued,
     Claimed,
     ProviderReceived,
@@ -4553,14 +4537,14 @@ pub enum WorkDeliveryStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkDelivery {
+pub struct ProviderWorkDispatch {
     pub id: String,
     pub work_event_id: String,
     pub team_run_id: String,
     pub work_id: String,
     pub work_version: u64,
     pub recipient_member_run_id: String,
-    pub status: WorkDeliveryStatus,
+    pub status: ProviderWorkDispatchStatus,
     pub attempt: u32,
     #[serde(default)]
     pub claim_id: Option<String>,
@@ -4592,9 +4576,9 @@ pub struct WorkOperation {
     #[serde(default)]
     pub decisions: Vec<WorkOperationalDecision>,
     #[serde(default)]
-    pub deliveries: Vec<WorkDelivery>,
+    pub deliveries: Vec<ProviderWorkDispatch>,
     #[serde(default)]
-    pub delivery_updates: Vec<WorkDeliveryUpdate>,
+    pub delivery_updates: Vec<ProviderWorkDispatchUpdate>,
     /// Delegation projection transitions caused by this exact Work mutation.
     /// Keeping them in the same row closes the crash gap between target Work
     /// state and its cross-Team responsibility projection.
@@ -4603,13 +4587,13 @@ pub struct WorkOperation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkDeliveryUpdate {
+pub struct ProviderWorkDispatchUpdate {
     pub delivery_id: String,
     /// Store-global ordering for delivery projection updates. Legacy rows
     /// deserialize as zero and are folded before sequenced writes.
     #[serde(default)]
     pub update_sequence: u64,
-    pub status: WorkDeliveryStatus,
+    pub status: ProviderWorkDispatchStatus,
     pub attempt: u32,
     #[serde(default)]
     pub claim_id: Option<String>,
@@ -4626,7 +4610,7 @@ pub struct WorkDeliveryUpdate {
 
 /// Why the exact bound Host must inspect durable Agent Team state.
 ///
-/// This is deliberately separate from [`TeamMessageKind`] and
+/// This is deliberately separate from [`ProviderDispatchIntent`] and
 /// [`WorkEventKind`]. Work remains the responsibility/status plane, while a
 /// Host attention row is only a durable notification that a particular Work
 /// state now needs Host action.
@@ -4725,7 +4709,7 @@ impl Validate for HostAttention {
             if !self.work_id.is_empty() || self.work_version != 0 || self.member_run_id.is_some() {
                 return Err(ValidationError::Invalid {
                     field: "HostAttention.host_binding_stale",
-                    reason: "must not name Work or MemberRun state",
+                    reason: "must not name Work or ProviderRuntimeProjection state",
                 });
             }
         } else {
@@ -5166,7 +5150,7 @@ pub enum DelegationStatus {
     Cancelled,
 }
 
-/// One delegation of work out of a [`MemberRun`]: a provider-native child
+/// One delegation of work out of a [`ProviderRuntimeProjection`]: a provider-native child
 /// thread, a harness worker, or a dynamic workflow run. Exactly one of
 /// `provider_child_thread_id` / `workflow_run_id` is typically set, matching
 /// `mode`.
@@ -5251,16 +5235,16 @@ mod tests {
         assert_eq!(ProviderKind::from("gemini".to_string()), kind);
     }
 
-    fn bare_team_message(kind: TeamMessageKind) -> TeamMessage {
-        TeamMessage {
+    fn bare_team_message(kind: ProviderDispatchIntent) -> ProviderDispatchEnvelope {
+        ProviderDispatchEnvelope {
             id: "tmsg-1".to_string(),
             team_run_id: "run-1".to_string(),
             work_id: None,
-            origin_wave_id: None,
+            source_plan_ref: None,
             sender: None,
-            from_member_id: "host".to_string(),
+            sender_runtime_id: "host".to_string(),
             recipients: Vec::new(),
-            to_member_ids: Vec::new(),
+            recipient_runtime_ids: Vec::new(),
             kind,
             body: "body".to_string(),
             correlation_id: "corr-1".to_string(),
@@ -5272,11 +5256,11 @@ mod tests {
         }
     }
 
-    fn peer_team_message(kind: TeamMessageKind) -> TeamMessage {
+    fn peer_team_message(kind: ProviderDispatchIntent) -> ProviderDispatchEnvelope {
         let mut message = bare_team_message(kind);
-        message.from_member_id = "member-run-2".to_string();
+        message.sender_runtime_id = "member-run-2".to_string();
         message.sender = Some(TeamActorRef {
-            kind: TeamActorKind::MemberRun,
+            kind: TeamActorKind::ProviderRuntimeProjection,
             id: "member-run-2".to_string(),
             display_name: None,
             authn_source: None,
@@ -5288,18 +5272,20 @@ mod tests {
     fn team_message_response_intent_defaults_from_kind() {
         // Review and runtime-control kinds require a response round from every sender.
         for kind in [
-            TeamMessageKind::Handoff,
-            TeamMessageKind::Control,
-            TeamMessageKind::ProviderInteractionRequest,
+            ProviderDispatchIntent::Message,
+            ProviderDispatchIntent::Control,
+            ProviderDispatchIntent::ProviderInteractionRequest,
         ] {
             assert!(bare_team_message(kind).requires_response(), "{kind:?}");
             assert!(peer_team_message(kind).requires_response(), "{kind:?}");
         }
         assert!(
-            !bare_team_message(TeamMessageKind::ProviderInteractionResponse).requires_response()
+            !bare_team_message(ProviderDispatchIntent::ProviderInteractionResponse)
+                .requires_response()
         );
         assert!(
-            !peer_team_message(TeamMessageKind::ProviderInteractionResponse).requires_response()
+            !peer_team_message(ProviderDispatchIntent::ProviderInteractionResponse)
+                .requires_response()
         );
     }
 
@@ -5393,10 +5379,10 @@ mod tests {
     #[test]
     fn provider_interaction_request_envelope_binds_identity_and_correlation() {
         let body = provider_interaction_request_body();
-        let mut message = bare_team_message(TeamMessageKind::ProviderInteractionRequest);
-        message.from_member_id = body.member.clone();
+        let mut message = bare_team_message(ProviderDispatchIntent::ProviderInteractionRequest);
+        message.sender_runtime_id = body.member.clone();
         message.sender = Some(TeamActorRef {
-            kind: TeamActorKind::MemberRun,
+            kind: TeamActorKind::ProviderRuntimeProjection,
             id: body.member.clone(),
             display_name: None,
             authn_source: Some("provider_reverse_rpc".to_string()),
@@ -5405,8 +5391,8 @@ mod tests {
             kind: TeamRecipientKind::Host,
             id: "host".to_string(),
         }];
-        message.to_member_ids = vec!["host".to_string()];
-        message.deliveries = vec![TeamMessageDelivery {
+        message.recipient_runtime_ids = vec!["host".to_string()];
+        message.deliveries = vec![ProviderDispatchAttempt {
             member_id: "host".to_string(),
             policy: TeamDeliveryPolicy::ManualAck,
             status: TeamDeliveryStatus::Delivered,
@@ -5433,13 +5419,13 @@ mod tests {
             .contains("correlation_id"));
 
         message.correlation_id = body.correlation_id();
-        message.response_intent = Some(TeamMessageResponseIntent::Informational);
+        message.response_intent = Some(ProviderResponseIntent::Informational);
         assert!(message
             .validate_provider_interaction_contract()
             .expect_err("request cannot suppress response")
             .contains("must require"));
 
-        message.response_intent = Some(TeamMessageResponseIntent::ResponseRequired);
+        message.response_intent = Some(ProviderResponseIntent::ResponseRequired);
         message.sender.as_mut().expect("sender").id = "forged-member".to_string();
         assert!(message
             .validate_provider_interaction_contract()
@@ -5450,11 +5436,11 @@ mod tests {
     #[test]
     fn ordinary_message_response_intent_defaults_from_sender() {
         for kind in [
-            TeamMessageKind::Message,
-            TeamMessageKind::Question,
-            TeamMessageKind::Answer,
-            TeamMessageKind::Progress,
-            TeamMessageKind::Blocker,
+            ProviderDispatchIntent::Message,
+            ProviderDispatchIntent::Message,
+            ProviderDispatchIntent::Message,
+            ProviderDispatchIntent::Message,
+            ProviderDispatchIntent::Message,
         ] {
             // `message` is the only legal carrier for Host questions,
             // revisions, and acceptance decisions: Host mail must stay waking.
@@ -5480,8 +5466,8 @@ mod tests {
             TeamActorKind::Operator,
             TeamActorKind::Service,
         ] {
-            let mut message = bare_team_message(TeamMessageKind::Message);
-            message.from_member_id = format!("{actor_kind:?}-sender");
+            let mut message = bare_team_message(ProviderDispatchIntent::Message);
+            message.sender_runtime_id = format!("{actor_kind:?}-sender");
             message.sender = Some(TeamActorRef {
                 kind: actor_kind,
                 id: "sender-1".to_string(),
@@ -5494,10 +5480,10 @@ mod tests {
 
     #[test]
     fn historical_rows_without_sender_fall_back_to_from_member_id() {
-        let mut historical = bare_team_message(TeamMessageKind::Message);
+        let mut historical = bare_team_message(ProviderDispatchIntent::Message);
         historical.sender = None;
-        assert!(historical.requires_response(), "from_member_id == host");
-        historical.from_member_id = "member-run-9".to_string();
+        assert!(historical.requires_response(), "sender_runtime_id == host");
+        historical.sender_runtime_id = "member-run-9".to_string();
         assert!(
             !historical.requires_response(),
             "historical peer mail stays informational"
@@ -5507,30 +5493,30 @@ mod tests {
     #[test]
     fn team_message_explicit_response_intent_wins_over_kind_default() {
         // Override upward: an ack-only peer note that genuinely needs action.
-        let mut ack_only = peer_team_message(TeamMessageKind::Message);
+        let mut ack_only = peer_team_message(ProviderDispatchIntent::Message);
         assert_eq!(
             ack_only.effective_response_intent(),
-            TeamMessageResponseIntent::Informational
+            ProviderResponseIntent::Informational
         );
-        ack_only.response_intent = Some(TeamMessageResponseIntent::ResponseRequired);
+        ack_only.response_intent = Some(ProviderResponseIntent::ResponseRequired);
         assert!(ack_only.requires_response());
         // Override downward: Host mail that is deliberately FYI-only.
-        let mut host_fyi = bare_team_message(TeamMessageKind::Message);
+        let mut host_fyi = bare_team_message(ProviderDispatchIntent::Message);
         assert!(host_fyi.requires_response());
-        host_fyi.response_intent = Some(TeamMessageResponseIntent::Informational);
+        host_fyi.response_intent = Some(ProviderResponseIntent::Informational);
         assert!(!host_fyi.requires_response());
         // Override downward on a work-carrying kind too.
-        let mut control = bare_team_message(TeamMessageKind::Control);
-        control.response_intent = Some(TeamMessageResponseIntent::Informational);
+        let mut control = bare_team_message(ProviderDispatchIntent::Control);
+        control.response_intent = Some(ProviderResponseIntent::Informational);
         assert!(!control.requires_response());
         // The explicit field round-trips through serde; an absent field keeps
         // historical rows on their kind+sender-derived default.
         let json = serde_json::to_string(&ack_only).expect("serialize");
         assert!(json.contains("\"response_intent\":\"response_required\""));
-        let without = peer_team_message(TeamMessageKind::Message);
+        let without = peer_team_message(ProviderDispatchIntent::Message);
         let json = serde_json::to_string(&without).expect("serialize");
         assert!(!json.contains("response_intent"));
-        let historical: TeamMessage =
+        let historical: ProviderDispatchEnvelope =
             serde_json::from_str(&json).expect("deserialize without the field");
         assert_eq!(historical.response_intent, None);
         assert!(!historical.requires_response());
@@ -5710,7 +5696,7 @@ fn validation_rejects_missing_required_id() {
         prompt_ref: None,
         skill_refs: vec![],
         workspace_policy: None,
-        worktree_ref: None,
+        provider_cwd_hint: None,
         permission_profile: None,
         runtime_workspace_roots: Vec::new(),
         status: ProviderLaunchStatus::Idle,
@@ -5752,20 +5738,21 @@ fn message_sender_kind_defaults_to_agent_and_persists_operator() {
             "created_at": "2026-05-26T00:00:00Z",
             "delivery": null
         }"#;
-    let legacy: Message = serde_json::from_str(legacy_json).expect("deserialize legacy message");
+    let legacy: RegistryMessage =
+        serde_json::from_str(legacy_json).expect("deserialize legacy message");
     assert_eq!(legacy.sender_kind, SenderKind::Agent);
     assert!(legacy.validate().is_ok());
 
     // An operator-authored message uses the reserved "operator" from id and
     // round-trips its sender_kind without loss.
-    let operator = Message {
+    let operator = RegistryMessage {
         id: "msg-op".to_string(),
         task_id: None,
         from_agent_id: "operator".to_string(),
         to_agent_id: Some("agent-1".to_string()),
         channel: None,
-        kind: MessageKind::Assignment,
-        delivery_status: MessageDeliveryStatus::Queued,
+        kind: RegistryMessageIntent::Message,
+        delivery_status: RegistryDeliveryStatus::Queued,
         content: "do the thing".to_string(),
         evidence_ids: vec![],
         created_at: "2026-05-26T00:00:00Z".to_string(),
@@ -5777,7 +5764,8 @@ fn message_sender_kind_defaults_to_agent_and_persists_operator() {
         json.contains("\"sender_kind\":\"operator\""),
         "operator message must serialize sender_kind as snake_case: {json}"
     );
-    let parsed: Message = serde_json::from_str(&json).expect("deserialize operator message");
+    let parsed: RegistryMessage =
+        serde_json::from_str(&json).expect("deserialize operator message");
     assert_eq!(parsed, operator);
     assert_eq!(parsed.sender_kind, SenderKind::Operator);
     assert!(parsed.validate().is_ok());
@@ -5798,7 +5786,7 @@ fn sample_member() -> ProviderLaunchProfile {
         prompt_ref: Some(".firm/prompts/worker.md".to_string()),
         skill_refs: vec!["firm-workflow".to_string()],
         workspace_policy: None,
-        worktree_ref: Some("../worktrees/task-1".to_string()),
+        provider_cwd_hint: Some("../worktrees/task-1".to_string()),
         permission_profile: None,
         runtime_workspace_roots: Vec::new(),
         status: ProviderLaunchStatus::Idle,
@@ -5816,15 +5804,15 @@ fn sample_member() -> ProviderLaunchProfile {
     }
 }
 
-fn sample_message() -> Message {
-    Message {
+fn sample_message() -> RegistryMessage {
+    RegistryMessage {
         id: "msg-1".to_string(),
         task_id: Some("task-1".to_string()),
         from_agent_id: "leader-1".to_string(),
         to_agent_id: Some("agent-1".to_string()),
         channel: Some("team".to_string()),
-        kind: MessageKind::Assignment,
-        delivery_status: MessageDeliveryStatus::Queued,
+        kind: RegistryMessageIntent::Message,
+        delivery_status: RegistryDeliveryStatus::Queued,
         content: "Implement the launch spec.".to_string(),
         evidence_ids: vec![],
         created_at: "2026-05-26T00:00:00Z".to_string(),
@@ -6235,12 +6223,12 @@ fn workspace_rows_deserialize_with_optional_observability_fields() {
         .expect("deserialize team run");
     assert!(team.execution_root.is_none());
 
-    let member: MemberRun = serde_json::from_str(
+    let member: ProviderRuntimeProjection = serde_json::from_str(
             r#"{"id":"mr-legacy","team_run_id":"tr-legacy","name":"worker","role":"worker","provider":"codex","status":"idle","started_at":"unix-ms:1"}"#,
         )
         .expect("deserialize legacy member run");
-    assert!(member.worktree_ref.is_none());
-    assert!(member.workspace_snapshot.is_none());
+    assert!(member.provider_cwd_hint.is_none());
+    assert!(member.provider_environment_observation.is_none());
     assert_eq!(
         member.provider_controls,
         ProviderExecutionControls::default(),
@@ -6566,7 +6554,7 @@ fn member_run_rows_without_capacity_stay_readable_and_absent_is_not_available() 
         "status": "idle",
         "started_at": "unix-ms:1"
     });
-    let member: MemberRun = serde_json::from_value(row).expect("legacy member run");
+    let member: ProviderRuntimeProjection = serde_json::from_value(row).expect("legacy member run");
     assert_eq!(member.provider_capacity, None);
     assert!(!provider_capacity_start_decision(
         member.provider_capacity.as_ref(),
@@ -6576,12 +6564,12 @@ fn member_run_rows_without_capacity_stay_readable_and_absent_is_not_available() 
     .is_blocked());
 }
 
-/// The emit/schema contract for MemberRun.
+/// The emit/schema contract for ProviderRuntimeProjection.
 ///
 /// `schemas/member-run.schema.json` keeps `additionalProperties: false`, so
 /// any field the emitter serialises that the schema does not declare makes
-/// an emitted MemberRun fail validation against its own schema. This test
-/// round-trips a MemberRun carrying `provider_capacity` and asserts every
+/// an emitted ProviderRuntimeProjection fail validation against its own schema. This test
+/// round-trips a ProviderRuntimeProjection carrying `provider_capacity` and asserts every
 /// emitted key — top level and inside the capacity snapshot — is declared.
 /// It fails on the next undeclared field, not just on `provider_capacity`.
 #[test]
@@ -6638,7 +6626,7 @@ fn emitted_member_run_keys_are_declared_in_member_run_schema() {
         "status": "idle",
         "started_at": "unix-ms:1785591600000"
     });
-    let mut member: MemberRun = serde_json::from_value(row).expect("member run");
+    let mut member: ProviderRuntimeProjection = serde_json::from_value(row).expect("member run");
     member.provider_capacity = Some(snapshot.clone());
     member.status = MemberRunStatus::Blocked;
     member.provider_profile = Some(ProviderIntegrationProfile {
@@ -6689,7 +6677,7 @@ fn emitted_member_run_keys_are_declared_in_member_run_schema() {
         .collect::<Vec<_>>();
     assert!(
             undeclared.is_empty(),
-            "emitted MemberRun fields are not declared in member-run.schema.json              (additionalProperties is false, so these cannot validate): {undeclared:?}"
+            "emitted ProviderRuntimeProjection fields are not declared in member-run.schema.json              (additionalProperties is false, so these cannot validate): {undeclared:?}"
         );
 
     let declared_capacity = declared["provider_capacity"]["properties"]
@@ -6724,11 +6712,12 @@ fn emitted_member_run_keys_are_declared_in_member_run_schema() {
 
     // Round-trip: the snapshot survives encode/decode unchanged, so the
     // schema is describing the shape the runtime actually persists.
-    let decoded: MemberRun = serde_json::from_value(encoded).expect("decode member run");
+    let decoded: ProviderRuntimeProjection =
+        serde_json::from_value(encoded).expect("decode member run");
     assert_eq!(decoded.provider_capacity, Some(snapshot));
     decoded
         .validate()
-        .expect("typed blocked MemberRun round-trips");
+        .expect("typed blocked ProviderRuntimeProjection round-trips");
 }
 
 #[test]
@@ -6799,7 +6788,7 @@ fn work_prerequisite_satisfaction_is_distinct_from_claim_readiness() {
 
 #[test]
 fn legacy_work_delivery_update_defaults_to_unsequenced() {
-    let update: WorkDeliveryUpdate = serde_json::from_value(serde_json::json!({
+    let update: ProviderWorkDispatchUpdate = serde_json::from_value(serde_json::json!({
         "delivery_id": "delivery-legacy",
         "status": "queued",
         "attempt": 1,

@@ -371,7 +371,7 @@ fn external_work_and_delivery_writes_invalidate_a_healthy_stream_and_snapshot_co
         "authoritative snapshot did not converge after invalidation: {snapshot}"
     );
 
-    // WorkDelivery update rows are a separate ledger and must independently
+    // ProviderWorkDispatch update rows are a separate ledger and must independently
     // invalidate the same already-open stream. This simulates a supervisor or
     // external runtime process committing a durable delivery status update.
     let delivery = snapshot["work_deliveries"]

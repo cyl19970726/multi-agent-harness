@@ -173,7 +173,7 @@ pub fn clear_inherited_native_firm_env(command: &mut Command) {
     }
 }
 
-/// Reconstruct the latest WorkDelivery projection from crash-atomic Work
+/// Reconstruct the latest ProviderWorkDispatch projection from crash-atomic Work
 /// operations plus later claim/receipt updates. Integration tests use this
 /// instead of treating update rows as standalone deliveries.
 pub fn work_deliveries(home: &TempHome, project_id: &str) -> Vec<serde_json::Value> {
@@ -187,7 +187,7 @@ pub fn work_deliveries(home: &TempHome, project_id: &str) -> Vec<serde_json::Val
         for delivery in row["deliveries"].as_array().into_iter().flatten() {
             let id = delivery["id"]
                 .as_str()
-                .expect("WorkDelivery id")
+                .expect("ProviderWorkDispatch id")
                 .to_string();
             if !by_id.contains_key(&id) {
                 order.push(id.clone());
@@ -198,12 +198,14 @@ pub fn work_deliveries(home: &TempHome, project_id: &str) -> Vec<serde_json::Val
     if let Ok(updates) = std::fs::read_to_string(store.join("work_delivery_updates.jsonl")) {
         for line in updates.lines().filter(|line| !line.trim().is_empty()) {
             let update: serde_json::Value =
-                serde_json::from_str(line).expect("WorkDelivery update JSON");
+                serde_json::from_str(line).expect("ProviderWorkDispatch update JSON");
             let id = update["delivery_id"]
                 .as_str()
-                .expect("WorkDelivery update id");
+                .expect("ProviderWorkDispatch update id");
             if let Some(delivery) = by_id.get_mut(id) {
-                let object = delivery.as_object_mut().expect("WorkDelivery object");
+                let object = delivery
+                    .as_object_mut()
+                    .expect("ProviderWorkDispatch object");
                 for key in [
                     "status",
                     "attempt",
@@ -417,6 +419,46 @@ impl ServeHandle {
         token: &str,
     ) -> (u16, serde_json::Value) {
         self.post_json_with_header(path, body, Some(token))
+    }
+
+    /// POST JSON with explicit test-owned headers. Values are restricted to
+    /// single HTTP header lines so acceptance tests cannot smuggle a second
+    /// request through this helper.
+    pub fn post_json_with_headers(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+        headers: &[(&str, &str)],
+    ) -> (u16, serde_json::Value) {
+        let payload = body.to_string();
+        let mut stream = TcpStream::connect(self.addr()).expect("connect post");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
+        let mut header_lines = String::new();
+        for (name, value) in headers {
+            assert!(
+                !name.contains(['\r', '\n', ':']),
+                "invalid test header name"
+            );
+            assert!(!value.contains(['\r', '\n']), "invalid test header value");
+            header_lines.push_str(name);
+            header_lines.push_str(": ");
+            header_lines.push_str(value);
+            header_lines.push_str("\r\n");
+        }
+        write!(
+            stream,
+            "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n{header_lines}Content-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+            payload.len()
+        )
+        .expect("write post");
+        let mut raw = String::new();
+        read_http_to_string(&mut stream, &mut raw).expect("read post");
+        let (status, text) = split_status_body(&raw);
+        let json = serde_json::from_str(&text)
+            .unwrap_or_else(|error| panic!("POST {path} body not JSON ({error}): {text}"));
+        (status, json)
     }
 
     fn post_json_with_header(

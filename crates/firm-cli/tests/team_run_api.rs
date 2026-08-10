@@ -116,8 +116,8 @@ fn member_semantic_row_counts(store: &HarnessStore, member_id: &str) -> (usize, 
         .expect("team messages")
         .into_iter()
         .filter(|message| {
-            message.from_member_id == member_id
-                && message.kind == harness_core::TeamMessageKind::Handoff
+            message.sender_runtime_id == member_id
+                && message.kind == harness_core::ProviderDispatchIntent::Message
         })
         .count();
     (member_rows, actions, handoffs)
@@ -450,7 +450,7 @@ fn team_run_cli_create_list_status_send_events() {
     let controlled_member = members
         .iter()
         .find(|entry| entry["member_run"]["name"].as_str() == Some("worker-1"))
-        .expect("worker-1 MemberRun");
+        .expect("worker-1 ProviderRuntimeProjection");
     assert_eq!(
         controlled_member["member_run"]["provider_controls"]["model"]["requested"].as_str(),
         Some("gpt-5")
@@ -471,7 +471,7 @@ fn team_run_cli_create_list_status_send_events() {
     );
     assert_eq!(members[1]["member_run"]["model"].as_str(), Some("gpt-5"));
     assert_eq!(
-        members[1]["member_run"]["worktree_ref"].as_str(),
+        members[1]["member_run"]["provider_cwd_hint"].as_str(),
         Some(project_root.as_str())
     );
     assert_eq!(
@@ -509,7 +509,7 @@ fn team_run_cli_create_list_status_send_events() {
     assert_eq!(
         member_detail["mailbox"]["inbox"].as_array().map(Vec::len),
         Some(0),
-        "Work ownership is not duplicated into TeamMessage"
+        "Work ownership is not duplicated into ProviderDispatchEnvelope"
     );
     let store = HarnessStore::new(home.spaces_dir().join(&project_id));
     let works = store.latest_works().expect("latest Works");
@@ -540,7 +540,7 @@ fn team_run_cli_create_list_status_send_events() {
         ],
     );
     assert_eq!(message["kind"].as_str(), Some("message"));
-    assert_eq!(message["from_member_id"].as_str(), Some(member_ids[1]));
+    assert_eq!(message["sender_runtime_id"].as_str(), Some(member_ids[1]));
     assert_eq!(message["team_run_id"].as_str(), Some(run_id.as_str()));
     assert_eq!(
         message["deliveries"][0]["status"].as_str(),
@@ -1362,8 +1362,8 @@ fn get_team_member_inbox_uses_actionable_latest_wins_projection() {
     let (status, sent) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),
         &serde_json::json!({
-            "from_member_id": "host",
-            "to_member_ids": [member_id],
+            "sender_runtime_id": "host",
+            "recipient_runtime_ids": [member_id],
             "kind": "message",
             "body": "Please review the shared Work board"
         }),
@@ -1413,8 +1413,8 @@ fn get_host_inbox_is_scoped_to_exact_native_thread() {
     let (status, sent) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),
         &serde_json::json!({
-            "from_member_id": member_id,
-            "to_member_ids": ["host"],
+            "sender_runtime_id": member_id,
+            "recipient_runtime_ids": ["host"],
             "kind": "message",
             "body": "QUESTION: choose A or B",
         }),
@@ -1532,7 +1532,7 @@ fn post_team_run_creates_entities_and_get_snapshot_projects_them() {
                 {"name": "lead", "role": "coordinator", "provider": "kimi",
                  "initial_work": "Coordinate the delivery"},
                 {"name": "worker-1", "role": "implementer", "provider": "codex",
-                 "model": "gpt-5", "worktree_ref": project_root, "owned_paths": ["crates/a"],
+                 "model": "gpt-5", "provider_cwd_hint": project_root, "owned_paths": ["crates/a"],
                  "initial_work": "Implement and verify the change"},
             ],
         }),
@@ -1561,7 +1561,7 @@ fn post_team_run_creates_entities_and_get_snapshot_projects_them() {
     );
     assert_eq!(result["member_runs"].as_array().map(Vec::len), Some(2));
     assert_eq!(
-        result["member_runs"][1]["worktree_ref"].as_str(),
+        result["member_runs"][1]["provider_cwd_hint"].as_str(),
         Some(project_root.to_str().expect("project root"))
     );
     assert_eq!(result["works"].as_array().map(Vec::len), Some(2));
@@ -1747,8 +1747,8 @@ fn post_team_run_message_and_start_async() {
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),
         &serde_json::json!({
-            "from_member_id": member_ids[1],
-            "to_member_ids": [member_ids[0]],
+            "sender_runtime_id": member_ids[1],
+            "recipient_runtime_ids": [member_ids[0]],
             "kind": "handoff",
             "body": "take over the review",
             "work_id": worker_work_id,
@@ -1781,8 +1781,8 @@ fn post_team_run_message_and_start_async() {
     let (status, body) = serve.post_json(
         "/v1/team-runs/team-run-nope/messages",
         &serde_json::json!({
-            "from_member_id": "host",
-            "to_member_ids": [member_ids[0]],
+            "sender_runtime_id": "host",
+            "recipient_runtime_ids": [member_ids[0]],
             "kind": "control",
             "body": "ping",
         }),
@@ -1808,8 +1808,8 @@ fn post_team_run_message_and_start_async() {
     let (status, host_notice) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),
         &serde_json::json!({
-            "from_member_id": member_ids[1],
-            "to_member_ids": ["host"],
+            "sender_runtime_id": member_ids[1],
+            "recipient_runtime_ids": ["host"],
             "kind": "message",
             "body": "The Work is ready for Host review",
             "work_id": worker_work_id,
@@ -2112,8 +2112,8 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
     let (status, host_mail) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),
         &serde_json::json!({
-            "from_member_id": "host",
-            "to_member_ids": [builder_id],
+            "sender_runtime_id": "host",
+            "recipient_runtime_ids": [builder_id],
             "kind": "message",
             "body": "HOST FOLLOW-UP after TeamRun completion",
         }),
@@ -2127,8 +2127,8 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
     let (status, peer_mail) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),
         &serde_json::json!({
-            "from_member_id": reviewer_id,
-            "to_member_ids": [builder_id],
+            "sender_runtime_id": reviewer_id,
+            "recipient_runtime_ids": [builder_id],
             "kind": "message",
             "response_intent": "response_required",
             "body": "PEER FOLLOW-UP after TeamRun completion",
@@ -2331,8 +2331,8 @@ fn stale_supervisor_quiesces_and_successor_resumes_mail_once() {
     let (status, queued_mail) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),
         &serde_json::json!({
-            "from_member_id": "host",
-            "to_member_ids": [member_id],
+            "sender_runtime_id": "host",
+            "recipient_runtime_ids": [member_id],
             "kind": "message",
             "body": "QUEUED_FOR_SUCCESSOR",
         }),
@@ -2349,8 +2349,8 @@ fn stale_supervisor_quiesces_and_successor_resumes_mail_once() {
     let (status, accepted_mail) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),
         &serde_json::json!({
-            "from_member_id": "host",
-            "to_member_ids": [member_id],
+            "sender_runtime_id": "host",
+            "recipient_runtime_ids": [member_id],
             "kind": "message",
             "body": "PROVIDER_ACCEPTED_BEFORE_LOSS",
             "correlation_id": correlation,
@@ -2365,8 +2365,8 @@ fn stale_supervisor_quiesces_and_successor_resumes_mail_once() {
     let (status, uncertain_mail) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),
         &serde_json::json!({
-            "from_member_id": "host",
-            "to_member_ids": [member_id],
+            "sender_runtime_id": "host",
+            "recipient_runtime_ids": [member_id],
             "kind": "message",
             "body": "CLAIMED_WITHOUT_RECEIPT_BEFORE_LOSS",
             "correlation_id": correlation,
@@ -2621,7 +2621,7 @@ fn stale_supervisor_quiesces_and_successor_resumes_mail_once() {
         .flatten()
         .filter(|message| {
             message["kind"] == "handoff"
-                && message["from_member_id"].as_str() == Some(member_id.as_str())
+                && message["sender_runtime_id"].as_str() == Some(member_id.as_str())
         })
         .collect::<Vec<_>>();
     assert_eq!(
@@ -2986,7 +2986,7 @@ fn codex_app_server_post_handoff_steer_is_independent_and_converges_before_follo
         &serde_json::json!({
             "sender_kind": "member_run",
             "sender_id": member_id,
-            "to_member_ids": ["host"],
+            "recipient_runtime_ids": ["host"],
             "kind": "handoff",
             "body": "## RESULT\ndone\n## SUMMARY\nexplicit same-turn handoff",
             "work_id": work_id,
@@ -3065,7 +3065,7 @@ fn codex_app_server_post_handoff_steer_is_independent_and_converges_before_follo
             .join(&project_id)
             .join("team_messages.jsonl"),
     )
-    .expect("read physical TeamMessage rows")
+    .expect("read physical ProviderDispatchEnvelope rows")
     .lines()
     .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
     .filter(|message| message["id"].as_str() == Some(steer_message_id.as_str()))
@@ -3100,7 +3100,7 @@ fn codex_app_server_post_handoff_steer_is_independent_and_converges_before_follo
             .into_iter()
             .flatten()
             .filter(|message| {
-                message["from_member_id"].as_str() == Some(member_id.as_str())
+                message["sender_runtime_id"].as_str() == Some(member_id.as_str())
                     && message["kind"].as_str() == Some("handoff")
             })
             .collect::<Vec<_>>();
@@ -3120,8 +3120,8 @@ fn codex_app_server_post_handoff_steer_is_independent_and_converges_before_follo
     let (status, follow_up) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),
         &serde_json::json!({
-            "from_member_id": "host",
-            "to_member_ids": [member_id],
+            "sender_runtime_id": "host",
+            "recipient_runtime_ids": [member_id],
             "kind": "message",
             "body": "OPEN NEXT ROUND after idle",
             "correlation_id": conversation_correlation,
@@ -3266,8 +3266,8 @@ fn codex_app_server_member_interrupt_waits_for_provider_terminal_event() {
     let (status, follow_up) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),
         &serde_json::json!({
-            "from_member_id": "host",
-            "to_member_ids": [member_id],
+            "sender_runtime_id": "host",
+            "recipient_runtime_ids": [member_id],
             "kind": "message",
             "body": "continue after interrupt"
         }),
@@ -3823,8 +3823,11 @@ fn review_required_kimi_033_blocks_initial_start_and_http_work_rebind_before_acp
         .expect("latest deliveries")
         .into_iter()
         .find(|delivery| delivery.work_id == work_id)
-        .expect("WorkDelivery");
-    assert_eq!(delivery.status, harness_core::WorkDeliveryStatus::Queued);
+        .expect("ProviderWorkDispatch");
+    assert_eq!(
+        delivery.status,
+        harness_core::ProviderWorkDispatchStatus::Queued
+    );
     assert_eq!(delivery.attempt, 0);
     assert!(delivery.provider_receipt_id.is_none());
     assert!(store
@@ -4182,11 +4185,11 @@ fn reviewed_recovery_redelivers_same_stable_member_without_duplicate_work_or_ses
 
     let active_member = store
         .member_runs()
-        .expect("MemberRun rows")
+        .expect("ProviderRuntimeProjection rows")
         .into_iter()
         .rev()
         .find(|member| member.id == member_id)
-        .expect("MemberRun");
+        .expect("ProviderRuntimeProjection");
     let mut stopped_member = active_member.clone();
     let original_generation = stopped_member.runtime_generation;
     stopped_member.status = harness_core::MemberRunStatus::Stopped;
@@ -4265,23 +4268,23 @@ fn reviewed_recovery_redelivers_same_stable_member_without_duplicate_work_or_ses
 
     let latest_member = store
         .member_runs()
-        .expect("MemberRun rows")
+        .expect("ProviderRuntimeProjection rows")
         .into_iter()
         .rev()
         .find(|member| member.id == member_id)
-        .expect("recovered MemberRun");
+        .expect("recovered ProviderRuntimeProjection");
     assert_eq!(latest_member.id, member_id);
     assert_eq!(latest_member.runtime_generation, original_generation + 1);
     assert!(latest_member.native_session.is_none());
     assert_eq!(
         store
             .member_runs()
-            .expect("MemberRun rows")
+            .expect("ProviderRuntimeProjection rows")
             .into_iter()
             .map(|member| member.id)
             .collect::<std::collections::BTreeSet<_>>(),
         std::collections::BTreeSet::from([member_id.clone()]),
-        "recovery must not mint a replacement durable MemberRun identity"
+        "recovery must not mint a replacement durable ProviderRuntimeProjection identity"
     );
 
     let rebound_events = store
@@ -4315,7 +4318,7 @@ fn reviewed_recovery_redelivers_same_stable_member_without_duplicate_work_or_ses
     assert_eq!(fresh_deliveries[0].recipient_member_run_id, member_id);
     assert_eq!(
         fresh_deliveries[0].status,
-        harness_core::WorkDeliveryStatus::Queued
+        harness_core::ProviderWorkDispatchStatus::Queued
     );
     assert!(fresh_deliveries[0].provider_receipt_id.is_none());
 
@@ -4500,8 +4503,8 @@ fn idle_kimi_member_consumes_late_mail_on_the_same_native_session() {
     let (status, sent) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),
         &serde_json::json!({
-            "from_member_id": "host",
-            "to_member_ids": [member_id],
+            "sender_runtime_id": "host",
+            "recipient_runtime_ids": [member_id],
             "kind": "message",
             "body": "late Kimi follow-up",
         }),
@@ -4606,8 +4609,8 @@ fn busy_kimi_member_batches_mail_in_order_and_withholds_stale_handoff() {
     let (status, first) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),
         &serde_json::json!({
-            "from_member_id": "host",
-            "to_member_ids": [member_id],
+            "sender_runtime_id": "host",
+            "recipient_runtime_ids": [member_id],
             "kind": "message",
             "body": "BUSY_CORRECTION_ONE",
         }),
@@ -4621,8 +4624,8 @@ fn busy_kimi_member_batches_mail_in_order_and_withholds_stale_handoff() {
     let (status, second) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),
         &serde_json::json!({
-            "from_member_id": "host",
-            "to_member_ids": [member_id],
+            "sender_runtime_id": "host",
+            "recipient_runtime_ids": [member_id],
             "kind": "message",
             "body": "BUSY_CORRECTION_TWO",
             "correlation_id": correlation,
@@ -4868,7 +4871,7 @@ fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
             .into_iter()
             .flatten()
             .find(|message| {
-                message["from_member_id"].as_str() == Some(member_id.as_str())
+                message["sender_runtime_id"].as_str() == Some(member_id.as_str())
                     && message["kind"].as_str() == Some("provider_interaction_request")
             })
             .and_then(|message| message["id"].as_str().map(str::to_string));
@@ -5009,9 +5012,9 @@ fn codex_app_server_multi_question_fails_closed_without_interaction_rows() {
             .flatten()
             .all(|message| {
                 message["kind"].as_str() != Some("provider_interaction_request")
-                    || message["from_member_id"].as_str() != Some(member_id.as_str())
+                    || message["sender_runtime_id"].as_str() != Some(member_id.as_str())
             }),
-        "unsupported multi-question request became a TeamMessage"
+        "unsupported multi-question request became a ProviderDispatchEnvelope"
     );
     assert!(snapshot["pending_interactions"]
         .as_array()
@@ -5082,7 +5085,7 @@ fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
             .flatten()
             .find(|message| {
                 message["kind"].as_str() == Some("provider_interaction_request")
-                    && message["from_member_id"].as_str() == Some(member_id.as_str())
+                    && message["sender_runtime_id"].as_str() == Some(member_id.as_str())
             })
             .and_then(|message| message["id"].as_str().map(str::to_string));
         if waiting && waiting_request_id.is_some() {
@@ -5185,7 +5188,7 @@ fn close_cancels_kimi_provider_request_without_resuming_member() {
             .flatten()
             .find(|message| {
                 message["kind"].as_str() == Some("provider_interaction_request")
-                    && message["from_member_id"].as_str() == Some(member_id.as_str())
+                    && message["sender_runtime_id"].as_str() == Some(member_id.as_str())
             })
             .and_then(|message| message["id"].as_str().map(str::to_string));
         let waiting = snapshot["member_runs"]
@@ -5685,8 +5688,8 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
         &serde_json::json!({
             "sender_kind": "member_run",
             "sender_id": member_b,
-            "from_member_id": member_b,
-            "to_member_ids": [member_a],
+            "sender_runtime_id": member_b,
+            "recipient_runtime_ids": [member_a],
             "kind": "message",
             "body": "ACK: your lane note landed; no reply needed",
         }),
@@ -5705,8 +5708,8 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
     let (status, host_fyi) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),
         &serde_json::json!({
-            "from_member_id": "host",
-            "to_member_ids": [member_a],
+            "sender_runtime_id": "host",
+            "recipient_runtime_ids": [member_a],
             "kind": "message",
             "response_intent": "informational",
             "body": "FYI: the wave advanced; no reply needed",
@@ -5747,8 +5750,8 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
     let (status, question) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),
         &serde_json::json!({
-            "from_member_id": "host",
-            "to_member_ids": [member_a],
+            "sender_runtime_id": "host",
+            "recipient_runtime_ids": [member_a],
             "kind": "message",
             "response_intent": "response_required",
             "body": "QUESTION: confirm your lane state",
@@ -5782,8 +5785,8 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
         &serde_json::json!({
             "sender_kind": "member_run",
             "sender_id": member_a,
-            "from_member_id": member_a,
-            "to_member_ids": [member_b],
+            "sender_runtime_id": member_a,
+            "recipient_runtime_ids": [member_b],
             "kind": "message",
             "response_intent": "informational",
             "body": "ACK: noted, no reply needed",
@@ -5829,8 +5832,8 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
     let ack_message = messages
         .iter()
         .find(|message| {
-            message["from_member_id"].as_str() == Some(member_a.as_str())
-                && message["to_member_ids"][0].as_str() == Some(member_b.as_str())
+            message["sender_runtime_id"].as_str() == Some(member_a.as_str())
+                && message["recipient_runtime_ids"][0].as_str() == Some(member_b.as_str())
         })
         .expect("peer ack message")
         .clone();
@@ -5848,8 +5851,8 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
     let (status, b_trigger) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),
         &serde_json::json!({
-            "from_member_id": "host",
-            "to_member_ids": [member_b],
+            "sender_runtime_id": "host",
+            "recipient_runtime_ids": [member_b],
             "kind": "message",
             "body": "Start your reviewed lane now",
         }),
@@ -5970,7 +5973,7 @@ fn kimi_provider_error_round_records_failure_without_fabricated_handoff_and_reco
         let handoffs = messages
             .iter()
             .filter(|message| {
-                message["from_member_id"].as_str() == Some(member_id.as_str())
+                message["sender_runtime_id"].as_str() == Some(member_id.as_str())
                     && message["kind"].as_str() == Some("handoff")
             })
             .count();
@@ -6027,8 +6030,8 @@ fn kimi_provider_error_round_records_failure_without_fabricated_handoff_and_reco
     let (status, follow_up) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),
         &serde_json::json!({
-            "from_member_id": "host",
-            "to_member_ids": [member_id],
+            "sender_runtime_id": "host",
+            "recipient_runtime_ids": [member_id],
             "kind": "message",
             "response_intent": "response_required",
             "body": "Retry the lane after the provider outage",
@@ -6136,7 +6139,7 @@ fn kimi_prompt_rejected_before_any_prompt_update_never_burns_the_work() {
             .into_iter()
             .flatten()
             .filter(|message| {
-                message["from_member_id"].as_str() == Some(member_id.as_str())
+                message["sender_runtime_id"].as_str() == Some(member_id.as_str())
                     && message["kind"].as_str() == Some("handoff")
             })
             .count();
@@ -6339,7 +6342,7 @@ fn kimi_incomplete_stop_reason_records_failure_without_a_fabricated_handoff() {
                 .into_iter()
                 .flatten()
                 .filter(|message| {
-                    message["from_member_id"].as_str() == Some(member_id.as_str())
+                    message["sender_runtime_id"].as_str() == Some(member_id.as_str())
                         && message["kind"].as_str() == Some("handoff")
                 })
                 .count();
@@ -6423,8 +6426,8 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
             let (status, nudge) = serve.post_json(
                 &format!("/v1/team-runs/{run_id}/messages"),
                 &serde_json::json!({
-                    "from_member_id": "host",
-                    "to_member_ids": [member_id],
+                    "sender_runtime_id": "host",
+                    "recipient_runtime_ids": [member_id],
                     "kind": "message",
                     "response_intent": "response_required",
                     "body": "Continue the active lane after the productive reset round",
@@ -6453,9 +6456,9 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
                     member["id"].as_str() == Some(member_id.as_str())
                         && member["status"].as_str() == Some("failed")
                 });
-            // The breaker audit action and MemberRun transition live in
+            // The breaker audit action and ProviderRuntimeProjection transition live in
             // separate append-only ledgers. A snapshot may briefly observe
-            // the action before the failed MemberRun revision; require both
+            // the action before the failed ProviderRuntimeProjection revision; require both
             // facts to converge instead of treating that split read as a
             // product failure.
             if !member_failed {
@@ -6488,7 +6491,7 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
     });
     assert!(
         circuit_converged,
-        "breaker action and failed MemberRun did not converge: {last_snapshot}"
+        "breaker action and failed ProviderRuntimeProjection did not converge: {last_snapshot}"
     );
     let summary = stopped["summary"].as_str().unwrap_or_default();
     assert!(
@@ -6552,7 +6555,7 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
         .expect("stored provider-received delivery");
     assert_eq!(
         stored_delivery.status,
-        harness_core::WorkDeliveryStatus::ProviderReceived
+        harness_core::ProviderWorkDispatchStatus::ProviderReceived
     );
     assert_eq!(stored_delivery.attempt, 1);
     assert!(stored_delivery.provider_receipt_id.is_some());
@@ -6626,7 +6629,7 @@ fn kimi_quota_like_failures_stop_without_fabricating_capacity() {
                         .is_some_and(|summary| summary.contains("quota-like provider failure"))
             });
         // `/v1/snapshot` folds the append-only ledgers independently. The
-        // runtime persists the terminal MemberRun revision before publishing
+        // runtime persists the terminal ProviderRuntimeProjection revision before publishing
         // the circuit-breaker action, but a snapshot can begin reading the
         // member ledger before that revision and finish reading the action
         // ledger after the action is appended. Treat the transition as
@@ -6774,7 +6777,7 @@ fn kimi_model_switch_uses_only_the_new_models_advertised_effort_controls() {
 
     // An explicitly requested K3-only value is not silently carried into the
     // Qwen turn either: refreshed model-specific options reject it before any
-    // prompt, leaving an actionable failed MemberRun.
+    // prompt, leaving an actionable failed ProviderRuntimeProjection.
     let rejected_home = TempHome::new("team-run-kimi-qwen-reject-k3-effort");
     let _project_id = init_project(&rejected_home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(rejected_home.base());
@@ -6920,7 +6923,7 @@ fn external_interactive_member_joins_and_exchanges_mail() {
         "external members have no native session record: {ext}"
     );
     assert!(
-        ext["workspace_snapshot"].is_null(),
+        ext["provider_environment_observation"].is_null(),
         "external members get no Harness workspace snapshot: {ext}"
     );
 
@@ -7150,7 +7153,7 @@ fn external_interactive_member_joins_and_exchanges_mail() {
         .iter()
         .find(|message| message["id"].as_str() == Some(reply_id.as_str()))
         .expect("reply in host inbox");
-    assert_eq!(reply["from_member_id"].as_str(), Some(ext_id.as_str()));
+    assert_eq!(reply["sender_runtime_id"].as_str(), Some(ext_id.as_str()));
     assert_eq!(reply["correlation_id"].as_str(), Some(correlation.as_str()));
     assert_eq!(
         reply["causation_id"].as_str(),
@@ -7500,7 +7503,7 @@ struct BoardReadFixture {
     work_cancelled_id: String,
 }
 
-/// Create one Work and return its id. `owner` is the owning MemberRun id, or
+/// Create one Work and return its id. `owner` is the owning ProviderRuntimeProjection id, or
 /// `None` to leave it unassigned in the shared Ready Pool.
 fn create_fixture_work(
     home: &TempHome,

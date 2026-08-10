@@ -232,7 +232,7 @@ The fields that bind a member to a workspace:
 
 | Field | Meaning |
 | --- | --- |
-| `worktree_ref` | The git worktree / branch this member operates in. |
+| `provider_cwd_hint` | The git worktree / branch this member operates in. |
 | `runtime_workspace_roots` | Roots the runtime is allowed to read/write. |
 | `owned_paths` (per task) | Paths a specific task may modify; basis for diff gating. |
 | `workspace_policy` | `read-only` vs writable; the abstract permission posture. |
@@ -485,7 +485,7 @@ is the concrete "define X, Y, Z" deliverable.
    artifact and how it slots into the prompt stack; list the `skill_refs`
    (honoring the proposed skill contract); set member `capabilities`; choose
    `model` / `profile`.
-2. **Define Pillar 2 (environment).** Specify `worktree_ref`,
+2. **Define Pillar 2 (environment).** Specify `provider_cwd_hint`,
    `runtime_workspace_roots`, `owned_paths` per task, and `workspace_policy`. If
    the platform uses MCP, write the neutral `mcp` block and how the platform
    consumes it.

@@ -23,14 +23,14 @@ const wait = (n, ms=120000) => new Promise(r=>{
 const done = runner.start();
 
 // --- D1: durable Work enters the persistent member ---
-runner.deliver({ id:"work-canary", kind:"work", from_member_id:"host",
+runner.deliver({ id:"work-canary", kind:"work", sender_runtime_id:"host",
   body:`WORK: Propose a concise Markdown plan for writing the word READY into ${SB}/lane/ready.txt. Do not execute yet.` });
 await wait(1);
 const existsBefore = (await import("node:fs")).existsSync(`${SB}/lane/ready.txt`);
 console.log(`D1 planned: file_exists_before_execute=${existsBefore}`);
 
 // --- D2: Host replies with an ordinary execute message ---
-runner.deliver({ id:"p2", kind:"message", from_member_id:"host", work_id:"work-canary", correlation_id:"c1",
+runner.deliver({ id:"p2", kind:"message", sender_runtime_id:"host", work_id:"work-canary", correlation_id:"c1",
   body:`EXECUTE: The plan is accepted. Now write READY into ${SB}/lane/ready.txt using the Write tool.` });
 await wait(2);
 const existsAfter = (await import("node:fs")).existsSync(`${SB}/lane/ready.txt`);
@@ -42,7 +42,7 @@ try { await runner.setPermissionMode("acceptEdits");
 catch (e) { console.log("D3 steer:   THREW", String(e).slice(0,90)); }
 
 // --- D4: interrupt（真实终态确认） ---
-runner.deliver({ id:"work-interrupt", kind:"work", from_member_id:"host",
+runner.deliver({ id:"work-interrupt", kind:"work", sender_runtime_id:"host",
   body:"Count slowly from 1 to 120, one number per line, no other text." });
 await new Promise(r=>setTimeout(r,2500));         // 让它真的在生成
 try { const receipt = await runner.interrupt();

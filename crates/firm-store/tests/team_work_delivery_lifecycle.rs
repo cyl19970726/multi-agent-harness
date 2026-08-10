@@ -1,8 +1,8 @@
-//! Regression coverage for the TeamRun WorkDelivery lifecycle contract in
+//! Regression coverage for the TeamRun ProviderWorkDispatch lifecycle contract in
 //! `docs/product/agent-team-works.md` and the runtime/mailbox table of
 //! `specs/nested-agent-team-organization/design.md` (PR #302):
 //!
-//! - one execution slot per MemberRun: a member with active Work cannot start
+//! - one execution slot per ProviderRuntimeProjection: a member with active Work cannot start
 //!   or claim a second Work, and the Supervisor claim fence does not hand a
 //!   second delivery to an occupied member (dual-driver risk);
 //! - busy members: Host assignment queues a durable delivery instead of
@@ -11,7 +11,7 @@
 //! - closed members: queued deliveries freeze and new deliveries are rejected;
 //!   reopen delivers the frozen Work version exactly once
 //!   (duplicate-delivery risk);
-//! - retired members: no new WorkDelivery and no member-driven transitions;
+//! - retired members: no new ProviderWorkDispatch and no member-driven transitions;
 //!   ordinary delivery cannot revive the member.
 //!
 //! These tests pin behavior of the current TeamRun-scoped Work store only;
@@ -21,10 +21,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use firm_core::{
-    AgentTeamRun, ExecutionNode, ExecutionNodeStatus, MemberCoordinationStatus, MemberRun,
-    MemberRunStatus, NodeDaemonLeaseStatus, TeamActorKind, TeamActorRef, TeamRunStatus, Work,
-    WorkClaimMode, WorkCommandContext, WorkCondition, WorkDelivery, WorkDeliveryStatus, WorkPhase,
-    WorkPriority,
+    AgentTeamRun, ExecutionNode, ExecutionNodeStatus, MemberCoordinationStatus, MemberRunStatus,
+    NodeDaemonLeaseStatus, ProviderRuntimeProjection, ProviderWorkDispatch,
+    ProviderWorkDispatchStatus, TeamActorKind, TeamActorRef, TeamRunStatus, Work, WorkClaimMode,
+    WorkCommandContext, WorkCondition, WorkPhase, WorkPriority,
 };
 use firm_store::{HarnessStore, WorkDeliveryClaimResult};
 
@@ -58,7 +58,14 @@ impl Drop for TestStore {
     }
 }
 
-fn team_fixture(label: &str) -> (TestStore, AgentTeamRun, MemberRun, MemberRun) {
+fn team_fixture(
+    label: &str,
+) -> (
+    TestStore,
+    AgentTeamRun,
+    ProviderRuntimeProjection,
+    ProviderRuntimeProjection,
+) {
     let harness = TestStore::new(label);
     let run = AgentTeamRun {
         id: format!("tr-{label}"),
@@ -70,7 +77,7 @@ fn team_fixture(label: &str) -> (TestStore, AgentTeamRun, MemberRun, MemberRun) 
         host_thread_id: Some(format!("host-{label}")),
         host_actor: None,
         host_control_mode: Default::default(),
-        objective: "prove WorkDelivery lifecycle".into(),
+        objective: "prove ProviderWorkDispatch lifecycle".into(),
         execution_root: None,
         status: TeamRunStatus::Running,
         member_run_ids: vec![format!("mr-{label}-a"), format!("mr-{label}-b")],
@@ -79,7 +86,7 @@ fn team_fixture(label: &str) -> (TestStore, AgentTeamRun, MemberRun, MemberRun) 
         updated_at: "unix-ms:1".into(),
         completed_at: None,
     };
-    let member = |suffix: &str| MemberRun {
+    let member = |suffix: &str| ProviderRuntimeProjection {
         id: format!("mr-{label}-{suffix}"),
         team_run_id: run.id.clone(),
         slot_id: Some(format!("slot-{suffix}")),
@@ -96,8 +103,8 @@ fn team_fixture(label: &str) -> (TestStore, AgentTeamRun, MemberRun, MemberRun) 
         runtime_generation: 1,
         status: MemberRunStatus::Idle,
         native_session: None,
-        worktree_ref: None,
-        workspace_snapshot: None,
+        provider_cwd_hint: None,
+        provider_environment_observation: None,
         owned_paths: Vec::new(),
         started_at: "unix-ms:1".into(),
         last_event_at: None,
@@ -143,7 +150,7 @@ fn member_context(member_run_id: &str, event_id: &str, key: &str, at: &str) -> W
     WorkCommandContext {
         event_id: event_id.into(),
         performed_by_actor: TeamActorRef {
-            kind: TeamActorKind::MemberRun,
+            kind: TeamActorKind::ProviderRuntimeProjection,
             id: member_run_id.into(),
             display_name: None,
             authn_source: Some("bound-runtime:test".into()),
@@ -187,7 +194,7 @@ fn base_work(run_id: &str, id: &str) -> Work {
     }
 }
 
-fn owned_work(run_id: &str, id: &str, member: &MemberRun) -> Work {
+fn owned_work(run_id: &str, id: &str, member: &ProviderRuntimeProjection) -> Work {
     let mut work = base_work(run_id, id);
     work.claim_mode = WorkClaimMode::HostAssign;
     work.owner_member_id = Some(member.agent_member_id.clone());
@@ -196,11 +203,11 @@ fn owned_work(run_id: &str, id: &str, member: &MemberRun) -> Work {
 }
 
 /// Persist a member coordination/runtime transition exactly the way the
-/// Supervisor driver and the reopen command do: one new MemberRun row that
+/// Supervisor driver and the reopen command do: one new ProviderRuntimeProjection row that
 /// keeps identity, workspace, and native-session binding untouched.
 fn set_member_state(
     harness: &TestStore,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     coordination: MemberCoordinationStatus,
     status: MemberRunStatus,
     generation: u64,
@@ -208,11 +215,11 @@ fn set_member_state(
     let current = harness
         .store
         .member_runs()
-        .expect("read MemberRun history")
+        .expect("read ProviderRuntimeProjection history")
         .into_iter()
         .rev()
         .find(|candidate| candidate.id == member.id)
-        .expect("current MemberRun");
+        .expect("current ProviderRuntimeProjection");
     let mut next = current.clone();
     next.coordination_status = coordination;
     next.status = status;
@@ -223,7 +230,7 @@ fn set_member_state(
         .expect("append member state");
 }
 
-fn deliveries_for(harness: &TestStore, work_id: &str) -> Vec<WorkDelivery> {
+fn deliveries_for(harness: &TestStore, work_id: &str) -> Vec<ProviderWorkDispatch> {
     harness
         .store
         .latest_work_deliveries()
@@ -302,7 +309,7 @@ fn complete_delivery(
     member_run_id: &str,
     claim_id: &str,
     provider_receipt_id: &str,
-) -> WorkDelivery {
+) -> ProviderWorkDispatch {
     harness
         .store
         .complete_work_delivery_claim(
@@ -352,7 +359,7 @@ fn member_with_active_work_cannot_start_or_claim_a_second_work() {
         .expect("assignment to a busy member queues");
     let queued = deliveries_for(&harness, "work-2");
     assert_eq!(queued.len(), 1);
-    assert_eq!(queued[0].status, WorkDeliveryStatus::Queued);
+    assert_eq!(queued[0].status, ProviderWorkDispatchStatus::Queued);
 
     let busy_start = store
         .start_work(
@@ -361,7 +368,7 @@ fn member_with_active_work_cannot_start_or_claim_a_second_work() {
             &member_a.id,
             member_context(&member_a.id, "we-start-2", "start-w2", "unix-ms:5"),
         )
-        .expect_err("a second active Work on one MemberRun must be rejected");
+        .expect_err("a second active Work on one ProviderRuntimeProjection must be rejected");
     assert!(
         busy_start.to_string().contains("MEMBER_BUSY"),
         "unexpected error: {busy_start}"
@@ -387,7 +394,7 @@ fn member_with_active_work_cannot_start_or_claim_a_second_work() {
         "unexpected error: {busy_claim}"
     );
 
-    // The fence is per MemberRun, not global: an idle peer claims the pool.
+    // The fence is per ProviderRuntimeProjection, not global: an idle peer claims the pool.
     let claimed = store
         .claim_work(
             "work-3",
@@ -515,7 +522,7 @@ fn close_freezes_and_reopen_delivers_a_queued_work_version_exactly_once() {
     let delivery_id = deliveries_for(&harness, "work-1")[0].id.clone();
 
     // Close: the Supervisor driver persists Closed + Stopped and retains the
-    // native-session binding on the same MemberRun identity.
+    // native-session binding on the same ProviderRuntimeProjection identity.
     set_member_state(
         &harness,
         &member_a,
@@ -531,7 +538,7 @@ fn close_freezes_and_reopen_delivers_a_queued_work_version_exactly_once() {
     ));
     assert_eq!(
         deliveries_for(&harness, "work-1")[0].status,
-        WorkDeliveryStatus::Queued,
+        ProviderWorkDispatchStatus::Queued,
         "close must not drop or invalidate the durable delivery"
     );
 
@@ -603,7 +610,10 @@ fn close_freezes_and_reopen_delivers_a_queued_work_version_exactly_once() {
         1,
         "one accepted Work version produces one durable delivery"
     );
-    assert_eq!(deliveries[0].status, WorkDeliveryStatus::ProviderReceived);
+    assert_eq!(
+        deliveries[0].status,
+        ProviderWorkDispatchStatus::ProviderReceived
+    );
     assert_eq!(
         deliveries[0].attempt, 1,
         "the Work version was delivered exactly once across close/reopen"
@@ -636,7 +646,7 @@ fn retired_member_rejects_new_deliveries_and_member_driven_transitions() {
         1,
     );
 
-    // Retired members receive no new WorkDelivery; the Host must reassign.
+    // Retired members receive no new ProviderWorkDispatch; the Host must reassign.
     let retired_create = store
         .insert_work(
             owned_work(&run.id, "work-2", &member_a),
@@ -674,7 +684,7 @@ fn retired_member_rejects_new_deliveries_and_member_driven_transitions() {
     ));
     assert_eq!(
         deliveries_for(&harness, "work-1")[0].status,
-        WorkDeliveryStatus::Queued
+        ProviderWorkDispatchStatus::Queued
     );
 
     // Member-driven transitions are refused for the same reason.

@@ -9,10 +9,11 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use harness_core::{
     MemberCoordinationStatus, MemberRunStatus, NativeSessionAvailability, NativeSessionRef,
+    ProviderDispatchAttempt, ProviderDispatchEnvelope, ProviderDispatchIntent,
     ProviderInteractionMessageOption, ProviderInteractionRequestBody, ProviderInteractionType,
-    TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessage,
-    TeamMessageDelivery, TeamMessageKind, TeamMessageResponseIntent, TeamRecipientKind,
-    TeamRecipientRef, WorkCommandContext, WorkDeliveryStatus,
+    ProviderResponseIntent, ProviderWorkDispatchStatus, TeamActorKind, TeamActorRef,
+    TeamDeliveryPolicy, TeamDeliveryStatus, TeamRecipientKind, TeamRecipientRef,
+    WorkCommandContext,
 };
 use harness_store::{HarnessStore, WorkDeliveryClaimResult};
 
@@ -433,30 +434,30 @@ fn mcp_resolves_provider_request_messages_and_keeps_legacy_ledger_empty() {
         generation: member.runtime_generation,
     };
     let created_at = "unix-ms:mcp-provider-request".to_string();
-    let request = TeamMessage {
+    let request = ProviderDispatchEnvelope {
         id: "tmsg-mcp-provider-request".into(),
         team_run_id: run_id.clone(),
         work_id: None,
-        origin_wave_id: None,
+        source_plan_ref: None,
         sender: Some(TeamActorRef {
-            kind: TeamActorKind::MemberRun,
+            kind: TeamActorKind::ProviderRuntimeProjection,
             id: member.id.clone(),
             display_name: None,
             authn_source: Some("provider_reverse_request_test".into()),
         }),
-        from_member_id: member.id.clone(),
+        sender_runtime_id: member.id.clone(),
         recipients: vec![TeamRecipientRef {
             kind: TeamRecipientKind::Host,
             id: "host".into(),
         }],
-        to_member_ids: vec!["host".into()],
-        kind: TeamMessageKind::ProviderInteractionRequest,
+        recipient_runtime_ids: vec!["host".into()],
+        kind: ProviderDispatchIntent::ProviderInteractionRequest,
         body: request_body.to_canonical_json().expect("canonical request"),
         correlation_id: request_body.correlation_id(),
         causation_id: None,
-        response_intent: Some(TeamMessageResponseIntent::ResponseRequired),
+        response_intent: Some(ProviderResponseIntent::ResponseRequired),
         evidence_refs: Vec::new(),
-        deliveries: vec![TeamMessageDelivery {
+        deliveries: vec![ProviderDispatchAttempt {
             member_id: "host".into(),
             policy: TeamDeliveryPolicy::ManualAck,
             status: TeamDeliveryStatus::Delivered,
@@ -508,13 +509,13 @@ fn mcp_resolves_provider_request_messages_and_keeps_legacy_ledger_empty() {
         .is_empty());
     let messages = store.team_messages().expect("team messages");
     assert!(messages.iter().any(|message| {
-        message.kind == TeamMessageKind::ProviderInteractionResponse
+        message.kind == ProviderDispatchIntent::ProviderInteractionResponse
             && message.causation_id.as_deref() == Some("tmsg-mcp-provider-request")
     }));
 }
 
 /// Seed one historical Wave row directly, bypassing the retired `wave_create`
-/// MCP tool (ADR 0051), so tests can prove `origin_wave_id` navigation still
+/// MCP tool (ADR 0051), so tests can prove `source_plan_ref` navigation still
 /// resolves a pre-cutover Wave row without exercising a live write.
 fn seed_historical_wave(home: &TempHome, project_id: &str, id: &str, mission_id: &str, index: u64) {
     use std::io::Write as _;
@@ -533,7 +534,7 @@ fn seed_historical_wave(home: &TempHome, project_id: &str, id: &str, mission_id:
             "mission_id": mission_id,
             "index": index,
             "title": "Historical Wave",
-            "objective": "Seeded pre-cutover row for origin_wave_id coverage",
+            "objective": "Seeded pre-cutover row for source_plan_ref coverage",
             "executor_kind": "agent_team",
             "created_at": "unix-ms:1",
             "updated_at": "unix-ms:1",
@@ -715,9 +716,9 @@ fn mcp_stdio_agent_team_tools() {
     );
     assert!(
         create_schema["inputSchema"]["properties"]["members"]["items"]["properties"]
-            .get("worktree_ref")
+            .get("provider_cwd_hint")
             .is_some(),
-        "MCP create accepts member worktree_ref: {create_schema}"
+        "MCP create accepts member provider_cwd_hint: {create_schema}"
     );
     let start_descriptor = tools
         .iter()
@@ -742,7 +743,7 @@ fn mcp_stdio_agent_team_tools() {
     // HTTP) supplies the outer identity for the TeamRun. Wave creation is
     // retired (ADR 0051): the MCP tool now answers isError:true instead of
     // authoring a row; a historical Wave is seeded directly (never through
-    // `wave_create`) purely so the origin_wave_id navigation check below has
+    // `wave_create`) purely so the source_plan_ref navigation check below has
     // a real pre-cutover Wave id to cite.
     let response = mcp.request(
         "tools/call",
@@ -797,7 +798,7 @@ fn mcp_stdio_agent_team_tools() {
                 "host_thread_id": "codex-host-mcp",
                 "members": [
                     {"name": "lead", "role": "coordinator", "provider": "kimi", "agent_member_id": stable_agent_id, "initial_work": "Coordinate the TeamRun and report evidence."},
-                    {"name": "worker-1", "role": "implementer", "provider": "codex", "agent_member_id": worker_agent_id, "model": "gpt-5", "worktree_ref": project_root, "owned_paths": ["crates/a", "docs"], "initial_work": "Implement the requested slice and pass checks."}
+                    {"name": "worker-1", "role": "implementer", "provider": "codex", "agent_member_id": worker_agent_id, "model": "gpt-5", "provider_cwd_hint": project_root, "owned_paths": ["crates/a", "docs"], "initial_work": "Implement the requested slice and pass checks."}
                 ]
             }
         }),
@@ -818,7 +819,7 @@ fn mcp_stdio_agent_team_tools() {
         Some(project_root.to_str().expect("project root"))
     );
     assert_eq!(
-        payload["member_runs"][1]["worktree_ref"].as_str(),
+        payload["member_runs"][1]["provider_cwd_hint"].as_str(),
         Some(project_root.to_str().expect("project root"))
     );
     let member_ids: Vec<String> = payload["member_run_ids"]
@@ -876,7 +877,7 @@ fn mcp_stdio_agent_team_tools() {
             "name": "team_run_add_member",
             "arguments": {
                 "team_run_id": team_run_id,
-                "origin_wave_id": "wave-mcp",
+                "source_plan_ref": "wave-mcp",
                 "initial_work": "repair the interaction path",
                 "member": {
                     "agent_member_id": repair_agent_id,
@@ -962,7 +963,7 @@ fn mcp_stdio_agent_team_tools() {
         Some(expected_dashboard.as_str())
     );
 
-    // 8. An unbound MCP connection cannot impersonate a MemberRun. The same
+    // 8. An unbound MCP connection cannot impersonate a ProviderRuntimeProjection. The same
     // tool remains the Host/operator/service send path and can immediately
     // create an ordinary Work-linked conversation correlation.
     let response = mcp.request(
@@ -971,9 +972,9 @@ fn mcp_stdio_agent_team_tools() {
             "name": "team_run_send_message",
             "arguments": {
                 "team_run_id": team_run_id,
-                "from_member_id": member_ids[0],
+                "sender_runtime_id": member_ids[0],
                 "sender_kind": "member_run",
-                "to_member_ids": [member_ids[1]],
+                "recipient_runtime_ids": [member_ids[1]],
                 "kind": "handoff",
                 "body": "attempted member impersonation",
                 "work_id": initial_work_id.clone()
@@ -992,8 +993,8 @@ fn mcp_stdio_agent_team_tools() {
             "name": "team_run_send_message",
             "arguments": {
                 "team_run_id": team_run_id,
-                "from_member_id": "host",
-                "to_member_ids": [member_ids[1]],
+                "sender_runtime_id": "host",
+                "recipient_runtime_ids": [member_ids[1]],
                 "kind": "message",
                 "body": "Host coordination for the assigned slice",
                 "work_id": initial_work_id.clone()
@@ -1079,30 +1080,30 @@ fn mcp_stdio_agent_team_tools() {
     // identity. It then appears in the Host-native inbox exposed by MCP.
     let host_message = "tmsg-provider-bound-question".to_string();
     store
-        .append_team_message(&TeamMessage {
+        .append_team_message(&ProviderDispatchEnvelope {
             id: host_message.clone(),
             team_run_id: team_run_id.clone(),
             work_id: Some(initial_work_id.clone()),
-            origin_wave_id: None,
+            source_plan_ref: None,
             sender: Some(TeamActorRef {
-                kind: TeamActorKind::MemberRun,
+                kind: TeamActorKind::ProviderRuntimeProjection,
                 id: member_ids[0].clone(),
                 display_name: Some("Provider-bound member".to_string()),
                 authn_source: Some("provider_runtime_test".to_string()),
             }),
-            from_member_id: member_ids[0].clone(),
+            sender_runtime_id: member_ids[0].clone(),
             recipients: vec![TeamRecipientRef {
                 kind: TeamRecipientKind::Host,
                 id: "host".to_string(),
             }],
-            to_member_ids: vec!["host".to_string()],
-            kind: TeamMessageKind::Message,
+            recipient_runtime_ids: vec!["host".to_string()],
+            kind: ProviderDispatchIntent::Message,
             body: "QUESTION: choose interface A or B".to_string(),
             correlation_id: coordination_correlation.clone(),
             causation_id: Some(message_id.clone()),
             response_intent: None,
             evidence_refs: Vec::new(),
-            deliveries: vec![TeamMessageDelivery {
+            deliveries: vec![ProviderDispatchAttempt {
                 member_id: "host".to_string(),
                 policy: TeamDeliveryPolicy::ManualAck,
                 status: TeamDeliveryStatus::Delivered,
@@ -1491,7 +1492,7 @@ fn mcp_stdio_agent_team_tools() {
 
 /// Declared `external_interactive` members are the one exception to the
 /// unbound-MCP impersonation invariant: their user-driven session may author
-/// its own MemberRun mail, recorded with explicit provenance. Driven members
+/// its own ProviderRuntimeProjection mail, recorded with explicit provenance. Driven members
 /// stay rejected from the same unbound connection.
 #[test]
 fn mcp_stdio_external_interactive_member_authorship() {
@@ -1568,8 +1569,8 @@ fn mcp_stdio_external_interactive_member_authorship() {
             "name": "team_run_send_message",
             "arguments": {
                 "team_run_id": team_run_id,
-                "from_member_id": "host",
-                "to_member_ids": [member_ids[1]],
+                "sender_runtime_id": "host",
+                "recipient_runtime_ids": [member_ids[1]],
                 "kind": "message",
                 "body": "Please review the linked Work and reply with evidence.",
                 "work_id": work_id
@@ -1594,9 +1595,9 @@ fn mcp_stdio_external_interactive_member_authorship() {
             "name": "team_run_send_message",
             "arguments": {
                 "team_run_id": team_run_id,
-                "from_member_id": member_ids[1],
+                "sender_runtime_id": member_ids[1],
                 "sender_kind": "member_run",
-                "to_member_ids": ["host"],
+                "recipient_runtime_ids": ["host"],
                 "kind": "message",
                 "body": "External review: no defects found",
                 "work_id": work_id,
@@ -1636,9 +1637,9 @@ fn mcp_stdio_external_interactive_member_authorship() {
             "name": "team_run_send_message",
             "arguments": {
                 "team_run_id": team_run_id,
-                "from_member_id": member_ids[0],
+                "sender_runtime_id": member_ids[0],
                 "sender_kind": "member_run",
-                "to_member_ids": [member_ids[1]],
+                "recipient_runtime_ids": [member_ids[1]],
                 "kind": "message",
                 "body": "attempted driven-member impersonation",
                 "correlation_id": conversation_correlation.clone()
@@ -1690,7 +1691,7 @@ fn mcp_stdio_external_interactive_member_authorship() {
     );
 
     // Close freezes only the Harness coordination binding. The still-running
-    // external process cannot author MemberRun mail until explicit Reopen.
+    // external process cannot author ProviderRuntimeProjection mail until explicit Reopen.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -1710,9 +1711,9 @@ fn mcp_stdio_external_interactive_member_authorship() {
             "name": "team_run_send_message",
             "arguments": {
                 "team_run_id": team_run_id,
-                "from_member_id": member_ids[1],
+                "sender_runtime_id": member_ids[1],
                 "sender_kind": "member_run",
-                "to_member_ids": ["host"],
+                "recipient_runtime_ids": ["host"],
                 "kind": "message",
                 "body": "must not author after coordination close",
                 "correlation_id": conversation_correlation
@@ -1755,9 +1756,9 @@ fn mcp_stdio_external_interactive_member_authorship() {
             "name": "team_run_send_message",
             "arguments": {
                 "team_run_id": team_run_id,
-                "from_member_id": member_ids[1],
+                "sender_runtime_id": member_ids[1],
                 "sender_kind": "member_run",
-                "to_member_ids": ["host"],
+                "recipient_runtime_ids": ["host"],
                 "kind": "message",
                 "body": "authoring resumes after explicit reopen",
                 "correlation_id": conversation_correlation
@@ -1906,7 +1907,7 @@ fn mcp_stdio_work_rebind_and_successor_delivery_reconcile() {
     next_run.member_run_ids.push(replacement.id.clone());
     store
         .admit_member_run(&run, &next_run, &replacement)
-        .expect("atomically admit replacement MemberRun");
+        .expect("atomically admit replacement ProviderRuntimeProjection");
 
     let response = mcp.request(
         "tools/call",
@@ -1941,8 +1942,8 @@ fn mcp_stdio_work_rebind_and_successor_delivery_reconcile() {
                 && delivery.work_version == rebound_version
                 && delivery.recipient_member_run_id == replacement.id
         })
-        .expect("replacement WorkDelivery");
-    assert_eq!(delivery.status, WorkDeliveryStatus::Queued);
+        .expect("replacement ProviderWorkDispatch");
+    assert_eq!(delivery.status, ProviderWorkDispatchStatus::Queued);
     let now_unix_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("unix epoch")
@@ -1987,7 +1988,7 @@ fn mcp_stdio_work_rebind_and_successor_delivery_reconcile() {
         WorkDeliveryClaimResult::Claimed(delivery) => delivery,
         WorkDeliveryClaimResult::NotQueued => panic!("replacement delivery must be queued"),
     };
-    assert_eq!(claimed.status, WorkDeliveryStatus::Claimed);
+    assert_eq!(claimed.status, ProviderWorkDispatchStatus::Claimed);
     let successor = store
         .acquire_team_supervisor_under_node_lease(
             &team_run_id,

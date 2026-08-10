@@ -14,7 +14,7 @@ import type {
   NativeActivityProjection,
   PendingInteraction,
   Project,
-  TeamMessage,
+  ProviderDispatchEnvelope,
   TeamMemberCloseRequest,
   TeamSupervisorLease,
   TeamRun,
@@ -471,7 +471,7 @@ export type SseFrame =
   | { kind: "wave"; wave: Wave }
   | { kind: "agent_team_run"; run: TeamRun }
   | { kind: "member_run"; member: MemberRun }
-  | { kind: "team_message"; message: TeamMessage }
+  | { kind: "team_message"; message: ProviderDispatchEnvelope }
   | { kind: "team_supervisor_lease"; lease: TeamSupervisorLease }
   | { kind: "team_member_close_request"; request: TeamMemberCloseRequest }
   | { kind: "member_action"; action: MemberAction }
@@ -599,7 +599,7 @@ export function openEventStream(
     if (data) handlers.onFrame({ kind: "member_run", member: data });
   });
   source.addEventListener("team_message", (event) => {
-    const data = parse<TeamMessage>(event as MessageEvent);
+    const data = parse<ProviderDispatchEnvelope>(event as MessageEvent);
     if (data) handlers.onFrame({ kind: "team_message", message: data });
   });
   source.addEventListener("team_supervisor_lease", (event) => {
