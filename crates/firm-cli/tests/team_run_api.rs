@@ -5368,7 +5368,7 @@ fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
 #[test]
 fn close_cancels_kimi_provider_request_without_resuming_member() {
     let home = TempHome::new("team-run-kimi-waiting-close");
-    let _project_id = init_project(&home, "alpha");
+    let project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
     let fake_kimi = fake_bin.join("kimi").display().to_string();
     let serve = ServeHandle::spawn_with_env(
@@ -5484,6 +5484,54 @@ fn close_cancels_kimi_provider_request_without_resuming_member() {
     assert!(snapshot["pending_interactions"]
         .as_array()
         .is_some_and(Vec::is_empty));
+
+    let close_requests = snapshot["team_member_close_requests"]
+        .as_array()
+        .expect("close requests");
+    assert_eq!(
+        close_requests
+            .iter()
+            .filter(|request| request["member_run_id"].as_str() == Some(member_id.as_str()))
+            .count(),
+        1,
+        "the close has one latest durable request"
+    );
+    assert_eq!(
+        close_requests
+            .iter()
+            .find(|request| request["member_run_id"].as_str() == Some(member_id.as_str()))
+            .and_then(|request| request["status"].as_str()),
+        Some("applied")
+    );
+
+    let store_root = home.firm_home().join("execution-spaces").join(project_id);
+    let ledgers = [
+        "team_member_close_requests.jsonl",
+        "team_messages.jsonl",
+        "member_runs.jsonl",
+        "pending_interactions.jsonl",
+        "member_actions.jsonl",
+        "team_run_events.jsonl",
+    ];
+    let ledger_bytes = |name: &str| std::fs::read(store_root.join(name)).unwrap_or_default();
+    let before_replay = ledgers
+        .iter()
+        .map(|name| ledger_bytes(name))
+        .collect::<Vec<_>>();
+    let (replay_status, replay) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
+        &serde_json::json!({"reason": "close while waiting", "requested_by": "operator"}),
+    );
+    assert_eq!(replay_status, 200, "body: {replay}");
+    assert_eq!(replay["result"]["idempotent"].as_bool(), Some(true));
+    let after_replay = ledgers
+        .iter()
+        .map(|name| ledger_bytes(name))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        after_replay, before_replay,
+        "close replay must not repeat cancellation, lifecycle, event, or receipt effects"
+    );
 }
 
 #[test]

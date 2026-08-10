@@ -17878,22 +17878,70 @@ fn mark_member_coordination_closed(
     team_run_id: &str,
     member_run_id: &str,
 ) -> CliResult<ProviderRuntimeProjection> {
-    let mut member = latest_member_runs_in_append_order(store)?
-        .into_iter()
-        .find(|member| member.id == member_run_id && member.team_run_id == team_run_id)
-        .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
-    if member.coordination_is_retired() {
-        return Err(CliError::Usage(format!(
-            "member run {member_run_id} is retired and cannot be closed or reopened"
-        )));
-    }
-    if !member.coordination_is_closed() {
+    mark_member_coordination_closed_with_hook(store, team_run_id, member_run_id, |_, _| Ok(()))
+}
+
+fn mark_member_coordination_closed_with_hook(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member_run_id: &str,
+    mut before_cas: impl FnMut(usize, &ProviderRuntimeProjection) -> CliResult<()>,
+) -> CliResult<ProviderRuntimeProjection> {
+    let mut conflicted_expected = None;
+    for attempt in 0..PROVIDER_MEMBER_CAS_RETRIES {
+        let mut member = latest_member_runs_in_append_order(store)?
+            .into_iter()
+            .find(|member| member.id == member_run_id && member.team_run_id == team_run_id)
+            .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+        if member.coordination_is_retired() {
+            return Err(CliError::Usage(format!(
+                "member run {member_run_id} is retired and cannot be closed or reopened"
+            )));
+        }
+        if member.coordination_is_closed() {
+            return Ok(member);
+        }
+        if let Some(expected) = conflicted_expected.take() {
+            if !is_provider_callback_resume_drift(&expected, &member) {
+                return Err(CliError::Usage(format!(
+                    "ProviderRuntimeProjection {member_run_id} changed outside the admitted provider callback waiting-to-running transition"
+                )));
+            }
+        }
         let expected = member.clone();
         member.coordination_status = MemberCoordinationStatus::Closed;
         member.last_event_at = Some(now_string());
-        store_conflict_as_usage(store.compare_and_append_member_run(&expected, &member))?;
+        before_cas(attempt, &expected)?;
+        match store.compare_and_append_member_run(&expected, &member) {
+            Ok(()) => return Ok(member),
+            Err(StoreError::Conflict(message))
+                if message.starts_with("ProviderRuntimeProjection ")
+                    && message.ends_with(" changed concurrently; retry the operation")
+                    && attempt + 1 < PROVIDER_MEMBER_CAS_RETRIES =>
+            {
+                conflicted_expected = Some(expected);
+            }
+            Err(error) => return store_conflict_as_usage(Err(error)),
+        }
     }
-    Ok(member)
+    unreachable!("bounded coordination-close CAS loop returns on every path")
+}
+
+fn is_provider_callback_resume_drift(
+    expected: &ProviderRuntimeProjection,
+    latest: &ProviderRuntimeProjection,
+) -> bool {
+    if expected.status != MemberRunStatus::Waiting
+        || latest.status != MemberRunStatus::Running
+        || !expected.coordination_is_active()
+        || !latest.coordination_is_active()
+    {
+        return false;
+    }
+    let mut normalized = latest.clone();
+    normalized.status = expected.status;
+    normalized.last_event_at = expected.last_event_at.clone();
+    normalized == *expected
 }
 
 fn dispatch_local_live_member_control(
@@ -47935,6 +47983,94 @@ package:com.tencent.mm
             .compare_and_append_member_run(initial, &blocked)
             .expect("seed capacity-origin Blocked member");
         blocked
+    }
+
+    #[test]
+    fn coordination_close_retries_provider_callback_status_race() {
+        use std::cell::Cell;
+
+        let (store, root) = temp_store("coordination-close-provider-status-race");
+        let created = create_two_member_team_run(&store);
+        let initial = created.member_runs[0].clone();
+        let mut waiting = initial.clone();
+        waiting.status = MemberRunStatus::Waiting;
+        waiting.last_event_at = Some("unix-ms:100".into());
+        store
+            .compare_and_append_member_run(&initial, &waiting)
+            .expect("seed provider interaction wait");
+
+        let attempts = Cell::new(0_usize);
+        let closed = mark_member_coordination_closed_with_hook(
+            &store,
+            &created.team_run.id,
+            &waiting.id,
+            |attempt, expected| {
+                attempts.set(attempts.get() + 1);
+                if attempt == 0 {
+                    let mut callback_resumed = expected.clone();
+                    callback_resumed.status = MemberRunStatus::Running;
+                    callback_resumed.last_event_at = Some("unix-ms:101".into());
+                    store.compare_and_append_member_run(expected, &callback_resumed)?;
+                }
+                Ok(())
+            },
+        )
+        .expect("coordination close retries the provider callback CAS");
+
+        assert!(closed.coordination_is_closed());
+        assert_eq!(closed.status, MemberRunStatus::Running);
+        assert_eq!(attempts.get(), 2, "the retry must be bounded and exact");
+        assert_eq!(
+            latest_member_runs_in_append_order(&store)
+                .expect("read members")
+                .into_iter()
+                .find(|member| member.id == waiting.id)
+                .expect("closed member")
+                .coordination_status,
+            MemberCoordinationStatus::Closed
+        );
+
+        let other_initial = created.member_runs[1].clone();
+        let mut other_waiting = other_initial.clone();
+        other_waiting.status = MemberRunStatus::Waiting;
+        other_waiting.last_event_at = Some("unix-ms:200".into());
+        store
+            .compare_and_append_member_run(&other_initial, &other_waiting)
+            .expect("seed second provider interaction wait");
+        let unrelated_attempts = Cell::new(0_usize);
+        let error = mark_member_coordination_closed_with_hook(
+            &store,
+            &created.team_run.id,
+            &other_waiting.id,
+            |attempt, expected| {
+                unrelated_attempts.set(unrelated_attempts.get() + 1);
+                if attempt == 0 {
+                    let mut unrelated = expected.clone();
+                    unrelated.last_event_at = Some("unix-ms:201".into());
+                    store.compare_and_append_member_run(expected, &unrelated)?;
+                }
+                Ok(())
+            },
+        )
+        .expect_err("unrelated concurrent revisions fail closed");
+        assert!(error.to_string().contains(
+            "changed outside the admitted provider callback waiting-to-running transition"
+        ));
+        assert_eq!(
+            unrelated_attempts.get(),
+            1,
+            "unrelated drift is not retried"
+        );
+        assert!(
+            latest_member_runs_in_append_order(&store)
+                .expect("read members")
+                .into_iter()
+                .find(|member| member.id == other_waiting.id)
+                .expect("second member")
+                .coordination_is_active(),
+            "failed close must not mutate coordination authority"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
