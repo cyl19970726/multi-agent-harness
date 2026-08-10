@@ -11,13 +11,20 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 
 const repoRoot = path.resolve(new URL("..", import.meta.url).pathname);
 const harness = path.join(repoRoot, "target", "debug", "firm");
+
+if (!existsSync(harness)) {
+  execFileSync("cargo", ["build", "-q", "-p", "firm-cli"], {
+    cwd: repoRoot,
+    stdio: "inherit",
+  });
+}
 
 let failures = 0;
 const fail = (message) => {
