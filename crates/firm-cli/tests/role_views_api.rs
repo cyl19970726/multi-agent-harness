@@ -1357,6 +1357,12 @@ fn operator_eligible_daemon_and_server_probed_admission_are_real_and_fail_closed
         .as_u64()
         .expect("node revision")
         .to_string();
+    let initial_daemon_generation = operator["data"]["node"]["daemon_generation"]
+        .as_u64()
+        .expect("live daemon generation");
+    assert!(actions.iter().any(|action| {
+        action["kind"] == "stop_daemon" && action["daemon_generation"] == initial_daemon_generation
+    }));
     let initial_stop_headers = [
         ("X-AgentFirm-Token", OPERATOR_TOKEN),
         ("Idempotency-Key", "operator-daemon-initial-stop"),
@@ -1366,13 +1372,24 @@ fn operator_eligible_daemon_and_server_probed_admission_are_real_and_fail_closed
     let stop_route = format!("/v1/agentfirm/nodes/{node_id}/daemon-stop?project={project_id}");
     let (status, initial_stopped) = serve.post_json_with_headers(
         &stop_route,
-        &serde_json::json!({"action":"daemon_stop"}),
+        &serde_json::json!({"action":"daemon_stop","daemon_generation":initial_daemon_generation}),
         &initial_stop_headers,
     );
     assert_eq!(status, 200, "initial daemon stop: {initial_stopped}");
     let (status, after_stop) =
         serve.get_json_with_headers(&operator_route, &[("X-AgentFirm-Token", OPERATOR_TOKEN)]);
     assert_eq!(status, 200, "Operator after stop: {after_stop}");
+    let stopped_generation = after_stop["data"]["node"]["daemon_generation"]
+        .as_u64()
+        .expect("released daemon generation");
+    assert!(after_stop["allowed_actions"]
+        .as_array()
+        .is_some_and(|actions| {
+            actions.iter().any(|action| {
+                action["kind"] == "start_daemon"
+                    && action["daemon_generation"] == stopped_generation
+            })
+        }));
     assert!(after_stop["allowed_actions"]
         .as_array()
         .is_some_and(|actions| {
@@ -1389,13 +1406,13 @@ fn operator_eligible_daemon_and_server_probed_admission_are_real_and_fail_closed
     let start_route = format!("/v1/agentfirm/nodes/{node_id}/daemon-start?project={project_id}");
     let (status, started) = serve.post_json_with_headers(
         &start_route,
-        &serde_json::json!({"action":"daemon_start","max_concurrency":1}),
+        &serde_json::json!({"action":"daemon_start","max_concurrency":1,"daemon_generation":stopped_generation}),
         &start_headers,
     );
     assert_eq!(status, 200, "daemon start: {started}");
     let (status, start_replay) = serve.post_json_with_headers(
         &start_route,
-        &serde_json::json!({"action":"daemon_start","max_concurrency":1}),
+        &serde_json::json!({"action":"daemon_start","max_concurrency":1,"daemon_generation":stopped_generation}),
         &start_headers,
     );
     assert_eq!(status, 200, "daemon start replay: {start_replay}");
@@ -1403,13 +1420,46 @@ fn operator_eligible_daemon_and_server_probed_admission_are_real_and_fail_closed
     assert_eq!(start_replay["event_id"], started["event_id"]);
     let (status, changed_start) = serve.post_json_with_headers(
         &start_route,
-        &serde_json::json!({"action":"daemon_start","max_concurrency":2}),
+        &serde_json::json!({"action":"daemon_start","max_concurrency":2,"daemon_generation":stopped_generation}),
         &start_headers,
     );
     assert_eq!(
         status, 409,
         "changed daemon start replay must fail closed: {changed_start}"
     );
+    let (status, after_start) =
+        serve.get_json_with_headers(&operator_route, &[("X-AgentFirm-Token", OPERATOR_TOKEN)]);
+    assert_eq!(status, 200, "Operator after start: {after_start}");
+    let successor_generation = after_start["data"]["node"]["daemon_generation"]
+        .as_u64()
+        .expect("successor daemon generation");
+    assert!(successor_generation > stopped_generation);
+    let stale_stop_headers = [
+        ("X-AgentFirm-Token", OPERATOR_TOKEN),
+        ("Idempotency-Key", "operator-daemon-stale-stop"),
+        ("If-Match", node_revision.as_str()),
+        ("X-AgentFirm-Confirm", "daemon-stop"),
+    ];
+    let (status, stale_stopped) = serve.post_json_with_headers(
+        &stop_route,
+        &serde_json::json!({"action":"daemon_stop","daemon_generation":stopped_generation}),
+        &stale_stop_headers,
+    );
+    assert_eq!(status, 409, "stale generation stop: {stale_stopped}");
+    let (status, after_stale_stop) =
+        serve.get_json_with_headers(&operator_route, &[("X-AgentFirm-Token", OPERATOR_TOKEN)]);
+    assert_eq!(status, 200, "Operator after stale stop: {after_stale_stop}");
+    assert_eq!(
+        after_stale_stop["data"]["node"]["daemon_generation"], successor_generation,
+        "stale stop cannot replace or terminate the successor generation"
+    );
+    assert!(after_stale_stop["allowed_actions"]
+        .as_array()
+        .is_some_and(|actions| {
+            actions.iter().any(|action| {
+                action["kind"] == "stop_daemon" && action["disabled_reason"].is_null()
+            })
+        }));
 
     let store = HarnessStore::new(home.spaces_dir().join(&space_id))
         .with_provider_compatibility_scope(&project_id, format!("execution-space:{space_id}"));
@@ -1506,16 +1556,33 @@ fn operator_eligible_daemon_and_server_probed_admission_are_real_and_fail_closed
     ];
     let (status, stopped) = serve.post_json_with_headers(
         &stop_route,
-        &serde_json::json!({"action":"daemon_stop"}),
+        &serde_json::json!({"action":"daemon_stop","daemon_generation":successor_generation}),
         &stop_headers,
     );
     assert_eq!(status, 200, "daemon stop: {stopped}");
     let (status, stop_replay) = serve.post_json_with_headers(
         &stop_route,
-        &serde_json::json!({"action":"daemon_stop"}),
+        &serde_json::json!({"action":"daemon_stop","daemon_generation":successor_generation}),
         &stop_headers,
     );
     assert_eq!(status, 200, "daemon stop replay: {stop_replay}");
     assert_eq!(stop_replay["replayed"], true);
     assert_eq!(stop_replay["event_id"], stopped["event_id"]);
+
+    run(&["node", "drain", "--id", node_id]);
+    let (status, replay_after_revision_advance) =
+        serve.post_json_with_headers(&admission_route, &intent, &admission_headers);
+    assert_eq!(
+        status, 200,
+        "provider replay must precede advanced ExecutionNode revision checks: {replay_after_revision_advance}"
+    );
+    assert_eq!(replay_after_revision_advance["replayed"], true);
+    let conflicting_intent =
+        serde_json::json!({"action":"admit_provider","provider":"codex","execution_mode":"exec"});
+    let (status, conflicting_replay) =
+        serve.post_json_with_headers(&admission_route, &conflicting_intent, &admission_headers);
+    assert_eq!(
+        status, 409,
+        "provider replay fingerprint conflict: {conflicting_replay}"
+    );
 }

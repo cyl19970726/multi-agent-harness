@@ -1746,7 +1746,7 @@ fn operator_view(
     });
     let local_machine_proven =
         crate::read_local_node_id().ok().as_deref() == Some(node_id) && firm_home.is_some();
-    operator_actions.push(action(
+    let mut daemon_action = action(
         if daemon_live {
             "stop_daemon"
         } else {
@@ -1757,7 +1757,10 @@ fn operator_view(
         node_revision,
         (!local_machine_proven)
             .then_some("this serve process cannot prove exact local Node lifecycle ownership"),
-    ));
+    );
+    daemon_action["daemon_generation"] =
+        json!(lease.as_ref().map(|lease| lease.generation).unwrap_or(0));
+    operator_actions.push(daemon_action);
     let admission_scope_proven = local_machine_proven
         && store.provider_compatibility_scope().is_some()
         && store

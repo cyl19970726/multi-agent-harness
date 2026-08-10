@@ -11,6 +11,7 @@ export interface AttentionItem {
 }
 export interface AllowedAction {
   kind: string; target_ref: TargetRef; required_version: number; disabled_reason: string | null;
+  daemon_generation?: number;
 }
 
 export interface AgentFirmActionError {
@@ -124,7 +125,7 @@ export function prepareRoleAction(
       case "request_gate_evaluation": body={action:"request_gate_evaluation",gate_type:required("gate_type"),gate_contract_version:required("gate_contract_version"),evaluator_ref:{kind:fields.evaluator_kind||"agent_member",id:required("evaluator_id")},evaluator_version:required("evaluator_version"),resolved_config:{},required:true};break;
       case "evaluate_gate": body={action:"evaluate_gate",verdict:fields.verdict||"passed",summary:required("summary"),evidence_refs:(fields.evidence_refs??"").split(",").map(v=>v.trim()).filter(Boolean)};break;
       case "waive_gate": body={action:"waive_gate",reason:required("reason"),evidence_refs:(fields.evidence_refs??"").split(",").map(v=>v.trim()).filter(Boolean)};break; case "revoke_waiver": body={action:"revoke_waiver"};break;
-      case "start_daemon": body={action:"daemon_start"};break; case "stop_daemon": body={action:"daemon_stop"};break; case "admit_provider": body={action:"admit_provider",provider:required("provider"),execution_mode:required("execution_mode")};break; case "diagnose": body={action:"diagnose"};break;
+      case "start_daemon": if(!Number.isSafeInteger(action.daemon_generation))throw new Error("Exact daemon generation is required.");body={action:"daemon_start",daemon_generation:action.daemon_generation};break; case "stop_daemon": if(!Number.isSafeInteger(action.daemon_generation))throw new Error("Exact daemon generation is required.");body={action:"daemon_stop",daemon_generation:action.daemon_generation};break; case "admit_provider": body={action:"admit_provider",provider:required("provider"),execution_mode:required("execution_mode")};break; case "diagnose": body={action:"diagnose"};break;
       case "release_work": body={action:"release_work"};break;
       case "claim_work": body={action:"claim_work"};break;
       case "start_work": body={action:"start_work"};break;

@@ -26962,10 +26962,32 @@ fn daemon_command(args: &[String]) -> CliResult<()> {
             None => println!("absent (no NodeDaemon for Node {node_id})"),
         },
         "stop" => {
-            let response = supervisor_daemon::daemon_stop_via_socket(&firm_home, &node_id)
+            let (space_id, generation) = execution_space::list_spaces(&firm_home)
+                .map_err(execution_space_err)?
+                .into_iter()
+                .find_map(|space| {
+                    let store = HarnessStore::new(space.store_root);
+                    store
+                        .latest_node_daemon_lease(&node_id)
+                        .ok()
+                        .flatten()
+                        .filter(|lease| {
+                            lease.status == NodeDaemonLeaseStatus::Active
+                                && lease.expires_unix_ms > current_unix_ms_u64()
+                        })
+                        .map(|lease| (space.id, lease.generation))
+                })
                 .ok_or_else(|| {
-                    CliError::Usage(format!("no NodeDaemon is running for Node {node_id}"))
+                    CliError::Usage(format!(
+                        "no current NodeDaemon lease is available for Node {node_id}"
+                    ))
                 })?;
+            let response = supervisor_daemon::daemon_stop_via_socket(
+                &firm_home, &node_id, &space_id, generation,
+            )
+            .ok_or_else(|| {
+                CliError::Usage(format!("no NodeDaemon is running for Node {node_id}"))
+            })?;
             println!("{response}");
         }
         other => return Err(CliError::Usage(format!("unknown daemon command: {other}"))),

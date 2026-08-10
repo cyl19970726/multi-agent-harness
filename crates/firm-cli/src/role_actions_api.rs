@@ -197,8 +197,11 @@ enum OperatorActionIntent {
     DaemonStart {
         #[serde(default = "default_daemon_concurrency")]
         max_concurrency: usize,
+        daemon_generation: u64,
     },
-    DaemonStop,
+    DaemonStop {
+        daemon_generation: u64,
+    },
     Diagnose,
     AdmitProvider {
         provider: String,
@@ -2703,7 +2706,7 @@ fn execute_operator_action(
         (operation, &intent),
         ("diagnostics", OperatorActionIntent::Diagnose)
             | ("daemon-start", OperatorActionIntent::DaemonStart { .. })
-            | ("daemon-stop", OperatorActionIntent::DaemonStop)
+            | ("daemon-stop", OperatorActionIntent::DaemonStop { .. })
             | (
                 "provider-admission",
                 OperatorActionIntent::AdmitProvider { .. }
@@ -2719,6 +2722,7 @@ fn execute_operator_action(
         ));
     }
     let daemon_action = matches!(operation, "daemon-start" | "daemon-stop");
+    let receipted_action = daemon_action || operation == "provider-admission";
     if daemon_action && confirmed_action != Some(operation) {
         return Err(encoded_error(
             "CONFIRMATION_REQUIRED",
@@ -2728,7 +2732,7 @@ fn execute_operator_action(
             None,
         ));
     }
-    let firm_home = daemon_action
+    let firm_home = receipted_action
         .then(crate::execution_space::firm_home)
         .transpose()
         .map_err(|error| {
@@ -2792,7 +2796,13 @@ fn execute_operator_action(
                 replayed: false,
             })
         }
-        ("daemon-start", OperatorActionIntent::DaemonStart { max_concurrency }) => {
+        (
+            "daemon-start",
+            OperatorActionIntent::DaemonStart {
+                max_concurrency,
+                daemon_generation,
+            },
+        ) => {
             if max_concurrency == 0 {
                 return Err(encoded_error(
                     "INVALID_STATE_TRANSITION",
@@ -2803,6 +2813,19 @@ fn execute_operator_action(
                 ));
             }
             let firm_home = firm_home.expect("daemon action resolves firm home before dispatch");
+            let current_generation = store
+                .latest_node_daemon_lease(node_id)?
+                .map(|lease| lease.generation)
+                .unwrap_or(0);
+            if daemon_generation != current_generation {
+                return Err(encoded_error(
+                    "SUPERVISOR_GENERATION_FENCED",
+                    "daemon start intent does not match the current NodeDaemon generation",
+                    "node_daemon_lease",
+                    node_id,
+                    Some(current_generation),
+                ));
+            }
             if crate::supervisor_daemon::daemon_status_via_socket(&firm_home, node_id).is_some() {
                 return Err(encoded_error(
                     "ACTION_UNAVAILABLE",
@@ -2813,10 +2836,12 @@ fn execute_operator_action(
                 ));
             }
             execute_receipted_operator_action(&firm_home, node_id, &auth, || {
-                let status = crate::supervisor_daemon::start_daemon_process(
+                let status = crate::supervisor_daemon::start_daemon_process_fenced(
                     &firm_home,
                     node_id,
                     max_concurrency,
+                    &auth.execution_space_id,
+                    daemon_generation,
                 )
                 .map_err(|error| {
                     encoded_error(
@@ -2841,20 +2866,66 @@ fn execute_operator_action(
                 })
             })
         }
-        ("daemon-stop", OperatorActionIntent::DaemonStop) => {
+        ("daemon-stop", OperatorActionIntent::DaemonStop { daemon_generation }) => {
             let firm_home = firm_home.expect("daemon action resolves firm home before dispatch");
+            let lease = store.latest_node_daemon_lease(node_id)?.ok_or_else(|| {
+                encoded_error(
+                    "SUPERVISOR_GENERATION_FENCED",
+                    "daemon stop requires a current NodeDaemon lease",
+                    "node_daemon_lease",
+                    node_id,
+                    None,
+                )
+            })?;
+            if lease.generation != daemon_generation
+                || lease.status != harness_core::NodeDaemonLeaseStatus::Active
+                || lease.expires_unix_ms <= crate::current_unix_ms_u64()
+            {
+                return Err(encoded_error(
+                    "SUPERVISOR_GENERATION_FENCED",
+                    "daemon stop intent does not match the current live NodeDaemon generation",
+                    "node_daemon_lease",
+                    node_id,
+                    Some(lease.generation),
+                ));
+            }
             execute_receipted_operator_action(&firm_home, node_id, &auth, || {
-                let response =
-                    crate::supervisor_daemon::daemon_stop_via_socket(&firm_home, node_id)
-                        .ok_or_else(|| {
-                            encoded_error(
+                let response = crate::supervisor_daemon::daemon_stop_via_socket(
+                    &firm_home,
+                    node_id,
+                    &auth.execution_space_id,
+                    daemon_generation,
+                )
+                .ok_or_else(|| {
+                    encoded_error(
                         "ACTION_UNAVAILABLE",
                         "no live NodeDaemon is available to stop; refresh the Operator RoleView",
                         "execution_node",
                         node_id,
                         Some(node_revision),
                     )
-                        })?;
+                })?;
+                let control =
+                    serde_json::from_str::<serde_json::Value>(&response).map_err(|_| {
+                        encoded_error(
+                            "RECOVERY_REQUIRED",
+                            "NodeDaemon returned an invalid stop receipt",
+                            "node_daemon_lease",
+                            node_id,
+                            Some(daemon_generation),
+                        )
+                    })?;
+                if control["ok"] != true {
+                    return Err(encoded_error(
+                        "SUPERVISOR_GENERATION_FENCED",
+                        control["error"]
+                            .as_str()
+                            .unwrap_or("NodeDaemon rejected the generation-fenced stop"),
+                        "node_daemon_lease",
+                        node_id,
+                        Some(daemon_generation),
+                    ));
+                }
                 Ok(RoleActionResult {
                     ok: true,
                     action_protocol_version: "agentfirm.role_actions.v1",
@@ -2875,31 +2946,34 @@ fn execute_operator_action(
                 execution_mode,
             },
         ) => {
-            let (admission, replayed) = crate::admit_provider_from_operator_action(
-                store,
-                &auth.execution_space_id,
-                node_id,
-                &provider,
-                &execution_mode,
-                &auth.idempotency_key,
-            )
-            .map_err(|error| {
-                encoded_error(
-                    "PROVIDER_ADMISSION_FAILED",
-                    error,
-                    "execution_node",
+            let firm_home = firm_home.expect("receipted provider action resolves firm home");
+            execute_receipted_operator_action(&firm_home, node_id, &auth, || {
+                let (admission, replayed) = crate::admit_provider_from_operator_action(
+                    store,
+                    &auth.execution_space_id,
                     node_id,
-                    Some(node_revision),
+                    &provider,
+                    &execution_mode,
+                    &auth.idempotency_key,
                 )
-            })?;
-            Ok(RoleActionResult {
-                ok: true,
-                action_protocol_version: "agentfirm.role_actions.v1",
-                projection: serde_json::to_value(&admission)?,
-                event_id: admission.id.clone(),
-                resulting_version: 1,
-                store_sequence: store.latest_provider_compatibility_admissions()?.len() as u64,
-                replayed,
+                .map_err(|error| {
+                    encoded_error(
+                        "PROVIDER_ADMISSION_FAILED",
+                        error,
+                        "execution_node",
+                        node_id,
+                        Some(node_revision),
+                    )
+                })?;
+                Ok(RoleActionResult {
+                    ok: true,
+                    action_protocol_version: "agentfirm.role_actions.v1",
+                    projection: serde_json::to_value(&admission)?,
+                    event_id: admission.id.clone(),
+                    resulting_version: 1,
+                    store_sequence: store.latest_provider_compatibility_admissions()?.len() as u64,
+                    replayed,
+                })
             })
         }
         _ => Err(encoded_error(

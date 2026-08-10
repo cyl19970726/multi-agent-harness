@@ -307,8 +307,7 @@ const liveMemberRunId = liveTeamRunPayload.member_runs?.[0]?.id ?? liveTeamRunPa
 if (!liveMemberRunId) throw new Error(`team-run create did not return a MemberRun: ${JSON.stringify(liveTeamRunPayload)}`);
 
 // A second Execution Space and sibling Team prove that Company Work is a
-// vector snapshot rather than a max-sequence illusion. The immutable local
-// Node identity is intentionally reused: one machine has one NodeDaemon/Node.
+// vector snapshot rather than a max-sequence illusion.
 const secondarySpaceId = "dashboard-secondary-space";
 runHarness([
   "space", "init", "--id", secondarySpaceId, "--name", "Dashboard secondary space",
@@ -325,6 +324,24 @@ if (secondaryNode.id !== liveNode.id) {
 runHarness([
   "node", "project", "register",
   "--node-id", secondaryNode.id,
+  "--execution-space-id", secondarySpaceId,
+  "--project-binding-id", projectId,
+], secondaryEnv, projectRoot);
+// Model a genuinely distinct machine by giving the same canonical Store an
+// independent FIRM_HOME (and therefore an independently generated immutable
+// Node identity). The Runtime still reads the real registered projection from
+// the shared Execution Space; no credential or RoleView row is fabricated.
+const siblingMachineHome = join(temporaryRoot, "sibling-machine-home");
+await mkdir(siblingMachineHome, {recursive:true});
+const siblingMachineEnv = {...secondaryEnv,FIRM_HOME:siblingMachineHome,HARNESS_HOME:siblingMachineHome};
+const secondaryStoreRoot = join(harnessHome, "execution-spaces", secondarySpaceId);
+const siblingNode = JSON.parse(runHarness([
+  "--store", secondaryStoreRoot, "node", "init", "--display-name", "dashboard-sibling-machine-node",
+], siblingMachineEnv, projectRoot));
+if (siblingNode.id === liveNode.id) throw new Error("distinct machine must have a distinct immutable Node identity");
+runHarness([
+  "node", "project", "register",
+  "--node-id", siblingNode.id,
   "--execution-space-id", secondarySpaceId,
   "--project-binding-id", projectId,
 ], secondaryEnv, projectRoot);
@@ -364,7 +381,7 @@ env.AGENTFIRM_HTTP_CREDENTIALS_JSON = JSON.stringify([{
 },{
   token: secondaryHostAgentFirmToken, actor: {kind:"agent_member",id:"host-secondary"}, authority_actors: [],
 },{
-  token: siblingNodeAgentFirmToken, actor: {kind:"service",id:"10000000-0000-4000-8000-000000000099"}, authority_actors: [],
+  token: siblingNodeAgentFirmToken, actor: {kind:"service",id:siblingNode.id}, authority_actors: [],
 }]);
 await stopRuntime();
 startRuntime();
@@ -403,7 +420,10 @@ const secondaryDeniedByPrimary = await roleView(`/v1/views/host-console/${second
 check(primaryDeniedBySecondary.status===403 && secondaryDeniedByPrimary.status===403,
 "sibling Team Host identities are denied bidirectionally");
 const siblingNodeDenied = await roleView(`/v1/views/operator/${liveNode.id}?project=${projectId}&space=${spaceId}`, siblingNodeAgentFirmToken);
-check(siblingNodeDenied.status===403, "non-local sibling Node Service cannot obtain Operator authority");
+const primaryNodeDeniedOnSibling = await roleView(`/v1/views/operator/${siblingNode.id}?project=${projectId}&space=${secondarySpaceId}`, operatorAgentFirmToken);
+const siblingNodeProjection = await roleView(`/v1/views/operator/${siblingNode.id}?project=${projectId}&space=${secondarySpaceId}`, siblingNodeAgentFirmToken);
+check(siblingNodeDenied.status===403 && primaryNodeDeniedOnSibling.status===403 && siblingNodeProjection.status===200,
+  "distinct registered sibling Nodes are isolated bidirectionally by Node and Execution Space");
 runHarness([
   "team-run", "work", "create", "--team-run-id", secondaryTeamRunId,
   "--work-id", "work-secondary-vector-advance", "--title", "Advance secondary vector",
@@ -503,6 +523,9 @@ try {
   await waitForText(page, "work-role-live");
   check(true, "real Company Work RoleView is populated");
   await page.goto(`${appBase}/?${new URLSearchParams({...roleBaseQuery,surface:"team",team:liveTeamRunId})}`, {waitUntil:"domcontentloaded"});
+  await page.getByText("Team Workspace", {exact:true}).waitFor();
+  await waitForText(page, "work-role-live");
+  check(true, "real Team Workspace RoleView is populated before Host navigation");
   await page.getByRole("button", {name:"Open Host Console"}).click();
   await page.getByRole("heading", {name:"Host Console"}).waitFor();
   await page.getByRole("button", {name:"assign work",exact:true}).click();
@@ -541,6 +564,10 @@ try {
   const admitProvider = operatorPage.getByRole("button", {name:"admit provider",exact:true});
   await admitProvider.waitFor();
   if (await admitProvider.isDisabled()) {
+    await operatorPage.waitForFunction(() => {
+      const button = [...document.querySelectorAll("button")].find((candidate) => candidate.textContent?.trim() === "admit provider");
+      return button?.getAttribute("title")?.startsWith("server cannot prove an eligible provider admission:") === true;
+    });
     const disabledReason = await admitProvider.getAttribute("title");
     check(disabledReason?.startsWith("server cannot prove an eligible provider admission:") === true,
       "Operator browser fails closed when the server-observed provider tuple is not admission-eligible");
