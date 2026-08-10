@@ -69,7 +69,7 @@ flowchart LR
   X --> TW["Agent Team Work"]
   X --> W["WorkflowRun / Step"]
   X --> P["Team participation"]
-  TW --> M["Mission-linked TeamRun"]
+  TW --> M["Mission-owned TeamRun"]
   M --> MR["MemberRun\none TeamRun participation"]
   MR -. "explicit agent_member_id only" .-> A
 ```

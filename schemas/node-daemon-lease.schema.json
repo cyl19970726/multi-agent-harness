@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/node-daemon-lease.schema.json",
+  "title": "NodeDaemonLease",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "node_id",
+    "daemon_id",
+    "generation",
+    "instance_id",
+    "status",
+    "acquired_unix_ms",
+    "renewed_unix_ms",
+    "expires_unix_ms"
+  ],
+  "properties": {
+    "node_id": {
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+    },
+    "daemon_id": { "type": "string", "minLength": 1 },
+    "generation": { "type": "integer", "minimum": 1 },
+    "instance_id": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "enum": ["active", "draining", "released", "expired"] },
+    "acquired_unix_ms": { "type": "integer", "minimum": 0 },
+    "renewed_unix_ms": { "type": "integer", "minimum": 0 },
+    "expires_unix_ms": { "type": "integer", "minimum": 0 },
+    "released_unix_ms": { "type": ["integer", "null"], "minimum": 0 }
+  }
+}

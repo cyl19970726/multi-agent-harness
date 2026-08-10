@@ -29,7 +29,7 @@ Company
 
 - Teams are independent, non-nested execution units.
 - Each Team has a Host Agent and Members.
-- A Team may declare a `machine_id` (cross-machine awareness) and `labels` (filtering).
+- A Team has one immutable `node_id`; its Members do not execute across machines.
 - Standing Agents are durable identities that persist across Team Runs (e.g. a governance Agent on a schedule).
 
 ## Native actor identities
@@ -65,13 +65,12 @@ membership, Work authority, or acceptance authority.
 AgentTeam
 - id
 - name
-- purpose
-- machine_id?
-- labels[]
-- host_member_id
+- description
+- mission_id
+- host_agent_id
+- node_id
 - member_ids[]
 - status
-- policy_refs[]
 ```
 
 Topology is flat. There is no `parent_team_id` and no child Team concept in the

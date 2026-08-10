@@ -88,27 +88,26 @@ export function operatorMessage(params: {
 }
 
 /**
- * Create a new team. POST /v1/teams requires name, description and the Team
- * Lead agent id. The Host Agent creating and coordinating the team is its Lead.
+ * Create the one flat Team for a Mission on an immutable Node placement.
  * Returns the created AgentTeam in the action result.
  */
 export function createTeam(params: {
   name: string;
   description: string;
-  leadAgentId: string;
+  missionId: string;
+  hostAgentId: string;
+  nodeId: string;
   memberIds?: string[];
-  hostMemberId?: string;
 }): ActionDescriptor {
   const body: Record<string, unknown> = {
     name: params.name,
     description: params.description,
-    lead_agent_id: params.leadAgentId,
+    mission_id: params.missionId,
+    host_agent_id: params.hostAgentId,
+    node_id: params.nodeId,
   };
   if (params.memberIds && params.memberIds.length) {
     body.member = params.memberIds;
-  }
-  if (params.hostMemberId) {
-    body.host_member_id = params.hostMemberId;
   }
   return {
     method: "POST",
@@ -429,23 +428,6 @@ export function updateMissionContext(missionId: string, context: string): Action
   };
 }
 
-export function linkMissionTeam(missionId: string, teamId: string): ActionDescriptor {
-  return {
-    method: "POST",
-    path: `/v1/missions/${encodeId(missionId)}/link-team`,
-    body: { team_id: teamId },
-  };
-}
-
-/** Remove a durable team from a Mission's linked-team set. */
-export function unlinkMissionTeam(missionId: string, teamId: string): ActionDescriptor {
-  return {
-    method: "POST",
-    path: `/v1/missions/${encodeId(missionId)}/unlink-team`,
-    body: { team_id: teamId },
-  };
-}
-
 /**
  * Acknowledge one HostAttention from the console (POST
  * /v1/host-attentions/{id}/ack). Transport intake only — the server walks the
@@ -456,25 +438,6 @@ export function acknowledgeHostAttention(attentionId: string): ActionDescriptor 
     method: "POST",
     path: `/v1/host-attentions/${encodeId(attentionId)}/ack`,
     body: { acknowledged_by: "operator" },
-  };
-}
-
-export function createMissionTeam(params: {
-  missionId: string;
-  name: string;
-  description: string;
-  leadAgentId?: string;
-  memberIds?: string[];
-}): ActionDescriptor {
-  return {
-    method: "POST",
-    path: `/v1/missions/${encodeId(params.missionId)}/teams`,
-    body: {
-      name: params.name,
-      description: params.description,
-      lead_agent_id: params.leadAgentId ?? "host",
-      member: params.memberIds ?? [],
-    },
   };
 }
 

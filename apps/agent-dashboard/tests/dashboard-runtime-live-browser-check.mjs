@@ -193,6 +193,40 @@ await waitFor(async () => (await fetch(`${apiBase}/health`).catch(() => null))?.
 const { current: projectId } = await requestJson(apiBase, "/v1/projects");
 const { current: spaceId } = await requestJson(apiBase, "/v1/spaces");
 
+// Build the complete Wave 3 admission chain. A TeamRun is never a free-standing
+// runtime: its flat AgentTeam owns one Mission, is placed on one Node, and the
+// Node must be registered for this exact Execution Space + Project Binding.
+const liveNode = JSON.parse(runHarness([
+  "node", "init", "--display-name", "dashboard-live-node",
+], env, projectRoot));
+runHarness([
+  "node", "project", "register",
+  "--node-id", liveNode.id,
+  "--execution-space-id", spaceId,
+  "--project-binding-id", projectId,
+], env, projectRoot);
+const liveMission = JSON.parse(runHarness([
+  "mission", "create",
+  "--title", "Dashboard Runtime Live Mission",
+  "--objective", "Exercise Runtime convergence against native TeamWork",
+  "--json",
+], env, projectRoot));
+runHarness([
+  "org", "member", "create",
+  "--id", "host",
+  "--name", "Dashboard Runtime Host",
+  "--description", "Durable Host identity for live Dashboard Runtime acceptance.",
+  "--role", "host",
+], env, projectRoot);
+const liveTeam = JSON.parse(runHarness([
+  "team", "create",
+  "--name", "Dashboard Runtime Live Team",
+  "--description", "Flat Team for the live Dashboard Runtime acceptance.",
+  "--mission-id", liveMission.id,
+  "--host-agent-id", "host",
+  "--node-id", liveNode.id,
+], env, projectRoot));
+
 async function postCompany(company, endpoint, record, administrative = true) {
   const query = new URLSearchParams({ company, project: projectId, space: spaceId });
   return await requestJson(apiBase, `/v1/company-os/${endpoint}?${query}`, {
@@ -217,6 +251,7 @@ for (const company of ["company-a", "company-b"]) {
 const liveTeamRunPayload = JSON.parse(runHarness([
   "team-run", "create",
   "--objective", "Exercise Runtime convergence against native TeamWork",
+  "--agent-team-id", liveTeam.id,
   "--member", "worker:worker:codex/app-server",
   "--json",
 ], env, projectRoot));

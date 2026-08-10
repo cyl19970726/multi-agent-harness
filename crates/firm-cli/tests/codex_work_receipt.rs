@@ -12,19 +12,99 @@ mod fake_provider;
 mod firm_env;
 use firm_env::{current_project_id, run_firm, ServeHandle, TempHome};
 
-/// `harness init` a project rooted at `<base>/<name>` and return its id.
+/// Initialize one Execution Space and its mandatory flat AgentTeam runtime.
 fn init_project(home: &TempHome, name: &str) -> String {
     let root = home.base().join(name);
     std::fs::create_dir_all(&root).unwrap();
     let out = run_firm(home, &root, &["init"]);
     assert!(out.status.success(), "init {name} failed: {out:?}");
-    current_project_id(home)
+    let project_id = current_project_id(home);
+
+    let node = run_firm(home, &root, &["node", "init"]);
+    assert!(node.status.success(), "node init failed: {node:?}");
+    let node: serde_json::Value = serde_json::from_slice(&node.stdout).expect("node JSON");
+    let node_id = node["id"].as_str().expect("node id");
+    let registration = run_firm(
+        home,
+        &root,
+        &[
+            "node",
+            "project",
+            "register",
+            "--node-id",
+            node_id,
+            "--project-binding-id",
+            &project_id,
+        ],
+    );
+    assert!(
+        registration.status.success(),
+        "node registration failed: {registration:?}"
+    );
+
+    let mission = run_firm(
+        home,
+        &root,
+        &[
+            "mission",
+            "create",
+            "--title",
+            "Codex receipt mission",
+            "--objective",
+            "Verify provider receipt and recovery truth",
+        ],
+    );
+    assert!(
+        mission.status.success(),
+        "mission create failed: {mission:?}"
+    );
+    let mission_id = String::from_utf8_lossy(&mission.stdout).trim().to_string();
+    let host = run_firm(
+        home,
+        &root,
+        &[
+            "agent",
+            "create",
+            "--name",
+            "codex-receipt-host",
+            "--role",
+            "host",
+            "--provider",
+            "codex",
+        ],
+    );
+    assert!(host.status.success(), "host create failed: {host:?}");
+    let host: serde_json::Value = serde_json::from_slice(&host.stdout).expect("host JSON");
+    let host_id = host["id"].as_str().expect("host id");
+    let team = run_firm(
+        home,
+        &root,
+        &[
+            "team",
+            "create",
+            "--name",
+            "Codex receipt team",
+            "--description",
+            "Flat receipt and recovery test team",
+            "--mission-id",
+            &mission_id,
+            "--host-agent-id",
+            host_id,
+            "--node-id",
+            node_id,
+            "--member",
+            host_id,
+        ],
+    );
+    assert!(team.status.success(), "team create failed: {team:?}");
+    let team: serde_json::Value = serde_json::from_slice(&team.stdout).expect("team JSON");
+    team["id"].as_str().expect("team id").to_string()
 }
 
 #[test]
 fn codex_work_receipt_lands_at_turn_acceptance_and_survives_close() {
     let home = TempHome::new("codex-work-receipt-acceptance");
-    let _project_id = init_project(&home, "alpha");
+    let team_id = init_project(&home, "alpha");
     let fake_bin =
         fake_provider::install_codex_team_shim(&home.base().join("fakebin-codex-receipt"));
     let path = format!(
@@ -38,6 +118,7 @@ fn codex_work_receipt_lands_at_turn_acceptance_and_survives_close() {
     let (status, created) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
+            "agent_team_id": team_id,
             "objective": "Prove codex receipt lands at provider acceptance",
             "members": [{
                 "name": "codex-receipt",
@@ -139,7 +220,7 @@ fn codex_disconnect_resume_continues_receipted_work_on_same_session() {
     // continue the receipted-but-unfinished Work on the same native session
     // (runtime_recovery journal + a continuation turn), not strand it.
     let home = TempHome::new("codex-disconnect-resume");
-    let _project_id = init_project(&home, "alpha");
+    let team_id = init_project(&home, "alpha");
     let fake_bin =
         fake_provider::install_codex_team_shim(&home.base().join("fakebin-codex-resume"));
     let path = format!(
@@ -170,6 +251,7 @@ fn codex_disconnect_resume_continues_receipted_work_on_same_session() {
     let (status, created) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
+            "agent_team_id": team_id,
             "objective": "Prove codex resume continues receipted work",
             "members": [{
                 "name": "codex-resume",

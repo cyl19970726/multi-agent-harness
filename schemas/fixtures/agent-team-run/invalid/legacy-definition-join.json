@@ -1,0 +1,12 @@
+{
+  "id": "trun-legacy",
+  "definition_id": "definition-legacy",
+  "agent_team_id": "team-1",
+  "execution_node_id": "0f95cac7-5ff8-4c76-8f36-9c8f208815d3",
+  "project_binding_id": "project-harness",
+  "host_surface": "codex-app",
+  "objective": "Legacy definition joins are rejected.",
+  "status": "planning",
+  "created_at": "2026-08-09T00:00:00Z",
+  "updated_at": "2026-08-09T00:00:00Z"
+}

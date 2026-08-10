@@ -84,7 +84,7 @@ flowchart TB
 | Agent Team Works | TeamRun-scoped Work ownership, assigned/unassigned readiness, atomic claim, review, child delegation, and Kanban projection | authored conversation, company approval/finance, or provider transcript |
 | Company Work and Approval | WorkCore extension with Milestones, TeamWork responsibility, source/result provenance, policy gates, and execution reference | provider runtime or a second Agent Team scheduler |
 | Finance and Metrics | typed values, observations, audit, business relations | copied document display values |
-| Execution | Mission context/Host-plan Waves, independent or Mission-scoped Agent Teams, durable Team Supervisors, typed mail, Workflow, direct delivery | company organization or document truth; Wave runtime containment |
+| Execution | Mission context/Host-plan Waves, one flat Mission-owned AgentTeam, durable NodeDaemon-fenced Team Supervisors, typed mail, Workflow, direct delivery | company organization or document truth; nested/reusable Teams or Wave runtime containment |
 | Runtime | provider processes, native sessions, native activity readers/resume, plugins, MCP, and ephemeral projections | business approval, assignment inference, or a second provider history |
 
 For persistent Agent Team members, Work ownership and continuous native

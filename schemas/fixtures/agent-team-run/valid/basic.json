@@ -1,20 +1,17 @@
 {
   "id": "trun-1",
-  "definition_id": "team-1",
   "agent_team_id": "team-1",
+  "execution_node_id": "0f95cac7-5ff8-4c76-8f36-9c8f208815d3",
+  "project_binding_id": "project-harness",
   "previous_run_id": "trun-0",
-  "mission_id": "mission-1",
-  "host_surface": "kimi-cli",
+  "host_surface": "codex-app",
   "host_thread_id": "thread-9",
   "objective": "Ship the team run ledger.",
-  "execution_root": "/projects/harness/worktrees/wave-2",
+  "execution_root": "/projects/harness/worktrees/wave-3",
   "status": "running",
-  "member_run_ids": [
-    "mrun-1",
-    "mrun-2"
-  ],
+  "member_run_ids": ["mrun-1", "mrun-2"],
   "budget_limit_usd": 12.5,
-  "created_at": "2026-07-18T00:00:00Z",
-  "updated_at": "2026-07-18T00:01:00Z",
+  "created_at": "2026-08-09T00:00:00Z",
+  "updated_at": "2026-08-09T00:01:00Z",
   "completed_at": null
 }

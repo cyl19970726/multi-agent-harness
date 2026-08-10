@@ -32,7 +32,7 @@ The canonical diagrams for the current product direction live in
 see:
 
 - the product capability stack;
-- the Mission -> Host-plan Wave and Mission <-> AgentTeam relations;
+- the Mission -> Host-plan Wave and Mission -> one AgentTeam relations;
 - the shared runtime and dashboard infrastructure;
 - what is implemented, planned, or transitional.
 
@@ -44,7 +44,7 @@ The product direction is:
 
 ```text
 Mission -> ordered Host-plan Wave
-Mission <-> independent AgentTeam -> AgentTeamRun -> MemberRun
+Mission -> one flat AgentTeam -> AgentTeamRun -> MemberRun
 ```
 
 - A `Mission` is the durable objective and outcome container.

@@ -31,7 +31,7 @@ function workLifecycleLabel(work: Work): string {
 }
 
 /**
- * Read-model selectors for Mission-linked independent Agent Teams, TeamRuns,
+ * Read-model selectors for Mission-owned flat Agent Teams, TeamRuns,
  * versioned Host-plan Waves, and provider-native MemberRun bindings.
  *
  * These selectors intentionally do not project a MemberRun into a standing
@@ -217,21 +217,13 @@ export function selectOrderedWaves(snapshot: DashboardSnapshot, missionId?: stri
     .sort((left, right) => left.index - right.index || stableIdCompare(left.id, right.id));
 }
 
-/**
- * Compatibility lookup for AgentTeamRun attempts directly owned by one Wave.
- * New Mission-scoped Teams are intentionally absent: their lifecycle can span
- * Waves, while the shared Works board carries durable execution ownership.
- */
+/** Resolve Wave attempts through the Wave's explicit run references. */
 export function selectWaveAttempts(snapshot: DashboardSnapshot, wave: Wave | string | undefined): TeamRun[] {
   const resolvedWave = typeof wave === "string" ? (snapshot.waves ?? []).find((item) => item.id === wave) : wave;
   if (!resolvedWave) return [];
   const explicitOrder = new Map((resolvedWave.executor_run_ids ?? []).map((id, index) => [id, index]));
   return [...(snapshot.team_runs ?? [])]
-    .filter(
-      (run) =>
-        run.wave_id === resolvedWave.id &&
-        (!run.mission_id || run.mission_id === resolvedWave.mission_id),
-    )
+    .filter((run) => explicitOrder.has(run.id))
     .sort((left, right) => {
       const leftExplicit = explicitOrder.get(left.id);
       const rightExplicit = explicitOrder.get(right.id);
@@ -272,10 +264,11 @@ export function selectTeamRunContext(
   const run = (snapshot.team_runs ?? []).find((item) => item.id === teamRunId);
   if (!run) return undefined;
 
-  const wave =
-    (snapshot.waves ?? []).find((item) => item.id === run.wave_id) ??
-    (snapshot.waves ?? []).find((item) => (item.executor_run_ids ?? []).includes(run.id));
-  const mission = selectMission(snapshot, run.mission_id ?? wave?.mission_id);
+  const team = (snapshot.teams ?? []).find((item) => item.id === run.agent_team_id);
+  const wave = (snapshot.waves ?? []).find((item) =>
+    (item.executor_run_ids ?? []).includes(run.id),
+  );
+  const mission = selectMission(snapshot, team?.mission_id ?? wave?.mission_id);
   const members = (snapshot.member_runs ?? []).filter(
     (member) => member.team_run_id === run.id || (run.member_run_ids ?? []).includes(member.id),
   );

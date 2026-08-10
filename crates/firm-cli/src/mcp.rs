@@ -14,10 +14,7 @@
 //! - `tools/call` → `{content:[{type:"text",text:<result JSON>}], isError}`.
 //! - unknown method → JSON-RPC -32601. stdin EOF exits.
 
-use std::{
-    io::{BufRead, Write},
-    time::Duration,
-};
+use std::io::{BufRead, Write};
 
 use harness_core::{
     validate_gate_specs, BuiltinGateConfig, CodeReviewStrategy, GateSpec, MemberRunStatus,
@@ -29,20 +26,21 @@ use harness_store::{HarnessStore, WorkReviewPayload};
 use serde_json::{json, Value};
 
 use crate::{
-    acknowledge_team_message, add_team_run_member, append_work_event, close_mission,
-    close_team_member_value, create_mission, create_team_run, current_unix_ms_u64,
-    deactivate_team_run_member, drive_prepared_team_run, format_work_brief_line, generated_id,
+    acknowledge_team_message, add_team_run_member, append_work_event, cancel_work_delegation_value,
+    close_mission, close_team_member_value, create_mission, create_team_run,
+    create_work_delegation_value, current_unix_ms_u64, deactivate_team_run_member,
+    delegate_team_run_to_node_daemon, format_work_brief_line, generated_id,
     has_actionable_delivered_manual_ack, host_inbox_for_native_thread, interrupt_team_member_value,
     latest_member_runs_in_append_order, latest_pending_interactions_in_append_order,
     latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
     mutate_team_work_value, now_string, parse_team_actor_kind, parse_team_message_kind,
-    parse_team_message_response_intent, parse_work_review_verdict, prepare_team_run_start,
+    parse_team_message_response_intent, parse_work_review_verdict,
     reconcile_team_message_delivery_value, reconcile_team_work_delivery_value,
     rename_team_run_member, reopen_team_member_value, reopened_member_requires_supervisor_start,
     resolve_pending_interaction_value, retired_wave_write_error, revise_mission_context,
-    revise_mission_team_link, route_agent_inbox_messages, send_team_message_as_work,
-    serde_snake_label, steer_team_member_value, team_member_specs_from_definition,
-    team_run_board_summary_text, team_run_inbox, team_run_wave_index, transition_team_run,
+    route_agent_inbox_messages, send_team_message_as_work, serde_snake_label,
+    steer_team_member_value, team_member_specs_from_definition, team_run_board_summary_text,
+    team_run_inbox, team_run_mission_id, team_run_wave_index, transition_team_run,
     visible_member_actions_in_append_order, work_operation_cursors, ResolvedStore, TeamMemberSpec,
 };
 
@@ -58,10 +56,10 @@ const DASHBOARD_SAME_ORIGIN_API_BASE: &str = ".";
 
 fn team_dashboard_url(store: &HarnessStore, resolved: &ResolvedStore, team_run_id: &str) -> String {
     let run = latest_team_run(store, team_run_id).ok();
-    let mission_id = run.as_ref().and_then(|run| run.mission_id.as_deref());
-    let direct_wave_id = run.as_ref().and_then(|run| run.wave_id.as_deref());
-    let current_wave_id = direct_wave_id.map(str::to_string).or_else(|| {
-        let mission_id = mission_id?;
+    let mission_id = run
+        .as_ref()
+        .and_then(|run| team_run_mission_id(store, run).ok());
+    let current_wave_id = mission_id.as_deref().and_then(|mission_id| {
         let mut waves = store.latest_waves().ok()?;
         waves.retain(|wave| wave.mission_id == mission_id);
         waves.sort_by_key(|wave| wave.index);
@@ -77,7 +75,7 @@ fn team_dashboard_url(store: &HarnessStore, resolved: &ResolvedStore, team_run_i
             .or_else(|| waves.last())
             .map(|wave| wave.id.clone())
     });
-    let context = match (mission_id, current_wave_id.as_deref()) {
+    let context = match (mission_id.as_deref(), current_wave_id.as_deref()) {
         (Some(mission_id), Some(wave_id)) => format!("&mission={mission_id}&wave={wave_id}"),
         (Some(mission_id), None) => format!("&mission={mission_id}"),
         _ => String::new(),
@@ -156,7 +154,7 @@ fn handle_line(store: &HarnessStore, resolved: &ResolvedStore, line: &str) -> Op
 /// Dispatch one `tools/call`. Unknown tool names and malformed call params
 /// are JSON-RPC errors; a tool that runs and fails answers 200-style with
 /// `isError: true` so the host model sees the failure text as tool output.
-fn call_tool(
+pub(crate) fn call_tool(
     store: &HarnessStore,
     resolved: &ResolvedStore,
     params: &Value,
@@ -174,8 +172,6 @@ fn call_tool(
     let outcome = match name {
         "mission_create" => tool_mission_create(store, &arguments),
         "mission_update_context" => tool_mission_update_context(store, &arguments),
-        "mission_link_team" => tool_mission_team_link(store, &arguments, true),
-        "mission_unlink_team" => tool_mission_team_link(store, &arguments, false),
         "mission_close" => tool_mission_close(store, &arguments),
         "mission_list" => tool_mission_list(store),
         "wave_create" => tool_wave_create(store, &arguments),
@@ -202,6 +198,12 @@ fn call_tool(
         "team_run_work_reconcile_delivery" => {
             tool_team_run_work_reconcile_delivery(store, &arguments)
         }
+        "work_delegation_create" => tool_work_delegation_create(store, &arguments),
+        "work_delegation_list" => tool_work_delegation_list(store, &arguments),
+        "work_delegation_show" => tool_work_delegation_show(store, &arguments),
+        "work_delegation_cancel" => tool_work_delegation_cancel(store, &arguments),
+        "execution_node_list" => tool_execution_node_list(store, &arguments),
+        "execution_node_show" => tool_execution_node_show(store, &arguments),
         "team_run_rename_member" => tool_team_run_rename_member(store, &arguments),
         "team_run_deactivate_member" => tool_team_run_deactivate_member(store, &arguments),
         "team_run_start" => tool_team_run_start(store, resolved, &arguments),
@@ -712,6 +714,129 @@ fn tool_team_run_work_reconcile_delivery(
         .map_err(|error| error.to_string())
 }
 
+fn tool_work_delegation_create(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    const ALLOWED: &[&str] = &[
+        "source_team_run_id",
+        "source_work_id",
+        "expected_version",
+        "target_agent_team_id",
+        "target_title",
+        "target_context_markdown",
+        "target_completion_criteria_markdown",
+        "target_priority",
+        "target_eligible_member_ids",
+        "target_work_id",
+        "delegation_id",
+        "gates",
+        "event_id",
+        "actor_id",
+        "actor_name",
+        "caused_by_message_id",
+        "idempotency_key",
+        "duplicate_ok",
+    ];
+    reject_unknown_arguments(arguments, "work_delegation_create", ALLOWED)?;
+    create_work_delegation_value(store, arguments).map_err(|error| error.to_string())
+}
+
+fn tool_work_delegation_list(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    const ALLOWED: &[&str] = &["source_work_id", "target_agent_team_id", "state"];
+    reject_unknown_arguments(arguments, "work_delegation_list", ALLOWED)?;
+    let source_work_id = optional_str(arguments, "source_work_id")?;
+    let target_team_id = optional_str(arguments, "target_agent_team_id")?;
+    let state = optional_str(arguments, "state")?;
+    let delegations = store
+        .latest_work_delegations()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|delegation| {
+            source_work_id
+                .as_deref()
+                .is_none_or(|id| delegation.source_work_ref.work_id == id)
+        })
+        .filter(|delegation| {
+            target_team_id
+                .as_deref()
+                .is_none_or(|id| delegation.target_agent_team_id == id)
+        })
+        .filter(|delegation| {
+            state
+                .as_deref()
+                .is_none_or(|expected| serde_snake_label(&delegation.state) == expected)
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({"delegations": delegations}))
+}
+
+fn tool_work_delegation_show(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    reject_unknown_arguments(arguments, "work_delegation_show", &["delegation_id"])?;
+    let id = required_non_empty_str(arguments, "delegation_id")?;
+    let delegation = store
+        .latest_work_delegations()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|delegation| delegation.id == id)
+        .ok_or_else(|| format!("Delegation not found: {id}"))?;
+    let events = store
+        .work_delegation_events()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|event| event.delegation_id == id)
+        .collect::<Vec<_>>();
+    Ok(json!({"delegation": delegation, "events": events}))
+}
+
+fn tool_work_delegation_cancel(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    const ALLOWED: &[&str] = &[
+        "delegation_id",
+        "expected_version",
+        "reason",
+        "event_id",
+        "actor_id",
+        "actor_name",
+        "caused_by_message_id",
+        "idempotency_key",
+        "duplicate_ok",
+    ];
+    reject_unknown_arguments(arguments, "work_delegation_cancel", ALLOWED)?;
+    cancel_work_delegation_value(
+        store,
+        required_non_empty_str(arguments, "delegation_id")?,
+        arguments,
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn tool_execution_node_list(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    reject_unknown_arguments(arguments, "execution_node_list", &[])?;
+    Ok(json!({
+        "nodes": store.latest_execution_nodes().map_err(|error| error.to_string())?,
+        "registrations": store.latest_node_project_registrations().map_err(|error| error.to_string())?,
+        "daemon_leases": store.latest_node_daemon_leases().map_err(|error| error.to_string())?,
+    }))
+}
+
+fn tool_execution_node_show(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
+    reject_unknown_arguments(arguments, "execution_node_show", &["node_id"])?;
+    let node_id = required_str(arguments, "node_id")?;
+    let node = store
+        .latest_execution_nodes()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|node| node.id == node_id)
+        .ok_or_else(|| format!("ExecutionNode not found: {node_id}"))?;
+    let registrations = store
+        .latest_node_project_registrations()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|registration| registration.node_id == node_id)
+        .collect::<Vec<_>>();
+    let daemon_lease = store
+        .latest_node_daemon_lease(node_id)
+        .map_err(|error| error.to_string())?;
+    Ok(json!({"node": node, "registrations": registrations, "daemon_lease": daemon_lease}))
+}
+
 fn tool_team_run_steer_member(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
     let team_run_id = required_str(arguments, "team_run_id")?;
     let member_run_id = required_str(arguments, "member_run_id")?;
@@ -779,31 +904,15 @@ fn tool_team_run_start(
         .get("max_concurrency")
         .and_then(Value::as_u64)
         .unwrap_or(4) as usize;
-    let idle_timeout_s = arguments
-        .get("idle_timeout_s")
-        .and_then(Value::as_u64)
-        .unwrap_or(120);
-    if max_concurrency == 0 || idle_timeout_s == 0 {
-        return Err("max_concurrency and idle_timeout_s must be positive".into());
+    if max_concurrency == 0 {
+        return Err("max_concurrency must be positive".into());
     }
-    let prepared =
-        prepare_team_run_start(store, id, max_concurrency).map_err(|error| error.to_string())?;
-    let execution_space = resolved.execution_space_context.clone();
-    let project_context = resolved.context.clone();
-    std::thread::spawn(move || {
-        if let Err(error) = drive_prepared_team_run(
-            prepared,
-            execution_space,
-            project_context,
-            max_concurrency,
-            Duration::from_secs(idle_timeout_s),
-            None,
-        ) {
-            eprintln!("team-run MCP start failed: {error}");
-        }
-    });
+    let node_daemon = delegate_team_run_to_node_daemon(store, resolved, id, max_concurrency)
+        .map_err(|error| error.to_string())?;
     let run = latest_team_run(store, id).map_err(|error| error.to_string())?;
-    Ok(json!({"team_run": run, "dashboard_url": team_dashboard_url(store, resolved, id)}))
+    Ok(
+        json!({"team_run": run, "node_daemon": node_daemon, "dashboard_url": team_dashboard_url(store, resolved, id)}),
+    )
 }
 
 fn tool_team_run_cancel(
@@ -881,21 +990,6 @@ fn tool_mission_update_context(store: &HarnessStore, arguments: &Value) -> Resul
         store,
         required_str(arguments, "mission_id")?,
         required_str(arguments, "context")?,
-    )
-    .map(|mission| json!(mission))
-    .map_err(|error| error.to_string())
-}
-
-fn tool_mission_team_link(
-    store: &HarnessStore,
-    arguments: &Value,
-    link: bool,
-) -> Result<Value, String> {
-    revise_mission_team_link(
-        store,
-        required_str(arguments, "mission_id")?,
-        required_str(arguments, "team_id")?,
-        link,
     )
     .map(|mission| json!(mission))
     .map_err(|error| error.to_string())
@@ -1001,16 +1095,18 @@ fn tool_team_run_create(
             initial_work: optional_str(member, "initial_work")?,
         });
     }
-    let agent_team_id = optional_str(arguments, "agent_team_id")?;
+    let agent_team_id = required_non_empty_str(arguments, "agent_team_id")?.to_string();
     if members.is_empty() {
-        if let Some(team_id) = agent_team_id.as_deref() {
-            members = team_member_specs_from_definition(store, team_id)
-                .map_err(|error| error.to_string())?;
-        }
+        members = team_member_specs_from_definition(store, &agent_team_id)
+            .map_err(|error| error.to_string())?;
     }
     let created = create_team_run(
         store,
         resolved.context.as_ref(),
+        resolved
+            .execution_space_context
+            .as_ref()
+            .map(|space| space.id.as_str()),
         optional_str(arguments, "execution_root")?,
         objective,
         budget_limit_usd,
@@ -1019,17 +1115,17 @@ fn tool_team_run_create(
             .unwrap_or("mcp"),
         optional_str(arguments, "host_thread_id")?,
         optional_str(arguments, "previous_run_id")?,
-        agent_team_id,
-        optional_str(arguments, "mission_id")?,
-        optional_str(arguments, "wave_id")?,
+        Some(agent_team_id),
+        None,
+        None,
         &members,
     )
     .map_err(|error| error.to_string())?;
     Ok(json!({
         "team_run_id": created.team_run.id,
         "member_run_ids": created.team_run.member_run_ids,
-        "mission_id": created.team_run.mission_id,
-        "wave_id": created.team_run.wave_id,
+        "mission_id": team_run_mission_id(store, &created.team_run).map_err(|error| error.to_string())?,
+        "wave_id": null,
         "execution_root": created.team_run.execution_root,
         "member_runs": created.member_runs,
         "works": created.works,
@@ -1146,7 +1242,7 @@ fn tool_team_run_list(store: &HarnessStore, arguments: &Value) -> Result<Value, 
     let runs: Vec<_> = runs
         .into_iter()
         .filter(|run| match project_binding_id.as_deref() {
-            Some(wanted) => run.project_binding_id.as_deref() == Some(wanted),
+            Some(wanted) => run.project_binding_id == wanted,
             None => true,
         })
         .filter(|run| match status_filter {
@@ -1486,30 +1582,6 @@ fn tool_definitions() -> Value {
             }
         },
         {
-            "name": "mission_link_team",
-            "description": "Link an independent reusable AgentTeam to a Mission without transferring lifecycle ownership.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "mission_id": {"type": "string"},
-                    "team_id": {"type": "string"}
-                },
-                "required": ["mission_id", "team_id"]
-            }
-        },
-        {
-            "name": "mission_unlink_team",
-            "description": "Detach a Mission relation without closing, archiving, or deleting the AgentTeam.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "mission_id": {"type": "string"},
-                    "team_id": {"type": "string"}
-                },
-                "required": ["mission_id", "team_id"]
-            }
-        },
-        {
             "name": "mission_close",
             "description": "Complete a Mission with an explicit outcome. Completed Missions are immutable; linked Team lifecycle is unchanged. Wave gate acceptance is no longer required (ADR 0051) — record a closeout_evidence Mission Log entry beforehand by convention.",
             "inputSchema": {
@@ -1598,16 +1670,15 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "team_run_create",
-            "description": "Create a standalone or Mission-scoped Agent Team run. Prefer agent_team_id + mission_id with no wave_id; members can come from the stable team definition. wave_id is legacy direct-Wave compatibility only.",
+            "description": "Create one runtime attempt from a required flat AgentTeam. Mission, ExecutionNode, and Project Binding are derived from the durable Team and selected execution context; members can come from the Team definition.",
             "inputSchema": {
                 "type": "object",
+                "additionalProperties": false,
                 "properties": {
                     "objective": {"type": "string", "minLength": 1, "description": "Durable TeamRun context. It never silently assigns the same responsibility to every member."},
                     "budget_limit_usd": {"type": "number", "minimum": 0, "description": "Optional budget cap in USD, recorded on the run."},
-                    "previous_run_id": {"type": "string", "description": "Optional previous attempt id. For a linked native Wave it must belong to the same Mission/Wave."},
-                    "agent_team_id": {"type": "string", "description": "Stable independent AgentTeam definition. It must be linked when mission_id is supplied."},
-                    "mission_id": {"type": "string", "description": "Optional durable Mission relation. Mission-only is the primary long-lived team path."},
-                    "wave_id": {"type": "string", "description": "Legacy direct-Wave executor compatibility only."},
+                    "previous_run_id": {"type": "string", "description": "Optional previous attempt id; it must belong to the same durable AgentTeam."},
+                    "agent_team_id": {"type": "string", "minLength": 1, "description": "Required durable flat AgentTeam identity."},
                     "execution_root": {"type": "string", "minLength": 1, "description": "Optional TeamRun execution root. Must be the selected project_root or a Git worktree sharing its git common directory; defaults to project_root."},
                     "host_surface": {"type": "string", "minLength": 1, "description": "Exact provider-native Host surface, for example codex-app. Defaults to mcp when the calling Host does not bind itself."},
                     "host_thread_id": {"type": "string", "minLength": 1, "description": "Exact native Host task/session id. Required for Plugin safe-boundary delivery to this Host."},
@@ -1634,7 +1705,7 @@ fn tool_definitions() -> Value {
                         }
                     }
                 },
-                "required": ["objective"]
+                "required": ["objective", "agent_team_id"]
             }
         },
         {
@@ -1766,6 +1837,60 @@ fn tool_definitions() -> Value {
                 },
                 "required": ["team_run_id", "delivery_id", "supervisor_id", "supervisor_generation"]
             }
+        },
+        {
+            "name": "work_delegation_create",
+            "description": "Atomically create a cross-Team WorkDelegation and one root Work in the target Team's sole active TeamRun. The source owner retains integration responsibility.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "source_team_run_id": {"type": "string", "minLength": 1},
+                    "source_work_id": {"type": "string", "minLength": 1},
+                    "expected_version": {"type": "integer", "minimum": 1},
+                    "target_agent_team_id": {"type": "string", "minLength": 1},
+                    "target_title": {"type": "string", "minLength": 1},
+                    "target_context_markdown": {"type": "string"},
+                    "target_completion_criteria_markdown": {"type": "string", "minLength": 1},
+                    "target_priority": {"type": "string", "enum": ["low", "normal", "high", "urgent"]},
+                    "target_eligible_member_ids": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                    "target_work_id": {"type": "string", "minLength": 1},
+                    "delegation_id": {"type": "string", "minLength": 1},
+                    "gates": {"type": "array", "items": {"type": "object"}},
+                    "event_id": {"type": "string", "minLength": 1},
+                    "actor_id": {"type": "string", "minLength": 1},
+                    "actor_name": {"type": "string", "minLength": 1},
+                    "caused_by_message_id": {"type": "string", "minLength": 1},
+                    "idempotency_key": {"type": "string", "minLength": 1},
+                    "duplicate_ok": {"type": "boolean"}
+                },
+                "required": ["source_team_run_id", "source_work_id", "expected_version", "target_agent_team_id", "target_title", "target_completion_criteria_markdown"]
+            }
+        },
+        {
+            "name": "work_delegation_list",
+            "description": "List current cross-Team WorkDelegations, optionally filtered by source Work, target AgentTeam, or state.",
+            "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"source_work_id": {"type": "string", "minLength": 1}, "target_agent_team_id": {"type": "string", "minLength": 1}, "state": {"type": "string", "enum": ["active", "blocked", "completed", "failed", "cancelled"]}}}
+        },
+        {
+            "name": "work_delegation_show",
+            "description": "Show one WorkDelegation with its append-only transition events.",
+            "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"delegation_id": {"type": "string", "minLength": 1}}, "required": ["delegation_id"]}
+        },
+        {
+            "name": "work_delegation_cancel",
+            "description": "Cancel one active or blocked WorkDelegation with optimistic version fencing; the target Work remains independently auditable.",
+            "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"delegation_id": {"type": "string", "minLength": 1}, "expected_version": {"type": "integer", "minimum": 1}, "reason": {"type": "string", "minLength": 1}, "event_id": {"type": "string", "minLength": 1}, "actor_id": {"type": "string", "minLength": 1}, "actor_name": {"type": "string", "minLength": 1}, "caused_by_message_id": {"type": "string", "minLength": 1}, "idempotency_key": {"type": "string", "minLength": 1}, "duplicate_ok": {"type": "boolean"}}, "required": ["delegation_id", "expected_version", "reason"]}
+        },
+        {
+            "name": "execution_node_list",
+            "description": "List stable ExecutionNodes with project registrations and current NodeDaemon lease generations.",
+            "inputSchema": {"type": "object", "additionalProperties": false, "properties": {}}
+        },
+        {
+            "name": "execution_node_show",
+            "description": "Show one ExecutionNode with its registrations and current NodeDaemon lease.",
+            "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"node_id": {"type": "string", "minLength": 1}}, "required": ["node_id"]}
         },
         {
             "name": "team_run_add_member",

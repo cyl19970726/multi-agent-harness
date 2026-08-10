@@ -44,15 +44,13 @@ The execution Workbench uses these native safe-action families:
 ```text
 POST /v1/missions
 POST /v1/missions/{id}/context
-POST /v1/missions/{id}/link-team
 POST /v1/missions/{id}/close
-POST /v1/waves
-POST /v1/waves/{id}/context
-POST /v1/waves/{id}/advance
-POST /v1/waves/{id}/gate
+POST /v1/missions/{id}/log
+POST /v1/teams
 POST /v1/team-runs
 POST /v1/team-runs/{id}/start
 POST /v1/team-runs/{id}/messages
+POST /v1/work-delegations
 POST /v1/team-runs/{id}/messages/{message_id}/ack
 POST /v1/team-runs/{id}/messages/{message_id}/reconcile-delivery
 POST /v1/team-runs/{id}/members/{member_run_id}/steer
@@ -112,9 +110,9 @@ empty offline workspace (write actions disabled).
 
 The current execution surfaces show:
 
-- Missions: durable Markdown context, linked Teams, ordered Host-plan Wave
+- Missions: durable Markdown context, their Mission-owned Team, ordered Host-plan Wave
   revisions, explicit judgments, and closeout;
-- Agent Teams: independent and Mission-scoped long-lived runs, including
+- Agent Teams: one flat Node-placed Team per Mission with long-lived runs, including
   historical direct-Wave compatibility rows;
 - Team War Room: member presence, assignments, unified activity, messages,
   typed authors/recipients, claim/provider receipt/ACK, current Supervisor,

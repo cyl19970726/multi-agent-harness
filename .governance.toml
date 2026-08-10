@@ -118,3 +118,45 @@ context_markers = [
     "retired",
     "superseded",
 ]
+
+[[document_invariants]]
+name = "mission-team-bijection"
+paths = [
+    "AGENTS.md",
+    "docs/mental/agent-firm-mental-model.md",
+    "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
+]
+required_terms = [
+    "flat AgentTeams",
+    "Every Team belongs to exactly one Mission",
+    "No two AgentTeams may reference the same Mission",
+    "immutable `node_id`",
+]
+forbidden_terms = [
+    "recursive AgentTeams",
+    "recursive AgentTeam Organization",
+    "Mission <-> independent AgentTeam",
+    "zero or more Agent Teams",
+    "optional `machine_id`",
+    "`machine_id` field on Agent Teams",
+]
+
+[[document_invariants]]
+name = "machine-node-daemon-authority"
+paths = [
+    "AGENTS.md",
+    "docs/mental/agent-firm-mental-model.md",
+    "docs/current/architecture/multi-team-supervisor-daemon.md",
+]
+required_terms = [
+    "one machine-scoped NodeDaemon",
+    "`NodeDaemonLease` is machine-scoped",
+    "all local Teams",
+    "registered Execution Spaces",
+    "never scoped to one Execution Space",
+]
+forbidden_terms = [
+    "one daemon per Team",
+    "one daemon per TeamRun",
+    "`NodeDaemonLease` is scoped to one Execution Space",
+]

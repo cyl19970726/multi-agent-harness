@@ -1,7 +1,7 @@
 # Agent Workbench
 
 The Agent Workbench is the operator UI for Star Harness. Its job is to make
-Mission/Wave Host planning, linked Agent Teams, shared Works, execution state,
+Mission/Wave Host planning, each Mission's flat AgentTeam, shared Works, execution state,
 artifacts, advance decisions, and capability gaps inspectable
 without raw JSON or duplicated provider transcripts.
 
@@ -13,7 +13,7 @@ module/path name in `apps/agent-dashboard`, snapshots, and commands.
 ```text
 Mission
   -> ordered Host-plan Wave
-  <-> independent Agent Team -> Mission-scoped TeamRun
+  -> one flat AgentTeam -> Team/Node/Project-fenced TeamRun
       -> shared Works -> Member execution
   -> Dynamic Workflow | Host work
   -> observable actions/messages/artifacts/outcome
@@ -23,18 +23,18 @@ Mission
 
 The Workbench must not require or introduce a dependency graph for Mission,
 Wave, or Agent Team. Retired coordination pages are not part of active
-navigation or authoring. Agent Teams navigation lists both standalone and
-Mission-scoped runs; only Mission Canvas excludes unrelated runs.
+navigation or authoring. Agent Teams navigation lists Mission-owned Teams and
+their runs; Mission Canvas shows only its owning Team.
 
 ## Key Questions
 
 | Question | Workbench answer |
 | --- | --- |
-| What durable outcome are we pursuing? | Mission header with Markdown context, status, linked teams, and closeout summary. |
+| What durable outcome are we pursuing? | Mission header with Markdown context, status, owning Team, and closeout summary. |
 | What should happen next? | Ordered Wave list with full Host context, revision, carry-over, outcome, and next action. |
-| Which execution is active? | Mission-linked TeamRuns/Workflows/Host work with honest native status; Wave does not own them. |
+| Which execution is active? | Mission-owned TeamRuns, Workflows, and Host work with honest native status; Wave does not own them. |
 | Who owns Agent Team work? | Work owner, status, readiness, WorkDelivery receipt, submission, and review state. |
-| Which service owns the live Team? | Current Supervisor generation, heartbeat, loopback locator, reconnect state, and fenced control availability. |
+| Which service owns the live Team? | Machine NodeDaemon generation plus its parent-fenced Team Supervisor generation, heartbeat, loopback locator, reconnect state, and control availability. |
 | Who sent this message? | Typed Host, Member, stable Agent, Operator, or Service identity; UI never infers authorship from display text. |
 | What is each member doing? | Provider/model, lifecycle, current explicit action, pressure, heartbeat, and blockers. |
 | What did a Dynamic Workflow produce? | Workflow steps, artifact manifests, typed result/verdict, and patch state. |
@@ -81,9 +81,9 @@ flowchart TD
 | View | Purpose | Safe actions |
 | --- | --- | --- |
 | Mission list | Find active, blocked, completed, and proposed Missions. | create/open Mission |
-| Mission detail | Read durable context, linked teams, ordered Host-plan Waves, and outcome. | link/create team, create/update/advance Wave, close |
+| Mission detail | Read durable context, its one Team, ordered Host-plan Waves, and outcome. | create Team, append Mission Log, close |
 | Wave timeline | Compare Host plan revisions, carry-over, evidence, and advance outcomes. | update/advance Wave, open linked execution |
-| Agent Team | Operate one standalone or Mission-scoped TeamRun that may span Waves. | create/assign/claim/review Works, message, inspect runtime, add/close/resume members |
+| Agent Team | Operate one Mission-owned, single-Node TeamRun that may span Host-plan Waves. | create/assign/claim/review Works, delegate, message, inspect runtime, add/close/resume members |
 | Works | Inspect assigned, unassigned, ready, active, blocked, review, done, and child Work without reading chat. | create, assign, claim, start, block, submit, request changes, accept, release, cancel, delegate |
 | Member detail | Inspect one MemberRun lane, My Works, ready pool, mailbox, native-session locator, and actions. | claim/start/submit Work, message, inspect, interrupt/close/resume when supported |
 | Dynamic Workflow | Inspect one WorkflowRun and its steps/artifacts/patches. | apply/reject patch, cite result from Host plan |
@@ -95,7 +95,7 @@ flowchart TD
 The target ownership chain is:
 
 ```text
-Mission <-> AgentTeam -> Mission-scoped AgentTeamRun
+Mission -> one AgentTeam -> AgentTeamRun(agent_team_id, execution_node_id, project_binding_id)
   -> Work -> owner + WorkEvents + WorkDelivery
   -> MemberRun + native session execution
   -> optional Work-linked TeamMessages
@@ -114,7 +114,7 @@ submission, and acceptance as separate facts.
 | Workbench need | Required contract |
 | --- | --- |
 | Mission/Wave | ids, Mission status/context, ordered Wave index, Markdown context, revision, Host outcome/advance |
-| Executions | independent TeamRun/WorkflowRun ids, status, lineage, outcomes, and explicit Mission/context relations |
+| Executions | frozen TeamRun/WorkflowRun ids, status, lineage, outcomes, and explicit Mission/context relations |
 | Team Works | Work id/version, owner, status, readiness, claim policy, blockers, parent/child, results, artifacts, and checks |
 | Work delivery | WorkEvent id, target MemberRun, claim, provider receipt/failure, invalidation, retry, and reconciliation; Work claim/start is the semantic responsibility acknowledgement |
 | Member state | lifecycle, provider/model, latest explicit action, heartbeat, queue pressure |
@@ -181,7 +181,7 @@ exists yet.
 Workbench acceptance requires fixtures plus at least one live Mission showing:
 
 1. ordered Waves without a legacy dependency graph;
-2. at least one Mission-linked AgentTeam and Mission-scoped TeamRun with
+2. the Mission's flat AgentTeam and a Team/Node/Project-fenced TeamRun with
    assigned, unassigned, claimed, delivered, reviewed, and child Work data;
 3. at least one independent WorkflowRun/Host-work projection or an explicit
    unsupported-state fixture;

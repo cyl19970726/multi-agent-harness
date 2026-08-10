@@ -77,7 +77,7 @@ Gate, or universal Task Graph.
 ```text
 Agent identity
   ├─ Organization profile and authority
-  ├─ reusable AgentTeam membership
+  ├─ stable membership in one Mission-owned AgentTeam
   └─ MemberRun
        ├─ provider-native session
        ├─ durable coordination address

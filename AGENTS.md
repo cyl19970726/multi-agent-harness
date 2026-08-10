@@ -14,7 +14,7 @@ this file and a canonical doc conflict, the canonical doc wins — fix this file
 
 Star Harness is an AI Company OS with two primary systems: a Notion-like Docs
 system for company memory and operating structure, and a mixed Organization of
-humans, durable AgentMembers arranged in recursive AgentTeams, external
+humans, durable AgentMembers arranged in flat AgentTeams, external
 collaborators, and services. Documents create or relate Work and Approvals;
 accountable actors execute them; results, evidence, metrics, and financial
 effects return to the originating records. See
@@ -26,16 +26,22 @@ and MCP are the shared execution foundation. Their native relations are:
 
 ```text
 Mission -> ordered Host-plan Wave
-Mission <-> independent AgentTeam
+Mission <-> exactly one flat AgentTeam
+AgentTeam -> immutable node_id -> one machine-scoped NodeDaemon
 AgentTeamRun -> MemberRun -> provider-native session
 ```
 
 `Mission` is durable intent; `Wave` is a lightweight, versioned Markdown record
 of the Host's current plan and judgment — not an executor container or
 synchronization barrier. An AgentTeamRun may span multiple Waves while its
-MemberRuns and native sessions continue. Docs plus recursive AgentTeam
-Organization is the accepted target product direction (ADR 0052); current
-StandingAgent remains compatibility implementation truth. Company Work is a
+MemberRuns and native sessions continue. Every Team belongs to exactly one Mission,
+one Mission owns exactly one Team, and a Team never spans machines.
+No two AgentTeams may reference the same Mission. `NodeDaemonLease` is machine-scoped authority for all local Teams across registered Execution Spaces;
+each machine has one machine-scoped NodeDaemon and the lease is never scoped to one Execution Space.
+Cross-Team responsibility uses explicit WorkDelegation rather than parent/child
+Team topology. Docs plus flat AgentTeam Organization is the accepted product
+direction; ADR 0052 is superseded historical evidence. Current StandingAgent
+remains compatibility implementation truth. Company Work is a
 read-only aggregate over authoritative TeamWork and must never regain a second
 task ledger or mutation path. Repository self-hosting remains the first
 execution-foundation scenario.
@@ -121,8 +127,9 @@ doc carries the contract behind each rule.
     being implemented; do not claim planned objects or fields exist until
     schemas, stores, APIs, and acceptance checks prove them. Keep the
     design-contract vs implemented-schema distinction explicit. In particular,
-    ADR 0052's AgentMember identity and recursive AgentTeam Organization remain
-    staged contracts. The unified Work kernel is the shipped authority: do not
+    AgentTeam authority is flat, Mission-Team identity is one-to-one, and every
+    Team has immutable `node_id` placement under one machine-scoped NodeDaemon.
+    The unified Work kernel is the shipped authority: do not
     extend the compatibility StandingAgent-to-AgentMember join or recreate a
     Company task ledger, migration fallback, or dual-write Work path.
 11. **Skill optionality.** Skills are optional capabilities, never the

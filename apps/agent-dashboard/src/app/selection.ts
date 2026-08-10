@@ -84,6 +84,8 @@ export interface SelectionState {
   teamWorkId?: string;
   /** URL-backed filters for the cross-TeamRun Team Works aggregate. */
   workTeamId?: string;
+  workMissionId?: string;
+  workNodeId?: string;
   workHostId?: string;
   workMemberId?: string;
   workStatus?: string;
@@ -268,6 +270,8 @@ function selectionFromSearch(search: string, pathname = "/"): SelectionState {
   if (teamWork) next.teamWorkId = teamWork;
   const filterParams = [
     ["workTeam", "workTeamId"],
+    ["workMission", "workMissionId"],
+    ["workNode", "workNodeId"],
     ["workHost", "workHostId"],
     ["workMember", "workMemberId"],
     ["workStatus", "workStatus"],
@@ -347,6 +351,8 @@ export function syncSelectionToLocation(selection: SelectionState): void {
   setOrDelete("orgExpanded", selection.orgExpanded);
   setOrDelete("teamWork", selection.teamWorkId);
   setOrDelete("workTeam", selection.workTeamId);
+  setOrDelete("workMission", selection.workMissionId);
+  setOrDelete("workNode", selection.workNodeId);
   setOrDelete("workHost", selection.workHostId);
   setOrDelete("workMember", selection.workMemberId);
   setOrDelete("workStatus", selection.workStatus);
@@ -398,6 +404,8 @@ const selectionCompareKeys = [
   "orgExpanded",
   "teamWorkId",
   "workTeamId",
+  "workMissionId",
+  "workNodeId",
   "workHostId",
   "workMemberId",
   "workStatus",

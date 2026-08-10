@@ -16,9 +16,7 @@ use std::time::{Duration, Instant};
 
 mod fake_provider;
 mod firm_env;
-use firm_env::{
-    collect_sse_data, current_project_id, run_firm, run_firm_with_env, ServeHandle, TempHome,
-};
+use firm_env::{current_project_id, run_firm, run_firm_with_env, ServeHandle, TempHome};
 
 const COMPANY_OS_TEST_TOKEN: &str = "mission-wave-company-os-test-capability";
 
@@ -80,24 +78,20 @@ fn force_team_run_reviewing(home: &TempHome, project_id: &str, run_id: &str, mis
     use std::io::Write as _;
 
     let path = home.spaces_dir().join(project_id).join("team_runs.jsonl");
+    let mut row = std::fs::read_to_string(&path)
+        .expect("read team run ledger")
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .rfind(|candidate| candidate["id"].as_str() == Some(run_id))
+        .expect("current TeamRun row");
+    row["status"] = serde_json::json!("reviewing");
+    row["updated_at"] = serde_json::json!("unix-ms:2");
+    let _ = mission_id;
     let mut ledger = std::fs::OpenOptions::new()
         .append(true)
         .open(path)
         .expect("open team run ledger");
-    writeln!(
-        ledger,
-        "{}",
-        serde_json::json!({
-            "id": run_id,
-            "mission_id": mission_id,
-            "host_surface": "test",
-            "objective": "accepted attempt",
-            "status": "reviewing",
-            "created_at": "unix-ms:1",
-            "updated_at": "unix-ms:2",
-        })
-    )
-    .expect("append reviewing team run");
+    writeln!(ledger, "{row}").expect("append reviewing team run");
 }
 
 /// Seed one historical Wave row directly, bypassing the retired `wave
@@ -225,6 +219,38 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
             "Own persistent implementation work",
         ],
     );
+    let mission = run_json(
+        &home,
+        &project_id,
+        &[
+            "mission",
+            "create",
+            "--id",
+            "mission-host-plan",
+            "--title",
+            "Ship host plan",
+            "--objective",
+            "Prove members can continue across plan revisions",
+            "--context",
+            "# Mission context\n\nKeep provider-native sessions.",
+            "--json",
+        ],
+    );
+    let node = run_json(&home, &project_id, &["node", "init"]);
+    let node_id = node["id"].as_str().expect("node id").to_string();
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "node",
+            "project",
+            "register",
+            "--node-id",
+            &node_id,
+            "--project-binding-id",
+            &project_id,
+        ],
+    );
     run_json(
         &home,
         &project_id,
@@ -237,50 +263,21 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
             "Platform Team",
             "--description",
             "Long-lived Mission team",
-            "--lead",
-            "host",
+            "--mission-id",
+            "mission-host-plan",
+            "--host-agent-id",
+            "agent-build",
+            "--node-id",
+            &node_id,
             "--member",
             "agent-build",
             "--member",
             "agent-review",
         ],
     );
-    let mission = run_json(
-        &home,
-        &project_id,
-        &[
-            "mission",
-            "create",
-            "--id",
-            "mission-host-plan",
-            "--title",
-            "Ship host plan",
-            "--objective",
-            "Prove members can continue across Waves",
-            "--context",
-            "# Mission context\n\nKeep provider-native sessions.",
-            "--json",
-        ],
-    );
     assert!(mission["context"]
         .as_str()
         .is_some_and(|context| context.contains("provider-native")));
-    let linked = run_json(
-        &home,
-        &project_id,
-        &[
-            "mission",
-            "link-team",
-            "--id",
-            "mission-host-plan",
-            "--team-id",
-            "team-platform",
-        ],
-    );
-    assert_eq!(
-        linked["agent_team_ids"],
-        serde_json::json!(["team-platform"])
-    );
     // Host plan judgment is now a Mission Log entry, not a Wave (ADR 0051).
     let judgment_1 = run_json(
         &home,
@@ -311,8 +308,6 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
             "Work across Host plan revisions",
             "--agent-team-id",
             "team-platform",
-            "--mission-id",
-            "mission-host-plan",
             "--resume-member",
             "PrimaryBuilder:codex-session-1",
             "--member-owned-path",
@@ -327,7 +322,12 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
         Some("team-platform")
     );
     assert_eq!(
-        created["team_run"]["mission_id"].as_str(),
+        run_json(
+            &home,
+            &project_id,
+            &["team", "show", "--id", "team-platform"]
+        )["mission_id"]
+            .as_str(),
         Some("mission-host-plan")
     );
     assert_eq!(
@@ -337,7 +337,7 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
     assert_eq!(
         created["member_runs"][0]["owned_paths"],
         serde_json::json!(["crates", "apps"]),
-        "reusable team identity survives member-owned-path overrides"
+        "Mission-owned team identity survives member-owned-path overrides"
     );
     assert_eq!(
         created["member_runs"][1]["agent_member_id"].as_str(),
@@ -518,6 +518,21 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
         &home,
         &project_id,
         &[
+            "mission",
+            "create",
+            "--id",
+            "mission-other",
+            "--title",
+            "Other Mission",
+            "--objective",
+            "Retry isolation fixture",
+            "--json",
+        ],
+    );
+    run_json(
+        &home,
+        &project_id,
+        &[
             "team",
             "create",
             "--id",
@@ -526,22 +541,14 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
             "Other Team",
             "--description",
             "Retry isolation fixture",
-            "--lead",
-            "host",
+            "--mission-id",
+            "mission-other",
+            "--host-agent-id",
+            "agent-build",
+            "--node-id",
+            &node_id,
             "--member",
             "agent-build",
-        ],
-    );
-    run_json(
-        &home,
-        &project_id,
-        &[
-            "mission",
-            "link-team",
-            "--id",
-            "mission-host-plan",
-            "--team-id",
-            "team-other",
         ],
     );
     let cross_team_retry = run_firm(
@@ -556,8 +563,6 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
             "invalid cross-team retry",
             "--agent-team-id",
             "team-other",
-            "--mission-id",
-            "mission-host-plan",
             "--previous",
             team_run_id,
         ],
@@ -567,21 +572,6 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
         String::from_utf8_lossy(&cross_team_retry.stderr).contains("not for the same agent team")
     );
 
-    run_json(
-        &home,
-        &project_id,
-        &[
-            "mission",
-            "create",
-            "--id",
-            "mission-other",
-            "--title",
-            "Other Mission",
-            "--objective",
-            "Retry isolation fixture",
-            "--json",
-        ],
-    );
     // Seeded historical, not created -- proves origin_wave_id cross-Mission
     // validation still works against a pre-cutover row.
     seed_historical_wave(&home, &project_id, "wave-other", "mission-other", 1, "host");
@@ -610,18 +600,8 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
     assert!(!cross_mission_origin.status.success());
     assert!(String::from_utf8_lossy(&cross_mission_origin.stderr)
         .contains("not TeamRun Mission mission-host-plan"));
-    run_json(
-        &home,
-        &project_id,
-        &[
-            "mission",
-            "link-team",
-            "--id",
-            "mission-other",
-            "--team-id",
-            "team-platform",
-        ],
-    );
+    // Mission is immutable Team metadata; callers cannot rebind a TeamRun by
+    // supplying a different Mission at attempt creation.
     let cross_mission_retry = run_firm(
         &home,
         home.base(),
@@ -641,9 +621,8 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
         ],
     );
     assert!(!cross_mission_retry.status.success());
-    assert!(
-        String::from_utf8_lossy(&cross_mission_retry.stderr).contains("not in the same mission")
-    );
+    assert!(String::from_utf8_lossy(&cross_mission_retry.stderr)
+        .contains("mission_id and wave_id were removed"));
 
     let closeout = run_json(
         &home,
@@ -675,7 +654,7 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
             "--id",
             "mission-host-plan",
             "--outcome",
-            "Mission completed while the reusable team remains independent",
+            "Mission completed while its Team history remains durable",
             "--json",
         ],
     );
@@ -700,7 +679,7 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
     assert_eq!(
         cancelled["status"].as_str(),
         Some("cancelled"),
-        "Mission closeout must not prevent the independent TeamRun from settling"
+        "Mission closeout must not prevent its TeamRun from settling"
     );
 }
 
@@ -961,6 +940,59 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
         &home,
         &project_id,
         &[
+            "agent",
+            "create",
+            "--id",
+            "agent-alpha-host",
+            "--name",
+            "Alpha Host",
+            "--role",
+            "host",
+            "--provider",
+            "codex",
+        ],
+    );
+    let node = run_json(&home, &project_id, &["node", "init"]);
+    let node_id = node["id"].as_str().expect("node id").to_string();
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "node",
+            "project",
+            "register",
+            "--node-id",
+            &node_id,
+            "--project-binding-id",
+            &project_id,
+        ],
+    );
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "team",
+            "create",
+            "--id",
+            "team-alpha",
+            "--name",
+            "Alpha Team",
+            "--description",
+            "Flat retry Team",
+            "--mission-id",
+            "mission-alpha",
+            "--host-agent-id",
+            "agent-alpha-host",
+            "--node-id",
+            &node_id,
+            "--member",
+            "agent-alpha-host",
+        ],
+    );
+    run_json(
+        &home,
+        &project_id,
+        &[
             "mission",
             "log",
             "append",
@@ -1085,7 +1117,7 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
         "/v1/team-runs",
         &serde_json::json!({
             "objective": "first attempt",
-            "mission_id": "mission-alpha",
+            "agent_team_id": "team-alpha",
             "members": [{"name": "lead", "role": "integrator", "provider": "kimi", "initial_work": "Integrate the first attempt and submit evidence for Host review."}],
         }),
     );
@@ -1094,10 +1126,7 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
         .as_str()
         .unwrap()
         .to_string();
-    assert_eq!(
-        body["result"]["team_run"]["mission_id"].as_str(),
-        Some("mission-alpha")
-    );
+    assert_eq!(body["result"]["team_run"]["agent_team_id"], "team-alpha");
     assert!(body["result"]["team_run"]["wave_id"].is_null());
     assert!(body["result"]["team_run"].get("task_ids").is_none());
     let member_id = body["result"]["member_runs"][0]["id"]
@@ -1212,7 +1241,7 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
         "/v1/team-runs",
         &serde_json::json!({
             "objective": "replacement attempt",
-            "mission_id": "mission-alpha",
+            "agent_team_id": "team-alpha",
             "previous_run_id": attempt_a,
             "members": [{"name": "lead", "role": "integrator", "provider": "kimi"}],
         }),
@@ -1355,7 +1384,7 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
 }
 
 #[test]
-fn http_console_starts_native_team_run_and_streams_transient_thinking() {
+fn http_console_delegates_native_team_run_to_node_daemon() {
     let home = TempHome::new("mission-wave-console-start");
     let project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
@@ -1379,13 +1408,64 @@ fn http_console_starts_native_team_run_and_streams_transient_thinking() {
         }),
     );
     assert_eq!(status, 200, "body: {body}");
-    // Mission-only (no wave_id) is the primary TeamRun creation path now
-    // that Wave no longer owns execution attempts (ADR 0034/0051).
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "agent",
+            "create",
+            "--id",
+            "agent-console-host",
+            "--name",
+            "Console Host",
+            "--role",
+            "host",
+            "--provider",
+            "codex",
+        ],
+    );
+    let node = run_json(&home, &project_id, &["node", "init"]);
+    let node_id = node["id"].as_str().expect("node id").to_string();
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "node",
+            "project",
+            "register",
+            "--node-id",
+            &node_id,
+            "--project-binding-id",
+            &project_id,
+        ],
+    );
+    run_json(
+        &home,
+        &project_id,
+        &[
+            "team",
+            "create",
+            "--id",
+            "team-console",
+            "--name",
+            "Console Team",
+            "--description",
+            "Flat Console Team",
+            "--mission-id",
+            "mission-console",
+            "--host-agent-id",
+            "agent-console-host",
+            "--node-id",
+            &node_id,
+            "--member",
+            "agent-console-host",
+        ],
+    );
     let (status, body) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
             "objective": "Complete through the Console start endpoint",
-            "mission_id": "mission-console",
+            "agent_team_id": "team-console",
             "members": [{"name": "worker", "role": "implementer", "provider": "kimi", "initial_work": "Run the fake provider and return the requested evidence."}],
         }),
     );
@@ -1403,31 +1483,37 @@ fn http_console_starts_native_team_run_and_streams_transient_thinking() {
         .expect("Work id")
         .to_string();
 
-    let mut sse = serve.open_sse(&format!("?project={project_id}"));
+    let daemon = run_firm_with_env(
+        &home,
+        home.base(),
+        &["--project", &project_id, "daemon", "start"],
+        &[
+            ("KIMI_CODE_BIN", fake_kimi.as_str()),
+            ("FAKE_KIMI_RESULT", "done"),
+        ],
+    );
+    assert!(
+        daemon.status.success(),
+        "start NodeDaemon failed: {}",
+        String::from_utf8_lossy(&daemon.stderr)
+    );
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/start?project={project_id}"),
         &serde_json::json!({"max_concurrency": 1, "idle_timeout_s": 10}),
     );
     assert_eq!(status, 202, "body: {body}");
     assert_eq!(body["result"]["status"].as_str(), Some("running"));
+    assert_eq!(body["result"]["node_daemon"]["node_id"], node_id);
 
-    // The synchronous reservation makes duplicate starts fail even while the
-    // provider driver is still booting (or after it has already completed).
+    // Repeated adoption is idempotent at the NodeDaemon boundary.
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/start?project={project_id}"),
         &serde_json::json!({}),
     );
-    assert_eq!(status, 400, "body: {body}");
-
-    let frames = collect_sse_data(&mut sse, Duration::from_secs(8), 30);
-    assert!(
-        frames.iter().any(|frame| {
-            frame["kind"].as_str() == Some("thinking")
-                && frame["team_run_id"].as_str() == Some(run_id.as_str())
-                && frame["member_run_id"].as_str() == Some(member_id.as_str())
-                && frame["preview"].as_str() == Some("hidden reasoning")
-        }),
-        "transient activity frame missing: {frames:?}"
+    assert_eq!(status, 202, "body: {body}");
+    assert_eq!(
+        body["result"]["node_daemon"]["daemon_response"]["reused"],
+        true
     );
 
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -1442,7 +1528,15 @@ fn http_console_starts_native_team_run_and_streams_transient_thinking() {
                 member["id"].as_str() == Some(member_id.as_str())
                     && member["status"].as_str() == Some("idle")
             });
-        if idle {
+        let completed_turn = snapshot["member_actions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|action| {
+                action["member_run_id"].as_str() == Some(member_id.as_str())
+                    && action["action_type"].as_str() == Some("turn_completed")
+            });
+        if idle && completed_turn {
             break;
         }
         assert!(
@@ -1549,6 +1643,15 @@ fn http_console_starts_native_team_run_and_streams_transient_thinking() {
         }),
     );
     assert_eq!(status, 400, "body: {body}");
+    let stopped = run_firm(
+        &home,
+        home.base(),
+        &["--project", &project_id, "daemon", "stop"],
+    );
+    assert!(
+        stopped.status.success(),
+        "stop NodeDaemon failed: {stopped:?}"
+    );
 
     // The Host records closeout evidence in the Mission Log instead of a
     // Wave gate accepting the run (ADR 0051: an append-only log has nothing

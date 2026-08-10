@@ -16,7 +16,7 @@ The accepted product vision is:
 ```text
 Turn a project objective into agent-operable work:
 Mission -> ordered Host-plan Wave
-Mission <-> independent AgentTeam -> TeamRun -> MemberRun
+Mission -> one flat AgentTeam -> TeamRun -> MemberRun
   -> Harness coordination / native session refs / artifacts
   -> explicit Host advance -> Mission outcome
 ```
@@ -40,6 +40,7 @@ flowchart TD
   Vision[Product Vision]
   Mission[Mission]
   Wave[Native Wave]
+  Team[AgentTeam]
   TeamRun[AgentTeamRun]
   WorkflowRun[WorkflowRun]
   HostExec[Host execution]
@@ -59,7 +60,8 @@ flowchart TD
 
   Vision --> Mission
   Mission --> Wave
-  Mission --> TeamRun
+  Mission --> Team
+  Team --> TeamRun
   Wave -. plan explains .-> TeamRun
   Wave -. plan explains .-> WorkflowRun
   Wave -. plan explains .-> HostExec
@@ -87,7 +89,7 @@ flowchart TD
 
 ## Mission And Wave
 
-A `Mission` is the durable objective and relation boundary for reusable teams.
+A `Mission` is the durable objective and one-Team ownership boundary.
 A `Wave` is a lightweight, versioned Markdown record of the Host's current
 plan and judgment.
 
@@ -95,7 +97,8 @@ Rules:
 
 - a Mission owns objective, success interpretation, priority, and closeout
   standard;
-- a Mission may link zero or more independent AgentTeams;
+- a Mission owns exactly one flat AgentTeam, and a Team belongs to exactly one
+  Mission;
 - a Wave records changed facts, Work/member composition changes, blockers,
   carry-over, evidence, and the Host's advance outcome;
 - a Wave does not require or expose a legacy dependency graph as a product concept;
@@ -165,18 +168,21 @@ debt and cannot define another ownership path.
 
 ## Agent Team Objects
 
-`AgentTeamRun` is one standalone or Mission-scoped use of an independent team.
-It is not a standing organization and is not owned by one Wave.
+`AgentTeamRun` is one execution attempt of its required Mission-owned flat
+AgentTeam. It is not standalone, is not a standing organization, and is not
+owned by one historical Wave.
 
 | Object | Meaning | Rule |
 | --- | --- | --- |
-| `AgentTeamRun` | One standalone or Mission-scoped team execution. | May span Waves; every terminal run remains read-only history. |
+| `AgentTeam` | One Mission's flat execution agency with Host and immutable Node placement. | One Team equals one Mission; there is no parent/child Team topology. |
+| `AgentTeamRun` | One Team execution with frozen Team, Node, and Project Binding. | May span Waves; every terminal run remains read-only history. |
 | `MemberRun` | One member instance inside a run: role, provider, model, status, worktree, owned paths. | Exists only for that run; it is not a durable standing employee record. |
 | `Work` | TeamRun-scoped responsibility, owner, readiness, state, criteria and result. | Assignment, claim, block, submission and acceptance are Work operations governed by ADR 0050. |
-| `WorkOperation` | Crash-atomic Store replay row containing one WorkEvent, its complete resulting Work, and delivery creates/updates. | It prevents an event and its projection from becoming independently visible; Hosts still act on Work, not WorkOperation. |
+| `WorkOperation` | Crash-atomic Store replay row containing one WorkEvent, its complete resulting Work, delivery creates/updates, and target-caused WorkDelegation revisions. | It prevents Work, delivery, and cross-Team roll-up projections from becoming independently visible; Hosts still act on Work, not WorkOperation. |
 | `WorkDelivery` | Reliable delivery of one Work version to a Member runtime. | It reuses delivery machinery but is not authored conversation or Work ownership. |
 | `TeamMessage` | Run-scoped authored conversation envelope with delivery records and optional Work link. | Questions, answers, planning and coordination live here; it is not task state or a fake live-control protocol. |
-| `TeamSupervisorLease` | Latest-wins cross-process authority for one active TeamRun generation. | Owns provider transports, delivery claims, reconnect, and real Steer/Interrupt/Close routing; it is not a provider transcript. |
+| `ExecutionNode` / `NodeDaemonLease` | Stable machine identity and its one active daemon generation. | One NodeDaemon owns all local Teams and registered Project Bindings. |
+| `TeamSupervisorLease` | Latest-wins cross-process authority for one active TeamRun generation. | Parent-fenced by NodeDaemon generation; owns this run's transports, claims, reconnect, and real controls. |
 | `AgentMessageRoute` | Stable bridge from a reusable Agent Inbox message to one active MemberRun/TeamMessage. | Makes external Agent-addressed mail explicit and idempotent without collapsing Agent identity into MemberRun identity. |
 | `MemberAction` | Transitional Harness action row. Target use is limited to Harness-owned coordination/control facts. | Provider tool, command, file, chat, turn, and reasoning streams stay solely in the native provider session. |
 | `DelegationRun` | Attribution record for observed or orchestrated delegation. | Parent permissions, paths, and budgets bound the child. |
@@ -184,7 +190,8 @@ It is not a standing organization and is not owned by one Wave.
 
 Relationship rules:
 
-- a Mission may link multiple independent teams and create multiple TeamRuns;
+- a Mission owns one flat AgentTeam and may create multiple runs of that same
+  Team;
 - ownership is explained by the latest Work projection and the ordered
   WorkOperations that preserve its WorkEvent audit;
 - every message carries typed sender and recipient provenance; UI or MCP callers
@@ -260,11 +267,11 @@ deliberately different:
 
 - a Wave decision records the Host's `accepted | revise | blocked` judgment,
   actor/time, outcome summary, a short note, and useful artifact refs;
-- new AgentTeamRun and WorkflowRun records remain independent; a Wave does not
-  need or own an `accepted_run_id`. That field is legacy direct-executor
-  compatibility only;
-- a Mission outcome is based on its Wave gates and an explicit Mission-level
-  closeout summary;
+- AgentTeamRun and WorkflowRun remain distinct execution record types; a
+  historical Wave does not need or own an `accepted_run_id`. That field is
+  legacy direct-executor compatibility only;
+- a Mission outcome is based on accepted Work evidence and an explicit
+  Mission-level closeout summary; historical Wave gates are read-only context;
 - this repository may layer review, evidence, or evaluation on high-risk Waves,
   but those objects are not mandatory for every self-hosting change.
 

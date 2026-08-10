@@ -406,12 +406,10 @@ mod tests {
         store.init().expect("init");
         let run = AgentTeamRun {
             id: "run-1".into(),
-            definition_id: None,
-            agent_team_id: None,
+            agent_team_id: "team-1".into(),
+            execution_node_id: "node-1".into(),
             previous_run_id: None,
-            mission_id: None,
-            wave_id: None,
-            project_binding_id: None,
+            project_binding_id: "project-1".into(),
             host_surface: "codex".into(),
             host_thread_id: Some("thread-1".into()),
             host_actor: None,

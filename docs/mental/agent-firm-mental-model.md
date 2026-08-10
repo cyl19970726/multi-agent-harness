@@ -25,7 +25,7 @@ Company has three facets: Organization (who), Execution (what's being done), Kno
 
 Organization answers "who exists and how are they organized."
 
-**Agent Teams**: An independent unit of execution with a Host Agent and Members. Can be deployed on a specific machine. Flat topology — no nesting. Has optional `machine_id` (cross-machine awareness) and `labels` (filtering).
+**Agent Teams**: An independent unit of execution with a Host Agent and Members. The Organization contains flat AgentTeams — no nesting or parent/child Team authority. Every Team belongs to exactly one Mission and has immutable `node_id` placement on one machine. No two AgentTeams may reference the same Mission. A Team's Members never cross machines. `labels` are optional filtering metadata; placement identity is not optional metadata.
 
 **Standing Agents**: Durable agent identities that persist across Team Runs. Not tied to any single execution. Examples: governance Agent auditing docs/works periodically, scheduled-task Agent running on a timer.
 
@@ -37,7 +37,7 @@ Organization answers "who exists and how are they organized."
 
 Execution answers "what work is being done right now."
 
-**Missions**: Durable goals linking zero or more Agent Teams, persisting across multiple Team Runs.
+**Missions**: Durable goals owning exactly one flat AgentTeam. A Mission persists across multiple TeamRuns and Host-plan Waves without changing Team identity.
 
 **Agent Team Runs**: One execution instance with MemberRuns (runtime bindings), shared Work board, message inbox. Existing execution model — Work state machine, Message delivery, Daemon supervision — unchanged.
 
@@ -63,7 +63,7 @@ Documents are Company memory — structured content, typed records, views. Agent
 
 ## Cross-Machine Communication
 
-Agent Teams on different machines. Future requirement — design task, not implementation yet. Will provide message protocol, cross-machine work assignment, team discovery. The `machine_id` field on Agent Teams is the foundation.
+One logical Firm may place different AgentTeams on different ExecutionNodes. Each machine runs one machine-scoped NodeDaemon that supervises all local Teams across registered Execution Spaces. `NodeDaemonLease` is machine-scoped authority for all local Teams across registered Execution Spaces; it is never scoped to one Execution Space. A single Team never spans machines. Cross-Team responsibility uses explicit `WorkDelegation`; future cross-machine transport must preserve the source and target Team identities instead of introducing nested Teams or optional placement.
 
 ---
 
@@ -84,7 +84,7 @@ Agent Teams on different machines. Future requirement — design task, not imple
 | Agent Team execution | ✅ Live | Full lifecycle |
 | Work — gates | ✅ Live | Open persistence/closed default registry, four built-ins, authority-bound Review, Store acceptance invariant |
 | Work — workspace | ✅ Live | PR #406 — WorkWorkspace, ensure/cleanup, --worktree CLI |
-| Organization — Agent Teams | ✅ PR #385 | machine_id + labels |
+| Organization — Agent Teams | ✅ Live | flat Mission-Team 1:1 + immutable node_id placement + labels |
 | Organization — Standing Agents | ❌ Not started | Design only |
 | Work → Docs links | ❌ Not started | Optional document_refs |
 | Work → labels / tags | ❌ Not started | Filter + tag UI |

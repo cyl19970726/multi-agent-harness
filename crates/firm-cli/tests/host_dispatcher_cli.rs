@@ -28,12 +28,10 @@ fn dispatch_host_resumes_exact_kimi_session_and_releases_lease() {
 
     let run = AgentTeamRun {
         id: "team-run-host-dispatch".into(),
-        definition_id: None,
-        agent_team_id: None,
+        agent_team_id: "team-host-dispatch".into(),
+        execution_node_id: "node-host-dispatch".into(),
         previous_run_id: None,
-        mission_id: None,
-        wave_id: None,
-        project_binding_id: Some(project_id.clone()),
+        project_binding_id: project_id.clone(),
         host_surface: "kimi".into(),
         host_thread_id: Some("session_exact_host".into()),
         host_actor: None,

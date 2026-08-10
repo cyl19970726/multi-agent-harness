@@ -5,11 +5,35 @@
 //! deterministically against a temp HOME. No real kimi binary is invoked.
 
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+};
 
 mod fake_provider;
 mod firm_env;
 
 use firm_env::{current_project_id, latest_works, run_firm, work_deliveries, TempHome};
+
+static TEST_NODE_DAEMONS: OnceLock<Mutex<Vec<std::process::Child>>> = OnceLock::new();
+
+fn test_node_daemon_socket(home: &TempHome) -> std::path::PathBuf {
+    let node_id = std::fs::read_to_string(home.firm_home().join("NODE_ID")).expect("test Node id");
+    let node_id = node_id.trim();
+    let direct = home
+        .firm_home()
+        .join("nodes")
+        .join(node_id)
+        .join("daemon.sock");
+    if direct.to_string_lossy().len() < 100 {
+        return direct;
+    }
+    let mut hasher = DefaultHasher::new();
+    home.firm_home().to_string_lossy().hash(&mut hasher);
+    node_id.hash(&mut hasher);
+    Path::new("/tmp").join(format!("firm-node-daemon-{:x}.sock", hasher.finish()))
+}
 
 /// `harness init` a project rooted at `<base>/<name>` and return its id.
 fn init_project(home: &TempHome, name: &str) -> String {
@@ -17,7 +41,188 @@ fn init_project(home: &TempHome, name: &str) -> String {
     std::fs::create_dir_all(&root).unwrap();
     let out = run_firm(home, &root, &["init"]);
     assert!(out.status.success(), "init {name} failed: {out:?}");
-    current_project_id(home)
+    let project_id = current_project_id(home);
+    let node = run_firm(home, &root, &["node", "init"]);
+    assert!(node.status.success(), "node init failed: {node:?}");
+    let node: serde_json::Value = serde_json::from_slice(&node.stdout).expect("node JSON");
+    let node_id = node["id"].as_str().expect("node id");
+    let registration = run_firm(
+        home,
+        &root,
+        &[
+            "node",
+            "project",
+            "register",
+            "--node-id",
+            node_id,
+            "--project-binding-id",
+            &project_id,
+        ],
+    );
+    assert!(
+        registration.status.success(),
+        "register failed: {registration:?}"
+    );
+    let mission = run_firm(
+        home,
+        &root,
+        &[
+            "mission",
+            "create",
+            "--id",
+            "mission-runtime-fixture",
+            "--title",
+            "Provider runtime fixture",
+            "--objective",
+            "Verify provider-native TeamRun execution",
+        ],
+    );
+    assert!(
+        mission.status.success(),
+        "mission create failed: {mission:?}"
+    );
+    let host = run_firm(
+        home,
+        &root,
+        &[
+            "agent",
+            "create",
+            "--id",
+            "agent-runtime-host",
+            "--name",
+            "runtime-host",
+            "--role",
+            "host",
+            "--provider",
+            "codex",
+        ],
+    );
+    assert!(host.status.success(), "host create failed: {host:?}");
+    let team = run_firm(
+        home,
+        &root,
+        &[
+            "team",
+            "create",
+            "--id",
+            "team-runtime-fixture",
+            "--name",
+            "Provider runtime team",
+            "--description",
+            "Flat provider runtime test team",
+            "--mission-id",
+            "mission-runtime-fixture",
+            "--host-agent-id",
+            "agent-runtime-host",
+            "--node-id",
+            node_id,
+            "--member",
+            "agent-runtime-host",
+        ],
+    );
+    assert!(team.status.success(), "team create failed: {team:?}");
+    project_id
+}
+
+fn start_fake_node_daemon(
+    home: &TempHome,
+    fake_bin: &Path,
+    fake_result: &str,
+    extra_env: &[(&str, &str)],
+) {
+    let socket = test_node_daemon_socket(home);
+    if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+        return;
+    }
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_firm"));
+    command
+        .args([
+            "daemon",
+            "serve",
+            "--scan-interval-secs",
+            "1",
+            "--idle-timeout-secs",
+            "60",
+        ])
+        .current_dir(home.base())
+        .envs(home.envs())
+        .env("PATH", path)
+        .env("FAKE_KIMI_RESULT", fake_result)
+        .env("FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS", "100")
+        .env(
+            "FAKE_KIMI_ENV_MARKER",
+            home.base().join("kimi-collaboration.env"),
+        )
+        .env(
+            "FAKE_CODEX_ENV_MARKER",
+            home.base().join("codex-collaboration.env"),
+        )
+        .env(
+            "FAKE_CODEX_NAME_MARKER",
+            home.base().join("codex-thread-name.jsonl"),
+        )
+        .env(
+            "FAKE_CODEX_PLAN_MARKER",
+            home.base().join("codex-execution-driver.log"),
+        )
+        .env("FAKE_CODEX_AUTO_COMPLETE", "1")
+        .env(
+            "FAKE_CLAUDE_ENV_MARKER",
+            home.base().join("claude-collaboration.env"),
+        )
+        .env_remove("KIMI_CODE_BIN")
+        .env_remove("FIRM_ROOT")
+        .env_remove("FIRM_PROJECT")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(
+            std::fs::File::create(home.base().join("node-daemon.stderr.log"))
+                .expect("create NodeDaemon test log"),
+        );
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
+    let child = command.spawn().expect("spawn fake NodeDaemon");
+    TEST_NODE_DAEMONS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .expect("test NodeDaemon registry")
+        .push(child);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::os::unix::net::UnixStream::connect(&socket).is_err() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "NodeDaemon did not bind {}: {}",
+            socket.display(),
+            std::fs::read_to_string(home.base().join("node-daemon.stderr.log")).unwrap_or_default()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+fn wait_for_node_daemon_idle(home: &TempHome) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let status = run_firm(home, home.base(), &["daemon", "status"]);
+        if status.status.success() {
+            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&status.stdout) {
+                if value["runs"].as_array().is_some_and(Vec::is_empty) {
+                    return;
+                }
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "NodeDaemon did not become idle: {}",
+            String::from_utf8_lossy(&status.stdout)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
 }
 
 /// Run `harness <args...>` with the fake kimi dir prepended to PATH (so
@@ -35,8 +240,35 @@ fn run_with_fake_kimi(
         fake_bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    std::process::Command::new(env!("CARGO_BIN_EXE_firm"))
-        .args(args)
+    let is_create = args
+        .windows(2)
+        .any(|window| window == ["team-run", "create"]);
+    let has_team = args.contains(&"--agent-team-id");
+    let mut normalized = Vec::with_capacity(args.len() + 2);
+    let mut skip_legacy_value = false;
+    for arg in args {
+        if skip_legacy_value {
+            skip_legacy_value = false;
+            continue;
+        }
+        if is_create && (*arg == "--mission-id" || *arg == "--wave-id") {
+            skip_legacy_value = true;
+            continue;
+        }
+        normalized.push(*arg);
+    }
+    if is_create && !has_team {
+        normalized.push("--agent-team-id");
+        normalized.push("team-runtime-fixture");
+    }
+    let is_start = normalized
+        .windows(2)
+        .any(|window| window[0] == "team-run" && window[1] == "start");
+    if is_start {
+        start_fake_node_daemon(home, fake_bin, fake_result, &[]);
+    }
+    let mut output = std::process::Command::new(env!("CARGO_BIN_EXE_firm"))
+        .args(normalized)
         .current_dir(home.base())
         .envs(home.envs())
         .env_remove("FIRM_ROOT")
@@ -69,7 +301,17 @@ fn run_with_fake_kimi(
         )
         .env_remove("KIMI_CODE_BIN")
         .output()
-        .expect("run harness")
+        .expect("run harness");
+    if !output.status.success() {
+        if let Ok(log) = std::fs::read(home.base().join("node-daemon.stderr.log")) {
+            output.stderr.extend_from_slice(b"\nNodeDaemon log:\n");
+            output.stderr.extend_from_slice(&log);
+        }
+    }
+    if is_start && output.status.success() {
+        wait_for_node_daemon_idle(home);
+    }
+    output
 }
 
 /// Read one store JSONL file with latest-wins-per-id projection, in append
@@ -240,7 +482,7 @@ fn team_run_start_leaves_kimi_members_idle_until_host_close() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains(&format!("team run {run_id}\trunning")),
+        stdout.contains(&format!("team run {run_id}\tdelegated to NodeDaemon")),
         "summary line: {stdout}"
     );
 
@@ -394,6 +636,16 @@ fn kimi_can_send_work_linked_progress_after_first_acp_acceptance() {
         fake_bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
+    let marker_value = marker.display().to_string();
+    start_fake_node_daemon(
+        &home,
+        &fake_bin,
+        "done",
+        &[
+            ("FAKE_KIMI_MESSAGE_DURING_TURN", "1"),
+            ("FAKE_KIMI_MESSAGE_MARKER", marker_value.as_str()),
+        ],
+    );
 
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_firm"))
         .args([
@@ -425,6 +677,7 @@ fn kimi_can_send_work_linked_progress_after_first_acp_acceptance() {
         "start failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    wait_for_node_daemon_idle(&home);
     assert!(
         std::fs::read_to_string(&marker)
             .expect("message command marker")
@@ -482,6 +735,12 @@ fn kimi_concatenated_acp_report_persists_only_the_terminal_contract() {
         fake_bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
+    start_fake_node_daemon(
+        &home,
+        &fake_bin,
+        "done",
+        &[("FAKE_KIMI_CONCATENATED_REPORT", "1")],
+    );
 
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_firm"))
         .args([
@@ -510,6 +769,7 @@ fn kimi_concatenated_acp_report_persists_only_the_terminal_contract() {
         "start failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    wait_for_node_daemon_idle(&home);
 
     let actions = store_rows(&home, &project_id, "member_actions.jsonl");
     for member_id in member_ids {
@@ -987,6 +1247,7 @@ fn kimi_question_waits_for_lead_resolution_and_resumes_same_turn() {
         fake_bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
+    start_fake_node_daemon(&home, &fake_bin, "done", &[("FAKE_KIMI_ASK", "1")]);
     let child = std::process::Command::new(env!("CARGO_BIN_EXE_firm"))
         .args([
             "--project",
@@ -1100,6 +1361,7 @@ fn kimi_question_waits_for_lead_resolution_and_resumes_same_turn() {
         "start: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    wait_for_node_daemon_idle(&home);
 
     let messages = store_rows(&home, &project_id, "team_messages.jsonl");
     let request = messages
@@ -1175,6 +1437,12 @@ fn kimi_full_access_tool_permissions_acknowledge_without_pending_interactions() 
         fake_bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
+    start_fake_node_daemon(
+        &home,
+        &fake_bin,
+        "done",
+        &[("FAKE_KIMI_ASK", "approval_twice")],
+    );
     let child = std::process::Command::new(env!("CARGO_BIN_EXE_firm"))
         .args([
             "--project",
@@ -1198,6 +1466,7 @@ fn kimi_full_access_tool_permissions_acknowledge_without_pending_interactions() 
 
     let output = child.wait_with_output().expect("wait team run");
     assert!(output.status.success(), "start failed: {output:?}");
+    wait_for_node_daemon_idle(&home);
 
     let interactions = optional_store_rows(&home, &project_id, "pending_interactions.jsonl");
     assert!(
@@ -1268,6 +1537,7 @@ fn assert_kimi_permission_request_fails_closed(
         fake_bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
+    start_fake_node_daemon(&home, &fake_bin, "done", &[("FAKE_KIMI_ASK", ask_mode)]);
     let child = std::process::Command::new(env!("CARGO_BIN_EXE_firm"))
         .args([
             "--project",
@@ -1298,6 +1568,7 @@ fn assert_kimi_permission_request_fails_closed(
             "unknown optionless request must fail closed in-process: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+        wait_for_node_daemon_idle(&home);
         assert!(optional_store_rows(&home, &project_id, "pending_interactions.jsonl").is_empty());
         assert!(
             optional_store_rows(&home, &project_id, "team_messages.jsonl")
@@ -1383,6 +1654,7 @@ fn assert_kimi_permission_request_fails_closed(
         "start failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    wait_for_node_daemon_idle(&home);
     let messages = store_rows(&home, &project_id, "team_messages.jsonl");
     let request = messages
         .iter()

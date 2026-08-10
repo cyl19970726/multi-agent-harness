@@ -110,6 +110,21 @@ impl TempHome {
 
 impl Drop for TempHome {
     fn drop(&mut self) {
+        // Some focused integration fixtures start a real machine-scoped
+        // NodeDaemon only to provide the parent execution authority. Stop it
+        // before deleting its FIRM_HOME so no detached test process or socket
+        // can outlive the isolated fixture.
+        if self.firm_home.join("NODE_ID").is_file() {
+            let mut stop = Command::new(env!("CARGO_BIN_EXE_firm"));
+            stop.args(["daemon", "stop"])
+                .current_dir(&self.base)
+                .envs(self.envs())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            clear_inherited_native_firm_env(&mut stop);
+            let _ = stop.output();
+        }
         let _ = std::fs::remove_dir_all(&self.base);
     }
 }
@@ -122,7 +137,7 @@ impl Drop for TempHome {
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 pub const INHERITED_NATIVE_FIRM_ENV: &[&str] = &[
@@ -236,6 +251,7 @@ pub fn latest_works(home: &TempHome, project_id: &str) -> Vec<serde_json::Value>
 /// A spawned `harness serve` child bound to `127.0.0.1:<port>`. Killed on drop.
 pub struct ServeHandle {
     child: Child,
+    node_daemon: Option<Child>,
     port: u16,
 }
 
@@ -255,6 +271,52 @@ impl ServeHandle {
         extra_args: &[&str],
         extra_env: &[(&str, &str)],
     ) -> Self {
+        let node_daemon = if home.firm_home().join("NODE_ID").exists() {
+            let mut daemon = Command::new(env!("CARGO_BIN_EXE_firm"));
+            daemon
+                .args([
+                    "daemon",
+                    "serve",
+                    "--max-concurrency",
+                    "8",
+                    "--idle-timeout-secs",
+                    "30",
+                    "--scan-interval-secs",
+                    "1",
+                ])
+                .current_dir(cwd)
+                .envs(home.envs())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            clear_inherited_native_firm_env(&mut daemon);
+            for (key, value) in extra_env {
+                daemon.env(key, value);
+            }
+            Some(daemon.spawn().expect("spawn NodeDaemon"))
+        } else {
+            None
+        };
+        if node_daemon.is_some() {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let mut status = Command::new(env!("CARGO_BIN_EXE_firm"));
+                status
+                    .args(["daemon", "status"])
+                    .current_dir(cwd)
+                    .envs(home.envs());
+                clear_inherited_native_firm_env(&mut status);
+                let ready = status.output().is_ok_and(|output| {
+                    output.status.success()
+                        && !String::from_utf8_lossy(&output.stdout).contains("absent")
+                });
+                if ready {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "NodeDaemon did not become ready");
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        }
         let port = free_port();
         let addr = format!("127.0.0.1:{port}");
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_firm"));
@@ -272,7 +334,11 @@ impl ServeHandle {
             cmd.env(key, value);
         }
         let child = cmd.spawn().expect("spawn harness serve");
-        let handle = Self { child, port };
+        let handle = Self {
+            child,
+            node_daemon,
+            port,
+        };
         handle.wait_until_ready();
         handle
     }
@@ -359,7 +425,30 @@ impl ServeHandle {
         body: &serde_json::Value,
         token: Option<&str>,
     ) -> (u16, serde_json::Value) {
-        let payload = body.to_string();
+        // TeamRun regression suites can seed one explicit flat fixture Team.
+        // If present, make legacy HTTP scenarios name it without introducing a
+        // production fallback for missing AgentTeam identity.
+        let mut normalized_body = body.clone();
+        if path == "/v1/team-runs" && body.get("agent_team_id").is_none() {
+            if let Ok((200, snapshot)) = self.try_get("/v1/snapshot") {
+                if let Ok(snapshot) = serde_json::from_str::<serde_json::Value>(&snapshot) {
+                    let has_fixture = snapshot["teams"].as_array().is_some_and(|teams| {
+                        teams
+                            .iter()
+                            .any(|team| team["id"].as_str() == Some("team-runtime-fixture"))
+                    });
+                    if has_fixture {
+                        normalized_body["agent_team_id"] =
+                            serde_json::Value::String("team-runtime-fixture".to_string());
+                        if let Some(object) = normalized_body.as_object_mut() {
+                            object.remove("mission_id");
+                            object.remove("wave_id");
+                        }
+                    }
+                }
+            }
+        }
+        let payload = normalized_body.to_string();
         let mut stream = TcpStream::connect(self.addr()).expect("connect post");
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
@@ -421,6 +510,10 @@ impl Drop for ServeHandle {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if let Some(daemon) = self.node_daemon.as_mut() {
+            let _ = daemon.kill();
+            let _ = daemon.wait();
+        }
     }
 }
 
@@ -525,7 +618,39 @@ pub fn run_firm_with_env(
     extra_env: &[(&str, &str)],
 ) -> std::process::Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_firm"));
+    let fixture_team_exists = home.spaces_dir().exists()
+        && std::fs::read_dir(home.spaces_dir())
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .any(|entry| {
+                std::fs::read_to_string(entry.path().join("teams.jsonl"))
+                    .is_ok_and(|rows| rows.contains("team-runtime-fixture"))
+            });
+    let is_team_run_create = args
+        .windows(2)
+        .any(|window| window == ["team-run", "create"]);
+    let has_team = args.contains(&"--agent-team-id");
+    let mut normalized = Vec::with_capacity(args.len() + 2);
+    let mut skip_legacy_value = false;
     for a in args {
+        if skip_legacy_value {
+            skip_legacy_value = false;
+            continue;
+        }
+        if fixture_team_exists && is_team_run_create && (*a == "--mission-id" || *a == "--wave-id")
+        {
+            skip_legacy_value = true;
+            continue;
+        }
+        normalized.push(*a);
+    }
+    if fixture_team_exists && is_team_run_create && !has_team {
+        normalized.push("--agent-team-id");
+        normalized.push("team-runtime-fixture");
+    }
+    for a in normalized {
         cmd.arg(a);
     }
     let command = cmd.current_dir(cwd).envs(home.envs());

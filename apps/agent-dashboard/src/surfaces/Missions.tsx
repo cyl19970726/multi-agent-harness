@@ -43,11 +43,9 @@ import {
 import {
   appendMissionLog,
   closeMission,
-  createMissionTeam,
+  createTeam,
   createMission,
   createTeamRun,
-  linkMissionTeam,
-  unlinkMissionTeam,
   updateMissionContext,
   type ActionDescriptor,
   type TeamRunMemberSpec,
@@ -147,18 +145,20 @@ function missionLogFor(model: WorkbenchModel, missionId: string): MissionLogEntr
 }
 
 function runsForWave(model: WorkbenchModel, wave: Wave): TeamRun[] {
+  const teamIds = new Set((model.snapshot.teams ?? [])
+    .filter((team) => team.mission_id === wave.mission_id)
+    .map((team) => team.id));
   return [...(model.snapshot.team_runs ?? [])]
-    .filter((run) => run.mission_id === wave.mission_id && run.wave_id === wave.id)
+    .filter((run) => teamIds.has(run.agent_team_id))
     .sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""));
 }
 
 function runsForMission(model: WorkbenchModel, mission: Mission): TeamRun[] {
-  const teamIds = new Set(mission.agent_team_ids ?? []);
+  const teamIds = new Set((model.snapshot.teams ?? [])
+    .filter((team) => team.mission_id === mission.id)
+    .map((team) => team.id));
   return [...(model.snapshot.team_runs ?? [])]
-    .filter((run) =>
-      run.mission_id === mission.id
-      && (!run.agent_team_id || teamIds.size === 0 || teamIds.has(run.agent_team_id)),
-    )
+    .filter((run) => teamIds.has(run.agent_team_id))
     .sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""));
 }
 
@@ -366,7 +366,6 @@ function MissionDetail({
   const [teamOpen, setTeamOpen] = useState(false);
   const [closeOpen, setCloseOpen] = useState(false);
   const [editContextOpen, setEditContextOpen] = useState(false);
-  const [linkTeamId, setLinkTeamId] = useState("");
   const waves = wavesFor(model, mission.id);
   const missionLog = missionLogFor(model, mission.id);
   const readyToClose =
@@ -385,12 +384,10 @@ function MissionDetail({
   const missionRuns = runsForMission(model, mission);
   const latestMissionRun = missionRuns[missionRuns.length - 1];
   const linkedMissionTeams = (model.snapshot.teams ?? []).filter((team) =>
-    (mission.agent_team_ids ?? []).includes(team.id),
+    team.mission_id === mission.id,
   );
-  const unlinkedTeams = (model.snapshot.teams ?? []).filter(
-    (team) => !(mission.agent_team_ids ?? []).includes(team.id),
-  );
-  const linkedTeamSummaries = (mission.agent_team_ids ?? []).map((teamId) => {
+  const linkedTeamSummaries = linkedMissionTeams.map((linkedTeam) => {
+    const teamId = linkedTeam.id;
     const team = linkedMissionTeams.find((candidate) => candidate.id === teamId);
     const runs = missionRuns.filter((run) => run.agent_team_id === teamId);
     const latestRun = runs[runs.length - 1];
@@ -466,7 +463,7 @@ function MissionDetail({
               <p className="line-clamp-2 max-w-3xl text-[13px] leading-relaxed text-muted-foreground">{mission.objective}</p>
               <div className="flex flex-wrap items-center gap-1.5">
                 <Badge tone="muted">{waves.length} ordered {waves.length === 1 ? "wave" : "waves"}</Badge>
-                <Badge tone="muted">{mission.agent_team_ids?.length ?? 0} linked {mission.agent_team_ids?.length === 1 ? "team" : "teams"}</Badge>
+                <Badge tone="muted">{linkedMissionTeams.length} owning {linkedMissionTeams.length === 1 ? "team" : "teams"}</Badge>
                 <Badge tone={missionTone(mission.status)}>{mission.status ?? "planned"}</Badge>
               </div>
             </div>
@@ -534,58 +531,21 @@ function MissionDetail({
             <div className="mb-3 flex items-center justify-between gap-3">
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Linked teams</p>
-                <p className="mt-1 text-[11px] text-muted-foreground">Independent Agent Teams this Mission may reuse across Waves.</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">The one flat AgentTeam whose immutable mission_id points here.</p>
               </div>
               <Badge tone="muted">{linkedMissionTeams.length} linked</Badge>
             </div>
             {linkedMissionTeams.length === 0 ? (
-              <p className="text-[12px] text-muted-foreground">No teams linked yet. Link an independent team below or create one under New Team.</p>
+              <p className="text-[12px] text-muted-foreground">No AgentTeam has been created for this Mission.</p>
             ) : (
               <ul className="space-y-2">
                 {linkedMissionTeams.map((team) => (
                   <li key={team.id} className="flex items-center gap-2 rounded-lg border border-border/70 bg-background/70 px-3 py-2">
                     <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground">{team.name ?? team.id}</span>
-                    <button
-                      type="button"
-                      disabled={!actionsEnabled}
-                      title={actionsEnabled ? "Remove this team from the Mission's linked set" : "Connect a live source to enable actions"}
-                      onClick={() => dispatch(onAction, unlinkMissionTeam(mission.id, team.id))}
-                      className="shrink-0 rounded-md border border-border bg-background px-2 py-1 text-[11px] font-medium text-foreground transition-colors enabled:hover:border-primary/30 enabled:hover:bg-primary/[0.035] disabled:cursor-default disabled:text-muted-foreground"
-                    >
-                      Unlink
-                    </button>
+                    <Badge tone="info">Mission owner</Badge>
                   </li>
                 ))}
               </ul>
-            )}
-            {unlinkedTeams.length > 0 && (
-              <div className="mt-3 flex items-center gap-2">
-                <Select
-                  aria-label="Team to link"
-                  value={linkTeamId}
-                  onChange={(event) => setLinkTeamId(event.target.value)}
-                  className="h-9 min-w-0 flex-1"
-                  disabled={!actionsEnabled}
-                >
-                  <option value="">Choose an unlinked team…</option>
-                  {unlinkedTeams.map((team) => (
-                    <option key={team.id} value={team.id}>{team.name ?? team.id}</option>
-                  ))}
-                </Select>
-                <button
-                  type="button"
-                  disabled={!actionsEnabled || !linkTeamId}
-                  title={actionsEnabled ? (linkTeamId ? "Link this team to the Mission" : "Choose a team first") : "Connect a live source to enable actions"}
-                  onClick={() => {
-                    if (!linkTeamId) return;
-                    dispatch(onAction, linkMissionTeam(mission.id, linkTeamId));
-                    setLinkTeamId("");
-                  }}
-                  className="shrink-0 rounded-md border border-border bg-background px-3 py-2 text-[11px] font-medium text-foreground transition-colors enabled:hover:border-primary/30 enabled:hover:bg-primary/[0.035] disabled:cursor-default disabled:text-muted-foreground"
-                >
-                  Link team
-                </button>
-              </div>
             )}
           </section>
 
@@ -708,7 +668,7 @@ function MissionDetail({
             <dl className="space-y-2 text-[11px] leading-relaxed">
               <ContextFact label="Objective" value={mission.objective} />
               <ContextFact label="Desired" value={mission.desired_outcome || "Not declared"} />
-              <ContextFact label="Teams" value={`${mission.agent_team_ids?.length ?? 0} linked`} />
+              <ContextFact label="Team" value={linkedMissionTeams[0]?.name ?? linkedMissionTeams[0]?.id ?? "Not created"} />
               {mission.outcome_summary && <ContextFact label="Closeout" value={mission.outcome_summary} />}
               <ContextFact label="Updated" value={fmt(mission.updated_at ?? mission.created_at)} />
             </dl>
@@ -774,7 +734,7 @@ function MissionDetail({
             </ContextModule>
           )}
 
-          {(mission.agent_team_ids?.length ?? 0) > 0 && (
+          {linkedMissionTeams.length > 0 && (
             <ContextModule
               className="order-5 xl:order-5"
               title="Mission Agent Teams"
@@ -801,7 +761,7 @@ function MissionDetail({
                       <span className="min-w-0">
                         <span className="block truncate text-[11px] font-semibold text-foreground">{team?.name ?? teamId}</span>
                         <span className="mt-0.5 block text-[10px] leading-relaxed text-muted-foreground">
-                          {!team?.owner_agent_id || team.owner_agent_id === "host" ? "Current Host Agent" : team.owner_agent_id}
+                          {team?.host_agent_id ?? "Host Agent unavailable"}
                           {" · "}{members.length} member{members.length === 1 ? "" : "s"}
                           {" · "}{attemptCount} attempt{attemptCount === 1 ? "" : "s"}
                         </span>
@@ -809,7 +769,7 @@ function MissionDetail({
                       <Badge tone={latestRun ? waveTone(latestRun.status) : "idle"}>{latestRun?.status ?? "not started"}</Badge>
                     </span>
                     <span className="mt-2 block line-clamp-2 text-[10px] leading-relaxed text-muted-foreground">
-                      {latestRun?.objective ?? "Linked and reusable; no TeamRun has started yet."}
+                      {latestRun?.objective ?? "Mission-owned Team; no TeamRun has started yet."}
                     </span>
                   </button>
                 ))}
@@ -1411,21 +1371,25 @@ function MissionTeamDialog({
 }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [nodeId, setNodeId] = useState("");
 
   useEffect(() => {
     if (open) {
       setName("");
       setDescription("");
+      setNodeId("");
     }
   }, [open]);
 
-  const valid = Boolean(name.trim() && description.trim());
+  const valid = Boolean(name.trim() && description.trim() && nodeId.trim());
   const submit = () => {
     if (!valid) return;
-    dispatch(onAction, createMissionTeam({
+    dispatch(onAction, createTeam({
       missionId: mission.id,
       name: name.trim(),
       description: description.trim(),
+      hostAgentId: "host",
+      nodeId: nodeId.trim(),
     }));
     onClose();
   };
@@ -1434,7 +1398,7 @@ function MissionTeamDialog({
     <Dialog
       open={open}
       title="Create Mission Agent Team"
-      description="Creates an independent reusable team and links it to this Mission. Closing the Mission will not close the team."
+      description="Creates the Mission's one flat AgentTeam with immutable Node placement."
       onClose={onClose}
     >
       <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); submit(); }}>
@@ -1444,8 +1408,11 @@ function MissionTeamDialog({
         <Field label="Purpose" required>
           {(id) => <TextArea id={id} value={description} onChange={(event) => setDescription(event.target.value)} />}
         </Field>
+        <Field label="Node ID" required hint="Stable UUID of the machine that owns this Team.">
+          {(id) => <TextInput id={id} value={nodeId} onChange={(event) => setNodeId(event.target.value)} />}
+        </Field>
         <DialogFooter
-          submitLabel="Create and link team"
+          submitLabel="Create team"
           actionsEnabled={actionsEnabled}
           canSubmit={valid}
           onCancel={onClose}

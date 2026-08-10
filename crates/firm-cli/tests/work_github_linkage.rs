@@ -42,7 +42,87 @@ fn init_project(home: &TempHome, name: &str) -> String {
     std::fs::create_dir_all(&root).unwrap();
     let out = run_firm(home, &root, &["init"]);
     assert!(out.status.success(), "init {name} failed: {out:?}");
-    current_project_id(home)
+    let project_id = current_project_id(home);
+    let node = run_firm(home, &root, &["node", "init"]);
+    assert!(node.status.success(), "node init failed: {node:?}");
+    let node: serde_json::Value = serde_json::from_slice(&node.stdout).expect("node JSON");
+    let node_id = node["id"].as_str().expect("node id");
+    let registration = run_firm(
+        home,
+        &root,
+        &[
+            "node",
+            "project",
+            "register",
+            "--node-id",
+            node_id,
+            "--project-binding-id",
+            &project_id,
+        ],
+    );
+    assert!(
+        registration.status.success(),
+        "register failed: {registration:?}"
+    );
+    let mission = run_firm(
+        home,
+        &root,
+        &[
+            "mission",
+            "create",
+            "--id",
+            "mission-github-fixture",
+            "--title",
+            "GitHub linkage mission",
+            "--objective",
+            "Verify GitHub-linked Work",
+        ],
+    );
+    assert!(
+        mission.status.success(),
+        "mission create failed: {mission:?}"
+    );
+    let host = run_firm(
+        home,
+        &root,
+        &[
+            "agent",
+            "create",
+            "--id",
+            "agent-github-host",
+            "--name",
+            "github-host",
+            "--role",
+            "host",
+            "--provider",
+            "codex",
+        ],
+    );
+    assert!(host.status.success(), "host create failed: {host:?}");
+    let team = run_firm(
+        home,
+        &root,
+        &[
+            "team",
+            "create",
+            "--id",
+            "team-github-fixture",
+            "--name",
+            "GitHub linkage team",
+            "--description",
+            "Flat GitHub linkage test team",
+            "--mission-id",
+            "mission-github-fixture",
+            "--host-agent-id",
+            "agent-github-host",
+            "--node-id",
+            node_id,
+            "--member",
+            "agent-github-host",
+        ],
+    );
+    assert!(team.status.success(), "team create failed: {team:?}");
+    project_id
 }
 
 /// Host-side harness command against the isolated store. `HOME` stays at the
@@ -111,6 +191,8 @@ fn github_fixture(tag: &str) -> (TempHome, String, String, String) {
             &project_id,
             "team-run",
             "create",
+            "--agent-team-id",
+            "team-github-fixture",
             "--objective",
             "GitHub linkage fixture",
             "--member",

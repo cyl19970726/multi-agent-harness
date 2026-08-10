@@ -26,8 +26,8 @@ parts; they do not fork the core model.
 ## Current Executable Boundary
 
 - Host: Codex can call the stdio MCP server after local registration below.
-- Coordination: Mission context, ordered Host-plan Wave revisions,
-  Mission-linked independent AgentTeams, and Mission-scoped AgentTeamRuns are
+- Coordination: Mission context, ordered Host-plan Wave revisions, each
+  Mission's one flat AgentTeam, and Team/Node/Project-fenced AgentTeamRuns are
   native.
 - Member execution: Codex app-server (`codex_app_server`), Kimi ACP
   (`kimi_acp`), and Claude Agent SDK streaming (`claude_agent_sdk`) are the
@@ -117,20 +117,21 @@ path as an execution root is a routing defect.
 ## Host Journey
 
 1. Call `mission_create` for durable intent and Markdown context.
-2. Create or select an independent AgentTeam and link it to the Mission. Create
-   the next Host-plan Wave with full Markdown context; do not bind Team runtime
-   ownership to it.
-3. Call `team_run_create` with `mission_id + agent_team_id`, supported provider
-   member identities/roles, disjoint owned paths, and workspace overrides only
-   when needed. Keep the returned execution/member roots. Create bounded Works
+2. Create the Mission's one flat AgentTeam with its Host Agent and immutable
+   ExecutionNode placement. Create the next Host-plan Wave with full Markdown
+   context; the Wave remains planning history and never owns runtime.
+3. Call `team_run_create` with the required `agent_team_id`; Node and Mission
+   are derived from the Team and the selected Project Binding is frozen on the
+   run. Supply supported provider member identities/roles, disjoint owned paths,
+   and workspace overrides only when needed. Keep the returned execution/member roots. Create bounded Works
    with explicit completion criteria, directly assign them or expose eligible
    unassigned Works for atomic claim, and keep the returned Work ids/versions.
 4. Call `team_run_start`; immediately give the user its `dashboard_url`.
    For a Mission-scoped long-lived TeamRun, the URL includes the Mission and
    the Host's current Wave as navigation context even though the run itself has
-   no Wave owner. Direct legacy Wave runs use their stored Wave id. The starting
-   service owns the new Supervisor generation; a later Host process inspects
-   that lease rather than assuming it owns provider handles.
+   no Wave owner. Direct legacy Wave runs use their stored Wave id. The machine
+   NodeDaemon owns the new Team Supervisor generation; a later Host process
+   inspects that parent-fenced lease rather than assuming it owns provider handles.
 5. Follow `team_run_status` or `team_run_events(after_seq=...)`. The browser
    receives durable Harness coordination plus transient/on-demand activity
    projected from provider-native sessions through SSE/API. Its compatibility
@@ -249,9 +250,8 @@ result as accepted:
 7. **Contradictions:** the Host records accepted claims, mandatory corrections,
    unresolved unknowns, and active work carried forward.
 8. **Semantics:** provider/Member completion is not treated as Host acceptance.
-   Standalone TeamRun semantic closeout remains tracked by issue
-   [#229](https://github.com/cyl19970726/multi-agent-harness/issues/229);
-   Mission work additionally needs an explicit Host Wave judgment.
+   Every TeamRun belongs to its Mission-owned Team, and semantic closeout
+   requires the Host's explicit acceptance of the relevant Works.
 9. **Reproducibility:** cited paths, revisions, session locators, checks, and
    external product/version facts can be reconstructed without copied provider
    transcripts or persisted thinking.

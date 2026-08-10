@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/work-delegation.schema.json",
+  "title": "WorkDelegation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "source_work_ref",
+    "source_work_version",
+    "source_owner_member_id",
+    "target_agent_team_id",
+    "target_work_ref",
+    "delegated_by_actor",
+    "state",
+    "version",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "source_work_ref": { "$ref": "#/$defs/workRef" },
+    "source_work_version": { "type": "integer", "minimum": 1 },
+    "source_owner_member_id": { "type": "string", "minLength": 1 },
+    "created_by_member_run_id": { "type": ["string", "null"], "minLength": 1 },
+    "target_agent_team_id": { "type": "string", "minLength": 1 },
+    "target_work_ref": { "$ref": "#/$defs/workRef" },
+    "delegated_by_actor": { "$ref": "#/$defs/actorRef" },
+    "state": { "type": "string", "enum": ["active", "blocked", "completed", "failed", "cancelled"] },
+    "resolution_summary": { "type": ["string", "null"], "minLength": 1 },
+    "blocker_reason": { "type": ["string", "null"], "minLength": 1 },
+    "version": { "type": "integer", "minimum": 1 },
+    "created_at": { "type": "string", "minLength": 1 },
+    "updated_at": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "workRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["team_run_id", "work_id"],
+      "properties": {
+        "team_run_id": { "type": "string", "minLength": 1 },
+        "work_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "actorRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["host", "member_run", "agent_member", "operator", "service"] },
+        "id": { "type": "string", "minLength": 1 },
+        "display_name": { "type": ["string", "null"], "minLength": 1 },
+        "authn_source": { "type": ["string", "null"], "minLength": 1 }
+      }
+    }
+  }
+}

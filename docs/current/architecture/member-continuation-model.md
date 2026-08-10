@@ -20,7 +20,7 @@ execution:
 ```text
 Mission
   -> ordered Host-plan Wave
-  -> independent AgentTeam / AgentTeamRun
+  -> one flat AgentTeam -> AgentTeamRun
   -> MemberRun
        -> active Work + WorkDelivery
        -> Harness Mailbox

@@ -7,13 +7,16 @@ outputs, adapters, and the Agent Dashboard.
 
 | Object | Purpose |
 | --- | --- |
-| `Mission` | Durable intent/context, linked Agent Teams, ordered Waves, and closeout |
+| `Mission` | Durable intent/context, one owning AgentTeam, ordered Waves, and closeout |
 | `Wave` | One lightweight versioned Host plan/judgment and advance outcome |
-| `AgentTeamRun` | One standalone or Mission-scoped use of an independent Agent Team |
+| `AgentTeam` | One Mission's flat Team with required Host Agent and immutable Node placement |
+| `AgentTeamRun` | One Team execution with required Team, Node, and Project Binding identity |
 | `MemberRun` | One role/provider execution instance inside a TeamRun |
 | `Work` / `WorkOperation` / `WorkEvent` / `WorkDelivery` | TeamRun-scoped responsibility projection, crash-atomic replay row, append-only semantic transition, and versioned runtime delivery |
+| `WorkDelegation` / `WorkDelegationEvent` | Cross-Team responsibility handoff with CAS, idempotency, cycle prevention, and source rollup |
 | `TeamMessage` | Typed sender/recipients, optional `work_id`, correlation/causation, optional origin Wave, response intent, claim/provider-receipt/ACK delivery state; conversation only |
-| `TeamSupervisorLease` | Latest-wins TeamRun control owner, generation fence, heartbeat, and loopback locator |
+| `ExecutionNode` / `NodeProjectRegistration` / `NodeDaemonLease` | Machine identity, available Project Bindings, and the one daemon generation that owns all local TeamRuns |
+| `TeamSupervisorLease` | Latest-wins TeamRun control owner parent-fenced by NodeDaemon generation |
 | `AgentMessageRoute` | Idempotent bridge from stable Agent Inbox mail to a MemberRun/TeamMessage |
 | `MemberAction` | Transitional action schema; target scope is Harness-owned coordination/control facts, never mirrored provider activity |
 | `DelegationRun` | Honest attribution for observed or harness-controlled delegation |
@@ -96,10 +99,13 @@ schema contracts are checked with valid and invalid fixtures.
 | Vision | [vision.schema.json](../../../schemas/vision.schema.json) |
 
 `WorkOperation` is the Store's crash-atomic replay envelope around one
-WorkEvent, its complete resulting Work, and delivery creates/updates. It is not
-a separately authored public lifecycle object and therefore has no standalone
-public JSON Schema in V1; the three public schemas above define the projections
-and semantic event/delivery records exposed by CLI/API/Dashboard.
+WorkEvent, its complete resulting Work, delivery creates/updates, and any
+`WorkDelegation` revisions caused by that exact target-Work transition. The
+embedded delegation revisions ensure HTTP, MCP, and CLI mutations cannot expose
+a newer target Work with a stale cross-Team roll-up after a crash. It is not a
+separately authored public lifecycle object and therefore has no standalone
+public JSON Schema in V1; the public schemas above define the projections and
+semantic event/delivery records exposed by CLI/API/Dashboard.
 
 ## Schema Evolution
 

@@ -48,8 +48,8 @@ open_questions:
 
 ## Core Page Specs
 
-The current product direction is Mission context -> ordered Host-plan Waves,
-with independent Agent Teams linked at Mission scope, owned by
+The current product direction is Mission context -> one flat AgentTeam plus
+ordered Host-plan Waves, owned by
 ADR 0034, while
 durable Team control and typed mail are owned by
 ADR 0044. The
@@ -59,8 +59,8 @@ define the new information architecture.
 
 | Page | Status | Layout |
 | --- | --- | --- |
-| [Mission/Wave Canvas](mission-wave-canvas.md) | implemented | durable context, linked Teams, ordered Host-plan revisions |
-| [Agent Team War Room](team-run-war-room.md) | implemented | one independent or Mission-scoped long-lived TeamRun |
+| [Mission/Wave Canvas](mission-wave-canvas.md) | implemented | durable context, Mission-owned Team, ordered Host-plan revisions |
+| [Agent Team War Room](team-run-war-room.md) | implemented | one Mission-owned, Node-placed long-lived TeamRun |
 | [MemberRun Focus](member-run-focus.md) | implemented candidate | run-scoped member detail |
 | [Standing Agent Focus](standing-agent-focus.md) | proposed | durable organization identity and collaboration |
 | [Debug](debug.md) | planned secondary surface | current raw objects and source diagnosis |

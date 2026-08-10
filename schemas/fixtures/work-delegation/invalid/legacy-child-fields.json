@@ -1,0 +1,14 @@
+{
+  "id": "delegation-legacy",
+  "source_work_ref": { "team_run_id": "run-source", "work_id": "work-source" },
+  "source_work_version": 3,
+  "source_owner_member_id": "member-source",
+  "target_agent_team_id": "team-target",
+  "target_work_ref": { "team_run_id": "run-target", "work_id": "work-target" },
+  "delegated_by_actor": { "kind": "agent_member", "id": "member-source" },
+  "state": "active",
+  "version": 1,
+  "child_team_run_id": "run-target",
+  "created_at": "2026-08-09T00:00:00Z",
+  "updated_at": "2026-08-09T00:00:00Z"
+}

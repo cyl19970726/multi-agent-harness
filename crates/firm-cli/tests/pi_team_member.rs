@@ -11,13 +11,94 @@ mod firm_env;
 
 use firm_env::{current_project_id, run_firm, TempHome};
 
-/// Init a project and return its id.
-fn init_project(home: &TempHome, name: &str) -> String {
+/// Init a project and the mandatory flat AgentTeam runtime relation.
+fn init_project(home: &TempHome, name: &str) -> (String, String) {
     let root = home.base().join(name);
     std::fs::create_dir_all(&root).unwrap();
     let out = run_firm(home, &root, &["init"]);
     assert!(out.status.success(), "init failed: {out:?}");
-    current_project_id(home)
+    let project_id = current_project_id(home);
+    let node = run_firm(home, &root, &["node", "init"]);
+    assert!(node.status.success(), "node init failed: {node:?}");
+    let node: serde_json::Value = serde_json::from_slice(&node.stdout).expect("node JSON");
+    let node_id = node["id"].as_str().expect("node id");
+    let registration = run_firm(
+        home,
+        &root,
+        &[
+            "node",
+            "project",
+            "register",
+            "--node-id",
+            node_id,
+            "--project-binding-id",
+            &project_id,
+        ],
+    );
+    assert!(
+        registration.status.success(),
+        "register failed: {registration:?}"
+    );
+    let mission = run_firm(
+        home,
+        &root,
+        &[
+            "mission",
+            "create",
+            "--title",
+            "Pi member mission",
+            "--objective",
+            "Verify persistent Pi member orchestration",
+        ],
+    );
+    assert!(
+        mission.status.success(),
+        "mission create failed: {mission:?}"
+    );
+    let mission_id = String::from_utf8_lossy(&mission.stdout).trim().to_string();
+    let host = run_firm(
+        home,
+        &root,
+        &[
+            "agent",
+            "create",
+            "--name",
+            "pi-host",
+            "--role",
+            "host",
+            "--provider",
+            "codex",
+        ],
+    );
+    assert!(host.status.success(), "host create failed: {host:?}");
+    let host: serde_json::Value = serde_json::from_slice(&host.stdout).expect("host JSON");
+    let host_id = host["id"].as_str().expect("host id");
+    let team = run_firm(
+        home,
+        &root,
+        &[
+            "team",
+            "create",
+            "--name",
+            "Pi member team",
+            "--description",
+            "Flat Pi integration test team",
+            "--mission-id",
+            &mission_id,
+            "--host-agent-id",
+            host_id,
+            "--node-id",
+            node_id,
+            "--member",
+            host_id,
+        ],
+    );
+    assert!(team.status.success(), "team create failed: {team:?}");
+    let team: serde_json::Value = serde_json::from_slice(&team.stdout).expect("team JSON");
+    (
+        project_id,
+        team["id"].as_str().expect("team id").to_string(),
+    )
 }
 
 /// Run harness with the fake pi shim on PATH and PI_BIN set.
@@ -62,9 +143,57 @@ fn run_with_fake_pi(
             "FAKE_PI_CWD_MARKER",
             home.base().join("pi-cwd.txt").to_string_lossy().to_string(),
         )
-        .env("FIRM_MEMBER_SUPERVISOR_TEST_IDLE_MS", "100")
         .output()
         .expect("run harness")
+}
+
+fn spawn_fake_pi_daemon(home: &TempHome, fake_bin: &Path) -> std::process::Child {
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    std::process::Command::new(env!("CARGO_BIN_EXE_firm"))
+        .args([
+            "daemon",
+            "serve",
+            "--scan-interval-secs",
+            "1",
+            "--idle-timeout-secs",
+            "30",
+        ])
+        .current_dir(home.base())
+        .envs(home.envs())
+        .env_remove("FIRM_ROOT")
+        .env_remove("FIRM_PROJECT")
+        .env_remove("FIRM_SPACE")
+        .env_remove("FIRM_COMPANY")
+        .env("PATH", path)
+        .env("PI_BIN", fake_bin.join("pi"))
+        .env("FAKE_PI_RESULT", "DONE")
+        .env("FAKE_PI_SUBMIT_WORK", "1")
+        .env("FAKE_PI_ARGS_MARKER", home.base().join("pi-args.json"))
+        .env("FAKE_PI_SESSION_DIR", home.base().join("pi-sessions"))
+        .env("FAKE_PI_CWD_MARKER", home.base().join("pi-cwd.txt"))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn NodeDaemon")
+}
+
+fn wait_for_daemon(home: &TempHome, fake_bin: &Path) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let status = run_with_fake_pi(home, fake_bin, "DONE", &["daemon", "status"]);
+        if status.status.success() && !String::from_utf8_lossy(&status.stdout).contains("absent") {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "NodeDaemon did not become ready: {status:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
 }
 
 /// Read store JSONL rows (latest-wins-per-id projection).
@@ -133,7 +262,7 @@ fn wait_for_member_turns(
 #[test]
 fn pi_rpc_team_member_completes_work_then_host_follow_up_without_disconnect() {
     let home = TempHome::new("pi-team-member-round");
-    let project_id = init_project(&home, "pi-test");
+    let (project_id, team_id) = init_project(&home, "pi-test");
 
     let fake_bin = fake_provider::install_pi_rpc_shim(
         home.base(),
@@ -150,6 +279,8 @@ fn pi_rpc_team_member_completes_work_then_host_follow_up_without_disconnect() {
         &[
             "team-run",
             "create",
+            "--agent-team-id",
+            &team_id,
             "--objective",
             "Verify pi integration",
             "--member",
@@ -210,6 +341,9 @@ fn pi_rpc_team_member_completes_work_then_host_follow_up_without_disconnect() {
         String::from_utf8_lossy(&message_out.stderr)
     );
 
+    let mut daemon = spawn_fake_pi_daemon(&home, &fake_bin);
+    wait_for_daemon(&home, &fake_bin);
+
     // Start the team run — this exercises the full orchestration loop
     let start_out = run_with_fake_pi(
         &home,
@@ -233,9 +367,11 @@ fn pi_rpc_team_member_completes_work_then_host_follow_up_without_disconnect() {
 
     let stdout = String::from_utf8_lossy(&start_out.stdout);
     assert!(
-        stdout.contains(&format!("team run {run_id}\trunning")),
-        "summary line should show running: {stdout}"
+        stdout.contains(&format!("team run {run_id}\tdelegated to NodeDaemon")),
+        "summary line should show NodeDaemon delegation: {stdout}"
     );
+
+    let actions = wait_for_member_turns(&home, &project_id, &member_id, 2);
 
     // Verify the fake shim was actually called (cwd recorded)
     let cwd_marker = home.base().join("pi-cwd.txt");
@@ -259,7 +395,6 @@ fn pi_rpc_team_member_completes_work_then_host_follow_up_without_disconnect() {
         "persistent Pi launch must force thinking off: {args:?}"
     );
 
-    let actions = wait_for_member_turns(&home, &project_id, &member_id, 2);
     let member_actions = actions
         .iter()
         .filter(|action| action["member_run_id"] == member_id)
@@ -322,6 +457,13 @@ fn pi_rpc_team_member_completes_work_then_host_follow_up_without_disconnect() {
             .join("pi-sessions/fake-session.jsonl")
             .to_string_lossy()
             .as_ref()
+    );
+
+    let stop = run_with_fake_pi(&home, &fake_bin, "DONE", &["daemon", "stop"]);
+    assert!(stop.status.success(), "NodeDaemon stop failed: {stop:?}");
+    assert!(
+        daemon.wait().expect("wait NodeDaemon").success(),
+        "NodeDaemon did not exit cleanly"
     );
 }
 

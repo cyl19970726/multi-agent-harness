@@ -50,19 +50,98 @@ fn build_info_is_storeless_and_reports_exact_or_unknown_revision() {
     );
 }
 
-/// `harness init` a project rooted at `<base>/<name>` and return its derived id.
-fn init_project(home: &TempHome, name: &str) -> String {
+fn seed_team(
+    home: &TempHome,
+    root: &std::path::Path,
+    project_id: &str,
+    space_id: Option<&str>,
+    suffix: &str,
+) -> String {
+    let run = |args: &[&str]| {
+        let mut selected = Vec::new();
+        if let Some(space_id) = space_id {
+            selected.extend(["--space", space_id, "--project", project_id]);
+        }
+        selected.extend_from_slice(args);
+        let output = run_firm(home, root, &selected);
+        assert!(
+            output.status.success(),
+            "fixture command {args:?} failed: {output:?}"
+        );
+        output
+    };
+    let node = run(&["node", "init"]);
+    let node: serde_json::Value = serde_json::from_slice(&node.stdout).expect("node JSON");
+    let node_id = node["id"].as_str().expect("node id");
+    let mut registration = vec![
+        "node",
+        "project",
+        "register",
+        "--node-id",
+        node_id,
+        "--project-binding-id",
+        project_id,
+    ];
+    if let Some(space_id) = space_id {
+        registration.extend(["--execution-space-id", space_id]);
+    }
+    run(&registration);
+    let mission = run(&[
+        "mission",
+        "create",
+        "--title",
+        &format!("Meta mission {suffix}"),
+        "--objective",
+        "Verify dashboard metadata provenance",
+    ]);
+    let mission_id = String::from_utf8_lossy(&mission.stdout).trim().to_string();
+    let host = run(&[
+        "agent",
+        "create",
+        "--name",
+        &format!("meta-host-{suffix}"),
+        "--role",
+        "host",
+        "--provider",
+        "codex",
+    ]);
+    let host: serde_json::Value = serde_json::from_slice(&host.stdout).expect("host JSON");
+    let host_id = host["id"].as_str().expect("host id");
+    let team = run(&[
+        "team",
+        "create",
+        "--name",
+        &format!("Meta team {suffix}"),
+        "--description",
+        "Flat dashboard metadata test team",
+        "--mission-id",
+        &mission_id,
+        "--host-agent-id",
+        host_id,
+        "--node-id",
+        node_id,
+        "--member",
+        host_id,
+    ]);
+    let team: serde_json::Value = serde_json::from_slice(&team.stdout).expect("team JSON");
+    team["id"].as_str().expect("team id").to_string()
+}
+
+/// `harness init` a project and seed the TeamRun admission relation.
+fn init_project(home: &TempHome, name: &str) -> (String, String) {
     let root = home.base().join(name);
     std::fs::create_dir_all(&root).unwrap();
     let out = run_firm(home, &root, &["init"]);
     assert!(out.status.success(), "init {name} failed: {out:?}");
-    current_project_id(home)
+    let project_id = current_project_id(home);
+    let team_id = seed_team(home, &root, &project_id, None, name);
+    (project_id, team_id)
 }
 
 #[test]
 fn meta_shape_and_provenance_fields_on_an_empty_store() {
     let home = TempHome::new("meta-empty");
-    let _project_id = init_project(&home, "alpha");
+    let (_project_id, _team_id) = init_project(&home, "alpha");
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
 
     let (status, meta) = serve.get_json("/v1/meta");
@@ -117,7 +196,7 @@ fn meta_shape_and_provenance_fields_on_an_empty_store() {
 #[test]
 fn latest_op_seq_advances_as_work_operations_are_appended() {
     let home = TempHome::new("meta-op-seq");
-    let _project_id = init_project(&home, "alpha");
+    let (_project_id, team_id) = init_project(&home, "alpha");
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
 
     let (_status, before) = serve.get_json("/v1/meta");
@@ -127,6 +206,7 @@ fn latest_op_seq_advances_as_work_operations_are_appended() {
     let (status, created) = serve.post_json(
         "/v1/team-runs",
         &serde_json::json!({
+            "agent_team_id": team_id,
             "objective": "Prove op_seq advances",
             "members": [
                 {"name": "lead", "role": "integrator", "provider": "codex",
@@ -172,8 +252,8 @@ fn meta_reads_the_space_selected_store_not_a_sibling_space() {
     // Mirrors serve_projects_api.rs's snapshot isolation coverage: two
     // Execution Spaces must never leak into each other's /v1/meta response.
     let home = TempHome::new("meta-space-scoped");
-    let id_a = init_project(&home, "alpha");
-    let id_b = init_project(&home, "beta");
+    let (id_a, _default_team_a) = init_project(&home, "alpha");
+    let (id_b, _default_team_b) = init_project(&home, "beta");
     for (space_id, project_id) in [("space-alpha", &id_a), ("space-beta", &id_b)] {
         let out = run_firm(
             &home,
@@ -195,10 +275,19 @@ fn meta_reads_the_space_selected_store_not_a_sibling_space() {
         );
     }
 
+    let team_a = seed_team(
+        &home,
+        &home.base().join("alpha"),
+        &id_a,
+        Some("space-alpha"),
+        "space-alpha",
+    );
+
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
     let (status, created) = serve.post_json(
         &format!("/v1/team-runs?space=space-alpha&project={id_a}"),
         &serde_json::json!({
+            "agent_team_id": team_a,
             "objective": "Scoped to space-alpha",
             "members": [
                 {"name": "lead", "role": "integrator", "provider": "codex",

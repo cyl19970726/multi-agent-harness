@@ -23,7 +23,7 @@ Star Harness must support Codex first — with Claude Code and Kimi now
 registered as further exec-stream providers — while leaving room for others
 such as OpenClaw, cloud-hosted agents, or a Permission Agent. Provider
 integrations are successful only when they preserve Mission intent,
-Host-plan Waves, Mission-linked independent teams, and each execution
+Mission intent, its one flat Node-placed Team, and each execution
 capability's honest native records. Provider integrations must not reintroduce the retired
 Goal/GoalPhase planning stack.
 
@@ -177,9 +177,11 @@ README until they need their own file.
     continuation loop owns that same work.
 12. Provider-native continuation is optional. Absence of Goal mode degrades to
     `host_driven`; it does not make the provider an invalid Agent Team member.
-13. One latest-wins Team Supervisor generation owns a live TeamRun's provider
-    transports, delivery claims, reconnect, and real controls. The adapter must
-    verify transport health before claim and fence every routed operation.
+13. One machine-scoped NodeDaemon generation owns all local TeamRuns. Each live
+    Team Supervisor generation is fenced by that parent daemon generation and
+    owns its run's provider transports, delivery claims, reconnect, and real
+    controls. The adapter must verify transport health before claim and fence
+    every routed operation.
 14. Team mail has typed actor provenance. Delivery claim, provider receipt,
     recipient ACK, semantic response, and Host acceptance are distinct facts.
 15. Explicit Close is latched and ends one runtime generation. Idle, Work

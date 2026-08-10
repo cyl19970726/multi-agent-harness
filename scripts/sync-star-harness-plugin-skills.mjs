@@ -17,6 +17,7 @@ const pluginRoot = join(repoRoot, "plugins", "star-harness", "skills");
 const names = [
   "orchestrate-mission-waves",
   "collaborate-as-agent-team-member",
+  "shared-references",
 ];
 const check = process.argv.includes("--check");
 

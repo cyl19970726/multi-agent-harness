@@ -88,6 +88,11 @@ pub struct GovernanceConfig {
     /// and lines that clearly label migration/history remain readable.
     #[serde(default)]
     pub retired_vocabulary: Option<RetiredVocabularyConfig>,
+    /// Exact document contracts that must keep teaching the same product
+    /// invariants. Unlike retired vocabulary, this can cover unregistered
+    /// repository entry points such as `AGENTS.md`.
+    #[serde(default)]
+    pub document_invariants: Vec<DocumentInvariantConfig>,
 }
 
 /// Config for the `registry` gate (the doc-governance registry validator).
@@ -128,6 +133,21 @@ pub struct RetiredVocabularyConfig {
     /// Case-insensitive markers that make a matching line explicitly historical.
     #[serde(default)]
     pub context_markers: Vec<String>,
+}
+
+/// Required and forbidden exact terms for a set of authoritative documents.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentInvariantConfig {
+    /// Stable label used in gate failures.
+    pub name: String,
+    /// Repository-relative files. Every file is checked independently.
+    pub paths: Vec<String>,
+    /// Every path must contain every required term.
+    #[serde(default)]
+    pub required_terms: Vec<String>,
+    /// No path may contain any forbidden term.
+    #[serde(default)]
+    pub forbidden_terms: Vec<String>,
 }
 
 impl GovernanceConfig {
@@ -239,6 +259,7 @@ impl GovernanceConfig {
                 coverage_exclude: Vec::new(),
             }),
             retired_vocabulary: None,
+            document_invariants: Vec::new(),
         }
     }
 
@@ -256,6 +277,7 @@ impl GovernanceConfig {
             member_data_root: None,
             registry: None,
             retired_vocabulary: None,
+            document_invariants: Vec::new(),
         }
     }
 
@@ -304,6 +326,9 @@ pub fn run_check_at(root: &Path, config: &GovernanceConfig, today: &str) -> Gove
         if let Some(retired) = &config.retired_vocabulary {
             gates.push(check_retired_vocabulary(root, reg, retired));
         }
+    }
+    if !config.document_invariants.is_empty() {
+        gates.push(check_document_invariants(root, &config.document_invariants));
     }
     GovernanceReport { gates }
 }
@@ -743,6 +768,67 @@ fn retired_vocabulary_report(failures: Vec<String>, checked: usize) -> GateRepor
         failures,
         warnings: Vec::new(),
         summary: format!("checked {checked} active registered markdown documents"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// gate: authoritative document invariants
+// ---------------------------------------------------------------------------
+
+/// Require authoritative entry points to state the same exact product
+/// invariants and reject known superseded formulations.
+pub fn check_document_invariants(root: &Path, configs: &[DocumentInvariantConfig]) -> GateReport {
+    let mut failures = Vec::new();
+    let mut checked = 0usize;
+
+    for config in configs {
+        if config.paths.is_empty() {
+            failures.push(format!(
+                "{}: document invariant must declare at least one path",
+                config.name
+            ));
+            continue;
+        }
+        for path in &config.paths {
+            let text = match std::fs::read_to_string(root.join(path)) {
+                Ok(text) => text,
+                Err(error) => {
+                    failures.push(format!(
+                        "{}: {path}: cannot read authoritative document: {error}",
+                        config.name
+                    ));
+                    continue;
+                }
+            };
+            checked += 1;
+            for term in &config.required_terms {
+                if !text.contains(term) {
+                    failures.push(format!(
+                        "{}: {path}: missing required invariant `{term}`",
+                        config.name
+                    ));
+                }
+            }
+            for term in &config.forbidden_terms {
+                if text.contains(term) {
+                    failures.push(format!(
+                        "{}: {path}: contains superseded invariant `{term}`",
+                        config.name
+                    ));
+                }
+            }
+        }
+    }
+
+    GateReport {
+        kind: "document_invariants".into(),
+        severity: Severity::Blocker,
+        failures,
+        warnings: Vec::new(),
+        summary: format!(
+            "checked {checked} authoritative documents across {} invariant sets",
+            configs.len()
+        ),
     }
 }
 
@@ -1487,6 +1573,138 @@ mod tests {
         };
         let r = check_retired_vocabulary(&root, &reg_cfg(), &cfg);
         assert!(r.failures.is_empty(), "got {:?}", r.failures);
+    }
+
+    fn flat_team_invariant(paths: &[&str]) -> DocumentInvariantConfig {
+        DocumentInvariantConfig {
+            name: "flat-agent-team-authority".into(),
+            paths: paths.iter().map(|path| (*path).into()).collect(),
+            required_terms: vec![
+                "flat AgentTeams".into(),
+                "exactly one Mission".into(),
+                "immutable `node_id`".into(),
+                "one machine-scoped NodeDaemon".into(),
+            ],
+            forbidden_terms: vec!["recursive AgentTeams".into()],
+        }
+    }
+
+    #[test]
+    fn document_invariants_pass_when_every_authority_teaches_the_contract() {
+        let root = tmp("document-invariants-ok");
+        let contract = "flat AgentTeams; exactly one Mission; immutable `node_id`; one machine-scoped NodeDaemon";
+        write(&root, "AGENTS.md", contract);
+        write(&root, "docs/mental/model.md", contract);
+        let report = check_document_invariants(
+            &root,
+            &[flat_team_invariant(&["AGENTS.md", "docs/mental/model.md"])],
+        );
+        assert!(report.failures.is_empty(), "got {:?}", report.failures);
+        assert!(report.summary.contains("checked 2 authoritative documents"));
+    }
+
+    #[test]
+    fn document_invariants_fail_on_missing_or_superseded_contract() {
+        let root = tmp("document-invariants-bad");
+        write(
+            &root,
+            "AGENTS.md",
+            "recursive AgentTeams; exactly one Mission; immutable `node_id`; one machine-scoped NodeDaemon",
+        );
+        write(
+            &root,
+            "docs/mental/model.md",
+            "flat AgentTeams; exactly one Mission; one machine-scoped NodeDaemon",
+        );
+        let report = check_document_invariants(
+            &root,
+            &[flat_team_invariant(&["AGENTS.md", "docs/mental/model.md"])],
+        );
+        assert!(report
+            .failures
+            .iter()
+            .any(|failure| failure
+                .contains("AGENTS.md: missing required invariant `flat AgentTeams`")));
+        assert!(report.failures.iter().any(|failure| failure
+            .contains("AGENTS.md: contains superseded invariant `recursive AgentTeams`")));
+        assert!(report.failures.iter().any(|failure| failure
+            .contains("docs/mental/model.md: missing required invariant `immutable `node_id``")));
+        assert!(report.is_blocking_failure());
+    }
+
+    #[test]
+    fn self_host_document_invariants_cover_mission_team_and_node_authorities() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("repo root from crate manifest")
+            .to_path_buf();
+        let config = GovernanceConfig::load(&repo).expect("load .governance.toml");
+        let by_name = config
+            .document_invariants
+            .iter()
+            .map(|invariant| (invariant.name.as_str(), invariant))
+            .collect::<BTreeMap<_, _>>();
+
+        let mission_team = by_name
+            .get("mission-team-bijection")
+            .expect("Mission-Team bijection must be governed");
+        for path in [
+            "AGENTS.md",
+            "docs/mental/agent-firm-mental-model.md",
+            "docs/decisions/0050-agent-team-work-board-and-message-boundary.md",
+        ] {
+            assert!(
+                mission_team.paths.iter().any(|candidate| candidate == path),
+                "Mission-Team governance omitted {path}"
+            );
+        }
+        for term in [
+            "Every Team belongs to exactly one Mission",
+            "No two AgentTeams may reference the same Mission",
+            "immutable `node_id`",
+        ] {
+            assert!(
+                mission_team
+                    .required_terms
+                    .iter()
+                    .any(|candidate| candidate == term),
+                "Mission-Team governance omitted `{term}`"
+            );
+        }
+
+        let node_daemon = by_name
+            .get("machine-node-daemon-authority")
+            .expect("machine NodeDaemon authority must be governed");
+        for path in [
+            "AGENTS.md",
+            "docs/mental/agent-firm-mental-model.md",
+            "docs/current/architecture/multi-team-supervisor-daemon.md",
+        ] {
+            assert!(
+                node_daemon.paths.iter().any(|candidate| candidate == path),
+                "NodeDaemon governance omitted {path}"
+            );
+        }
+        for term in [
+            "one machine-scoped NodeDaemon",
+            "`NodeDaemonLease` is machine-scoped",
+            "all local Teams",
+            "registered Execution Spaces",
+            "never scoped to one Execution Space",
+        ] {
+            assert!(
+                node_daemon
+                    .required_terms
+                    .iter()
+                    .any(|candidate| candidate == term),
+                "NodeDaemon governance omitted `{term}`"
+            );
+        }
+
+        let report = check_document_invariants(&repo, &config.document_invariants);
+        assert!(report.failures.is_empty(), "got {:?}", report.failures);
+        assert!(report.summary.contains("checked 6 authoritative documents"));
     }
 
     #[test]

@@ -131,17 +131,18 @@ one of the product's one-time long-task capabilities:
 
 ```text
 Mission -> ordered Host-plan Wave
-Mission <-> independent AgentTeam
+Mission -> one flat AgentTeam
 execution = Agent Team | Dynamic Workflow | Host work
 ```
 
-- `Mission` structures one bounded long-running outcome and links reusable
-  Agent Teams.
+- `Mission` structures one bounded long-running outcome and owns one flat
+  AgentTeam.
 - `Wave` preserves the Host's evolving plan and judgment without becoming a
   runtime container or barrier.
 - `AgentTeamRun/MemberRun` records temporary collaboration that may span
   several Waves while native sessions continue.
-- one durable Team Supervisor generation owns each live TeamRun's provider
+- one machine NodeDaemon generation owns all local TeamRuns; each live Team
+  Supervisor generation is parent-fenced by it and owns that run's provider
   transports, delivery claims, reconnect, and real controls;
 - typed Host/Member/Agent/Operator mail preserves provenance; claim, provider
   receipt, recipient ACK, semantic reply, and acceptance remain distinct;

@@ -90,7 +90,7 @@ cargo test -p firm-cli --test team_run_api \
 
 There is currently no packaged live-provider command. When a claim depends on
 a real provider, record the exact Mission, selected Host-plan Wave revision,
-Mission-scoped TeamRun, MemberRuns, provider-native session ids, Work
+Team/Node/Project-fenced TeamRun, MemberRuns, provider-native session ids, Work
 ids/versions, WorkDelivery, linked conversation, submissions/Host
 acceptance, artifacts, and
 Host judgment from the live run. Do not present deterministic provider-shim
@@ -191,9 +191,10 @@ The current Mission/Team authoring path is available through Cargo:
 cargo run -p firm-cli -- --help
 cargo run -p firm-cli -- init
 cargo run -p firm-cli -- mission create --title <title> --objective <objective> --context "<mission-markdown>"
-cargo run -p firm-cli -- mission create-team --id <mission-id> --name <team-name> --description <purpose> --lead host
-cargo run -p firm-cli -- team-run create --mission-id <mission-id> \
-  --agent-team-id <team-id> --objective <objective> \
+cargo run -p firm-cli -- node init
+cargo run -p firm-cli -- team create --mission-id <mission-id> --name <team-name> \
+  --description <purpose> --host-agent-id <agent-id> --node-id <node-uuid>
+cargo run -p firm-cli -- team-run create --agent-team-id <team-id> --objective <objective> \
   --member-owned-path <member-name>:crates
 cargo run -p firm-cli -- team-run start --id <team-run-id>
 cargo run -p firm-cli -- mission log append --mission-id <mission-id> --kind judgment --body "<host-decision>"
@@ -201,8 +202,8 @@ cargo run -p firm-cli -- dashboard snapshot
 cargo run -p firm-cli -- serve --addr 127.0.0.1:8787
 ```
 
-Omit ad-hoc `--member` overrides when starting from a reusable AgentTeam
-definition. That path preserves each registered AgentMember's stable identifier
+Omit ad-hoc `--member` overrides when starting from a Mission-owned AgentTeam.
+That path preserves each registered AgentMember's stable identifier
 as `MemberRun.agent_member_id`; an intentionally matching Company OS
 StandingAgent can then project the participation without inferring identity or
 authority.

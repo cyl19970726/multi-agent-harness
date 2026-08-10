@@ -1,8 +1,6 @@
-//! Integration coverage for the recursive AgentTeam topology slice (ADR 0052):
-//! `harness team create --parent-team/--host-member` persists the durable
-//! parent/host relations, the store guard enforces the direct-host and
-//! acyclic invariants on every creation path, and `team remove-member`
-//! refuses to strand a child Team's host.
+//! Integration coverage for the flat AgentTeam model: one Mission, one Host
+//! Agent, and one immutable ExecutionNode placement per Team. Cross-Team work
+//! is represented by WorkDelegation, never parent/child Team topology.
 
 mod firm_env;
 
@@ -62,7 +60,7 @@ fn create_member(home: &TempHome, project_id: &str, id: &str, role: &str) {
 }
 
 #[test]
-fn team_create_persists_and_enforces_recursive_topology() {
+fn team_create_persists_and_enforces_flat_identity_and_placement() {
     let home = TempHome::new("team-topology");
     let project_id = init_project(&home, "topology");
     for (id, role) in [
@@ -73,7 +71,31 @@ fn team_create_persists_and_enforces_recursive_topology() {
         create_member(&home, &project_id, id, role);
     }
 
-    // Root team with a durable Lead host; flat member list stays compatible.
+    for (id, title) in [
+        ("mission-root", "Root Mission"),
+        ("mission-peer", "Peer Mission"),
+        ("mission-node-check", "Node Check Mission"),
+        ("mission-host-check", "Host Check Mission"),
+    ] {
+        run_json(
+            &home,
+            &project_id,
+            &[
+                "mission",
+                "create",
+                "--id",
+                id,
+                "--title",
+                title,
+                "--objective",
+                "Exercise flat Team identity",
+                "--json",
+            ],
+        );
+    }
+    let node = run_json(&home, &project_id, &["node", "init"]);
+    let node_id = node["id"].as_str().expect("node id").to_string();
+
     let root = run_json(
         &home,
         &project_id,
@@ -85,51 +107,52 @@ fn team_create_persists_and_enforces_recursive_topology() {
             "--name",
             "Root Team",
             "--description",
-            "Root of the recursive Organization",
-            "--lead",
-            "host",
+            "Flat peer in the Organization",
+            "--mission-id",
+            "mission-root",
+            "--host-agent-id",
+            "agent-lead",
+            "--node-id",
+            &node_id,
             "--member",
             "agent-lead",
             "--member",
             "agent-cto",
-            "--host-member",
-            "agent-lead",
         ],
     );
-    assert_eq!(root["parent_team_id"], serde_json::Value::Null);
-    assert_eq!(root["host_member_id"], "agent-lead");
+    assert_eq!(root["mission_id"], "mission-root");
+    assert_eq!(root["host_agent_id"], "agent-lead");
+    assert_eq!(root["node_id"], node_id);
+    assert!(root.get("parent_team_id").is_none());
+    assert!(root.get("host_member_id").is_none());
 
-    // Child team: the host is a direct member of the parent.
-    let child = run_json(
+    let peer = run_json(
         &home,
         &project_id,
         &[
             "team",
             "create",
             "--id",
-            "team-child",
+            "team-peer",
             "--name",
-            "Child Team",
+            "Peer Team",
             "--description",
-            "Executes delegated Work",
-            "--lead",
+            "Receives explicit delegated Work",
+            "--mission-id",
+            "mission-peer",
+            "--host-agent-id",
             "agent-cto",
+            "--node-id",
+            &node_id,
             "--member",
             "agent-worker",
-            "--parent-team",
-            "team-root",
-            "--host-member",
-            "agent-cto",
         ],
     );
-    assert_eq!(child["parent_team_id"], "team-root");
-    assert_eq!(child["host_member_id"], "agent-cto");
+    assert_eq!(peer["mission_id"], "mission-peer");
+    assert_eq!(peer["host_agent_id"], "agent-cto");
+    assert!(peer.get("parent_team_id").is_none());
 
-    let shown = run_json(&home, &project_id, &["team", "show", "--id", "team-child"]);
-    assert_eq!(shown["parent_team_id"], "team-root");
-    assert_eq!(shown["host_member_id"], "agent-cto");
-
-    // Unknown parent is rejected.
+    // The Mission relation is one-to-one.
     let err = run_err(
         &home,
         &project_id,
@@ -137,45 +160,22 @@ fn team_create_persists_and_enforces_recursive_topology() {
             "team",
             "create",
             "--id",
-            "team-orphan",
+            "team-duplicate-mission",
             "--name",
-            "Orphan",
+            "Duplicate Mission",
             "--description",
-            "Missing parent",
-            "--lead",
-            "host",
-            "--parent-team",
-            "team-missing",
-            "--host-member",
-            "agent-cto",
-        ],
-    );
-    assert!(err.contains("missing parent AgentTeam"), "stderr: {err}");
-
-    // Direct-host invariant: the host must be a direct member of the parent.
-    let err = run_err(
-        &home,
-        &project_id,
-        &[
-            "team",
-            "create",
-            "--id",
-            "team-stranger",
-            "--name",
-            "Stranger Hosted",
-            "--description",
-            "Host outside parent membership",
-            "--lead",
-            "host",
-            "--parent-team",
-            "team-root",
-            "--host-member",
+            "Must fail",
+            "--mission-id",
+            "mission-root",
+            "--host-agent-id",
             "agent-worker",
+            "--node-id",
+            &node_id,
         ],
     );
-    assert!(err.contains("not a direct member"), "stderr: {err}");
+    assert!(err.contains("Mission mission-root"), "stderr: {err}");
 
-    // One member hosts at most one team in V1.
+    // Missing durable joins fail before a Team row is appended.
     let err = run_err(
         &home,
         &project_id,
@@ -183,22 +183,21 @@ fn team_create_persists_and_enforces_recursive_topology() {
             "team",
             "create",
             "--id",
-            "team-second",
+            "team-missing-mission",
             "--name",
-            "Second Hosted Team",
+            "Missing Mission",
             "--description",
-            "Duplicate host claim",
-            "--lead",
-            "host",
-            "--parent-team",
-            "team-root",
-            "--host-member",
-            "agent-cto",
+            "Must fail",
+            "--mission-id",
+            "mission-missing",
+            "--host-agent-id",
+            "agent-worker",
+            "--node-id",
+            &node_id,
         ],
     );
-    assert!(err.contains("more than one AgentTeam"), "stderr: {err}");
+    assert!(err.contains("TEAM_REQUIRES_MISSION"), "stderr: {err}");
 
-    // A non-root team must name its durable host.
     let err = run_err(
         &home,
         &project_id,
@@ -206,35 +205,44 @@ fn team_create_persists_and_enforces_recursive_topology() {
             "team",
             "create",
             "--id",
-            "team-hostless",
+            "team-missing-node",
             "--name",
-            "Hostless Child",
+            "Missing Node",
             "--description",
-            "Non-root without host",
-            "--lead",
-            "host",
-            "--parent-team",
-            "team-root",
+            "Must fail",
+            "--mission-id",
+            "mission-node-check",
+            "--host-agent-id",
+            "agent-worker",
+            "--node-id",
+            "00000000-0000-4000-8000-000000000099",
         ],
     );
-    assert!(err.contains("host_member_id"), "stderr: {err}");
+    assert!(err.contains("NODE_NOT_ACTIVE"), "stderr: {err}");
 
-    // Removing the child's host from the parent would strand the child team.
     let err = run_err(
         &home,
         &project_id,
         &[
             "team",
-            "remove-member",
+            "create",
             "--id",
-            "team-root",
-            "--member",
-            "agent-cto",
+            "team-missing-host",
+            "--name",
+            "Missing Host",
+            "--description",
+            "Must fail",
+            "--mission-id",
+            "mission-host-check",
+            "--host-agent-id",
+            "agent-missing",
+            "--node-id",
+            &node_id,
         ],
     );
-    assert!(err.contains("not a direct member"), "stderr: {err}");
+    assert!(err.contains("missing Host Agent"), "stderr: {err}");
 
-    // Removing an unrelated member stays legal.
+    // Membership is execution composition, not Host authority.
     let updated = run_json(
         &home,
         &project_id,
@@ -244,8 +252,9 @@ fn team_create_persists_and_enforces_recursive_topology() {
             "--id",
             "team-root",
             "--member",
-            "agent-lead",
+            "agent-cto",
         ],
     );
-    assert_eq!(updated["member_ids"], serde_json::json!(["agent-cto"]));
+    assert_eq!(updated["host_agent_id"], "agent-lead");
+    assert_eq!(updated["member_ids"], serde_json::json!(["agent-lead"]));
 }

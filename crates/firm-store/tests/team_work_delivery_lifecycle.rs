@@ -21,9 +21,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use firm_core::{
-    AgentTeamRun, MemberCoordinationStatus, MemberRun, MemberRunStatus, TeamActorKind,
-    TeamActorRef, TeamRunStatus, Work, WorkClaimMode, WorkCommandContext, WorkCondition,
-    WorkDelivery, WorkDeliveryStatus, WorkPhase, WorkPriority,
+    AgentTeamRun, ExecutionNode, ExecutionNodeStatus, MemberCoordinationStatus, MemberRun,
+    MemberRunStatus, NodeDaemonLeaseStatus, TeamActorKind, TeamActorRef, TeamRunStatus, Work,
+    WorkClaimMode, WorkCommandContext, WorkCondition, WorkDelivery, WorkDeliveryStatus, WorkPhase,
+    WorkPriority,
 };
 use firm_store::{HarnessStore, WorkDeliveryClaimResult};
 
@@ -61,12 +62,10 @@ fn team_fixture(label: &str) -> (TestStore, AgentTeamRun, MemberRun, MemberRun) 
     let harness = TestStore::new(label);
     let run = AgentTeamRun {
         id: format!("tr-{label}"),
-        definition_id: None,
-        agent_team_id: None,
+        agent_team_id: format!("team-{label}"),
+        execution_node_id: "00000000-0000-4000-8000-000000000001".into(),
+        project_binding_id: "project-test".into(),
         previous_run_id: None,
-        mission_id: None,
-        wave_id: None,
-        project_binding_id: None,
         host_surface: "codex-app".into(),
         host_thread_id: Some(format!("host-{label}")),
         host_actor: None,
@@ -237,10 +236,36 @@ fn deliveries_for(harness: &TestStore, work_id: &str) -> Vec<WorkDelivery> {
 }
 
 fn acquire_lease(harness: &TestStore, run_id: &str) {
+    let node = ExecutionNode {
+        id: "00000000-0000-4000-8000-000000000001".into(),
+        display_name: "test-node".into(),
+        status: ExecutionNodeStatus::Active,
+        created_at: "unix-ms:1".into(),
+        updated_at: "unix-ms:1".into(),
+    };
+    if harness.store.latest_execution_nodes().unwrap().is_empty() {
+        harness.store.insert_execution_node(&node).unwrap();
+    }
+    let parent = harness
+        .store
+        .acquire_node_daemon_lease(
+            &node.id,
+            "daemon-test",
+            "instance-test",
+            NOW_MS,
+            LEASE_TTL_MS,
+        )
+        .expect("acquire node daemon lease");
+    assert_eq!(parent.status, NodeDaemonLeaseStatus::Active);
     harness
         .store
-        .acquire_team_supervisor_lease(
+        .acquire_team_supervisor_under_node_lease(
             run_id,
+            &node.id,
+            &parent.daemon_id,
+            parent.generation,
+            "space-test",
+            "project-test",
             SUPERVISOR,
             std::process::id(),
             "loopback://delivery-test",

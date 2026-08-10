@@ -3,7 +3,7 @@
 ```text
 status: implemented baseline; Works visual and responsive closure in progress
 owner_role: product-design
-canonical_for: one standalone or Mission-scoped AgentTeamRun
+canonical_for: one Mission-owned AgentTeamRun
 route_or_surface: Agent Teams -> TeamRun
 architecture: ADR 0025 retained runtime contracts + ADR 0034 lifecycle +
               ADR 0037 collaboration + ADR 0044 supervision/typed mail +
@@ -23,10 +23,12 @@ The page must remain useful when the same TeamRun spans several Host-plan Waves.
 
 Required data:
 
-- independent `AgentTeam` definition, explicit Team Lead, and editable member
-  identities;
-- `AgentTeamRun`, optional `mission_id`, optional legacy `wave_id`, status,
-  previous run, host/runtime facts, and outcome;
+- one flat, Mission-owned `AgentTeam`, explicit Host Agent, immutable Node
+  placement, and editable member identities;
+- `AgentTeamRun`, required `agent_team_id`, `execution_node_id`, and
+  `project_binding_id`, plus status, previous same-Team run, host/runtime facts,
+  and outcome; Mission is derived through `AgentTeam.mission_id` and Wave is
+  never a TeamRun ownership field;
 - `MemberRun` identity, role, provider/model, status, capability profile,
   worktree, and native-session binding;
 - current `TeamSupervisorLease` generation, heartbeat, owner locator,
@@ -45,9 +47,9 @@ Harness does not mirror provider transcripts, tool calls, commands, file
 events, turns, or thinking. A provider `completed` lifecycle update is not an
 answer, approval, or semantic result.
 
-The TeamRun may be standalone or linked to a Mission. In the primary
-Mission-scoped path it is not owned by one Wave. Wave context explains how the
-Host is currently using the team.
+Every TeamRun belongs to its required AgentTeam, and every AgentTeam belongs to
+exactly one Mission. A selected Wave is navigation and planning context only;
+it never owns the TeamRun.
 
 The Host Agent that created and coordinates the team is the Team Lead. The page
 must show that identity separately from the member roster. `host` means the
