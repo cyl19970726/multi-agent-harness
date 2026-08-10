@@ -540,16 +540,21 @@ try {
   check(true, "Operator diagnostics survives 20/20 authoritative refetch cycles");
   const admitProvider = operatorPage.getByRole("button", {name:"admit provider",exact:true});
   await admitProvider.waitFor();
-  if (await admitProvider.isDisabled()) throw new Error("eligible live Node did not expose executable provider admission");
-  await admitProvider.click();
-  await operatorPage.getByLabel("Installed provider (for example, codex)").fill("codex");
-  await operatorPage.getByLabel("Execution mode (for example, codex_app_server)").fill("codex_app_server");
-  const admissionResponse = operatorPage.waitForResponse((response) => response.request().method()==="POST" && response.url().includes(`/v1/agentfirm/nodes/${liveNode.id}/provider-admission`));
-  await operatorPage.getByRole("button", {name:"Execute action"}).click();
-  const admissionHttp = await admissionResponse;
-  const admissionBody = await admissionHttp.json();
-  check(admissionHttp.status()===200 && admissionBody?.projection?.evidence_refs?.every((ref)=>ref.startsWith("server-")), "Operator browser executes server-probed provider admission through the real service");
-  await operatorPage.getByRole("button", {name:"admit provider",exact:true}).waitFor();
+  if (await admitProvider.isDisabled()) {
+    const disabledReason = await admitProvider.getAttribute("title");
+    check(disabledReason?.startsWith("server cannot prove an eligible provider admission:") === true,
+      "Operator browser fails closed when the server-observed provider tuple is not admission-eligible");
+  } else {
+    await admitProvider.click();
+    await operatorPage.getByLabel("Installed provider (for example, codex)").fill("codex");
+    await operatorPage.getByLabel("Execution mode (for example, codex_app_server)").fill("codex_app_server");
+    const admissionResponse = operatorPage.waitForResponse((response) => response.request().method()==="POST" && response.url().includes(`/v1/agentfirm/nodes/${liveNode.id}/provider-admission`));
+    await operatorPage.getByRole("button", {name:"Execute action"}).click();
+    const admissionHttp = await admissionResponse;
+    const admissionBody = await admissionHttp.json();
+    check(admissionHttp.status()===200 && admissionBody?.projection?.evidence_refs?.every((ref)=>ref.startsWith("server-")), "Operator browser executes server-probed provider admission through the real service");
+    await operatorPage.getByRole("button", {name:"admit provider",exact:true}).waitFor();
+  }
   await operatorContext.close();
 
   await page.goto(`${appBase}/?${new URLSearchParams({...roleBaseQuery,surface:"work"})}`, {waitUntil:"domcontentloaded"});

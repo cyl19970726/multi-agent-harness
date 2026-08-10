@@ -1769,13 +1769,19 @@ fn operator_view(
                     && registration.execution_space_id == space_id
                     && enum_string(&registration.status) == "active"
             });
+    let admission_disabled_reason = if !admission_scope_proven {
+        Some("exact Node/project/Execution Space admission scope is unavailable".to_string())
+    } else {
+        crate::operator_provider_admission_probe("codex", "codex_app_server")
+            .err()
+            .map(|error| format!("server cannot prove an eligible provider admission: {error}"))
+    };
     operator_actions.push(action(
         "admit_provider",
         "execution_node",
         node_id,
         node_revision,
-        (!admission_scope_proven)
-            .then_some("exact Node/project/Execution Space admission scope is unavailable"),
+        admission_disabled_reason.as_deref(),
     ));
     Ok(envelope(
         "operator",

@@ -1456,6 +1456,48 @@ fn operator_eligible_daemon_and_server_probed_admission_are_real_and_fail_closed
         "hostile browser facts have zero durable side effects"
     );
 
+    std::fs::write(
+        &shim,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'codex-cli 0.145.0-alpha.18'; exit 0; fi\nexit 2\n",
+    )
+    .expect("replace probe shim with an adapter-current version");
+    let (status, current_provider_view) =
+        serve.get_json_with_headers(&operator_route, &[("X-AgentFirm-Token", OPERATOR_TOKEN)]);
+    assert_eq!(
+        status, 200,
+        "current provider Operator view: {current_provider_view}"
+    );
+    let current_admission_action = current_provider_view["allowed_actions"]
+        .as_array()
+        .and_then(|actions| {
+            actions
+                .iter()
+                .find(|action| action["kind"] == "admit_provider")
+        })
+        .expect("admission action remains visible with an explicit disabled reason");
+    assert!(current_admission_action["disabled_reason"]
+        .as_str()
+        .is_some_and(|reason| reason.contains("observed provider tuple is current")));
+    let current_headers = action_headers(
+        OPERATOR_TOKEN,
+        "operator-provider-current-version",
+        node_revision.as_str(),
+    );
+    let (status, current_rejected) =
+        serve.post_json_with_headers(&admission_route, &intent, &current_headers);
+    assert_eq!(
+        status, 409,
+        "current tuple cannot be admitted: {current_rejected}"
+    );
+    assert_eq!(
+        store
+            .latest_provider_compatibility_admissions()
+            .expect("admissions after current tuple rejection")
+            .len(),
+        before + 1,
+        "ineligible current tuple has zero durable side effects"
+    );
+
     let stop_headers = [
         ("X-AgentFirm-Token", OPERATOR_TOKEN),
         ("Idempotency-Key", "operator-daemon-stop"),

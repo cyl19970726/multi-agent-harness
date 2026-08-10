@@ -7876,23 +7876,8 @@ fn admit_provider_from_operator_action(
     if registration.project_binding_id != project_id {
         return Err("Node registration does not match the canonical project scope".into());
     }
-    let mut profile = team_member_provider_profile_for_mode(provider, Some(execution_mode));
-    if profile.execution_mode != execution_mode {
-        return Err(format!(
-            "execution mode {execution_mode} is not registered for {provider}"
-        ));
-    }
-    let adapter_contract_version = profile.adapter_contract_version.clone().ok_or_else(|| {
-        format!("provider {provider}/{execution_mode} has no registered adapter contract")
-    })?;
-    let detected = team_member_provider_version_output(provider)?;
-    apply_provider_version(&mut profile, Some(detected.clone()));
-    if profile.compatibility_status != ProviderCompatibilityStatus::ReviewRequired {
-        return Err(format!(
-            "observed provider tuple is {}; admission is available only for review_required tuples",
-            serde_snake_label(&profile.compatibility_status)
-        ));
-    }
+    let (detected, adapter_contract_version) =
+        operator_provider_admission_probe(provider, execution_mode)?;
     let admission = ProviderCompatibilityAdmission {
         id: admission_id,
         project_id: project_id.to_string(),
@@ -7917,6 +7902,34 @@ fn admit_provider_from_operator_action(
         .ensure_provider_compatibility_admission(&admission)
         .map_err(|error| error.to_string())?;
     Ok((ensured.admission, !ensured.created))
+}
+
+/// Observe whether an installed provider tuple is presently eligible for an
+/// operational admission. RoleView projection and action execution share this
+/// exact probe so the UI cannot advertise an action that the server already
+/// knows it must reject.
+pub(crate) fn operator_provider_admission_probe(
+    provider: &str,
+    execution_mode: &str,
+) -> Result<(String, String), String> {
+    let mut profile = team_member_provider_profile_for_mode(provider, Some(execution_mode));
+    if profile.execution_mode != execution_mode {
+        return Err(format!(
+            "execution mode {execution_mode} is not registered for {provider}"
+        ));
+    }
+    let adapter_contract_version = profile.adapter_contract_version.clone().ok_or_else(|| {
+        format!("provider {provider}/{execution_mode} has no registered adapter contract")
+    })?;
+    let detected = team_member_provider_version_output(provider)?;
+    apply_provider_version(&mut profile, Some(detected.clone()));
+    if profile.compatibility_status != ProviderCompatibilityStatus::ReviewRequired {
+        return Err(format!(
+            "observed provider tuple is {}; admission is available only for review_required tuples",
+            serde_snake_label(&profile.compatibility_status)
+        ));
+    }
+    Ok((detected, adapter_contract_version))
 }
 
 fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
