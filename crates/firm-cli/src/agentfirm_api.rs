@@ -318,6 +318,9 @@ pub struct AuthenticatedMutation {
     pub authorized_authority_actors: Vec<ActorRef>,
     pub idempotency_key: String,
     pub expected_version: u64,
+    /// Present only for the closed browser semantic adapter. It binds route,
+    /// typed intent, identity, authority and original If-Match across retries.
+    pub request_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -446,12 +449,28 @@ fn authorize(
             | TrustCommand::CreateWorkFinding { .. }
             | TrustCommand::CreateFailureAnalysis { .. }
             | TrustCommand::EvaluateGate { .. }
+            | TrustCommand::WaiveGate { .. }
+            | TrustCommand::RevokeGateWaiver { .. }
     );
     if execution_authoring {
         return Ok(());
     }
 
     if actor.kind == ActorKind::AgentMember {
+        if let TrustCommand::CreateGateRequirement { team_id, .. } = command {
+            if store
+                .latest_teams()?
+                .get(team_id)
+                .is_some_and(|team| team.host_agent_id == actor.id)
+            {
+                return Ok(());
+            }
+            return Err(unauthorized(
+                "agent_team",
+                team_id,
+                "only the exact Team Host may request a Gate evaluation",
+            ));
+        }
         if let TrustCommand::AcceptWork { team_id, .. } = command {
             let exact_host = store
                 .latest_teams()?
@@ -479,10 +498,26 @@ fn authorize(
             if member_run_owned_by(store, execution_space_id, member_run_id, &actor.id)? {
                 return Ok(());
             }
+            let host_controls_team_run = store
+                .trust_member_runs(execution_space_id)?
+                .into_iter()
+                .find(|run| run.id == *member_run_id)
+                .and_then(|member_run| {
+                    store
+                        .team_runs()
+                        .ok()?
+                        .into_iter()
+                        .find(|run| run.id == member_run.team_run_id)
+                })
+                .and_then(|team_run| store.latest_teams().ok()?.remove(&team_run.agent_team_id))
+                .is_some_and(|team| team.host_agent_id == actor.id);
+            if host_controls_team_run {
+                return Ok(());
+            }
             return Err(unauthorized(
                 "member_run",
                 member_run_id,
-                "AgentMember may mutate only its own MemberRun",
+                "AgentMember may mutate only its own MemberRun or a MemberRun in a Team it exactly Hosts",
             ));
         }
     }
@@ -562,6 +597,7 @@ pub fn execute(
         command_name: command.name().to_string(),
         idempotency_key: auth.idempotency_key,
         expected_version: auth.expected_version,
+        request_fingerprint: auth.request_fingerprint,
     };
     match command {
         TrustCommand::CreateAgentMember { mut member } => {
@@ -861,6 +897,7 @@ mod tests {
                 authorized_authority_actors: vec![allowed_authority],
                 idempotency_key: "waive-spoof".into(),
                 expected_version: 0,
+                request_fingerprint: None,
             },
             TrustCommand::WaiveGate {
                 waiver: GateWaiver {

@@ -1160,6 +1160,20 @@ fn team_view(
     let mut actions = Vec::new();
     if let Some(run_id) = run_id {
         actions.push(action("create_work", "team_run", run_id, 0, disabled));
+        actions.push(action(
+            "send_message",
+            "team_run",
+            run_id,
+            team_revision,
+            disabled,
+        ));
+        actions.push(action(
+            "reply_message",
+            "team_run",
+            run_id,
+            team_revision,
+            disabled,
+        ));
     }
     for w in &works {
         let id = w["work_id"].as_str().unwrap_or_default();
@@ -1177,6 +1191,16 @@ fn team_view(
             actions.push(action("release_work", "work", id, version, disabled));
         }
         if phase == "review" && condition == "normal" {
+            actions.push(action("request_changes", "work", id, version, disabled));
+            if !w["latest_report_ref"].is_null() {
+                actions.push(action(
+                    "request_gate_evaluation",
+                    "work",
+                    id,
+                    version,
+                    disabled,
+                ));
+            }
             let gates = &w["gate_summary"];
             let gates_satisfied = gates["failed"].as_u64() == Some(0)
                 && gates["pending"].as_u64() == Some(0)
@@ -1191,6 +1215,162 @@ fn team_view(
         }
         if phase != "closed" {
             actions.push(action("cancel_work", "work", id, version, disabled));
+        }
+    }
+    if let Some(run_id) = run_id {
+        for member_run in facts
+            .member_runs
+            .iter()
+            .filter(|value| value["team_run_id"] == run_id)
+        {
+            let Some(member_run_id) = member_run["id"].as_str() else {
+                continue;
+            };
+            let Some(version) = member_run["version"].as_u64() else {
+                continue;
+            };
+            match member_run["coordination_status"].as_str() {
+                Some("active") => actions.push(action(
+                    "close_member_run",
+                    "member_run",
+                    member_run_id,
+                    version,
+                    disabled,
+                )),
+                Some("closed") => actions.push(action(
+                    "reopen_member_run",
+                    "member_run",
+                    member_run_id,
+                    version,
+                    disabled,
+                )),
+                _ => {}
+            }
+            if member_run["coordination_status"] != "retired" {
+                actions.push(action(
+                    "retire_member_run",
+                    "member_run",
+                    member_run_id,
+                    version,
+                    disabled,
+                ));
+            }
+            if matches!(
+                member_run["runtime_status"].as_str(),
+                Some("disconnected" | "failed" | "stopped")
+            ) {
+                actions.push(action(
+                    "resume_native_session",
+                    "member_run",
+                    member_run_id,
+                    version,
+                    disabled,
+                ));
+            }
+            let binding = facts
+                .side
+                .iter()
+                .filter(|value| {
+                    value["member_run_id"] == member_run_id && value.get("canonical_root").is_some()
+                })
+                .max_by_key(|value| value["version"].as_u64().unwrap_or(0));
+            if let Some(binding) = binding {
+                let binding_version = binding["version"].as_u64().unwrap_or(0);
+                match binding["lifecycle"].as_str() {
+                    Some("ready") => actions.push(action(
+                        "attach_workspace",
+                        "member_run",
+                        member_run_id,
+                        binding_version,
+                        disabled,
+                    )),
+                    Some("attached" | "dirty" | "conflicted") => actions.push(action(
+                        "archive_workspace",
+                        "member_run",
+                        member_run_id,
+                        binding_version,
+                        disabled,
+                    )),
+                    Some("cleanup_blocked") => actions.push(action(
+                        "archive_workspace",
+                        "member_run",
+                        member_run_id,
+                        binding_version,
+                        disabled,
+                    )),
+                    Some("archived") => actions.push(action(
+                        "cleanup_workspace",
+                        "member_run",
+                        member_run_id,
+                        binding_version,
+                        disabled,
+                    )),
+                    _ => {}
+                }
+            } else {
+                actions.push(action(
+                    "provision_workspace",
+                    "member_run",
+                    member_run_id,
+                    version,
+                    disabled,
+                ));
+            }
+        }
+    }
+    for requirement in raw_requirements.iter() {
+        let Some(requirement_id) = requirement["id"].as_str() else {
+            continue;
+        };
+        let Some(version) = requirement["version"].as_u64() else {
+            continue;
+        };
+        if identity.is_some_and(|identity| {
+            requirement["evaluator_ref"]["kind"] == enum_string(&identity.actor.kind)
+                && requirement["evaluator_ref"]["id"] == identity.actor.id
+        }) {
+            actions.push(action(
+                "evaluate_gate",
+                "gate_requirement",
+                requirement_id,
+                version,
+                disabled,
+            ));
+        }
+        if identity.is_some_and(|identity| !identity.authority_actors.is_empty()) {
+            actions.push(action(
+                "waive_gate",
+                "gate_requirement",
+                requirement_id,
+                version,
+                disabled,
+            ));
+        }
+    }
+    for waiver in raw_waivers
+        .iter()
+        .filter(|waiver| waiver["state"] == "active")
+    {
+        if let (Some(id), Some(version), Some(identity)) =
+            (waiver["id"].as_str(), waiver["version"].as_u64(), identity)
+        {
+            let actor_matches = waiver["performed_by_actor"]["kind"]
+                == enum_string(&identity.actor.kind)
+                && waiver["performed_by_actor"]["id"] == identity.actor.id;
+            let authority_matches = identity.authority_actors.iter().any(|authority| {
+                waiver["authority_actor"]["kind"] == enum_string(&authority.kind)
+                    && waiver["authority_actor"]["id"] == authority.id
+            });
+            if !actor_matches || !authority_matches {
+                continue;
+            }
+            actions.push(action(
+                "revoke_waiver",
+                "gate_waiver",
+                id,
+                version,
+                disabled,
+            ));
         }
     }
     if identity_conflicted {
@@ -1311,6 +1491,30 @@ fn member_view(
     let mut actions = Vec::new();
     let addressed_generation_is_current =
         run["coordination_status"] == "active" && active_generations == 1;
+    let team_revision = facts.team_revisions.get(&team.id).copied().unwrap_or(0);
+    if addressed_generation_is_current {
+        actions.push(action(
+            "send_message",
+            "team_run",
+            team_run_id,
+            team_revision,
+            None,
+        ));
+        actions.push(action(
+            "reply_message",
+            "team_run",
+            team_run_id,
+            team_revision,
+            None,
+        ));
+        actions.push(action(
+            "request_decision",
+            "team_run",
+            team_run_id,
+            team_revision,
+            None,
+        ));
+    }
     for w in &my {
         if !addressed_generation_is_current {
             break;
@@ -1326,8 +1530,22 @@ fn member_view(
         } else if phase == "active" && condition == "normal" {
             actions.push(action("block_work", "work", id, version, None));
             actions.push(action("submit_work", "work", id, version, None));
+            if facts
+                .works
+                .iter()
+                .find(|work| work.id == id)
+                .is_some_and(|work| work.blocker_reason.is_some())
+            {
+                actions.push(action("revise_work", "work", id, version, None));
+            }
+            actions.push(action("write_report", "work", id, version, None));
+            actions.push(action("write_finding", "work", id, version, None));
+            actions.push(action("write_failure", "work", id, version, None));
         } else if phase == "active" && condition == "blocked" {
             actions.push(action("unblock_work", "work", id, version, None));
+            actions.push(action("write_report", "work", id, version, None));
+            actions.push(action("write_finding", "work", id, version, None));
+            actions.push(action("write_failure", "work", id, version, None));
         }
     }
     for w in &pool {
@@ -1343,6 +1561,23 @@ fn member_view(
                 .expect("Work summary carries a durable revision"),
             None,
         ));
+    }
+    for requirement in records(&facts, |value| {
+        value.get("requirement_set_fingerprint").is_some()
+            && value["evaluator_ref"]["kind"] == "agent_member"
+            && value["evaluator_ref"]["id"] == member_id
+    }) {
+        if let (Some(id), Some(version)) =
+            (requirement["id"].as_str(), requirement["version"].as_u64())
+        {
+            actions.push(action(
+                "evaluate_gate",
+                "gate_requirement",
+                id,
+                version,
+                None,
+            ));
+        }
     }
     Ok(envelope(
         "member_workbench",
@@ -1451,7 +1686,7 @@ fn operator_view(
         })
         .filter_map(|run| run["id"].as_str())
         .collect::<BTreeSet<_>>();
-    let operator_actions = facts
+    let mut operator_actions = facts
         .work_deliveries
         .iter()
         .filter(|delivery| {
@@ -1473,6 +1708,75 @@ fn operator_view(
             ))
         })
         .collect::<Vec<_>>();
+    for delivery in facts.message_deliveries.iter().filter(|delivery| {
+        delivery["status"] == "claimed"
+            && delivery["recipient_member_run_id"]
+                .as_str()
+                .is_some_and(|id| node_member_run_ids.contains(id))
+    }) {
+        if let (Some(id), Some(version)) = (
+            delivery["id"].as_str(),
+            facts
+                .canonical_versions
+                .get(&(
+                    "message_delivery".into(),
+                    delivery["id"].as_str().unwrap_or_default().into(),
+                ))
+                .copied(),
+        ) {
+            operator_actions.push(action(
+                "reconcile_message_delivery",
+                "message_delivery",
+                id,
+                version,
+                None,
+            ));
+        }
+    }
+    operator_actions.push(action(
+        "diagnose",
+        "execution_node",
+        node_id,
+        node_revision,
+        None,
+    ));
+    let firm_home = crate::execution_space::firm_home().ok();
+    let daemon_live = firm_home.as_ref().is_some_and(|home| {
+        crate::supervisor_daemon::daemon_status_via_socket(home, node_id).is_some()
+    });
+    let local_machine_proven =
+        crate::read_local_node_id().ok().as_deref() == Some(node_id) && firm_home.is_some();
+    operator_actions.push(action(
+        if daemon_live {
+            "stop_daemon"
+        } else {
+            "start_daemon"
+        },
+        "execution_node",
+        node_id,
+        node_revision,
+        (!local_machine_proven)
+            .then_some("this serve process cannot prove exact local Node lifecycle ownership"),
+    ));
+    let admission_scope_proven = local_machine_proven
+        && store.provider_compatibility_scope().is_some()
+        && store
+            .latest_node_project_registrations()
+            .unwrap_or_default()
+            .iter()
+            .any(|registration| {
+                registration.node_id == node_id
+                    && registration.execution_space_id == space_id
+                    && enum_string(&registration.status) == "active"
+            });
+    operator_actions.push(action(
+        "admit_provider",
+        "execution_node",
+        node_id,
+        node_revision,
+        (!admission_scope_proven)
+            .then_some("exact Node/project/Execution Space admission scope is unavailable"),
+    ));
     Ok(envelope(
         "operator",
         &facts,

@@ -706,6 +706,7 @@ impl ServeHandle {
                         command_name: "integration_test.agent_member.create".into(),
                         idempotency_key: format!("integration-test-create-{id}"),
                         expected_version: 0,
+                        request_fingerprint: None,
                     },
                     AgentMember {
                         id: id.clone(),

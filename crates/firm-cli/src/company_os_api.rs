@@ -1076,6 +1076,7 @@ mod projection_tests {
                     command_name: "agent_member.create".to_string(),
                     idempotency_key: "root-lead".to_string(),
                     expected_version: 0,
+                    request_fingerprint: None,
                 },
                 AgentMember {
                     id: "root-lead".to_string(),

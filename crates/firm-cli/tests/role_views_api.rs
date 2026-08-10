@@ -7,6 +7,7 @@ use firm_env::{
     TempHome,
 };
 use harness_core::agentfirm_api::{ActorKind, ActorRef, DeliveryClaim, MutationContext};
+use harness_core::MemberRunStatus;
 use harness_store::HarnessStore;
 
 const TOKEN: &str = "role-view-local-capability";
@@ -43,6 +44,26 @@ fn unix_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock")
         .as_millis() as u64
+}
+
+fn assert_exact_role_action_replay(
+    serve: &ServeHandle,
+    route: &str,
+    body: &serde_json::Value,
+    headers: &[(&str, &str)],
+    label: &str,
+) -> serde_json::Value {
+    let (status, committed) = serve.post_json_with_headers(route, body, headers);
+    assert_eq!(status, 200, "{label} commit: {committed}");
+    assert_eq!(committed["replayed"], false, "{label} first write");
+    let (status, replayed) = serve.post_json_with_headers(route, body, headers);
+    assert_eq!(status, 200, "{label} replay: {replayed}");
+    assert_eq!(replayed["replayed"], true, "{label} replay marker");
+    assert_eq!(
+        replayed["event_id"], committed["event_id"],
+        "{label} event identity"
+    );
+    committed
 }
 
 #[test]
@@ -243,10 +264,132 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         .is_some_and(|actions| actions
             .iter()
             .all(|action| action["required_version"].is_u64())));
+    let message_route =
+        format!("/v1/agentfirm/team-runs/{run_id}/messages/send?project={project_id}");
+    let message_intent = serde_json::json!({
+        "action":"send_message",
+        "recipient_ids":[worker_id],
+        "body":"Store-live CAS-bound Team Message",
+        "response_required":true
+    });
+    let before_stale_message = ledger_digest(serve.fixture_store_root());
+    let stale_message_headers = action_headers(TOKEN, "message-stale-team-revision", "0");
+    let (status, stale_message) =
+        serve.post_json_with_headers(&message_route, &message_intent, &stale_message_headers);
+    assert_eq!(status, 409, "stale Team Message CAS: {stale_message}");
+    assert_eq!(
+        ledger_digest(serve.fixture_store_root()),
+        before_stale_message,
+        "stale Team Message changed durable state"
+    );
+    let team_revision = refreshed["allowed_actions"]
+        .as_array()
+        .and_then(|actions| {
+            actions
+                .iter()
+                .find(|action| action["kind"] == "send_message")
+        })
+        .and_then(|action| action["required_version"].as_u64())
+        .expect("Team revision from send_message action")
+        .to_string();
+    let message_headers = action_headers(TOKEN, "message-current-team-revision", &team_revision);
+    let (status, sent_message) =
+        serve.post_json_with_headers(&message_route, &message_intent, &message_headers);
+    assert_eq!(status, 200, "current Team Message CAS: {sent_message}");
+    let (status, replayed_message) =
+        serve.post_json_with_headers(&message_route, &message_intent, &message_headers);
+    assert_eq!(status, 200, "Team Message replay: {replayed_message}");
+    assert_eq!(replayed_message["replayed"], true);
+    assert_eq!(replayed_message["event_id"], sent_message["event_id"]);
 
     let member_run_id = created_run["result"]["member_runs"][0]["id"]
         .as_str()
         .expect("member run id");
+    let member_run_version = store
+        .trust_member_runs(&space_id)
+        .expect("MemberRuns")
+        .into_iter()
+        .find(|run| run.id == member_run_id)
+        .expect("canonical MemberRun")
+        .version
+        .to_string();
+    for args in [
+        vec!["init"],
+        vec!["config", "user.email", "role-view@example.invalid"],
+        vec!["config", "user.name", "Role View Test"],
+        vec!["add", "-A"],
+        vec!["commit", "--allow-empty", "-m", "workspace proof fixture"],
+    ] {
+        let output = std::process::Command::new("git")
+            .current_dir(&root)
+            .args(&args)
+            .output()
+            .expect("run git workspace fixture command");
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+    }
+    let before_hostile_workspace = ledger_digest(serve.fixture_store_root());
+    let workspace_route = format!(
+        "/v1/agentfirm/member-runs/{member_run_id}/workspace/provision?project={project_id}"
+    );
+    let workspace_headers = action_headers(
+        MEMBER_TOKEN,
+        "hostile-workspace-escape",
+        member_run_version.as_str(),
+    );
+    let (status, workspace_rejected) = serve.post_json_with_headers(
+        &workspace_route,
+        &serde_json::json!({
+            "action":"provision_workspace",
+            "project_binding_id":project_id,
+            "mode":"inherit",
+            "ownership":"shared_project",
+            "canonical_root":home.base()
+        }),
+        &workspace_headers,
+    );
+    assert_eq!(
+        status, 409,
+        "workspace escape must fail closed: {workspace_rejected}"
+    );
+    assert_eq!(
+        ledger_digest(serve.fixture_store_root()),
+        before_hostile_workspace,
+        "hostile workspace intent changed durable state"
+    );
+    let safe_workspace_headers = action_headers(
+        TOKEN,
+        "safe-workspace-provision",
+        member_run_version.as_str(),
+    );
+    let (status, provisioned_workspace) = serve.post_json_with_headers(
+        &workspace_route,
+        &serde_json::json!({
+            "action":"provision_workspace",
+            "project_binding_id":project_id,
+            "mode":"worktree",
+            "ownership":"managed",
+            "canonical_root":root
+        }),
+        &safe_workspace_headers,
+    );
+    assert_eq!(
+        status, 200,
+        "server-observed workspace provision: {provisioned_workspace}"
+    );
+    assert!(provisioned_workspace["projection"]["git_common_dir"]
+        .as_str()
+        .is_some());
+    assert_eq!(provisioned_workspace["projection"]["lifecycle"], "ready");
+    let attach_workspace_route =
+        format!("/v1/agentfirm/member-runs/{member_run_id}/workspace/attach?project={project_id}");
+    let attached_workspace = assert_exact_role_action_replay(
+        &serve,
+        &attach_workspace_route,
+        &serde_json::json!({"action":"attach_workspace"}),
+        &action_headers(TOKEN, "safe-workspace-attach", "3"),
+        "workspace attach",
+    );
+    assert_eq!(attached_workspace["projection"]["lifecycle"], "attached");
     let member_view_route =
         format!("/v1/views/member-workbench/{member_run_id}?project={project_id}");
     let (status, member_view) =
@@ -255,6 +398,20 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert!(member_view["allowed_actions"]
         .as_array()
         .is_some_and(|actions| actions.iter().any(|action| action["kind"] == "claim_work")));
+    let decision_route =
+        format!("/v1/agentfirm/team-runs/{run_id}/messages/request-decision?project={project_id}");
+    let decision_headers = action_headers(MEMBER_TOKEN, "request-host-decision", &team_revision);
+    let (status, decision) = serve.post_json_with_headers(
+        &decision_route,
+        &serde_json::json!({
+            "action":"request_decision",
+            "body":"Host decision is required",
+            "work_id":"work-store-live-1",
+            "evidence_refs":["check:member-request-decision"]
+        }),
+        &decision_headers,
+    );
+    assert_eq!(status, 200, "Member request-decision to Host: {decision}");
     let claim_route = format!(
         "/v1/agentfirm/team-runs/{run_id}/works/work-store-live-1/claim?project={project_id}"
     );
@@ -266,6 +423,22 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     );
     assert_eq!(status, 200, "member claim: {claimed}");
     assert_eq!(claimed["projection"]["active_member_run_id"], member_run_id);
+    let (status, claim_replay) = serve.post_json_with_headers(
+        &claim_route,
+        &serde_json::json!({"action":"claim_work"}),
+        &claim_headers,
+    );
+    assert_eq!(status, 200, "member claim replay: {claim_replay}");
+    assert_eq!(claim_replay["event_id"], claimed["event_id"]);
+    assert_eq!(claim_replay["replayed"], true);
+    let (status, reused_claim_key) = serve.post_json_with_headers(
+        &format!(
+            "/v1/agentfirm/team-runs/{run_id}/works/work-store-live-1/start?project={project_id}"
+        ),
+        &serde_json::json!({"action":"start_work"}),
+        &claim_headers,
+    );
+    assert_eq!(status, 409, "same key changed command: {reused_claim_key}");
 
     // Seed a genuinely claimed canonical delivery so the Operator action is
     // proven against Store-live state, not an empty RoleView fixture.
@@ -312,6 +485,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         command_name: "work_delivery.create".into(),
         idempotency_key: "seed-store-live-delivery".into(),
         expected_version: 0,
+        request_fingerprint: None,
     };
     let created_deliveries = store
         .create_trust_work_deliveries(
@@ -334,6 +508,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         command_name: "work_delivery.claim".into(),
         idempotency_key: "claim-store-live-delivery".into(),
         expected_version: 0,
+        request_fingerprint: None,
     };
     store
         .claim_trust_work_delivery(
@@ -435,6 +610,14 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     );
     assert_eq!(status, 200, "Operator reconcile: {reconciled}");
     assert_eq!(reconciled["projection"]["status"], "failed");
+    let (status, reconcile_replay) = serve.post_json_with_headers(
+        &reconcile_route,
+        &serde_json::json!({"action":"reconcile_delivery","evidence_ref":"check:operator-recovery"}),
+        &reconcile_headers,
+    );
+    assert_eq!(status, 200, "Operator reconcile replay: {reconcile_replay}");
+    assert_eq!(reconcile_replay["event_id"], reconciled["event_id"]);
+    assert_eq!(reconcile_replay["replayed"], true);
 
     let submit_route = format!(
         "/v1/agentfirm/team-runs/{run_id}/works/work-store-live-1/submit?project={project_id}"
@@ -453,6 +636,19 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert_eq!(status, 200, "member submit: {submitted}");
     assert_eq!(submitted["projection"]["kind"], "result");
     assert_eq!(submitted["projection"]["work_revision"], 3);
+    let (status, submit_replay) = serve.post_json_with_headers(
+        &submit_route,
+        &serde_json::json!({
+            "action":"submit_work",
+            "result_summary":"Store-live loop complete",
+            "candidate_revision":"0123456789abcdef0123456789abcdef01234567",
+            "check_refs":["check:role-action-loop"]
+        }),
+        &submit_headers,
+    );
+    assert_eq!(status, 200, "submit replay: {submit_replay}");
+    assert_eq!(submit_replay["event_id"], submitted["event_id"]);
+    assert_eq!(submit_replay["replayed"], true);
     assert_eq!(
         store
             .work_operations()
@@ -469,6 +665,43 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         .is_some_and(|actions| actions
             .iter()
             .any(|action| action["kind"] == "accept_work" && action["required_version"] == 3)));
+    let request_changes_route = format!(
+        "/v1/agentfirm/teams/{}/works/work-store-live-1/request-changes?project={project_id}",
+        team.id
+    );
+    let request_changes_headers = action_headers(TOKEN, "request-changes-store-live-1", "3");
+    let request_changes_intent =
+        serde_json::json!({"action":"request_changes","reason":"tighten exact replay evidence"});
+    let (status, changes_requested) = serve.post_json_with_headers(
+        &request_changes_route,
+        &request_changes_intent,
+        &request_changes_headers,
+    );
+    assert_eq!(status, 200, "request changes: {changes_requested}");
+    assert_eq!(changes_requested["projection"]["version"], 4);
+    let (status, changes_replay) = serve.post_json_with_headers(
+        &request_changes_route,
+        &request_changes_intent,
+        &request_changes_headers,
+    );
+    assert_eq!(status, 200, "request changes replay: {changes_replay}");
+    assert_eq!(changes_replay["event_id"], changes_requested["event_id"]);
+    assert_eq!(changes_replay["replayed"], true);
+    let revise_route = format!(
+        "/v1/agentfirm/teams/{}/works/work-store-live-1/revise?project={project_id}",
+        team.id
+    );
+    let revise_headers = action_headers(MEMBER_TOKEN, "revise-store-live-1", "4");
+    let revise_intent = serde_json::json!({"action":"revise_work","result_summary":"Revised Store-live loop","candidate_revision":"1123456789abcdef0123456789abcdef01234567","check_refs":["check:role-action-revise"]});
+    let (status, revised) =
+        serve.post_json_with_headers(&revise_route, &revise_intent, &revise_headers);
+    assert_eq!(status, 200, "member revise: {revised}");
+    assert_eq!(revised["projection"]["work_revision"], 5);
+    let (status, revise_replay) =
+        serve.post_json_with_headers(&revise_route, &revise_intent, &revise_headers);
+    assert_eq!(status, 200, "member revise replay: {revise_replay}");
+    assert_eq!(revise_replay["event_id"], revised["event_id"]);
+    assert_eq!(revise_replay["replayed"], true);
     let accept_route = format!(
         "/v1/agentfirm/teams/{}/works/work-store-live-1/accept?project={project_id}",
         team.id
@@ -477,7 +710,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         .canonical_operations_for_space(&space_id)
         .expect("before accept")
         .len();
-    let no_confirm_headers = action_headers(TOKEN, "accept-no-confirm", "3");
+    let no_confirm_headers = action_headers(TOKEN, "accept-no-confirm", "5");
     let (status, no_confirm) = serve.post_json_with_headers(
         &accept_route,
         &serde_json::json!({"action":"accept_work"}),
@@ -487,7 +720,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     let member_accept_headers = [
         ("X-AgentFirm-Token", MEMBER_TOKEN),
         ("Idempotency-Key", "accept-member-spoof"),
-        ("If-Match", "3"),
+        ("If-Match", "5"),
         ("X-AgentFirm-Confirm", "accept"),
     ];
     let (status, member_accept) = serve.post_json_with_headers(
@@ -499,7 +732,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     let stale_accept_headers = [
         ("X-AgentFirm-Token", TOKEN),
         ("Idempotency-Key", "accept-stale"),
-        ("If-Match", "2"),
+        ("If-Match", "4"),
         ("X-AgentFirm-Confirm", "accept"),
     ];
     let (status, stale_accept) = serve.post_json_with_headers(
@@ -519,7 +752,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     let accept_headers = [
         ("X-AgentFirm-Token", TOKEN),
         ("Idempotency-Key", "accept-store-live-1"),
-        ("If-Match", "3"),
+        ("If-Match", "5"),
         ("X-AgentFirm-Confirm", "accept"),
     ];
     let (status, accepted) = serve.post_json_with_headers(
@@ -530,10 +763,18 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert_eq!(status, 200, "Host accept: {accepted}");
     assert_eq!(accepted["projection"]["phase"], "closed");
     assert_eq!(accepted["projection"]["resolution"], "accepted");
+    let (status, accept_replay) = serve.post_json_with_headers(
+        &accept_route,
+        &serde_json::json!({"action":"accept_work"}),
+        &accept_headers,
+    );
+    assert_eq!(status, 200, "accept replay: {accept_replay}");
+    assert_eq!(accept_replay["event_id"], accepted["event_id"]);
+    assert_eq!(accept_replay["replayed"], true);
     assert_eq!(
         store.work_operations().expect("accept roll-up").len(),
-        before + 2,
-        "canonical accept must not fabricate a second legacy Work transition"
+        before + 3,
+        "canonical accept must not fabricate a second legacy Work transition beyond request-changes"
     );
     assert!(store
         .canonical_operations_for_space(&space_id)
@@ -543,6 +784,216 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
             && operation.event.aggregate_id == "work-store-live-1"
             && operation.event.transition == "accepted"),
         "canonical acceptance and its delegation/gate/report roll-up must be one canonical operation");
+
+    // Every mutable Work action exposed by the closed RoleAction matrix must
+    // replay the original commit before consulting the now-advanced Work
+    // revision. These sequences are deliberately table-driven so future
+    // actions cannot silently regress to create-only idempotency coverage.
+    let host_matrix_work = serde_json::json!({
+        "action":"create_work",
+        "work_id":"work-host-replay-matrix",
+        "title":"Host replay matrix",
+        "completion_criteria_markdown":"Every Host mutation replays exactly",
+        "eligible_member_ids":[worker_id]
+    });
+    assert_exact_role_action_replay(
+        &serve,
+        &action_route,
+        &host_matrix_work,
+        &action_headers(TOKEN, "matrix-host-create", "0"),
+        "host create",
+    );
+    let provider_run = store
+        .member_runs()
+        .expect("provider runtime projections")
+        .into_iter()
+        .find(|run| run.id == member_run_id)
+        .expect("provider runtime for MemberRun");
+    let mut failed_provider_run = provider_run.clone();
+    failed_provider_run.status = MemberRunStatus::Failed;
+    failed_provider_run.finished_at = Some("unix-ms:matrix-failed".into());
+    store
+        .compare_and_append_member_run(&provider_run, &failed_provider_run)
+        .expect("record failed provider runtime generation");
+    let mut successor_provider_run = provider_run.clone();
+    successor_provider_run.runtime_generation += 1;
+    successor_provider_run.status = MemberRunStatus::Idle;
+    successor_provider_run.started_at = "unix-ms:matrix-successor".into();
+    successor_provider_run.finished_at = None;
+    let successor_run_id = successor_provider_run.id.clone();
+    store
+        .compare_and_append_member_run(&failed_provider_run, &successor_provider_run)
+        .expect("append higher-generation replacement runtime");
+    let host_steps = [
+        (
+            "assign",
+            "assign_work",
+            "1",
+            "matrix-host-assign",
+            serde_json::json!({"action":"assign_work","member_run_id":member_run_id}),
+            None,
+        ),
+        (
+            "release",
+            "release_work",
+            "2",
+            "matrix-host-release",
+            serde_json::json!({"action":"release_work"}),
+            None,
+        ),
+        (
+            "assign",
+            "assign_work",
+            "3",
+            "matrix-host-reassign",
+            serde_json::json!({"action":"assign_work","member_run_id":member_run_id}),
+            None,
+        ),
+        (
+            "rebind",
+            "rebind_work",
+            "4",
+            "matrix-host-rebind",
+            serde_json::json!({"action":"rebind_work","member_run_id":successor_run_id}),
+            None,
+        ),
+        (
+            "cancel",
+            "cancel_work",
+            "5",
+            "matrix-host-cancel",
+            serde_json::json!({"action":"cancel_work","reason":"matrix complete"}),
+            Some("cancel"),
+        ),
+    ];
+    for (route_suffix, label, version, key, body, confirmation) in host_steps {
+        let route = format!("/v1/agentfirm/team-runs/{run_id}/works/work-host-replay-matrix/{route_suffix}?project={project_id}");
+        let mut headers = vec![
+            ("X-AgentFirm-Token", TOKEN),
+            ("Idempotency-Key", key),
+            ("If-Match", version),
+        ];
+        if let Some(confirmation) = confirmation {
+            headers.push(("X-AgentFirm-Confirm", confirmation));
+        }
+        assert_exact_role_action_replay(&serve, &route, &body, &headers, label);
+    }
+    let member_claim_work = serde_json::json!({
+        "action":"create_work",
+        "work_id":"work-member-claim-replay",
+        "title":"Member claim replay",
+        "completion_criteria_markdown":"Team claim replays exactly",
+        "claim_mode":"team_claim",
+        "eligible_member_ids":[worker_id]
+    });
+    assert_exact_role_action_replay(
+        &serve,
+        &action_route,
+        &member_claim_work,
+        &action_headers(TOKEN, "matrix-member-claim-create", "0"),
+        "member-claim create",
+    );
+    assert_exact_role_action_replay(
+        &serve,
+        &format!("/v1/agentfirm/team-runs/{run_id}/works/work-member-claim-replay/claim?project={project_id}"),
+        &serde_json::json!({"action":"claim_work"}),
+        &action_headers(MEMBER_TOKEN, "matrix-member-claim", "1"),
+        "claim_work",
+    );
+    for (route_suffix, label, version, key, body) in [
+        (
+            "block",
+            "claimed block_work",
+            "2",
+            "matrix-claimed-block",
+            serde_json::json!({"action":"block_work","reason":"claim-path blocker"}),
+        ),
+        (
+            "resume",
+            "claimed unblock_work",
+            "3",
+            "matrix-claimed-resume",
+            serde_json::json!({"action":"unblock_work","resolution":"claim-path blocker resolved"}),
+        ),
+        (
+            "submit",
+            "claimed submit_work",
+            "4",
+            "matrix-claimed-submit",
+            serde_json::json!({"action":"submit_work","result_summary":"claim path complete","candidate_revision":"3123456789abcdef0123456789abcdef01234567","check_refs":["check:claim-replay-matrix"]}),
+        ),
+    ] {
+        let route = format!("/v1/agentfirm/team-runs/{run_id}/works/work-member-claim-replay/{route_suffix}?project={project_id}");
+        assert_exact_role_action_replay(
+            &serve,
+            &route,
+            &body,
+            &action_headers(MEMBER_TOKEN, key, version),
+            label,
+        );
+    }
+
+    let member_matrix_work = serde_json::json!({
+        "action":"create_work",
+        "work_id":"work-member-replay-matrix",
+        "title":"Member replay matrix",
+        "completion_criteria_markdown":"Every assigned Member mutation replays exactly",
+        "eligible_member_ids":[worker_id]
+    });
+    assert_exact_role_action_replay(
+        &serve,
+        &action_route,
+        &member_matrix_work,
+        &action_headers(TOKEN, "matrix-member-create", "0"),
+        "member-matrix create",
+    );
+    assert_exact_role_action_replay(
+        &serve,
+        &format!("/v1/agentfirm/team-runs/{run_id}/works/work-member-replay-matrix/assign?project={project_id}"),
+        &serde_json::json!({"action":"assign_work","member_run_id":member_run_id}),
+        &action_headers(TOKEN, "matrix-member-assign", "1"),
+        "member-matrix assign",
+    );
+    let member_steps = [
+        (
+            "start",
+            "start_work",
+            "2",
+            "matrix-member-start",
+            serde_json::json!({"action":"start_work"}),
+        ),
+        (
+            "block",
+            "block_work",
+            "3",
+            "matrix-member-block",
+            serde_json::json!({"action":"block_work","reason":"deterministic matrix blocker"}),
+        ),
+        (
+            "resume",
+            "unblock_work",
+            "4",
+            "matrix-member-resume",
+            serde_json::json!({"action":"unblock_work","resolution":"matrix blocker resolved"}),
+        ),
+        (
+            "submit",
+            "submit_work",
+            "5",
+            "matrix-member-submit",
+            serde_json::json!({"action":"submit_work","result_summary":"member replay matrix complete","candidate_revision":"2123456789abcdef0123456789abcdef01234567","check_refs":["check:member-replay-matrix"]}),
+        ),
+    ];
+    for (route_suffix, label, version, key, body) in member_steps {
+        let route = format!("/v1/agentfirm/team-runs/{run_id}/works/work-member-replay-matrix/{route_suffix}?project={project_id}");
+        assert_exact_role_action_replay(
+            &serve,
+            &route,
+            &body,
+            &action_headers(MEMBER_TOKEN, key, version),
+            label,
+        );
+    }
 
     // Historical/corrupt stores can contain two active generations for one
     // AgentMember in the same TeamRun. Reads must never choose one
@@ -565,6 +1016,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
                 command_name: "member_run.create".into(),
                 idempotency_key: "seed-duplicate-active-run".into(),
                 expected_version: 0,
+                request_fingerprint: None,
             },
             duplicate_run,
         )
@@ -686,4 +1138,200 @@ fn role_views_require_local_capability_and_gets_are_store_pure() {
         before,
         "404 GETs changed canonical ledgers"
     );
+}
+
+#[test]
+fn operator_eligible_daemon_and_server_probed_admission_are_real_and_fail_closed() {
+    let home = TempHome::new("role-operator-actions");
+    let root = home.base().join("project");
+    std::fs::create_dir_all(&root).expect("project root");
+    let initialized = run_firm(&home, &root, &["init"]);
+    assert!(initialized.status.success(), "init failed: {initialized:?}");
+    let project_id = current_project_id(&home);
+    let space_id = current_space_id(&home);
+    let run = |args: &[&str]| {
+        let mut full = vec!["--project", project_id.as_str()];
+        full.extend_from_slice(args);
+        let output = run_firm(&home, &root, &full);
+        assert!(output.status.success(), "fixture {args:?}: {output:?}");
+        output
+    };
+    let node: serde_json::Value =
+        serde_json::from_slice(&run(&["node", "init"]).stdout).expect("node JSON");
+    let node_id = node["id"].as_str().expect("node id");
+    run(&[
+        "node",
+        "project",
+        "register",
+        "--node-id",
+        node_id,
+        "--execution-space-id",
+        &space_id,
+        "--project-binding-id",
+        &project_id,
+    ]);
+
+    let fake_bin = home.base().join("operator-probe-bin");
+    std::fs::create_dir_all(&fake_bin).expect("fake bin");
+    let shim = fake_bin.join("codex");
+    std::fs::write(&shim, "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'codex-cli 9.9.9'; exit 0; fi\nexit 2\n").expect("probe shim");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(&shim).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&shim, permissions).unwrap();
+    }
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let credentials = serde_json::json!([{"token":OPERATOR_TOKEN,"actor":{"kind":"service","id":node_id},"authority_actors":[]}]).to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        &root,
+        &["--space", &space_id],
+        &[
+            ("AGENTFIRM_HTTP_CREDENTIALS_JSON", credentials.as_str()),
+            ("PATH", path.as_str()),
+        ],
+    );
+    let operator_route = format!("/v1/views/operator/{node_id}?project={project_id}");
+    let (status, operator) =
+        serve.get_json_with_headers(&operator_route, &[("X-AgentFirm-Token", OPERATOR_TOKEN)]);
+    assert_eq!(status, 200, "Operator view: {operator}");
+    let actions = operator["allowed_actions"].as_array().expect("actions");
+    assert!(
+        actions
+            .iter()
+            .any(|action| action["kind"] == "stop_daemon" && action["disabled_reason"].is_null()),
+        "eligible stop action: {operator}"
+    );
+    assert!(actions
+        .iter()
+        .any(|action| action["kind"] == "admit_provider" && action["disabled_reason"].is_null()));
+    let node_revision = operator["data"]["node"]["node_revision"]
+        .as_u64()
+        .expect("node revision")
+        .to_string();
+    let initial_stop_headers = [
+        ("X-AgentFirm-Token", OPERATOR_TOKEN),
+        ("Idempotency-Key", "operator-daemon-initial-stop"),
+        ("If-Match", node_revision.as_str()),
+        ("X-AgentFirm-Confirm", "daemon-stop"),
+    ];
+    let stop_route = format!("/v1/agentfirm/nodes/{node_id}/daemon-stop?project={project_id}");
+    let (status, initial_stopped) = serve.post_json_with_headers(
+        &stop_route,
+        &serde_json::json!({"action":"daemon_stop"}),
+        &initial_stop_headers,
+    );
+    assert_eq!(status, 200, "initial daemon stop: {initial_stopped}");
+    let (status, after_stop) =
+        serve.get_json_with_headers(&operator_route, &[("X-AgentFirm-Token", OPERATOR_TOKEN)]);
+    assert_eq!(status, 200, "Operator after stop: {after_stop}");
+    assert!(after_stop["allowed_actions"]
+        .as_array()
+        .is_some_and(|actions| {
+            actions.iter().any(|action| {
+                action["kind"] == "start_daemon" && action["disabled_reason"].is_null()
+            })
+        }));
+    let start_headers = [
+        ("X-AgentFirm-Token", OPERATOR_TOKEN),
+        ("Idempotency-Key", "operator-daemon-start"),
+        ("If-Match", node_revision.as_str()),
+        ("X-AgentFirm-Confirm", "daemon-start"),
+    ];
+    let start_route = format!("/v1/agentfirm/nodes/{node_id}/daemon-start?project={project_id}");
+    let (status, started) = serve.post_json_with_headers(
+        &start_route,
+        &serde_json::json!({"action":"daemon_start","max_concurrency":1}),
+        &start_headers,
+    );
+    assert_eq!(status, 200, "daemon start: {started}");
+    let (status, start_replay) = serve.post_json_with_headers(
+        &start_route,
+        &serde_json::json!({"action":"daemon_start","max_concurrency":1}),
+        &start_headers,
+    );
+    assert_eq!(status, 200, "daemon start replay: {start_replay}");
+    assert_eq!(start_replay["replayed"], true);
+    assert_eq!(start_replay["event_id"], started["event_id"]);
+    let (status, changed_start) = serve.post_json_with_headers(
+        &start_route,
+        &serde_json::json!({"action":"daemon_start","max_concurrency":2}),
+        &start_headers,
+    );
+    assert_eq!(
+        status, 409,
+        "changed daemon start replay must fail closed: {changed_start}"
+    );
+
+    let store = HarnessStore::new(home.spaces_dir().join(&space_id))
+        .with_provider_compatibility_scope(&project_id, format!("execution-space:{space_id}"));
+    let before = store
+        .latest_provider_compatibility_admissions()
+        .expect("admissions before")
+        .len();
+    let admission_headers = action_headers(
+        OPERATOR_TOKEN,
+        "operator-provider-admit",
+        node_revision.as_str(),
+    );
+    let admission_route =
+        format!("/v1/agentfirm/nodes/{node_id}/provider-admission?project={project_id}");
+    let intent = serde_json::json!({"action":"admit_provider","provider":"codex","execution_mode":"codex_app_server"});
+    let (status, admitted) =
+        serve.post_json_with_headers(&admission_route, &intent, &admission_headers);
+    assert_eq!(status, 200, "provider admission: {admitted}");
+    assert_eq!(admitted["projection"]["provider_version"], "9.9.9");
+    assert!(admitted["projection"]["evidence_refs"]
+        .as_array()
+        .is_some_and(|refs| refs.iter().all(|item| item
+            .as_str()
+            .is_some_and(|value| value.starts_with("server-")))));
+    let (status, replay) =
+        serve.post_json_with_headers(&admission_route, &intent, &admission_headers);
+    assert_eq!(status, 200, "provider admission replay: {replay}");
+    assert_eq!(replay["replayed"], true);
+    let hostile = serde_json::json!({"action":"admit_provider","provider":"codex","execution_mode":"codex_app_server","provider_version":"browser-spoof","evidence_refs":["browser-proof"]});
+    let hostile_headers = action_headers(
+        OPERATOR_TOKEN,
+        "operator-provider-hostile",
+        node_revision.as_str(),
+    );
+    let (status, rejected) =
+        serve.post_json_with_headers(&admission_route, &hostile, &hostile_headers);
+    assert_eq!(status, 409, "hostile admission facts: {rejected}");
+    assert_eq!(
+        store
+            .latest_provider_compatibility_admissions()
+            .expect("admissions after")
+            .len(),
+        before + 1,
+        "hostile browser facts have zero durable side effects"
+    );
+
+    let stop_headers = [
+        ("X-AgentFirm-Token", OPERATOR_TOKEN),
+        ("Idempotency-Key", "operator-daemon-stop"),
+        ("If-Match", node_revision.as_str()),
+        ("X-AgentFirm-Confirm", "daemon-stop"),
+    ];
+    let (status, stopped) = serve.post_json_with_headers(
+        &stop_route,
+        &serde_json::json!({"action":"daemon_stop"}),
+        &stop_headers,
+    );
+    assert_eq!(status, 200, "daemon stop: {stopped}");
+    let (status, stop_replay) = serve.post_json_with_headers(
+        &stop_route,
+        &serde_json::json!({"action":"daemon_stop"}),
+        &stop_headers,
+    );
+    assert_eq!(status, 200, "daemon stop replay: {stop_replay}");
+    assert_eq!(stop_replay["replayed"], true);
+    assert_eq!(stop_replay["event_id"], stopped["event_id"]);
 }

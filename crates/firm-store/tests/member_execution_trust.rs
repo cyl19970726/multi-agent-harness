@@ -92,6 +92,7 @@ fn context(actor: ActorRef, command: &str, key: &str, expected_version: u64) -> 
         command_name: command.into(),
         idempotency_key: key.into(),
         expected_version,
+        request_fingerprint: None,
     }
 }
 

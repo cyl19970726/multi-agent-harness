@@ -38,7 +38,13 @@ const TEAM_WORK_ACTIONS = {
   submit_work:"submit",
 } as const;
 
-export type ExecutableRoleActionKind = "create_work" | "accept_work" | "reconcile_delivery" | keyof typeof TEAM_WORK_ACTIONS;
+export type ExecutableRoleActionKind = "create_work" | "accept_work" | "reconcile_delivery" | keyof typeof TEAM_WORK_ACTIONS
+  | "request_changes" | "revise_work" | "send_message" | "reply_message" | "request_decision"
+  | "close_member_run" | "reopen_member_run" | "retire_member_run" | "resume_native_session"
+  | "provision_workspace" | "attach_workspace" | "archive_workspace" | "cleanup_workspace"
+  | "write_report" | "write_finding" | "write_failure" | "request_gate_evaluation"
+  | "evaluate_gate" | "waive_gate" | "revoke_waiver" | "reconcile_message_delivery"
+  | "start_daemon" | "stop_daemon" | "admit_provider" | "diagnose";
 export type RoleActionFields = Readonly<Record<string,string>>;
 export interface PreparedRoleAction {
   path: string;
@@ -63,13 +69,27 @@ export function prepareRoleAction(
   const node=context.nodeId&&encodeURIComponent(context.nodeId);
   const id=encodeURIComponent(action.target_ref.id);
   const operation=TEAM_WORK_ACTIONS[action.kind as keyof typeof TEAM_WORK_ACTIONS];
+  const memberRunActions:Record<string,string>={close_member_run:"close",reopen_member_run:"reopen",retire_member_run:"retire",resume_native_session:"resume-native-session"};
+  const workspaceActions:Record<string,string>={provision_workspace:"provision",attach_workspace:"attach",archive_workspace:"archive",cleanup_workspace:"cleanup"};
+  const workRecordActions:Record<string,string>={request_changes:"request-changes",revise_work:"revise",write_report:"reports",write_finding:"findings",write_failure:"failure-analyses",request_gate_evaluation:"gate-requirements"};
+  const messageActions:Record<string,string>={send_message:"send",reply_message:"reply",request_decision:"request-decision"};
   const path=action.kind==="reconcile_delivery"&&node
     ?`/v1/agentfirm/nodes/${node}/work-deliveries/${id}/reconcile`
+    :action.kind==="reconcile_message_delivery"&&node?`/v1/agentfirm/nodes/${node}/message-deliveries/${id}/reconcile`
+    :["start_daemon","stop_daemon","admit_provider"].includes(action.kind)&&node?`/v1/agentfirm/nodes/${node}/${action.kind==="start_daemon"?"daemon-start":action.kind==="stop_daemon"?"daemon-stop":"provider-admission"}`
+    :action.kind==="diagnose"&&node?`/v1/views/operator/${node}`
     :action.kind==="accept_work"&&team
     ?`/v1/agentfirm/teams/${team}/works/${id}/accept`
     :action.kind==="create_work"&&run
     ?`/v1/agentfirm/team-runs/${run}/works`
-    :operation&&run?`/v1/agentfirm/team-runs/${run}/works/${id}/${operation}`:null;
+    :operation&&run?`/v1/agentfirm/team-runs/${run}/works/${id}/${operation}`
+    :workRecordActions[action.kind]&&team?`/v1/agentfirm/teams/${team}/works/${id}/${workRecordActions[action.kind]}`
+    :messageActions[action.kind]&&run?`/v1/agentfirm/team-runs/${run}/messages/${messageActions[action.kind]}`
+    :memberRunActions[action.kind]?`/v1/agentfirm/member-runs/${id}/${memberRunActions[action.kind]}`
+    :workspaceActions[action.kind]?`/v1/agentfirm/member-runs/${id}/workspace/${workspaceActions[action.kind]}`
+    :action.kind==="evaluate_gate"?`/v1/agentfirm/gate-requirements/${id}/evaluate`
+    :action.kind==="waive_gate"?`/v1/agentfirm/gate-requirements/${id}/waive`
+    :action.kind==="revoke_waiver"?`/v1/agentfirm/gate-waivers/${id}/revoke`:null;
   if(!path)return {error:"Dashboard semantic adapter does not implement this action."};
   const required=(name:string)=>{const value=fields[name]?.trim();if(!value)throw new Error(`${name.replace(/_/g," ")} is required.`);return value};
   let body:Record<string,unknown>;
@@ -78,6 +98,7 @@ export function prepareRoleAction(
       case "create_work": body={action:"create_work",work_id:required("work_id"),title:required("title"),context_markdown:fields.context_markdown??"",completion_criteria_markdown:required("completion_criteria_markdown"),claim_mode:fields.claim_mode||"host_assign",priority:fields.priority||"normal"};break;
       case "accept_work": body={action:"accept_work"};break;
       case "reconcile_delivery": body={action:"reconcile_delivery",evidence_ref:required("evidence_ref")};break;
+      case "reconcile_message_delivery": body={action:"reconcile_message_delivery",outcome:fields.outcome||"retry_safe_failure",evidence_ref:required("evidence_ref")};break;
       case "assign_work": body={action:"assign_work",member_run_id:required("member_run_id")};break;
       case "rebind_work": body={action:"rebind_work",member_run_id:required("member_run_id")};break;
       case "cancel_work": body={action:"cancel_work",reason:required("reason")};break;
@@ -89,13 +110,29 @@ export function prepareRoleAction(
         if(artifact_refs.length+check_refs.length===0)throw new Error("At least one artifact or check/evidence ref is required.");
         body={action:"submit_work",result_summary:required("result_summary"),artifact_refs,check_refs,...(fields.base_revision?.trim()?{base_revision:fields.base_revision.trim()}:{}),candidate_revision:required("candidate_revision")};break;
       }
+      case "revise_work": { const artifact_refs=(fields.artifact_refs??"").split(",").map(v=>v.trim()).filter(Boolean);const check_refs=(fields.check_refs??"").split(",").map(v=>v.trim()).filter(Boolean);if(!artifact_refs.length&&!check_refs.length)throw new Error("At least one evidence ref is required.");body={action:"revise_work",result_summary:required("result_summary"),artifact_refs,check_refs,candidate_revision:required("candidate_revision"),...(fields.base_revision?.trim()?{base_revision:fields.base_revision.trim()}:{})};break; }
+      case "request_changes": body={action:"request_changes",reason:required("reason")};break;
+      case "send_message": body={action:"send_message",recipient_ids:required("recipient_ids").split(",").map(v=>v.trim()).filter(Boolean),body:required("body"),response_required:fields.response_required==="true"};break;
+      case "reply_message": body={action:"reply_message",recipient_ids:required("recipient_ids").split(",").map(v=>v.trim()).filter(Boolean),body:required("body"),correlation_id:required("correlation_id"),causation_id:required("causation_id"),response_required:fields.response_required==="true"};break;
+      case "request_decision": body={action:"request_decision",body:required("body")};break;
+      case "close_member_run": body={action:"close_member_run"};break; case "reopen_member_run": body={action:"reopen_member_run"};break; case "retire_member_run": body={action:"retire_member_run"};break; case "resume_native_session": body={action:"resume_native_session"};break;
+      case "provision_workspace": body={action:"provision_workspace",project_binding_id:required("project_binding_id"),mode:fields.mode||"worktree",ownership:fields.ownership||"managed",canonical_root:required("canonical_root"),...(fields.work_id?.trim()?{work_id:fields.work_id.trim()}:{})};break;
+      case "attach_workspace": body={action:"attach_workspace"};break; case "archive_workspace": body={action:"archive_workspace"};break; case "cleanup_workspace": body={action:"cleanup_workspace"};break;
+      case "write_report": body={action:"write_report",summary:required("summary"),evidence_refs:(fields.evidence_refs??"").split(",").map(v=>v.trim()).filter(Boolean)};break;
+      case "write_finding": body={action:"write_finding",kind:fields.kind||"discovery",summary:required("summary"),detail_markdown:required("detail_markdown"),evidence_refs:(fields.evidence_refs??"").split(",").map(v=>v.trim()).filter(Boolean),confidence:fields.confidence||"medium"};break;
+      case "write_failure": body={action:"write_failure",observed_failure:required("observed_failure"),impact:required("impact"),primary_cause_status:fields.primary_cause_status||"suspected",primary_cause:fields.primary_cause||undefined,retry_safety:fields.retry_safety||"unknown",recommended_host_decision:required("recommended_host_decision"),evidence_refs:(fields.evidence_refs??"").split(",").map(v=>v.trim()).filter(Boolean),confidence:fields.confidence||"medium"};break;
+      case "request_gate_evaluation": body={action:"request_gate_evaluation",gate_type:required("gate_type"),gate_contract_version:required("gate_contract_version"),evaluator_ref:{kind:fields.evaluator_kind||"agent_member",id:required("evaluator_id")},evaluator_version:required("evaluator_version"),resolved_config:{},required:true};break;
+      case "evaluate_gate": body={action:"evaluate_gate",verdict:fields.verdict||"passed",summary:required("summary"),evidence_refs:(fields.evidence_refs??"").split(",").map(v=>v.trim()).filter(Boolean)};break;
+      case "waive_gate": body={action:"waive_gate",reason:required("reason"),evidence_refs:(fields.evidence_refs??"").split(",").map(v=>v.trim()).filter(Boolean)};break; case "revoke_waiver": body={action:"revoke_waiver"};break;
+      case "start_daemon": body={action:"daemon_start"};break; case "stop_daemon": body={action:"daemon_stop"};break; case "admit_provider": body={action:"admit_provider",provider:required("provider"),execution_mode:required("execution_mode")};break; case "diagnose": body={action:"diagnose"};break;
       case "release_work": body={action:"release_work"};break;
       case "claim_work": body={action:"claim_work"};break;
       case "start_work": body={action:"start_work"};break;
     }
   }catch(error){return {error:error instanceof Error?error.message:String(error)}}
-  if(["accept_work","cancel_work","reconcile_delivery"].includes(action.kind)&&!confirmed)return {error:"Server-enforced confirmation is required."};
-  return {path,body,headers:{"Idempotency-Key":crypto.randomUUID(),"If-Match":String(action.required_version),...(action.kind==="cancel_work"?{"X-AgentFirm-Confirm":"cancel"}:action.kind==="accept_work"?{"X-AgentFirm-Confirm":"accept"}:action.kind==="reconcile_delivery"?{"X-AgentFirm-Confirm":"reconcile_delivery"}:{})}};
+  const confirmation:Record<string,string>={cancel_work:"cancel",accept_work:"accept",reconcile_delivery:"reconcile_delivery",reconcile_message_delivery:"reconcile_message_delivery",close_member_run:"close_member_run",retire_member_run:"retire_member_run",cleanup_workspace:"cleanup_workspace",waive_gate:"waive_gate",revoke_waiver:"revoke_waiver",start_daemon:"daemon-start",stop_daemon:"daemon-stop"};
+  if(confirmation[action.kind]&&!confirmed)return {error:"Server-enforced confirmation is required."};
+  return {path,body,headers:{"Idempotency-Key":crypto.randomUUID(),"If-Match":String(action.required_version),...(confirmation[action.kind]?{"X-AgentFirm-Confirm":confirmation[action.kind]}:{})}};
 }
 
 /** Resolve only the semantic actions implemented by the closed adapter. */
@@ -108,6 +145,20 @@ export function roleActionRoute(action:AllowedAction,context:{teamId?:string;tea
   if(action.kind==="create_work"&&run)return `/v1/agentfirm/team-runs/${run}/works`;
   if(action.kind==="accept_work"&&team)return `/v1/agentfirm/teams/${team}/works/${id}/accept`;
   if(action.kind==="reconcile_delivery"&&node)return `/v1/agentfirm/nodes/${node}/work-deliveries/${id}/reconcile`;
+  if(action.kind==="reconcile_message_delivery"&&node)return `/v1/agentfirm/nodes/${node}/message-deliveries/${id}/reconcile`;
+  if(action.kind==="diagnose"&&node)return `/v1/views/operator/${node}`;
+  if(["start_daemon","stop_daemon","admit_provider"].includes(action.kind)&&node)return `/v1/agentfirm/nodes/${node}/${action.kind==="start_daemon"?"daemon-start":action.kind==="stop_daemon"?"daemon-stop":"provider-admission"}`;
+  const workRecords:Record<string,string>={request_changes:"request-changes",revise_work:"revise",write_report:"reports",write_finding:"findings",write_failure:"failure-analyses",request_gate_evaluation:"gate-requirements"};
+  if(workRecords[action.kind]&&team)return `/v1/agentfirm/teams/${team}/works/${id}/${workRecords[action.kind]}`;
+  const messages:Record<string,string>={send_message:"send",reply_message:"reply",request_decision:"request-decision"};
+  if(messages[action.kind]&&run)return `/v1/agentfirm/team-runs/${run}/messages/${messages[action.kind]}`;
+  const memberRuns:Record<string,string>={close_member_run:"close",reopen_member_run:"reopen",retire_member_run:"retire",resume_native_session:"resume-native-session"};
+  if(memberRuns[action.kind])return `/v1/agentfirm/member-runs/${id}/${memberRuns[action.kind]}`;
+  const workspaces:Record<string,string>={provision_workspace:"provision",attach_workspace:"attach",archive_workspace:"archive",cleanup_workspace:"cleanup"};
+  if(workspaces[action.kind])return `/v1/agentfirm/member-runs/${id}/workspace/${workspaces[action.kind]}`;
+  if(action.kind==="evaluate_gate")return `/v1/agentfirm/gate-requirements/${id}/evaluate`;
+  if(action.kind==="waive_gate")return `/v1/agentfirm/gate-requirements/${id}/waive`;
+  if(action.kind==="revoke_waiver")return `/v1/agentfirm/gate-waivers/${id}/revoke`;
   return null;
 }
 export interface RoleView<T> {

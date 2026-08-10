@@ -1010,6 +1010,50 @@ pub(crate) fn daemon_status_via_socket(firm_home: &Path, node_id: &str) -> Optio
     Some(response)
 }
 
+/// Start the exact machine-scoped NodeDaemon and wait for its control socket.
+/// Shared by the CLI and the authenticated Operator semantic action.
+pub(crate) fn start_daemon_process(
+    firm_home: &Path,
+    node_id: &str,
+    max_concurrency: usize,
+) -> CliResult<String> {
+    if max_concurrency == 0 {
+        return Err(CliError::Usage(
+            "daemon max_concurrency must be greater than zero".into(),
+        ));
+    }
+    if let Some(status) = daemon_status_via_socket(firm_home, node_id) {
+        return Ok(status);
+    }
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    command
+        .arg("daemon")
+        .arg("serve")
+        .arg("--max-concurrency")
+        .arg(max_concurrency.to_string())
+        .arg("--idle-timeout-secs")
+        .arg("300")
+        .arg("--scan-interval-secs")
+        .arg("5")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let child = command.spawn()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Some(status) = daemon_status_via_socket(firm_home, node_id) {
+            return Ok(status);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(CliError::Usage(format!(
+                "NodeDaemon pid {} did not become ready within 10s",
+                child.id()
+            )));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 /// Send a stop command to the multi-team daemon.
 pub(crate) fn daemon_stop_via_socket(firm_home: &Path, node_id: &str) -> Option<String> {
     let socket_path = node_daemon_socket_path(firm_home, node_id);

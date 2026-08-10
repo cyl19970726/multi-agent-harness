@@ -4,11 +4,16 @@ import { Button } from "@/components/ui/button";
 import type { AllowedAction, RoleActionExecutor } from "../model/roleViews";
 import { prepareRoleAction, roleActionRoute } from "../model/roleViews";
 
-const CRITICAL = new Set(["accept_work", "cancel_work", "reconcile_delivery"]);
+const CRITICAL = new Set(["accept_work", "cancel_work", "reconcile_delivery", "reconcile_message_delivery", "close_member_run", "retire_member_run", "cleanup_workspace", "waive_gate", "revoke_waiver", "start_daemon", "stop_daemon"]);
 const EXECUTABLE = new Set([
   "create_work", "assign_work", "rebind_work", "release_work", "accept_work",
   "cancel_work", "claim_work", "start_work", "block_work", "unblock_work", "submit_work",
   "reconcile_delivery",
+  "request_changes", "revise_work", "send_message", "reply_message", "request_decision",
+  "close_member_run", "reopen_member_run", "retire_member_run", "resume_native_session",
+  "provision_workspace", "attach_workspace", "archive_workspace", "cleanup_workspace",
+  "write_report", "write_finding", "write_failure", "request_gate_evaluation", "evaluate_gate", "waive_gate", "revoke_waiver",
+  "reconcile_message_delivery", "start_daemon", "stop_daemon", "admit_provider", "diagnose",
 ]);
 
 const FIELD_SPECS: Record<string, Array<{ name: string; label: string; multiline?: boolean }>> = {
@@ -31,6 +36,20 @@ const FIELD_SPECS: Record<string, Array<{ name: string; label: string; multiline
     { name: "check_refs", label: "Check/evidence refs (comma-separated)" },
   ],
   reconcile_delivery: [{ name: "evidence_ref", label: "Recovery evidence ref" }],
+  reconcile_message_delivery: [{ name: "evidence_ref", label: "Recovery evidence ref" },{name:"outcome",label:"Outcome (acknowledged or retry_safe_failure)"}],
+  request_changes: [{name:"reason",label:"Requested changes",multiline:true}],
+  revise_work: [{name:"result_summary",label:"Revised result",multiline:true},{name:"candidate_revision",label:"Candidate commit SHA"},{name:"artifact_refs",label:"Artifact refs (comma-separated)"},{name:"check_refs",label:"Check refs (comma-separated)"}],
+  send_message: [{name:"recipient_ids",label:"Recipient AgentMember IDs (comma-separated)"},{name:"body",label:"Message",multiline:true}],
+  reply_message: [{name:"recipient_ids",label:"Recipient AgentMember IDs"},{name:"body",label:"Reply",multiline:true},{name:"correlation_id",label:"Correlation ID"},{name:"causation_id",label:"Message being replied to"}],
+  request_decision: [{name:"body",label:"Decision requested",multiline:true}],
+  provision_workspace: [{name:"project_binding_id",label:"Project binding ID"},{name:"canonical_root",label:"Canonical workspace path"},{name:"work_id",label:"Work ID (optional)"}],
+  write_report: [{name:"summary",label:"Progress report",multiline:true},{name:"evidence_refs",label:"Evidence refs"}],
+  write_finding: [{name:"summary",label:"Finding summary"},{name:"detail_markdown",label:"Finding detail",multiline:true},{name:"evidence_refs",label:"Evidence refs"}],
+  write_failure: [{name:"observed_failure",label:"Observed failure",multiline:true},{name:"impact",label:"Impact",multiline:true},{name:"primary_cause",label:"Primary cause"},{name:"recommended_host_decision",label:"Recommended Host decision",multiline:true},{name:"evidence_refs",label:"Evidence refs"}],
+  request_gate_evaluation: [{name:"gate_type",label:"Gate type"},{name:"gate_contract_version",label:"Gate contract version"},{name:"evaluator_id",label:"Evaluator actor ID"},{name:"evaluator_version",label:"Evaluator version"}],
+  evaluate_gate: [{name:"summary",label:"Evaluation summary",multiline:true},{name:"evidence_refs",label:"Evidence refs"}],
+  waive_gate: [{name:"reason",label:"Waiver reason",multiline:true},{name:"evidence_refs",label:"Evidence refs"}],
+  admit_provider: [{name:"provider",label:"Installed provider (for example, codex)"},{name:"execution_mode",label:"Execution mode (for example, codex_app_server)"}],
 };
 
 export function RoleActionPanel({
@@ -68,6 +87,11 @@ export function RoleActionPanel({
   };
   const execute = async () => {
     if (!selected || !actionsCurrent) return;
+    if (selected.kind === "diagnose") {
+      setStatus("Diagnostics are read-only. Refetching the authoritative OperatorView.");
+      onCompleted?.();
+      return;
+    }
     const prepared = prepareRoleAction(selected, context, fields, confirm);
     if ("error" in prepared) {
       setStatus(prepared.error);

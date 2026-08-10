@@ -516,7 +516,10 @@ impl HarnessStore {
         required(aggregate_kind, "aggregate_kind")?;
         required(aggregate_id, "aggregate_id")?;
         let existing = self.trust_operation_envelopes_unlocked()?;
-        let fingerprint = canonical_json_fingerprint(&request_payload);
+        let fingerprint = context
+            .request_fingerprint
+            .clone()
+            .unwrap_or_else(|| canonical_json_fingerprint(&request_payload));
 
         if let Some(replay) = existing.iter().find(|envelope| {
             envelope.execution_space_id == context.execution_space_id
@@ -632,7 +635,10 @@ impl HarnessStore {
         immutable_side_records: Vec<Value>,
     ) -> StoreResult<CanonicalMutationResult<Work>> {
         let existing = self.trust_operation_envelopes_unlocked()?;
-        let fingerprint = canonical_json_fingerprint(&request_payload);
+        let fingerprint = context
+            .request_fingerprint
+            .clone()
+            .unwrap_or_else(|| canonical_json_fingerprint(&request_payload));
         if let Some(replay) = existing.iter().find(|envelope| {
             envelope.execution_space_id == context.execution_space_id
                 && envelope.authenticated_actor_kind == context.authenticated_actor.kind
@@ -1340,21 +1346,35 @@ impl HarnessStore {
                 None,
             ));
         }
-        if !self
+        let team_run = self
             .team_runs()?
             .into_iter()
-            .any(|run| run.id == message.team_run_id)
-        {
-            return Err(trust_error(
-                TrustErrorCode::InvalidStateTransition,
-                "message references a missing TeamRun",
-                "team_message",
-                &message.id,
-                None,
-            ));
-        }
+            .rev()
+            .find(|run| run.id == message.team_run_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "message references a missing TeamRun",
+                    "team_message",
+                    &message.id,
+                    None,
+                )
+            })?;
+        let team = self
+            .latest_teams()?
+            .remove(&team_run.agent_team_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "message TeamRun references a missing AgentTeam",
+                    "team_message",
+                    &message.id,
+                    None,
+                )
+            })?;
         let runs = self.trust_member_runs(&context.execution_space_id)?;
         if message.sender.kind == ActorKind::AgentMember
+            && message.sender.id != team.host_agent_id
             && !runs.iter().any(|run| {
                 run.team_run_id == message.team_run_id
                     && run.agent_member_id == message.sender.id
@@ -1389,6 +1409,9 @@ impl HarnessStore {
                         && run.coordination_status != MemberCoordinationStatus::Retired
                 })
                 .collect::<Vec<_>>();
+            if recipient.id == team.host_agent_id && matching.is_empty() {
+                continue;
+            }
             if matching.len() != 1 {
                 return Err(trust_error(
                     TrustErrorCode::InvalidStateTransition,
@@ -3720,6 +3743,7 @@ mod tests {
             command_name: command.into(),
             idempotency_key: key.into(),
             expected_version: expected,
+            request_fingerprint: None,
         }
     }
 

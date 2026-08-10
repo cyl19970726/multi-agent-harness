@@ -2053,6 +2053,7 @@ fn member_trust_command(
         authorized_authority_actors: authority_actor.into_iter().collect(),
         idempotency_key,
         expected_version,
+        request_fingerprint: None,
     };
     match agentfirm_api::execute(store, auth, command) {
         Ok(result) => print_json(&result),
@@ -7823,6 +7824,99 @@ where
     }
 }
 
+/// Server-owned provider admission seam for the closed Operator action.
+/// The browser selects only a registered provider/mode; installed version,
+/// adapter contract, scope and evidence are all observed and bound here.
+fn admit_provider_from_operator_action(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    node_id: &str,
+    provider: &str,
+    execution_mode: &str,
+    idempotency_key: &str,
+) -> Result<(ProviderCompatibilityAdmission, bool), String> {
+    let registration = store
+        .latest_node_project_registrations()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|registration| {
+            registration.node_id == node_id
+                && registration.execution_space_id == execution_space_id
+                && registration.status == harness_core::NodeProjectRegistrationStatus::Active
+        })
+        .ok_or_else(|| {
+            "exact Node/project/Execution Space registration is not active".to_string()
+        })?;
+    let (project_id, store_id) = store
+        .provider_compatibility_scope()
+        .ok_or_else(|| "canonical provider compatibility scope is unavailable".to_string())?;
+    if registration.project_binding_id != project_id {
+        return Err("Node registration does not match the canonical project scope".into());
+    }
+    let mut profile = team_member_provider_profile_for_mode(provider, Some(execution_mode));
+    if profile.execution_mode != execution_mode {
+        return Err(format!(
+            "execution mode {execution_mode} is not registered for {provider}"
+        ));
+    }
+    let adapter_contract_version = profile.adapter_contract_version.clone().ok_or_else(|| {
+        format!("provider {provider}/{execution_mode} has no registered adapter contract")
+    })?;
+    let detected = team_member_provider_version_output(provider)?;
+    apply_provider_version(&mut profile, Some(detected.clone()));
+    if profile.compatibility_status != ProviderCompatibilityStatus::ReviewRequired {
+        return Err(format!(
+            "observed provider tuple is {}; admission is available only for review_required tuples",
+            serde_snake_label(&profile.compatibility_status)
+        ));
+    }
+    let admission = ProviderCompatibilityAdmission {
+        id: format!("provider-admission:{idempotency_key}"),
+        project_id: project_id.to_string(),
+        store_id: store_id.to_string(),
+        provider: provider.to_string(),
+        execution_mode: execution_mode.to_string(),
+        provider_version: detected.clone(),
+        adapter_contract_version: adapter_contract_version.clone(),
+        policy: ProviderCompatibilityAdmissionPolicy::Strict,
+        actor: node_id.to_string(),
+        evidence_refs: vec![
+            format!("server-probe:provider-version:{provider}:{detected}"),
+            format!("server-registry:adapter-contract:{adapter_contract_version}"),
+            format!("server-scope:{execution_space_id}:{node_id}:{project_id}"),
+        ],
+        admitted_at: now_string(),
+        lifecycle: ProviderCompatibilityAdmissionLifecycle::Active,
+        predecessor_admission_id: None,
+        reason: None,
+    };
+    if let Some(existing) = store
+        .latest_provider_compatibility_admissions()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|existing| existing.id == admission.id)
+    {
+        let same_request = existing.project_id == admission.project_id
+            && existing.store_id == admission.store_id
+            && existing.provider == admission.provider
+            && existing.execution_mode == admission.execution_mode
+            && existing.provider_version == admission.provider_version
+            && existing.adapter_contract_version == admission.adapter_contract_version
+            && existing.policy == admission.policy
+            && existing.actor == admission.actor
+            && existing.evidence_refs == admission.evidence_refs
+            && existing.lifecycle == admission.lifecycle;
+        if same_request {
+            return Ok((existing, true));
+        }
+        return Err("idempotency key is already bound to a different provider admission".into());
+    }
+    let ensured = store
+        .ensure_provider_compatibility_admission(&admission)
+        .map_err(|error| error.to_string())?;
+    Ok((ensured.admission, !ensured.created))
+}
+
 fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(args, "member providers|preflight")?;
     match args[0].as_str() {
@@ -11366,6 +11460,7 @@ fn materialize_canonical_member_run(
         command_name: "team_run.materialize_member_run".into(),
         idempotency_key: format!("team-run-member-run:{}", runtime.id),
         expected_version: 0,
+        request_fingerprint: None,
     };
     store_conflict_as_usage(store.create_trust_member_run(&context, run))?;
     Ok(())
@@ -11516,6 +11611,7 @@ fn ensure_unit_test_canonical_members(
                 command_name: "unit_test.agent_member.create".into(),
                 idempotency_key: format!("unit-test-member:{}", member.agent_member_id),
                 expected_version: 0,
+                request_fingerprint: None,
             },
             harness_core::agentfirm_api::AgentMember {
                 id: member.agent_member_id.clone(),
@@ -17161,6 +17257,7 @@ fn canonical_delivery_context(
         command_name: command_name.to_string(),
         idempotency_key,
         expected_version,
+        request_fingerprint: None,
     }
 }
 
@@ -27107,6 +27204,7 @@ fn handle_http_connection(
             authorized_authority_actors: credential.authority_actors,
             idempotency_key,
             expected_version,
+            request_fingerprint: None,
         };
         if role_actions_api::is_http_mutation_path(&path_only) {
             match role_actions_api::execute(
@@ -46684,6 +46782,7 @@ package:com.tencent.mm
                     command_name: "test.team_message.create".into(),
                     idempotency_key: "canonical-supervisor-message".into(),
                     expected_version: 0,
+                    request_fingerprint: None,
                 },
                 harness_core::agentfirm_api::TeamMessage {
                     id: "canonical-supervisor-message".into(),
@@ -46813,6 +46912,7 @@ package:com.tencent.mm
                     command_name: "test.work_delivery.create".into(),
                     idempotency_key: "canonical-supervisor-work-delivery".into(),
                     expected_version: 0,
+                    request_fingerprint: None,
                 },
                 "canonical-supervisor-work-event",
                 &work.id,

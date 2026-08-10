@@ -288,6 +288,7 @@ fn tool_agentfirm_member_trust_mutate(
         authorized_authority_actors: authority_actor.into_iter().collect(),
         idempotency_key: required_non_empty_str(arguments, "idempotency_key")?.to_string(),
         expected_version,
+        request_fingerprint: None,
     };
     agentfirm_api::execute(store, auth, command)
         .map(|result| json!(result))

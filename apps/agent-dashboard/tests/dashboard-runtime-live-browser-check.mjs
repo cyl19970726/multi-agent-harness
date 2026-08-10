@@ -22,6 +22,8 @@ const harness = join(repoRoot, "target", "debug", "firm");
 const evidenceRoot = join(repoRoot, ".visual-evidence", "dashboard-runtime-live-e2e-v1");
 const token = `dashboard-runtime-live-${process.pid}`;
 const agentFirmToken = `agentfirm-runtime-live-${process.pid}`;
+const memberAgentFirmToken = `agentfirm-member-live-${process.pid}`;
+const operatorAgentFirmToken = `agentfirm-operator-live-${process.pid}`;
 const now = "2026-08-05T12:00:00+08:00";
 const actorRef = { actor_type: "human", actor_id: "human-live-owner" };
 
@@ -141,8 +143,8 @@ const env = {
   HARNESS_COMPANY_OS_TOKEN: token,
   AGENTFIRM_HTTP_CREDENTIALS_JSON: JSON.stringify([{
     token: agentFirmToken,
-    actor: { kind: "human", id: "host" },
-    authority_actors: [{ kind: "agent_member", id: "host" }],
+    actor: { kind: "agent_member", id: "host" },
+    authority_actors: [],
   }]),
 };
 delete env.FIRM_ROOT;
@@ -299,6 +301,18 @@ const liveTeamRunPayload = JSON.parse(runHarness([
 ], env, projectRoot));
 const liveTeamRunId = liveTeamRunPayload.team_run?.id ?? liveTeamRunPayload.id ?? liveTeamRunPayload.result?.id;
 if (!liveTeamRunId) throw new Error(`team-run create did not return an id: ${JSON.stringify(liveTeamRunPayload)}`);
+const liveMemberRunId = liveTeamRunPayload.member_runs?.[0]?.id ?? liveTeamRunPayload.result?.member_runs?.[0]?.id;
+if (!liveMemberRunId) throw new Error(`team-run create did not return a MemberRun: ${JSON.stringify(liveTeamRunPayload)}`);
+env.AGENTFIRM_HTTP_CREDENTIALS_JSON = JSON.stringify([{
+  token: agentFirmToken, actor: {kind:"agent_member",id:"host"}, authority_actors: [],
+},{
+  token: memberAgentFirmToken, actor: {kind:"agent_member",id:"worker"}, authority_actors: [],
+},{
+  token: operatorAgentFirmToken, actor: {kind:"service",id:liveNode.id}, authority_actors: [],
+}]);
+await stopRuntime();
+startRuntime();
+await waitFor(async () => (await fetch(`${apiBase}/health`).catch(() => null))?.ok, "Runtime with exact AgentFirm credentials");
 function createNativeWork(id, title) {
   runHarness([
     "team-run", "work", "create",
@@ -308,8 +322,11 @@ function createNativeWork(id, title) {
     "--context", "External Runtime acceptance write.",
     "--completion-criteria", "Visible without reload in the Company Work aggregate.",
     "--priority", "high",
+    "--claim-mode", "team_claim",
+    "--eligible-member-id", "worker",
   ], env, projectRoot);
 }
+createNativeWork("work-role-live", "Real browser RoleAction loop");
 
 const vite = await createViteServer({
   configFile: join(dashboardRoot, "vite.config.ts"),
@@ -383,6 +400,61 @@ try {
     check(await page.locator(`[data-freshness-domain="${domain}"]`).count() === 1, `${domain} freshness is exposed independently`);
   }
 
+  // Real five-view product loop. No route is fulfilled or fixture-injected:
+  // each browser credential reaches the real serve process and Store.
+  const roleBaseQuery = {api:appBase,project:projectId,space:spaceId,company:"company-a"};
+  await page.goto(`${appBase}/?${new URLSearchParams({...roleBaseQuery,surface:"work"})}`, {waitUntil:"domcontentloaded"});
+  await waitForText(page, "work-role-live");
+  check(true, "real Company Work RoleView is populated");
+  await page.goto(`${appBase}/?${new URLSearchParams({...roleBaseQuery,surface:"team",team:liveTeamRunId})}`, {waitUntil:"domcontentloaded"});
+  await page.getByRole("button", {name:"Open Host Console"}).click();
+  await page.getByRole("heading", {name:"Host Console"}).waitFor();
+  await page.getByRole("button", {name:"assign work",exact:true}).click();
+  await page.getByLabel("MemberRun ID").fill(liveMemberRunId);
+  await page.getByRole("button", {name:"Execute action"}).click();
+  await page.getByRole("button", {name:"rebind work",exact:true}).waitFor();
+  check(true, "Host browser executes authenticated assign_work and refetches HostConsole");
+
+  const memberContext = await browser.newContext({viewport:{width:1200,height:900},reducedMotion:"reduce"});
+  const memberPage = await memberContext.newPage();
+  await memberPage.addInitScript(({capabilityToken})=>{window.__AGENTFIRM_BOOTSTRAP__={capabilityToken}}, {capabilityToken:memberAgentFirmToken});
+  await memberPage.goto(`${appBase}/?${new URLSearchParams({...roleBaseQuery,surface:"team",memberRun:liveMemberRunId})}`, {waitUntil:"domcontentloaded"});
+  await memberPage.getByRole("heading", {name:"Member Workbench"}).waitFor();
+  await memberPage.getByRole("button", {name:"start work"}).click();
+  await memberPage.getByRole("button", {name:"Execute action"}).click();
+  await memberPage.getByRole("button", {name:"block work",exact:true}).waitFor();
+  check(true, "Member browser executes authenticated start_work and refetches MemberWorkbench");
+  await memberContext.close();
+
+  const operatorContext = await browser.newContext({viewport:{width:1200,height:900},reducedMotion:"reduce"});
+  const operatorPage = await operatorContext.newPage();
+  await operatorPage.addInitScript(({capabilityToken})=>{window.__AGENTFIRM_BOOTSTRAP__={capabilityToken}}, {capabilityToken:operatorAgentFirmToken});
+  await operatorPage.goto(`${appBase}/?${new URLSearchParams({...roleBaseQuery,surface:"operator",node:liveNode.id})}`, {waitUntil:"domcontentloaded"});
+  await operatorPage.getByRole("heading", {name:"Operator View"}).waitFor();
+  await operatorPage.getByRole("button", {name:"diagnose"}).click();
+  await operatorPage.getByRole("button", {name:"Execute action"}).click();
+  await waitForText(operatorPage, "Diagnostics are read-only");
+  check(true, "Operator browser executes honest read-only diagnostics through authoritative refetch");
+  const admitProvider = operatorPage.getByRole("button", {name:"admit provider",exact:true});
+  await admitProvider.waitFor();
+  if (await admitProvider.isDisabled()) throw new Error("eligible live Node did not expose executable provider admission");
+  await admitProvider.click();
+  await operatorPage.getByLabel("Installed provider (for example, codex)").fill("codex");
+  await operatorPage.getByLabel("Execution mode (for example, codex_app_server)").fill("codex_app_server");
+  const admissionResponse = operatorPage.waitForResponse((response) => response.request().method()==="POST" && response.url().includes(`/v1/agentfirm/nodes/${liveNode.id}/provider-admission`));
+  await operatorPage.getByRole("button", {name:"Execute action"}).click();
+  const admissionHttp = await admissionResponse;
+  const admissionBody = await admissionHttp.json();
+  check(admissionHttp.status()===200 && admissionBody?.projection?.evidence_refs?.every((ref)=>ref.startsWith("server-")), "Operator browser executes server-probed provider admission through the real service");
+  await operatorPage.getByRole("button", {name:"admit provider",exact:true}).waitFor();
+  await operatorContext.close();
+
+  await page.goto(`${appBase}/?${new URLSearchParams({...roleBaseQuery,surface:"work"})}`, {waitUntil:"domcontentloaded"});
+  await waitForText(page, "work-role-live");
+  await waitForText(page, "active");
+  check(true, "five-view loop converges the Member mutation into real Company Work truth");
+
+  await navigate(page, "Docs");
   const defaultBefore = await requestJson(apiBase, "/v1/companies/current");
   await page.getByLabel("Active company").selectOption("company-a");
   await waitForDomain(page, "runtime", "live");

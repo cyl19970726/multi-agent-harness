@@ -6,12 +6,16 @@
 //! transport and the addressed Team/Work at this boundary.
 
 use harness_core::agentfirm_api::{
-    ActorKind, CandidateKind, CandidateRef, Confidence, MemberCoordinationStatus, WorkReport,
-    WorkReportKind,
+    ActorKind, ActorRef, CandidateKind, CandidateRef, Confidence, DeliveryReconcileOutcome,
+    FailureAnalysis, GateEvaluation, GateRequirement, GateRequirementSource, GateVerdict,
+    GateWaiver, GateWaiverState, MemberCoordinationStatus, MemberWorkspaceBinding,
+    PrimaryCauseStatus, ResponseIntent, RetrySafety, TeamMessage, TeamMessageKind, WorkFinding,
+    WorkFindingKind, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
+    WorkspaceOwnership, WorkspaceSafetyProof,
 };
 use harness_core::{
-    TeamActorKind, TeamActorRef, Work, WorkClaimMode, WorkCommandContext, WorkCondition, WorkPhase,
-    WorkPriority,
+    TeamActorKind, TeamActorRef, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext,
+    WorkCondition, WorkPhase, WorkPriority,
 };
 use harness_store::{canonical_json_fingerprint, HarnessStore, StoreError};
 use serde::{Deserialize, Serialize};
@@ -70,12 +74,143 @@ enum RoleActionIntent {
         #[serde(default)]
         candidate_revision: Option<String>,
     },
+    ReviseWork {
+        result_summary: String,
+        #[serde(default)]
+        artifact_refs: Vec<String>,
+        #[serde(default)]
+        check_refs: Vec<String>,
+        #[serde(default)]
+        base_revision: Option<String>,
+        candidate_revision: String,
+    },
+    RequestChanges {
+        reason: String,
+    },
+    SendMessage {
+        recipient_ids: Vec<String>,
+        body: String,
+        #[serde(default)]
+        work_id: Option<String>,
+        #[serde(default)]
+        evidence_refs: Vec<String>,
+        #[serde(default)]
+        response_required: bool,
+    },
+    ReplyMessage {
+        recipient_ids: Vec<String>,
+        body: String,
+        correlation_id: String,
+        causation_id: String,
+        #[serde(default)]
+        work_id: Option<String>,
+        #[serde(default)]
+        evidence_refs: Vec<String>,
+        #[serde(default)]
+        response_required: bool,
+    },
+    RequestDecision {
+        body: String,
+        #[serde(default)]
+        work_id: Option<String>,
+        #[serde(default)]
+        evidence_refs: Vec<String>,
+    },
+    CloseMemberRun,
+    ReopenMemberRun,
+    RetireMemberRun,
+    ResumeNativeSession,
+    ProvisionWorkspace {
+        project_binding_id: String,
+        #[serde(default)]
+        work_id: Option<String>,
+        mode: WorkspaceMode,
+        ownership: WorkspaceOwnership,
+        canonical_root: String,
+        #[serde(default)]
+        base_ref: Option<String>,
+    },
+    AttachWorkspace,
+    ArchiveWorkspace,
+    CleanupWorkspace,
+    WriteReport {
+        summary: String,
+        #[serde(default)]
+        evidence_refs: Vec<String>,
+        #[serde(default)]
+        recommended_next_action: Option<String>,
+    },
+    WriteFinding {
+        kind: WorkFindingKind,
+        summary: String,
+        detail_markdown: String,
+        #[serde(default)]
+        evidence_refs: Vec<String>,
+        confidence: Confidence,
+    },
+    WriteFailure {
+        observed_failure: String,
+        impact: String,
+        primary_cause_status: PrimaryCauseStatus,
+        #[serde(default)]
+        primary_cause: Option<String>,
+        retry_safety: RetrySafety,
+        recommended_host_decision: String,
+        #[serde(default)]
+        evidence_refs: Vec<String>,
+        confidence: Confidence,
+    },
+    RequestGateEvaluation {
+        gate_type: String,
+        gate_contract_version: String,
+        evaluator_ref: ActorRef,
+        evaluator_version: String,
+        #[serde(default)]
+        resolved_config: serde_json::Value,
+        #[serde(default = "default_true")]
+        required: bool,
+    },
+    EvaluateGate {
+        verdict: GateVerdict,
+        summary: String,
+        #[serde(default)]
+        evidence_refs: Vec<String>,
+    },
+    WaiveGate {
+        reason: String,
+        #[serde(default)]
+        evidence_refs: Vec<String>,
+    },
+    RevokeWaiver,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 enum OperatorActionIntent {
-    ReconcileDelivery { evidence_ref: String },
+    ReconcileDelivery {
+        evidence_ref: String,
+    },
+    ReconcileMessageDelivery {
+        outcome: DeliveryReconcileOutcome,
+        evidence_ref: String,
+    },
+    DaemonStart {
+        #[serde(default = "default_daemon_concurrency")]
+        max_concurrency: usize,
+    },
+    DaemonStop,
+    Diagnose,
+    AdmitProvider {
+        provider: String,
+        execution_mode: String,
+    },
+}
+
+fn default_true() -> bool {
+    true
+}
+fn default_daemon_concurrency() -> usize {
+    4
 }
 
 fn default_claim_mode() -> WorkClaimMode {
@@ -171,10 +306,126 @@ fn parse_operator_route(path: &str) -> Option<(&str, &str)> {
     }
 }
 
+#[derive(Debug)]
+enum CanonicalRoute<'a> {
+    Message {
+        team_run_id: &'a str,
+        operation: &'a str,
+    },
+    MemberRun {
+        member_run_id: &'a str,
+        operation: &'a str,
+    },
+    Workspace {
+        member_run_id: &'a str,
+        operation: &'a str,
+    },
+    WorkRecord {
+        team_id: &'a str,
+        work_id: &'a str,
+        operation: &'a str,
+    },
+    Gate {
+        requirement_id: &'a str,
+        operation: &'a str,
+    },
+    Waiver {
+        waiver_id: &'a str,
+    },
+    MessageDelivery {
+        node_id: &'a str,
+        delivery_id: &'a str,
+    },
+    Operator {
+        node_id: &'a str,
+        operation: &'a str,
+    },
+}
+
+fn parse_canonical_route(path: &str) -> Option<CanonicalRoute<'_>> {
+    let parts = path.trim_matches('/').split('/').collect::<Vec<_>>();
+    match parts.as_slice() {
+        ["v1", "agentfirm", "team-runs", run, "messages", operation]
+            if matches!(*operation, "send" | "reply" | "request-decision") =>
+        {
+            Some(CanonicalRoute::Message {
+                team_run_id: run,
+                operation,
+            })
+        }
+        ["v1", "agentfirm", "member-runs", run, operation]
+            if matches!(
+                *operation,
+                "close" | "reopen" | "retire" | "resume-native-session"
+            ) =>
+        {
+            Some(CanonicalRoute::MemberRun {
+                member_run_id: run,
+                operation,
+            })
+        }
+        ["v1", "agentfirm", "member-runs", run, "workspace", operation]
+            if matches!(*operation, "provision" | "attach" | "archive" | "cleanup") =>
+        {
+            Some(CanonicalRoute::Workspace {
+                member_run_id: run,
+                operation,
+            })
+        }
+        ["v1", "agentfirm", "teams", team, "works", work, operation]
+            if matches!(
+                *operation,
+                "request-changes"
+                    | "revise"
+                    | "reports"
+                    | "findings"
+                    | "failure-analyses"
+                    | "gate-requirements"
+            ) =>
+        {
+            Some(CanonicalRoute::WorkRecord {
+                team_id: team,
+                work_id: work,
+                operation,
+            })
+        }
+        ["v1", "agentfirm", "gate-requirements", requirement, operation]
+            if matches!(*operation, "evaluate" | "waive") =>
+        {
+            Some(CanonicalRoute::Gate {
+                requirement_id: requirement,
+                operation,
+            })
+        }
+        ["v1", "agentfirm", "gate-waivers", waiver, "revoke"] => {
+            Some(CanonicalRoute::Waiver { waiver_id: waiver })
+        }
+        ["v1", "agentfirm", "nodes", node, "message-deliveries", delivery, "reconcile"] => {
+            Some(CanonicalRoute::MessageDelivery {
+                node_id: node,
+                delivery_id: delivery,
+            })
+        }
+        ["v1", "agentfirm", "nodes", node, operation]
+            if matches!(
+                *operation,
+                "daemon-start" | "daemon-stop" | "diagnostics" | "provider-admission"
+            ) =>
+        {
+            Some(CanonicalRoute::Operator {
+                node_id: node,
+                operation,
+            })
+        }
+        _ => None,
+    }
+}
+
 pub fn is_http_mutation_path(path: &str) -> bool {
     parse_route(path).is_some()
         || parse_accept_route(path).is_some()
         || parse_operator_route(path).is_some()
+        || parse_canonical_route(path).is_some()
 }
 
 /// Old Work and WorkDelegation HTTP writers were body-authorized and are not
@@ -234,7 +485,13 @@ fn host_context(
             display_name: None,
             authn_source: Some("agentfirm_http_credential".into()),
         }),
-        causation_ref: None,
+        causation_ref: auth
+            .request_fingerprint
+            .as_ref()
+            .map(|id| WorkCausationRef {
+                kind: "agentfirm.role_action.v1".into(),
+                id: id.clone(),
+            }),
         idempotency_key: auth.idempotency_key.clone(),
         created_at: now_string(),
         duplicate_ok,
@@ -251,7 +508,13 @@ fn member_context(auth: &AuthenticatedMutation, member_run_id: &str) -> WorkComm
             authn_source: Some("agentfirm_http_credential".into()),
         },
         authority_actor: None,
-        causation_ref: None,
+        causation_ref: auth
+            .request_fingerprint
+            .as_ref()
+            .map(|id| WorkCausationRef {
+                kind: "agentfirm.role_action.v1".into(),
+                id: id.clone(),
+            }),
         idempotency_key: auth.idempotency_key.clone(),
         created_at: now_string(),
         duplicate_ok: false,
@@ -433,13 +696,2018 @@ fn require_confirmed(
     Ok(())
 }
 
-pub fn execute(
+fn trust_result(result: crate::agentfirm_api::TrustCommandResult) -> RoleActionResult {
+    RoleActionResult {
+        ok: true,
+        action_protocol_version: "agentfirm.role_actions.v1",
+        projection: result.projection,
+        event_id: result.event_id,
+        resulting_version: result.resulting_version,
+        store_sequence: result.store_sequence,
+        replayed: result.replayed,
+    }
+}
+
+fn deterministic_id(kind: &str, auth: &AuthenticatedMutation) -> String {
+    format!("{kind}:{}", auth.idempotency_key)
+}
+
+fn canonical_replay(
+    store: &HarnessStore,
+    auth: &AuthenticatedMutation,
+    aggregate_kind: &str,
+    aggregate_id: &str,
+) -> Result<Option<RoleActionResult>, StoreError> {
+    let Some(operation) = store
+        .canonical_operations_for_space(&auth.execution_space_id)?
+        .into_iter()
+        .find(|operation| operation.event.idempotency_key == auth.idempotency_key)
+    else {
+        return Ok(None);
+    };
+    let fingerprint_matches = auth.request_fingerprint.as_deref()
+        == Some(operation.event.canonical_request_fingerprint.as_str());
+    if operation.event.aggregate_kind != aggregate_kind
+        || operation.event.aggregate_id != aggregate_id
+        || operation.event.performed_by_actor != auth.actor
+        || !fingerprint_matches
+    {
+        return Err(encoded_error(
+            "IDEMPOTENCY_KEY_REUSED",
+            "idempotency key is already bound to a different authenticated semantic action",
+            aggregate_kind,
+            aggregate_id,
+            Some(operation.event.resulting_version),
+        ));
+    }
+    Ok(Some(RoleActionResult {
+        ok: true,
+        action_protocol_version: "agentfirm.role_actions.v1",
+        projection: operation.resulting_projection,
+        event_id: operation.event.id,
+        resulting_version: operation.event.resulting_version,
+        store_sequence: operation.event.store_sequence,
+        replayed: true,
+    }))
+}
+
+fn work_replay(
+    store: &HarnessStore,
+    auth: &AuthenticatedMutation,
+    work_id: &str,
+    kind: harness_core::WorkEventKind,
+) -> Result<Option<RoleActionResult>, StoreError> {
+    let operations = store.work_operations()?;
+    let Some(operation) = operations
+        .iter()
+        .find(|operation| operation.event.idempotency_key == auth.idempotency_key)
+    else {
+        return Ok(None);
+    };
+    let fingerprint_matches = auth.request_fingerprint.as_deref()
+        == operation
+            .event
+            .causation_ref
+            .as_ref()
+            .filter(|reference| reference.kind == "agentfirm.role_action.v1")
+            .map(|reference| reference.id.as_str());
+    if operation.event.work_id != work_id
+        || operation.event.kind != kind
+        || operation.event.expected_version != auth.expected_version
+        || !fingerprint_matches
+    {
+        return Err(encoded_error(
+            "IDEMPOTENCY_KEY_REUSED",
+            "idempotency key is already bound to a different authenticated Work action",
+            "work",
+            work_id,
+            Some(operation.event.resulting_version),
+        ));
+    }
+    Ok(Some(RoleActionResult {
+        ok: true,
+        action_protocol_version: "agentfirm.role_actions.v1",
+        projection: serde_json::to_value(&operation.work)?,
+        event_id: operation.event.id.clone(),
+        resulting_version: operation.event.resulting_version,
+        store_sequence: operations.len() as u64,
+        replayed: true,
+    }))
+}
+
+fn active_member_run(
+    store: &HarnessStore,
+    space_id: &str,
+    member_run_id: &str,
+) -> Result<harness_core::agentfirm_api::MemberRun, StoreError> {
+    store
+        .trust_member_runs(space_id)?
+        .into_iter()
+        .find(|run| run.id == member_run_id)
+        .ok_or_else(|| {
+            encoded_error(
+                "INVALID_STATE_TRANSITION",
+                "MemberRun does not exist",
+                "member_run",
+                member_run_id,
+                None,
+            )
+        })
+}
+
+fn team_for_member_run(
+    store: &HarnessStore,
+    space_id: &str,
+    member_run_id: &str,
+) -> Result<
+    (
+        harness_core::agentfirm_api::MemberRun,
+        harness_core::AgentTeamRun,
+        harness_core::AgentTeam,
+    ),
+    StoreError,
+> {
+    let member_run = active_member_run(store, space_id, member_run_id)?;
+    let (team_run, team) = team_for_run(store, &member_run.team_run_id)?;
+    Ok((member_run, team_run, team))
+}
+
+fn require_member_or_host(
+    store: &HarnessStore,
+    auth: &AuthenticatedMutation,
+    member_run_id: &str,
+) -> Result<
+    (
+        harness_core::agentfirm_api::MemberRun,
+        harness_core::AgentTeam,
+    ),
+    StoreError,
+> {
+    let (run, _, team) = team_for_member_run(store, &auth.execution_space_id, member_run_id)?;
+    let own = auth.actor.kind == ActorKind::AgentMember && auth.actor.id == run.agent_member_id;
+    if !own && !is_host(auth, &team.host_agent_id) {
+        return Err(encoded_error(
+            "UNAUTHORIZED_ACTOR",
+            "credential is neither this MemberRun's AgentMember nor its exact Team Host",
+            "member_run",
+            member_run_id,
+            Some(run.version),
+        ));
+    }
+    Ok((run, team))
+}
+
+fn latest_workspace(
+    store: &HarnessStore,
+    space_id: &str,
+    member_run_id: &str,
+) -> Result<MemberWorkspaceBinding, StoreError> {
+    store
+        .trust_workspace_bindings(space_id)?
+        .into_iter()
+        .filter(|binding| binding.member_run_id == member_run_id)
+        .max_by_key(|binding| binding.version)
+        .ok_or_else(|| {
+            encoded_error(
+                "INVALID_STATE_TRANSITION",
+                "MemberRun has no Workspace binding",
+                "member_run",
+                member_run_id,
+                None,
+            )
+        })
+}
+
+fn observe_workspace_proof(
+    binding: &MemberWorkspaceBinding,
+    member_generation: u64,
+) -> Result<WorkspaceSafetyProof, StoreError> {
+    let root = std::path::Path::new(&binding.canonical_root);
+    let canonical = std::fs::canonicalize(root).map_err(|error| {
+        encoded_error(
+            "WORKSPACE_UNSAFE",
+            format!("workspace root cannot be canonicalized: {error}"),
+            "workspace_binding",
+            &binding.id,
+            Some(binding.version),
+        )
+    })?;
+    fn link_safe(root: &std::path::Path, current: &std::path::Path) -> std::io::Result<bool> {
+        for entry in std::fs::read_dir(current)? {
+            let entry = entry?;
+            let path = entry.path();
+            let metadata = std::fs::symlink_metadata(&path)?;
+            if metadata.file_type().is_symlink() {
+                let target = std::fs::canonicalize(&path)?;
+                if !target.starts_with(root) {
+                    return Ok(false);
+                }
+            } else if metadata.is_dir() && entry.file_name() != ".git" && !link_safe(root, &path)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+    let link_escape_free = link_safe(&canonical, &canonical).map_err(|error| {
+        encoded_error(
+            "WORKSPACE_UNSAFE",
+            format!("workspace link boundary cannot be observed: {error}"),
+            "workspace_binding",
+            &binding.id,
+            Some(binding.version),
+        )
+    })?;
+    if !link_escape_free {
+        return Err(encoded_error(
+            "WORKSPACE_UNSAFE",
+            "workspace contains a symlink escaping its canonical root",
+            "workspace_binding",
+            &binding.id,
+            Some(binding.version),
+        ));
+    }
+    let git_common_dir = std::process::Command::new("git")
+        .args([
+            "-C",
+            &binding.canonical_root,
+            "rev-parse",
+            "--git-common-dir",
+        ])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|value| value.trim().to_string())
+        .and_then(|value| {
+            let path = std::path::PathBuf::from(value);
+            std::fs::canonicalize(if path.is_absolute() {
+                path
+            } else {
+                canonical.join(path)
+            })
+            .ok()
+        })
+        .map(|path| path.to_string_lossy().into_owned());
+    let status = std::process::Command::new("git")
+        .args(["-C", &binding.canonical_root, "status", "--porcelain=v1"])
+        .output()
+        .ok();
+    let status = status
+        .filter(|output| output.status.success())
+        .ok_or_else(|| {
+            encoded_error(
+                "WORKSPACE_UNSAFE",
+                "workspace git status cannot be observed",
+                "workspace_binding",
+                &binding.id,
+                Some(binding.version),
+            )
+        })?;
+    let is_dirty = !status.stdout.is_empty();
+    let conflict_output = std::process::Command::new("git")
+        .args([
+            "-C",
+            &binding.canonical_root,
+            "diff",
+            "--name-only",
+            "--diff-filter=U",
+        ])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .ok_or_else(|| {
+            encoded_error(
+                "WORKSPACE_UNSAFE",
+                "workspace conflict state cannot be observed",
+                "workspace_binding",
+                &binding.id,
+                Some(binding.version),
+            )
+        })?;
+    let is_conflicted = !conflict_output.stdout.is_empty();
+    let repository_matches = git_common_dir.is_some();
+    let proof = WorkspaceSafetyProof {
+        canonical_root: canonical.to_string_lossy().into_owned(),
+        project_binding_id: binding.project_binding_id.clone(),
+        git_common_dir,
+        link_escape_free,
+        repository_matches,
+        is_dirty,
+        is_conflicted,
+        observed_member_generation: member_generation,
+    };
+    if !proof.repository_matches {
+        return Err(encoded_error(
+            "WORKSPACE_UNSAFE",
+            "workspace repository identity cannot be established",
+            "workspace_binding",
+            &binding.id,
+            Some(binding.version),
+        ));
+    }
+    Ok(proof)
+}
+
+fn execute_canonical_role_action(
+    store: &HarnessStore,
+    mut auth: AuthenticatedMutation,
+    route: CanonicalRoute<'_>,
+    body: &[u8],
+    confirmed_action: Option<&str>,
+) -> Result<RoleActionResult, StoreError> {
+    match route {
+        CanonicalRoute::Message {
+            team_run_id,
+            operation,
+        } => {
+            let intent = serde_json::from_slice::<RoleActionIntent>(body).map_err(|error| {
+                encoded_error(
+                    "INVALID_STATE_TRANSITION",
+                    format!("invalid message intent: {error}"),
+                    "team_run",
+                    team_run_id,
+                    None,
+                )
+            })?;
+            let (_run, team) = team_for_run(store, team_run_id)?;
+            let actor_is_host = is_host(&auth, &team.host_agent_id);
+            let actor_member_run = resolve_member_run(store, &auth, team_run_id).ok();
+            if !actor_is_host && actor_member_run.is_none() {
+                return Err(encoded_error(
+                    "UNAUTHORIZED_ACTOR",
+                    "message sender must be the exact Team Host or one active Team Member",
+                    "team_run",
+                    team_run_id,
+                    None,
+                ));
+            }
+            if let Some(replay) = canonical_replay(
+                store,
+                &auth,
+                "team_message",
+                &deterministic_id("team-message", &auth),
+            )? {
+                return Ok(replay);
+            }
+            let team_revision = store
+                .teams()?
+                .into_iter()
+                .filter(|candidate| candidate.id == team.id)
+                .count() as u64;
+            if auth.expected_version != team_revision {
+                return Err(encoded_error(
+                    "VERSION_CONFLICT",
+                    "Team Message requires the exact current Team revision",
+                    "team",
+                    &team.id,
+                    Some(team_revision),
+                ));
+            }
+            let (
+                recipient_ids,
+                message_body,
+                work_id,
+                evidence_refs,
+                response_required,
+                correlation_id,
+                causation_id,
+            ) = match (operation, intent) {
+                (
+                    "send",
+                    RoleActionIntent::SendMessage {
+                        recipient_ids,
+                        body,
+                        work_id,
+                        evidence_refs,
+                        response_required,
+                    },
+                ) => (
+                    recipient_ids,
+                    body,
+                    work_id,
+                    evidence_refs,
+                    response_required,
+                    deterministic_id("correlation", &auth),
+                    None,
+                ),
+                (
+                    "reply",
+                    RoleActionIntent::ReplyMessage {
+                        recipient_ids,
+                        body,
+                        correlation_id,
+                        causation_id,
+                        work_id,
+                        evidence_refs,
+                        response_required,
+                    },
+                ) => (
+                    recipient_ids,
+                    body,
+                    work_id,
+                    evidence_refs,
+                    response_required,
+                    correlation_id,
+                    Some(causation_id),
+                ),
+                (
+                    "request-decision",
+                    RoleActionIntent::RequestDecision {
+                        body,
+                        work_id,
+                        evidence_refs,
+                    },
+                ) => (
+                    vec![team.host_agent_id.clone()],
+                    body,
+                    work_id,
+                    evidence_refs,
+                    true,
+                    deterministic_id("decision", &auth),
+                    None,
+                ),
+                _ => {
+                    return Err(encoded_error(
+                        "INVALID_STATE_TRANSITION",
+                        "semantic action does not match message route",
+                        "team_run",
+                        team_run_id,
+                        None,
+                    ))
+                }
+            };
+            if message_body.trim().is_empty() || recipient_ids.is_empty() {
+                return Err(encoded_error(
+                    "INVALID_STATE_TRANSITION",
+                    "message body and recipients are required",
+                    "team_run",
+                    team_run_id,
+                    None,
+                ));
+            }
+            let allowed = team
+                .member_ids
+                .iter()
+                .chain(std::iter::once(&team.host_agent_id))
+                .collect::<std::collections::BTreeSet<_>>();
+            if recipient_ids.iter().any(|id| !allowed.contains(id)) {
+                return Err(encoded_error(
+                    "UNAUTHORIZED_ACTOR",
+                    "every message recipient must belong to the exact Team",
+                    "team_run",
+                    team_run_id,
+                    None,
+                ));
+            }
+            let message = TeamMessage {
+                id: deterministic_id("team-message", &auth),
+                team_run_id: team_run_id.to_string(),
+                work_id,
+                sender: auth.actor.clone(),
+                recipients: recipient_ids
+                    .into_iter()
+                    .map(|id| ActorRef {
+                        kind: ActorKind::AgentMember,
+                        id,
+                    })
+                    .collect(),
+                kind: TeamMessageKind::Message,
+                body: message_body,
+                correlation_id,
+                causation_id,
+                response_intent: if response_required {
+                    ResponseIntent::ResponseRequired
+                } else {
+                    ResponseIntent::Informational
+                },
+                evidence_refs,
+                created_at: now_string(),
+            };
+            auth.expected_version = 0;
+            Ok(trust_result(crate::agentfirm_api::execute(
+                store,
+                auth,
+                crate::agentfirm_api::TrustCommand::CreateTeamMessage {
+                    message,
+                    updated_at: now_string(),
+                },
+            )?))
+        }
+        CanonicalRoute::MemberRun {
+            member_run_id,
+            operation,
+        } => {
+            let intent = serde_json::from_slice::<RoleActionIntent>(body).map_err(|error| {
+                encoded_error(
+                    "INVALID_STATE_TRANSITION",
+                    format!("invalid MemberRun intent: {error}"),
+                    "member_run",
+                    member_run_id,
+                    None,
+                )
+            })?;
+            let (run, _) = require_member_or_host(store, &auth, member_run_id)?;
+            let required_confirmation = match operation {
+                "close" => Some("close_member_run"),
+                "retire" => Some("retire_member_run"),
+                _ => None,
+            };
+            if required_confirmation.is_some_and(|required| confirmed_action != Some(required)) {
+                return Err(encoded_error(
+                    "CONFIRMATION_REQUIRED",
+                    format!(
+                        "server confirmation must exactly confirm {}",
+                        required_confirmation.unwrap_or_default()
+                    ),
+                    "member_run",
+                    member_run_id,
+                    Some(run.version),
+                ));
+            }
+            if let Some(replay) = canonical_replay(store, &auth, "member_run", member_run_id)? {
+                return Ok(replay);
+            }
+            if auth.expected_version != run.version {
+                return Err(encoded_error(
+                    "VERSION_CONFLICT",
+                    "MemberRun action requires its exact current revision",
+                    "member_run",
+                    member_run_id,
+                    Some(run.version),
+                ));
+            }
+            let command = match (operation, intent) {
+                ("close", RoleActionIntent::CloseMemberRun) => {
+                    crate::agentfirm_api::TrustCommand::CloseMemberRun {
+                        member_run_id: member_run_id.into(),
+                        updated_at: now_string(),
+                    }
+                }
+                ("reopen", RoleActionIntent::ReopenMemberRun) => {
+                    crate::agentfirm_api::TrustCommand::ReopenMemberRun {
+                        member_run_id: member_run_id.into(),
+                        updated_at: now_string(),
+                    }
+                }
+                ("retire", RoleActionIntent::RetireMemberRun) => {
+                    crate::agentfirm_api::TrustCommand::RetireMemberRun {
+                        member_run_id: member_run_id.into(),
+                        updated_at: now_string(),
+                    }
+                }
+                ("resume-native-session", RoleActionIntent::ResumeNativeSession) => {
+                    crate::agentfirm_api::TrustCommand::ResumeNativeSession {
+                        member_run_id: member_run_id.into(),
+                        updated_at: now_string(),
+                    }
+                }
+                _ => {
+                    return Err(encoded_error(
+                        "INVALID_STATE_TRANSITION",
+                        "semantic action does not match MemberRun route",
+                        "member_run",
+                        member_run_id,
+                        Some(run.version),
+                    ))
+                }
+            };
+            Ok(trust_result(crate::agentfirm_api::execute(
+                store, auth, command,
+            )?))
+        }
+        CanonicalRoute::Workspace {
+            member_run_id,
+            operation,
+        } => {
+            let intent = serde_json::from_slice::<RoleActionIntent>(body).map_err(|error| {
+                encoded_error(
+                    "INVALID_STATE_TRANSITION",
+                    format!("invalid Workspace intent: {error}"),
+                    "member_run",
+                    member_run_id,
+                    None,
+                )
+            })?;
+            let (run, _) = require_member_or_host(store, &auth, member_run_id)?;
+            if operation == "provision" {
+                let RoleActionIntent::ProvisionWorkspace {
+                    project_binding_id,
+                    work_id,
+                    mode,
+                    ownership,
+                    canonical_root,
+                    base_ref,
+                } = intent
+                else {
+                    return Err(encoded_error(
+                        "INVALID_STATE_TRANSITION",
+                        "semantic action does not match Workspace provision",
+                        "member_run",
+                        member_run_id,
+                        Some(run.version),
+                    ));
+                };
+                if let Some(replay) = canonical_replay(
+                    store,
+                    &auth,
+                    "workspace_binding",
+                    &deterministic_id("workspace", &auth),
+                )? {
+                    return Ok(replay);
+                }
+                if auth.expected_version != run.version {
+                    return Err(encoded_error(
+                        "VERSION_CONFLICT",
+                        "Workspace provision requires the exact MemberRun revision",
+                        "member_run",
+                        member_run_id,
+                        Some(run.version),
+                    ));
+                }
+                let canonical = std::fs::canonicalize(&canonical_root).map_err(|error| {
+                    encoded_error(
+                        "WORKSPACE_UNSAFE",
+                        format!("workspace path is not canonical/readable: {error}"),
+                        "member_run",
+                        member_run_id,
+                        Some(run.version),
+                    )
+                })?;
+                let (team_run, team) = team_for_run(store, &run.team_run_id)?;
+                if project_binding_id != team_run.project_binding_id
+                    || !store
+                        .latest_node_project_registrations()?
+                        .into_iter()
+                        .any(|registration| {
+                            registration.node_id == team.node_id
+                                && registration.execution_space_id == auth.execution_space_id
+                                && registration.project_binding_id == project_binding_id
+                                && registration.status
+                                    == harness_core::NodeProjectRegistrationStatus::Active
+                        })
+                {
+                    return Err(encoded_error("WORKSPACE_UNSAFE", "workspace project binding is not active on the Team's exact Node and Execution Space", "member_run", member_run_id, Some(run.version)));
+                }
+                let execution_root = team_run.execution_root.as_deref().ok_or_else(|| {
+                    encoded_error(
+                        "WORKSPACE_UNSAFE",
+                        "TeamRun has no server-observed execution root",
+                        "member_run",
+                        member_run_id,
+                        Some(run.version),
+                    )
+                })?;
+                let canonical_execution_root =
+                    std::fs::canonicalize(execution_root).map_err(|error| {
+                        encoded_error(
+                            "WORKSPACE_UNSAFE",
+                            format!("TeamRun execution root cannot be canonicalized: {error}"),
+                            "member_run",
+                            member_run_id,
+                            Some(run.version),
+                        )
+                    })?;
+                if !canonical.starts_with(&canonical_execution_root) {
+                    return Err(encoded_error(
+                        "WORKSPACE_UNSAFE",
+                        "workspace escapes the TeamRun execution-root boundary",
+                        "member_run",
+                        member_run_id,
+                        Some(run.version),
+                    ));
+                }
+                let git_value = |args: &[&str]| {
+                    std::process::Command::new("git")
+                        .arg("-C")
+                        .arg(&canonical)
+                        .args(args)
+                        .output()
+                        .ok()
+                        .filter(|output| output.status.success())
+                        .and_then(|output| String::from_utf8(output.stdout).ok())
+                        .map(|value| value.trim().to_string())
+                        .filter(|value| !value.is_empty())
+                };
+                let git_common_dir = git_value(&["rev-parse", "--git-common-dir"])
+                    .and_then(|value| {
+                        let path = std::path::PathBuf::from(value);
+                        std::fs::canonicalize(if path.is_absolute() {
+                            path
+                        } else {
+                            canonical.join(path)
+                        })
+                        .ok()
+                    })
+                    .map(|path| path.to_string_lossy().into_owned());
+                let git_head = git_value(&["rev-parse", "HEAD"]);
+                let git_branch = git_value(&["branch", "--show-current"]);
+                let mut binding = MemberWorkspaceBinding {
+                    id: deterministic_id("workspace", &auth),
+                    project_binding_id,
+                    team_run_id: run.team_run_id.clone(),
+                    member_run_id: member_run_id.into(),
+                    work_id,
+                    mode,
+                    ownership,
+                    canonical_root: canonical.to_string_lossy().into_owned(),
+                    git_common_dir,
+                    base_ref,
+                    git_head,
+                    git_branch,
+                    dirty_fingerprint: None,
+                    instruction_roots: Vec::new(),
+                    skill_roots: Vec::new(),
+                    lifecycle: WorkspaceLifecycle::Requested,
+                    blocked_reason: None,
+                    attached_member_generation: None,
+                    version: 1,
+                    created_by: auth.actor.clone(),
+                    created_at: now_string(),
+                    updated_at: now_string(),
+                };
+                let proof = observe_workspace_proof(&binding, run.runtime_generation)?;
+                if proof.is_dirty {
+                    binding.dirty_fingerprint = Some(canonical_json_fingerprint(&json!({
+                        "canonical_root": &binding.canonical_root,
+                        "git_head": &binding.git_head,
+                        "observed_dirty": true,
+                    })));
+                }
+                let role_action_key = auth.idempotency_key.clone();
+                let binding_id = binding.id.clone();
+                let mut create_auth = auth.clone();
+                create_auth.idempotency_key = format!("{role_action_key}:workspace-create");
+                create_auth.expected_version = 0;
+                crate::agentfirm_api::execute(
+                    store,
+                    create_auth,
+                    crate::agentfirm_api::TrustCommand::ProvisionWorkspace { binding },
+                )?;
+                let mut prepare_auth = auth.clone();
+                prepare_auth.idempotency_key = format!("{role_action_key}:workspace-prepare");
+                prepare_auth.expected_version = 1;
+                crate::agentfirm_api::execute(
+                    store,
+                    prepare_auth,
+                    crate::agentfirm_api::TrustCommand::TransitionWorkspace {
+                        member_run_id: member_run_id.into(),
+                        binding_id: binding_id.clone(),
+                        next: WorkspaceLifecycle::Preparing,
+                        proof: proof.clone(),
+                        updated_at: now_string(),
+                    },
+                )?;
+                auth.expected_version = 2;
+                return Ok(trust_result(crate::agentfirm_api::execute(
+                    store,
+                    auth,
+                    crate::agentfirm_api::TrustCommand::TransitionWorkspace {
+                        member_run_id: member_run_id.into(),
+                        binding_id,
+                        next: WorkspaceLifecycle::Ready,
+                        proof,
+                        updated_at: now_string(),
+                    },
+                )?));
+            }
+            let binding = latest_workspace(store, &auth.execution_space_id, member_run_id)?;
+            if let Some(replay) = canonical_replay(store, &auth, "workspace_binding", &binding.id)?
+            {
+                return Ok(replay);
+            }
+            if auth.expected_version != binding.version {
+                return Err(encoded_error(
+                    "VERSION_CONFLICT",
+                    "Workspace transition requires the exact binding revision",
+                    "workspace_binding",
+                    &binding.id,
+                    Some(binding.version),
+                ));
+            }
+            let next = match (operation, intent) {
+                ("attach", RoleActionIntent::AttachWorkspace) => WorkspaceLifecycle::Attached,
+                ("archive", RoleActionIntent::ArchiveWorkspace) => WorkspaceLifecycle::Archived,
+                ("cleanup", RoleActionIntent::CleanupWorkspace) => WorkspaceLifecycle::Removed,
+                _ => {
+                    return Err(encoded_error(
+                        "INVALID_STATE_TRANSITION",
+                        "semantic action does not match Workspace route",
+                        "workspace_binding",
+                        &binding.id,
+                        Some(binding.version),
+                    ))
+                }
+            };
+            if matches!(next, WorkspaceLifecycle::Removed)
+                && confirmed_action != Some("cleanup_workspace")
+            {
+                return Err(encoded_error(
+                    "CONFIRMATION_REQUIRED",
+                    "server confirmation must exactly confirm cleanup_workspace",
+                    "workspace_binding",
+                    &binding.id,
+                    Some(binding.version),
+                ));
+            }
+            let proof = observe_workspace_proof(&binding, run.runtime_generation)?;
+            Ok(trust_result(crate::agentfirm_api::execute(
+                store,
+                auth,
+                crate::agentfirm_api::TrustCommand::TransitionWorkspace {
+                    member_run_id: member_run_id.into(),
+                    binding_id: binding.id,
+                    next,
+                    proof,
+                    updated_at: now_string(),
+                },
+            )?))
+        }
+        CanonicalRoute::WorkRecord {
+            team_id,
+            work_id,
+            operation,
+        } => execute_work_record_action(
+            store,
+            auth,
+            team_id,
+            work_id,
+            operation,
+            body,
+            confirmed_action,
+        ),
+        CanonicalRoute::Gate {
+            requirement_id,
+            operation,
+        } => execute_gate_action(
+            store,
+            auth,
+            requirement_id,
+            operation,
+            body,
+            confirmed_action,
+        ),
+        CanonicalRoute::Waiver { waiver_id } => {
+            execute_waiver_revoke(store, auth, waiver_id, body, confirmed_action)
+        }
+        CanonicalRoute::MessageDelivery {
+            node_id,
+            delivery_id,
+        } => {
+            let intent = serde_json::from_slice::<OperatorActionIntent>(body).map_err(|error| {
+                encoded_error(
+                    "INVALID_STATE_TRANSITION",
+                    format!("invalid MessageDelivery intent: {error}"),
+                    "message_delivery",
+                    delivery_id,
+                    None,
+                )
+            })?;
+            let OperatorActionIntent::ReconcileMessageDelivery {
+                outcome,
+                evidence_ref,
+            } = intent
+            else {
+                return Err(encoded_error(
+                    "INVALID_STATE_TRANSITION",
+                    "semantic action does not match MessageDelivery route",
+                    "message_delivery",
+                    delivery_id,
+                    None,
+                ));
+            };
+            if auth.actor.kind != ActorKind::Service || auth.actor.id != node_id {
+                return Err(encoded_error(
+                    "UNAUTHORIZED_ACTOR",
+                    "Operator must be the exact Execution Node Service",
+                    "execution_node",
+                    node_id,
+                    None,
+                ));
+            }
+            if confirmed_action != Some("reconcile_message_delivery") {
+                return Err(encoded_error(
+                    "CONFIRMATION_REQUIRED",
+                    "server confirmation must exactly confirm reconcile_message_delivery",
+                    "message_delivery",
+                    delivery_id,
+                    None,
+                ));
+            }
+            if let Some(replay) = canonical_replay(store, &auth, "message_delivery", delivery_id)? {
+                return Ok(replay);
+            }
+            Ok(trust_result(crate::agentfirm_api::execute(
+                store,
+                auth,
+                crate::agentfirm_api::TrustCommand::ReconcileMessageDelivery {
+                    delivery_id: delivery_id.into(),
+                    outcome,
+                    evidence_ref,
+                    updated_at: now_string(),
+                },
+            )?))
+        }
+        CanonicalRoute::Operator { node_id, operation } => {
+            execute_operator_action(store, auth, node_id, operation, body, confirmed_action)
+        }
+    }
+}
+
+fn execute_work_record_action(
+    store: &HarnessStore,
+    mut auth: AuthenticatedMutation,
+    team_id: &str,
+    work_id: &str,
+    operation: &str,
+    body: &[u8],
+    _confirmed_action: Option<&str>,
+) -> Result<RoleActionResult, StoreError> {
+    let intent = serde_json::from_slice::<RoleActionIntent>(body).map_err(|error| {
+        encoded_error(
+            "INVALID_STATE_TRANSITION",
+            format!("invalid Work record intent: {error}"),
+            "work",
+            work_id,
+            None,
+        )
+    })?;
+    let team = store.latest_teams()?.remove(team_id).ok_or_else(|| {
+        encoded_error(
+            "INVALID_STATE_TRANSITION",
+            "AgentTeam does not exist",
+            "team",
+            team_id,
+            None,
+        )
+    })?;
+    let current = current_canonical_work(store, &auth.execution_space_id, work_id)?;
+    if current.team_id.as_deref() != Some(team_id) {
+        return Err(encoded_error(
+            "UNAUTHORIZED_ACTOR",
+            "Work does not belong to the addressed Team",
+            "work",
+            work_id,
+            Some(current.version),
+        ));
+    }
+    match operation {
+        "request-changes" | "gate-requirements" => {
+            require_host(&auth, &team.host_agent_id, "work", work_id)?;
+        }
+        "revise" | "reports" | "findings" | "failure-analyses" => {
+            let _ = resolve_member_run(store, &auth, &current.team_run_id)?;
+        }
+        _ => {}
+    }
+    let replay = match operation {
+        "request-changes" => work_replay(
+            store,
+            &auth,
+            work_id,
+            harness_core::WorkEventKind::ChangesRequested,
+        )?,
+        "revise" | "reports" => canonical_replay(
+            store,
+            &auth,
+            "work_report",
+            &deterministic_id("work-report", &auth),
+        )?,
+        "findings" => canonical_replay(
+            store,
+            &auth,
+            "work_finding",
+            &deterministic_id("work-finding", &auth),
+        )?,
+        "failure-analyses" => canonical_replay(
+            store,
+            &auth,
+            "failure_analysis",
+            &deterministic_id("failure-analysis", &auth),
+        )?,
+        "gate-requirements" => canonical_replay(
+            store,
+            &auth,
+            "gate_requirement",
+            &deterministic_id("gate-requirement", &auth),
+        )?,
+        _ => None,
+    };
+    if let Some(replay) = replay {
+        return Ok(replay);
+    }
+    if auth.expected_version != current.version {
+        return Err(encoded_error(
+            "VERSION_CONFLICT",
+            "Work record action requires the exact current Work revision",
+            "work",
+            work_id,
+            Some(current.version),
+        ));
+    }
+    if operation == "request-changes" {
+        let RoleActionIntent::RequestChanges { reason } = intent else {
+            return Err(encoded_error(
+                "INVALID_STATE_TRANSITION",
+                "semantic action does not match request-changes",
+                "work",
+                work_id,
+                Some(current.version),
+            ));
+        };
+        let host_id = require_host(&auth, &team.host_agent_id, "work", work_id)?;
+        let before = store.work_operations()?.len();
+        let work = store.request_work_changes(
+            work_id,
+            auth.expected_version,
+            &reason,
+            host_context(&auth, host_id, false),
+        )?;
+        return work_action_result(store, &auth, before, work);
+    }
+    if operation == "revise" {
+        let RoleActionIntent::ReviseWork {
+            result_summary,
+            artifact_refs,
+            check_refs,
+            base_revision,
+            candidate_revision,
+        } = intent
+        else {
+            return Err(encoded_error(
+                "INVALID_STATE_TRANSITION",
+                "semantic action does not match revise",
+                "work",
+                work_id,
+                Some(current.version),
+            ));
+        };
+        let _member_run = resolve_member_run(store, &auth, &current.team_run_id)?;
+        return create_result_report(
+            store,
+            auth,
+            &team,
+            &current,
+            ResultReportInput {
+                result_summary,
+                artifact_refs,
+                check_refs,
+                base_revision,
+                candidate_revision,
+            },
+        );
+    }
+    match (operation, intent) {
+        (
+            "reports",
+            RoleActionIntent::WriteReport {
+                summary,
+                evidence_refs,
+                recommended_next_action,
+            },
+        ) => {
+            let _member_run = resolve_member_run(store, &auth, &current.team_run_id)?;
+            let report = WorkReport {
+                id: deterministic_id("work-report", &auth),
+                work_id: work_id.into(),
+                work_revision: current.version,
+                report_revision: canonical_report_count(store, &auth.execution_space_id, work_id)?
+                    + 1,
+                kind: WorkReportKind::Progress,
+                authored_by: auth.actor.clone(),
+                summary,
+                base_revision: None,
+                candidate: None,
+                candidate_fingerprint: None,
+                finding_refs: Vec::new(),
+                failure_analysis_ref: None,
+                artifact_refs: Vec::new(),
+                check_refs: Vec::new(),
+                evidence_refs,
+                known_risks: Vec::new(),
+                confidence: Some(Confidence::Medium),
+                recommended_next_action,
+                created_at: now_string(),
+            };
+            auth.expected_version = 0;
+            Ok(trust_result(crate::agentfirm_api::execute(
+                store,
+                auth,
+                crate::agentfirm_api::TrustCommand::CreateWorkReport {
+                    team_id: team_id.into(),
+                    report,
+                },
+            )?))
+        }
+        (
+            "findings",
+            RoleActionIntent::WriteFinding {
+                kind,
+                summary,
+                detail_markdown,
+                evidence_refs,
+                confidence,
+            },
+        ) => {
+            let _member_run = resolve_member_run(store, &auth, &current.team_run_id)?;
+            let finding = WorkFinding {
+                id: deterministic_id("work-finding", &auth),
+                work_id: work_id.into(),
+                work_revision: current.version,
+                kind,
+                summary,
+                detail_markdown,
+                affected_work_refs: Vec::new(),
+                reusable_asset_refs: Vec::new(),
+                invalidated_assumptions: Vec::new(),
+                evidence_refs,
+                confidence,
+                reported_by: auth.actor.clone(),
+                created_at: now_string(),
+            };
+            auth.expected_version = 0;
+            Ok(trust_result(crate::agentfirm_api::execute(
+                store,
+                auth,
+                crate::agentfirm_api::TrustCommand::CreateWorkFinding {
+                    team_id: team_id.into(),
+                    finding,
+                },
+            )?))
+        }
+        (
+            "failure-analyses",
+            RoleActionIntent::WriteFailure {
+                observed_failure,
+                impact,
+                primary_cause_status,
+                primary_cause,
+                retry_safety,
+                recommended_host_decision,
+                evidence_refs,
+                confidence,
+            },
+        ) => {
+            let member_run = resolve_member_run(store, &auth, &current.team_run_id)?;
+            let analysis = FailureAnalysis {
+                id: deterministic_id("failure-analysis", &auth),
+                work_id: work_id.into(),
+                work_revision: current.version,
+                member_run_id: Some(member_run),
+                candidate: None,
+                observed_failure,
+                impact,
+                primary_cause_status,
+                primary_cause,
+                contributing_causes: Vec::new(),
+                attempts_already_made: Vec::new(),
+                last_safe_checkpoint: None,
+                retry_safety,
+                side_effect_summary: None,
+                recovery_options: Vec::new(),
+                recommended_host_decision,
+                evidence_refs,
+                confidence,
+                reported_by: auth.actor.clone(),
+                created_at: now_string(),
+            };
+            auth.expected_version = 0;
+            Ok(trust_result(crate::agentfirm_api::execute(
+                store,
+                auth,
+                crate::agentfirm_api::TrustCommand::CreateFailureAnalysis {
+                    team_id: team_id.into(),
+                    analysis,
+                },
+            )?))
+        }
+        (
+            "gate-requirements",
+            RoleActionIntent::RequestGateEvaluation {
+                gate_type,
+                gate_contract_version,
+                evaluator_ref,
+                evaluator_version,
+                resolved_config,
+                required,
+            },
+        ) => {
+            require_host(&auth, &team.host_agent_id, "work", work_id)?;
+            let report = store
+                .canonical_operations_for_space(&auth.execution_space_id)?
+                .into_iter()
+                .filter(|op| op.event.aggregate_kind == "work_report")
+                .filter_map(|op| serde_json::from_value::<WorkReport>(op.resulting_projection).ok())
+                .filter(|report| {
+                    report.work_id == work_id
+                        && report.kind == WorkReportKind::Result
+                        && report.work_revision == current.version
+                })
+                .max_by_key(|report| report.report_revision)
+                .ok_or_else(|| {
+                    encoded_error(
+                        "REPORT_EVIDENCE_MISSING",
+                        "Gate request requires the exact current result report",
+                        "work",
+                        work_id,
+                        Some(current.version),
+                    )
+                })?;
+            let candidate_fingerprint = report.candidate_fingerprint.clone().ok_or_else(|| {
+                encoded_error(
+                    "REPORT_EVIDENCE_MISSING",
+                    "result report has no candidate fingerprint",
+                    "work",
+                    work_id,
+                    Some(current.version),
+                )
+            })?;
+            let evaluator_fingerprint = canonical_json_fingerprint(
+                &json!({"actor":evaluator_ref,"version":evaluator_version}),
+            );
+            let config_fingerprint = canonical_json_fingerprint(&resolved_config);
+            let requirement = GateRequirement {
+                id: deterministic_id("gate-requirement", &auth),
+                work_id: work_id.into(),
+                work_revision: current.version,
+                work_report_id: report.id,
+                candidate_fingerprint,
+                source: GateRequirementSource::Direct,
+                source_binding_id: None,
+                gate_type,
+                gate_contract_version,
+                evaluator_ref,
+                evaluator_version,
+                evaluator_fingerprint,
+                resolved_config,
+                config_fingerprint,
+                required,
+                dependency_requirement_ids: Vec::new(),
+                requirement_set_fingerprint: String::new(),
+                created_at: now_string(),
+                version: 1,
+            };
+            auth.expected_version = 0;
+            Ok(trust_result(crate::agentfirm_api::execute(
+                store,
+                auth,
+                crate::agentfirm_api::TrustCommand::CreateGateRequirement {
+                    team_id: team_id.into(),
+                    requirement,
+                },
+            )?))
+        }
+        _ => Err(encoded_error(
+            "INVALID_STATE_TRANSITION",
+            "semantic action does not match Work record route",
+            "work",
+            work_id,
+            Some(current.version),
+        )),
+    }
+}
+
+struct ResultReportInput {
+    result_summary: String,
+    artifact_refs: Vec<String>,
+    check_refs: Vec<String>,
+    base_revision: Option<String>,
+    candidate_revision: String,
+}
+
+fn create_result_report(
+    store: &HarnessStore,
+    mut auth: AuthenticatedMutation,
+    team: &harness_core::AgentTeam,
+    current: &Work,
+    input: ResultReportInput,
+) -> Result<RoleActionResult, StoreError> {
+    let ResultReportInput {
+        result_summary,
+        artifact_refs,
+        check_refs,
+        base_revision,
+        candidate_revision,
+    } = input;
+    if candidate_revision.trim().is_empty() || artifact_refs.is_empty() && check_refs.is_empty() {
+        return Err(encoded_error(
+            "REPORT_EVIDENCE_MISSING",
+            "result revision and at least one evidence ref are required",
+            "work",
+            &current.id,
+            Some(current.version),
+        ));
+    }
+    let candidate = CandidateRef {
+        kind: CandidateKind::GitCommit,
+        value: candidate_revision,
+    };
+    let candidate_fingerprint = canonical_json_fingerprint(&serde_json::to_value(&candidate)?);
+    let evidence_refs = artifact_refs
+        .iter()
+        .chain(check_refs.iter())
+        .cloned()
+        .collect();
+    let report = WorkReport {
+        id: deterministic_id("work-report", &auth),
+        work_id: current.id.clone(),
+        work_revision: current.version + 1,
+        report_revision: canonical_report_count(store, &auth.execution_space_id, &current.id)? + 1,
+        kind: WorkReportKind::Result,
+        authored_by: auth.actor.clone(),
+        summary: result_summary,
+        base_revision,
+        candidate: Some(candidate),
+        candidate_fingerprint: Some(candidate_fingerprint),
+        finding_refs: Vec::new(),
+        failure_analysis_ref: None,
+        artifact_refs,
+        check_refs,
+        evidence_refs,
+        known_risks: Vec::new(),
+        confidence: Some(Confidence::High),
+        recommended_next_action: Some("host_review".into()),
+        created_at: now_string(),
+    };
+    auth.expected_version = 0;
+    Ok(trust_result(crate::agentfirm_api::execute(
+        store,
+        auth,
+        crate::agentfirm_api::TrustCommand::CreateWorkReport {
+            team_id: team.id.clone(),
+            report,
+        },
+    )?))
+}
+
+fn work_action_result(
+    store: &HarnessStore,
+    auth: &AuthenticatedMutation,
+    before: usize,
+    work: Work,
+) -> Result<RoleActionResult, StoreError> {
+    let operations = store.work_operations()?;
+    let operation = operations
+        .iter()
+        .rev()
+        .find(|operation| {
+            operation.work.id == work.id && operation.event.idempotency_key == auth.idempotency_key
+        })
+        .ok_or_else(|| {
+            encoded_error(
+                "INVALID_STATE_TRANSITION",
+                "Work mutation committed without its operation",
+                "work",
+                &work.id,
+                Some(work.version),
+            )
+        })?;
+    Ok(RoleActionResult {
+        ok: true,
+        action_protocol_version: "agentfirm.role_actions.v1",
+        projection: serde_json::to_value(&work)?,
+        event_id: operation.event.id.clone(),
+        resulting_version: work.version,
+        store_sequence: operations.len() as u64,
+        replayed: operations.len() == before,
+    })
+}
+
+fn execute_gate_action(
+    store: &HarnessStore,
+    mut auth: AuthenticatedMutation,
+    requirement_id: &str,
+    operation: &str,
+    body: &[u8],
+    confirmed_action: Option<&str>,
+) -> Result<RoleActionResult, StoreError> {
+    let intent = serde_json::from_slice::<RoleActionIntent>(body).map_err(|error| {
+        encoded_error(
+            "INVALID_STATE_TRANSITION",
+            format!("invalid Gate intent: {error}"),
+            "gate_requirement",
+            requirement_id,
+            None,
+        )
+    })?;
+    let requirement = store
+        .canonical_operations_for_space(&auth.execution_space_id)?
+        .into_iter()
+        .filter(|operation| operation.event.aggregate_kind == "gate_requirement")
+        .flat_map(|operation| {
+            std::iter::once(operation.resulting_projection).chain(operation.immutable_side_records)
+        })
+        .filter_map(|value| serde_json::from_value::<GateRequirement>(value).ok())
+        .filter(|item| item.id == requirement_id)
+        .max_by_key(|item| item.version)
+        .ok_or_else(|| {
+            encoded_error(
+                "INVALID_STATE_TRANSITION",
+                "GateRequirement does not exist",
+                "gate_requirement",
+                requirement_id,
+                None,
+            )
+        })?;
+    let replay_id = match operation {
+        "evaluate" => {
+            if auth.actor != requirement.evaluator_ref {
+                return Err(encoded_error(
+                    "UNAUTHORIZED_ACTOR",
+                    "only the frozen exact evaluator may evaluate this gate",
+                    "gate_requirement",
+                    requirement_id,
+                    Some(requirement.version),
+                ));
+            }
+            deterministic_id("gate-evaluation", &auth)
+        }
+        "waive" => {
+            if confirmed_action != Some("waive_gate") {
+                return Err(encoded_error(
+                    "CONFIRMATION_REQUIRED",
+                    "server confirmation must exactly confirm waive_gate",
+                    "gate_requirement",
+                    requirement_id,
+                    Some(requirement.version),
+                ));
+            }
+            if auth.authorized_authority_actors.is_empty() {
+                return Err(encoded_error(
+                    "UNAUTHORIZED_ACTOR",
+                    "credential has no frozen waiver authority",
+                    "gate_requirement",
+                    requirement_id,
+                    Some(requirement.version),
+                ));
+            }
+            deterministic_id("gate-waiver", &auth)
+        }
+        _ => {
+            return Err(encoded_error(
+                "INVALID_STATE_TRANSITION",
+                "unknown Gate operation",
+                "gate_requirement",
+                requirement_id,
+                Some(requirement.version),
+            ))
+        }
+    };
+    if let Some(replay) = canonical_replay(
+        store,
+        &auth,
+        if operation == "evaluate" {
+            "gate_evaluation"
+        } else {
+            "gate_waiver"
+        },
+        &replay_id,
+    )? {
+        return Ok(replay);
+    }
+    if auth.expected_version != requirement.version {
+        return Err(encoded_error(
+            "VERSION_CONFLICT",
+            "Gate action requires the exact current requirement revision",
+            "gate_requirement",
+            requirement_id,
+            Some(requirement.version),
+        ));
+    }
+    match (operation, intent) {
+        (
+            "evaluate",
+            RoleActionIntent::EvaluateGate {
+                verdict,
+                summary,
+                evidence_refs,
+            },
+        ) => {
+            let mut dependency_ids = requirement.dependency_requirement_ids.clone();
+            dependency_ids.sort();
+            let evaluation = GateEvaluation {
+                id: deterministic_id("gate-evaluation", &auth),
+                requirement_id: requirement.id.clone(),
+                work_id: requirement.work_id.clone(),
+                work_revision: requirement.work_revision,
+                work_report_id: requirement.work_report_id.clone(),
+                candidate_fingerprint: requirement.candidate_fingerprint.clone(),
+                config_fingerprint: requirement.config_fingerprint.clone(),
+                evaluator_version: requirement.evaluator_version.clone(),
+                evaluator_fingerprint: requirement.evaluator_fingerprint.clone(),
+                dependency_fingerprint: canonical_json_fingerprint(&serde_json::to_value(
+                    dependency_ids,
+                )?),
+                verdict,
+                summary,
+                evidence_refs,
+                performed_by: auth.actor.clone(),
+                evaluated_at: now_string(),
+                version: 1,
+            };
+            auth.expected_version = 0;
+            Ok(trust_result(crate::agentfirm_api::execute(
+                store,
+                auth,
+                crate::agentfirm_api::TrustCommand::EvaluateGate { evaluation },
+            )?))
+        }
+        (
+            "waive",
+            RoleActionIntent::WaiveGate {
+                reason,
+                evidence_refs,
+            },
+        ) => {
+            let authority_actor = auth
+                .authorized_authority_actors
+                .iter()
+                .find(|authority| **authority == auth.actor)
+                .cloned()
+                .or_else(|| auth.authorized_authority_actors.first().cloned())
+                .ok_or_else(|| {
+                    encoded_error(
+                        "UNAUTHORIZED_ACTOR",
+                        "credential has no frozen waiver authority",
+                        "gate_requirement",
+                        requirement_id,
+                        Some(requirement.version),
+                    )
+                })?;
+            let waiver = GateWaiver {
+                id: deterministic_id("gate-waiver", &auth),
+                requirement_id: requirement.id,
+                work_id: requirement.work_id,
+                work_revision: requirement.work_revision,
+                candidate_fingerprint: requirement.candidate_fingerprint,
+                authority_actor,
+                performed_by_actor: auth.actor.clone(),
+                reason,
+                evidence_refs,
+                state: GateWaiverState::Active,
+                version: 1,
+                created_at: now_string(),
+                revoked_at: None,
+            };
+            auth.expected_version = 0;
+            Ok(trust_result(crate::agentfirm_api::execute(
+                store,
+                auth,
+                crate::agentfirm_api::TrustCommand::WaiveGate { waiver },
+            )?))
+        }
+        _ => Err(encoded_error(
+            "INVALID_STATE_TRANSITION",
+            "semantic action does not match Gate route",
+            "gate_requirement",
+            requirement_id,
+            Some(requirement.version),
+        )),
+    }
+}
+
+fn execute_waiver_revoke(
     store: &HarnessStore,
     auth: AuthenticatedMutation,
+    waiver_id: &str,
+    body: &[u8],
+    confirmed_action: Option<&str>,
+) -> Result<RoleActionResult, StoreError> {
+    let intent = serde_json::from_slice::<RoleActionIntent>(body).map_err(|error| {
+        encoded_error(
+            "INVALID_STATE_TRANSITION",
+            format!("invalid waiver intent: {error}"),
+            "gate_waiver",
+            waiver_id,
+            None,
+        )
+    })?;
+    if !matches!(intent, RoleActionIntent::RevokeWaiver) {
+        return Err(encoded_error(
+            "INVALID_STATE_TRANSITION",
+            "semantic action does not match waiver revoke",
+            "gate_waiver",
+            waiver_id,
+            None,
+        ));
+    }
+    let waiver = store
+        .trust_gate_waivers(&auth.execution_space_id)?
+        .into_iter()
+        .find(|item| item.id == waiver_id)
+        .ok_or_else(|| {
+            encoded_error(
+                "INVALID_STATE_TRANSITION",
+                "GateWaiver does not exist",
+                "gate_waiver",
+                waiver_id,
+                None,
+            )
+        })?;
+    if confirmed_action != Some("revoke_waiver") {
+        return Err(encoded_error(
+            "CONFIRMATION_REQUIRED",
+            "server confirmation must exactly confirm revoke_waiver",
+            "gate_waiver",
+            waiver_id,
+            Some(waiver.version),
+        ));
+    }
+    if waiver.performed_by_actor != auth.actor
+        || !auth
+            .authorized_authority_actors
+            .contains(&waiver.authority_actor)
+    {
+        return Err(encoded_error(
+            "UNAUTHORIZED_ACTOR",
+            "only the exact waiver actor with its frozen authority may revoke",
+            "gate_waiver",
+            waiver_id,
+            Some(waiver.version),
+        ));
+    }
+    if let Some(replay) = canonical_replay(store, &auth, "gate_waiver", waiver_id)? {
+        return Ok(replay);
+    }
+    if auth.expected_version != waiver.version {
+        return Err(encoded_error(
+            "VERSION_CONFLICT",
+            "waiver revoke requires exact current revision",
+            "gate_waiver",
+            waiver_id,
+            Some(waiver.version),
+        ));
+    }
+    Ok(trust_result(crate::agentfirm_api::execute(
+        store,
+        auth,
+        crate::agentfirm_api::TrustCommand::RevokeGateWaiver {
+            waiver_id: waiver_id.into(),
+            revoked_at: now_string(),
+        },
+    )?))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct OperatorActionReceipt {
+    request_fingerprint: String,
+    projection: serde_json::Value,
+    event_id: String,
+    resulting_version: u64,
+    store_sequence: u64,
+}
+
+fn execute_receipted_operator_action<F>(
+    firm_home: &std::path::Path,
+    node_id: &str,
+    auth: &AuthenticatedMutation,
+    execute: F,
+) -> Result<RoleActionResult, StoreError>
+where
+    F: FnOnce() -> Result<RoleActionResult, StoreError>,
+{
+    let request_fingerprint = auth.request_fingerprint.clone().ok_or_else(|| {
+        encoded_error(
+            "INVALID_STATE_TRANSITION",
+            "Operator action is missing its server-bound request fingerprint",
+            "execution_node",
+            node_id,
+            None,
+        )
+    })?;
+    let receipt_root = firm_home
+        .join("runtime")
+        .join("operator-action-receipts")
+        .join(node_id);
+    std::fs::create_dir_all(&receipt_root).map_err(|error| {
+        encoded_error(
+            "ACTION_UNAVAILABLE",
+            format!("cannot create Operator receipt directory: {error}"),
+            "execution_node",
+            node_id,
+            None,
+        )
+    })?;
+    let receipt_id = canonical_json_fingerprint(&json!({
+        "node_id": node_id,
+        "idempotency_key": auth.idempotency_key,
+    }));
+    let receipt_path = receipt_root.join(format!("{receipt_id}.json"));
+    let lock_path = receipt_root.join(format!("{receipt_id}.lock"));
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|error| {
+            encoded_error(
+                "ACTION_UNAVAILABLE",
+                format!("cannot open Operator receipt lock: {error}"),
+                "execution_node",
+                node_id,
+                None,
+            )
+        })?;
+    lock_file.lock().map_err(|error| {
+        encoded_error(
+            "ACTION_UNAVAILABLE",
+            format!("cannot lock Operator receipt: {error}"),
+            "execution_node",
+            node_id,
+            None,
+        )
+    })?;
+    if receipt_path.exists() {
+        let receipt =
+            serde_json::from_slice::<OperatorActionReceipt>(&std::fs::read(&receipt_path)?)?;
+        if receipt.request_fingerprint != request_fingerprint {
+            return Err(encoded_error(
+                "IDEMPOTENCY_CONFLICT",
+                "idempotency key was already committed with a different Operator action fingerprint",
+                "execution_node",
+                node_id,
+                Some(receipt.resulting_version),
+            ));
+        }
+        return Ok(RoleActionResult {
+            ok: true,
+            action_protocol_version: "agentfirm.role_actions.v1",
+            projection: receipt.projection,
+            event_id: receipt.event_id,
+            resulting_version: receipt.resulting_version,
+            store_sequence: receipt.store_sequence,
+            replayed: true,
+        });
+    }
+    let result = execute()?;
+    let receipt = OperatorActionReceipt {
+        request_fingerprint,
+        projection: result.projection.clone(),
+        event_id: result.event_id.clone(),
+        resulting_version: result.resulting_version,
+        store_sequence: result.store_sequence,
+    };
+    let bytes = serde_json::to_vec_pretty(&receipt)?;
+    crate::execution_space::atomic_write_bytes(&receipt_path, &bytes).map_err(|error| {
+        encoded_error(
+            "ACTION_UNAVAILABLE",
+            format!("cannot commit Operator action receipt: {error}"),
+            "execution_node",
+            node_id,
+            Some(result.resulting_version),
+        )
+    })?;
+    Ok(result)
+}
+
+fn execute_operator_action(
+    store: &HarnessStore,
+    auth: AuthenticatedMutation,
+    node_id: &str,
+    operation: &str,
+    body: &[u8],
+    confirmed_action: Option<&str>,
+) -> Result<RoleActionResult, StoreError> {
+    if auth.actor.kind != ActorKind::Service || auth.actor.id != node_id {
+        return Err(encoded_error(
+            "UNAUTHORIZED_ACTOR",
+            "Operator credential is not the exact Execution Node Service",
+            "execution_node",
+            node_id,
+            None,
+        ));
+    }
+    let node_revision = store
+        .execution_nodes()?
+        .into_iter()
+        .filter(|node| node.id == node_id)
+        .count() as u64;
+    if auth.expected_version != node_revision {
+        return Err(encoded_error(
+            "VERSION_CONFLICT",
+            "Operator action requires the exact current ExecutionNode revision",
+            "execution_node",
+            node_id,
+            Some(node_revision),
+        ));
+    }
+    let local_node_id = crate::read_local_node_id().map_err(|error| {
+        encoded_error(
+            "ACTION_UNAVAILABLE",
+            error.to_string(),
+            "execution_node",
+            node_id,
+            Some(node_revision),
+        )
+    })?;
+    if local_node_id != node_id {
+        return Err(encoded_error(
+            "UNAUTHORIZED_ACTOR",
+            "Operator action targets a Node other than this machine's immutable Node",
+            "execution_node",
+            node_id,
+            Some(node_revision),
+        ));
+    }
+    let intent = serde_json::from_slice::<OperatorActionIntent>(body).map_err(|error| {
+        encoded_error(
+            "INVALID_STATE_TRANSITION",
+            format!("invalid Operator intent: {error}"),
+            "execution_node",
+            node_id,
+            None,
+        )
+    })?;
+    match (operation, intent) {
+        ("diagnostics", OperatorActionIntent::Diagnose) => {
+            let lease = store.latest_node_daemon_lease(node_id)?;
+            Ok(RoleActionResult {
+                ok: true,
+                action_protocol_version: "agentfirm.role_actions.v1",
+                projection: json!({"node_id":node_id,"daemon_lease":lease}),
+                event_id: format!("diagnostic:{}", auth.idempotency_key),
+                resulting_version: auth.expected_version,
+                store_sequence: store
+                    .canonical_operations_for_space(&auth.execution_space_id)?
+                    .len() as u64,
+                replayed: false,
+            })
+        }
+        ("daemon-start", OperatorActionIntent::DaemonStart { max_concurrency }) => {
+            if max_concurrency == 0 {
+                return Err(encoded_error(
+                    "INVALID_STATE_TRANSITION",
+                    "daemon concurrency must be non-zero",
+                    "execution_node",
+                    node_id,
+                    None,
+                ));
+            }
+            if confirmed_action != Some(operation) {
+                return Err(encoded_error(
+                    "CONFIRMATION_REQUIRED",
+                    format!("server confirmation must exactly confirm {operation}"),
+                    "execution_node",
+                    node_id,
+                    None,
+                ));
+            }
+            let firm_home = crate::execution_space::firm_home().map_err(|error| {
+                encoded_error(
+                    "ACTION_UNAVAILABLE",
+                    error.to_string(),
+                    "execution_node",
+                    node_id,
+                    Some(node_revision),
+                )
+            })?;
+            execute_receipted_operator_action(&firm_home, node_id, &auth, || {
+                if crate::supervisor_daemon::daemon_status_via_socket(&firm_home, node_id).is_some()
+                {
+                    return Err(encoded_error(
+                        "ACTION_UNAVAILABLE",
+                        "NodeDaemon is already live; refresh the Operator RoleView",
+                        "execution_node",
+                        node_id,
+                        Some(node_revision),
+                    ));
+                }
+                let status = crate::supervisor_daemon::start_daemon_process(
+                    &firm_home,
+                    node_id,
+                    max_concurrency,
+                )
+                .map_err(|error| {
+                    encoded_error(
+                        "DAEMON_START_FAILED",
+                        error.to_string(),
+                        "execution_node",
+                        node_id,
+                        Some(node_revision),
+                    )
+                })?;
+                let lease = store.latest_node_daemon_lease(node_id)?;
+                Ok(RoleActionResult {
+                    ok: true,
+                    action_protocol_version: "agentfirm.role_actions.v1",
+                    projection: json!({"node_id":node_id,"status":status,"lease":lease}),
+                    event_id: format!("daemon-start:{}", auth.idempotency_key),
+                    resulting_version: node_revision,
+                    store_sequence: store
+                        .canonical_operations_for_space(&auth.execution_space_id)?
+                        .len() as u64,
+                    replayed: false,
+                })
+            })
+        }
+        ("daemon-stop", OperatorActionIntent::DaemonStop) => {
+            if confirmed_action != Some(operation) {
+                return Err(encoded_error(
+                    "CONFIRMATION_REQUIRED",
+                    format!("server confirmation must exactly confirm {operation}"),
+                    "execution_node",
+                    node_id,
+                    None,
+                ));
+            }
+            let firm_home = crate::execution_space::firm_home().map_err(|error| {
+                encoded_error(
+                    "ACTION_UNAVAILABLE",
+                    error.to_string(),
+                    "execution_node",
+                    node_id,
+                    Some(node_revision),
+                )
+            })?;
+            execute_receipted_operator_action(&firm_home, node_id, &auth, || {
+                let response =
+                    crate::supervisor_daemon::daemon_stop_via_socket(&firm_home, node_id)
+                        .ok_or_else(|| {
+                            encoded_error(
+                        "ACTION_UNAVAILABLE",
+                        "no live NodeDaemon is available to stop; refresh the Operator RoleView",
+                        "execution_node",
+                        node_id,
+                        Some(node_revision),
+                    )
+                        })?;
+                Ok(RoleActionResult {
+                    ok: true,
+                    action_protocol_version: "agentfirm.role_actions.v1",
+                    projection: json!({"node_id":node_id,"status":response}),
+                    event_id: format!("daemon-stop:{}", auth.idempotency_key),
+                    resulting_version: node_revision,
+                    store_sequence: store
+                        .canonical_operations_for_space(&auth.execution_space_id)?
+                        .len() as u64,
+                    replayed: false,
+                })
+            })
+        }
+        (
+            "provider-admission",
+            OperatorActionIntent::AdmitProvider {
+                provider,
+                execution_mode,
+            },
+        ) => {
+            let (admission, replayed) = crate::admit_provider_from_operator_action(
+                store,
+                &auth.execution_space_id,
+                node_id,
+                &provider,
+                &execution_mode,
+                &auth.idempotency_key,
+            )
+            .map_err(|error| {
+                encoded_error(
+                    "PROVIDER_ADMISSION_FAILED",
+                    error,
+                    "execution_node",
+                    node_id,
+                    Some(node_revision),
+                )
+            })?;
+            Ok(RoleActionResult {
+                ok: true,
+                action_protocol_version: "agentfirm.role_actions.v1",
+                projection: serde_json::to_value(&admission)?,
+                event_id: admission.id.clone(),
+                resulting_version: 1,
+                store_sequence: store.latest_provider_compatibility_admissions()?.len() as u64,
+                replayed,
+            })
+        }
+        _ => Err(encoded_error(
+            "INVALID_STATE_TRANSITION",
+            "semantic action does not match Operator route",
+            "execution_node",
+            node_id,
+            None,
+        )),
+    }
+}
+
+pub fn execute(
+    store: &HarnessStore,
+    mut auth: AuthenticatedMutation,
     path: &str,
     body: &[u8],
     confirmed_action: Option<&str>,
 ) -> Result<RoleActionResult, StoreError> {
+    auth.request_fingerprint = Some(canonical_json_fingerprint(&json!({
+        "protocol":"agentfirm.role_actions.v1",
+        "execution_space_id":auth.execution_space_id,
+        "actor":auth.actor,
+        "authorized_authority_actors":auth.authorized_authority_actors,
+        "path":path,
+        "intent":serde_json::from_slice::<serde_json::Value>(body).unwrap_or(serde_json::Value::Null),
+        "expected_version":auth.expected_version,
+        "confirmation":confirmed_action,
+    })));
+    if let Some(route) = parse_canonical_route(path) {
+        return execute_canonical_role_action(store, auth, route, body, confirmed_action);
+    }
     if let Some((node_id, delivery_id)) = parse_operator_route(path) {
         let intent = serde_json::from_slice::<OperatorActionIntent>(body).map_err(|error| {
             encoded_error(
@@ -469,7 +2737,18 @@ pub fn execute(
                 None,
             ));
         }
-        let OperatorActionIntent::ReconcileDelivery { evidence_ref } = intent;
+        if let Some(replay) = canonical_replay(store, &auth, "work_delivery", delivery_id)? {
+            return Ok(replay);
+        }
+        let OperatorActionIntent::ReconcileDelivery { evidence_ref } = intent else {
+            return Err(encoded_error(
+                "INVALID_STATE_TRANSITION",
+                "semantic action does not match WorkDelivery route",
+                "work_delivery",
+                delivery_id,
+                None,
+            ));
+        };
         let result = crate::agentfirm_api::execute(
             store,
             auth,
@@ -527,6 +2806,9 @@ pub fn execute(
             )
         })?;
         require_host(&auth, &team.host_agent_id, "work", work_id)?;
+        if let Some(replay) = canonical_replay(store, &auth, "work", work_id)? {
+            return Ok(replay);
+        }
         let work = current_canonical_work(store, &auth.execution_space_id, work_id)?;
         if work.team_id.as_deref() != Some(team_id) || work.version != auth.expected_version {
             return Err(encoded_error(
@@ -621,6 +2903,14 @@ pub fn execute(
     ) = (route.operation, route.work_id, &intent)
     {
         let _member_run_id = resolve_member_run(store, &auth, route.team_run_id)?;
+        if let Some(replay) = canonical_replay(
+            store,
+            &auth,
+            "work_report",
+            &deterministic_id("work-report", &auth),
+        )? {
+            return Ok(replay);
+        }
         let current = current_work(store, route.team_run_id, work_id)?;
         if current.version != auth.expected_version {
             return Err(encoded_error(
@@ -727,6 +3017,11 @@ pub fn execute(
             },
         ) => {
             let host_id = require_host(&auth, &team.host_agent_id, "team_run", route.team_run_id)?;
+            if let Some(replay) =
+                work_replay(store, &auth, &work_id, harness_core::WorkEventKind::Created)?
+            {
+                return Ok(replay);
+            }
             if auth.expected_version != 0 {
                 return Err(encoded_error(
                     "VERSION_CONFLICT",
@@ -771,6 +3066,34 @@ pub fn execute(
         }
         (operation, Some(work_id), intent) => {
             require_confirmed(operation, confirmed_action, work_id)?;
+            let kind = match operation {
+                "assign" => harness_core::WorkEventKind::Assigned,
+                "rebind" => harness_core::WorkEventKind::Rebound,
+                "release" => harness_core::WorkEventKind::Released,
+                "cancel" => harness_core::WorkEventKind::Cancelled,
+                "claim" => harness_core::WorkEventKind::Claimed,
+                "start" => harness_core::WorkEventKind::Started,
+                "block" => harness_core::WorkEventKind::Blocked,
+                "resume" => harness_core::WorkEventKind::Resumed,
+                "submit" => harness_core::WorkEventKind::Submitted,
+                _ => {
+                    return Err(encoded_error(
+                        "INVALID_STATE_TRANSITION",
+                        "unknown Work operation",
+                        "work",
+                        work_id,
+                        None,
+                    ))
+                }
+            };
+            if matches!(operation, "assign" | "rebind" | "cancel") {
+                require_host(&auth, &team.host_agent_id, "work", work_id)?;
+            } else if operation != "release" || !is_host(&auth, &team.host_agent_id) {
+                let _ = resolve_member_run(store, &auth, route.team_run_id)?;
+            }
+            if let Some(replay) = work_replay(store, &auth, work_id, kind)? {
+                return Ok(replay);
+            }
             let current = current_work(store, route.team_run_id, work_id)?;
             if current.version != auth.expected_version {
                 return Err(encoded_error(
@@ -956,18 +3279,32 @@ mod tests {
         assert!(is_http_mutation_path(
             "/v1/agentfirm/nodes/node-1/work-deliveries/delivery-1/reconcile"
         ));
-        assert!(!is_http_mutation_path(
-            "/v1/agentfirm/team-runs/run-1/messages"
+        assert!(is_http_mutation_path(
+            "/v1/agentfirm/team-runs/run-1/messages/send"
         ));
-        assert!(!is_http_mutation_path(
-            "/v1/agentfirm/team-runs/run-1/works/work-1/request-changes"
+        assert!(is_http_mutation_path(
+            "/v1/agentfirm/teams/team-1/works/work-1/request-changes"
         ));
         assert!(!is_http_mutation_path(
             "/v1/agentfirm/team-runs/run-1/works/work-1/browser-invented"
         ));
-        assert!(is_retired_legacy_write_path(
-            "/v1/team-runs/run-1/works/work-1/accept"
-        ));
-        assert!(is_retired_legacy_write_path("/v1/work-delegations"));
+        for retired in [
+            "/v1/team-runs/run-1/works",
+            "/v1/team-runs/run-1/works/work-1/assign",
+            "/v1/team-runs/run-1/works/work-1/review",
+            "/v1/team-runs/run-1/works/work-1/accept",
+            "/v1/work-delegations",
+            "/v1/work-delegations/delegation-1",
+            "/v1/work-delegations/delegation-1/accept",
+        ] {
+            assert!(is_retired_legacy_write_path(retired), "{retired}");
+        }
+        for canonical in [
+            "/v1/agentfirm/team-runs/run-1/works",
+            "/v1/agentfirm/team-runs/run-1/works/work-1/start",
+            "/v1/agentfirm/teams/team-1/works/work-1/accept",
+        ] {
+            assert!(!is_retired_legacy_write_path(canonical), "{canonical}");
+        }
     }
 }
