@@ -1,10 +1,10 @@
 {
   "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://agent-harness.local/schemas/gate-evaluation.schema.json","title":"GateEvaluation",
   "type":"object","additionalProperties":false,
-  "required":["id","requirement_id","work_id","work_revision","work_report_id","candidate_fingerprint","config_fingerprint","evaluator_version","dependency_fingerprint","verdict","summary","performed_by","evaluated_at","version"],
+  "required":["id","requirement_id","work_id","work_revision","work_report_id","candidate_fingerprint","config_fingerprint","evaluator_version","evaluator_fingerprint","dependency_fingerprint","verdict","summary","performed_by","evaluated_at","version"],
   "properties":{
     "id":{"type":"string","minLength":1},"requirement_id":{"type":"string","minLength":1},"work_id":{"type":"string","minLength":1},"work_revision":{"type":"integer","minimum":1},"work_report_id":{"type":"string","minLength":1},
-    "candidate_fingerprint":{"type":"string","minLength":1},"config_fingerprint":{"type":"string","minLength":1},"evaluator_version":{"type":"string","minLength":1},"dependency_fingerprint":{"type":"string","minLength":1},
+    "candidate_fingerprint":{"type":"string","minLength":1},"config_fingerprint":{"type":"string","minLength":1},"evaluator_version":{"type":"string","minLength":1},"evaluator_fingerprint":{"type":"string","minLength":1},"dependency_fingerprint":{"type":"string","minLength":1},
     "verdict":{"enum":["passed","failed","error"]},"summary":{"type":"string","minLength":1},"evidence_refs":{"$ref":"#/$defs/refs"},"performed_by":{"$ref":"#/$defs/actor"},
     "evaluated_at":{"type":"string","minLength":1},"version":{"type":"integer","minimum":1}
   },

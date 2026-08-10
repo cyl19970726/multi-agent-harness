@@ -285,7 +285,7 @@ fn tool_agentfirm_member_trust_mutate(
             kind: actor_kind,
             id: actor_id,
         },
-        authority_actor,
+        authorized_authority_actors: authority_actor.into_iter().collect(),
         idempotency_key: required_non_empty_str(arguments, "idempotency_key")?.to_string(),
         expected_version,
     };

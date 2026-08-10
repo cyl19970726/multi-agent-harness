@@ -591,8 +591,12 @@ pub struct GateRequirement {
     pub source_binding_id: Option<String>,
     pub gate_type: String,
     pub gate_contract_version: String,
-    pub evaluator_ref: String,
+    /// Exact authenticated evaluator identity frozen with the requirement.
+    pub evaluator_ref: ActorRef,
     pub evaluator_version: String,
+    /// Fingerprint of `(evaluator_ref, evaluator_version)` so an adapter or
+    /// service upgrade cannot silently change who produced the verdict.
+    pub evaluator_fingerprint: String,
     pub resolved_config: serde_json::Value,
     pub config_fingerprint: String,
     pub required: bool,
@@ -622,6 +626,7 @@ pub struct GateEvaluation {
     pub candidate_fingerprint: String,
     pub config_fingerprint: String,
     pub evaluator_version: String,
+    pub evaluator_fingerprint: String,
     pub dependency_fingerprint: String,
     pub verdict: GateVerdict,
     pub summary: String,
@@ -716,6 +721,7 @@ pub enum TrustErrorCode {
     MemberRunClosed,
     MemberRunRetired,
     MemberRunGenerationFenced,
+    SupervisorGenerationFenced,
     NativeSessionMissing,
     NativeSessionIncompatible,
     DeliveryClaimConflict,

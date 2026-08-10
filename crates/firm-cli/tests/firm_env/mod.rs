@@ -297,8 +297,16 @@ impl ServeHandle {
         let fixture_mutation_token = extra_env
             .iter()
             .find_map(|(key, value)| {
-                (*key == "AGENTFIRM_HTTP_MUTATION_TOKEN" && !value.is_empty())
-                    .then(|| (*value).to_string())
+                if *key != "AGENTFIRM_HTTP_CREDENTIALS_JSON" || value.is_empty() {
+                    return None;
+                }
+                serde_json::from_str::<serde_json::Value>(value)
+                    .ok()?
+                    .as_array()?
+                    .first()?
+                    .get("token")?
+                    .as_str()
+                    .map(str::to_string)
             })
             .unwrap_or_else(|| "integration-test-http-token".to_string());
         let node_daemon = if home.firm_home().join("NODE_ID").exists() {
@@ -356,7 +364,15 @@ impl ServeHandle {
         }
         cmd.current_dir(cwd).envs(home.envs());
         clear_inherited_native_firm_env(&mut cmd);
-        cmd.env("AGENTFIRM_HTTP_MUTATION_TOKEN", &fixture_mutation_token);
+        cmd.env(
+            "AGENTFIRM_HTTP_CREDENTIALS_JSON",
+            serde_json::json!([{
+                "token": fixture_mutation_token.as_str(),
+                "actor": {"kind": "service", "id": "integration-test-fixture"},
+                "authority_actors": []
+            }])
+            .to_string(),
+        );
         // Production supervisors never retire an idle Member implicitly.
         // Integration processes need a bounded escape after they have
         // asserted the idle state so test teardown can join cleanly.
@@ -541,8 +557,6 @@ impl ServeHandle {
         let expected = "0";
         let headers = [
             ("X-AgentFirm-Token", self.fixture_mutation_token.as_str()),
-            ("X-AgentFirm-Actor-Kind", "service"),
-            ("X-AgentFirm-Actor-Id", "integration-test-fixture"),
             ("Idempotency-Key", message_id.as_str()),
             ("If-Match", expected),
         ];

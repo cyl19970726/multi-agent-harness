@@ -5,6 +5,7 @@
 //! scoped idempotency/CAS, organization and run lifecycle fences, atomic
 //! message fanout, report evidence, exact gates/waivers, and workspace paths.
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,8 +23,8 @@ use firm_core::agentfirm_api::{
 use firm_core::{
     AgentTeam, AgentTeamRun, AgentTeamStatus, ExecutionNode, ExecutionNodeStatus, MemberRunStatus,
     Mission, MissionStatus, ProviderRuntimeProjection as RuntimeMemberRun, TeamActorKind,
-    TeamActorRef, TeamRunStatus, Work, WorkClaimMode, WorkCommandContext, WorkCondition, WorkPhase,
-    WorkPriority,
+    TeamActorRef, TeamRunStatus, Work, WorkClaimMode, WorkCommandContext, WorkCondition,
+    WorkDelegation, WorkDelegationState, WorkPhase, WorkPriority, WorkRef,
 };
 use firm_store::{canonical_json_fingerprint, HarnessStore, StoreError};
 
@@ -67,6 +68,20 @@ fn member_actor(id: &str) -> ActorRef {
         kind: ActorKind::AgentMember,
         id: id.into(),
     }
+}
+
+fn service(id: &str) -> ActorRef {
+    ActorRef {
+        kind: ActorKind::Service,
+        id: id.into(),
+    }
+}
+
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock after unix epoch")
+        .as_millis() as u64
 }
 
 fn context(actor: ActorRef, command: &str, key: &str, expected_version: u64) -> MutationContext {
@@ -220,6 +235,32 @@ fn seed_team(store: &HarnessStore, label: &str, member_ids: &[&str]) -> AgentTea
     };
     store.append_team_run(&run).expect("append team run");
     run
+}
+
+fn acquire_supervisor(
+    store: &HarnessStore,
+    run: &AgentTeamRun,
+    supervisor_id: &str,
+) -> firm_core::TeamSupervisorLease {
+    let now = unix_ms();
+    let daemon = store
+        .acquire_node_daemon_lease(NODE, "daemon-test", "daemon-instance-test", now, 60_000)
+        .expect("acquire node daemon lease");
+    store
+        .acquire_team_supervisor_under_node_lease(
+            &run.id,
+            NODE,
+            &daemon.daemon_id,
+            daemon.generation,
+            SPACE,
+            &run.project_binding_id,
+            supervisor_id,
+            std::process::id(),
+            "test://member-execution-trust",
+            now,
+            60_000,
+        )
+        .expect("acquire team supervisor lease")
 }
 
 fn seed_team_work(store: &HarnessStore, label: &str, work_id: &str) -> String {
@@ -521,6 +562,50 @@ fn idempotency_is_scoped_payload_exact_and_cas_protected() {
 }
 
 #[test]
+fn canonical_ledger_recovers_old_torn_tail_and_ignores_uncommitted_next_file() {
+    let harness = TestStore::new("canonical-crash-recovery");
+    let host = human("host");
+    harness
+        .store
+        .create_trust_agent_member(
+            &context(host.clone(), "member.create", "create-a", 0),
+            member("member-a", &host),
+        )
+        .expect("commit first canonical operation");
+
+    let ledger = harness.root.join("agentfirm_trust_operations.jsonl");
+    let next = harness.root.join("agentfirm_trust_operations.jsonl.next");
+    std::fs::write(&next, b"{\"uncommitted\":").expect("simulate crash before rename");
+    assert_eq!(harness.store.canonical_operations().unwrap().len(), 1);
+
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&ledger)
+        .expect("open canonical ledger");
+    file.write_all(b"{\"torn\":")
+        .expect("simulate legacy append tear");
+    file.sync_all().expect("persist torn tail");
+    assert_eq!(harness.store.canonical_operations().unwrap().len(), 1);
+
+    harness
+        .store
+        .create_trust_agent_member(
+            &context(host.clone(), "member.create", "create-b", 0),
+            member("member-b", &host),
+        )
+        .expect("next commit atomically replaces torn ledger");
+    assert_eq!(harness.store.canonical_operations().unwrap().len(), 2);
+    let repaired = std::fs::read(&ledger).expect("read repaired ledger");
+    assert!(repaired.ends_with(b"\n"));
+    assert!(!next.exists(), "atomic rename consumes the next file");
+    for row in repaired.split(|byte| *byte == b'\n') {
+        if !row.is_empty() {
+            serde_json::from_slice::<serde_json::Value>(row).expect("complete JSON frame");
+        }
+    }
+}
+
+#[test]
 fn paused_and_retired_members_cannot_start_runs() {
     let harness = TestStore::new("member-status");
     let host = human("host");
@@ -737,10 +822,10 @@ fn close_reopen_and_retire_fence_queued_delivery_by_generation() {
     assert_eq!(delivery.version, 3);
 }
 
-fn delivery_claim(id: &str, member_generation: u64) -> DeliveryClaim {
+fn delivery_claim(id: &str, supervisor_generation: u64, member_generation: u64) -> DeliveryClaim {
     DeliveryClaim {
         claim_id: id.into(),
-        supervisor_generation: 11,
+        supervisor_generation,
         member_generation,
         claim_expires_at: "t99".into(),
     }
@@ -751,6 +836,8 @@ fn delivery_claim_and_receipt_are_generation_fenced_and_reconcile_is_explicit() 
     let harness = TestStore::new("delivery-generation");
     let host = human("host");
     let team_run = seed_team(&harness.store, "delivery-generation", &["member-a"]);
+    let supervisor = acquire_supervisor(&harness.store, &team_run, "supervisor-a");
+    let supervisor_actor = service(&supervisor.supervisor_id);
     create_member_and_run(
         &harness.store,
         &host,
@@ -776,9 +863,9 @@ fn delivery_claim_and_receipt_are_generation_fenced_and_reconcile_is_explicit() 
             harness
                 .store
                 .claim_trust_message_delivery(
-                    &context(host.clone(), "delivery.claim", "stale-claim", 0),
+                    &context(supervisor_actor.clone(), "delivery.claim", "stale-claim", 0),
                     "message-old:run-a",
-                    delivery_claim("claim-stale", 0),
+                    delivery_claim("claim-stale", supervisor.generation, 0),
                     "t3",
                 )
                 .expect_err("stale generation cannot claim")
@@ -798,13 +885,13 @@ fn delivery_claim_and_receipt_are_generation_fenced_and_reconcile_is_explicit() 
             .store
             .claim_trust_message_delivery(
                 &context(
-                    host.clone(),
+                    supervisor_actor.clone(),
                     "delivery.claim",
                     &format!("key-{claim_id}"),
                     0,
                 ),
                 delivery,
-                delivery_claim(claim_id, 1),
+                delivery_claim(claim_id, supervisor.generation, 1),
                 "t3",
             )
             .expect("claim at generation one");
@@ -830,7 +917,7 @@ fn delivery_claim_and_receipt_are_generation_fenced_and_reconcile_is_explicit() 
 
     let receipt = ProviderReceipt {
         claim_id: "claim-old".into(),
-        supervisor_generation: 11,
+        supervisor_generation: supervisor.generation,
         member_generation: 1,
         provider_receipt_id: "provider-old".into(),
     };
@@ -839,7 +926,12 @@ fn delivery_claim_and_receipt_are_generation_fenced_and_reconcile_is_explicit() 
             harness
                 .store
                 .receive_trust_message_delivery(
-                    &context(host.clone(), "delivery.receive", "stale-receipt", 1),
+                    &context(
+                        supervisor_actor.clone(),
+                        "delivery.receive",
+                        "stale-receipt",
+                        1
+                    ),
                     "message-old:run-a",
                     receipt,
                     "t6",
@@ -871,9 +963,14 @@ fn delivery_claim_and_receipt_are_generation_fenced_and_reconcile_is_explicit() 
             harness
                 .store
                 .claim_trust_message_delivery(
-                    &context(host.clone(), "delivery.claim", "queued-old-generation", 0),
+                    &context(
+                        supervisor_actor.clone(),
+                        "delivery.claim",
+                        "queued-old-generation",
+                        0
+                    ),
                     "message-queued:run-a",
-                    delivery_claim("claim-queued-stale", 1),
+                    delivery_claim("claim-queued-stale", supervisor.generation, 1),
                     "t8",
                 )
                 .expect_err("frozen queued delivery cannot use old generation")
@@ -883,20 +980,30 @@ fn delivery_claim_and_receipt_are_generation_fenced_and_reconcile_is_explicit() 
     harness
         .store
         .claim_trust_message_delivery(
-            &context(host.clone(), "delivery.claim", "queued-new-generation", 0),
+            &context(
+                supervisor_actor.clone(),
+                "delivery.claim",
+                "queued-new-generation",
+                0,
+            ),
             "message-queued:run-a",
-            delivery_claim("claim-queued", 2),
+            delivery_claim("claim-queued", supervisor.generation, 2),
             "t8",
         )
         .expect("new generation may claim frozen delivery");
     harness
         .store
         .receive_trust_message_delivery(
-            &context(host.clone(), "delivery.receive", "fresh-receipt", 1),
+            &context(
+                supervisor_actor.clone(),
+                "delivery.receive",
+                "fresh-receipt",
+                1,
+            ),
             "message-queued:run-a",
             ProviderReceipt {
                 claim_id: "claim-queued".into(),
-                supervisor_generation: 11,
+                supervisor_generation: supervisor.generation,
                 member_generation: 2,
                 provider_receipt_id: "provider-fresh".into(),
             },
@@ -906,7 +1013,7 @@ fn delivery_claim_and_receipt_are_generation_fenced_and_reconcile_is_explicit() 
     let acknowledged = harness
         .store
         .acknowledge_trust_message_delivery(
-            &context(host, "delivery.ack", "fresh-ack", 2),
+            &context(supervisor_actor, "delivery.ack", "fresh-ack", 2),
             "message-queued:run-a",
             "claim-queued",
             2,
@@ -915,6 +1022,90 @@ fn delivery_claim_and_receipt_are_generation_fenced_and_reconcile_is_explicit() 
         .expect("matching acknowledgement")
         .projection;
     assert_eq!(acknowledged.status, MessageDeliveryStatus::Acknowledged);
+}
+
+#[test]
+fn successor_supervisor_fences_stale_claim_before_any_canonical_side_effect() {
+    let harness = TestStore::new("delivery-supervisor-successor");
+    let host = human("host");
+    let team_run = seed_team(
+        &harness.store,
+        "delivery-supervisor-successor",
+        &["member-a"],
+    );
+    create_member_and_run(
+        &harness.store,
+        &host,
+        &team_run.id,
+        "member-a",
+        "run-a",
+        true,
+    );
+    harness
+        .store
+        .create_trust_team_message_with_deliveries(
+            &context(host, "message.create", "message-successor", 0),
+            message(
+                "message-successor",
+                &team_run.id,
+                &human("host"),
+                &["member-a"],
+            ),
+            "t2",
+        )
+        .expect("queue delivery");
+    let first = acquire_supervisor(&harness.store, &team_run, "supervisor-old");
+    harness
+        .store
+        .release_team_supervisor_lease(
+            &team_run.id,
+            &first.supervisor_id,
+            first.generation,
+            unix_ms(),
+        )
+        .expect("release old supervisor");
+    let successor = acquire_supervisor(&harness.store, &team_run, "supervisor-successor");
+    assert!(successor.generation > first.generation);
+
+    let before = harness.store.canonical_operations().unwrap().len();
+    assert_eq!(
+        trust_code(
+            harness
+                .store
+                .claim_trust_message_delivery(
+                    &context(
+                        service(&first.supervisor_id),
+                        "delivery.claim",
+                        "stale-supervisor-claim",
+                        0,
+                    ),
+                    "message-successor:run-a",
+                    delivery_claim("claim-stale-supervisor", first.generation, 1),
+                    "t3",
+                )
+                .expect_err("successor acquisition must fence old supervisor")
+        ),
+        TrustErrorCode::SupervisorGenerationFenced
+    );
+    assert_eq!(
+        harness.store.canonical_operations().unwrap().len(),
+        before,
+        "stale Supervisor loses at the same Store lock before provider-visible state"
+    );
+    harness
+        .store
+        .claim_trust_message_delivery(
+            &context(
+                service(&successor.supervisor_id),
+                "delivery.claim",
+                "successor-claim",
+                0,
+            ),
+            "message-successor:run-a",
+            delivery_claim("claim-successor", successor.generation, 1),
+            "t4",
+        )
+        .expect("current successor can claim");
 }
 
 fn report(id: &str, kind: WorkReportKind, author: &ActorRef) -> WorkReport {
@@ -1140,7 +1331,218 @@ fn exact_result_report_submits_and_accepts_work_in_canonical_operations() {
     assert_eq!(replay.event.id, accepted.event.id);
 }
 
+#[test]
+fn canonical_acceptance_rolls_up_delegation_in_the_same_operation() {
+    let harness = TestStore::new("canonical-delegation-rollup");
+    seed_active_team_work(&harness.store, "delegation-source", "source-rollup");
+    let source = harness
+        .store
+        .latest_works()
+        .unwrap()
+        .into_iter()
+        .find(|work| work.id == "source-rollup")
+        .expect("source Work");
+    let target_run = seed_team(&harness.store, "delegation-target", &["target-worker"]);
+    let target_runtime_id = "runtime-target-worker";
+    harness
+        .store
+        .append_member_run(&RuntimeMemberRun {
+            id: target_runtime_id.into(),
+            team_run_id: target_run.id.clone(),
+            slot_id: None,
+            agent_member_id: "target-worker".into(),
+            name: "Target Worker".into(),
+            role: "worker".into(),
+            provider: "codex".into(),
+            model: None,
+            provider_controls: Default::default(),
+            provider_profile: None,
+            provider_capacity: None,
+            provider_compatibility_block_cause: None,
+            coordination_status: Default::default(),
+            runtime_generation: 1,
+            status: MemberRunStatus::Idle,
+            native_session: None,
+            provider_cwd_hint: None,
+            provider_environment_observation: None,
+            owned_paths: Vec::new(),
+            zero_output_streak: 0,
+            last_consumed_work_version: None,
+            started_at: "t1".into(),
+            last_event_at: None,
+            finished_at: None,
+        })
+        .expect("seed target runtime");
+    let host_actor = TeamActorRef {
+        kind: TeamActorKind::Host,
+        id: "host".into(),
+        display_name: None,
+        authn_source: Some("test".into()),
+    };
+    let (delegation, target) = harness
+        .store
+        .create_work_delegation_with_target_work(
+            WorkDelegation {
+                id: "delegation-rollup".into(),
+                source_work_ref: WorkRef {
+                    team_run_id: source.team_run_id.clone(),
+                    work_id: source.id.clone(),
+                },
+                source_work_version: source.version,
+                source_owner_member_id: source.owner_member_id.clone().expect("source owner"),
+                created_by_member_run_id: None,
+                target_agent_team_id: target_run.agent_team_id.clone(),
+                target_work_ref: WorkRef {
+                    team_run_id: String::new(),
+                    work_id: String::new(),
+                },
+                delegated_by_actor: host_actor.clone(),
+                state: WorkDelegationState::Active,
+                resolution_summary: None,
+                blocker_reason: None,
+                version: 0,
+                created_at: String::new(),
+                updated_at: String::new(),
+            },
+            Work {
+                id: "target-rollup".into(),
+                team_run_id: target_run.id.clone(),
+                team_id: None,
+                created_by_member_id: None,
+                parent_work_id: None,
+                title: "Delegated target".into(),
+                context_markdown: "execute delegated target".into(),
+                completion_criteria_markdown: "exact candidate accepted".into(),
+                phase: WorkPhase::Open,
+                condition: WorkCondition::Normal,
+                resolution: None,
+                owner_member_id: Some("target-worker".into()),
+                active_member_run_id: Some(target_runtime_id.into()),
+                claim_mode: WorkClaimMode::HostAssign,
+                eligible_member_ids: Vec::new(),
+                prerequisite_work_ids: Vec::new(),
+                priority: WorkPriority::Normal,
+                created_by_actor: host_actor.clone(),
+                result_summary: None,
+                blocker_reason: None,
+                artifact_refs: Vec::new(),
+                check_refs: Vec::new(),
+                github_links: Vec::new(),
+                version: 0,
+                created_at: String::new(),
+                updated_at: String::new(),
+            },
+            WorkCommandContext {
+                event_id: "delegation-create".into(),
+                performed_by_actor: host_actor,
+                authority_actor: None,
+                causation_ref: None,
+                idempotency_key: "delegation-create".into(),
+                created_at: "t2".into(),
+                duplicate_ok: false,
+            },
+        )
+        .expect("atomically create Delegation and target Work");
+    let started = harness
+        .store
+        .start_work(
+            &target.id,
+            target.version,
+            target_runtime_id,
+            WorkCommandContext {
+                event_id: "target-start".into(),
+                performed_by_actor: TeamActorRef {
+                    kind: TeamActorKind::ProviderRuntimeProjection,
+                    id: target_runtime_id.into(),
+                    display_name: None,
+                    authn_source: Some("test".into()),
+                },
+                authority_actor: None,
+                causation_ref: None,
+                idempotency_key: "target-start".into(),
+                created_at: "t3".into(),
+                duplicate_ok: false,
+            },
+        )
+        .expect("start delegated target");
+    let candidate = CandidateRef {
+        kind: CandidateKind::GitCommit,
+        value: "delegated-candidate".into(),
+    };
+    let candidate_fingerprint =
+        canonical_json_fingerprint(&serde_json::to_value(&candidate).unwrap());
+    let mut result = report(
+        "report-delegated-target",
+        WorkReportKind::Result,
+        &member_actor("target-worker"),
+    );
+    result.work_id = target.id.clone();
+    result.work_revision = started.version + 1;
+    result.candidate = Some(candidate);
+    result.candidate_fingerprint = Some(candidate_fingerprint.clone());
+    result.evidence_refs = vec!["evidence://delegated-candidate".into()];
+    harness
+        .store
+        .create_trust_work_report(
+            &context(
+                member_actor("target-worker"),
+                "report.create",
+                "report-delegated-target",
+                0,
+            ),
+            &target_run.agent_team_id,
+            result,
+        )
+        .expect("submit delegated target result");
+    let accepted = harness
+        .store
+        .accept_trust_work(
+            &context(
+                human("host"),
+                "work.accept",
+                "accept-delegated-target",
+                started.version + 1,
+            ),
+            &target_run.agent_team_id,
+            &target.id,
+            "report-delegated-target",
+            &candidate_fingerprint,
+            "t5",
+        )
+        .expect("accept delegated target");
+    let rolled_up = harness
+        .store
+        .latest_work_delegations()
+        .unwrap()
+        .into_iter()
+        .find(|row| row.id == delegation.id)
+        .expect("rolled-up Delegation");
+    assert_eq!(rolled_up.state, WorkDelegationState::Completed);
+    assert_eq!(rolled_up.version, delegation.version + 1);
+    let operation = harness
+        .store
+        .canonical_operations()
+        .unwrap()
+        .into_iter()
+        .find(|operation| operation.event.id == accepted.event.id)
+        .expect("canonical acceptance operation");
+    assert!(operation.immutable_side_records.iter().any(|record| {
+        serde_json::from_value::<firm_core::WorkDelegationRevision>(record.clone())
+            .is_ok_and(|revision| revision.delegation.id == delegation.id)
+    }));
+    let source_after = harness
+        .store
+        .latest_works()
+        .unwrap()
+        .into_iter()
+        .find(|work| work.id == source.id)
+        .expect("source Work remains visible");
+    assert_eq!(source_after, source, "roll-up must not mutate source Work");
+}
+
 fn requirement(id: &str) -> GateRequirement {
+    let evaluator_ref = member_actor("critic");
+    let evaluator_version = "v1".to_string();
     GateRequirement {
         id: id.into(),
         work_id: "work-gate".into(),
@@ -1151,8 +1553,12 @@ fn requirement(id: &str) -> GateRequirement {
         source_binding_id: None,
         gate_type: "test".into(),
         gate_contract_version: "1".into(),
-        evaluator_ref: "critic".into(),
-        evaluator_version: "v1".into(),
+        evaluator_fingerprint: canonical_json_fingerprint(&serde_json::json!({
+            "actor": evaluator_ref,
+            "version": evaluator_version,
+        })),
+        evaluator_ref,
+        evaluator_version,
         resolved_config: serde_json::json!({"strict": true}),
         config_fingerprint: "sha256:config".into(),
         required: true,
@@ -1164,6 +1570,7 @@ fn requirement(id: &str) -> GateRequirement {
 }
 
 fn evaluation(id: &str, requirement_id: &str, evaluator: &ActorRef) -> GateEvaluation {
+    let evaluator_version = "v1".to_string();
     GateEvaluation {
         id: id.into(),
         requirement_id: requirement_id.into(),
@@ -1172,7 +1579,11 @@ fn evaluation(id: &str, requirement_id: &str, evaluator: &ActorRef) -> GateEvalu
         work_report_id: "report-gate".into(),
         candidate_fingerprint: "sha256:candidate".into(),
         config_fingerprint: "sha256:config".into(),
-        evaluator_version: "v1".into(),
+        evaluator_fingerprint: canonical_json_fingerprint(&serde_json::json!({
+            "actor": evaluator,
+            "version": evaluator_version,
+        })),
+        evaluator_version,
         dependency_fingerprint: canonical_json_fingerprint(&serde_json::json!([])),
         verdict: GateVerdict::Passed,
         summary: "passed".into(),
@@ -1262,6 +1673,25 @@ fn gates_require_exact_evaluation_or_authorized_waiver_and_reject_self_cycles() 
                 .expect_err("stale candidate must fail")
         ),
         TrustErrorCode::GateRequirementStale
+    );
+    let before_wrong_evaluator = harness.store.canonical_operations().unwrap().len();
+    let impostor = member_actor("worker");
+    assert_eq!(
+        trust_code(
+            harness
+                .store
+                .create_trust_gate_evaluation(
+                    &context(impostor.clone(), "gate.evaluate", "wrong-evaluator", 0),
+                    evaluation("eval-impostor", "gate-a", &impostor),
+                )
+                .expect_err("wrong evaluator identity must fail")
+        ),
+        TrustErrorCode::UnauthorizedActor
+    );
+    assert_eq!(
+        harness.store.canonical_operations().unwrap().len(),
+        before_wrong_evaluator,
+        "wrong evaluator rejection must have zero durable side effects"
     );
     harness
         .store

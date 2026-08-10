@@ -15,6 +15,7 @@ Protocol: `agentfirm-member-trust/1`
 | `MEMBER_RUN_CLOSED` | Typed kernel rejection; inspect message, resource and current_version. | false unless the returned payload explicitly says otherwise |
 | `MEMBER_RUN_RETIRED` | Typed kernel rejection; inspect message, resource and current_version. | false unless the returned payload explicitly says otherwise |
 | `MEMBER_RUN_GENERATION_FENCED` | Typed kernel rejection; inspect message, resource and current_version. | false unless the returned payload explicitly says otherwise |
+| `SUPERVISOR_GENERATION_FENCED` | Typed kernel rejection; inspect message, resource and current_version. | false unless the returned payload explicitly says otherwise |
 | `NATIVE_SESSION_MISSING` | Typed kernel rejection; inspect message, resource and current_version. | false unless the returned payload explicitly says otherwise |
 | `NATIVE_SESSION_INCOMPATIBLE` | Typed kernel rejection; inspect message, resource and current_version. | false unless the returned payload explicitly says otherwise |
 | `DELIVERY_CLAIM_CONFLICT` | Typed kernel rejection; inspect message, resource and current_version. | false unless the returned payload explicitly says otherwise |

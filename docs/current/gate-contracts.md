@@ -13,8 +13,12 @@ WorkModuleBinding
 ```
 
 `WorkModuleBinding` freezes a reusable Module version and configuration.
-`GateRequirement` names the evaluator, evidence contract and dependency set.
-`GateEvaluation` records the evaluator's exact Candidate verdict and evidence.
+`GateRequirement` freezes a typed evaluator `ActorRef`, evaluator version and
+their canonical fingerprint together with the evidence contract and dependency
+set. `GateEvaluation.performed_by` must be the transport-authenticated actor and
+must exactly equal that frozen evaluator identity; matching only a free-form
+name or evaluator version is never sufficient. `GateEvaluation` records that
+evaluator's exact Candidate verdict and evidence.
 `GateWaiver` is explicit, scoped, authorized, justified, expiring and
 revocable.
 
@@ -52,7 +56,9 @@ independent-review requirement by self-attribution.
 
 ## Transport parity
 
-CLI, HTTP and MCP decode authenticated transport identity, overwrite any
-payload actor claim, and invoke the same trust application service. The
+CLI, HTTP and MCP resolve authenticated transport identity and its authorized
+authority set from server-side credential/session state, overwrite any payload
+actor claim, and invoke the same trust application service. HTTP request
+headers and bodies cannot select or expand either identity. The
 canonical operation ledger is the sole mutation journal for Module, requirement,
 evaluation, waiver, Result and acceptance changes.

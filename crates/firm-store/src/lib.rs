@@ -5002,6 +5002,7 @@ impl HarnessStore {
                 .into_iter()
                 .flat_map(|operation| operation.delegation_revisions),
         );
+        revisions.extend(self.trust_work_delegation_revisions_unlocked()?);
         revisions.sort_by(|left, right| {
             left.delegation
                 .id
@@ -13774,7 +13775,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "legacy Work acceptance route is retired; canonical exact-candidate acceptance is covered by member_execution_trust"]
+    #[ignore = "legacy Work acceptance route is retired; exact replacement: member_execution_trust::canonical_acceptance_rolls_up_delegation_in_the_same_operation"]
     fn work_delegation_rolls_up_target_condition_and_resolution_without_mutating_source() {
         let (root, store, run_a, member_a, run_b, member_b) =
             delegation_test_fixture("delegation-rollup");

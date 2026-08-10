@@ -311,7 +311,10 @@ impl TrustCommand {
 pub struct AuthenticatedMutation {
     pub execution_space_id: String,
     pub actor: ActorRef,
-    pub authority_actor: Option<ActorRef>,
+    /// Authority identities bound to this credential/session by the transport.
+    /// A request body may reference one of these identities but can never add
+    /// to this server-resolved set.
+    pub authorized_authority_actors: Vec<ActorRef>,
     pub idempotency_key: String,
     pub expected_version: u64,
 }
@@ -430,10 +433,50 @@ pub fn execute(
     command: TrustCommand,
 ) -> Result<TrustCommandResult, StoreError> {
     authorize(store, &auth.execution_space_id, &auth.actor, &command)?;
+    let claimed_actor = match &command {
+        TrustCommand::CreateAgentMember { member } => Some(&member.created_by),
+        TrustCommand::CreateTeamMessage { message, .. } => Some(&message.sender),
+        TrustCommand::CreateWorkReport { report, .. } => Some(&report.authored_by),
+        TrustCommand::CreateWorkFinding { finding, .. } => Some(&finding.reported_by),
+        TrustCommand::CreateFailureAnalysis { analysis, .. } => Some(&analysis.reported_by),
+        TrustCommand::BindWorkModule { binding, .. } => Some(&binding.attached_by),
+        TrustCommand::EvaluateGate { evaluation } => Some(&evaluation.performed_by),
+        TrustCommand::WaiveGate { waiver } => Some(&waiver.performed_by_actor),
+        _ => None,
+    };
+    if claimed_actor.is_some_and(|claimed| claimed != &auth.actor) {
+        return Err(unauthorized(
+            "authenticated_actor",
+            &auth.actor.id,
+            "request body actor claim does not match the transport-authenticated actor",
+        ));
+    }
+    let requested_authority = match &command {
+        TrustCommand::WaiveGate { waiver } => Some(waiver.authority_actor.clone()),
+        TrustCommand::RevokeGateWaiver { waiver_id, .. } => store
+            .trust_gate_waivers(&auth.execution_space_id)?
+            .into_iter()
+            .find(|waiver| waiver.id == *waiver_id)
+            .map(|waiver| waiver.authority_actor),
+        _ => None,
+    };
+    if requested_authority
+        .as_ref()
+        .is_some_and(|authority| !auth.authorized_authority_actors.contains(authority))
+    {
+        return Err(unauthorized(
+            "authority_actor",
+            requested_authority
+                .as_ref()
+                .map(|actor| actor.id.as_str())
+                .unwrap_or("missing"),
+            "credential is not bound to the requested authority actor",
+        ));
+    }
     let context = MutationContext {
         execution_space_id: auth.execution_space_id,
         authenticated_actor: auth.actor.clone(),
-        authority_actor: auth.authority_actor,
+        authority_actor: requested_authority,
         command_name: command.name().to_string(),
         idempotency_key: auth.idempotency_key,
         expected_version: auth.expected_version,
@@ -710,5 +753,65 @@ mod tests {
             updated_at: "unix-ms:2".into(),
         };
         assert!(authorize(&store, "space", &member, &self_control).is_err());
+    }
+
+    #[test]
+    fn transport_credential_cannot_claim_unbound_authority_and_has_zero_side_effects() {
+        let (_root, store) = store();
+        let actor = ActorRef {
+            kind: ActorKind::Human,
+            id: "operator-a".into(),
+        };
+        let allowed_authority = ActorRef {
+            kind: ActorKind::Service,
+            id: "review-board-a".into(),
+        };
+        let spoofed_authority = ActorRef {
+            kind: ActorKind::Service,
+            id: "review-board-b".into(),
+        };
+        let before = store.canonical_operations().expect("read operations").len();
+        let error = execute(
+            &store,
+            AuthenticatedMutation {
+                execution_space_id: "space".into(),
+                actor: actor.clone(),
+                authorized_authority_actors: vec![allowed_authority],
+                idempotency_key: "waive-spoof".into(),
+                expected_version: 0,
+            },
+            TrustCommand::WaiveGate {
+                waiver: GateWaiver {
+                    id: "waiver-spoof".into(),
+                    requirement_id: "requirement-1".into(),
+                    work_id: "work-1".into(),
+                    work_revision: 1,
+                    candidate_fingerprint: "sha256:candidate".into(),
+                    authority_actor: spoofed_authority,
+                    performed_by_actor: actor,
+                    reason: "must not be accepted".into(),
+                    evidence_refs: vec!["evidence://spoof".into()],
+                    state: harness_core::agentfirm_api::GateWaiverState::Active,
+                    version: 1,
+                    created_at: "unix-ms:1".into(),
+                    revoked_at: None,
+                },
+            },
+        )
+        .expect_err("credential may not expand its server-resolved authority set");
+        let StoreError::Conflict(encoded) = error else {
+            panic!("expected trust conflict")
+        };
+        let trust: harness_core::agentfirm_api::TrustError =
+            serde_json::from_str(&encoded).expect("decode trust error");
+        assert_eq!(
+            trust.code,
+            harness_core::agentfirm_api::TrustErrorCode::UnauthorizedActor
+        );
+        assert_eq!(
+            store.canonical_operations().expect("read operations").len(),
+            before,
+            "rejected authority spoof must not append a canonical operation"
+        );
     }
 }

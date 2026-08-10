@@ -9,11 +9,12 @@ use firm_core::agentfirm_api::{
     WorkFinding, WorkModuleBinding, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
     WorkspaceOwnership, WorkspaceSafetyProof,
 };
-use firm_core::Work;
+use firm_core::{TeamActorKind, TeamActorRef, Work, WorkCommandContext, WorkDelegationRevision};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -69,6 +70,15 @@ fn required(value: &str, field: &str) -> StoreResult<()> {
         ));
     }
     Ok(())
+}
+
+fn current_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 #[derive(Debug)]
@@ -225,6 +235,8 @@ fn gate_requirement_is_satisfied(
             && evaluation.candidate_fingerprint == requirement.candidate_fingerprint
             && evaluation.config_fingerprint == requirement.config_fingerprint
             && evaluation.evaluator_version == requirement.evaluator_version
+            && evaluation.evaluator_fingerprint == requirement.evaluator_fingerprint
+            && evaluation.performed_by == requirement.evaluator_ref
             && evaluation.dependency_fingerprint == dependency_fingerprint
             && evaluation.verdict == GateVerdict::Passed
     }) || waivers.iter().any(|waiver| {
@@ -236,7 +248,111 @@ fn gate_requirement_is_satisfied(
     })
 }
 
+fn gate_evaluator_fingerprint(actor: &firm_core::agentfirm_api::ActorRef, version: &str) -> String {
+    canonical_json_fingerprint(&serde_json::json!({
+        "actor": actor,
+        "version": version,
+    }))
+}
+
 impl HarnessStore {
+    fn require_current_trust_supervisor_unlocked(
+        &self,
+        context: &MutationContext,
+        team_run_id: &str,
+        supervisor_generation: u64,
+        resource_kind: &str,
+        resource_id: &str,
+        current_version: Option<u64>,
+    ) -> StoreResult<()> {
+        let lease = self
+            .latest_team_supervisor_lease(team_run_id)?
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::SupervisorGenerationFenced,
+                    "Team Supervisor lease is missing",
+                    resource_kind,
+                    resource_id,
+                    current_version,
+                )
+            })?;
+        if context.authenticated_actor.kind != firm_core::agentfirm_api::ActorKind::Service
+            || context.authenticated_actor.id != lease.supervisor_id
+            || lease.generation != supervisor_generation
+            || lease.execution_space_id != context.execution_space_id
+            || lease.status != firm_core::TeamSupervisorLeaseStatus::Active
+            || lease.expires_unix_ms <= current_unix_ms()
+        {
+            return Err(trust_error(
+                TrustErrorCode::SupervisorGenerationFenced,
+                "delivery mutation used a stale or unauthorized Team Supervisor lease",
+                resource_kind,
+                resource_id,
+                current_version,
+            ));
+        }
+        let parent = self
+            .latest_node_daemon_lease(&lease.node_id)?
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::SupervisorGenerationFenced,
+                    "Team Supervisor parent NodeDaemon lease is missing",
+                    resource_kind,
+                    resource_id,
+                    current_version,
+                )
+            })?;
+        if parent.status != firm_core::NodeDaemonLeaseStatus::Active
+            || parent.daemon_id != lease.node_daemon_id
+            || parent.generation != lease.node_daemon_generation
+            || parent.expires_unix_ms <= current_unix_ms()
+        {
+            return Err(trust_error(
+                TrustErrorCode::SupervisorGenerationFenced,
+                "delivery mutation used a Supervisor whose parent NodeDaemon lease is stale",
+                resource_kind,
+                resource_id,
+                current_version,
+            ));
+        }
+        Ok(())
+    }
+
+    fn trust_message_team_run_unlocked(
+        &self,
+        execution_space_id: &str,
+        message_id: &str,
+    ) -> StoreResult<String> {
+        self.latest_trust_envelopes_unlocked(execution_space_id, "team_message")?
+            .remove(message_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "MessageDelivery references a missing TeamMessage",
+                    "team_message",
+                    message_id,
+                    None,
+                )
+            })
+            .and_then(|envelope| event_projection::<TeamMessage>(&envelope))
+            .map(|message| message.team_run_id)
+    }
+
+    fn trust_work_team_run_unlocked(&self, work_id: &str) -> StoreResult<String> {
+        self.latest_works_unlocked()?
+            .remove(work_id)
+            .map(|work| work.team_run_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::WorkRevisionStale,
+                    "WorkDelivery references a missing Work",
+                    "work",
+                    work_id,
+                    None,
+                )
+            })
+    }
+
     fn trust_team_work_unlocked(
         &self,
         team_id: &str,
@@ -268,7 +384,49 @@ impl HarnessStore {
     }
 
     fn trust_operation_envelopes_unlocked(&self) -> StoreResult<Vec<TrustOperationEnvelope>> {
-        self.read_jsonl(TRUST_OPERATIONS_LEDGER)
+        let path = self.root.join(TRUST_OPERATIONS_LEDGER);
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let bytes = std::fs::read(path)?;
+        let durable_len = bytes
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        let mut envelopes = Vec::new();
+        for row in bytes[..durable_len].split(|byte| *byte == b'\n') {
+            if row.iter().all(u8::is_ascii_whitespace) {
+                continue;
+            }
+            // A complete malformed frame is corruption and remains fail-closed.
+            // Only a non-newline-terminated tail can be the residue of an old
+            // append-style crash and is intentionally ignored above.
+            envelopes.push(serde_json::from_slice(row)?);
+        }
+        Ok(envelopes)
+    }
+
+    fn write_trust_operation_envelopes_atomic_unlocked(
+        &self,
+        envelopes: &[TrustOperationEnvelope],
+    ) -> StoreResult<()> {
+        let path = self.root.join(TRUST_OPERATIONS_LEDGER);
+        let next_path = self.root.join("agentfirm_trust_operations.jsonl.next");
+        let mut next = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&next_path)?;
+        for envelope in envelopes {
+            serde_json::to_writer(&mut next, envelope)?;
+            next.write_all(b"\n")?;
+        }
+        next.flush()?;
+        next.sync_all()?;
+        std::fs::rename(&next_path, &path)?;
+        std::fs::File::open(&self.root)?.sync_all()?;
+        Ok(())
     }
 
     pub fn canonical_operations(&self) -> StoreResult<Vec<CanonicalOperation>> {
@@ -292,6 +450,20 @@ impl HarnessStore {
             }
         }
         Ok(works)
+    }
+
+    pub(crate) fn trust_work_delegation_revisions_unlocked(
+        &self,
+    ) -> StoreResult<Vec<WorkDelegationRevision>> {
+        let mut revisions = Vec::new();
+        for envelope in self.trust_operation_envelopes_unlocked()? {
+            for record in envelope.operation.immutable_side_records {
+                if let Ok(revision) = serde_json::from_value::<WorkDelegationRevision>(record) {
+                    revisions.push(revision);
+                }
+            }
+        }
+        Ok(revisions)
     }
 
     fn latest_trust_envelopes_unlocked(
@@ -421,16 +593,15 @@ impl HarnessStore {
             immutable_side_records,
             initial_outbox_records,
         };
-        self.append_jsonl_unlocked(
-            TRUST_OPERATIONS_LEDGER,
-            &TrustOperationEnvelope {
-                execution_space_id: context.execution_space_id.clone(),
-                authenticated_actor_kind: context.authenticated_actor.kind,
-                authenticated_actor_id: context.authenticated_actor.id.clone(),
-                command_name: context.command_name.clone(),
-                operation,
-            },
-        )?;
+        let mut committed = existing;
+        committed.push(TrustOperationEnvelope {
+            execution_space_id: context.execution_space_id.clone(),
+            authenticated_actor_kind: context.authenticated_actor.kind,
+            authenticated_actor_id: context.authenticated_actor.id.clone(),
+            command_name: context.command_name.clone(),
+            operation,
+        });
+        self.write_trust_operation_envelopes_atomic_unlocked(&committed)?;
         Ok(CanonicalMutationResult {
             projection: resulting_projection.clone(),
             event,
@@ -512,16 +683,15 @@ impl HarnessStore {
             immutable_side_records,
             initial_outbox_records: Vec::new(),
         };
-        self.append_jsonl_unlocked(
-            TRUST_OPERATIONS_LEDGER,
-            &TrustOperationEnvelope {
-                execution_space_id: context.execution_space_id.clone(),
-                authenticated_actor_kind: context.authenticated_actor.kind,
-                authenticated_actor_id: context.authenticated_actor.id.clone(),
-                command_name: context.command_name.clone(),
-                operation,
-            },
-        )?;
+        let mut committed = existing;
+        committed.push(TrustOperationEnvelope {
+            execution_space_id: context.execution_space_id.clone(),
+            authenticated_actor_kind: context.authenticated_actor.kind,
+            authenticated_actor_id: context.authenticated_actor.id.clone(),
+            command_name: context.command_name.clone(),
+            operation,
+        });
+        self.write_trust_operation_envelopes_atomic_unlocked(&committed)?;
         Ok(CanonicalMutationResult {
             projection: work.clone(),
             event,
@@ -1107,6 +1277,13 @@ impl HarnessStore {
             .collect()
     }
 
+    pub fn trust_gate_waivers(&self, execution_space_id: &str) -> StoreResult<Vec<GateWaiver>> {
+        self.latest_trust_envelopes_unlocked(execution_space_id, "gate_waiver")?
+            .values()
+            .map(event_projection)
+            .collect()
+    }
+
     pub fn trust_work_deliveries(
         &self,
         execution_space_id: &str,
@@ -1450,6 +1627,16 @@ impl HarnessStore {
                 Some(delivery.version),
             ));
         }
+        let team_run_id = self
+            .trust_message_team_run_unlocked(&context.execution_space_id, &delivery.message_id)?;
+        self.require_current_trust_supervisor_unlocked(
+            context,
+            &team_run_id,
+            claim.supervisor_generation,
+            "message_delivery",
+            delivery_id,
+            Some(delivery.version),
+        )?;
         let run = self.claimable_member_run(
             &context.execution_space_id,
             &delivery.recipient_member_run_id,
@@ -1519,6 +1706,16 @@ impl HarnessStore {
                 Some(delivery.version),
             ));
         }
+        let team_run_id = self
+            .trust_message_team_run_unlocked(&context.execution_space_id, &delivery.message_id)?;
+        self.require_current_trust_supervisor_unlocked(
+            context,
+            &team_run_id,
+            receipt.supervisor_generation,
+            "message_delivery",
+            delivery_id,
+            Some(delivery.version),
+        )?;
         self.claimable_member_run(
             &context.execution_space_id,
             &delivery.recipient_member_run_id,
@@ -1586,6 +1783,26 @@ impl HarnessStore {
                 Some(delivery.version),
             ));
         }
+        let claimed_supervisor_generation =
+            delivery.claimed_supervisor_generation.ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::DeliveryClaimConflict,
+                    "acknowledgement requires a claimed Supervisor generation",
+                    "message_delivery",
+                    delivery_id,
+                    Some(delivery.version),
+                )
+            })?;
+        let team_run_id = self
+            .trust_message_team_run_unlocked(&context.execution_space_id, &delivery.message_id)?;
+        self.require_current_trust_supervisor_unlocked(
+            context,
+            &team_run_id,
+            claimed_supervisor_generation,
+            "message_delivery",
+            delivery_id,
+            Some(delivery.version),
+        )?;
         self.claimable_member_run(
             &context.execution_space_id,
             &delivery.recipient_member_run_id,
@@ -1784,6 +2001,15 @@ impl HarnessStore {
                 Some(delivery.version),
             ));
         }
+        let team_run_id = self.trust_work_team_run_unlocked(&delivery.work_id)?;
+        self.require_current_trust_supervisor_unlocked(
+            context,
+            &team_run_id,
+            claim.supervisor_generation,
+            "work_delivery",
+            delivery_id,
+            Some(delivery.version),
+        )?;
         let run = self.claimable_member_run(
             &context.execution_space_id,
             &delivery.recipient_member_run_id,
@@ -1853,6 +2079,15 @@ impl HarnessStore {
                 Some(delivery.version),
             ));
         }
+        let team_run_id = self.trust_work_team_run_unlocked(&delivery.work_id)?;
+        self.require_current_trust_supervisor_unlocked(
+            context,
+            &team_run_id,
+            receipt.supervisor_generation,
+            "work_delivery",
+            delivery_id,
+            Some(delivery.version),
+        )?;
         self.claimable_member_run(
             &context.execution_space_id,
             &delivery.recipient_member_run_id,
@@ -2133,6 +2368,11 @@ impl HarnessStore {
                         "module_config_fingerprint": binding.config_fingerprint,
                         "template": template,
                     });
+                    let evaluator_ref = firm_core::agentfirm_api::ActorRef {
+                        kind: firm_core::agentfirm_api::ActorKind::Service,
+                        id: definition.implementation_ref.clone(),
+                    };
+                    let evaluator_version = definition.module_version.to_string();
                     resolved_requirements.push(GateRequirement {
                         id: format!("gate:{}:{}:{index}", report.id, binding.id),
                         work_id: report.work_id.clone(),
@@ -2151,8 +2391,12 @@ impl HarnessStore {
                             .and_then(Value::as_str)
                             .unwrap_or("1")
                             .to_string(),
-                        evaluator_ref: definition.implementation_ref.clone(),
-                        evaluator_version: definition.module_version.to_string(),
+                        evaluator_fingerprint: gate_evaluator_fingerprint(
+                            &evaluator_ref,
+                            &evaluator_version,
+                        ),
+                        evaluator_ref,
+                        evaluator_version,
                         config_fingerprint: canonical_json_fingerprint(&resolved_config),
                         resolved_config,
                         required: template
@@ -2310,6 +2554,17 @@ impl HarnessStore {
         self.init()?;
         let _trust_lock = self.acquire_write_lock()?;
         self.trust_team_work_unlocked(team_id, &requirement.work_id, requirement.work_revision)?;
+        let expected_evaluator_fingerprint =
+            gate_evaluator_fingerprint(&requirement.evaluator_ref, &requirement.evaluator_version);
+        if requirement.evaluator_fingerprint != expected_evaluator_fingerprint {
+            return Err(trust_error(
+                TrustErrorCode::GateRequirementStale,
+                "GateRequirement evaluator fingerprint does not match its frozen ActorRef/version",
+                "gate_requirement",
+                &requirement.id,
+                None,
+            ));
+        }
         let existing = self
             .trust_gate_requirements_unlocked(&context.execution_space_id)?
             .into_values()
@@ -2424,6 +2679,17 @@ impl HarnessStore {
                     None,
                 )
             })?;
+        if context.authenticated_actor != requirement.evaluator_ref
+            || evaluation.performed_by != context.authenticated_actor
+        {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "authenticated evaluator must exactly match the frozen GateRequirement evaluator",
+                "gate_evaluation",
+                &evaluation.id,
+                None,
+            ));
+        }
         let mut dependency_ids = requirement.dependency_requirement_ids.clone();
         dependency_ids.sort();
         let expected_dependency_fingerprint =
@@ -2463,6 +2729,7 @@ impl HarnessStore {
             || requirement.candidate_fingerprint != evaluation.candidate_fingerprint
             || requirement.config_fingerprint != evaluation.config_fingerprint
             || requirement.evaluator_version != evaluation.evaluator_version
+            || requirement.evaluator_fingerprint != evaluation.evaluator_fingerprint
             || evaluation.dependency_fingerprint != expected_dependency_fingerprint
         {
             return Err(trust_error(
@@ -2851,6 +3118,41 @@ impl HarnessStore {
         next.result_summary = Some(report.summary.clone());
         next.version += 1;
         next.updated_at = updated_at.to_string();
+        let actor_kind = match context.authenticated_actor.kind {
+            ActorKind::Human => TeamActorKind::Operator,
+            ActorKind::AgentMember => TeamActorKind::AgentMember,
+            ActorKind::External => TeamActorKind::Operator,
+            ActorKind::Service => TeamActorKind::Service,
+        };
+        let rollup_context = WorkCommandContext {
+            event_id: format!("trust-accept:{}", context.idempotency_key),
+            performed_by_actor: TeamActorRef {
+                kind: actor_kind,
+                id: context.authenticated_actor.id.clone(),
+                display_name: None,
+                authn_source: Some("agentfirm-trust-kernel".into()),
+            },
+            authority_actor: context
+                .authority_actor
+                .as_ref()
+                .map(|authority| TeamActorRef {
+                    kind: match authority.kind {
+                        ActorKind::Human => TeamActorKind::Operator,
+                        ActorKind::AgentMember => TeamActorKind::AgentMember,
+                        ActorKind::External => TeamActorKind::Operator,
+                        ActorKind::Service => TeamActorKind::Service,
+                    },
+                    id: authority.id.clone(),
+                    display_name: None,
+                    authn_source: Some("agentfirm-trust-kernel".into()),
+                }),
+            causation_ref: None,
+            idempotency_key: context.idempotency_key.clone(),
+            created_at: updated_at.to_string(),
+            duplicate_ok: false,
+        };
+        let delegation_revisions =
+            self.work_delegation_rollup_revisions_unlocked(&next, &rollup_context)?;
         let side_records = std::iter::once(serde_json::to_value(&report)?)
             .chain(
                 requirements
@@ -2866,6 +3168,12 @@ impl HarnessStore {
             )
             .chain(
                 waivers
+                    .iter()
+                    .map(serde_json::to_value)
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+            .chain(
+                delegation_revisions
                     .iter()
                     .map(serde_json::to_value)
                     .collect::<Result<Vec<_>, _>>()?,
