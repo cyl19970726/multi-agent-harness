@@ -25736,20 +25736,41 @@ fn dashboard_doctor_command(store: &HarnessStore, args: &[String]) -> CliResult<
         ));
     }
 
+    let member_runs = latest_member_runs_in_append_order(store)?;
+    let mut message_ids = latest_team_messages_in_append_order(store)?
+        .into_iter()
+        .filter(|message| message.team_run_id == team_run_id)
+        .map(|message| message.id)
+        .collect::<BTreeSet<_>>();
+    let mut trust_scopes = BTreeSet::new();
+    for member in member_runs
+        .iter()
+        .filter(|member| member.team_run_id == team_run_id)
+    {
+        if let Some(scope) = store.trust_member_run_scope(&member.id)? {
+            trust_scopes.insert(scope);
+        }
+    }
+    for scope in trust_scopes {
+        message_ids.extend(
+            store
+                .trust_team_messages(&scope)?
+                .into_iter()
+                .filter(|message| message.team_run_id == team_run_id)
+                .map(|message| message.id),
+        );
+    }
     let store_counts = DoctorStoreCounts {
         works: store
             .latest_works()?
             .into_iter()
             .filter(|work| work.team_run_id == team_run_id)
             .count(),
-        members: latest_member_runs_in_append_order(store)?
-            .into_iter()
+        members: member_runs
+            .iter()
             .filter(|member| member.team_run_id == team_run_id)
             .count(),
-        messages: latest_team_messages_in_append_order(store)?
-            .into_iter()
-            .filter(|message| message.team_run_id == team_run_id)
-            .count(),
+        messages: message_ids.len(),
     };
 
     let (meta_status, meta) = http_get_json(&api, "/v1/meta")?;

@@ -241,6 +241,61 @@ fn run_with_fake_kimi(
         .windows(2)
         .any(|window| window == ["team-run", "create"]);
     let has_team = args.contains(&"--agent-team-id");
+    if is_create {
+        let project_id = args
+            .windows(2)
+            .find_map(|pair| (pair[0] == "--project").then_some(pair[1]))
+            .expect("TeamRun fixture project");
+        let team_id = args
+            .windows(2)
+            .find_map(|pair| (pair[0] == "--agent-team-id").then_some(pair[1]))
+            .unwrap_or("team-runtime-fixture");
+        for raw in args
+            .windows(2)
+            .filter_map(|pair| (pair[0] == "--member").then_some(pair[1]))
+        {
+            let identity = raw.split(['#', '@']).next().unwrap_or(raw);
+            let parts = identity.split(':').collect::<Vec<_>>();
+            assert!(parts.len() >= 3, "invalid Team member fixture: {raw}");
+            let id = parts[0];
+            let role = parts[1];
+            let provider = parts[2];
+            let created = create_canonical_agent_member(
+                home,
+                home.base(),
+                project_id,
+                id,
+                id,
+                role,
+                provider,
+                &[],
+            );
+            assert!(
+                created.status.success(),
+                "canonical AgentMember {id} failed: {}",
+                String::from_utf8_lossy(&created.stderr)
+            );
+            let added = run_firm(
+                home,
+                home.base(),
+                &[
+                    "--project",
+                    project_id,
+                    "team",
+                    "add-member",
+                    "--id",
+                    team_id,
+                    "--member",
+                    id,
+                ],
+            );
+            assert!(
+                added.status.success(),
+                "Team placement for {id} failed: {}",
+                String::from_utf8_lossy(&added.stderr)
+            );
+        }
+    }
     let mut normalized = Vec::with_capacity(args.len() + 2);
     let mut skip_legacy_value = false;
     for arg in args {

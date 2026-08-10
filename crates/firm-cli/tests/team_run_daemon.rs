@@ -242,6 +242,37 @@ fn create_run(
     name: &str,
     extra_env: &[(&str, &str)],
 ) -> String {
+    let mut identity_env = vec![("FIRM_SPACE", fixture.execution_space_id.as_str())];
+    identity_env.extend(extra_env.iter().copied());
+    let identity = create_canonical_agent_member(
+        home,
+        &fixture.project_root,
+        &fixture.project_id,
+        name,
+        name,
+        "implementer",
+        "kimi",
+        &identity_env,
+    );
+    success(&identity, "canonical runtime member create");
+    let add_member = run_firm_with_env(
+        home,
+        &fixture.project_root,
+        &[
+            "--space",
+            &fixture.execution_space_id,
+            "--project",
+            &fixture.project_id,
+            "team",
+            "add-member",
+            "--id",
+            &fixture.team_id,
+            "--member",
+            name,
+        ],
+        extra_env,
+    );
+    success(&add_member, "canonical runtime member team placement");
     let output = run_firm_with_env(
         home,
         &fixture.project_root,

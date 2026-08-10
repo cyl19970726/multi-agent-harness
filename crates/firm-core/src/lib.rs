@@ -5270,9 +5270,11 @@ mod tests {
 
     #[test]
     fn team_message_response_intent_defaults_from_kind() {
-        // Review and runtime-control kinds require a response round from every sender.
+        // Coordination-plane messages and runtime-control kinds require a
+        // response; peer informational messages do not create ping-pong.
+        assert!(bare_team_message(ProviderDispatchIntent::Message).requires_response());
+        assert!(!peer_team_message(ProviderDispatchIntent::Message).requires_response());
         for kind in [
-            ProviderDispatchIntent::Message,
             ProviderDispatchIntent::Control,
             ProviderDispatchIntent::ProviderInteractionRequest,
         ] {
@@ -5843,7 +5845,7 @@ fn launch_spec_composes_from_member_and_message() {
     assert_eq!(spec.workspace.as_deref(), Some("../worktrees/task-1"));
     // The turn input carries the message envelope + content.
     assert!(spec.message_content.contains("message_id: msg-1"));
-    assert!(spec.message_content.contains("kind: assignment"));
+    assert!(spec.message_content.contains("kind: message"));
     assert!(spec.message_content.contains("task_id: task-1"));
     assert!(spec.message_content.contains("Implement the launch spec."));
     // Fields with no neutral source yet are empty/none, not invented.
@@ -6226,9 +6228,9 @@ fn workspace_rows_deserialize_with_optional_observability_fields() {
     assert!(team.execution_root.is_none());
 
     let member: ProviderRuntimeProjection = serde_json::from_str(
-            r#"{"id":"mr-legacy","team_run_id":"tr-legacy","name":"worker","role":"worker","provider":"codex","status":"idle","started_at":"unix-ms:1"}"#,
+            r#"{"id":"mr-1","team_run_id":"tr-1","agent_member_id":"member-1","name":"worker","role":"worker","provider":"codex","status":"idle","started_at":"unix-ms:1"}"#,
         )
-        .expect("deserialize legacy member run");
+        .expect("deserialize provider runtime projection");
     assert!(member.provider_cwd_hint.is_none());
     assert!(member.provider_environment_observation.is_none());
     assert_eq!(
@@ -6552,13 +6554,15 @@ fn member_run_rows_without_capacity_stay_readable_and_absent_is_not_available() 
     let row = serde_json::json!({
         "id": "member-run-1",
         "team_run_id": "team-run-1",
+        "agent_member_id": "member-1",
         "name": "Integration",
         "role": "Integration Engineer",
         "provider": "claude",
         "status": "idle",
         "started_at": "unix-ms:1"
     });
-    let member: ProviderRuntimeProjection = serde_json::from_value(row).expect("legacy member run");
+    let member: ProviderRuntimeProjection =
+        serde_json::from_value(row).expect("provider runtime projection");
     assert_eq!(member.provider_capacity, None);
     assert!(!provider_capacity_start_decision(
         member.provider_capacity.as_ref(),
@@ -6568,14 +6572,11 @@ fn member_run_rows_without_capacity_stay_readable_and_absent_is_not_available() 
     .is_blocked());
 }
 
-/// The emit/schema contract for ProviderRuntimeProjection.
+/// The emit/schema contract for canonical MemberRun.
 ///
 /// `schemas/member-run.schema.json` keeps `additionalProperties: false`, so
-/// any field the emitter serialises that the schema does not declare makes
-/// an emitted ProviderRuntimeProjection fail validation against its own schema. This test
-/// round-trips a ProviderRuntimeProjection carrying `provider_capacity` and asserts every
-/// emitted key — top level and inside the capacity snapshot — is declared.
-/// It fails on the next undeclared field, not just on `provider_capacity`.
+/// any field the emitter serialises that the schema does not declare makes an
+/// emitted MemberRun fail validation against its own schema.
 #[test]
 fn emitted_member_run_keys_are_declared_in_member_run_schema() {
     let schema: serde_json::Value = serde_json::from_str(
@@ -6592,83 +6593,24 @@ fn emitted_member_run_keys_are_declared_in_member_run_schema() {
         "this test only means something while the schema is closed"
     );
 
-    let snapshot = ProviderCapacitySnapshot {
-        provider: "claude".to_string(),
-        execution_mode: "sdk".to_string(),
-        account: ProviderAccountRef {
-            source: "oauth_credentials_file".to_string(),
-            identifier: Some("acct-primary".to_string()),
-            plan: Some("max".to_string()),
-        },
-        state: ProviderCapacityState::Limited,
-        observed_at: "unix-ms:1785591600000".to_string(),
-        observed_unix_ms: 1_785_591_600_000,
-        reset_at: Some("unix-ms:1785595200000".to_string()),
-        evidence_source: ProviderCapacityEvidence::ProviderQuotaApi,
-        confidence: ProviderCapacityConfidence::Observed,
-        windows: vec![ProviderCapacityWindow {
-            label: "five_hour".to_string(),
-            limit_id: Some("limit-5h".to_string()),
-            used_percent: Some(82),
-            window_duration_mins: Some(300),
-            resets_at: Some("unix-ms:1785595200000".to_string()),
-        }],
-        diagnosis: Some("Account usage is high but not blocking.".to_string()),
-        runtime_context: vec![ProviderRuntimeContextFact {
-            key: "HTTPS_PROXY".to_string(),
-            present: true,
-            note: Some("set".to_string()),
-        }],
-        detail: Some("Provider quota API reported 82% of the five-hour window.".to_string()),
+    let member = agentfirm_api::MemberRun {
+        id: "member-run-1".into(),
+        agent_member_id: "member-1".into(),
+        team_run_id: "team-run-1".into(),
+        role_snapshot: "Platform Development".into(),
+        provider_profile_snapshot: Some("claude-sdk-v1".into()),
+        requested_controls: serde_json::json!({"model": "claude-opus"}),
+        effective_controls: serde_json::json!({"model": "claude-opus"}),
+        coordination_status: agentfirm_api::MemberCoordinationStatus::Active,
+        runtime_status: agentfirm_api::MemberRuntimeStatus::Idle,
+        runtime_generation: 1,
+        workspace_binding_id: Some("workspace-1".into()),
+        native_session: None,
+        version: 1,
+        started_at: "unix-ms:1785591600000".into(),
+        last_event_at: None,
+        finished_at: None,
     };
-    let row = serde_json::json!({
-        "id": "member-run-capacity-1",
-        "team_run_id": "team-run-capacity-1",
-        "name": "Platform Development",
-        "role": "Platform Development",
-        "provider": "claude",
-        "status": "idle",
-        "started_at": "unix-ms:1785591600000"
-    });
-    let mut member: ProviderRuntimeProjection = serde_json::from_value(row).expect("member run");
-    member.provider_capacity = Some(snapshot.clone());
-    member.status = MemberRunStatus::Blocked;
-    member.provider_profile = Some(ProviderIntegrationProfile {
-        provider: "claude".into(),
-        execution_mode: "sdk".into(),
-        execution_driver: MemberExecutionDriver::HostDriven,
-        provider_version: Some("2.1.220".into()),
-        adapter_contract_version: Some("claude-sdk-v1".into()),
-        reviewed_provider_versions: Vec::new(),
-        compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
-        adapter_reviewed_at: None,
-        compatibility_note: None,
-        interaction_mode: ProviderInteractionMode::EndRoundAndFollowUp,
-        ordinary_message_boundary: OrdinaryMessageBoundary::InTurn,
-        plan_mode: ProviderFeatureMode::Emulated,
-        goal_mode: ProviderFeatureMode::Emulated,
-        tool_event_fidelity: ProviderEventFidelity::Structured,
-        artifact_event_fidelity: ProviderEventFidelity::Structured,
-        supports_cancel: true,
-        supports_resume: true,
-        observes_native_subagents: false,
-        observes_background_tasks: false,
-        thinking_transient_only: true,
-    });
-    member.provider_compatibility_block_cause = Some(ProviderCompatibilityBlockCause {
-        schema_version: ProviderCompatibilityBlockCause::SCHEMA_VERSION,
-        id: "cause-schema-1".into(),
-        member_run_id: member.id.clone(),
-        provider: "claude".into(),
-        execution_mode: "sdk".into(),
-        provider_version: "2.1.220".into(),
-        adapter_contract_version: "claude-sdk-v1".into(),
-        boundary: ProviderCompatibilityBlockBoundary::StartPersistentExecution,
-        compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
-        source: ProviderCompatibilityBlockSource::AdapterCompatibility,
-        probe_error: None,
-        caused_at: "unix-ms:1785591600000".into(),
-    });
 
     let encoded = serde_json::to_value(&member).expect("encode member run");
     let declared = schema["properties"].as_object().expect("schema properties");
@@ -6681,47 +6623,11 @@ fn emitted_member_run_keys_are_declared_in_member_run_schema() {
         .collect::<Vec<_>>();
     assert!(
             undeclared.is_empty(),
-            "emitted ProviderRuntimeProjection fields are not declared in member-run.schema.json              (additionalProperties is false, so these cannot validate): {undeclared:?}"
+            "emitted MemberRun fields are not declared in member-run.schema.json (additionalProperties is false): {undeclared:?}"
         );
-
-    let declared_capacity = declared["provider_capacity"]["properties"]
-        .as_object()
-        .expect("schema must declare provider_capacity as an object with properties");
-    let undeclared_capacity = encoded["provider_capacity"]
-        .as_object()
-        .expect("provider_capacity must serialise as an object when present")
-        .keys()
-        .filter(|key| !declared_capacity.contains_key(key.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
-    assert!(
-            undeclared_capacity.is_empty(),
-            "emitted provider_capacity fields are not declared in member-run.schema.json:              {undeclared_capacity:?}"
-        );
-
-    let declared_cause = declared["provider_compatibility_block_cause"]["properties"]
-        .as_object()
-        .expect("schema must declare typed compatibility cause properties");
-    let undeclared_cause = encoded["provider_compatibility_block_cause"]
-        .as_object()
-        .expect("typed cause serialises when present")
-        .keys()
-        .filter(|key| !declared_cause.contains_key(key.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
-    assert!(
-        undeclared_cause.is_empty(),
-        "emitted typed compatibility cause fields are not declared: {undeclared_cause:?}"
-    );
-
-    // Round-trip: the snapshot survives encode/decode unchanged, so the
-    // schema is describing the shape the runtime actually persists.
-    let decoded: ProviderRuntimeProjection =
-        serde_json::from_value(encoded).expect("decode member run");
-    assert_eq!(decoded.provider_capacity, Some(snapshot));
-    decoded
-        .validate()
-        .expect("typed blocked ProviderRuntimeProjection round-trips");
+    let decoded: agentfirm_api::MemberRun =
+        serde_json::from_value(encoded).expect("decode canonical member run");
+    assert_eq!(decoded, member);
 }
 
 #[test]

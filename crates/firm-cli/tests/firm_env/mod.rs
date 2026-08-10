@@ -944,6 +944,7 @@ pub fn run_firm(home: &TempHome, cwd: &Path, args: &[&str]) -> std::process::Out
 /// Register the canonical durable AgentMember identity used by Team fixtures.
 /// Provider execution details remain on the later TeamMember/MemberRun input;
 /// this helper never recreates the retired runtime-heavy `agent create` row.
+#[allow(clippy::too_many_arguments)]
 pub fn create_canonical_agent_member(
     home: &TempHome,
     cwd: &Path,

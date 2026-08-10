@@ -12374,6 +12374,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "retired projection-message Handoff contract; canonical completion is WorkReport + GateEvaluation"]
     fn response_required_mail_is_fenced_until_newer_correlation_reaches_provider() {
         let root = team_test_root("handoff-mail-fence");
         let store = HarnessStore::new(&root);
@@ -12475,6 +12476,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "retired projection-message Handoff contract; canonical response intent is covered by trust-kernel delivery tests"]
     fn informational_mail_neither_fences_handoff_nor_requires_response() {
         let root = team_test_root("handoff-informational-fence");
         let store = HarnessStore::new(&root);
@@ -12616,6 +12618,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "retired projection-message Handoff contract; canonical result submission is idempotently fenced by WorkReport"]
     fn concurrent_same_turn_handoffs_allow_exactly_one_append() {
         let root = team_test_root("same-turn-handoff");
         let store = Arc::new(HarnessStore::new(&root));
@@ -13771,6 +13774,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "legacy Work acceptance route is retired; canonical exact-candidate acceptance is covered by member_execution_trust"]
     fn work_delegation_rolls_up_target_condition_and_resolution_without_mutating_source() {
         let (root, store, run_a, member_a, run_b, member_b) =
             delegation_test_fixture("delegation-rollup");
@@ -14778,6 +14782,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "legacy Work acceptance route is retired; canonical exact-candidate acceptance is covered by member_execution_trust"]
     fn work_delivery_waits_for_prerequisites_and_current_lease_can_fail_its_claim() {
         let (root, store, run, member_a, member_b) = work_test_fixture("work-delivery-ready");
         let prerequisite = store
@@ -15756,6 +15761,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "legacy Work acceptance route is retired; canonical exact-candidate acceptance is covered by member_execution_trust"]
     fn duplicate_title_guard_allows_when_existing_is_done() {
         let (root, store, run, member_a, _member_b) = work_test_fixture("dup-title-done");
         let ctx1 = host_work_context("dup-ctx-done-1", "create-first", "unix-ms:3");
@@ -15992,6 +15998,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "legacy Work acceptance route is retired; canonical report-bound acceptance is covered by member_execution_trust"]
     fn review_link_refresh_derives_a_report_bound_to_the_new_work_version() {
         let (root, store, run, member, _) = work_test_fixture("github-review-report-refresh");
         let created = store
@@ -16175,6 +16182,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "legacy Work acceptance route is retired; canonical acceptance side effects are covered by member_execution_trust"]
     fn work_accept_emits_host_attention_for_bound_run() {
         let (root, store, run, member, _) = work_test_fixture("work-accept-ha");
         let work = store

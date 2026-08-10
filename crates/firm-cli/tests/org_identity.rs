@@ -120,12 +120,11 @@ fn canonical_agent_member_directly_drives_team_host_and_cutover_audit() {
         .expect("canonical identities");
     assert_eq!(members.len(), 1);
     assert_eq!(members[0].id, "agent-lead");
-    for retired in ["provider_launch_profiles.jsonl"] {
-        assert!(
-            !store.root().join(retired).exists(),
-            "retired identity ledger must stay absent: {retired}"
-        );
-    }
+    let retired = "provider_launch_profiles.jsonl";
+    assert!(
+        !store.root().join(retired).exists(),
+        "retired identity ledger must stay absent: {retired}"
+    );
 }
 
 #[test]

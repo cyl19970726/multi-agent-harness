@@ -179,6 +179,35 @@ fn member_firm_json(
 fn github_fixture(tag: &str) -> (TempHome, String, String, String) {
     let home = TempHome::new(tag);
     let project_id = init_project(&home, "alpha");
+    let member = create_canonical_agent_member(
+        &home,
+        home.base(),
+        &project_id,
+        "github-member",
+        "github-member",
+        "implementer",
+        "kimi",
+        &[],
+    );
+    assert!(member.status.success(), "member create failed: {member:?}");
+    let placed = run_firm(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team",
+            "add-member",
+            "--id",
+            "team-github-fixture",
+            "--member",
+            "github-member",
+        ],
+    );
+    assert!(
+        placed.status.success(),
+        "member placement failed: {placed:?}"
+    );
     let out = run_firm(
         &home,
         home.base(),
