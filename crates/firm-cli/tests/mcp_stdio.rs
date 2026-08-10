@@ -971,8 +971,8 @@ fn mcp_stdio_agent_team_tools() {
             "name": "team_run_send_message",
             "arguments": {
                 "team_run_id": team_run_id,
-                "sender_runtime_id": member_ids[0],
-                "sender_kind": "member_run",
+                "sender_runtime_id": stable_agent_id,
+                "sender_kind": "agent_member",
                 "recipient_runtime_ids": [member_ids[1]],
                 "kind": "message",
                 "body": "attempted member impersonation",
@@ -1594,8 +1594,8 @@ fn mcp_stdio_external_interactive_member_authorship() {
             "name": "team_run_send_message",
             "arguments": {
                 "team_run_id": team_run_id,
-                "sender_runtime_id": member_ids[1],
-                "sender_kind": "member_run",
+                "sender_runtime_id": external_member_id,
+                "sender_kind": "agent_member",
                 "recipient_runtime_ids": ["host"],
                 "kind": "message",
                 "body": "External review: no defects found",
@@ -1636,8 +1636,8 @@ fn mcp_stdio_external_interactive_member_authorship() {
             "name": "team_run_send_message",
             "arguments": {
                 "team_run_id": team_run_id,
-                "sender_runtime_id": member_ids[0],
-                "sender_kind": "member_run",
+                "sender_runtime_id": "mcp-host-external",
+                "sender_kind": "agent_member",
                 "recipient_runtime_ids": [member_ids[1]],
                 "kind": "message",
                 "body": "attempted driven-member impersonation",
@@ -1690,7 +1690,7 @@ fn mcp_stdio_external_interactive_member_authorship() {
     );
 
     // Close freezes only the Harness coordination binding. The still-running
-    // external process cannot author ProviderRuntimeProjection mail until explicit Reopen.
+    // external process cannot author AgentMember mail until explicit Reopen.
     let response = mcp.request(
         "tools/call",
         serde_json::json!({
@@ -1710,8 +1710,8 @@ fn mcp_stdio_external_interactive_member_authorship() {
             "name": "team_run_send_message",
             "arguments": {
                 "team_run_id": team_run_id,
-                "sender_runtime_id": member_ids[1],
-                "sender_kind": "member_run",
+                "sender_runtime_id": external_member_id,
+                "sender_kind": "agent_member",
                 "recipient_runtime_ids": ["host"],
                 "kind": "message",
                 "body": "must not author after coordination close",
@@ -1755,8 +1755,8 @@ fn mcp_stdio_external_interactive_member_authorship() {
             "name": "team_run_send_message",
             "arguments": {
                 "team_run_id": team_run_id,
-                "sender_runtime_id": member_ids[1],
-                "sender_kind": "member_run",
+                "sender_runtime_id": external_member_id,
+                "sender_kind": "agent_member",
                 "recipient_runtime_ids": ["host"],
                 "kind": "message",
                 "body": "authoring resumes after explicit reopen",

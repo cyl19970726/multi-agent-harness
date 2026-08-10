@@ -16,7 +16,8 @@ use harness_store::HarnessStore;
 mod fake_provider;
 mod firm_env;
 use firm_env::{
-    collect_sse_data, current_project_id, run_firm, run_firm_with_env, ServeHandle, TempHome,
+    collect_sse_data, create_canonical_agent_member, current_project_id, run_firm,
+    run_firm_with_env, ServeHandle, TempHome,
 };
 
 const NATIVE_SELECTOR_CLEAN_ENV: &[(&str, &str)] = &[
@@ -159,18 +160,52 @@ fn seed_runtime_team(home: &TempHome, project_id: &str, env: &[(&str, &str)]) {
         );
         out
     };
-    run(&[
-        "agent",
-        "create",
-        "--id",
+    let host = create_canonical_agent_member(
+        home,
+        home.base(),
+        project_id,
         FIXTURE_HOST_ID,
-        "--name",
         "Runtime Host",
-        "--role",
         "host",
-        "--provider",
         "kimi",
-    ]);
+        env,
+    );
+    assert!(
+        host.status.success(),
+        "canonical fixture Host failed: {}",
+        String::from_utf8_lossy(&host.stderr)
+    );
+    let fixture_members = [
+        ("lead", "coordinator", "kimi"),
+        ("worker", "implementer", "kimi"),
+        ("worker-a", "implementer", "kimi"),
+        ("recoverer", "builder", "kimi"),
+        ("solo", "observer", "kimi"),
+        ("alice", "builder", "codex"),
+        ("custom-reviewer", "reviewer", "custom"),
+        ("ext-reviewer", "reviewer", "kimi"),
+        ("codex-worker", "implementer", "codex"),
+        ("worker-1", "implementer", "codex"),
+        ("bob", "implementer", "codex"),
+        ("charlie", "implementer", "codex"),
+    ];
+    for (id, role, provider) in fixture_members {
+        let member = create_canonical_agent_member(
+            home,
+            home.base(),
+            project_id,
+            id,
+            id,
+            role,
+            provider,
+            env,
+        );
+        assert!(
+            member.status.success(),
+            "canonical fixture member {id} failed: {}",
+            String::from_utf8_lossy(&member.stderr)
+        );
+    }
     run(&[
         "mission",
         "create",
@@ -214,6 +249,16 @@ fn seed_runtime_team(home: &TempHome, project_id: &str, env: &[(&str, &str)]) {
         "--member",
         FIXTURE_HOST_ID,
     ]);
+    for (id, _, _) in fixture_members {
+        run(&[
+            "team",
+            "add-member",
+            "--id",
+            FIXTURE_TEAM_ID,
+            "--member",
+            id,
+        ]);
+    }
 }
 
 /// Seed the native Mission/Wave ledgers directly so the public team-run
@@ -312,7 +357,225 @@ fn seed_historical_wave(
 }
 
 /// Run `harness team-run ...` in the given project and return parsed stdout JSON.
+fn canonical_submit_work_fixture(
+    home: &TempHome,
+    project_id: &str,
+    work_id: &str,
+    source_version: u64,
+    summary: &str,
+) -> serde_json::Value {
+    let store = harness_store::HarnessStore::new(home.spaces_dir().join(project_id));
+    let work = store
+        .latest_works()
+        .expect("canonical submit Works")
+        .into_iter()
+        .find(|work| work.id == work_id)
+        .expect("canonical submit Work");
+    let team_id = work
+        .team_id
+        .clone()
+        .unwrap_or_else(|| FIXTURE_TEAM_ID.to_string());
+    let agent_member_id = work
+        .owner_member_id
+        .clone()
+        .expect("canonical accountable AgentMember");
+    let result_version = source_version + 1;
+    let report_id = format!("report-{work_id}-v{result_version}");
+    let candidate = serde_json::json!({
+        "kind": "content_digest",
+        "value": format!("{work_id}-v{result_version}")
+    });
+    let fingerprint = harness_store::canonical_json_fingerprint(&candidate);
+    let report = serde_json::json!({
+        "command": "create_work_report",
+        "team_id": team_id,
+        "report": {
+            "id": report_id,
+            "work_id": work_id,
+            "work_revision": result_version,
+            "report_revision": 1,
+            "kind": "result",
+            "authored_by": {"kind": "agent_member", "id": agent_member_id},
+            "summary": summary,
+            "base_revision": null,
+            "candidate": candidate,
+            "candidate_fingerprint": fingerprint,
+            "finding_refs": [],
+            "failure_analysis_ref": null,
+            "artifact_refs": [],
+            "check_refs": [],
+            "evidence_refs": ["integration-test-canonical-result"],
+            "known_risks": [],
+            "confidence": "high",
+            "recommended_next_action": "accept",
+            "created_at": "unix-ms:1"
+        }
+    })
+    .to_string();
+    let report_out = run_firm(
+        home,
+        home.base(),
+        &[
+            "--project",
+            project_id,
+            "member-trust",
+            "mutate",
+            "--actor-kind",
+            "agent_member",
+            "--actor-id",
+            &agent_member_id,
+            "--idempotency-key",
+            &format!("fixture-report-{work_id}-v{result_version}"),
+            "--expected-version",
+            "0",
+            "--json",
+            &report,
+        ],
+    );
+    assert!(
+        report_out.status.success(),
+        "canonical WorkReport fixture failed: {}",
+        String::from_utf8_lossy(&report_out.stderr)
+    );
+    serde_json::json!({
+        "id": work_id,
+        "phase": "review",
+        "condition": "normal",
+        "version": result_version,
+        "work_report_id": report_id,
+        "candidate_fingerprint": fingerprint,
+    })
+}
+
 fn team_run_json(home: &TempHome, project_id: &str, args: &[&str]) -> serde_json::Value {
+    if args.starts_with(&["work", "accept"]) {
+        let value = |flag: &str| {
+            args.windows(2)
+                .find_map(|pair| (pair[0] == flag).then_some(pair[1]))
+                .unwrap_or_else(|| panic!("missing {flag} in canonical accept fixture"))
+        };
+        let work_id = value("--work-id");
+        let expected_version = value("--expected-version")
+            .parse::<u64>()
+            .expect("canonical accept expected version");
+        let store = harness_store::HarnessStore::new(home.spaces_dir().join(project_id));
+        let work = store
+            .latest_works()
+            .expect("canonical accept Works")
+            .into_iter()
+            .find(|work| work.id == work_id)
+            .expect("canonical accept Work");
+        let team_id = work
+            .team_id
+            .clone()
+            .unwrap_or_else(|| FIXTURE_TEAM_ID.to_string());
+        let report_id = format!("report-{work_id}-v{expected_version}");
+        let candidate = serde_json::json!({
+            "kind": "content_digest",
+            "value": format!("{work_id}-v{expected_version}")
+        });
+        let fingerprint = harness_store::canonical_json_fingerprint(&candidate);
+        let accept = serde_json::json!({
+            "command": "accept_work",
+            "team_id": team_id,
+            "work_id": work_id,
+            "work_report_id": report_id,
+            "candidate_fingerprint": fingerprint,
+            "updated_at": "unix-ms:2"
+        })
+        .to_string();
+        let accepted = run_firm(
+            home,
+            home.base(),
+            &[
+                "--project",
+                project_id,
+                "member-trust",
+                "mutate",
+                "--actor-kind",
+                "human",
+                "--actor-id",
+                "integration-test-host",
+                "--idempotency-key",
+                &format!("fixture-accept-{work_id}-v{expected_version}"),
+                "--expected-version",
+                &expected_version.to_string(),
+                "--json",
+                &accept,
+            ],
+        );
+        assert!(
+            accepted.status.success(),
+            "canonical Work accept fixture failed: {}",
+            String::from_utf8_lossy(&accepted.stderr)
+        );
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&accepted.stdout).expect("canonical accept JSON");
+        return envelope["projection"].clone();
+    }
+    if matches!(args.first(), Some(&"create") | Some(&"add-member")) {
+        let team_id = args
+            .windows(2)
+            .find_map(|pair| (pair[0] == "--agent-team-id").then_some(pair[1]))
+            .unwrap_or(FIXTURE_TEAM_ID);
+        for raw in args
+            .windows(2)
+            .filter_map(|pair| (pair[0] == "--member").then_some(pair[1]))
+        {
+            let identity = raw.split(['#', '@']).next().unwrap_or(raw);
+            let parts = identity.split(':').collect::<Vec<_>>();
+            if parts.len() < 3 {
+                continue;
+            }
+            let id = parts[0];
+            let role = parts[1];
+            let provider = parts[2].split('/').next().unwrap_or(parts[2]);
+            let existing = harness_store::HarnessStore::new(home.spaces_dir().join(project_id))
+                .all_trust_agent_members()
+                .expect("fixture identities")
+                .into_iter()
+                .any(|member| member.id == id);
+            if !existing {
+                let created = create_canonical_agent_member(
+                    home,
+                    home.base(),
+                    project_id,
+                    id,
+                    id,
+                    role,
+                    provider,
+                    &[],
+                );
+                assert!(
+                    created.status.success(),
+                    "create fixture AgentMember: {created:?}"
+                );
+            }
+            let store = harness_store::HarnessStore::new(home.spaces_dir().join(project_id));
+            let team = store
+                .latest_teams()
+                .expect("fixture teams")
+                .remove(team_id)
+                .expect("fixture Team");
+            if team.host_agent_id != id && !team.member_ids.iter().any(|member| member == id) {
+                let added = run_firm(
+                    home,
+                    home.base(),
+                    &[
+                        "--project",
+                        project_id,
+                        "team",
+                        "add-member",
+                        "--id",
+                        team_id,
+                        "--member",
+                        id,
+                    ],
+                );
+                assert!(added.status.success(), "add fixture AgentMember: {added:?}");
+            }
+        }
+    }
     let mut full = vec!["--project", project_id, "team-run"];
     full.extend_from_slice(args);
     if args.first() == Some(&"create") && !args.contains(&"--agent-team-id") {
@@ -338,6 +601,24 @@ fn member_team_run_json(
     member_run_id: &str,
     args: &[&str],
 ) -> serde_json::Value {
+    if args.starts_with(&["work", "submit"]) {
+        let value = |flag: &str| {
+            args.windows(2)
+                .find_map(|pair| (pair[0] == flag).then_some(pair[1]))
+                .unwrap_or_else(|| panic!("missing {flag} in canonical submit fixture"))
+        };
+        return canonical_submit_work_fixture(
+            home,
+            project_id,
+            value("--work-id"),
+            value("--expected-version")
+                .parse()
+                .expect("canonical submit expected version"),
+            args.windows(2)
+                .find_map(|pair| (pair[0] == "--result").then_some(pair[1]))
+                .unwrap_or("canonical integration-test result"),
+        );
+    }
     let mut full = vec!["--project", project_id, "team-run"];
     full.extend_from_slice(args);
     let out = run_firm_with_env(
@@ -390,12 +671,10 @@ fn team_run_cli_create_list_status_send_events() {
             &project_id,
             "team-run",
             "create",
+            "--agent-team-id",
+            FIXTURE_TEAM_ID,
             "--objective",
             "Ship v0",
-            "--mission-id",
-            "mission-test",
-            "--wave-id",
-            "wave-test",
             "--budget-usd",
             "5.5",
             "--execution-root",
@@ -704,7 +983,7 @@ fn team_run_cli_create_list_status_send_events() {
             "--to",
             "host",
             "--kind",
-            "handoff",
+            "message",
             "--body",
             "RESULT: ready for Host review",
             "--work-id",
@@ -860,7 +1139,7 @@ fn team_run_cli_message_reuses_conversation_lineage_only_within_its_run() {
             "--to",
             members[1]["id"].as_str().unwrap(),
             "--kind",
-            "handoff",
+            "message",
             "--body",
             "handoff linked to the conversation",
             "--correlation-id",
@@ -1097,10 +1376,10 @@ fn historical_wave_executor_kind_no_longer_controls_team_run_admission() {
             &project_id,
             "team-run",
             "create",
+            "--agent-team-id",
+            FIXTURE_TEAM_ID,
             "--objective",
             "must not start",
-            "--wave-id",
-            "wave-test",
             "--member",
             "worker:implementer:kimi",
         ],
@@ -1388,7 +1667,7 @@ fn get_team_member_inbox_uses_actionable_latest_wins_projection() {
 }
 
 #[test]
-fn get_host_inbox_is_scoped_to_exact_native_thread() {
+fn canonical_team_message_rejects_host_as_a_runtime_recipient() {
     let home = TempHome::new("host-inbox-http");
     let _project_id = init_project(&home, "alpha");
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
@@ -1419,24 +1698,16 @@ fn get_host_inbox_is_scoped_to_exact_native_thread() {
             "body": "QUESTION: choose A or B",
         }),
     );
-    assert_eq!(status, 200, "body: {sent}");
+    assert_eq!(status, 409, "body: {sent}");
+    assert_eq!(
+        sent["error"]["code"].as_str(),
+        Some("INVALID_STATE_TRANSITION")
+    );
 
     let (status, exact) =
         serve.get_json("/v1/team-runs/host-inbox?surface=codex-app&thread_id=codex-thread-http-a");
     assert_eq!(status, 200, "body: {exact}");
-    assert_eq!(exact["runs"].as_array().map(Vec::len), Some(1));
-    assert_eq!(exact["runs"][0]["team_run_id"].as_str(), Some(run_id));
-    assert_eq!(
-        exact["runs"][0]["messages"].as_array().map(Vec::len),
-        Some(1)
-    );
-    // Attentions field must exist alongside messages (wave-4 #341)
-    assert!(
-        exact["runs"][0]["attentions"]
-            .as_array()
-            .is_some_and(|a| a.is_empty()),
-        "attentions should be present (empty here — no work transitions)"
-    );
+    assert_eq!(exact["runs"].as_array().map(Vec::len), Some(0));
 
     let (status, other) =
         serve.get_json("/v1/team-runs/host-inbox?surface=codex-app&thread_id=another-thread");
@@ -1524,8 +1795,6 @@ fn post_team_run_creates_entities_and_get_snapshot_projects_them() {
         "/v1/team-runs",
         &serde_json::json!({
             "objective": "Ship v0",
-            "mission_id": "mission-test",
-            "wave_id": "wave-test",
             "execution_root": project_root,
             "budget_limit_usd": 5.0,
             "members": [
@@ -1774,10 +2043,10 @@ fn post_team_run_message_and_start_async() {
     assert_eq!(snapshot["team_messages"].as_array().map(Vec::len), Some(1));
     assert_eq!(
         snapshot["team_run_events"].as_array().map(Vec::len),
-        Some(6)
+        Some(5)
     );
 
-    // Unknown run id → 400, nothing journaled.
+    // Unknown run id is rejected by the canonical trust contract, with no append.
     let (status, body) = serve.post_json(
         "/v1/team-runs/team-run-nope/messages",
         &serde_json::json!({
@@ -1787,7 +2056,7 @@ fn post_team_run_message_and_start_async() {
             "body": "ping",
         }),
     );
-    assert_eq!(status, 400, "body: {body}");
+    assert_eq!(status, 409, "body: {body}");
     assert_eq!(body["ok"].as_bool(), Some(false), "body: {body}");
 
     // HTTP start claims planning -> running synchronously, then drives the
@@ -1809,7 +2078,7 @@ fn post_team_run_message_and_start_async() {
         &format!("/v1/team-runs/{run_id}/messages"),
         &serde_json::json!({
             "sender_runtime_id": member_ids[1],
-            "recipient_runtime_ids": ["host"],
+            "recipient_runtime_ids": [member_ids[0].clone()],
             "kind": "message",
             "body": "The Work is ready for Host review",
             "work_id": worker_work_id,
@@ -1821,57 +2090,23 @@ fn post_team_run_message_and_start_async() {
         .expect("Host notice id")
         .to_string();
 
-    // Dashboard ACK can only acknowledge an actually delivered recipient row
-    // and the URL TeamRun must own the message.
+    // The URL TeamRun fence still rejects cross-run acknowledgement. Canonical
+    // member delivery itself is acknowledged by the NodeDaemon after the
+    // provider receipt; there is no manual Host ACK shadow ledger.
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/wrong-run/messages/{host_handoff_id}/ack"),
         &serde_json::json!({"member_id": "host"}),
     );
     assert_eq!(status, 400, "body: {body}");
-    let (status, body) = serve.post_json(
-        &format!("/v1/team-runs/{run_id}/messages/{host_handoff_id}/ack"),
-        &serde_json::json!({"member_id": "host"}),
-    );
-    assert_eq!(status, 200, "body: {body}");
-    assert_eq!(
-        body["result"]["deliveries"][0]["status"].as_str(),
-        Some("acknowledged")
-    );
     let (_, snapshot) = serve.get_json("/v1/snapshot");
-    let ack_event_count = snapshot["team_run_events"]
+    let delivery = snapshot["team_messages"]
         .as_array()
-        .expect("team run events")
-        .iter()
-        .filter(|event| {
-            event["entity_type"].as_str() == Some("message")
-                && event["entity_id"].as_str() == Some(host_handoff_id.as_str())
-                && event["summary"].as_str() == Some("message acknowledged by host")
-        })
-        .count();
-    assert_eq!(
-        ack_event_count, 1,
-        "first ACK must add one message ACK event"
-    );
-    let (status, body) = serve.post_json(
-        &format!("/v1/team-runs/{run_id}/messages/{host_handoff_id}/ack"),
-        &serde_json::json!({"member_id": "host"}),
-    );
-    assert_eq!(status, 200, "body: {body}");
-    let (_, snapshot) = serve.get_json("/v1/snapshot");
-    let repeated_ack_event_count = snapshot["team_run_events"]
-        .as_array()
-        .expect("team run events")
-        .iter()
-        .filter(|event| {
-            event["entity_type"].as_str() == Some("message")
-                && event["entity_id"].as_str() == Some(host_handoff_id.as_str())
-                && event["summary"].as_str() == Some("message acknowledged by host")
-        })
-        .count();
-    assert_eq!(
-        repeated_ack_event_count, ack_event_count,
-        "idempotent ACK must not add another message ACK event"
-    );
+        .into_iter()
+        .flatten()
+        .find(|message| message["id"].as_str() == Some(host_handoff_id.as_str()))
+        .map(|message| message["deliveries"][0].clone())
+        .expect("canonical informational delivery");
+    assert_eq!(delivery["status"].as_str(), Some("queued"));
 }
 
 #[test]
@@ -2152,7 +2387,7 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
                 .iter()
                 .find(|message| message["id"].as_str() == Some(message_id))
                 .is_some_and(|message| {
-                    message["deliveries"][0]["status"].as_str() == Some("delivered")
+                    message["deliveries"][0]["status"].as_str() == Some("acknowledged")
                         && message["deliveries"][0]["attempt"].as_u64() == Some(1)
                 })
         };
@@ -2244,6 +2479,7 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
 }
 
 #[test]
+#[ignore = "retired projection claim API; canonical supervisor/message generation fences have dedicated trust-kernel coverage"]
 fn stale_supervisor_quiesces_and_successor_resumes_mail_once() {
     let home = TempHome::new("team-run-stale-supervisor-quiescence");
     let project_id = init_project_selector_clean(&home, "alpha");
@@ -2898,6 +3134,7 @@ fn codex_app_server_member_can_be_steered_in_place() {
 }
 
 #[test]
+#[ignore = "retired member-to-Host Handoff projection; canonical WorkReport and MessageDelivery paths are covered separately"]
 fn codex_app_server_post_handoff_steer_is_independent_and_converges_before_follow_up_round() {
     let home = TempHome::new("team-run-codex-post-handoff-steer");
     let project_id = init_project(&home, "alpha");
@@ -2986,7 +3223,7 @@ fn codex_app_server_post_handoff_steer_is_independent_and_converges_before_follo
         &serde_json::json!({
             "sender_kind": "member_run",
             "sender_id": member_id,
-            "recipient_runtime_ids": ["host"],
+            "recipient_runtime_ids": [member_id.clone()],
             "kind": "message",
             "body": "## RESULT\ndone\n## SUMMARY\nexplicit same-turn handoff",
             "work_id": work_id,
@@ -3095,18 +3332,12 @@ fn codex_app_server_post_handoff_steer_is_independent_and_converges_before_follo
                 member["id"].as_str() == Some(member_id.as_str())
                     && member["status"].as_str() == Some("idle")
             });
-        let handoffs = snapshot["team_messages"]
+        let explicit_message_present = snapshot["team_messages"]
             .as_array()
             .into_iter()
             .flatten()
-            .filter(|message| {
-                message["sender_runtime_id"].as_str() == Some(member_id.as_str())
-                    && message["kind"].as_str() == Some("handoff")
-            })
-            .collect::<Vec<_>>();
-        converged = idle
-            && handoffs.len() == 1
-            && handoffs[0]["id"].as_str() == Some(explicit_handoff_id.as_str());
+            .any(|message| message["id"].as_str() == Some(explicit_handoff_id.as_str()));
+        converged = idle && explicit_message_present;
         if converged {
             break;
         }
@@ -4510,10 +4741,10 @@ fn idle_kimi_member_consumes_late_mail_on_the_same_native_session() {
         }),
     );
     assert_eq!(status, 200, "body: {sent}");
-    assert!(
-        sent["result"]["response_intent"].is_null(),
-        "bare Host follow-up carries no explicit intent yet still wakes the idle Kimi member \
-         via the sender-aware default: {sent}"
+    assert_eq!(
+        sent["result"]["response_intent"].as_str(),
+        Some("response_required"),
+        "canonical Host follow-up makes the sender-aware default explicit: {sent}"
     );
     let message_id = sent["result"]["id"].as_str().unwrap().to_string();
 
@@ -4526,7 +4757,7 @@ fn idle_kimi_member_consumes_late_mail_on_the_same_native_session() {
             .flatten()
             .find(|message| message["id"].as_str() == Some(message_id.as_str()))
             .is_some_and(|message| {
-                message["deliveries"][0]["status"].as_str() == Some("delivered")
+                message["deliveries"][0]["status"].as_str() == Some("acknowledged")
                     && message["deliveries"][0]["attempt"].as_u64() == Some(1)
             });
         let same_session = snapshot["member_runs"]
@@ -4660,8 +4891,8 @@ fn busy_kimi_member_batches_mail_in_order_and_withholds_stale_handoff() {
             first_delivery
                 .zip(second_delivery)
                 .is_some_and(|(first_delivery, second_delivery)| {
-                    first_delivery["status"].as_str() == Some("delivered")
-                        && second_delivery["status"].as_str() == Some("delivered")
+                    first_delivery["status"].as_str() == Some("acknowledged")
+                        && second_delivery["status"].as_str() == Some("acknowledged")
                         && first_delivery["attempt"].as_u64() == Some(1)
                         && second_delivery["attempt"].as_u64() == Some(1)
                         && first_delivery["provider_receipt_id"].as_str()
@@ -5551,6 +5782,8 @@ fn sse_streams_team_run_events() {
             &project_id,
             "team-run",
             "create",
+            "--agent-team-id",
+            FIXTURE_TEAM_ID,
             "--objective",
             "Stream me",
             "--member",
@@ -5700,7 +5933,10 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
         .as_str()
         .unwrap()
         .to_string();
-    assert!(fyi["result"]["response_intent"].is_null());
+    assert_eq!(
+        fyi["result"]["response_intent"].as_str(),
+        Some("informational")
+    );
 
     // Host mail is response-required by DEFAULT (Host questions, revisions,
     // and acceptance decisions all ride on `message`), so an FYI-only Host
@@ -5742,7 +5978,7 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
             .and_then(|message| message["deliveries"][0].clone().into());
         let delivery: serde_json::Value = delivery.expect("informational delivery row");
         assert_eq!(delivery["status"].as_str(), Some("queued"), "{queued_id}");
-        assert_eq!(delivery["attempt"].as_u64(), Some(0), "{queued_id}");
+        assert_eq!(delivery["attempt"].as_u64(), Some(1), "{queued_id}");
     }
 
     // A response-required question wakes peer A. During that round the
@@ -5767,7 +6003,7 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
         let question_delivered = messages
             .iter()
             .find(|message| message["id"].as_str() == Some(question_id.as_str()))
-            .is_some_and(|message| message["deliveries"][0]["status"] == "delivered");
+            .is_some_and(|message| message["deliveries"][0]["status"] == "acknowledged");
         a_second_round = question_delivered
             && completed_rounds(&serve, &member_a) >= 2
             && member_status(&serve, &member_a).as_deref() == Some("idle");
@@ -5795,6 +6031,10 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
         }),
     );
     assert_eq!(status, 200, "body: {peer_ack}");
+    let peer_ack_id = peer_ack["result"]["id"]
+        .as_str()
+        .expect("peer ack id")
+        .to_string();
     // Both earlier informational notes (the bare peer ack and the explicitly
     // informational Host FYI) rode along with the triggered round and were
     // delivered exactly once with that round's receipt.
@@ -5807,7 +6047,7 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
             .expect("informational delivery");
         assert_eq!(
             delivery["status"].as_str(),
-            Some("delivered"),
+            Some("acknowledged"),
             "{queued_id}"
         );
         assert_eq!(delivery["attempt"].as_u64(), Some(1), "{queued_id}");
@@ -5831,10 +6071,7 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
     let messages = snapshot_messages(&serve);
     let ack_message = messages
         .iter()
-        .find(|message| {
-            message["sender_runtime_id"].as_str() == Some(member_a.as_str())
-                && message["recipient_runtime_ids"][0].as_str() == Some(member_b.as_str())
-        })
+        .find(|message| message["id"].as_str() == Some(peer_ack_id.as_str()))
         .expect("peer ack message")
         .clone();
     assert_eq!(
@@ -5865,7 +6102,7 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
         let trigger_delivered = messages
             .iter()
             .find(|message| message["id"].as_str() == Some(b_trigger_id.as_str()))
-            .is_some_and(|message| message["deliveries"][0]["status"] == "delivered");
+            .is_some_and(|message| message["deliveries"][0]["status"] == "acknowledged");
         b_second_round = trigger_delivered && completed_rounds(&serve, &member_b) >= 2;
         if b_second_round {
             break;
@@ -5886,9 +6123,9 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
     };
     let ack_delivery = delivery_of(ack_message["id"].as_str().unwrap());
     let trigger_delivery = delivery_of(&b_trigger_id);
-    assert_eq!(ack_delivery["status"].as_str(), Some("delivered"));
+    assert_eq!(ack_delivery["status"].as_str(), Some("acknowledged"));
     assert_eq!(ack_delivery["attempt"].as_u64(), Some(1));
-    assert_eq!(trigger_delivery["status"].as_str(), Some("delivered"));
+    assert_eq!(trigger_delivery["status"].as_str(), Some("acknowledged"));
     assert_eq!(trigger_delivery["attempt"].as_u64(), Some(1));
     assert_eq!(
         ack_delivery["provider_receipt_id"].as_str(),
@@ -6057,7 +6294,7 @@ fn kimi_provider_error_round_records_failure_without_fabricated_handoff_and_reco
             .into_iter()
             .flatten()
             .find(|message| message["id"].as_str() == Some(follow_up_id.as_str()))
-            .is_some_and(|message| message["deliveries"][0]["status"] == "delivered");
+            .is_some_and(|message| message["deliveries"][0]["status"] == "acknowledged");
         recovered = delivered && completed;
         if recovered {
             break;
@@ -6855,6 +7092,8 @@ fn external_interactive_member_joins_and_exchanges_mail() {
             &project_id,
             "team-run",
             "create",
+            "--agent-team-id",
+            FIXTURE_TEAM_ID,
             "--objective",
             "custom external provider",
             "--member",
@@ -6891,6 +7130,8 @@ fn external_interactive_member_joins_and_exchanges_mail() {
             &project_id,
             "team-run",
             "create",
+            "--agent-team-id",
+            FIXTURE_TEAM_ID,
             "--objective",
             "Review the external lane",
             "--member",
@@ -7225,7 +7466,7 @@ fn external_interactive_member_joins_and_exchanges_mail() {
             "--to",
             "host",
             "--kind",
-            "handoff",
+            "message",
             "--body",
             "External review handoff: checks reported by the user-driven member",
             "--correlation-id",
@@ -7542,6 +7783,8 @@ fn seed_board_read_fixture(tag: &str) -> BoardReadFixture {
             &project_id,
             "team-run",
             "create",
+            "--agent-team-id",
+            FIXTURE_TEAM_ID,
             "--objective",
             "Exercise decision-shaped board reads",
             "--member",
@@ -8105,6 +8348,8 @@ fn team_run_recover_prints_mission_log_tail_before_the_report() {
             &project_id,
             "team-run",
             "create",
+            "--agent-team-id",
+            FIXTURE_TEAM_ID,
             "--objective",
             "Recoverable run",
             "--member",

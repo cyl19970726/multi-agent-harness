@@ -17,6 +17,7 @@ use firm_env::{run_firm, TempHome};
 fn seed_local_store(home: &TempHome, name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     let repo = home.home().join(name);
     let local = repo.join(".harness");
+    std::fs::create_dir_all(&local).expect("create legacy local store");
     // Active JSONL ledgers plus one retired provider-session ledger that must
     // not be copied into the new centralized store.
     std::fs::write(

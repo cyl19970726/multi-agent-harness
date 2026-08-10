@@ -1636,14 +1636,6 @@ mod tests {
                 "team_runs.jsonl",
                 include_str!("../../../schemas/fixtures/agent-team-run/valid/basic.json"),
             ),
-            (
-                "member_runs.jsonl",
-                include_str!("../../../schemas/fixtures/member-run/valid/basic.json"),
-            ),
-            (
-                "team_messages.jsonl",
-                include_str!("../../../schemas/fixtures/team-message/valid/basic.json"),
-            ),
         ];
         for (filename, row) in rows {
             // Fixture files are pretty-printed JSON, whereas a JSONL ledger has
@@ -1678,8 +1670,6 @@ mod tests {
                 ("mission", "mission-1".into()),
                 ("wave", "wave-1".into()),
                 ("team_run", "trun-1".into()),
-                ("member_run", "mrun-1".into()),
-                ("team_message", "tmsg-1".into()),
             ]
         );
         for (filename, _) in rows {

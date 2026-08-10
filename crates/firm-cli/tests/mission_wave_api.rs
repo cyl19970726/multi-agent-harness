@@ -16,7 +16,10 @@ use std::time::{Duration, Instant};
 
 mod fake_provider;
 mod firm_env;
-use firm_env::{current_project_id, run_firm, run_firm_with_env, ServeHandle, TempHome};
+use firm_env::{
+    create_canonical_agent_member, current_project_id, run_firm, run_firm_with_env, ServeHandle,
+    TempHome,
+};
 
 const COMPANY_OS_TEST_TOKEN: &str = "mission-wave-company-os-test-capability";
 
@@ -144,21 +147,19 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
         ("agent-review", "ReviewPartner", "reviewer", "kimi"),
         ("agent-repair", "RepairFixer", "repair specialist", "codex"),
     ] {
-        run_json(
+        let created = create_canonical_agent_member(
             &home,
+            home.base(),
             &project_id,
-            &[
-                "agent",
-                "create",
-                "--id",
-                id,
-                "--name",
-                name,
-                "--role",
-                role,
-                "--provider",
-                provider,
-            ],
+            id,
+            name,
+            role,
+            provider,
+            &[("FIRM_COMPANY_OS_TOKEN", COMPANY_OS_TEST_TOKEN)],
+        );
+        assert!(
+            created.status.success(),
+            "canonical member create failed: {created:?}"
         );
     }
     run_json(
@@ -189,10 +190,10 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
             "human-owner",
             "--id",
             "agent-review",
-            "--name",
-            "Reviewer",
-            "--role",
-            "reviewer",
+            "--agent-member",
+            "agent-review",
+            "--execution-space",
+            &project_id,
             "--responsibility",
             "Same-id collision must remain unlinked",
         ],
@@ -209,12 +210,10 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
             "human-owner",
             "--id",
             "agent-build",
-            "--name",
-            "PrimaryBuilder",
-            "--role",
-            "primary builder",
-            "--execution-agent-member-ref",
+            "--agent-member",
             "agent-build",
+            "--execution-space",
+            &project_id,
             "--responsibility",
             "Own persistent implementation work",
         ],
@@ -344,27 +343,25 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
         Some("agent-review")
     );
     let snapshot = run_json(&home, &project_id, &["dashboard", "snapshot"]);
-    let membership_projections = snapshot["company_os"]["membership_projections"]
+    let membership_projections = snapshot["company_os"]["agent_members"]
         .as_array()
         .expect("AgentMember membership projection");
-    assert_eq!(
-        membership_projections.len(),
-        1,
-        "only a ProviderRuntimeProjection carrying the canonical AgentMember identity may appear"
+    let projected_ids = membership_projections
+        .iter()
+        .filter_map(|member| member["id"].as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        projected_ids.is_superset(&std::collections::BTreeSet::from([
+            "agent-build",
+            "agent-review",
+        ])),
+        "Company projection must include the Team's canonical AgentMembers: {projected_ids:?}"
     );
-    assert_eq!(
-        membership_projections[0]["agent_member_id"].as_str(),
-        Some("agent-build")
-    );
-    assert_eq!(
-        membership_projections[0]["member_run_id"].as_str(),
-        created["member_runs"][0]["id"].as_str()
-    );
-    assert_eq!(
-        membership_projections[0]["work_id"].as_str(),
-        created["works"][0]["id"].as_str(),
-        "AgentMember execution projection must derive from the member's durable Work"
-    );
+    assert!(membership_projections.iter().all(|member| {
+        member.get("member_run_id").is_none()
+            && member.get("work_id").is_none()
+            && member.get("native_session").is_none()
+    }));
     assert!(created["team_run"]["wave_id"].is_null());
     let team_run_id = created["team_run"]["id"].as_str().unwrap();
     let builder_member_id = created["member_runs"][0]["id"]
@@ -442,7 +439,7 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
             "--id",
             team_run_id,
             "--member",
-            "RepairFixer:repair specialist:codex",
+            "agent-repair:repair specialist:codex",
             "--initial-work",
             "Repair any issue found by the review lane",
             "--origin-wave-id",
@@ -931,21 +928,19 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
     );
     assert_eq!(status, 200, "body: {body}");
     assert_eq!(body["result"]["id"].as_str(), Some("mission-alpha"));
-    run_json(
+    let host = create_canonical_agent_member(
         &home,
+        home.base(),
         &project_id,
-        &[
-            "agent",
-            "create",
-            "--id",
-            "agent-alpha-host",
-            "--name",
-            "Alpha Host",
-            "--role",
-            "host",
-            "--provider",
-            "codex",
-        ],
+        "agent-alpha-host",
+        "Alpha Host",
+        "host",
+        "codex",
+        &[("FIRM_COMPANY_OS_TOKEN", COMPANY_OS_TEST_TOKEN)],
+    );
+    assert!(
+        host.status.success(),
+        "canonical host create failed: {host:?}"
     );
     let node = run_json(&home, &project_id, &["node", "init"]);
     let node_id = node["id"].as_str().expect("node id").to_string();
@@ -1162,7 +1157,7 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
             "sender_runtime_id": "operator-test",
             "sender_kind": "operator",
             "sender_id": "operator-test",
-            "recipient_runtime_ids": ["host"],
+            "recipient_runtime_ids": [member_id],
             "kind": "message",
             "body": "implementation handoff",
             "work_id": work_id,
@@ -1403,21 +1398,19 @@ fn http_console_delegates_native_team_run_to_node_daemon() {
         }),
     );
     assert_eq!(status, 200, "body: {body}");
-    run_json(
+    let host = create_canonical_agent_member(
         &home,
+        home.base(),
         &project_id,
-        &[
-            "agent",
-            "create",
-            "--id",
-            "agent-console-host",
-            "--name",
-            "Console Host",
-            "--role",
-            "host",
-            "--provider",
-            "codex",
-        ],
+        "agent-console-host",
+        "Console Host",
+        "host",
+        "codex",
+        &[("FIRM_COMPANY_OS_TOKEN", COMPANY_OS_TEST_TOKEN)],
+    );
+    assert!(
+        host.status.success(),
+        "canonical host create failed: {host:?}"
     );
     let node = run_json(&home, &project_id, &["node", "init"]);
     let node_id = node["id"].as_str().expect("node id").to_string();
@@ -1472,6 +1465,10 @@ fn http_console_delegates_native_team_run_to_node_daemon() {
     let member_id = body["result"]["member_runs"][0]["id"]
         .as_str()
         .expect("member id")
+        .to_string();
+    let agent_member_id = body["result"]["member_runs"][0]["agent_member_id"]
+        .as_str()
+        .expect("canonical AgentMember id")
         .to_string();
     let work_id = body["result"]["works"][0]["id"]
         .as_str()
@@ -1562,49 +1559,89 @@ fn http_console_delegates_native_team_run_to_node_daemon() {
         ],
     );
     let started_version = started["version"].as_u64().expect("started version");
-    let submitted = run_member_json(
+    let submitted_version = started_version + 1;
+    let report_id = "report-console-result";
+    let candidate = serde_json::json!({
+        "kind": "content_digest",
+        "value": "console-result-v1"
+    });
+    let candidate_fingerprint = harness_store::canonical_json_fingerprint(&candidate);
+    let report_command = serde_json::json!({
+        "command": "create_work_report",
+        "team_id": "team-console",
+        "report": {
+            "id": report_id,
+            "work_id": work_id,
+            "work_revision": submitted_version,
+            "report_revision": 1,
+            "kind": "result",
+            "authored_by": {"kind": "agent_member", "id": agent_member_id},
+            "summary": "Host accepted the fake provider evidence",
+            "base_revision": null,
+            "candidate": candidate,
+            "candidate_fingerprint": candidate_fingerprint,
+            "finding_refs": [],
+            "failure_analysis_ref": null,
+            "artifact_refs": [],
+            "check_refs": [],
+            "evidence_refs": ["fake-provider-round"],
+            "known_risks": [],
+            "confidence": "high",
+            "recommended_next_action": "accept",
+            "created_at": "unix-ms:1"
+        }
+    })
+    .to_string();
+    run_json(
         &home,
         &project_id,
-        &run_id,
-        &member_id,
         &[
-            "team-run",
-            "work",
-            "submit",
-            "--team-run-id",
-            &run_id,
-            "--work-id",
-            &work_id,
+            "member-trust",
+            "mutate",
+            "--actor-kind",
+            "agent_member",
+            "--actor-id",
+            &agent_member_id,
+            "--idempotency-key",
+            "console-work-report",
             "--expected-version",
-            &started_version.to_string(),
-            "--member-run-id",
-            &member_id,
-            "--result",
-            "fake provider round completed; transient thinking stayed live-only",
+            "0",
             "--json",
+            &report_command,
         ],
     );
-    let submitted_version = submitted["version"].as_u64().expect("submitted version");
+    let accept_command = serde_json::json!({
+        "command": "accept_work",
+        "team_id": "team-console",
+        "work_id": work_id,
+        "work_report_id": report_id,
+        "candidate_fingerprint": candidate_fingerprint,
+        "updated_at": "unix-ms:2"
+    })
+    .to_string();
     let accepted = run_json(
         &home,
         &project_id,
         &[
-            "team-run",
-            "work",
-            "accept",
-            "--team-run-id",
-            &run_id,
-            "--work-id",
-            &work_id,
+            "member-trust",
+            "mutate",
+            "--actor-kind",
+            "human",
+            "--actor-id",
+            "host-console",
+            "--idempotency-key",
+            "console-work-accept",
             "--expected-version",
             &submitted_version.to_string(),
-            "--summary",
-            "Host accepted the explicit Work result",
             "--json",
+            &accept_command,
         ],
     );
-    assert_eq!(accepted["phase"].as_str(), Some("closed"));
-    assert_eq!(accepted["resolution"].as_str(), Some("accepted"));
+    assert_eq!(accepted["projection"]["phase"].as_str(), Some("closed"));
+    assert_eq!(
+        accepted["projection"]["resolution"].as_str(),
+        Some("accepted")
+    );
 
     let (status, completed) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/transition?project={project_id}"),

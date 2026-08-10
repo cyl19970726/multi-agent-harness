@@ -5,7 +5,9 @@
 //! printing a pass/fail table and exiting non-zero on any mismatch.
 
 mod firm_env;
-use firm_env::{current_project_id, run_firm, ServeHandle, TempHome};
+use firm_env::{
+    create_canonical_agent_member, current_project_id, run_firm, ServeHandle, TempHome,
+};
 
 /// Initialize the project plus the flat AgentTeam required by TeamRun creation.
 fn init_project(home: &TempHome, name: &str) -> (String, String) {
@@ -52,23 +54,18 @@ fn init_project(home: &TempHome, name: &str) -> (String, String) {
         "mission create failed: {mission:?}"
     );
     let mission_id = String::from_utf8_lossy(&mission.stdout).trim().to_string();
-    let host = run_firm(
+    let host = create_canonical_agent_member(
         home,
         &root,
-        &[
-            "agent",
-            "create",
-            "--name",
-            "doctor-host",
-            "--role",
-            "host",
-            "--provider",
-            "codex",
-        ],
+        &project_id,
+        "agent-doctor-host",
+        "doctor-host",
+        "host",
+        "codex",
+        &[],
     );
     assert!(host.status.success(), "host create failed: {host:?}");
-    let host: serde_json::Value = serde_json::from_slice(&host.stdout).expect("host JSON");
-    let host_id = host["id"].as_str().expect("host id");
+    let host_id = "agent-doctor-host";
     let team = run_firm(
         home,
         &root,

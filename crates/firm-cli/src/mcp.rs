@@ -1868,7 +1868,7 @@ fn tool_definitions() -> Value {
                 "properties": {
                     "team_run_id": {"type": "string"},
                     "sender_runtime_id": {"type": "string", "description": "Compatibility sender projection. Use `host` for MCP Host calls; operator/service gateways provide their stable id here."},
-                    "sender_kind": {"type": "string", "enum": ["host", "operator", "service", "member_run", "agent_member"], "description": "Authenticated MCP actor provenance. Unbound MCP cannot author ProviderRuntimeProjection or AgentMember messages for driven members; those originate from the bound provider runtime. The declared exception is a non-driven external_interactive member, whose user-driven session may self-author here and is recorded with authn_source=mcp:external_interactive."},
+                    "sender_kind": {"type": "string", "enum": ["host", "operator", "service", "agent_member"], "description": "Authenticated MCP actor provenance. Unbound MCP cannot author AgentMember messages for driven members; those originate from the bound provider runtime. The declared exception is a non-driven external_interactive member, whose user-driven session may self-author here and is recorded with authn_source=mcp:external_interactive."},
                     "sender_id": {"type": "string", "description": "Stable id of the typed sender; defaults to sender_runtime_id."},
                     "sender_name": {"type": "string"},
                     "recipient_runtime_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}, "description": "One or more recipient member run ids, or the reserved host recipient."},

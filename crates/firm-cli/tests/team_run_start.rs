@@ -14,7 +14,10 @@ use std::{
 mod fake_provider;
 mod firm_env;
 
-use firm_env::{current_project_id, latest_works, run_firm, work_deliveries, TempHome};
+use firm_env::{
+    create_canonical_agent_member, current_project_id, latest_works, run_firm, work_deliveries,
+    TempHome,
+};
 
 static TEST_NODE_DAEMONS: OnceLock<Mutex<Vec<std::process::Child>>> = OnceLock::new();
 
@@ -81,21 +84,15 @@ fn init_project(home: &TempHome, name: &str) -> String {
         mission.status.success(),
         "mission create failed: {mission:?}"
     );
-    let host = run_firm(
+    let host = create_canonical_agent_member(
         home,
         &root,
-        &[
-            "agent",
-            "create",
-            "--id",
-            "agent-runtime-host",
-            "--name",
-            "runtime-host",
-            "--role",
-            "host",
-            "--provider",
-            "codex",
-        ],
+        &project_id,
+        "agent-runtime-host",
+        "runtime-host",
+        "host",
+        "codex",
+        &[],
     );
     assert!(host.status.success(), "host create failed: {host:?}");
     let team = run_firm(

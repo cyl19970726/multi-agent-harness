@@ -9,7 +9,8 @@
 
 mod firm_env;
 use firm_env::{
-    clear_inherited_native_firm_env, current_project_id, run_firm, ServeHandle, TempHome,
+    clear_inherited_native_firm_env, create_canonical_agent_member, current_project_id, run_firm,
+    ServeHandle, TempHome,
 };
 
 #[test]
@@ -95,18 +96,21 @@ fn seed_team(
         "Verify dashboard metadata provenance",
     ]);
     let mission_id = String::from_utf8_lossy(&mission.stdout).trim().to_string();
-    let host = run(&[
-        "agent",
-        "create",
-        "--name",
+    let host_id = format!("agent-meta-host-{suffix}");
+    let host = create_canonical_agent_member(
+        home,
+        root,
+        project_id,
+        &host_id,
         &format!("meta-host-{suffix}"),
-        "--role",
         "host",
-        "--provider",
         "codex",
-    ]);
-    let host: serde_json::Value = serde_json::from_slice(&host.stdout).expect("host JSON");
-    let host_id = host["id"].as_str().expect("host id");
+        &space_id
+            .map(|id| ("FIRM_SPACE", id))
+            .into_iter()
+            .collect::<Vec<_>>(),
+    );
+    assert!(host.status.success(), "canonical host failed: {host:?}");
     let team = run(&[
         "team",
         "create",
@@ -117,11 +121,11 @@ fn seed_team(
         "--mission-id",
         &mission_id,
         "--host-agent-id",
-        host_id,
+        &host_id,
         "--node-id",
         node_id,
         "--member",
-        host_id,
+        &host_id,
     ]);
     let team: serde_json::Value = serde_json::from_slice(&team.stdout).expect("team JSON");
     team["id"].as_str().expect("team id").to_string()

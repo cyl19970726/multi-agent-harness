@@ -2547,6 +2547,7 @@ const ACTIVE_COMPANY_OS_LEDGER_FILES: &[&str] = &[
     "company_os_relations.jsonl",
     "company_os_views.jsonl",
     "company_os_business_modules.jsonl",
+    "company_os_human_members.jsonl",
     "company_os_human_provider_launch_profiles.jsonl",
     "company_os_agent_memberships.jsonl",
     "company_os_external_participants.jsonl",
@@ -8845,7 +8846,7 @@ fn validate_team_member_identity(store: &HarnessStore, member: &TeamMemberSpec) 
                 == harness_core::agentfirm_api::AgentMemberOrganizationStatus::Active
     }) {
         return Err(CliError::Usage(format!(
-            "team member {} references missing ProviderLaunchProfile {agent_member_id}",
+            "team member {} references missing canonical AgentMember {agent_member_id}",
             member.name
         )));
     }
@@ -11674,8 +11675,8 @@ fn create_team_run(
                 "member provider_cwd_hint",
             )?;
         }
-        validate_team_member_identity(store, member)?;
         validate_team_member_execution_mode(member)?;
+        validate_team_member_identity(store, member)?;
     }
     if mission_id.is_some() || wave_id.is_some() {
         return Err(CliError::Usage(
@@ -11855,8 +11856,8 @@ fn add_team_run_member(
     initial_work: Option<&str>,
     source_plan_ref: Option<String>,
 ) -> CliResult<(AgentTeamRun, ProviderRuntimeProjection, Option<Work>)> {
-    validate_team_member_identity(store, member)?;
     validate_team_member_execution_mode(member)?;
+    validate_team_member_identity(store, member)?;
     if initial_work.is_some_and(|value| value.trim().is_empty()) {
         return Err(CliError::Usage(
             "new member initial Work must not be empty".to_string(),
@@ -12101,11 +12102,15 @@ fn compatibility_team_recipient(id: &str) -> TeamRecipientRef {
 }
 
 fn parse_team_actor_kind(value: &str) -> CliResult<TeamActorKind> {
-    serde_json::from_value(serde_json::Value::String(value.to_string())).map_err(|_| {
-        CliError::Usage(format!(
-            "unknown actor kind `{value}` (host|member_run|agent_member|operator|service)"
-        ))
-    })
+    match value {
+        "host" => Ok(TeamActorKind::Host),
+        "agent_member" => Ok(TeamActorKind::AgentMember),
+        "operator" => Ok(TeamActorKind::Operator),
+        "service" => Ok(TeamActorKind::Service),
+        _ => Err(CliError::Usage(format!(
+            "unknown actor kind `{value}` (host|agent_member|operator|service)"
+        ))),
+    }
 }
 
 fn team_event_source_for_actor(actor: &TeamActorRef) -> TeamRunEventSourceKind {
@@ -12506,7 +12511,7 @@ pub(crate) fn team_run_inbox(
             return Ok(Vec::new());
         }
     }
-    Ok(latest_team_messages_in_append_order(store)?
+    let mut messages = latest_team_messages_in_append_order(store)?
         .into_iter()
         .filter(|message| message.team_run_id == team_run_id)
         .filter(|message| {
@@ -12523,7 +12528,138 @@ pub(crate) fn team_run_inbox(
                             ))
                 })
         })
-        .collect())
+        .collect::<Vec<_>>();
+
+    // The member-trust kernel is the canonical message authority. Project its
+    // immutable ProviderDispatchEnvelope + RegistryDeliveryAttempt rows into the existing
+    // read shape while callers migrate; never require a retired shadow append
+    // merely to make a canonical message visible in an inbox.
+    if member_run_id != "host" {
+        if let Some(execution_space_id) = store.trust_member_run_scope(member_run_id)? {
+            let canonical_messages = store
+                .trust_team_messages(&execution_space_id)?
+                .into_iter()
+                .filter(|message| message.team_run_id == team_run_id)
+                .map(|message| (message.id.clone(), message))
+                .collect::<BTreeMap<_, _>>();
+            for delivery in store
+                .trust_message_deliveries(&execution_space_id)?
+                .into_iter()
+                .filter(|delivery| delivery.recipient_member_run_id == member_run_id)
+                .filter(|delivery| {
+                    include_all
+                        || delivery.status
+                            == harness_core::agentfirm_api::MessageDeliveryStatus::Queued
+                })
+            {
+                let Some(message) = canonical_messages.get(&delivery.message_id) else {
+                    continue;
+                };
+                let status = match delivery.status {
+                    harness_core::agentfirm_api::MessageDeliveryStatus::Queued => {
+                        TeamDeliveryStatus::Queued
+                    }
+                    harness_core::agentfirm_api::MessageDeliveryStatus::Claimed => {
+                        TeamDeliveryStatus::Claimed
+                    }
+                    harness_core::agentfirm_api::MessageDeliveryStatus::ProviderReceived => {
+                        TeamDeliveryStatus::Delivered
+                    }
+                    harness_core::agentfirm_api::MessageDeliveryStatus::Acknowledged => {
+                        TeamDeliveryStatus::Acknowledged
+                    }
+                    harness_core::agentfirm_api::MessageDeliveryStatus::Failed
+                    | harness_core::agentfirm_api::MessageDeliveryStatus::Invalidated => {
+                        TeamDeliveryStatus::Failed
+                    }
+                    harness_core::agentfirm_api::MessageDeliveryStatus::Expired => {
+                        TeamDeliveryStatus::Expired
+                    }
+                };
+                let sender = match message.sender.kind {
+                    harness_core::agentfirm_api::ActorKind::AgentMember => TeamActorRef {
+                        kind: TeamActorKind::AgentMember,
+                        id: message.sender.id.clone(),
+                        display_name: None,
+                        authn_source: Some("canonical_trust_kernel".into()),
+                    },
+                    harness_core::agentfirm_api::ActorKind::Human
+                    | harness_core::agentfirm_api::ActorKind::External => TeamActorRef {
+                        kind: TeamActorKind::Operator,
+                        id: message.sender.id.clone(),
+                        display_name: None,
+                        authn_source: Some("canonical_trust_kernel".into()),
+                    },
+                    harness_core::agentfirm_api::ActorKind::Service => TeamActorRef {
+                        kind: TeamActorKind::Service,
+                        id: message.sender.id.clone(),
+                        display_name: None,
+                        authn_source: Some("canonical_trust_kernel".into()),
+                    },
+                };
+                messages.push(ProviderDispatchEnvelope {
+                    id: message.id.clone(),
+                    team_run_id: message.team_run_id.clone(),
+                    work_id: message.work_id.clone(),
+                    source_plan_ref: None,
+                    sender: Some(sender),
+                    sender_runtime_id: message.sender.id.clone(),
+                    recipients: vec![TeamRecipientRef {
+                        kind: TeamRecipientKind::ProviderRuntimeProjection,
+                        id: member_run_id.to_string(),
+                    }],
+                    recipient_runtime_ids: vec![member_run_id.to_string()],
+                    kind: match message.kind {
+                        harness_core::agentfirm_api::TeamMessageKind::Control => {
+                            ProviderDispatchIntent::Control
+                        }
+                        harness_core::agentfirm_api::TeamMessageKind::ProviderInteractionRequest => {
+                            ProviderDispatchIntent::ProviderInteractionRequest
+                        }
+                        harness_core::agentfirm_api::TeamMessageKind::ProviderInteractionResponse => {
+                            ProviderDispatchIntent::ProviderInteractionResponse
+                        }
+                        harness_core::agentfirm_api::TeamMessageKind::Message => {
+                            ProviderDispatchIntent::Message
+                        }
+                    },
+                    body: message.body.clone(),
+                    correlation_id: message.correlation_id.clone(),
+                    causation_id: message.causation_id.clone(),
+                    response_intent: Some(match message.response_intent {
+                        harness_core::agentfirm_api::ResponseIntent::Informational => {
+                            ProviderResponseIntent::Informational
+                        }
+                        harness_core::agentfirm_api::ResponseIntent::ResponseRequired => {
+                            ProviderResponseIntent::ResponseRequired
+                        }
+                    }),
+                    evidence_refs: message.evidence_refs.clone(),
+                    deliveries: vec![ProviderDispatchAttempt {
+                        member_id: member_run_id.to_string(),
+                        policy: TeamDeliveryPolicy::Queue,
+                        status,
+                        attempt: delivery.attempt,
+                        claim_id: delivery.claim_id.clone(),
+                        claimed_by_supervisor_id: None,
+                        claimed_generation: delivery.claimed_supervisor_generation,
+                        claimed_unix_ms: None,
+                        claim_expires_unix_ms: None,
+                        provider_receipt_id: delivery.provider_receipt_id.clone(),
+                        failure_reason: delivery.failure_detail.clone(),
+                        updated_at: delivery.updated_at.clone(),
+                    }],
+                    created_at: message.created_at.clone(),
+                });
+            }
+        }
+    }
+    messages.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(messages)
 }
 
 /// Aggregate Host mail for the exact provider-native Host thread bound to each
@@ -17050,7 +17186,32 @@ fn claim_canonical_messages_for_member(
                 && delivery.status == harness_core::agentfirm_api::MessageDeliveryStatus::Queued
         })
         .collect::<Vec<_>>();
-    queued.sort_by(|left, right| left.id.cmp(&right.id));
+    queued.sort_by(|left, right| {
+        let left_message = messages.get(&left.message_id);
+        let right_message = messages.get(&right.message_id);
+        left_message
+            .map(|message| message.created_at.as_str())
+            .cmp(&right_message.map(|message| message.created_at.as_str()))
+            .then_with(|| {
+                let sequence = |id: &str| id.rsplit('-').next()?.parse::<u64>().ok();
+                sequence(&left.message_id)
+                    .cmp(&sequence(&right.message_id))
+                    .then_with(|| left.message_id.cmp(&right.message_id))
+            })
+    });
+    // Informational-only mail is durable context, not a provider-round
+    // trigger. Keep it queued until a response-required message arrives; the
+    // resulting round then consumes the entire ordered batch exactly once.
+    // This is the canonical-ledger equivalent of
+    // `claim_round_triggering_messages_for` for the retired projection.
+    let triggers_round = queued.iter().any(|delivery| {
+        messages.get(&delivery.message_id).is_some_and(|message| {
+            message.response_intent == harness_core::agentfirm_api::ResponseIntent::ResponseRequired
+        })
+    });
+    if !triggers_round {
+        return Ok(Vec::new());
+    }
     let mut claimed_messages = Vec::new();
     for delivery in queued {
         let source = messages.get(&delivery.message_id).ok_or_else(|| {
@@ -18948,14 +19109,19 @@ impl TeamRunLedger {
         &self,
         member_id: &str,
     ) -> CliResult<Vec<ProviderDispatchEnvelope>> {
+        let member = self
+            .latest_member_run(member_id)?
+            .ok_or_else(|| CliError::Usage(format!("member run not found: {member_id}")))?;
+        let mut canonical = claim_canonical_messages_for_member(self, &member)?;
         let queued = self.queued_messages_for(member_id)?;
         if !queued
             .iter()
             .any(ProviderDispatchEnvelope::requires_response)
         {
-            return Ok(Vec::new());
+            return Ok(canonical);
         }
-        let mut claimed = Vec::with_capacity(queued.len());
+        let mut claimed = Vec::with_capacity(canonical.len() + queued.len());
+        claimed.append(&mut canonical);
         for message in queued {
             if let Some(message) = self.claim_message(&message.id, member_id)? {
                 claimed.push(message);
@@ -35424,7 +35590,123 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     // event log is capped per run so a chatty run cannot bloat the snapshot.
     let team_runs = latest_team_runs_in_append_order(store)?;
     let member_runs = latest_member_runs_in_append_order(store)?;
-    let team_messages = latest_team_messages_in_append_order(store)?;
+    let mut team_messages = latest_team_messages_in_append_order(store)?;
+    let mut trust_scopes = BTreeSet::new();
+    for member_run in &member_runs {
+        if let Some(scope) = store.trust_member_run_scope(&member_run.id)? {
+            trust_scopes.insert(scope);
+        }
+    }
+    for execution_space_id in trust_scopes {
+        let deliveries = store.trust_message_deliveries(&execution_space_id)?;
+        for message in store.trust_team_messages(&execution_space_id)? {
+            let message_deliveries = deliveries
+                .iter()
+                .filter(|delivery| delivery.message_id == message.id)
+                .map(|delivery| ProviderDispatchAttempt {
+                    member_id: delivery.recipient_member_run_id.clone(),
+                    policy: TeamDeliveryPolicy::Queue,
+                    status: match delivery.status {
+                        harness_core::agentfirm_api::MessageDeliveryStatus::Queued => {
+                            TeamDeliveryStatus::Queued
+                        }
+                        harness_core::agentfirm_api::MessageDeliveryStatus::Claimed => {
+                            TeamDeliveryStatus::Claimed
+                        }
+                        harness_core::agentfirm_api::MessageDeliveryStatus::ProviderReceived => {
+                            TeamDeliveryStatus::Delivered
+                        }
+                        harness_core::agentfirm_api::MessageDeliveryStatus::Acknowledged => {
+                            TeamDeliveryStatus::Acknowledged
+                        }
+                        harness_core::agentfirm_api::MessageDeliveryStatus::Failed
+                        | harness_core::agentfirm_api::MessageDeliveryStatus::Invalidated => {
+                            TeamDeliveryStatus::Failed
+                        }
+                        harness_core::agentfirm_api::MessageDeliveryStatus::Expired => {
+                            TeamDeliveryStatus::Expired
+                        }
+                    },
+                    attempt: delivery.attempt,
+                    claim_id: delivery.claim_id.clone(),
+                    claimed_by_supervisor_id: None,
+                    claimed_generation: delivery.claimed_supervisor_generation,
+                    claimed_unix_ms: None,
+                    claim_expires_unix_ms: None,
+                    provider_receipt_id: delivery.provider_receipt_id.clone(),
+                    failure_reason: delivery.failure_detail.clone(),
+                    updated_at: delivery.updated_at.clone(),
+                })
+                .collect::<Vec<_>>();
+            let recipient_runtime_ids = message_deliveries
+                .iter()
+                .map(|delivery| delivery.member_id.clone())
+                .collect::<Vec<_>>();
+            team_messages.push(ProviderDispatchEnvelope {
+                id: message.id.clone(),
+                team_run_id: message.team_run_id.clone(),
+                work_id: message.work_id.clone(),
+                source_plan_ref: None,
+                sender: Some(TeamActorRef {
+                    kind: match message.sender.kind {
+                        harness_core::agentfirm_api::ActorKind::AgentMember => {
+                            TeamActorKind::AgentMember
+                        }
+                        harness_core::agentfirm_api::ActorKind::Service => TeamActorKind::Service,
+                        harness_core::agentfirm_api::ActorKind::Human
+                        | harness_core::agentfirm_api::ActorKind::External => {
+                            TeamActorKind::Operator
+                        }
+                    },
+                    id: message.sender.id.clone(),
+                    display_name: None,
+                    authn_source: Some("canonical_trust_kernel".into()),
+                }),
+                sender_runtime_id: message.sender.id.clone(),
+                recipients: recipient_runtime_ids
+                    .iter()
+                    .map(|id| TeamRecipientRef {
+                        kind: TeamRecipientKind::ProviderRuntimeProjection,
+                        id: id.clone(),
+                    })
+                    .collect(),
+                recipient_runtime_ids,
+                kind: match message.kind {
+                    harness_core::agentfirm_api::TeamMessageKind::Message => {
+                        ProviderDispatchIntent::Message
+                    }
+                    harness_core::agentfirm_api::TeamMessageKind::Control => {
+                        ProviderDispatchIntent::Control
+                    }
+                    harness_core::agentfirm_api::TeamMessageKind::ProviderInteractionRequest => {
+                        ProviderDispatchIntent::ProviderInteractionRequest
+                    }
+                    harness_core::agentfirm_api::TeamMessageKind::ProviderInteractionResponse => {
+                        ProviderDispatchIntent::ProviderInteractionResponse
+                    }
+                },
+                body: message.body,
+                correlation_id: message.correlation_id,
+                causation_id: message.causation_id,
+                response_intent: Some(match message.response_intent {
+                    harness_core::agentfirm_api::ResponseIntent::Informational => {
+                        ProviderResponseIntent::Informational
+                    }
+                    harness_core::agentfirm_api::ResponseIntent::ResponseRequired => {
+                        ProviderResponseIntent::ResponseRequired
+                    }
+                }),
+                evidence_refs: message.evidence_refs,
+                deliveries: message_deliveries,
+                created_at: message.created_at,
+            });
+        }
+    }
+    team_messages.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
     let works = store.latest_works()?;
     let work_events = store.work_events()?;
     let work_deliveries = store.latest_work_deliveries()?;
@@ -38752,7 +39034,7 @@ team-run start      --id <id> [--max-concurrency <n>] [--idle-timeout-s <n>]
 team-run add-member --id <id> --member <spec> [--initial-work <text>]
 team-run status     --id <id> [--json]
 team-run wait       --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
-team-run send       --id <id> --from <actor> --to <csv> --kind message|handoff|control
+team-run send       --id <id> --from <actor> --to <csv> --kind message|control
                     --body <text> [--response-required|--informational]
                     [--work-id <id>] [--correlation-id <id>] [--json]
 team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]
@@ -38769,15 +39051,11 @@ const CHEATSHEET_WORK: &str = r#"work create --team-run-id <id> --title <text> -
   [--claim-mode team_claim --eligible-member-id <id>]
   [--priority low|normal|high|urgent] [--context <md>]
   [--prerequisite-work-id <id>] [--idempotency-key <key>]
-  [--github-issue owner/repo#N] [--gate <spec>]
-  [--worktree <path> --workspace-base <ref> --workspace-no-cleanup]
-  [--workspace-kind worktree|dir|inherit --workspace-path <path>]
+  [--github-issue owner/repo#N]
 work list --team-run-id <id> [--brief] [--since <cursor>]
   [--status <status>] [--member-run-id <id>]
 work show --work-id <id>
 work assign --work-id <id> --expected-version <n> --member-run-id <id> [--idempotency-key <key>]
-work review --team-run-id <id> --work-id <id> --expected-version <n>
-  --verdict pass|fail|blocked|needs_changes --summary <text> [--member-run-id <id>]
 work accept --work-id <id> --expected-version <n> [--idempotency-key <key>]
 work request-changes --work-id <id> --expected-version <n> --reason <text> [--idempotency-key <key>]
 work poll-github-ci --team-run-id <id>
@@ -38802,7 +39080,7 @@ team-run add-member --id <id> --member <spec>
 team-run status --id <id> [--json]
 team-run wait --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
 team-run send --id <id> --from <actor> --to <csv>
-  --kind message|handoff|control --body <text> [--work-id <id>] [--json]
+  --kind message|control --body <text> [--work-id <id>] [--json]
 team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]
 team-run dispatch-host --id <id> [--min-age-s <n>] [--timeout-ms <n>]
 team-run ack --id <id> (--message-id <csv>|--all-delivered) [--json]
@@ -38813,7 +39091,7 @@ team-run recover --id <id> [--json]
 work create --team-run-id <id> --title <text> --completion-criteria <text>
   [--owner-member-run-id <id> --claim-mode host_assign]
   [--claim-mode team_claim --eligible-member-id <id>]
-  [--github-issue owner/repo#N] [--gate <spec>] [--worktree <path>]
+  [--github-issue owner/repo#N]
 work list --team-run-id <id> [--brief] [--since <cursor>]
 work show --work-id <id>
 work assign --work-id <id> --expected-version <n> --member-run-id <id>
@@ -44734,16 +45012,13 @@ package:com.tencent.mm
     }
 
     #[test]
-    fn public_team_message_writes_use_three_durable_shapes() {
+    fn public_team_message_writes_use_only_canonical_authored_shapes() {
         assert!(parse_team_message_kind("assignment").is_err());
         assert!(matches!(
             parse_team_message_kind("message"),
             Ok(ProviderDispatchIntent::Message)
         ));
-        assert!(matches!(
-            parse_team_message_kind("handoff"),
-            Ok(ProviderDispatchIntent::Message)
-        ));
+        assert!(parse_team_message_kind("handoff").is_err());
         assert!(matches!(
             parse_team_message_kind("control"),
             Ok(ProviderDispatchIntent::Control)
@@ -44762,12 +45037,8 @@ package:com.tencent.mm
             "plan_approval",
             "broadcast",
         ] {
-            let error = parse_team_message_kind(historical)
-                .expect_err("historical message kinds must be read-only");
-            assert!(
-                matches!(error, CliError::Usage(ref message) if message.contains("historical and read-only")),
-                "unexpected error for {historical}: {error:?}"
-            );
+            parse_team_message_kind(historical)
+                .expect_err("historical message kinds must not be authored");
         }
     }
 
@@ -46248,7 +46519,7 @@ package:com.tencent.mm
         let text = input[0]["text"].as_str().expect("turn text");
 
         assert!(text.contains("message_id: message-1"));
-        assert!(text.contains("kind: assignment"));
+        assert!(text.contains("kind: message"));
         assert!(text.contains("task_id: task-1"));
         assert!(text.contains("from_agent_id: leader"));
         assert!(text.contains("to_agent_id: agent-1"));
@@ -46531,6 +46802,27 @@ package:com.tencent.mm
                 updated_at: "unix-ms:1".into(),
             })
             .expect("insert target AgentTeam");
+        let target_member = TeamMemberSpec {
+            agent_member_id: "agent-target-builder".into(),
+            name: "TargetBuilder".into(),
+            role: "builder".into(),
+            provider: "codex".into(),
+            execution_mode: Some("codex_app_server".into()),
+            model: None,
+            effort: None,
+            service_tier: None,
+            provider_cwd_hint: None,
+            owned_paths: vec!["crates/target".into()],
+            resume_native_session_id: None,
+            initial_work: None,
+        };
+        ensure_unit_test_canonical_members(
+            &store,
+            "unit-test-space",
+            "surface-target-team",
+            std::slice::from_ref(&target_member),
+        )
+        .expect("register target canonical AgentMember");
         let target_run = create_team_run(
             &store,
             Some(&project_context),
@@ -46544,20 +46836,7 @@ package:com.tencent.mm
             Some("surface-target-team".into()),
             None,
             None,
-            &[TeamMemberSpec {
-                agent_member_id: "agent-target-builder".into(),
-                name: "TargetBuilder".into(),
-                role: "builder".into(),
-                provider: "codex".into(),
-                execution_mode: Some("codex_app_server".into()),
-                model: None,
-                effort: None,
-                service_tier: None,
-                provider_cwd_hint: None,
-                owned_paths: vec!["crates/target".into()],
-                resume_native_session_id: None,
-                initial_work: None,
-            }],
+            &[target_member],
         )
         .expect("create target TeamRun");
         let source_value = create_team_work_value(

@@ -688,65 +688,6 @@ impl DeliveryDriver {
         let out = self.run(&["init"]);
         assert!(out.success, "init failed: {}", out.stderr);
     }
-
-    /// Create a member for `provider`. When `worktree` is `Some`, pins the member's
-    /// workspace via `--worktree`. Returns the new member id.
-    pub fn create_member(&self, provider: &str, worktree: Option<&Path>) -> String {
-        let mut args = vec![
-            "agent",
-            "create",
-            "--name",
-            "worker",
-            "--role",
-            "worker",
-            "--provider",
-            provider,
-        ];
-        let worktree_str;
-        if let Some(wt) = worktree {
-            worktree_str = wt.display().to_string();
-            args.push("--worktree");
-            args.push(&worktree_str);
-        }
-        let out = self.run(&args);
-        assert!(out.success, "agent create failed: {}", out.stderr);
-        let value: serde_json::Value = serde_json::from_str(&out.stdout)
-            .unwrap_or_else(|e| panic!("create stdout not JSON ({e}): {}", out.stdout));
-        value["id"]
-            .as_str()
-            .expect("member id in create output")
-            .to_string()
-    }
-
-    /// Queue a message for `member_id`.
-    pub fn send_message(&self, member_id: &str, content: &str) {
-        let out = self.run(&[
-            "agent",
-            "send",
-            "--to",
-            member_id,
-            "--from",
-            "lead",
-            "--content",
-            content,
-        ]);
-        assert!(out.success, "agent send failed: {}", out.stderr);
-    }
-
-    /// Deliver queued messages to `member_id`, starting the runtime. Returns the
-    /// delivery output (delivery may report failure since the shim is not a real
-    /// provider; the cwd is recorded regardless).
-    pub fn deliver(&self, member_id: &str) -> CliOutput {
-        self.run(&[
-            "agent",
-            "deliver",
-            "--agent",
-            member_id,
-            "--start-runtime",
-            "--timeout-ms",
-            "5000",
-        ])
-    }
 }
 
 /// Install a fake `pi` executable that handles just enough RPC for team-run

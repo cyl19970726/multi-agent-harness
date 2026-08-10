@@ -4,7 +4,9 @@
 
 mod firm_env;
 
-use firm_env::{current_project_id, run_firm, run_firm_with_env, TempHome};
+use firm_env::{
+    create_canonical_agent_member, current_project_id, run_firm, run_firm_with_env, TempHome,
+};
 
 /// `harness init` a project rooted at `<base>/<name>` and return its id.
 fn init_project(home: &TempHome, name: &str) -> String {
@@ -41,21 +43,11 @@ fn run_err(home: &TempHome, project_id: &str, args: &[&str]) -> String {
 }
 
 fn create_member(home: &TempHome, project_id: &str, id: &str, role: &str) {
-    run_json(
-        home,
-        project_id,
-        &[
-            "agent",
-            "create",
-            "--id",
-            id,
-            "--name",
-            id,
-            "--role",
-            role,
-            "--provider",
-            "kimi",
-        ],
+    let created =
+        create_canonical_agent_member(home, home.base(), project_id, id, id, role, "kimi", &[]);
+    assert!(
+        created.status.success(),
+        "canonical member create failed: {created:?}"
     );
 }
 

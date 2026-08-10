@@ -9,7 +9,7 @@ use std::path::Path;
 mod fake_provider;
 mod firm_env;
 
-use firm_env::{current_project_id, run_firm, TempHome};
+use firm_env::{create_canonical_agent_member, current_project_id, run_firm, TempHome};
 
 /// Init a project and the mandatory flat AgentTeam runtime relation.
 fn init_project(home: &TempHome, name: &str) -> (String, String) {
@@ -56,23 +56,29 @@ fn init_project(home: &TempHome, name: &str) -> (String, String) {
         "mission create failed: {mission:?}"
     );
     let mission_id = String::from_utf8_lossy(&mission.stdout).trim().to_string();
-    let host = run_firm(
+    let host = create_canonical_agent_member(
         home,
         &root,
-        &[
-            "agent",
-            "create",
-            "--name",
-            "pi-host",
-            "--role",
-            "host",
-            "--provider",
-            "codex",
-        ],
+        &project_id,
+        "agent-pi-host",
+        "pi-host",
+        "host",
+        "codex",
+        &[],
     );
     assert!(host.status.success(), "host create failed: {host:?}");
-    let host: serde_json::Value = serde_json::from_slice(&host.stdout).expect("host JSON");
-    let host_id = host["id"].as_str().expect("host id");
+    let host_id = "agent-pi-host";
+    let member = create_canonical_agent_member(
+        home,
+        &root,
+        &project_id,
+        "agent-pi-member",
+        "pi-member",
+        "reviewer",
+        "pi",
+        &[],
+    );
+    assert!(member.status.success(), "member create failed: {member:?}");
     let team = run_firm(
         home,
         &root,
@@ -91,6 +97,8 @@ fn init_project(home: &TempHome, name: &str) -> (String, String) {
             node_id,
             "--member",
             host_id,
+            "--member",
+            "agent-pi-member",
         ],
     );
     assert!(team.status.success(), "team create failed: {team:?}");
@@ -284,7 +292,7 @@ fn pi_rpc_team_member_completes_work_then_host_follow_up_without_disconnect() {
             "--objective",
             "Verify pi integration",
             "--member",
-            "pi-member:reviewer:pi/pi_rpc:any-model@#Review the work and report",
+            "agent-pi-member:reviewer:pi/pi_rpc:any-model@#Review the work and report",
         ],
     );
     assert!(

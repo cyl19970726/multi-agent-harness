@@ -5,7 +5,10 @@
 use std::time::Duration;
 
 mod firm_env;
-use firm_env::{collect_sse_data, current_project_id, run_firm, ServeHandle, TempHome};
+use firm_env::{
+    collect_sse_data, create_canonical_agent_member, current_project_id, run_firm, ServeHandle,
+    TempHome,
+};
 
 fn init_project(home: &TempHome, name: &str) -> String {
     let root = home.base().join(name);
@@ -88,18 +91,33 @@ fn create_team(home: &TempHome, space_id: &str, project_id: &str) -> String {
         "mission-sse-work",
         "Verify external Work stream convergence",
     );
-    let host = run(&[
-        "agent",
-        "create",
-        "--name",
+    let host_id = "agent-sse-host";
+    let host = create_canonical_agent_member(
+        home,
+        home.base(),
+        project_id,
+        host_id,
         "sse-host",
-        "--role",
         "host",
-        "--provider",
         "codex",
-    ]);
-    let host: serde_json::Value = serde_json::from_slice(&host.stdout).expect("host JSON");
-    let host_id = host["id"].as_str().expect("host id");
+        &[],
+    );
+    assert!(host.status.success(), "canonical host failed: {host:?}");
+    let worker_id = "agent-sse-worker";
+    let worker = create_canonical_agent_member(
+        home,
+        home.base(),
+        project_id,
+        worker_id,
+        "worker",
+        "builder",
+        "kimi",
+        &[("FIRM_SPACE", space_id)],
+    );
+    assert!(
+        worker.status.success(),
+        "canonical worker failed: {worker:?}"
+    );
     let team = run(&[
         "team",
         "create",
@@ -115,6 +133,8 @@ fn create_team(home: &TempHome, space_id: &str, project_id: &str) -> String {
         node_id,
         "--member",
         host_id,
+        "--member",
+        worker_id,
     ]);
     let team: serde_json::Value = serde_json::from_slice(&team.stdout).expect("team JSON");
     team["id"].as_str().expect("team id").to_string()
@@ -304,7 +324,7 @@ fn external_work_and_delivery_writes_invalidate_a_healthy_stream_and_snapshot_co
                 "--objective",
                 "Exercise external Work projection",
                 "--member",
-                "worker:builder:kimi#Own external Work",
+                "agent-sse-worker:builder:kimi#Own external Work",
                 "--json",
             ],
         ),

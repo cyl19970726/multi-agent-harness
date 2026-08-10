@@ -13,6 +13,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
+fn current_unix_ms_for_fixture() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("fixture clock")
+        .as_millis()
+        .min(u64::MAX as u128) as u64
+}
+
 pub struct TempHome {
     base: PathBuf,
     home: PathBuf,
@@ -255,6 +263,9 @@ pub struct ServeHandle {
     child: Child,
     node_daemon: Option<Child>,
     port: u16,
+    fixture_store_root: PathBuf,
+    fixture_execution_space_id: String,
+    fixture_mutation_token: String,
 }
 
 impl ServeHandle {
@@ -273,6 +284,23 @@ impl ServeHandle {
         extra_args: &[&str],
         extra_env: &[(&str, &str)],
     ) -> Self {
+        let fixture_execution_space_id = extra_args
+            .windows(2)
+            .find_map(|pair| (pair[0] == "--space").then(|| pair[1].to_string()))
+            .or_else(|| {
+                extra_env.iter().find_map(|(key, value)| {
+                    (*key == "FIRM_SPACE" && !value.is_empty()).then(|| (*value).to_string())
+                })
+            })
+            .unwrap_or_else(|| current_space_id(home));
+        let fixture_store_root = home.spaces_dir().join(&fixture_execution_space_id);
+        let fixture_mutation_token = extra_env
+            .iter()
+            .find_map(|(key, value)| {
+                (*key == "AGENTFIRM_HTTP_MUTATION_TOKEN" && !value.is_empty())
+                    .then(|| (*value).to_string())
+            })
+            .unwrap_or_else(|| "integration-test-http-token".to_string());
         let node_daemon = if home.firm_home().join("NODE_ID").exists() {
             let mut daemon = Command::new(env!("CARGO_BIN_EXE_firm"));
             daemon
@@ -328,6 +356,7 @@ impl ServeHandle {
         }
         cmd.current_dir(cwd).envs(home.envs());
         clear_inherited_native_firm_env(&mut cmd);
+        cmd.env("AGENTFIRM_HTTP_MUTATION_TOKEN", &fixture_mutation_token);
         // Production supervisors never retire an idle Member implicitly.
         // Integration processes need a bounded escape after they have
         // asserted the idle state so test teardown can join cleanly.
@@ -340,6 +369,9 @@ impl ServeHandle {
             child,
             node_daemon,
             port,
+            fixture_store_root,
+            fixture_execution_space_id,
+            fixture_mutation_token,
         };
         handle.wait_until_ready();
         handle
@@ -408,7 +440,265 @@ impl ServeHandle {
 
     /// POST a JSON body to a path, returning (status_code, parsed JSON body).
     pub fn post_json(&self, path: &str, body: &serde_json::Value) -> (u16, serde_json::Value) {
+        if path == "/v1/team-runs" || path.starts_with("/v1/team-runs?") {
+            let prepared = self.prepare_canonical_team_run_fixture(path, body);
+            return self.post_json_with_header(path, &prepared, None);
+        }
+        if path.starts_with("/v1/team-runs/") && path.ends_with("/messages") {
+            return self.post_canonical_team_message_fixture(path, body);
+        }
         self.post_json_with_header(path, body, None)
+    }
+
+    fn post_canonical_team_message_fixture(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> (u16, serde_json::Value) {
+        use harness_store::HarnessStore;
+
+        let team_run_id = path
+            .trim_matches('/')
+            .split('/')
+            .nth(2)
+            .expect("team-run id");
+        let store = HarnessStore::new(&self.fixture_store_root);
+        let runs = store
+            .trust_member_runs(&self.fixture_execution_space_id)
+            .expect("read canonical MemberRuns");
+        let recipient_ids = body
+            .get("recipient_runtime_ids")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let recipients = recipient_ids
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(|recipient| {
+                let stable_id = runs
+                    .iter()
+                    .find(|run| run.id == recipient)
+                    .map(|run| run.agent_member_id.as_str())
+                    .unwrap_or(recipient);
+                serde_json::json!({"kind": "agent_member", "id": stable_id})
+            })
+            .collect::<Vec<_>>();
+        let generation = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let message_id = format!("message-it-{generation}");
+        let now = format!("unix-ms:{}", current_unix_ms_for_fixture());
+        let kind = match body
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("message")
+        {
+            "control" => "control",
+            other => {
+                assert_eq!(other, "message", "unsupported legacy fixture message kind");
+                "message"
+            }
+        };
+        let correlation_id = body
+            .get("correlation_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .or_else(|| {
+                let cause = body.get("causation_id")?.as_str()?;
+                store
+                    .trust_team_messages(&self.fixture_execution_space_id)
+                    .ok()?
+                    .into_iter()
+                    .find(|message| message.id == cause)
+                    .map(|message| message.correlation_id)
+            })
+            .unwrap_or_else(|| message_id.clone());
+        let request = serde_json::json!({
+            "command": "create_team_message",
+            "message": {
+                "id": message_id.clone(),
+                "team_run_id": team_run_id,
+                "work_id": body.get("work_id").cloned().unwrap_or(serde_json::Value::Null),
+                "sender": {"kind": "service", "id": "integration-test-fixture"},
+                "recipients": recipients,
+                "kind": kind,
+                "body": body.get("body").and_then(serde_json::Value::as_str).unwrap_or("test message"),
+                "correlation_id": correlation_id,
+                "causation_id": body.get("causation_id").cloned().unwrap_or(serde_json::Value::Null),
+                "response_intent": body
+                    .get("response_intent")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_else(|| {
+                        if body.get("sender_runtime_id").and_then(serde_json::Value::as_str) == Some("host") {
+                            "response_required"
+                        } else {
+                            "informational"
+                        }
+                    }),
+                "evidence_refs": body.get("evidence_refs").cloned().unwrap_or_else(|| serde_json::json!([])),
+                "created_at": now,
+            },
+            "updated_at": format!("unix-ms:{}", current_unix_ms_for_fixture()),
+        });
+        let expected = "0";
+        let headers = [
+            ("X-AgentFirm-Token", self.fixture_mutation_token.as_str()),
+            ("X-AgentFirm-Actor-Kind", "service"),
+            ("X-AgentFirm-Actor-Id", "integration-test-fixture"),
+            ("Idempotency-Key", message_id.as_str()),
+            ("If-Match", expected),
+        ];
+        let (status, response) = self.post_json_with_headers(path, &request, &headers);
+        if status == 200 {
+            let mut result = response
+                .get("projection")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            if let Some(result) = result.as_object_mut() {
+                result.insert("status".into(), serde_json::Value::String("queued".into()));
+                result.insert(
+                    "deliveries".into(),
+                    serde_json::json!([{"status": "queued", "attempt": 1}]),
+                );
+            }
+            return (
+                status,
+                serde_json::json!({
+                    "ok": true,
+                    "result": result,
+                    "canonical": response,
+                }),
+            );
+        }
+        (status, response)
+    }
+
+    /// Older runtime integration scenarios describe provider inputs inline.
+    /// Production now requires every input to reference a pre-existing
+    /// canonical AgentMember that belongs to the selected flat Team. Preserve
+    /// those scenarios by materializing their prerequisites in the isolated
+    /// test store before sending the unchanged production request shape.
+    fn prepare_canonical_team_run_fixture(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> serde_json::Value {
+        use harness_core::agentfirm_api::{
+            ActorKind, ActorRef, AgentMember, AgentMemberOrganizationStatus, MutationContext,
+            PermissionCeiling,
+        };
+        use harness_store::HarnessStore;
+
+        let mut prepared = body.clone();
+        let Some(object) = prepared.as_object_mut() else {
+            return prepared;
+        };
+        let execution_space_id = path
+            .split_once('?')
+            .and_then(|(_, query)| {
+                query.split('&').find_map(|pair| {
+                    pair.split_once('=')
+                        .and_then(|(key, value)| (key == "space").then(|| value.to_string()))
+                })
+            })
+            .unwrap_or_else(|| self.fixture_execution_space_id.clone());
+        let store_root = self
+            .fixture_store_root
+            .parent()
+            .expect("execution-spaces root")
+            .join(&execution_space_id);
+        let store = HarnessStore::new(store_root);
+        let teams = store.latest_teams().expect("read fixture AgentTeams");
+        let team_id = object
+            .get("agent_team_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .or_else(|| (teams.len() == 1).then(|| teams.keys().next().unwrap().clone()));
+        let Some(team_id) = team_id else {
+            return prepared;
+        };
+        object
+            .entry("agent_team_id".to_string())
+            .or_insert_with(|| serde_json::Value::String(team_id.clone()));
+        let Some(members) = object
+            .get_mut("members")
+            .and_then(serde_json::Value::as_array_mut)
+        else {
+            return prepared;
+        };
+        let mut team = teams.get(&team_id).cloned().expect("fixture AgentTeam");
+        let creator = ActorRef {
+            kind: ActorKind::Service,
+            id: "integration-test-fixture".into(),
+        };
+        let fixture_generation = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let mut changed_team = false;
+        for (index, member) in members.iter_mut().enumerate() {
+            let Some(member_object) = member.as_object_mut() else {
+                continue;
+            };
+            if member_object.get("agent_member_id").is_some() {
+                continue;
+            }
+            let name = member_object
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("member");
+            let role = member_object
+                .get("role")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("worker");
+            let provider = member_object
+                .get("provider")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("codex");
+            let safe_name = name
+                .chars()
+                .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+                .collect::<String>();
+            let id = format!("agent-it-{fixture_generation}-{index}-{safe_name}");
+            let now = format!("unix-ms:{}", current_unix_ms_for_fixture());
+            store
+                .create_trust_agent_member(
+                    &MutationContext {
+                        execution_space_id: execution_space_id.clone(),
+                        authenticated_actor: creator.clone(),
+                        authority_actor: None,
+                        command_name: "integration_test.agent_member.create".into(),
+                        idempotency_key: format!("integration-test-create-{id}"),
+                        expected_version: 0,
+                    },
+                    AgentMember {
+                        id: id.clone(),
+                        name: name.to_string(),
+                        description: "canonical integration-test AgentMember".into(),
+                        role: role.to_string(),
+                        capabilities: Vec::new(),
+                        skill_refs: Vec::new(),
+                        provider_profile_ref: Some(provider.to_string()),
+                        model_preference: member_object
+                            .get("model")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string),
+                        workspace_policy: "managed-worktree".into(),
+                        permission_ceiling: PermissionCeiling::WorkspaceWrite,
+                        organization_status: AgentMemberOrganizationStatus::Active,
+                        version: 1,
+                        created_by: creator.clone(),
+                        created_at: now.clone(),
+                        updated_at: now,
+                    },
+                )
+                .expect("create canonical fixture AgentMember");
+            if team.host_agent_id != id && !team.member_ids.contains(&id) {
+                team.member_ids.push(id.clone());
+                changed_team = true;
+            }
+            member_object.insert("agent_member_id".into(), serde_json::Value::String(id));
+        }
+        if changed_team {
+            team.updated_at = format!("unix-ms:{}", current_unix_ms_for_fixture());
+            store.append_team(&team).expect("extend fixture AgentTeam");
+        }
+        prepared
     }
 
     /// POST JSON with the server-held Company OS capability token.
@@ -649,6 +939,63 @@ fn split_status_body(raw: &str) -> (u16, String) {
 /// Run `harness <args...>` from `cwd` against `home`; return its Output.
 pub fn run_firm(home: &TempHome, cwd: &Path, args: &[&str]) -> std::process::Output {
     run_firm_with_env(home, cwd, args, &[])
+}
+
+/// Register the canonical durable AgentMember identity used by Team fixtures.
+/// Provider execution details remain on the later TeamMember/MemberRun input;
+/// this helper never recreates the retired runtime-heavy `agent create` row.
+pub fn create_canonical_agent_member(
+    home: &TempHome,
+    cwd: &Path,
+    project_id: &str,
+    id: &str,
+    name: &str,
+    role: &str,
+    provider: &str,
+    extra_env: &[(&str, &str)],
+) -> std::process::Output {
+    let payload = serde_json::json!({
+        "command": "create_agent_member",
+        "member": {
+            "id": id,
+            "name": name,
+            "description": "canonical integration-test AgentMember",
+            "role": role,
+            "capabilities": [],
+            "skill_refs": [],
+            "provider_profile_ref": provider,
+            "model_preference": null,
+            "workspace_policy": "managed-worktree",
+            "permission_ceiling": "workspace_write",
+            "organization_status": "active",
+            "version": 1,
+            "created_by": { "kind": "service", "id": "integration-test" },
+            "created_at": "unix-ms:1",
+            "updated_at": "unix-ms:1"
+        }
+    })
+    .to_string();
+    run_firm_with_env(
+        home,
+        cwd,
+        &[
+            "--project",
+            project_id,
+            "member-trust",
+            "mutate",
+            "--actor-kind",
+            "service",
+            "--actor-id",
+            "integration-test",
+            "--idempotency-key",
+            &format!("integration-test-create-{id}"),
+            "--expected-version",
+            "0",
+            "--json",
+            &payload,
+        ],
+        extra_env,
+    )
 }
 
 /// Run `harness <args...>` from `cwd` against `home` with explicit additional

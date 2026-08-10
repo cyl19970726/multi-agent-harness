@@ -8,7 +8,10 @@ use std::time::{Duration, Instant};
 
 mod fake_provider;
 mod firm_env;
-use firm_env::{current_project_id, run_firm, run_firm_with_env, ServeHandle, TempHome};
+use firm_env::{
+    create_canonical_agent_member, current_project_id, run_firm, run_firm_with_env, ServeHandle,
+    TempHome,
+};
 
 fn init_project(home: &TempHome, name: &str) -> (String, String, String) {
     let root = home.base().join(name);
@@ -37,23 +40,18 @@ fn init_project(home: &TempHome, name: &str) -> (String, String, String) {
         registration.status.success(),
         "register failed: {registration:?}"
     );
-    let host = run_firm(
+    let host = create_canonical_agent_member(
         home,
         &root,
-        &[
-            "agent",
-            "create",
-            "--name",
-            "console-host",
-            "--role",
-            "host",
-            "--provider",
-            "codex",
-        ],
+        &project_id,
+        "agent-console-host",
+        "console-host",
+        "host",
+        "codex",
+        &[],
     );
     assert!(host.status.success(), "host create failed: {host:?}");
-    let host: serde_json::Value = serde_json::from_slice(&host.stdout).expect("host JSON");
-    let host_id = host["id"].as_str().expect("host id").to_string();
+    let host_id = "agent-console-host".to_string();
     (project_id, node_id, host_id)
 }
 

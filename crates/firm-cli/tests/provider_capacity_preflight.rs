@@ -11,7 +11,9 @@ use std::path::Path;
 mod fake_provider;
 mod firm_env;
 
-use firm_env::{current_project_id, run_firm, work_deliveries, TempHome};
+use firm_env::{
+    create_canonical_agent_member, current_project_id, run_firm, work_deliveries, TempHome,
+};
 
 /// A rate-limit payload whose only saturated signal is the one under test.
 fn rate_limits_json(used_percent: i64, reached_type: &str, spend_control: bool) -> String {
@@ -65,23 +67,28 @@ fn init_project(home: &TempHome, name: &str) -> String {
         mission.status.success(),
         "mission create failed: {mission:?}"
     );
-    let host = run_firm(
+    let host = create_canonical_agent_member(
         home,
         &root,
-        &[
-            "agent",
-            "create",
-            "--id",
-            "agent-capacity-host",
-            "--name",
-            "capacity-host",
-            "--role",
-            "host",
-            "--provider",
-            "codex",
-        ],
+        &project_id,
+        "agent-capacity-host",
+        "capacity-host",
+        "host",
+        "codex",
+        &[],
     );
     assert!(host.status.success(), "host create failed: {host:?}");
+    let worker = create_canonical_agent_member(
+        home,
+        &root,
+        &project_id,
+        "codex-worker",
+        "codex-worker",
+        "implementer",
+        "codex",
+        &[],
+    );
+    assert!(worker.status.success(), "worker create failed: {worker:?}");
     let team = run_firm(
         home,
         &root,
@@ -102,6 +109,8 @@ fn init_project(home: &TempHome, name: &str) -> String {
             node_id,
             "--member",
             "agent-capacity-host",
+            "--member",
+            "codex-worker",
         ],
     );
     assert!(team.status.success(), "team create failed: {team:?}");
