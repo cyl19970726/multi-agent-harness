@@ -936,7 +936,20 @@ pub struct Review {
     pub residual_risk: Option<String>,
     pub missing_validation: Vec<String>,
     pub evidence_ids: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_present_review_actor")]
+    pub performed_by_actor: Option<TeamActorRef>,
+    #[serde(default, deserialize_with = "deserialize_present_review_actor")]
+    pub authority_actor: Option<TeamActorRef>,
     pub created_at: String,
+}
+
+fn deserialize_present_review_actor<'de, D>(
+    deserializer: D,
+) -> Result<Option<TeamActorRef>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    TeamActorRef::deserialize(deserializer).map(Some)
 }
 
 /// Severity of a [`Gap`]. Truly-closed, harness-owned set (matches the GAP
@@ -1301,6 +1314,18 @@ impl Validate for Review {
                 return Err(ValidationError::Required {
                     field: "Review.evidence_ids[]",
                 });
+            }
+        }
+        for (field, actor) in [
+            (
+                "Review.performed_by_actor",
+                self.performed_by_actor.as_ref(),
+            ),
+            ("Review.authority_actor", self.authority_actor.as_ref()),
+        ] {
+            if let Some(actor) = actor {
+                require_non_empty(&actor.id, field)?;
+                validate_actor_metadata(actor, field)?;
             }
         }
         Ok(())
@@ -5525,197 +5550,196 @@ mod tests {
             provider_price_per_mtok("codex")
         );
     }
+}
 
-    }
+#[test]
+fn gap_round_trips_json() {
+    let gap = Gap {
+        id: "gap-1".to_string(),
+        goal_id: Some("goal-1".to_string()),
+        task_id: None,
+        category: "observability".to_string(),
+        severity: GapSeverity::P1,
+        status: GapStatus::Open,
+        summary: "Dashboard does not surface open reviews per task.".to_string(),
+        evidence_ids: vec!["evidence-1".to_string()],
+        next_step: Some("Wire reviewsByTask into the task surface.".to_string()),
+        owner_agent_id: Some("worker-1".to_string()),
+        repro_ref: None,
+        closing_test_ref: None,
+        created_at: "2026-05-26T00:00:00Z".to_string(),
+        updated_at: "2026-05-26T00:00:00Z".to_string(),
+    };
 
-    #[test]
-    fn gap_round_trips_json() {
-        let gap = Gap {
-            id: "gap-1".to_string(),
-            goal_id: Some("goal-1".to_string()),
-            task_id: None,
-            category: "observability".to_string(),
-            severity: GapSeverity::P1,
-            status: GapStatus::Open,
-            summary: "Dashboard does not surface open reviews per task.".to_string(),
-            evidence_ids: vec!["evidence-1".to_string()],
-            next_step: Some("Wire reviewsByTask into the task surface.".to_string()),
-            owner_agent_id: Some("worker-1".to_string()),
-            repro_ref: None,
-            closing_test_ref: None,
-            created_at: "2026-05-26T00:00:00Z".to_string(),
-            updated_at: "2026-05-26T00:00:00Z".to_string(),
-        };
+    let json = serde_json::to_string(&gap).expect("serialize gap");
+    let parsed: Gap = serde_json::from_str(&json).expect("deserialize gap");
 
-        let json = serde_json::to_string(&gap).expect("serialize gap");
-        let parsed: Gap = serde_json::from_str(&json).expect("deserialize gap");
+    assert_eq!(parsed, gap);
+    assert!(parsed.validate().is_ok());
+    // Closed severity/status enums serialize to their snake_case wire values.
+    assert!(json.contains("\"severity\":\"p1\""));
+    assert!(json.contains("\"status\":\"open\""));
+}
 
-        assert_eq!(parsed, gap);
-        assert!(parsed.validate().is_ok());
-        // Closed severity/status enums serialize to their snake_case wire values.
-        assert!(json.contains("\"severity\":\"p1\""));
-        assert!(json.contains("\"status\":\"open\""));
-    }
+#[test]
+fn gap_bug_round_trips_with_bug_fields() {
+    // A Bug is a Gap with category="bug" carrying the optional repro/closing-test
+    // refs; no separate Bug object exists.
+    let bug = Gap {
+        id: "gap-bug-1".to_string(),
+        goal_id: None,
+        task_id: Some("task-1".to_string()),
+        category: "bug".to_string(),
+        severity: GapSeverity::P0,
+        status: GapStatus::InProgress,
+        summary: "Snapshot serialization drops the new gaps key.".to_string(),
+        evidence_ids: vec![],
+        next_step: None,
+        owner_agent_id: Some("worker-2".to_string()),
+        repro_ref: Some("artifacts/repro-1.log".to_string()),
+        closing_test_ref: Some("crates/firm-cli/src/main.rs::snapshot_test".to_string()),
+        created_at: "2026-05-26T00:00:00Z".to_string(),
+        updated_at: "2026-05-26T01:00:00Z".to_string(),
+    };
 
-    #[test]
-    fn gap_bug_round_trips_with_bug_fields() {
-        // A Bug is a Gap with category="bug" carrying the optional repro/closing-test
-        // refs; no separate Bug object exists.
-        let bug = Gap {
-            id: "gap-bug-1".to_string(),
-            goal_id: None,
-            task_id: Some("task-1".to_string()),
-            category: "bug".to_string(),
-            severity: GapSeverity::P0,
-            status: GapStatus::InProgress,
-            summary: "Snapshot serialization drops the new gaps key.".to_string(),
-            evidence_ids: vec![],
-            next_step: None,
-            owner_agent_id: Some("worker-2".to_string()),
-            repro_ref: Some("artifacts/repro-1.log".to_string()),
-            closing_test_ref: Some("crates/firm-cli/src/main.rs::snapshot_test".to_string()),
-            created_at: "2026-05-26T00:00:00Z".to_string(),
-            updated_at: "2026-05-26T01:00:00Z".to_string(),
-        };
+    let json = serde_json::to_string(&bug).expect("serialize bug gap");
+    let parsed: Gap = serde_json::from_str(&json).expect("deserialize bug gap");
 
-        let json = serde_json::to_string(&bug).expect("serialize bug gap");
-        let parsed: Gap = serde_json::from_str(&json).expect("deserialize bug gap");
+    assert_eq!(parsed, bug);
+    assert!(parsed.validate().is_ok());
+    assert!(json.contains("\"status\":\"in_progress\""));
+    assert_eq!(parsed.severity, GapSeverity::P0);
+}
 
-        assert_eq!(parsed, bug);
-        assert!(parsed.validate().is_ok());
-        assert!(json.contains("\"status\":\"in_progress\""));
-        assert_eq!(parsed.severity, GapSeverity::P0);
-    }
+#[test]
+fn vision_round_trips_json() {
+    let vision = Vision {
+        id: "vision-1".to_string(),
+        summary: "Generic harness object-model with a closed learning loop.".to_string(),
+        source_refs: vec!["docs/company-os/vision.md".to_string()],
+        created_at: "2026-05-30T00:00:00Z".to_string(),
+    };
 
-    #[test]
-    fn vision_round_trips_json() {
-        let vision = Vision {
-            id: "vision-1".to_string(),
-            summary: "Generic harness object-model with a closed learning loop.".to_string(),
-            source_refs: vec!["docs/company-os/vision.md".to_string()],
-            created_at: "2026-05-30T00:00:00Z".to_string(),
-        };
+    let json = serde_json::to_string(&vision).expect("serialize vision");
+    let parsed: Vision = serde_json::from_str(&json).expect("deserialize vision");
 
-        let json = serde_json::to_string(&vision).expect("serialize vision");
-        let parsed: Vision = serde_json::from_str(&json).expect("deserialize vision");
+    assert_eq!(parsed, vision);
+    assert!(parsed.validate().is_ok());
+}
 
-        assert_eq!(parsed, vision);
-        assert!(parsed.validate().is_ok());
-    }
+#[test]
+fn project_id_for_path_home_is_global() {
+    let home = std::path::Path::new("/Users/me");
+    assert_eq!(project_id_for_path(home, home), GLOBAL_PROJECT_ID);
+}
 
-    #[test]
-    fn project_id_for_path_home_is_global() {
-        let home = std::path::Path::new("/Users/me");
-        assert_eq!(project_id_for_path(home, home), GLOBAL_PROJECT_ID);
-    }
+#[test]
+fn project_id_for_path_under_home_flattens_to_slug() {
+    let home = std::path::Path::new("/Users/me");
+    assert_eq!(
+        project_id_for_path(std::path::Path::new("/Users/me/multi-agent-harness"), home),
+        "multi-agent-harness"
+    );
+    assert_eq!(
+        project_id_for_path(std::path::Path::new("/Users/me/ai-luodi/jyx3d"), home),
+        "ai-luodi-jyx3d"
+    );
+}
 
-    #[test]
-    fn project_id_for_path_under_home_flattens_to_slug() {
-        let home = std::path::Path::new("/Users/me");
-        assert_eq!(
-            project_id_for_path(std::path::Path::new("/Users/me/multi-agent-harness"), home),
-            "multi-agent-harness"
-        );
-        assert_eq!(
-            project_id_for_path(std::path::Path::new("/Users/me/ai-luodi/jyx3d"), home),
-            "ai-luodi-jyx3d"
-        );
-    }
+#[test]
+fn project_id_for_path_outside_home_is_stable_hash() {
+    let home = std::path::Path::new("/Users/me");
+    let id = project_id_for_path(std::path::Path::new("/opt/work/thing"), home);
+    assert!(id.starts_with("proj-"), "external path → hashed id: {id}");
+    // Stable across calls (a durable id must not change run-to-run).
+    assert_eq!(
+        id,
+        project_id_for_path(std::path::Path::new("/opt/work/thing"), home)
+    );
+    // Distinct paths → distinct ids.
+    assert_ne!(
+        id,
+        project_id_for_path(std::path::Path::new("/opt/work/other"), home)
+    );
+}
 
-    #[test]
-    fn project_id_for_path_outside_home_is_stable_hash() {
-        let home = std::path::Path::new("/Users/me");
-        let id = project_id_for_path(std::path::Path::new("/opt/work/thing"), home);
-        assert!(id.starts_with("proj-"), "external path → hashed id: {id}");
-        // Stable across calls (a durable id must not change run-to-run).
-        assert_eq!(
-            id,
-            project_id_for_path(std::path::Path::new("/opt/work/thing"), home)
-        );
-        // Distinct paths → distinct ids.
-        assert_ne!(
-            id,
-            project_id_for_path(std::path::Path::new("/opt/work/other"), home)
-        );
-    }
+#[test]
+fn project_store_root_is_under_projects() {
+    let home = std::path::Path::new("/Users/me/.firm");
+    assert_eq!(
+        project_store_root(home, "ai-luodi-jyx3d"),
+        std::path::Path::new("/Users/me/.firm/projects/ai-luodi-jyx3d")
+    );
+    assert_eq!(
+        project_store_root(home, GLOBAL_PROJECT_ID),
+        std::path::Path::new("/Users/me/.firm/projects/_global")
+    );
+}
 
-    #[test]
-    fn project_store_root_is_under_projects() {
-        let home = std::path::Path::new("/Users/me/.firm");
-        assert_eq!(
-            project_store_root(home, "ai-luodi-jyx3d"),
-            std::path::Path::new("/Users/me/.firm/projects/ai-luodi-jyx3d")
-        );
-        assert_eq!(
-            project_store_root(home, GLOBAL_PROJECT_ID),
-            std::path::Path::new("/Users/me/.firm/projects/_global")
-        );
-    }
+#[test]
+fn project_context_round_trips_json() {
+    let ctx = ProjectContext {
+        id: "ai-luodi-jyx3d".into(),
+        project_root: std::path::PathBuf::from("/Users/me/ai-luodi/jyx3d"),
+        store_root: std::path::PathBuf::from("/Users/me/.firm/projects/ai-luodi-jyx3d"),
+        kind: ProjectKind::Repo,
+        is_git_repo: true,
+    };
+    let json = serde_json::to_string(&ctx).expect("serialize");
+    assert_eq!(
+        serde_json::from_str::<ProjectContext>(&json).expect("deserialize"),
+        ctx
+    );
+    // kind is snake_case on the wire.
+    assert!(json.contains("\"kind\":\"repo\""));
+}
 
-    #[test]
-    fn project_context_round_trips_json() {
-        let ctx = ProjectContext {
-            id: "ai-luodi-jyx3d".into(),
-            project_root: std::path::PathBuf::from("/Users/me/ai-luodi/jyx3d"),
-            store_root: std::path::PathBuf::from("/Users/me/.firm/projects/ai-luodi-jyx3d"),
-            kind: ProjectKind::Repo,
-            is_git_repo: true,
-        };
-        let json = serde_json::to_string(&ctx).expect("serialize");
-        assert_eq!(
-            serde_json::from_str::<ProjectContext>(&json).expect("deserialize"),
-            ctx
-        );
-        // kind is snake_case on the wire.
-        assert!(json.contains("\"kind\":\"repo\""));
-    }
+#[test]
+fn validation_rejects_missing_required_id() {
+    let member = ProviderLaunchProfile {
+        id: "".to_string(),
+        name: "Leader".to_string(),
+        description: "Lead agent".to_string(),
+        role: "leader".to_string(),
+        provider: "codex".to_string(),
+        model: None,
+        profile: None,
+        provider_config: ProviderLaunchConfig::default(),
+        capabilities: vec![],
+        team_ids: vec![],
+        prompt_ref: None,
+        skill_refs: vec![],
+        workspace_policy: None,
+        worktree_ref: None,
+        permission_profile: None,
+        runtime_workspace_roots: Vec::new(),
+        status: ProviderLaunchStatus::Idle,
+        current_task_id: None,
+        current_proposal_id: None,
+        provider_runtime_id: None,
+        native_session: None,
+        provider_thread_id: None,
+        provider_agent_path: None,
+        provider_agent_nickname: None,
+        provider_agent_role: None,
+        control_endpoint: None,
+        created_at: "2026-05-26T00:00:00Z".to_string(),
+        last_seen_at: None,
+    };
 
-    #[test]
-    fn validation_rejects_missing_required_id() {
-        let member = ProviderLaunchProfile {
-            id: "".to_string(),
-            name: "Leader".to_string(),
-            description: "Lead agent".to_string(),
-            role: "leader".to_string(),
-            provider: "codex".to_string(),
-            model: None,
-            profile: None,
-            provider_config: ProviderLaunchConfig::default(),
-            capabilities: vec![],
-            team_ids: vec![],
-            prompt_ref: None,
-            skill_refs: vec![],
-            workspace_policy: None,
-            worktree_ref: None,
-            permission_profile: None,
-            runtime_workspace_roots: Vec::new(),
-            status: ProviderLaunchStatus::Idle,
-            current_task_id: None,
-            current_proposal_id: None,
-            provider_runtime_id: None,
-            native_session: None,
-            provider_thread_id: None,
-            provider_agent_path: None,
-            provider_agent_nickname: None,
-            provider_agent_role: None,
-            control_endpoint: None,
-            created_at: "2026-05-26T00:00:00Z".to_string(),
-            last_seen_at: None,
-        };
+    assert_eq!(
+        member.validate(),
+        Err(ValidationError::Required {
+            field: "ProviderLaunchProfile.id"
+        })
+    );
+}
 
-        assert_eq!(
-            member.validate(),
-            Err(ValidationError::Required {
-                field: "ProviderLaunchProfile.id"
-            })
-        );
-    }
-
-    #[test]
-    fn message_sender_kind_defaults_to_agent_and_persists_operator() {
-        // A record persisted before sender_kind existed omits the field entirely.
-        // It must deserialize as SenderKind::Agent (additive-optional backfill).
-        let legacy_json = r#"{
+#[test]
+fn message_sender_kind_defaults_to_agent_and_persists_operator() {
+    // A record persisted before sender_kind existed omits the field entirely.
+    // It must deserialize as SenderKind::Agent (additive-optional backfill).
+    let legacy_json = r#"{
             "id": "msg-legacy",
             "task_id": null,
             "from_agent_id": "leader-1",
@@ -5728,1257 +5752,1253 @@ mod tests {
             "created_at": "2026-05-26T00:00:00Z",
             "delivery": null
         }"#;
-        let legacy: Message =
-            serde_json::from_str(legacy_json).expect("deserialize legacy message");
-        assert_eq!(legacy.sender_kind, SenderKind::Agent);
-        assert!(legacy.validate().is_ok());
+    let legacy: Message = serde_json::from_str(legacy_json).expect("deserialize legacy message");
+    assert_eq!(legacy.sender_kind, SenderKind::Agent);
+    assert!(legacy.validate().is_ok());
 
-        // An operator-authored message uses the reserved "operator" from id and
-        // round-trips its sender_kind without loss.
-        let operator = Message {
-            id: "msg-op".to_string(),
-            task_id: None,
-            from_agent_id: "operator".to_string(),
-            to_agent_id: Some("agent-1".to_string()),
-            channel: None,
-            kind: MessageKind::Assignment,
-            delivery_status: MessageDeliveryStatus::Queued,
-            content: "do the thing".to_string(),
-            evidence_ids: vec![],
-            created_at: "2026-05-26T00:00:00Z".to_string(),
-            delivery: None,
-            sender_kind: SenderKind::Operator,
-        };
-        let json = serde_json::to_string(&operator).expect("serialize operator message");
-        assert!(
-            json.contains("\"sender_kind\":\"operator\""),
-            "operator message must serialize sender_kind as snake_case: {json}"
-        );
-        let parsed: Message = serde_json::from_str(&json).expect("deserialize operator message");
-        assert_eq!(parsed, operator);
-        assert_eq!(parsed.sender_kind, SenderKind::Operator);
-        assert!(parsed.validate().is_ok());
+    // An operator-authored message uses the reserved "operator" from id and
+    // round-trips its sender_kind without loss.
+    let operator = Message {
+        id: "msg-op".to_string(),
+        task_id: None,
+        from_agent_id: "operator".to_string(),
+        to_agent_id: Some("agent-1".to_string()),
+        channel: None,
+        kind: MessageKind::Assignment,
+        delivery_status: MessageDeliveryStatus::Queued,
+        content: "do the thing".to_string(),
+        evidence_ids: vec![],
+        created_at: "2026-05-26T00:00:00Z".to_string(),
+        delivery: None,
+        sender_kind: SenderKind::Operator,
+    };
+    let json = serde_json::to_string(&operator).expect("serialize operator message");
+    assert!(
+        json.contains("\"sender_kind\":\"operator\""),
+        "operator message must serialize sender_kind as snake_case: {json}"
+    );
+    let parsed: Message = serde_json::from_str(&json).expect("deserialize operator message");
+    assert_eq!(parsed, operator);
+    assert_eq!(parsed.sender_kind, SenderKind::Operator);
+    assert!(parsed.validate().is_ok());
+}
+
+fn sample_member() -> ProviderLaunchProfile {
+    ProviderLaunchProfile {
+        id: "agent-1".to_string(),
+        name: "Worker".to_string(),
+        description: "A worker member".to_string(),
+        role: "worker".to_string(),
+        provider: "codex".to_string(),
+        model: Some("o3".to_string()),
+        profile: None,
+        provider_config: ProviderLaunchConfig::default(),
+        capabilities: vec!["code".to_string()],
+        team_ids: vec![],
+        prompt_ref: Some(".firm/prompts/worker.md".to_string()),
+        skill_refs: vec!["firm-workflow".to_string()],
+        workspace_policy: None,
+        worktree_ref: Some("../worktrees/task-1".to_string()),
+        permission_profile: None,
+        runtime_workspace_roots: Vec::new(),
+        status: ProviderLaunchStatus::Idle,
+        current_task_id: None,
+        current_proposal_id: None,
+        provider_runtime_id: None,
+        native_session: None,
+        provider_thread_id: None,
+        provider_agent_path: None,
+        provider_agent_nickname: None,
+        provider_agent_role: None,
+        control_endpoint: None,
+        created_at: "2026-05-26T00:00:00Z".to_string(),
+        last_seen_at: None,
     }
+}
 
-    fn sample_member() -> ProviderLaunchProfile {
-        ProviderLaunchProfile {
-            id: "agent-1".to_string(),
-            name: "Worker".to_string(),
-            description: "A worker member".to_string(),
-            role: "worker".to_string(),
-            provider: "codex".to_string(),
-            model: Some("o3".to_string()),
-            profile: None,
-            provider_config: ProviderLaunchConfig::default(),
-            capabilities: vec!["code".to_string()],
-            team_ids: vec![],
-            prompt_ref: Some(".firm/prompts/worker.md".to_string()),
-            skill_refs: vec!["firm-workflow".to_string()],
-            workspace_policy: None,
-            worktree_ref: Some("../worktrees/task-1".to_string()),
-            permission_profile: None,
-            runtime_workspace_roots: Vec::new(),
-            status: ProviderLaunchStatus::Idle,
-            current_task_id: None,
-            current_proposal_id: None,
-            provider_runtime_id: None,
-            native_session: None,
-            provider_thread_id: None,
-            provider_agent_path: None,
-            provider_agent_nickname: None,
-            provider_agent_role: None,
-            control_endpoint: None,
-            created_at: "2026-05-26T00:00:00Z".to_string(),
-            last_seen_at: None,
-        }
+fn sample_message() -> Message {
+    Message {
+        id: "msg-1".to_string(),
+        task_id: Some("task-1".to_string()),
+        from_agent_id: "leader-1".to_string(),
+        to_agent_id: Some("agent-1".to_string()),
+        channel: Some("team".to_string()),
+        kind: MessageKind::Assignment,
+        delivery_status: MessageDeliveryStatus::Queued,
+        content: "Implement the launch spec.".to_string(),
+        evidence_ids: vec![],
+        created_at: "2026-05-26T00:00:00Z".to_string(),
+        delivery: None,
+        sender_kind: SenderKind::Agent,
     }
+}
 
-    fn sample_message() -> Message {
-        Message {
-            id: "msg-1".to_string(),
-            task_id: Some("task-1".to_string()),
-            from_agent_id: "leader-1".to_string(),
-            to_agent_id: Some("agent-1".to_string()),
-            channel: Some("team".to_string()),
-            kind: MessageKind::Assignment,
-            delivery_status: MessageDeliveryStatus::Queued,
-            content: "Implement the launch spec.".to_string(),
-            evidence_ids: vec![],
-            created_at: "2026-05-26T00:00:00Z".to_string(),
-            delivery: None,
-            sender_kind: SenderKind::Agent,
-        }
-    }
+#[test]
+fn launch_spec_composes_from_member_and_message() {
+    let mut member = sample_member();
+    member.provider_config.sandbox_policy = Some("workspace-write".to_string());
+    member.provider_config.effort = Some("high".to_string());
+    member.runtime_workspace_roots = vec!["crates/firm-core".to_string()];
+    member.provider_config.runtime_workspace_roots = vec!["crates/firm-cli".to_string()];
+    let message = sample_message();
 
-    #[test]
-    fn launch_spec_composes_from_member_and_message() {
+    let spec = build_launch_spec(&member, &message);
+
+    // Pillar 1 base configuration flows through unchanged.
+    assert_eq!(spec.prompt_ref.as_deref(), Some(".firm/prompts/worker.md"));
+    assert_eq!(spec.model.as_deref(), Some("o3"));
+    assert_eq!(spec.effort.as_deref(), Some("high"));
+    assert_eq!(spec.skill_refs, vec!["firm-workflow".to_string()]);
+    // Pillar 2 workspace flows through as the cwd / worktree root.
+    assert_eq!(spec.workspace.as_deref(), Some("../worktrees/task-1"));
+    // The turn input carries the message envelope + content.
+    assert!(spec.message_content.contains("message_id: msg-1"));
+    assert!(spec.message_content.contains("kind: assignment"));
+    assert!(spec.message_content.contains("task_id: task-1"));
+    assert!(spec.message_content.contains("Implement the launch spec."));
+    // Fields with no neutral source yet are empty/none, not invented.
+    assert!(spec.tools.is_empty());
+    assert!(spec.mcp.is_none());
+    // A fresh member (no prior provider thread/session) carries no resume token.
+    assert!(spec.resume.is_none());
+    assert!(spec.output.is_none());
+}
+
+#[test]
+fn launch_spec_carries_resume_from_member_provider_thread_id() {
+    // A member that already has a provider thread/session id (from a prior
+    // delivery) must produce a spec that resumes that session, so memory
+    // carries across deliveries instead of starting fresh each turn.
+    let mut member = sample_member();
+    member.provider_thread_id = Some("thread-abc-123".to_string());
+    let message = sample_message();
+
+    let spec = build_launch_spec(&member, &message);
+
+    assert_eq!(spec.resume.as_deref(), Some("thread-abc-123"));
+}
+
+#[test]
+fn launch_spec_maps_codex_sandbox_vocabulary_onto_neutral_permission() {
+    // Each Codex sandbox spelling (dashed and camelCase) maps onto the neutral
+    // permission enum; no Codex wire vocabulary survives onto the spec.
+    let cases = [
+        ("read-only", LaunchPermission::ReadOnly),
+        ("readOnly", LaunchPermission::ReadOnly),
+        ("workspace-write", LaunchPermission::WorkspaceWrite),
+        ("workspaceWrite", LaunchPermission::WorkspaceWrite),
+        ("danger-full-access", LaunchPermission::FullAccess),
+        ("dangerFullAccess", LaunchPermission::FullAccess),
+    ];
+    for (policy, expected) in cases {
         let mut member = sample_member();
-        member.provider_config.sandbox_policy = Some("workspace-write".to_string());
-        member.provider_config.effort = Some("high".to_string());
-        member.runtime_workspace_roots = vec!["crates/firm-core".to_string()];
-        member.provider_config.runtime_workspace_roots = vec!["crates/firm-cli".to_string()];
-        let message = sample_message();
-
-        let spec = build_launch_spec(&member, &message);
-
-        // Pillar 1 base configuration flows through unchanged.
-        assert_eq!(spec.prompt_ref.as_deref(), Some(".firm/prompts/worker.md"));
-        assert_eq!(spec.model.as_deref(), Some("o3"));
-        assert_eq!(spec.effort.as_deref(), Some("high"));
-        assert_eq!(spec.skill_refs, vec!["firm-workflow".to_string()]);
-        // Pillar 2 workspace flows through as the cwd / worktree root.
-        assert_eq!(spec.workspace.as_deref(), Some("../worktrees/task-1"));
-        // The turn input carries the message envelope + content.
-        assert!(spec.message_content.contains("message_id: msg-1"));
-        assert!(spec.message_content.contains("kind: assignment"));
-        assert!(spec.message_content.contains("task_id: task-1"));
-        assert!(spec.message_content.contains("Implement the launch spec."));
-        // Fields with no neutral source yet are empty/none, not invented.
-        assert!(spec.tools.is_empty());
-        assert!(spec.mcp.is_none());
-        // A fresh member (no prior provider thread/session) carries no resume token.
-        assert!(spec.resume.is_none());
-        assert!(spec.output.is_none());
-    }
-
-    #[test]
-    fn launch_spec_carries_resume_from_member_provider_thread_id() {
-        // A member that already has a provider thread/session id (from a prior
-        // delivery) must produce a spec that resumes that session, so memory
-        // carries across deliveries instead of starting fresh each turn.
-        let mut member = sample_member();
-        member.provider_thread_id = Some("thread-abc-123".to_string());
-        let message = sample_message();
-
-        let spec = build_launch_spec(&member, &message);
-
-        assert_eq!(spec.resume.as_deref(), Some("thread-abc-123"));
-    }
-
-    #[test]
-    fn launch_spec_maps_codex_sandbox_vocabulary_onto_neutral_permission() {
-        // Each Codex sandbox spelling (dashed and camelCase) maps onto the neutral
-        // permission enum; no Codex wire vocabulary survives onto the spec.
-        let cases = [
-            ("read-only", LaunchPermission::ReadOnly),
-            ("readOnly", LaunchPermission::ReadOnly),
-            ("workspace-write", LaunchPermission::WorkspaceWrite),
-            ("workspaceWrite", LaunchPermission::WorkspaceWrite),
-            ("danger-full-access", LaunchPermission::FullAccess),
-            ("dangerFullAccess", LaunchPermission::FullAccess),
-        ];
-        for (policy, expected) in cases {
-            let mut member = sample_member();
-            member.provider_config.sandbox_policy = Some(policy.to_string());
-            let spec = build_launch_spec(&member, &sample_message());
-            assert_eq!(
-                spec.permission, expected,
-                "policy {policy} should map to {expected:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn launch_spec_writable_roots_dedupe_and_drop_on_read_only() {
-        // workspace_write carries de-duplicated member + provider_config roots.
-        let mut member = sample_member();
-        member.provider_config.sandbox_policy = Some("workspaceWrite".to_string());
-        member.runtime_workspace_roots = vec!["shared".to_string(), "a".to_string()];
-        member.provider_config.runtime_workspace_roots =
-            vec!["shared".to_string(), "b".to_string()];
+        member.provider_config.sandbox_policy = Some(policy.to_string());
         let spec = build_launch_spec(&member, &sample_message());
         assert_eq!(
-            spec.writable_roots,
-            vec!["shared".to_string(), "a".to_string(), "b".to_string()],
-            "writable roots must be member-then-config order, de-duplicated"
-        );
-
-        // read_only never carries writable roots even if the member declares them.
-        member.provider_config.sandbox_policy = Some("read-only".to_string());
-        let spec = build_launch_spec(&member, &sample_message());
-        assert_eq!(spec.permission, LaunchPermission::ReadOnly);
-        assert!(
-            spec.writable_roots.is_empty(),
-            "a read-only turn must not carry writable roots"
+            spec.permission, expected,
+            "policy {policy} should map to {expected:?}"
         );
     }
+}
 
-    #[test]
-    fn launch_spec_absent_sandbox_policy_falls_back_to_safe_default() {
-        // A member that never declared a sandbox policy must not be silently
-        // elevated; it falls back to the default posture.
-        let member = sample_member();
-        assert!(member.provider_config.sandbox_policy.is_none());
-        let spec = build_launch_spec(&member, &sample_message());
-        assert_eq!(spec.permission, LaunchPermission::default());
+#[test]
+fn launch_spec_writable_roots_dedupe_and_drop_on_read_only() {
+    // workspace_write carries de-duplicated member + provider_config roots.
+    let mut member = sample_member();
+    member.provider_config.sandbox_policy = Some("workspaceWrite".to_string());
+    member.runtime_workspace_roots = vec!["shared".to_string(), "a".to_string()];
+    member.provider_config.runtime_workspace_roots = vec!["shared".to_string(), "b".to_string()];
+    let spec = build_launch_spec(&member, &sample_message());
+    assert_eq!(
+        spec.writable_roots,
+        vec!["shared".to_string(), "a".to_string(), "b".to_string()],
+        "writable roots must be member-then-config order, de-duplicated"
+    );
+
+    // read_only never carries writable roots even if the member declares them.
+    member.provider_config.sandbox_policy = Some("read-only".to_string());
+    let spec = build_launch_spec(&member, &sample_message());
+    assert_eq!(spec.permission, LaunchPermission::ReadOnly);
+    assert!(
+        spec.writable_roots.is_empty(),
+        "a read-only turn must not carry writable roots"
+    );
+}
+
+#[test]
+fn launch_spec_absent_sandbox_policy_falls_back_to_safe_default() {
+    // A member that never declared a sandbox policy must not be silently
+    // elevated; it falls back to the default posture.
+    let member = sample_member();
+    assert!(member.provider_config.sandbox_policy.is_none());
+    let spec = build_launch_spec(&member, &sample_message());
+    assert_eq!(spec.permission, LaunchPermission::default());
+}
+
+#[test]
+fn launch_spec_round_trips_json() {
+    let mut member = sample_member();
+    member.provider_config.sandbox_policy = Some("workspaceWrite".to_string());
+    member.provider_config.effort = Some("medium".to_string());
+    member.provider_config.output_schema = Some(serde_json::json!({
+        "type": "object",
+        "properties": { "verdict": { "type": "string" } },
+        "required": ["verdict"]
+    }));
+    member.runtime_workspace_roots = vec!["crates".to_string()];
+    let spec = build_launch_spec(&member, &sample_message());
+
+    let json = serde_json::to_string(&spec).expect("serialize launch spec");
+    let parsed: LaunchSpec = serde_json::from_str(&json).expect("deserialize launch spec");
+    assert_eq!(parsed, spec);
+    // The neutral permission serializes to its snake_case wire spelling, not
+    // the Codex `workspaceWrite` vocabulary it was mapped from.
+    assert!(json.contains("\"permission\":\"workspace_write\""));
+    assert!(json.contains("\"effort\":\"medium\""));
+    assert!(json.contains("\"output_schema\""));
+    assert_eq!(
+        parsed.output_schema, member.provider_config.output_schema,
+        "launch spec should round-trip the optional output schema"
+    );
+    assert!(!json.contains("workspaceWrite"));
+}
+
+#[test]
+fn effort_defaults_to_none_for_legacy_json() {
+    let provider_config: ProviderLaunchConfig = serde_json::from_value(serde_json::json!({
+        "service_tier": "default"
+    }))
+    .expect("legacy provider config without effort should deserialize");
+    assert!(provider_config.effort.is_none());
+    assert!(provider_config.output_schema.is_none());
+
+    let spec: LaunchSpec = serde_json::from_value(serde_json::json!({
+        "message_content": "legacy turn",
+        "model": "o3",
+        "permission": "workspace_write"
+    }))
+    .expect("legacy launch spec without effort should deserialize");
+    assert!(spec.effort.is_none());
+    assert!(spec.output_schema.is_none());
+}
+
+#[test]
+fn build_launch_spec_carries_output_schema_from_provider_config() {
+    let mut member = sample_member();
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": { "ok": { "type": "boolean" } },
+        "required": ["ok"]
+    });
+    member.provider_config.output_schema = Some(schema.clone());
+    let spec = build_launch_spec(&member, &sample_message());
+    assert_eq!(spec.output_schema, Some(schema));
+}
+
+#[test]
+fn launch_permission_wire_values_are_neutral() {
+    assert_eq!(LaunchPermission::ReadOnly.as_str(), "read_only");
+    assert_eq!(LaunchPermission::WorkspaceWrite.as_str(), "workspace_write");
+    assert_eq!(LaunchPermission::FullAccess.as_str(), "full_access");
+    // Round-trip each variant through serde to confirm the wire spelling.
+    for variant in [
+        LaunchPermission::ReadOnly,
+        LaunchPermission::WorkspaceWrite,
+        LaunchPermission::FullAccess,
+    ] {
+        let json = serde_json::to_string(&variant).expect("serialize permission");
+        assert_eq!(json, format!("\"{}\"", variant.as_str()));
+        let parsed: LaunchPermission = serde_json::from_str(&json).expect("deserialize permission");
+        assert_eq!(parsed, variant);
     }
+}
 
-    #[test]
-    fn launch_spec_round_trips_json() {
-        let mut member = sample_member();
-        member.provider_config.sandbox_policy = Some("workspaceWrite".to_string());
-        member.provider_config.effort = Some("medium".to_string());
-        member.provider_config.output_schema = Some(serde_json::json!({
-            "type": "object",
-            "properties": { "verdict": { "type": "string" } },
-            "required": ["verdict"]
-        }));
-        member.runtime_workspace_roots = vec!["crates".to_string()];
-        let spec = build_launch_spec(&member, &sample_message());
-
-        let json = serde_json::to_string(&spec).expect("serialize launch spec");
-        let parsed: LaunchSpec = serde_json::from_str(&json).expect("deserialize launch spec");
-        assert_eq!(parsed, spec);
-        // The neutral permission serializes to its snake_case wire spelling, not
-        // the Codex `workspaceWrite` vocabulary it was mapped from.
-        assert!(json.contains("\"permission\":\"workspace_write\""));
-        assert!(json.contains("\"effort\":\"medium\""));
-        assert!(json.contains("\"output_schema\""));
-        assert_eq!(
-            parsed.output_schema, member.provider_config.output_schema,
-            "launch spec should round-trip the optional output schema"
-        );
-        assert!(!json.contains("workspaceWrite"));
+#[test]
+fn delivery_handle_passes_endpoint_through_verbatim() {
+    // The neutral delivery handle preserves any endpoint scheme verbatim; it
+    // does not interpret or strip `unix://` (that stays in the CLI layer).
+    for endpoint in [
+        "unix:///tmp/agent/codex.sock",
+        "exec://session/abc",
+        "/tmp/plain/path",
+    ] {
+        let handle = DeliveryHandle::from_endpoint(endpoint);
+        assert_eq!(handle.endpoint(), endpoint);
+        let json = serde_json::to_string(&handle).expect("serialize handle");
+        let parsed: DeliveryHandle = serde_json::from_str(&json).expect("deserialize handle");
+        assert_eq!(parsed, handle);
+        assert_eq!(parsed.endpoint(), endpoint);
     }
+}
 
-    #[test]
-    fn effort_defaults_to_none_for_legacy_json() {
-        let provider_config: ProviderLaunchConfig = serde_json::from_value(serde_json::json!({
-            "service_tier": "default"
-        }))
-        .expect("legacy provider config without effort should deserialize");
-        assert!(provider_config.effort.is_none());
-        assert!(provider_config.output_schema.is_none());
+#[test]
+fn launch_mcp_block_round_trips_when_present() {
+    // The MCP block is omitted by build_launch_spec today, but the neutral
+    // shape must round-trip so later WPs can populate it.
+    let mcp = LaunchMcp {
+        servers: vec![LaunchMcpServer {
+            id: "fs".to_string(),
+            transport: Some("stdio".to_string()),
+            command: vec!["mcp-fs".to_string(), "--root".to_string()],
+            url: None,
+            allowed_tools: vec!["read".to_string()],
+        }],
+    };
+    let json = serde_json::to_string(&mcp).expect("serialize mcp");
+    let parsed: LaunchMcp = serde_json::from_str(&json).expect("deserialize mcp");
+    assert_eq!(parsed, mcp);
+}
 
-        let spec: LaunchSpec = serde_json::from_value(serde_json::json!({
-            "message_content": "legacy turn",
-            "model": "o3",
-            "permission": "workspace_write"
-        }))
-        .expect("legacy launch spec without effort should deserialize");
-        assert!(spec.effort.is_none());
-        assert!(spec.output_schema.is_none());
-    }
+#[test]
+fn build_launch_spec_carries_mcp_from_provider_config() {
+    let mut member = sample_member();
+    member.provider_config.mcp = Some(LaunchMcp {
+        servers: vec![LaunchMcpServer {
+            id: "fs".to_string(),
+            transport: Some("stdio".to_string()),
+            command: vec!["mcp-fs".to_string()],
+            url: None,
+            allowed_tools: vec![],
+        }],
+    });
+    let spec = build_launch_spec(&member, &sample_message());
+    assert!(
+        spec.mcp.is_some(),
+        "launch spec should carry mcp from provider_config"
+    );
+    let mcp = spec.mcp.as_ref().unwrap();
+    assert_eq!(mcp.servers.len(), 1);
+    assert_eq!(mcp.servers[0].id, "fs");
+}
 
-    #[test]
-    fn build_launch_spec_carries_output_schema_from_provider_config() {
-        let mut member = sample_member();
-        let schema = serde_json::json!({
-            "type": "object",
-            "properties": { "ok": { "type": "boolean" } },
-            "required": ["ok"]
-        });
-        member.provider_config.output_schema = Some(schema.clone());
-        let spec = build_launch_spec(&member, &sample_message());
-        assert_eq!(spec.output_schema, Some(schema));
-    }
+#[test]
+fn build_launch_spec_mcp_none_when_absent() {
+    let member = sample_member();
+    assert!(member.provider_config.mcp.is_none());
+    let spec = build_launch_spec(&member, &sample_message());
+    assert!(
+        spec.mcp.is_none(),
+        "launch spec mcp should be none when member has no mcp"
+    );
+}
 
-    #[test]
-    fn launch_permission_wire_values_are_neutral() {
-        assert_eq!(LaunchPermission::ReadOnly.as_str(), "read_only");
-        assert_eq!(LaunchPermission::WorkspaceWrite.as_str(), "workspace_write");
-        assert_eq!(LaunchPermission::FullAccess.as_str(), "full_access");
-        // Round-trip each variant through serde to confirm the wire spelling.
-        for variant in [
-            LaunchPermission::ReadOnly,
-            LaunchPermission::WorkspaceWrite,
-            LaunchPermission::FullAccess,
-        ] {
-            let json = serde_json::to_string(&variant).expect("serialize permission");
-            assert_eq!(json, format!("\"{}\"", variant.as_str()));
-            let parsed: LaunchPermission =
-                serde_json::from_str(&json).expect("deserialize permission");
-            assert_eq!(parsed, variant);
-        }
-    }
+#[test]
+fn build_launch_spec_mcp_round_trips_json() {
+    let mut member = sample_member();
+    member.provider_config.mcp = Some(LaunchMcp {
+        servers: vec![LaunchMcpServer {
+            id: "api".to_string(),
+            transport: Some("http".to_string()),
+            command: vec![],
+            url: Some("http://localhost:3000".to_string()),
+            allowed_tools: vec!["query".to_string()],
+        }],
+    });
+    let spec = build_launch_spec(&member, &sample_message());
+    let json = serde_json::to_string(&spec).expect("serialize spec");
+    let parsed: LaunchSpec = serde_json::from_str(&json).expect("deserialize spec");
+    assert_eq!(parsed.mcp, spec.mcp);
+}
 
-    #[test]
-    fn delivery_handle_passes_endpoint_through_verbatim() {
-        // The neutral delivery handle preserves any endpoint scheme verbatim; it
-        // does not interpret or strip `unix://` (that stays in the CLI layer).
-        for endpoint in [
-            "unix:///tmp/agent/codex.sock",
-            "exec://session/abc",
-            "/tmp/plain/path",
-        ] {
-            let handle = DeliveryHandle::from_endpoint(endpoint);
-            assert_eq!(handle.endpoint(), endpoint);
-            let json = serde_json::to_string(&handle).expect("serialize handle");
-            let parsed: DeliveryHandle = serde_json::from_str(&json).expect("deserialize handle");
-            assert_eq!(parsed, handle);
-            assert_eq!(parsed.endpoint(), endpoint);
-        }
-    }
+#[test]
+fn provider_capabilities_codex_matches_doc_table() {
+    let cap = ProviderCapabilities::codex_exec();
+    assert!(cap.streaming, "Codex exec has --json streaming");
+    assert!(cap.resume, "Codex exec has --session resume");
+    assert!(
+        !cap.mid_turn_approval,
+        "Codex exec has policy pre-approve, no mid-turn"
+    );
+    assert!(cap.subagents, "Codex supports subagents");
+    assert!(cap.mcp, "Codex exec has --config mcp_servers");
+    assert!(!cap.hooks, "Codex exec has limited hooks");
+    assert!(cap.schema, "Codex exec has --output-schema");
+    assert!(!cap.cost, "Codex reports token usage only, no USD");
+}
 
-    #[test]
-    fn launch_mcp_block_round_trips_when_present() {
-        // The MCP block is omitted by build_launch_spec today, but the neutral
-        // shape must round-trip so later WPs can populate it.
-        let mcp = LaunchMcp {
-            servers: vec![LaunchMcpServer {
-                id: "fs".to_string(),
-                transport: Some("stdio".to_string()),
-                command: vec!["mcp-fs".to_string(), "--root".to_string()],
-                url: None,
-                allowed_tools: vec!["read".to_string()],
-            }],
-        };
-        let json = serde_json::to_string(&mcp).expect("serialize mcp");
-        let parsed: LaunchMcp = serde_json::from_str(&json).expect("deserialize mcp");
-        assert_eq!(parsed, mcp);
-    }
+#[test]
+fn provider_capabilities_claude_matches_doc_table() {
+    let cap = ProviderCapabilities::claude_exec();
+    assert!(cap.streaming, "Claude -p has --output-format stream-json");
+    assert!(cap.resume, "Claude has --resume");
+    assert!(!cap.mid_turn_approval, "Claude -p has no mid-turn approval");
+    assert!(cap.subagents, "Claude supports subagents");
+    assert!(cap.mcp, "Claude has --mcp-config");
+    assert!(!cap.hooks, "Claude has no documented hooks");
+    assert!(cap.schema, "Claude has --json-schema");
+    assert!(cap.cost, "Claude reports result.total_cost_usd");
+}
 
-    #[test]
-    fn build_launch_spec_carries_mcp_from_provider_config() {
-        let mut member = sample_member();
-        member.provider_config.mcp = Some(LaunchMcp {
-            servers: vec![LaunchMcpServer {
-                id: "fs".to_string(),
-                transport: Some("stdio".to_string()),
-                command: vec!["mcp-fs".to_string()],
-                url: None,
-                allowed_tools: vec![],
-            }],
-        });
-        let spec = build_launch_spec(&member, &sample_message());
-        assert!(
-            spec.mcp.is_some(),
-            "launch spec should carry mcp from provider_config"
-        );
-        let mcp = spec.mcp.as_ref().unwrap();
-        assert_eq!(mcp.servers.len(), 1);
-        assert_eq!(mcp.servers[0].id, "fs");
-    }
+#[test]
+fn provider_capabilities_round_trips_json() {
+    let cap = ProviderCapabilities::codex_exec();
+    let json = serde_json::to_string(&cap).expect("serialize capabilities");
+    let parsed: ProviderCapabilities =
+        serde_json::from_str(&json).expect("deserialize capabilities");
+    assert_eq!(parsed, cap);
+}
 
-    #[test]
-    fn build_launch_spec_mcp_none_when_absent() {
-        let member = sample_member();
-        assert!(member.provider_config.mcp.is_none());
-        let spec = build_launch_spec(&member, &sample_message());
-        assert!(
-            spec.mcp.is_none(),
-            "launch spec mcp should be none when member has no mcp"
-        );
-    }
+#[test]
+fn provider_capabilities_display_shows_enabled_features() {
+    let cap = ProviderCapabilities::codex_exec();
+    let display = cap.to_string();
+    assert!(display.contains("streaming"));
+    assert!(display.contains("resume"));
+    assert!(display.contains("mcp"));
+    assert!(display.contains("subagents"));
+    assert!(
+        !display.contains("mid_turn_approval"),
+        "disabled features should not show"
+    );
+}
 
-    #[test]
-    fn build_launch_spec_mcp_round_trips_json() {
-        let mut member = sample_member();
-        member.provider_config.mcp = Some(LaunchMcp {
-            servers: vec![LaunchMcpServer {
-                id: "api".to_string(),
-                transport: Some("http".to_string()),
-                command: vec![],
-                url: Some("http://localhost:3000".to_string()),
-                allowed_tools: vec!["query".to_string()],
-            }],
-        });
-        let spec = build_launch_spec(&member, &sample_message());
-        let json = serde_json::to_string(&spec).expect("serialize spec");
-        let parsed: LaunchSpec = serde_json::from_str(&json).expect("deserialize spec");
-        assert_eq!(parsed.mcp, spec.mcp);
-    }
+#[test]
+fn supports_streaming_exec_check() {
+    let mut cap = ProviderCapabilities::codex_exec();
+    assert!(
+        cap.supports_streaming_exec(),
+        "streaming + no mid-turn should be ok"
+    );
+    cap.mid_turn_approval = true;
+    assert!(
+        !cap.supports_streaming_exec(),
+        "mid-turn approval blocks streaming exec"
+    );
+}
 
-    #[test]
-    fn provider_capabilities_codex_matches_doc_table() {
-        let cap = ProviderCapabilities::codex_exec();
-        assert!(cap.streaming, "Codex exec has --json streaming");
-        assert!(cap.resume, "Codex exec has --session resume");
-        assert!(
-            !cap.mid_turn_approval,
-            "Codex exec has policy pre-approve, no mid-turn"
-        );
-        assert!(cap.subagents, "Codex supports subagents");
-        assert!(cap.mcp, "Codex exec has --config mcp_servers");
-        assert!(!cap.hooks, "Codex exec has limited hooks");
-        assert!(cap.schema, "Codex exec has --output-schema");
-        assert!(!cap.cost, "Codex reports token usage only, no USD");
-    }
+#[test]
+fn workspace_observability_fields_round_trip_without_contents() {
+    let snapshot = MemberWorkspaceSnapshot {
+        cwd: "/projects/harness/worktrees/member-1".into(),
+        project_binding_id: Some("harness".into()),
+        resolution_source: Some("member_worktree".into()),
+        git_head: Some("0123456789abcdef".into()),
+        git_branch: Some("feature/member-1".into()),
+        instruction_roots: vec!["/projects/harness".into()],
+        skill_roots: vec!["/projects/harness/.agents/skills".into()],
+    };
+    assert!(snapshot.validate().is_ok());
 
-    #[test]
-    fn provider_capabilities_claude_matches_doc_table() {
-        let cap = ProviderCapabilities::claude_exec();
-        assert!(cap.streaming, "Claude -p has --output-format stream-json");
-        assert!(cap.resume, "Claude has --resume");
-        assert!(!cap.mid_turn_approval, "Claude -p has no mid-turn approval");
-        assert!(cap.subagents, "Claude supports subagents");
-        assert!(cap.mcp, "Claude has --mcp-config");
-        assert!(!cap.hooks, "Claude has no documented hooks");
-        assert!(cap.schema, "Claude has --json-schema");
-        assert!(cap.cost, "Claude reports result.total_cost_usd");
-    }
+    let json = serde_json::to_value(&snapshot).expect("serialize workspace snapshot");
+    assert_eq!(json["cwd"], "/projects/harness/worktrees/member-1");
+    assert!(json.get("instruction_contents").is_none());
+    assert!(json.get("skill_contents").is_none());
+    assert!(json.get("credentials").is_none());
+    assert!(json.get("transcript").is_none());
+    assert!(json.get("thinking").is_none());
+    assert_eq!(
+        serde_json::from_value::<MemberWorkspaceSnapshot>(json).expect("deserialize snapshot"),
+        snapshot
+    );
+}
 
-    #[test]
-    fn provider_capabilities_round_trips_json() {
-        let cap = ProviderCapabilities::codex_exec();
-        let json = serde_json::to_string(&cap).expect("serialize capabilities");
-        let parsed: ProviderCapabilities =
-            serde_json::from_str(&json).expect("deserialize capabilities");
-        assert_eq!(parsed, cap);
-    }
+#[test]
+fn workspace_observability_validation_rejects_empty_locators() {
+    let snapshot = MemberWorkspaceSnapshot {
+        cwd: " ".into(),
+        project_binding_id: None,
+        resolution_source: None,
+        git_head: None,
+        git_branch: None,
+        instruction_roots: Vec::new(),
+        skill_roots: Vec::new(),
+    };
+    assert_eq!(
+        snapshot.validate(),
+        Err(ValidationError::Required {
+            field: "MemberWorkspaceSnapshot.cwd"
+        })
+    );
 
-    #[test]
-    fn provider_capabilities_display_shows_enabled_features() {
-        let cap = ProviderCapabilities::codex_exec();
-        let display = cap.to_string();
-        assert!(display.contains("streaming"));
-        assert!(display.contains("resume"));
-        assert!(display.contains("mcp"));
-        assert!(display.contains("subagents"));
-        assert!(
-            !display.contains("mid_turn_approval"),
-            "disabled features should not show"
-        );
-    }
+    let snapshot = MemberWorkspaceSnapshot {
+        cwd: "/projects/harness".into(),
+        project_binding_id: None,
+        resolution_source: None,
+        git_head: None,
+        git_branch: None,
+        instruction_roots: vec![String::new()],
+        skill_roots: Vec::new(),
+    };
+    assert_eq!(
+        snapshot.validate(),
+        Err(ValidationError::Required {
+            field: "MemberWorkspaceSnapshot.instruction_roots"
+        })
+    );
+}
 
-    #[test]
-    fn supports_streaming_exec_check() {
-        let mut cap = ProviderCapabilities::codex_exec();
-        assert!(
-            cap.supports_streaming_exec(),
-            "streaming + no mid-turn should be ok"
-        );
-        cap.mid_turn_approval = true;
-        assert!(
-            !cap.supports_streaming_exec(),
-            "mid-turn approval blocks streaming exec"
-        );
-    }
-
-    #[test]
-    fn workspace_observability_fields_round_trip_without_contents() {
-        let snapshot = MemberWorkspaceSnapshot {
-            cwd: "/projects/harness/worktrees/member-1".into(),
-            project_binding_id: Some("harness".into()),
-            resolution_source: Some("member_worktree".into()),
-            git_head: Some("0123456789abcdef".into()),
-            git_branch: Some("feature/member-1".into()),
-            instruction_roots: vec!["/projects/harness".into()],
-            skill_roots: vec!["/projects/harness/.agents/skills".into()],
-        };
-        assert!(snapshot.validate().is_ok());
-
-        let json = serde_json::to_value(&snapshot).expect("serialize workspace snapshot");
-        assert_eq!(json["cwd"], "/projects/harness/worktrees/member-1");
-        assert!(json.get("instruction_contents").is_none());
-        assert!(json.get("skill_contents").is_none());
-        assert!(json.get("credentials").is_none());
-        assert!(json.get("transcript").is_none());
-        assert!(json.get("thinking").is_none());
-        assert_eq!(
-            serde_json::from_value::<MemberWorkspaceSnapshot>(json).expect("deserialize snapshot"),
-            snapshot
-        );
-    }
-
-    #[test]
-    fn workspace_observability_validation_rejects_empty_locators() {
-        let snapshot = MemberWorkspaceSnapshot {
-            cwd: " ".into(),
-            project_binding_id: None,
-            resolution_source: None,
-            git_head: None,
-            git_branch: None,
-            instruction_roots: Vec::new(),
-            skill_roots: Vec::new(),
-        };
-        assert_eq!(
-            snapshot.validate(),
-            Err(ValidationError::Required {
-                field: "MemberWorkspaceSnapshot.cwd"
-            })
-        );
-
-        let snapshot = MemberWorkspaceSnapshot {
-            cwd: "/projects/harness".into(),
-            project_binding_id: None,
-            resolution_source: None,
-            git_head: None,
-            git_branch: None,
-            instruction_roots: vec![String::new()],
-            skill_roots: Vec::new(),
-        };
-        assert_eq!(
-            snapshot.validate(),
-            Err(ValidationError::Required {
-                field: "MemberWorkspaceSnapshot.instruction_roots"
-            })
-        );
-    }
-
-    #[test]
-    fn workspace_rows_deserialize_with_optional_observability_fields() {
-        let team: AgentTeamRun = serde_json::from_str(
+#[test]
+fn workspace_rows_deserialize_with_optional_observability_fields() {
+    let team: AgentTeamRun = serde_json::from_str(
             r#"{"id":"tr-1","agent_team_id":"team-1","execution_node_id":"0f95cac7-5ff8-4c76-8f36-9c8f208815d3","project_binding_id":"project-1","host_surface":"codex-app","objective":"work","status":"planning","created_at":"unix-ms:1","updated_at":"unix-ms:1"}"#,
         )
         .expect("deserialize team run");
-        assert!(team.execution_root.is_none());
+    assert!(team.execution_root.is_none());
 
-        let member: MemberRun = serde_json::from_str(
+    let member: MemberRun = serde_json::from_str(
             r#"{"id":"mr-legacy","team_run_id":"tr-legacy","name":"worker","role":"worker","provider":"codex","status":"idle","started_at":"unix-ms:1"}"#,
         )
         .expect("deserialize legacy member run");
-        assert!(member.worktree_ref.is_none());
-        assert!(member.workspace_snapshot.is_none());
-        assert_eq!(
-            member.provider_controls,
-            ProviderExecutionControls::default(),
-            "historical rows stay readable without inventing requested or effective controls"
+    assert!(member.worktree_ref.is_none());
+    assert!(member.workspace_snapshot.is_none());
+    assert_eq!(
+        member.provider_controls,
+        ProviderExecutionControls::default(),
+        "historical rows stay readable without inventing requested or effective controls"
+    );
+}
+
+#[test]
+fn provider_execution_controls_separate_intent_from_native_receipt() {
+    let mut controls = ProviderExecutionControls::requested(
+        Some("gpt-5.6-sol".into()),
+        Some("max".into()),
+        Some("priority".into()),
+    );
+
+    assert_eq!(controls.model.status, ProviderControlStatus::Requested);
+    assert_eq!(controls.model.effective, None);
+    controls
+        .model
+        .mark_effective(Some("gpt-5.6-sol".into()), "confirmed by provider response");
+    controls
+        .service_tier
+        .mark_unsupported("provider exposes no service tier");
+    controls
+        .reasoning_effort
+        .mark_review_required("installed provider version is not reviewed");
+
+    assert_eq!(controls.model.status, ProviderControlStatus::Effective);
+    assert_eq!(
+        controls.service_tier.status,
+        ProviderControlStatus::Unsupported
+    );
+    assert_eq!(
+        controls.reasoning_effort.status,
+        ProviderControlStatus::ReviewRequired
+    );
+    assert_eq!(controls.reasoning_effort.effective, None);
+
+    let encoded = serde_json::to_string(&controls).expect("serialize controls");
+    let decoded: ProviderExecutionControls =
+        serde_json::from_str(&encoded).expect("deserialize controls");
+    assert_eq!(decoded, controls);
+}
+
+fn capacity_snapshot(
+    state: ProviderCapacityState,
+    observed_unix_ms: u64,
+) -> ProviderCapacitySnapshot {
+    ProviderCapacitySnapshot {
+        provider: "kimi".to_string(),
+        execution_mode: "kimi_acp".to_string(),
+        account: ProviderAccountRef {
+            source: "oauth_credentials_file".to_string(),
+            identifier: None,
+            plan: None,
+        },
+        state,
+        observed_at: "unix-ms:1000".to_string(),
+        observed_unix_ms,
+        reset_at: None,
+        evidence_source: ProviderCapacityEvidence::ProviderError,
+        confidence: ProviderCapacityConfidence::Observed,
+        windows: Vec::new(),
+        diagnosis: None,
+        runtime_context: Vec::new(),
+        detail: None,
+    }
+}
+
+#[test]
+fn capacity_default_state_is_unknown_and_never_available() {
+    assert_eq!(
+        ProviderCapacityState::default(),
+        ProviderCapacityState::Unknown
+    );
+    assert!(!ProviderCapacityState::Unknown.is_known_unavailable());
+    assert!(!ProviderCapacityState::Available.is_known_unavailable());
+    assert!(!ProviderCapacityState::Limited.is_known_unavailable());
+    assert!(ProviderCapacityState::Exhausted.is_known_unavailable());
+    assert!(ProviderCapacityState::Unauthorized.is_known_unavailable());
+}
+
+#[test]
+fn capacity_freshness_uses_the_observation_timestamp() {
+    let snapshot = capacity_snapshot(ProviderCapacityState::Exhausted, 1_000);
+    assert_eq!(
+        snapshot.freshness(1_500, 1_000),
+        ProviderCapacityFreshness::Fresh
+    );
+    assert_eq!(
+        snapshot.freshness(5_000, 1_000),
+        ProviderCapacityFreshness::Stale
+    );
+    // A future-dated or unstamped observation is never treated as fresh.
+    assert_eq!(
+        snapshot.freshness(500, 1_000),
+        ProviderCapacityFreshness::Unknown
+    );
+    assert_eq!(
+        capacity_snapshot(ProviderCapacityState::Exhausted, 0).freshness(5_000, 1_000),
+        ProviderCapacityFreshness::Unknown
+    );
+}
+
+#[test]
+fn fresh_known_unavailable_capacity_blocks_start() {
+    for state in [
+        ProviderCapacityState::Exhausted,
+        ProviderCapacityState::Unauthorized,
+    ] {
+        let snapshot = capacity_snapshot(state, 1_000);
+        let decision = provider_capacity_start_decision(Some(&snapshot), 1_100, 1_000);
+        assert!(decision.is_blocked(), "{state:?} must block a fresh start");
+        assert!(
+            decision.reason().contains("kimi_acp"),
+            "the blocking reason names the execution mode: {}",
+            decision.reason()
         );
     }
+}
 
-    #[test]
-    fn provider_execution_controls_separate_intent_from_native_receipt() {
-        let mut controls = ProviderExecutionControls::requested(
-            Some("gpt-5.6-sol".into()),
-            Some("max".into()),
-            Some("priority".into()),
-        );
+#[test]
+fn unknown_absent_and_stale_capacity_never_block_and_never_claim_available() {
+    let unknown = capacity_snapshot(ProviderCapacityState::Unknown, 1_000);
+    assert!(!provider_capacity_start_decision(Some(&unknown), 1_100, 1_000).is_blocked());
+    assert_ne!(unknown.state, ProviderCapacityState::Available);
 
-        assert_eq!(controls.model.status, ProviderControlStatus::Requested);
-        assert_eq!(controls.model.effective, None);
-        controls
-            .model
-            .mark_effective(Some("gpt-5.6-sol".into()), "confirmed by provider response");
-        controls
-            .service_tier
-            .mark_unsupported("provider exposes no service tier");
-        controls
-            .reasoning_effort
-            .mark_review_required("installed provider version is not reviewed");
+    assert!(!provider_capacity_start_decision(None, 1_100, 1_000).is_blocked());
 
-        assert_eq!(controls.model.status, ProviderControlStatus::Effective);
-        assert_eq!(
-            controls.service_tier.status,
-            ProviderControlStatus::Unsupported
-        );
-        assert_eq!(
-            controls.reasoning_effort.status,
-            ProviderControlStatus::ReviewRequired
-        );
-        assert_eq!(controls.reasoning_effort.effective, None);
+    let stale = capacity_snapshot(ProviderCapacityState::Exhausted, 1_000);
+    let decision = provider_capacity_start_decision(Some(&stale), 100_000, 1_000);
+    assert!(!decision.is_blocked());
+    assert!(decision.reason().contains("no longer fresh"));
+}
 
-        let encoded = serde_json::to_string(&controls).expect("serialize controls");
-        let decoded: ProviderExecutionControls =
-            serde_json::from_str(&encoded).expect("deserialize controls");
-        assert_eq!(decoded, controls);
+#[test]
+fn capacity_is_independent_of_adapter_compatibility_and_round_trips_json() {
+    // A reviewed-current adapter says nothing about runtime availability:
+    // this is the Wave 2 evidence (`current` adapter, 403 at request time).
+    let profile = ProviderIntegrationProfile {
+        provider: "claude".to_string(),
+        execution_mode: "claude_agent_sdk".to_string(),
+        execution_driver: MemberExecutionDriver::HostDriven,
+        provider_version: Some("2.1.220".to_string()),
+        adapter_contract_version: Some("claude-agent-sdk-v1".to_string()),
+        reviewed_provider_versions: vec!["2.1.220".to_string()],
+        compatibility_status: ProviderCompatibilityStatus::Current,
+        adapter_reviewed_at: None,
+        compatibility_note: None,
+        interaction_mode: ProviderInteractionMode::EndRoundAndFollowUp,
+        ordinary_message_boundary: OrdinaryMessageBoundary::InTurn,
+        plan_mode: ProviderFeatureMode::Emulated,
+        goal_mode: ProviderFeatureMode::Emulated,
+        tool_event_fidelity: ProviderEventFidelity::Structured,
+        artifact_event_fidelity: ProviderEventFidelity::Structured,
+        supports_cancel: true,
+        supports_resume: true,
+        observes_native_subagents: false,
+        observes_background_tasks: false,
+        thinking_transient_only: true,
+    };
+    let mut snapshot = capacity_snapshot(ProviderCapacityState::Unauthorized, 1_000);
+    snapshot.provider = "claude".to_string();
+    snapshot.execution_mode = "claude_agent_sdk".to_string();
+    snapshot.diagnosis = Some("no HTTPS_PROXY in the Harness process".to_string());
+    snapshot.runtime_context = vec![ProviderRuntimeContextFact {
+        key: "HTTPS_PROXY".to_string(),
+        present: false,
+        note: Some("absent".to_string()),
+    }];
+
+    assert_eq!(
+        profile.compatibility_status,
+        ProviderCompatibilityStatus::Current
+    );
+    assert!(snapshot.state.is_known_unavailable());
+
+    let encoded = serde_json::to_string(&snapshot).expect("serialize snapshot");
+    let decoded: ProviderCapacitySnapshot =
+        serde_json::from_str(&encoded).expect("deserialize snapshot");
+    assert_eq!(decoded, snapshot);
+    assert!(
+        !encoded.contains("compatibility"),
+        "capacity JSON must not carry adapter compatibility: {encoded}"
+    );
+}
+
+fn provider_compatibility_admission(
+    policy: ProviderCompatibilityAdmissionPolicy,
+) -> ProviderCompatibilityAdmission {
+    ProviderCompatibilityAdmission {
+        id: "admission-1".to_string(),
+        project_id: "project-1".to_string(),
+        store_id: "store-1".to_string(),
+        provider: "claude".to_string(),
+        execution_mode: "claude_agent_sdk".to_string(),
+        provider_version: "2.1.220".to_string(),
+        adapter_contract_version: "claude-agent-sdk-v1".to_string(),
+        policy,
+        actor: "operator-1".to_string(),
+        evidence_refs: vec!["evidence-1".to_string()],
+        admitted_at: "unix-ms:1".to_string(),
+        lifecycle: ProviderCompatibilityAdmissionLifecycle::Active,
+        predecessor_admission_id: None,
+        reason: None,
     }
+}
 
-    fn capacity_snapshot(
-        state: ProviderCapacityState,
-        observed_unix_ms: u64,
-    ) -> ProviderCapacitySnapshot {
-        ProviderCapacitySnapshot {
-            provider: "kimi".to_string(),
-            execution_mode: "kimi_acp".to_string(),
-            account: ProviderAccountRef {
-                source: "oauth_credentials_file".to_string(),
-                identifier: None,
-                plan: None,
-            },
-            state,
-            observed_at: "unix-ms:1000".to_string(),
-            observed_unix_ms,
-            reset_at: None,
-            evidence_source: ProviderCapacityEvidence::ProviderError,
-            confidence: ProviderCapacityConfidence::Observed,
-            windows: Vec::new(),
-            diagnosis: None,
-            runtime_context: Vec::new(),
-            detail: None,
-        }
-    }
-
-    #[test]
-    fn capacity_default_state_is_unknown_and_never_available() {
+#[test]
+fn provider_compatibility_admission_accepts_strict_and_advisory_exact_keys() {
+    for policy in [
+        ProviderCompatibilityAdmissionPolicy::Strict,
+        ProviderCompatibilityAdmissionPolicy::Advisory,
+    ] {
+        let admission = provider_compatibility_admission(policy);
+        assert!(admission.validate().is_ok());
+        assert!(admission.is_active());
         assert_eq!(
-            ProviderCapacityState::default(),
-            ProviderCapacityState::Unknown
+            admission.exact_key(),
+            (
+                "claude",
+                "claude_agent_sdk",
+                "2.1.220",
+                "claude-agent-sdk-v1"
+            )
         );
-        assert!(!ProviderCapacityState::Unknown.is_known_unavailable());
-        assert!(!ProviderCapacityState::Available.is_known_unavailable());
-        assert!(!ProviderCapacityState::Limited.is_known_unavailable());
-        assert!(ProviderCapacityState::Exhausted.is_known_unavailable());
-        assert!(ProviderCapacityState::Unauthorized.is_known_unavailable());
+
+        let encoded = serde_json::to_value(&admission).expect("serialize admission");
+        let decoded: ProviderCompatibilityAdmission =
+            serde_json::from_value(encoded).expect("deserialize admission");
+        assert_eq!(decoded, admission);
     }
+}
 
-    #[test]
-    fn capacity_freshness_uses_the_observation_timestamp() {
-        let snapshot = capacity_snapshot(ProviderCapacityState::Exhausted, 1_000);
-        assert_eq!(
-            snapshot.freshness(1_500, 1_000),
-            ProviderCapacityFreshness::Fresh
-        );
-        assert_eq!(
-            snapshot.freshness(5_000, 1_000),
-            ProviderCapacityFreshness::Stale
-        );
-        // A future-dated or unstamped observation is never treated as fresh.
-        assert_eq!(
-            snapshot.freshness(500, 1_000),
-            ProviderCapacityFreshness::Unknown
-        );
-        assert_eq!(
-            capacity_snapshot(ProviderCapacityState::Exhausted, 0).freshness(5_000, 1_000),
-            ProviderCapacityFreshness::Unknown
-        );
+#[test]
+fn provider_compatibility_admission_rejects_empty_evidence() {
+    let mut admission =
+        provider_compatibility_admission(ProviderCompatibilityAdmissionPolicy::Strict);
+    admission.evidence_refs.clear();
+    assert!(admission.validate().is_err());
+
+    admission.evidence_refs.push("  ".to_string());
+    assert!(admission.validate().is_err());
+}
+
+#[test]
+fn provider_compatibility_admission_rejects_invalid_lifecycle_metadata() {
+    let mut active =
+        provider_compatibility_admission(ProviderCompatibilityAdmissionPolicy::Advisory);
+    active.reason = Some("not valid on an active row".to_string());
+    assert!(active.validate().is_err());
+
+    for lifecycle in [
+        ProviderCompatibilityAdmissionLifecycle::Revoked,
+        ProviderCompatibilityAdmissionLifecycle::Superseded,
+    ] {
+        let mut terminal =
+            provider_compatibility_admission(ProviderCompatibilityAdmissionPolicy::Strict);
+        terminal.lifecycle = lifecycle;
+        assert!(!terminal.is_active());
+        assert!(terminal.validate().is_err());
+
+        terminal.predecessor_admission_id = Some(" ".to_string());
+        terminal.reason = Some("provider contract changed".to_string());
+        assert!(terminal.validate().is_err());
+
+        terminal.predecessor_admission_id = Some("admission-1".to_string());
+        terminal.reason = Some(String::new());
+        assert!(terminal.validate().is_err());
+
+        terminal.reason = Some("provider contract changed".to_string());
+        assert!(terminal.validate().is_ok());
     }
+}
 
-    #[test]
-    fn fresh_known_unavailable_capacity_blocks_start() {
-        for state in [
-            ProviderCapacityState::Exhausted,
-            ProviderCapacityState::Unauthorized,
-        ] {
-            let snapshot = capacity_snapshot(state, 1_000);
-            let decision = provider_capacity_start_decision(Some(&snapshot), 1_100, 1_000);
-            assert!(decision.is_blocked(), "{state:?} must block a fresh start");
-            assert!(
-                decision.reason().contains("kimi_acp"),
-                "the blocking reason names the execution mode: {}",
-                decision.reason()
-            );
-        }
-    }
+#[test]
+fn provider_compatibility_admission_rejects_unknown_fields() {
+    let admission = provider_compatibility_admission(ProviderCompatibilityAdmissionPolicy::Strict);
+    let mut value = serde_json::to_value(admission).expect("serialize admission");
+    value["source_reviewed"] = serde_json::json!(true);
+    let error = serde_json::from_value::<ProviderCompatibilityAdmission>(value)
+        .expect_err("admission wire format must reject unknown fields");
+    assert!(error.to_string().contains("unknown field"));
+}
 
-    #[test]
-    fn unknown_absent_and_stale_capacity_never_block_and_never_claim_available() {
-        let unknown = capacity_snapshot(ProviderCapacityState::Unknown, 1_000);
-        assert!(!provider_capacity_start_decision(Some(&unknown), 1_100, 1_000).is_blocked());
-        assert_ne!(unknown.state, ProviderCapacityState::Available);
+#[test]
+fn provider_compatibility_block_cause_is_typed_and_rejects_unknown_fields() {
+    let cause = ProviderCompatibilityBlockCause {
+        schema_version: ProviderCompatibilityBlockCause::SCHEMA_VERSION,
+        id: "cause-1".into(),
+        member_run_id: "member-1".into(),
+        provider: "codex".into(),
+        execution_mode: "codex_app_server".into(),
+        provider_version: "9.9.9".into(),
+        adapter_contract_version: "codex-app-server-v1".into(),
+        boundary: ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+        compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
+        source: ProviderCompatibilityBlockSource::AdapterCompatibility,
+        probe_error: None,
+        caused_at: "unix-ms:1".into(),
+    };
+    cause.validate().expect("valid typed cause");
+    let mut value = serde_json::to_value(&cause).unwrap();
+    value["forged_authority"] = serde_json::json!(true);
+    assert!(serde_json::from_value::<ProviderCompatibilityBlockCause>(value).is_err());
 
-        assert!(!provider_capacity_start_decision(None, 1_100, 1_000).is_blocked());
+    let mut inconsistent = cause;
+    inconsistent.compatibility_status = ProviderCompatibilityStatus::Unavailable;
+    assert!(inconsistent.validate().is_err());
+    inconsistent.source = ProviderCompatibilityBlockSource::ProbeFailure;
+    inconsistent.probe_error = Some("probe failed".into());
+    inconsistent.validate().expect("typed probe failure");
+}
 
-        let stale = capacity_snapshot(ProviderCapacityState::Exhausted, 1_000);
-        let decision = provider_capacity_start_decision(Some(&stale), 100_000, 1_000);
-        assert!(!decision.is_blocked());
-        assert!(decision.reason().contains("no longer fresh"));
-    }
+#[test]
+fn member_run_rows_without_capacity_stay_readable_and_absent_is_not_available() {
+    let row = serde_json::json!({
+        "id": "member-run-1",
+        "team_run_id": "team-run-1",
+        "name": "Integration",
+        "role": "Integration Engineer",
+        "provider": "claude",
+        "status": "idle",
+        "started_at": "unix-ms:1"
+    });
+    let member: MemberRun = serde_json::from_value(row).expect("legacy member run");
+    assert_eq!(member.provider_capacity, None);
+    assert!(!provider_capacity_start_decision(
+        member.provider_capacity.as_ref(),
+        1_000,
+        PROVIDER_CAPACITY_DEFAULT_TTL_MS
+    )
+    .is_blocked());
+}
 
-    #[test]
-    fn capacity_is_independent_of_adapter_compatibility_and_round_trips_json() {
-        // A reviewed-current adapter says nothing about runtime availability:
-        // this is the Wave 2 evidence (`current` adapter, 403 at request time).
-        let profile = ProviderIntegrationProfile {
-            provider: "claude".to_string(),
-            execution_mode: "claude_agent_sdk".to_string(),
-            execution_driver: MemberExecutionDriver::HostDriven,
-            provider_version: Some("2.1.220".to_string()),
-            adapter_contract_version: Some("claude-agent-sdk-v1".to_string()),
-            reviewed_provider_versions: vec!["2.1.220".to_string()],
-            compatibility_status: ProviderCompatibilityStatus::Current,
-            adapter_reviewed_at: None,
-            compatibility_note: None,
-            interaction_mode: ProviderInteractionMode::EndRoundAndFollowUp,
-            ordinary_message_boundary: OrdinaryMessageBoundary::InTurn,
-            plan_mode: ProviderFeatureMode::Emulated,
-            goal_mode: ProviderFeatureMode::Emulated,
-            tool_event_fidelity: ProviderEventFidelity::Structured,
-            artifact_event_fidelity: ProviderEventFidelity::Structured,
-            supports_cancel: true,
-            supports_resume: true,
-            observes_native_subagents: false,
-            observes_background_tasks: false,
-            thinking_transient_only: true,
-        };
-        let mut snapshot = capacity_snapshot(ProviderCapacityState::Unauthorized, 1_000);
-        snapshot.provider = "claude".to_string();
-        snapshot.execution_mode = "claude_agent_sdk".to_string();
-        snapshot.diagnosis = Some("no HTTPS_PROXY in the Harness process".to_string());
-        snapshot.runtime_context = vec![ProviderRuntimeContextFact {
+/// The emit/schema contract for MemberRun.
+///
+/// `schemas/member-run.schema.json` keeps `additionalProperties: false`, so
+/// any field the emitter serialises that the schema does not declare makes
+/// an emitted MemberRun fail validation against its own schema. This test
+/// round-trips a MemberRun carrying `provider_capacity` and asserts every
+/// emitted key — top level and inside the capacity snapshot — is declared.
+/// It fails on the next undeclared field, not just on `provider_capacity`.
+#[test]
+fn emitted_member_run_keys_are_declared_in_member_run_schema() {
+    let schema: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../schemas/member-run.schema.json"
+        ))
+        .expect("read member-run schema"),
+    )
+    .expect("parse member-run schema");
+    assert_eq!(
+        schema["additionalProperties"],
+        serde_json::Value::Bool(false),
+        "this test only means something while the schema is closed"
+    );
+
+    let snapshot = ProviderCapacitySnapshot {
+        provider: "claude".to_string(),
+        execution_mode: "sdk".to_string(),
+        account: ProviderAccountRef {
+            source: "oauth_credentials_file".to_string(),
+            identifier: Some("acct-primary".to_string()),
+            plan: Some("max".to_string()),
+        },
+        state: ProviderCapacityState::Limited,
+        observed_at: "unix-ms:1785591600000".to_string(),
+        observed_unix_ms: 1_785_591_600_000,
+        reset_at: Some("unix-ms:1785595200000".to_string()),
+        evidence_source: ProviderCapacityEvidence::ProviderQuotaApi,
+        confidence: ProviderCapacityConfidence::Observed,
+        windows: vec![ProviderCapacityWindow {
+            label: "five_hour".to_string(),
+            limit_id: Some("limit-5h".to_string()),
+            used_percent: Some(82),
+            window_duration_mins: Some(300),
+            resets_at: Some("unix-ms:1785595200000".to_string()),
+        }],
+        diagnosis: Some("Account usage is high but not blocking.".to_string()),
+        runtime_context: vec![ProviderRuntimeContextFact {
             key: "HTTPS_PROXY".to_string(),
-            present: false,
-            note: Some("absent".to_string()),
-        }];
+            present: true,
+            note: Some("set".to_string()),
+        }],
+        detail: Some("Provider quota API reported 82% of the five-hour window.".to_string()),
+    };
+    let row = serde_json::json!({
+        "id": "member-run-capacity-1",
+        "team_run_id": "team-run-capacity-1",
+        "name": "Platform Development",
+        "role": "Platform Development",
+        "provider": "claude",
+        "status": "idle",
+        "started_at": "unix-ms:1785591600000"
+    });
+    let mut member: MemberRun = serde_json::from_value(row).expect("member run");
+    member.provider_capacity = Some(snapshot.clone());
+    member.status = MemberRunStatus::Blocked;
+    member.provider_profile = Some(ProviderIntegrationProfile {
+        provider: "claude".into(),
+        execution_mode: "sdk".into(),
+        execution_driver: MemberExecutionDriver::HostDriven,
+        provider_version: Some("2.1.220".into()),
+        adapter_contract_version: Some("claude-sdk-v1".into()),
+        reviewed_provider_versions: Vec::new(),
+        compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
+        adapter_reviewed_at: None,
+        compatibility_note: None,
+        interaction_mode: ProviderInteractionMode::EndRoundAndFollowUp,
+        ordinary_message_boundary: OrdinaryMessageBoundary::InTurn,
+        plan_mode: ProviderFeatureMode::Emulated,
+        goal_mode: ProviderFeatureMode::Emulated,
+        tool_event_fidelity: ProviderEventFidelity::Structured,
+        artifact_event_fidelity: ProviderEventFidelity::Structured,
+        supports_cancel: true,
+        supports_resume: true,
+        observes_native_subagents: false,
+        observes_background_tasks: false,
+        thinking_transient_only: true,
+    });
+    member.provider_compatibility_block_cause = Some(ProviderCompatibilityBlockCause {
+        schema_version: ProviderCompatibilityBlockCause::SCHEMA_VERSION,
+        id: "cause-schema-1".into(),
+        member_run_id: member.id.clone(),
+        provider: "claude".into(),
+        execution_mode: "sdk".into(),
+        provider_version: "2.1.220".into(),
+        adapter_contract_version: "claude-sdk-v1".into(),
+        boundary: ProviderCompatibilityBlockBoundary::StartPersistentExecution,
+        compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
+        source: ProviderCompatibilityBlockSource::AdapterCompatibility,
+        probe_error: None,
+        caused_at: "unix-ms:1785591600000".into(),
+    });
 
-        assert_eq!(
-            profile.compatibility_status,
-            ProviderCompatibilityStatus::Current
-        );
-        assert!(snapshot.state.is_known_unavailable());
-
-        let encoded = serde_json::to_string(&snapshot).expect("serialize snapshot");
-        let decoded: ProviderCapacitySnapshot =
-            serde_json::from_str(&encoded).expect("deserialize snapshot");
-        assert_eq!(decoded, snapshot);
-        assert!(
-            !encoded.contains("compatibility"),
-            "capacity JSON must not carry adapter compatibility: {encoded}"
-        );
-    }
-
-    fn provider_compatibility_admission(
-        policy: ProviderCompatibilityAdmissionPolicy,
-    ) -> ProviderCompatibilityAdmission {
-        ProviderCompatibilityAdmission {
-            id: "admission-1".to_string(),
-            project_id: "project-1".to_string(),
-            store_id: "store-1".to_string(),
-            provider: "claude".to_string(),
-            execution_mode: "claude_agent_sdk".to_string(),
-            provider_version: "2.1.220".to_string(),
-            adapter_contract_version: "claude-agent-sdk-v1".to_string(),
-            policy,
-            actor: "operator-1".to_string(),
-            evidence_refs: vec!["evidence-1".to_string()],
-            admitted_at: "unix-ms:1".to_string(),
-            lifecycle: ProviderCompatibilityAdmissionLifecycle::Active,
-            predecessor_admission_id: None,
-            reason: None,
-        }
-    }
-
-    #[test]
-    fn provider_compatibility_admission_accepts_strict_and_advisory_exact_keys() {
-        for policy in [
-            ProviderCompatibilityAdmissionPolicy::Strict,
-            ProviderCompatibilityAdmissionPolicy::Advisory,
-        ] {
-            let admission = provider_compatibility_admission(policy);
-            assert!(admission.validate().is_ok());
-            assert!(admission.is_active());
-            assert_eq!(
-                admission.exact_key(),
-                (
-                    "claude",
-                    "claude_agent_sdk",
-                    "2.1.220",
-                    "claude-agent-sdk-v1"
-                )
-            );
-
-            let encoded = serde_json::to_value(&admission).expect("serialize admission");
-            let decoded: ProviderCompatibilityAdmission =
-                serde_json::from_value(encoded).expect("deserialize admission");
-            assert_eq!(decoded, admission);
-        }
-    }
-
-    #[test]
-    fn provider_compatibility_admission_rejects_empty_evidence() {
-        let mut admission =
-            provider_compatibility_admission(ProviderCompatibilityAdmissionPolicy::Strict);
-        admission.evidence_refs.clear();
-        assert!(admission.validate().is_err());
-
-        admission.evidence_refs.push("  ".to_string());
-        assert!(admission.validate().is_err());
-    }
-
-    #[test]
-    fn provider_compatibility_admission_rejects_invalid_lifecycle_metadata() {
-        let mut active =
-            provider_compatibility_admission(ProviderCompatibilityAdmissionPolicy::Advisory);
-        active.reason = Some("not valid on an active row".to_string());
-        assert!(active.validate().is_err());
-
-        for lifecycle in [
-            ProviderCompatibilityAdmissionLifecycle::Revoked,
-            ProviderCompatibilityAdmissionLifecycle::Superseded,
-        ] {
-            let mut terminal =
-                provider_compatibility_admission(ProviderCompatibilityAdmissionPolicy::Strict);
-            terminal.lifecycle = lifecycle;
-            assert!(!terminal.is_active());
-            assert!(terminal.validate().is_err());
-
-            terminal.predecessor_admission_id = Some(" ".to_string());
-            terminal.reason = Some("provider contract changed".to_string());
-            assert!(terminal.validate().is_err());
-
-            terminal.predecessor_admission_id = Some("admission-1".to_string());
-            terminal.reason = Some(String::new());
-            assert!(terminal.validate().is_err());
-
-            terminal.reason = Some("provider contract changed".to_string());
-            assert!(terminal.validate().is_ok());
-        }
-    }
-
-    #[test]
-    fn provider_compatibility_admission_rejects_unknown_fields() {
-        let admission =
-            provider_compatibility_admission(ProviderCompatibilityAdmissionPolicy::Strict);
-        let mut value = serde_json::to_value(admission).expect("serialize admission");
-        value["source_reviewed"] = serde_json::json!(true);
-        let error = serde_json::from_value::<ProviderCompatibilityAdmission>(value)
-            .expect_err("admission wire format must reject unknown fields");
-        assert!(error.to_string().contains("unknown field"));
-    }
-
-    #[test]
-    fn provider_compatibility_block_cause_is_typed_and_rejects_unknown_fields() {
-        let cause = ProviderCompatibilityBlockCause {
-            schema_version: ProviderCompatibilityBlockCause::SCHEMA_VERSION,
-            id: "cause-1".into(),
-            member_run_id: "member-1".into(),
-            provider: "codex".into(),
-            execution_mode: "codex_app_server".into(),
-            provider_version: "9.9.9".into(),
-            adapter_contract_version: "codex-app-server-v1".into(),
-            boundary: ProviderCompatibilityBlockBoundary::StartPersistentExecution,
-            compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
-            source: ProviderCompatibilityBlockSource::AdapterCompatibility,
-            probe_error: None,
-            caused_at: "unix-ms:1".into(),
-        };
-        cause.validate().expect("valid typed cause");
-        let mut value = serde_json::to_value(&cause).unwrap();
-        value["forged_authority"] = serde_json::json!(true);
-        assert!(serde_json::from_value::<ProviderCompatibilityBlockCause>(value).is_err());
-
-        let mut inconsistent = cause;
-        inconsistent.compatibility_status = ProviderCompatibilityStatus::Unavailable;
-        assert!(inconsistent.validate().is_err());
-        inconsistent.source = ProviderCompatibilityBlockSource::ProbeFailure;
-        inconsistent.probe_error = Some("probe failed".into());
-        inconsistent.validate().expect("typed probe failure");
-    }
-
-    #[test]
-    fn member_run_rows_without_capacity_stay_readable_and_absent_is_not_available() {
-        let row = serde_json::json!({
-            "id": "member-run-1",
-            "team_run_id": "team-run-1",
-            "name": "Integration",
-            "role": "Integration Engineer",
-            "provider": "claude",
-            "status": "idle",
-            "started_at": "unix-ms:1"
-        });
-        let member: MemberRun = serde_json::from_value(row).expect("legacy member run");
-        assert_eq!(member.provider_capacity, None);
-        assert!(!provider_capacity_start_decision(
-            member.provider_capacity.as_ref(),
-            1_000,
-            PROVIDER_CAPACITY_DEFAULT_TTL_MS
-        )
-        .is_blocked());
-    }
-
-    /// The emit/schema contract for MemberRun.
-    ///
-    /// `schemas/member-run.schema.json` keeps `additionalProperties: false`, so
-    /// any field the emitter serialises that the schema does not declare makes
-    /// an emitted MemberRun fail validation against its own schema. This test
-    /// round-trips a MemberRun carrying `provider_capacity` and asserts every
-    /// emitted key — top level and inside the capacity snapshot — is declared.
-    /// It fails on the next undeclared field, not just on `provider_capacity`.
-    #[test]
-    fn emitted_member_run_keys_are_declared_in_member_run_schema() {
-        let schema: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../schemas/member-run.schema.json"
-            ))
-            .expect("read member-run schema"),
-        )
-        .expect("parse member-run schema");
-        assert_eq!(
-            schema["additionalProperties"],
-            serde_json::Value::Bool(false),
-            "this test only means something while the schema is closed"
-        );
-
-        let snapshot = ProviderCapacitySnapshot {
-            provider: "claude".to_string(),
-            execution_mode: "sdk".to_string(),
-            account: ProviderAccountRef {
-                source: "oauth_credentials_file".to_string(),
-                identifier: Some("acct-primary".to_string()),
-                plan: Some("max".to_string()),
-            },
-            state: ProviderCapacityState::Limited,
-            observed_at: "unix-ms:1785591600000".to_string(),
-            observed_unix_ms: 1_785_591_600_000,
-            reset_at: Some("unix-ms:1785595200000".to_string()),
-            evidence_source: ProviderCapacityEvidence::ProviderQuotaApi,
-            confidence: ProviderCapacityConfidence::Observed,
-            windows: vec![ProviderCapacityWindow {
-                label: "five_hour".to_string(),
-                limit_id: Some("limit-5h".to_string()),
-                used_percent: Some(82),
-                window_duration_mins: Some(300),
-                resets_at: Some("unix-ms:1785595200000".to_string()),
-            }],
-            diagnosis: Some("Account usage is high but not blocking.".to_string()),
-            runtime_context: vec![ProviderRuntimeContextFact {
-                key: "HTTPS_PROXY".to_string(),
-                present: true,
-                note: Some("set".to_string()),
-            }],
-            detail: Some("Provider quota API reported 82% of the five-hour window.".to_string()),
-        };
-        let row = serde_json::json!({
-            "id": "member-run-capacity-1",
-            "team_run_id": "team-run-capacity-1",
-            "name": "Platform Development",
-            "role": "Platform Development",
-            "provider": "claude",
-            "status": "idle",
-            "started_at": "unix-ms:1785591600000"
-        });
-        let mut member: MemberRun = serde_json::from_value(row).expect("member run");
-        member.provider_capacity = Some(snapshot.clone());
-        member.status = MemberRunStatus::Blocked;
-        member.provider_profile = Some(ProviderIntegrationProfile {
-            provider: "claude".into(),
-            execution_mode: "sdk".into(),
-            execution_driver: MemberExecutionDriver::HostDriven,
-            provider_version: Some("2.1.220".into()),
-            adapter_contract_version: Some("claude-sdk-v1".into()),
-            reviewed_provider_versions: Vec::new(),
-            compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
-            adapter_reviewed_at: None,
-            compatibility_note: None,
-            interaction_mode: ProviderInteractionMode::EndRoundAndFollowUp,
-            ordinary_message_boundary: OrdinaryMessageBoundary::InTurn,
-            plan_mode: ProviderFeatureMode::Emulated,
-            goal_mode: ProviderFeatureMode::Emulated,
-            tool_event_fidelity: ProviderEventFidelity::Structured,
-            artifact_event_fidelity: ProviderEventFidelity::Structured,
-            supports_cancel: true,
-            supports_resume: true,
-            observes_native_subagents: false,
-            observes_background_tasks: false,
-            thinking_transient_only: true,
-        });
-        member.provider_compatibility_block_cause = Some(ProviderCompatibilityBlockCause {
-            schema_version: ProviderCompatibilityBlockCause::SCHEMA_VERSION,
-            id: "cause-schema-1".into(),
-            member_run_id: member.id.clone(),
-            provider: "claude".into(),
-            execution_mode: "sdk".into(),
-            provider_version: "2.1.220".into(),
-            adapter_contract_version: "claude-sdk-v1".into(),
-            boundary: ProviderCompatibilityBlockBoundary::StartPersistentExecution,
-            compatibility_status: ProviderCompatibilityStatus::ReviewRequired,
-            source: ProviderCompatibilityBlockSource::AdapterCompatibility,
-            probe_error: None,
-            caused_at: "unix-ms:1785591600000".into(),
-        });
-
-        let encoded = serde_json::to_value(&member).expect("encode member run");
-        let declared = schema["properties"].as_object().expect("schema properties");
-        let undeclared = encoded
-            .as_object()
-            .expect("encoded member run")
-            .keys()
-            .filter(|key| !declared.contains_key(key.as_str()))
-            .cloned()
-            .collect::<Vec<_>>();
-        assert!(
+    let encoded = serde_json::to_value(&member).expect("encode member run");
+    let declared = schema["properties"].as_object().expect("schema properties");
+    let undeclared = encoded
+        .as_object()
+        .expect("encoded member run")
+        .keys()
+        .filter(|key| !declared.contains_key(key.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
             undeclared.is_empty(),
             "emitted MemberRun fields are not declared in member-run.schema.json              (additionalProperties is false, so these cannot validate): {undeclared:?}"
         );
 
-        let declared_capacity = declared["provider_capacity"]["properties"]
-            .as_object()
-            .expect("schema must declare provider_capacity as an object with properties");
-        let undeclared_capacity = encoded["provider_capacity"]
-            .as_object()
-            .expect("provider_capacity must serialise as an object when present")
-            .keys()
-            .filter(|key| !declared_capacity.contains_key(key.as_str()))
-            .cloned()
-            .collect::<Vec<_>>();
-        assert!(
+    let declared_capacity = declared["provider_capacity"]["properties"]
+        .as_object()
+        .expect("schema must declare provider_capacity as an object with properties");
+    let undeclared_capacity = encoded["provider_capacity"]
+        .as_object()
+        .expect("provider_capacity must serialise as an object when present")
+        .keys()
+        .filter(|key| !declared_capacity.contains_key(key.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
             undeclared_capacity.is_empty(),
             "emitted provider_capacity fields are not declared in member-run.schema.json:              {undeclared_capacity:?}"
         );
 
-        let declared_cause = declared["provider_compatibility_block_cause"]["properties"]
-            .as_object()
-            .expect("schema must declare typed compatibility cause properties");
-        let undeclared_cause = encoded["provider_compatibility_block_cause"]
-            .as_object()
-            .expect("typed cause serialises when present")
-            .keys()
-            .filter(|key| !declared_cause.contains_key(key.as_str()))
-            .cloned()
-            .collect::<Vec<_>>();
-        assert!(
-            undeclared_cause.is_empty(),
-            "emitted typed compatibility cause fields are not declared: {undeclared_cause:?}"
-        );
+    let declared_cause = declared["provider_compatibility_block_cause"]["properties"]
+        .as_object()
+        .expect("schema must declare typed compatibility cause properties");
+    let undeclared_cause = encoded["provider_compatibility_block_cause"]
+        .as_object()
+        .expect("typed cause serialises when present")
+        .keys()
+        .filter(|key| !declared_cause.contains_key(key.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
+        undeclared_cause.is_empty(),
+        "emitted typed compatibility cause fields are not declared: {undeclared_cause:?}"
+    );
 
-        // Round-trip: the snapshot survives encode/decode unchanged, so the
-        // schema is describing the shape the runtime actually persists.
-        let decoded: MemberRun = serde_json::from_value(encoded).expect("decode member run");
-        assert_eq!(decoded.provider_capacity, Some(snapshot));
-        decoded
-            .validate()
-            .expect("typed blocked MemberRun round-trips");
-    }
+    // Round-trip: the snapshot survives encode/decode unchanged, so the
+    // schema is describing the shape the runtime actually persists.
+    let decoded: MemberRun = serde_json::from_value(encoded).expect("decode member run");
+    assert_eq!(decoded.provider_capacity, Some(snapshot));
+    decoded
+        .validate()
+        .expect("typed blocked MemberRun round-trips");
+}
 
-    #[test]
-    fn work_prerequisite_satisfaction_is_distinct_from_claim_readiness() {
-        fn work(
-            id: &str,
-            phase: WorkPhase,
-            resolution: Option<WorkResolution>,
-            prerequisites: Vec<&str>,
-        ) -> Work {
-            Work {
-                id: id.into(),
-                team_run_id: "team-1".into(),
-                team_id: None,
-                created_by_member_id: None,
-                parent_work_id: None,
-                title: id.into(),
-                context_markdown: String::new(),
-                completion_criteria_markdown: "done".into(),
-                phase,
-                condition: WorkCondition::Normal,
-                resolution,
-                owner_member_id: None,
-                active_member_run_id: None,
-                claim_mode: WorkClaimMode::TeamClaim,
-                eligible_member_ids: Vec::new(),
-                prerequisite_work_ids: prerequisites.into_iter().map(str::to_string).collect(),
-                priority: WorkPriority::Normal,
-                created_by_actor: TeamActorRef {
-                    kind: TeamActorKind::Host,
-                    id: "host".into(),
-                    display_name: None,
-                    authn_source: None,
-                },
-                result_summary: None,
-                blocker_reason: None,
-                artifact_refs: Vec::new(),
-                check_refs: Vec::new(),
-                github_links: Vec::new(),
-                version: 1,
-                created_at: "unix-ms:1".into(),
-                updated_at: "unix-ms:1".into(),
-            }
-        }
-
-        let prerequisite = work(
-            "prerequisite",
-            WorkPhase::Closed,
-            Some(WorkResolution::Accepted),
-            vec![],
-        );
-        let in_progress = work("dependent", WorkPhase::Active, None, vec!["prerequisite"]);
-        assert!(in_progress.prerequisites_satisfied([&prerequisite]));
-        assert!(!in_progress.is_claim_ready([&prerequisite]));
-
-        let open = work(
-            "dependent-open",
-            WorkPhase::Open,
-            None,
-            vec!["prerequisite"],
-        );
-        assert!(open.is_claim_ready([&prerequisite]));
-
-        let unfinished = work("prerequisite", WorkPhase::Review, None, vec![]);
-        assert!(!open.prerequisites_satisfied([&unfinished]));
-        assert!(!open.is_claim_ready([&unfinished]));
-    }
-
-    #[test]
-    fn legacy_work_delivery_update_defaults_to_unsequenced() {
-        let update: WorkDeliveryUpdate = serde_json::from_value(serde_json::json!({
-            "delivery_id": "delivery-legacy",
-            "status": "queued",
-            "attempt": 1,
-            "updated_at": "unix-ms:1"
-        }))
-        .expect("legacy delivery update remains readable");
-        assert_eq!(update.update_sequence, 0);
-    }
-
-    #[test]
-    fn host_attention_keeps_transport_intake_distinct_from_work_semantics() {
-        let mut attention = HostAttention {
-            id: "host-attention-work-event-1".into(),
-            team_run_id: "team-run-1".into(),
-            kind: HostAttentionKind::WorkReviewRequested,
-            work_id: "work-1".into(),
-            work_version: 3,
-            source_event_ref: "work-event-1".into(),
-            member_run_id: Some("member-run-1".into()),
-            status: HostAttentionStatus::Actionable,
-            attempt: 0,
-            claim_id: None,
-            claimed_host_surface: None,
-            claimed_host_thread_id: None,
-            claimed_host_lease_id: None,
-            claimed_host_lease_generation: None,
-            claimed_host_lease_owner_id: None,
-            provider_receipt_id: None,
-            last_failure_reason: None,
-            created_at: "unix-ms:1".into(),
-            updated_at: "unix-ms:1".into(),
-        };
-        assert!(attention.validate().is_ok());
-        assert!(attention.needs_host_action());
-
-        attention.claim_id = Some("claim-1".into());
-        attention.claimed_host_surface = Some("codex".into());
-        attention.claimed_host_thread_id = Some("thread-1".into());
-        attention.status = HostAttentionStatus::Claimed;
-        assert!(attention.validate().is_ok(), "interactive claim is valid");
-
-        attention.status = HostAttentionStatus::Delivered;
-        attention.provider_receipt_id = Some("provider-receipt-1".into());
-        assert!(
-            attention.validate().is_ok(),
-            "interactive delivery is valid"
-        );
-        assert!(
-            attention.needs_host_action(),
-            "delivery is transport receipt, not Host intake or Work acceptance"
-        );
-        attention.status = HostAttentionStatus::Acknowledged;
-        assert!(attention.validate().is_ok());
-        assert!(!attention.needs_host_action());
-
-        attention.claimed_host_lease_id = Some("lease-1".into());
-        assert!(
-            attention.validate().is_err(),
-            "partial lease fence is invalid"
-        );
-        attention.claimed_host_lease_generation = Some(1);
-        attention.claimed_host_lease_owner_id = Some("dispatcher-1".into());
-        assert!(attention.validate().is_ok(), "dispatcher delivery is valid");
-
-        let json = serde_json::to_value(&attention).expect("serialize Host attention");
-        assert_eq!(json["kind"], "work_review_requested");
-        assert_eq!(json["status"], "acknowledged");
-        assert!(json.get("team_message_id").is_none());
-        assert!(json.get("work_status").is_none());
-    }
-
-    #[test]
-    fn agent_team_wire_is_flat_and_requires_mission_host_and_node() {
-        let team: AgentTeam = serde_json::from_value(serde_json::json!({
-            "id": "team-1",
-            "name": "Core",
-            "description": "One Mission on one Node",
-            "mission_id": "mission-1",
-            "host_agent_id": "agent-host-1",
-            "node_id": "0f95cac7-5ff8-4c76-8f36-9c8f208815d3",
-            "member_ids": ["agent-worker-1"],
-            "created_at": "unix-ms:1",
-            "updated_at": "unix-ms:1"
-        }))
-        .expect("flat AgentTeam wire");
-        assert_eq!(team.validate(), Ok(()));
-
-        for legacy_field in ["owner_agent_id", "parent_team_id", "host_member_id"] {
-            let mut value = serde_json::to_value(&team).expect("serialize AgentTeam");
-            value[legacy_field] = serde_json::json!("legacy");
-            assert!(
-                serde_json::from_value::<AgentTeam>(value).is_err(),
-                "clean cutover rejects {legacy_field}"
-            );
-        }
-    }
-
-    #[test]
-    fn node_and_daemon_fences_validate_generation_and_time() {
-        let node = ExecutionNode {
-            id: "0f95cac7-5ff8-4c76-8f36-9c8f208815d3".into(),
-            display_name: "build-node-a".into(),
-            status: ExecutionNodeStatus::Active,
-            created_at: "unix-ms:1".into(),
-            updated_at: "unix-ms:1".into(),
-        };
-        assert_eq!(node.validate(), Ok(()));
-
-        let mut lease = NodeDaemonLease {
-            node_id: node.id,
-            daemon_id: "daemon-a".into(),
-            generation: 1,
-            instance_id: "pid:4242:start:1000".into(),
-            status: NodeDaemonLeaseStatus::Active,
-            acquired_unix_ms: 1_000,
-            renewed_unix_ms: 1_200,
-            expires_unix_ms: 6_200,
-            released_unix_ms: None,
-        };
-        assert_eq!(lease.validate(), Ok(()));
-        lease.generation = 0;
-        assert!(lease.validate().is_err());
-        lease.generation = 1;
-        lease.expires_unix_ms = 1_100;
-        assert!(lease.validate().is_err());
-    }
-
-    fn test_actor(id: &str) -> TeamActorRef {
-        TeamActorRef {
-            kind: TeamActorKind::AgentMember,
+#[test]
+fn work_prerequisite_satisfaction_is_distinct_from_claim_readiness() {
+    fn work(
+        id: &str,
+        phase: WorkPhase,
+        resolution: Option<WorkResolution>,
+        prerequisites: Vec<&str>,
+    ) -> Work {
+        Work {
             id: id.into(),
-            display_name: None,
-            authn_source: None,
-        }
-    }
-
-    #[test]
-    fn work_delegation_is_cross_work_versioned_responsibility() {
-        let mut delegation = WorkDelegation {
-            id: "delegation-1".into(),
-            source_work_ref: WorkRef {
-                team_run_id: "run-source".into(),
-                work_id: "work-source".into(),
+            team_run_id: "team-1".into(),
+            team_id: None,
+            created_by_member_id: None,
+            parent_work_id: None,
+            title: id.into(),
+            context_markdown: String::new(),
+            completion_criteria_markdown: "done".into(),
+            phase,
+            condition: WorkCondition::Normal,
+            resolution,
+            owner_member_id: None,
+            active_member_run_id: None,
+            claim_mode: WorkClaimMode::TeamClaim,
+            eligible_member_ids: Vec::new(),
+            prerequisite_work_ids: prerequisites.into_iter().map(str::to_string).collect(),
+            priority: WorkPriority::Normal,
+            created_by_actor: TeamActorRef {
+                kind: TeamActorKind::Host,
+                id: "host".into(),
+                display_name: None,
+                authn_source: None,
             },
-            source_work_version: 3,
-            source_owner_member_id: "member-source".into(),
-            created_by_member_run_id: Some("member-run-source".into()),
-            target_agent_team_id: "team-target".into(),
-            target_work_ref: WorkRef {
-                team_run_id: "run-target".into(),
-                work_id: "work-target".into(),
-            },
-            delegated_by_actor: test_actor("member-source"),
-            state: WorkDelegationState::Active,
-            resolution_summary: None,
+            result_summary: None,
             blocker_reason: None,
+            artifact_refs: Vec::new(),
+            check_refs: Vec::new(),
+            github_links: Vec::new(),
             version: 1,
             created_at: "unix-ms:1".into(),
             updated_at: "unix-ms:1".into(),
-        };
-        assert_eq!(delegation.validate(), Ok(()));
-
-        delegation.state = WorkDelegationState::Blocked;
-        assert!(delegation.validate().is_err());
-        delegation.blocker_reason = Some("target capacity unavailable".into());
-        assert_eq!(delegation.validate(), Ok(()));
-        delegation.state = WorkDelegationState::Completed;
-        delegation.blocker_reason = None;
-        delegation.resolution_summary = Some("target result returned to source owner".into());
-        assert_eq!(delegation.validate(), Ok(()));
+        }
     }
 
-    #[test]
-    fn work_delegation_event_enforces_cas_version_fence() {
-        let mut event = WorkDelegationEvent {
-            id: "delegation-event-1".into(),
-            delegation_id: "delegation-1".into(),
-            sequence: 1,
-            transition: WorkDelegationTransition::Created,
-            expected_version: 0,
-            resulting_version: 1,
-            performed_by_actor: test_actor("member-source"),
-            causation_ref: Some(WorkCausationRef {
-                kind: "work_event".into(),
-                id: "source-event-3".into(),
-            }),
-            idempotency_key: "create:delegation-1".into(),
-            payload: serde_json::json!({"target_agent_team_id": "team-target"}),
-            created_at: "unix-ms:1".into(),
-        };
-        assert_eq!(event.validate(), Ok(()));
-        event.resulting_version = 2;
-        assert!(event.validate().is_err());
-        event.resulting_version = 1;
-        event.payload = serde_json::Value::Null;
-        assert_eq!(event.validate(), Ok(()));
-    }
+    let prerequisite = work(
+        "prerequisite",
+        WorkPhase::Closed,
+        Some(WorkResolution::Accepted),
+        vec![],
+    );
+    let in_progress = work("dependent", WorkPhase::Active, None, vec!["prerequisite"]);
+    assert!(in_progress.prerequisites_satisfied([&prerequisite]));
+    assert!(!in_progress.is_claim_ready([&prerequisite]));
 
-    // ── GateEngine tests ──────────────────────────────────────────
+    let open = work(
+        "dependent-open",
+        WorkPhase::Open,
+        None,
+        vec!["prerequisite"],
+    );
+    assert!(open.is_claim_ready([&prerequisite]));
+
+    let unfinished = work("prerequisite", WorkPhase::Review, None, vec![]);
+    assert!(!open.prerequisites_satisfied([&unfinished]));
+    assert!(!open.is_claim_ready([&unfinished]));
+}
+
+#[test]
+fn legacy_work_delivery_update_defaults_to_unsequenced() {
+    let update: WorkDeliveryUpdate = serde_json::from_value(serde_json::json!({
+        "delivery_id": "delivery-legacy",
+        "status": "queued",
+        "attempt": 1,
+        "updated_at": "unix-ms:1"
+    }))
+    .expect("legacy delivery update remains readable");
+    assert_eq!(update.update_sequence, 0);
+}
+
+#[test]
+fn host_attention_keeps_transport_intake_distinct_from_work_semantics() {
+    let mut attention = HostAttention {
+        id: "host-attention-work-event-1".into(),
+        team_run_id: "team-run-1".into(),
+        kind: HostAttentionKind::WorkReviewRequested,
+        work_id: "work-1".into(),
+        work_version: 3,
+        source_event_ref: "work-event-1".into(),
+        member_run_id: Some("member-run-1".into()),
+        status: HostAttentionStatus::Actionable,
+        attempt: 0,
+        claim_id: None,
+        claimed_host_surface: None,
+        claimed_host_thread_id: None,
+        claimed_host_lease_id: None,
+        claimed_host_lease_generation: None,
+        claimed_host_lease_owner_id: None,
+        provider_receipt_id: None,
+        last_failure_reason: None,
+        created_at: "unix-ms:1".into(),
+        updated_at: "unix-ms:1".into(),
+    };
+    assert!(attention.validate().is_ok());
+    assert!(attention.needs_host_action());
+
+    attention.claim_id = Some("claim-1".into());
+    attention.claimed_host_surface = Some("codex".into());
+    attention.claimed_host_thread_id = Some("thread-1".into());
+    attention.status = HostAttentionStatus::Claimed;
+    assert!(attention.validate().is_ok(), "interactive claim is valid");
+
+    attention.status = HostAttentionStatus::Delivered;
+    attention.provider_receipt_id = Some("provider-receipt-1".into());
+    assert!(
+        attention.validate().is_ok(),
+        "interactive delivery is valid"
+    );
+    assert!(
+        attention.needs_host_action(),
+        "delivery is transport receipt, not Host intake or Work acceptance"
+    );
+    attention.status = HostAttentionStatus::Acknowledged;
+    assert!(attention.validate().is_ok());
+    assert!(!attention.needs_host_action());
+
+    attention.claimed_host_lease_id = Some("lease-1".into());
+    assert!(
+        attention.validate().is_err(),
+        "partial lease fence is invalid"
+    );
+    attention.claimed_host_lease_generation = Some(1);
+    attention.claimed_host_lease_owner_id = Some("dispatcher-1".into());
+    assert!(attention.validate().is_ok(), "dispatcher delivery is valid");
+
+    let json = serde_json::to_value(&attention).expect("serialize Host attention");
+    assert_eq!(json["kind"], "work_review_requested");
+    assert_eq!(json["status"], "acknowledged");
+    assert!(json.get("team_message_id").is_none());
+    assert!(json.get("work_status").is_none());
+}
+
+#[test]
+fn agent_team_wire_is_flat_and_requires_mission_host_and_node() {
+    let team: AgentTeam = serde_json::from_value(serde_json::json!({
+        "id": "team-1",
+        "name": "Core",
+        "description": "One Mission on one Node",
+        "mission_id": "mission-1",
+        "host_agent_id": "agent-host-1",
+        "node_id": "0f95cac7-5ff8-4c76-8f36-9c8f208815d3",
+        "member_ids": ["agent-worker-1"],
+        "created_at": "unix-ms:1",
+        "updated_at": "unix-ms:1"
+    }))
+    .expect("flat AgentTeam wire");
+    assert_eq!(team.validate(), Ok(()));
+
+    for legacy_field in ["owner_agent_id", "parent_team_id", "host_member_id"] {
+        let mut value = serde_json::to_value(&team).expect("serialize AgentTeam");
+        value[legacy_field] = serde_json::json!("legacy");
+        assert!(
+            serde_json::from_value::<AgentTeam>(value).is_err(),
+            "clean cutover rejects {legacy_field}"
+        );
+    }
+}
+
+#[test]
+fn node_and_daemon_fences_validate_generation_and_time() {
+    let node = ExecutionNode {
+        id: "0f95cac7-5ff8-4c76-8f36-9c8f208815d3".into(),
+        display_name: "build-node-a".into(),
+        status: ExecutionNodeStatus::Active,
+        created_at: "unix-ms:1".into(),
+        updated_at: "unix-ms:1".into(),
+    };
+    assert_eq!(node.validate(), Ok(()));
+
+    let mut lease = NodeDaemonLease {
+        node_id: node.id,
+        daemon_id: "daemon-a".into(),
+        generation: 1,
+        instance_id: "pid:4242:start:1000".into(),
+        status: NodeDaemonLeaseStatus::Active,
+        acquired_unix_ms: 1_000,
+        renewed_unix_ms: 1_200,
+        expires_unix_ms: 6_200,
+        released_unix_ms: None,
+    };
+    assert_eq!(lease.validate(), Ok(()));
+    lease.generation = 0;
+    assert!(lease.validate().is_err());
+    lease.generation = 1;
+    lease.expires_unix_ms = 1_100;
+    assert!(lease.validate().is_err());
+}
+
+fn test_actor(id: &str) -> TeamActorRef {
+    TeamActorRef {
+        kind: TeamActorKind::AgentMember,
+        id: id.into(),
+        display_name: None,
+        authn_source: None,
+    }
+}
+
+#[test]
+fn work_delegation_is_cross_work_versioned_responsibility() {
+    let mut delegation = WorkDelegation {
+        id: "delegation-1".into(),
+        source_work_ref: WorkRef {
+            team_run_id: "run-source".into(),
+            work_id: "work-source".into(),
+        },
+        source_work_version: 3,
+        source_owner_member_id: "member-source".into(),
+        created_by_member_run_id: Some("member-run-source".into()),
+        target_agent_team_id: "team-target".into(),
+        target_work_ref: WorkRef {
+            team_run_id: "run-target".into(),
+            work_id: "work-target".into(),
+        },
+        delegated_by_actor: test_actor("member-source"),
+        state: WorkDelegationState::Active,
+        resolution_summary: None,
+        blocker_reason: None,
+        version: 1,
+        created_at: "unix-ms:1".into(),
+        updated_at: "unix-ms:1".into(),
+    };
+    assert_eq!(delegation.validate(), Ok(()));
+
+    delegation.state = WorkDelegationState::Blocked;
+    assert!(delegation.validate().is_err());
+    delegation.blocker_reason = Some("target capacity unavailable".into());
+    assert_eq!(delegation.validate(), Ok(()));
+    delegation.state = WorkDelegationState::Completed;
+    delegation.blocker_reason = None;
+    delegation.resolution_summary = Some("target result returned to source owner".into());
+    assert_eq!(delegation.validate(), Ok(()));
+}
+
+#[test]
+fn work_delegation_event_enforces_cas_version_fence() {
+    let mut event = WorkDelegationEvent {
+        id: "delegation-event-1".into(),
+        delegation_id: "delegation-1".into(),
+        sequence: 1,
+        transition: WorkDelegationTransition::Created,
+        expected_version: 0,
+        resulting_version: 1,
+        performed_by_actor: test_actor("member-source"),
+        causation_ref: Some(WorkCausationRef {
+            kind: "work_event".into(),
+            id: "source-event-3".into(),
+        }),
+        idempotency_key: "create:delegation-1".into(),
+        payload: serde_json::json!({"target_agent_team_id": "team-target"}),
+        created_at: "unix-ms:1".into(),
+    };
+    assert_eq!(event.validate(), Ok(()));
+    event.resulting_version = 2;
+    assert!(event.validate().is_err());
+    event.resulting_version = 1;
+    event.payload = serde_json::Value::Null;
+    assert_eq!(event.validate(), Ok(()));
+}
+
+// ── GateEngine tests ──────────────────────────────────────────
 
 /// Skill reference resolution: maps skill_refs to SKILL.md content.
 ///

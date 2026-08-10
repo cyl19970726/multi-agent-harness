@@ -14,39 +14,37 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
-    build_launch_spec, content_hash_hex16, provider_interaction_response_id,
-    AgentTeam, AgentTeamRun, AgentTeamStatus, DelegationRun, Evidence,
-    ExecutionNode, ExecutionNodeStatus, ExecutionSpace, GitHubLink,
-    GitHubLinkKind, HostAttention, HostAttentionStatus, HostBindingLease,
-    HostBindingLeaseOwnerKind, HostControlMode, HostDispatchConfig, LaunchMcp, LaunchPermission,
-    LaunchSpec, MemberAction, MemberActionStatus, MemberCoordinationStatus, MemberExecutionDriver,
-    MemberRun, MemberRunStatus, MemberWorkspaceSnapshot, Message, MessageDelivery,
-    MessageDeliveryStatus, MessageKind, MessageTerminalSource, Mission, MissionLogEntry,
-    MissionLogEntryKind, MissionStatus, NativeSessionAvailability, NativeSessionRef,
-    NodeDaemonLeaseStatus, NodeProjectRegistration, NodeProjectRegistrationStatus,
-    OrdinaryMessageBoundary, PendingInteraction, PendingInteractionKind, PendingInteractionRoute,
-    PendingInteractionStatus, ProjectContext, ProjectKind, ProviderAccountRef,
-    ProviderCapabilities, ProviderCapacityConfidence, ProviderCapacityEvidence,
-    ProviderCapacitySnapshot, ProviderCapacityState, ProviderCompatibilityAdmission,
-    ProviderCompatibilityAdmissionLifecycle, ProviderCompatibilityAdmissionPolicy,
-    ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
-    ProviderCompatibilityBlockSource, ProviderCompatibilityStatus, ProviderControlValue,
-    ProviderDispatchEvent, ProviderEventFidelity, ProviderExecutionControls,
+    build_launch_spec, content_hash_hex16, provider_interaction_response_id, AgentTeam,
+    AgentTeamRun, AgentTeamStatus, DelegationRun, Evidence, ExecutionNode, ExecutionNodeStatus,
+    ExecutionSpace, GitHubLink, GitHubLinkKind, HostAttention, HostAttentionStatus,
+    HostBindingLease, HostBindingLeaseOwnerKind, HostControlMode, HostDispatchConfig, LaunchMcp,
+    LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus, MemberCoordinationStatus,
+    MemberExecutionDriver, MemberRun, MemberRunStatus, MemberWorkspaceSnapshot, Message,
+    MessageDelivery, MessageDeliveryStatus, MessageKind, MessageTerminalSource, Mission,
+    MissionLogEntry, MissionLogEntryKind, MissionStatus, NativeSessionAvailability,
+    NativeSessionRef, NodeDaemonLeaseStatus, NodeProjectRegistration,
+    NodeProjectRegistrationStatus, OrdinaryMessageBoundary, PendingInteraction,
+    PendingInteractionKind, PendingInteractionRoute, PendingInteractionStatus, ProjectContext,
+    ProjectKind, ProviderAccountRef, ProviderCapabilities, ProviderCapacityConfidence,
+    ProviderCapacityEvidence, ProviderCapacitySnapshot, ProviderCapacityState,
+    ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
+    ProviderCompatibilityAdmissionPolicy, ProviderCompatibilityBlockBoundary,
+    ProviderCompatibilityBlockCause, ProviderCompatibilityBlockSource, ProviderCompatibilityStatus,
+    ProviderControlValue, ProviderDispatchEvent, ProviderEventFidelity, ProviderExecutionControls,
     ProviderExecutionStatus, ProviderFeatureMode, ProviderIntegrationProfile,
     ProviderInteractionMessageOption, ProviderInteractionMode, ProviderInteractionRequestBody,
     ProviderInteractionResponseBody, ProviderInteractionType, ProviderLaunchConfig,
     ProviderLaunchProfile, ProviderLaunchStatus, ProviderProcess, ProviderProcessHealth,
-    ProviderProcessStatus, ProviderRuntimeContextFact, Review, SenderKind,
-    TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
+    ProviderProcessStatus, ProviderRuntimeContextFact, Review, SenderKind, TeamActorKind,
+    TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
     TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind,
     TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
     TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Validate, Wave, Work,
     WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkCondition, WorkDelegation,
     WorkDelegationState, WorkDelivery, WorkDeliveryStatus, WorkPhase, WorkPriority, WorkRef,
-    WorkResolution, WorkflowArtifactFile,
-    WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus,
-    WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
-    EXECUTION_MODE_EXTERNAL_INTERACTIVE,
+    WorkResolution, WorkflowArtifactFile, WorkflowArtifactManifest, WorkflowArtifactManifestStatus,
+    WorkflowPatch, WorkflowPatchStatus, WorkflowRun, WorkflowRunStatus, WorkflowStep,
+    WorkflowStepStatus, WorkflowTerminalReason, EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
     canonical_surface, HarnessStore, HostAttentionClaimResult, MessageDeliveryClaimResult,
@@ -930,30 +928,20 @@ fn execution_space_command(args: &[String]) -> CliResult<()> {
 const EXECUTION_LEDGER_NAMES: &[&str] = &[
     "missions.jsonl",
     "waves.jsonl",
-    "provider_launch_profiles.jsonl",
-    "durable_agent_provider_launch_profiles.jsonl",
     "teams.jsonl",
-    "provider_processes.jsonl",
-    "provider_dispatch_events.jsonl",
     "proposals.jsonl",
-    "messages.jsonl",
     "evidence.jsonl",
     "decisions.jsonl",
-    "reviews.jsonl",
     "gaps.jsonl",
     "provider_child_threads.jsonl",
     "team_runs.jsonl",
-    "member_runs.jsonl",
-    "team_messages.jsonl",
     "work_operations.jsonl",
-    "work_delivery_updates.jsonl",
     "host_attentions.jsonl",
     "team_supervisor_leases.jsonl",
-    "team_member_close_requests.jsonl",
-    "member_actions.jsonl",
     "pending_interactions.jsonl",
     "delegation_runs.jsonl",
     "team_run_events.jsonl",
+    "agentfirm_trust_operations.jsonl",
     "workflow_runs.jsonl",
     "workflow_steps.jsonl",
     "workflow_patches.jsonl",
@@ -1702,9 +1690,10 @@ fn project_show(firm_home: &Path, args: &[String]) -> CliResult<()> {
     print_json(&project_context_json(&ctx, &current))
 }
 
-/// Subdirectories of a store that hold non-JSONL payloads and must be copied
-/// wholesale during migration (provider session logs, prompts, runtime files).
-const STORE_PAYLOAD_DIRS: &[&str] = &["prompts", "runtimes"];
+/// The clean-cutover project migration copies only canonical ledgers. Provider
+/// native sessions, launch payloads and runtime files remain provider truth and
+/// are never imported into an Execution Space.
+const STORE_PAYLOAD_DIRS: &[&str] = &[];
 
 /// `harness project migrate [<local-store>] [--switch]` — move an existing
 /// repo-local `.harness/` store into the centralized per-project store
@@ -1836,8 +1825,7 @@ fn count_store_records(store_root: &Path) -> CliResult<u64> {
     Ok(total)
 }
 
-/// Copy active `*.jsonl` ledgers and the `prompts/` / `runtimes/` payload dirs
-/// from `src` into `dst`, preserving filenames. Returns the
+/// Copy allowlisted canonical `*.jsonl` ledgers from `src` into `dst`, preserving filenames. Returns the
 /// number of top-level entries copied. Existing destination files are overwritten
 /// (merge-copy under `--force`); missing source payload dirs are skipped.
 fn copy_store_contents(src: &Path, dst: &Path) -> CliResult<u64> {
@@ -1847,40 +1835,43 @@ fn copy_store_contents(src: &Path, dst: &Path) -> CliResult<u64> {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
             if let Some(name) = path.file_name() {
-                if name == "provider_sessions.jsonl" {
+                let name = name.to_string_lossy();
+                if !project_migration_ledger_allowed(&name) {
                     continue;
                 }
-                std::fs::copy(&path, dst.join(name))?;
+                std::fs::copy(&path, dst.join(name.as_ref()))?;
                 copied += 1;
             }
         }
     }
-    // 2. Payload directories (recursive).
-    for dir in STORE_PAYLOAD_DIRS {
-        let from = src.join(dir);
-        if from.is_dir() {
-            copy_dir_recursive(&from, &dst.join(dir))?;
-            copied += 1;
-        }
-    }
+    debug_assert!(STORE_PAYLOAD_DIRS.is_empty());
     Ok(copied)
 }
 
-/// Recursively copy a directory tree (files + subdirs), creating `dst` as needed.
-fn copy_dir_recursive(src: &Path, dst: &Path) -> CliResult<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)?.flatten() {
-        let path = entry.path();
-        let target = dst.join(entry.file_name());
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            copy_dir_recursive(&path, &target)?;
-        } else if file_type.is_file() {
-            std::fs::copy(&path, &target)?;
-        }
-        // Symlinks in a store are not expected; skip them rather than following.
-    }
-    Ok(())
+fn project_migration_ledger_allowed(name: &str) -> bool {
+    matches!(
+        name,
+        "goals.jsonl"
+            | "tasks.jsonl"
+            | "missions.jsonl"
+            | "waves.jsonl"
+            | "teams.jsonl"
+            | "team_runs.jsonl"
+            | "work_operations.jsonl"
+            | "evidence.jsonl"
+            | "decisions.jsonl"
+            | "gaps.jsonl"
+            | "host_attentions.jsonl"
+            | "team_supervisor_leases.jsonl"
+            | "pending_interactions.jsonl"
+            | "delegation_runs.jsonl"
+            | "team_run_events.jsonl"
+            | "agentfirm_trust_operations.jsonl"
+            | "workflow_runs.jsonl"
+            | "workflow_steps.jsonl"
+            | "workflow_patches.jsonl"
+            | "workflow_artifact_manifests.jsonl"
+    )
 }
 
 /// Return a stable relative-file index without following symlinks.
@@ -3063,8 +3054,7 @@ fn company_org_update_permissions_command(store: &HarnessStore, args: &[String])
     let actor_kind = value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string());
     let mut actor = latest_company_actor_value(store, &actor_kind, &actor_id)?;
     if actor_kind == "agent"
-        && (!many(args, "--authority-policy").is_empty()
-            || !many(args, "--capability").is_empty())
+        && (!many(args, "--authority-policy").is_empty() || !many(args, "--capability").is_empty())
     {
         return Err(CliError::Usage(
             "Agent Membership stores only permission_policy_refs; capabilities and authority live on the canonical AgentMember or Human authority"
@@ -11533,8 +11523,7 @@ fn ensure_unit_test_canonical_members(
                 provider_profile_ref: Some(member.provider.clone()),
                 model_preference: member.model.clone(),
                 workspace_policy: "managed-worktree".into(),
-                permission_ceiling:
-                    harness_core::agentfirm_api::PermissionCeiling::WorkspaceWrite,
+                permission_ceiling: harness_core::agentfirm_api::PermissionCeiling::WorkspaceWrite,
                 organization_status:
                     harness_core::agentfirm_api::AgentMemberOrganizationStatus::Active,
                 version: 1,
@@ -16791,9 +16780,10 @@ fn member_run_detail_json(
         .filter(|work| {
             work.active_member_run_id.as_deref() == Some(member_run_id)
                 || work.owner_member_id.as_deref() == Some(member.agent_member_id.as_str())
-                || work.eligible_member_ids.iter().any(|id| {
-                    id == member_run_id || id == &member.agent_member_id
-                })
+                || work
+                    .eligible_member_ids
+                    .iter()
+                    .any(|id| id == member_run_id || id == &member.agent_member_id)
         })
         .collect::<Vec<_>>();
     let latest_handoff = outbox
@@ -17080,8 +17070,7 @@ fn claim_canonical_messages_for_member(
         .into_iter()
         .filter(|delivery| {
             delivery.recipient_member_run_id == member.id
-                && delivery.status
-                    == harness_core::agentfirm_api::MessageDeliveryStatus::Queued
+                && delivery.status == harness_core::agentfirm_api::MessageDeliveryStatus::Queued
         })
         .collect::<Vec<_>>();
     queued.sort_by(|left, right| left.id.cmp(&right.id));
@@ -17101,10 +17090,7 @@ fn claim_canonical_messages_for_member(
             claim_id: claim_id.clone(),
             supervisor_generation: ledger.supervisor_generation,
             member_generation: member.runtime_generation,
-            claim_expires_at: format!(
-                "unix-ms:{}",
-                current_unix_ms_u64().saturating_add(30_000)
-            ),
+            claim_expires_at: format!("unix-ms:{}", current_unix_ms_u64().saturating_add(30_000)),
         };
         ledger.store.claim_trust_message_delivery(
             &canonical_delivery_context(
@@ -17162,9 +17148,7 @@ fn claim_canonical_messages_for_member(
                     TeamMessageKind::ProviderInteractionResponse
                 }
                 harness_core::agentfirm_api::TeamMessageKind::Control
-                | harness_core::agentfirm_api::TeamMessageKind::Message => {
-                    TeamMessageKind::Message
-                }
+                | harness_core::agentfirm_api::TeamMessageKind::Message => TeamMessageKind::Message,
             },
             body: source.body.clone(),
             correlation_id: source.correlation_id.clone(),
@@ -18033,8 +18017,7 @@ fn claim_canonical_work_for_member(
         .into_iter()
         .filter(|delivery| {
             delivery.recipient_member_run_id == member.id
-                && delivery.status
-                    == harness_core::agentfirm_api::WorkDeliveryStatus::Queued
+                && delivery.status == harness_core::agentfirm_api::WorkDeliveryStatus::Queued
         })
         .collect::<Vec<_>>();
     queued.sort_by(|left, right| left.id.cmp(&right.id));
@@ -27345,6 +27328,7 @@ fn handle_http_connection(
     let mut company_os_token = None;
     let mut trust_actor_kind = None;
     let mut trust_actor_id = None;
+    let mut trust_transport_token = None;
     let mut trust_authority_kind = None;
     let mut trust_authority_id = None;
     let mut trust_idempotency_key = None;
@@ -27368,6 +27352,9 @@ fn handle_http_connection(
             }
             if name.eq_ignore_ascii_case("x-agentfirm-actor-id") {
                 trust_actor_id = Some(value.trim().to_string());
+            }
+            if name.eq_ignore_ascii_case("x-agentfirm-token") {
+                trust_transport_token = Some(value.trim().to_string());
             }
             if name.eq_ignore_ascii_case("x-agentfirm-authority-kind") {
                 trust_authority_kind = Some(value.trim().to_string());
@@ -27401,6 +27388,22 @@ fn handle_http_connection(
         return Ok(());
     }
     if method == "POST" && agentfirm_api::is_http_mutation_path(&path_only) {
+        let configured_transport_token = std::env::var("AGENTFIRM_HTTP_MUTATION_TOKEN")
+            .ok()
+            .filter(|value| !value.trim().is_empty());
+        if configured_transport_token.as_deref() != trust_transport_token.as_deref()
+            || configured_transport_token.is_none()
+        {
+            write_http_json(
+                &mut stream,
+                "401 Unauthorized",
+                &serde_json::json!({
+                    "ok": false,
+                    "error": {"code": "UNAUTHORIZED_ACTOR", "message": "member-trust HTTP transport is not authenticated"}
+                }),
+            )?;
+            return Ok(());
+        }
         let actor_kind = match trust_actor_kind.as_deref() {
             Some("human") => harness_core::agentfirm_api::ActorKind::Human,
             Some("agent_member") => harness_core::agentfirm_api::ActorKind::AgentMember,
@@ -47086,8 +47089,7 @@ package:com.tencent.mm
                     body: "deliver through the NodeDaemon supervisor".into(),
                     correlation_id: "canonical-supervisor-correlation".into(),
                     causation_id: None,
-                    response_intent:
-                        harness_core::agentfirm_api::ResponseIntent::ResponseRequired,
+                    response_intent: harness_core::agentfirm_api::ResponseIntent::ResponseRequired,
                     evidence_refs: Vec::new(),
                     created_at: "unix-ms:3".into(),
                 },
@@ -47141,6 +47143,112 @@ package:com.tencent.mm
             .expect("legacy TeamMessages")
             .iter()
             .all(|message| message.id != claimed.id));
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn supervisor_claims_and_records_provider_receipt_for_canonical_work_delivery() {
+        let (store, root) = temp_store("canonical-supervisor-work-delivery");
+        let created = create_two_member_team_run(&store);
+        let member = created.member_runs[0].clone();
+        let work = store
+            .insert_work(
+                Work {
+                    id: "canonical-supervisor-work".into(),
+                    team_run_id: created.team_run.id.clone(),
+                    team_id: Some(created.team_run.agent_team_id.clone()),
+                    created_by_member_id: None,
+                    parent_work_id: None,
+                    title: "Deliver canonical Work".into(),
+                    context_markdown: "Exercise NodeDaemon WorkDelivery wiring".into(),
+                    completion_criteria_markdown: "Provider receipt is canonical".into(),
+                    phase: WorkPhase::Open,
+                    condition: WorkCondition::Normal,
+                    resolution: None,
+                    owner_member_id: Some(member.agent_member_id.clone()),
+                    active_member_run_id: Some(member.id.clone()),
+                    claim_mode: WorkClaimMode::HostAssign,
+                    eligible_member_ids: vec![member.agent_member_id.clone()],
+                    prerequisite_work_ids: Vec::new(),
+                    priority: WorkPriority::Normal,
+                    created_by_actor: compatibility_team_actor("host", "test"),
+                    result_summary: None,
+                    blocker_reason: None,
+                    artifact_refs: Vec::new(),
+                    check_refs: Vec::new(),
+                    github_links: Vec::new(),
+                    version: 0,
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                },
+                WorkCommandContext {
+                    event_id: "canonical-supervisor-work-created".into(),
+                    performed_by_actor: compatibility_team_actor("host", "test"),
+                    authority_actor: None,
+                    causation_ref: None,
+                    idempotency_key: "canonical-supervisor-work-create".into(),
+                    created_at: "unix-ms:3".into(),
+                    duplicate_ok: false,
+                },
+            )
+            .expect("create assigned Work");
+        store
+            .create_trust_work_deliveries(
+                &harness_core::agentfirm_api::MutationContext {
+                    execution_space_id: "unit-test-space".into(),
+                    authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                        kind: harness_core::agentfirm_api::ActorKind::Service,
+                        id: "test-host".into(),
+                    },
+                    authority_actor: None,
+                    command_name: "test.work_delivery.create".into(),
+                    idempotency_key: "canonical-supervisor-work-delivery".into(),
+                    expected_version: 0,
+                },
+                "canonical-supervisor-work-event",
+                &work.id,
+                work.version,
+                std::slice::from_ref(&member.id),
+                "unix-ms:4",
+            )
+            .expect("create canonical WorkDelivery");
+        let lease = store
+            .acquire_test_supervisor_lease(
+                &created.team_run.id,
+                "canonical-work-supervisor",
+                std::process::id(),
+                "test://canonical-work-supervisor",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire supervisor lease");
+        let ledger = TeamRunLedger::new(
+            &store,
+            &created.team_run.id,
+            &lease.supervisor_id,
+            lease.generation,
+            Arc::new(AtomicBool::new(true)),
+        );
+        let claimed = claim_canonical_work_for_member(&ledger, &member)
+            .expect("claim canonical Work")
+            .expect("one canonical Work claim");
+        ledger
+            .complete_work_delivery(&claimed, "provider-work-receipt")
+            .expect("record canonical provider receipt");
+        let delivery = store
+            .trust_work_deliveries("unit-test-space")
+            .expect("canonical WorkDelivery ledger")
+            .into_iter()
+            .find(|delivery| delivery.work_id == work.id)
+            .expect("canonical delivery");
+        assert_eq!(
+            delivery.status,
+            harness_core::agentfirm_api::WorkDeliveryStatus::ProviderReceived
+        );
+        assert_eq!(
+            delivery.provider_receipt_id.as_deref(),
+            Some("provider-work-receipt")
+        );
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 

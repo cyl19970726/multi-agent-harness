@@ -37,7 +37,7 @@ live state and is never replayed or evidence.
 | Who owns live control? | latest active `TeamSupervisorLease` generation and owner heartbeat |
 | Who sent the input? | typed TeamMessage actor; bound Member context for Member authorship |
 | Is a delivery attempt active? | latest queued/claim/provider-receipt/failure projection |
-| Is the runtime executable? | `AgentRuntimeHealth` process, endpoint, protocol, and delivery probes |
+| Is the runtime executable? | provider-process health, endpoint, protocol, and delivery probes |
 | What is the agent doing? | on-demand provider-native activity projection |
 | Is input or approval required? | Harness `PendingInteraction` |
 | Can execution resume? | `NativeSessionRef.supports_resume` plus availability/version checks |

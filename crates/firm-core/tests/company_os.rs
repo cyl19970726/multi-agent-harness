@@ -1,13 +1,12 @@
 use firm_core::{
     ActionCommand, ActionCommandStatus, ActionEffect, ActionPolicyDefinition, ActorRef, ActorType,
-    Approval, ApprovalStatus, AuditEvent, AuditEventKind, Block, BlockKind, BusinessModule,
-    Commitment, CommitmentStatus, CompanyOsValidationError, CustomPageDefinition,
+    AgentMembership, Approval, ApprovalStatus, AuditEvent, AuditEventKind, Block, BlockKind,
+    BusinessModule, Commitment, CommitmentStatus, CompanyOsValidationError, CustomPageDefinition,
     CustomPagePackage, CustomPagePackageKind, DataQueryDeclaration, Document, DocumentKind,
     EntityKind, EntityRef, ExternalParticipant, HumanMember, LifecycleStatus, MemberStatus,
     Milestone, MilestoneStatus, Money, OrgUnit, OrgUnitStatus, OrganizationMembership,
     OrganizationMembershipRole, OrganizationMembershipStatus, Payment, PaymentStatus, Relation,
-    AgentMembership, RelationRule, RiskTier, ServiceActor, TypedRecord, ValidateCompanyOs, View,
-    ViewMode,
+    RelationRule, RiskTier, ServiceActor, TypedRecord, ValidateCompanyOs, View, ViewMode,
 };
 use serde_json::json;
 

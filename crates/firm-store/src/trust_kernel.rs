@@ -1,19 +1,22 @@
 use crate::{HarnessStore, StoreError, StoreResult};
 use firm_core::agentfirm_api::{
-    integration_plan_module_v1, ActorKind, AgentMember, AgentMemberOrganizationStatus, CanonicalMutationEvent,
-    CanonicalOperation, DeliveryClaim, DeliveryReconcileOutcome, FailureAnalysis, GateEvaluation,
-    GateRequirement, GateRequirementSource, GateVerdict, GateWaiver, GateWaiverState, MemberCoordinationStatus, MemberRun,
-    MemberRuntimeStatus, MemberWorkspaceBinding, MessageDelivery, MessageDeliveryStatus,
-    MutationContext, ProviderReceipt, TeamMessage, TrustError, TrustErrorCode, WorkDelivery,
-    WorkDeliveryStatus, WorkFinding, WorkModuleBinding, WorkReport, WorkReportKind,
-    WorkspaceLifecycle, WorkspaceMode, WorkspaceOwnership, WorkspaceSafetyProof,
+    integration_plan_module_v1, ActorKind, AgentMember, AgentMemberOrganizationStatus,
+    CanonicalMutationEvent, CanonicalOperation, DeliveryClaim, DeliveryReconcileOutcome,
+    FailureAnalysis, GateEvaluation, GateRequirement, GateRequirementSource, GateVerdict,
+    GateWaiver, GateWaiverState, MemberCoordinationStatus, MemberRun, MemberRuntimeStatus,
+    MemberWorkspaceBinding, MessageDelivery, MessageDeliveryStatus, MutationContext,
+    ProviderReceipt, TeamMessage, TrustError, TrustErrorCode, WorkDelivery, WorkDeliveryStatus,
+    WorkFinding, WorkModuleBinding, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
+    WorkspaceOwnership, WorkspaceSafetyProof,
 };
+use firm_core::Work;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
-use firm_core::Work;
 
 const TRUST_OPERATIONS_LEDGER: &str = "agentfirm_trust_operations.jsonl";
 
@@ -68,6 +71,93 @@ fn required(value: &str, field: &str) -> StoreResult<()> {
     Ok(())
 }
 
+#[derive(Debug)]
+struct ObservedWorkspaceSafety {
+    canonical_root: PathBuf,
+    git_common_dir: Option<PathBuf>,
+    dirty: bool,
+    conflicted: bool,
+    link_escape_free: bool,
+    dirty_fingerprint: Option<String>,
+}
+
+fn canonical_git_path(root: &Path, value: &str) -> StoreResult<PathBuf> {
+    let path = Path::new(value);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    std::fs::canonicalize(absolute).map_err(StoreError::Io)
+}
+
+fn git_output(root: &Path, args: &[&str]) -> StoreResult<Option<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .map_err(StoreError::Io)?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    Ok(Some(
+        String::from_utf8_lossy(&output.stdout).trim().to_string(),
+    ))
+}
+
+fn workspace_tree_link_escape_free(root: &Path) -> StoreResult<bool> {
+    let canonical_root = std::fs::canonicalize(root).map_err(StoreError::Io)?;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        for entry in std::fs::read_dir(&path).map_err(StoreError::Io)? {
+            let entry = entry.map_err(StoreError::Io)?;
+            let child = entry.path();
+            let metadata = std::fs::symlink_metadata(&child).map_err(StoreError::Io)?;
+            if metadata.file_type().is_symlink() {
+                let Ok(target) = std::fs::canonicalize(&child) else {
+                    return Ok(false);
+                };
+                if !target.starts_with(&canonical_root) {
+                    return Ok(false);
+                }
+            } else if metadata.is_dir() && entry.file_name() != ".git" {
+                stack.push(child);
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn observe_workspace_safety(root: &Path) -> StoreResult<ObservedWorkspaceSafety> {
+    let canonical_root = std::fs::canonicalize(root).map_err(StoreError::Io)?;
+    let link_escape_free = workspace_tree_link_escape_free(root)?;
+    let git_common_dir = git_output(root, &["rev-parse", "--git-common-dir"])?
+        .filter(|value| !value.is_empty())
+        .map(|value| canonical_git_path(root, &value))
+        .transpose()?;
+    let porcelain = git_output(
+        root,
+        &["status", "--porcelain=v1", "--untracked-files=normal"],
+    )?;
+    let conflicts = git_output(root, &["diff", "--name-only", "--diff-filter=U"])?;
+    let dirty = porcelain.as_deref().is_some_and(|value| !value.is_empty());
+    let conflicted = conflicts.as_deref().is_some_and(|value| !value.is_empty());
+    let dirty_fingerprint = porcelain.filter(|value| !value.is_empty()).map(|value| {
+        let mut digest = Sha256::new();
+        digest.update(value.as_bytes());
+        format!("sha256:{:x}", digest.finalize())
+    });
+    Ok(ObservedWorkspaceSafety {
+        canonical_root,
+        git_common_dir,
+        dirty,
+        conflicted,
+        link_escape_free,
+        dirty_fingerprint,
+    })
+}
+
 fn now_string() -> String {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -115,13 +205,7 @@ fn gate_requirement_is_satisfied(
     }
     let dependencies_satisfied = requirement.dependency_requirement_ids.iter().all(|id| {
         requirements.get(id).is_some_and(|dependency| {
-            gate_requirement_is_satisfied(
-                dependency,
-                requirements,
-                evaluations,
-                waivers,
-                visiting,
-            )
+            gate_requirement_is_satisfied(dependency, requirements, evaluations, waivers, visiting)
         })
     });
     visiting.remove(&requirement.id);
@@ -775,18 +859,85 @@ impl HarnessStore {
         run.last_event_at = Some(updated_at.to_string());
 
         let mut side_records = Vec::new();
+        if transition == "reopened" {
+            if let Some(binding_id) = run.workspace_binding_id.as_deref() {
+                let mut binding = self
+                    .trust_workspace_bindings(&context.execution_space_id)?
+                    .into_iter()
+                    .find(|binding| binding.id == binding_id)
+                    .ok_or_else(|| {
+                        trust_error(
+                            TrustErrorCode::WorkspacePathUnsafe,
+                            "reopen requires the bound workspace projection",
+                            "workspace_binding",
+                            binding_id,
+                            None,
+                        )
+                    })?;
+                if matches!(
+                    binding.lifecycle,
+                    WorkspaceLifecycle::Missing
+                        | WorkspaceLifecycle::CleanupBlocked
+                        | WorkspaceLifecycle::Removed
+                ) {
+                    return Err(trust_error(
+                        TrustErrorCode::WorkspaceCleanupBlocked,
+                        "reopen cannot reattach an unavailable workspace",
+                        "workspace_binding",
+                        binding_id,
+                        Some(binding.version),
+                    ));
+                }
+                let observed = observe_workspace_safety(Path::new(&binding.canonical_root))?;
+                if !observed.link_escape_free {
+                    return Err(trust_error(
+                        TrustErrorCode::WorkspaceLinkEscape,
+                        "reopen workspace contains a symbolic-link escape",
+                        "workspace_binding",
+                        binding_id,
+                        Some(binding.version),
+                    ));
+                }
+                if observed.conflicted || observed.dirty {
+                    return Err(trust_error(
+                        if observed.conflicted {
+                            TrustErrorCode::WorkspaceConflicted
+                        } else {
+                            TrustErrorCode::WorkspaceDirty
+                        },
+                        "reopen requires a clean conflict-free workspace",
+                        "workspace_binding",
+                        binding_id,
+                        Some(binding.version),
+                    ));
+                }
+                binding.lifecycle = WorkspaceLifecycle::Attached;
+                binding.attached_member_generation = Some(run.runtime_generation);
+                binding.dirty_fingerprint = None;
+                binding.blocked_reason = None;
+                binding.version += 1;
+                binding.updated_at = updated_at.to_string();
+                side_records.push(serde_json::to_value(binding)?);
+            }
+        }
         if transition == "closed" || transition == "retired" {
             for mut delivery in self.trust_message_deliveries(&context.execution_space_id)? {
                 if delivery.recipient_member_run_id != member_run_id {
                     continue;
                 }
-                if matches!(delivery.status, MessageDeliveryStatus::Queued) {
-                    if transition == "closed" {
-                        delivery.freeze_generation = Some(run.runtime_generation);
-                    } else {
-                        delivery.status = MessageDeliveryStatus::Invalidated;
-                        delivery.version += 1;
-                    }
+                if transition == "closed" && delivery.status == MessageDeliveryStatus::Queued {
+                    delivery.freeze_generation = Some(run.runtime_generation);
+                    delivery.version += 1;
+                    delivery.updated_at = updated_at.to_string();
+                    side_records.push(serde_json::to_value(delivery)?);
+                } else if transition == "retired"
+                    && matches!(
+                        delivery.status,
+                        MessageDeliveryStatus::Queued | MessageDeliveryStatus::Claimed
+                    )
+                {
+                    delivery.status = MessageDeliveryStatus::Invalidated;
+                    delivery.version += 1;
                     delivery.updated_at = updated_at.to_string();
                     side_records.push(serde_json::to_value(delivery)?);
                 }
@@ -795,13 +946,19 @@ impl HarnessStore {
                 if delivery.recipient_member_run_id != member_run_id {
                     continue;
                 }
-                if matches!(delivery.status, WorkDeliveryStatus::Queued) {
-                    if transition == "closed" {
-                        delivery.freeze_generation = Some(run.runtime_generation);
-                    } else {
-                        delivery.status = WorkDeliveryStatus::Invalidated;
-                        delivery.version += 1;
-                    }
+                if transition == "closed" && delivery.status == WorkDeliveryStatus::Queued {
+                    delivery.freeze_generation = Some(run.runtime_generation);
+                    delivery.version += 1;
+                    delivery.updated_at = updated_at.to_string();
+                    side_records.push(serde_json::to_value(delivery)?);
+                } else if transition == "retired"
+                    && matches!(
+                        delivery.status,
+                        WorkDeliveryStatus::Queued | WorkDeliveryStatus::Claimed
+                    )
+                {
+                    delivery.status = WorkDeliveryStatus::Invalidated;
+                    delivery.version += 1;
                     delivery.updated_at = updated_at.to_string();
                     side_records.push(serde_json::to_value(delivery)?);
                 }
@@ -2151,11 +2308,7 @@ impl HarnessStore {
     ) -> StoreResult<CanonicalMutationResult<GateRequirement>> {
         self.init()?;
         let _trust_lock = self.acquire_write_lock()?;
-        self.trust_team_work_unlocked(
-            team_id,
-            &requirement.work_id,
-            requirement.work_revision,
-        )?;
+        self.trust_team_work_unlocked(team_id, &requirement.work_id, requirement.work_revision)?;
         let existing = self
             .trust_gate_requirements_unlocked(&context.execution_space_id)?
             .into_values()
@@ -2226,8 +2379,7 @@ impl HarnessStore {
             required_ids.push(requirement.id.clone());
         }
         required_ids.sort();
-        let set_fingerprint =
-            canonical_json_fingerprint(&serde_json::to_value(required_ids)?);
+        let set_fingerprint = canonical_json_fingerprint(&serde_json::to_value(required_ids)?);
         requirement.requirement_set_fingerprint = set_fingerprint.clone();
         for existing in &mut same_set {
             if existing.required {
@@ -2535,7 +2687,10 @@ impl HarnessStore {
             .cloned()
             .map(|requirement| (requirement.id.clone(), requirement))
             .collect::<BTreeMap<_, _>>();
-        for requirement in requirements.into_iter().filter(|requirement| requirement.required) {
+        for requirement in requirements
+            .into_iter()
+            .filter(|requirement| requirement.required)
+        {
             if !gate_requirement_is_satisfied(
                 &requirement,
                 &requirement_map,
@@ -2574,15 +2729,17 @@ impl HarnessStore {
             "updated_at": updated_at,
         });
         let request_fingerprint = canonical_json_fingerprint(&request_payload);
-        if let Some(replay) = self.trust_operation_envelopes_unlocked()?.into_iter().find(
-            |envelope| {
-                envelope.execution_space_id == context.execution_space_id
-                    && envelope.authenticated_actor_kind == context.authenticated_actor.kind
-                    && envelope.authenticated_actor_id == context.authenticated_actor.id
-                    && envelope.command_name == context.command_name
-                    && envelope.operation.event.idempotency_key == context.idempotency_key
-            },
-        ) {
+        if let Some(replay) =
+            self.trust_operation_envelopes_unlocked()?
+                .into_iter()
+                .find(|envelope| {
+                    envelope.execution_space_id == context.execution_space_id
+                        && envelope.authenticated_actor_kind == context.authenticated_actor.kind
+                        && envelope.authenticated_actor_id == context.authenticated_actor.id
+                        && envelope.command_name == context.command_name
+                        && envelope.operation.event.idempotency_key == context.idempotency_key
+                })
+        {
             if replay.operation.event.canonical_request_fingerprint != request_fingerprint
                 || replay.operation.event.aggregate_kind != "work"
                 || replay.operation.event.aggregate_id != work_id
@@ -2695,22 +2852,32 @@ impl HarnessStore {
         next.version += 1;
         next.updated_at = updated_at.to_string();
         let side_records = std::iter::once(serde_json::to_value(&report)?)
-            .chain(requirements.iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>()?)
-            .chain(evaluations.iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>()?)
-            .chain(waivers.iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>()?)
+            .chain(
+                requirements
+                    .iter()
+                    .map(serde_json::to_value)
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+            .chain(
+                evaluations
+                    .iter()
+                    .map(serde_json::to_value)
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+            .chain(
+                waivers
+                    .iter()
+                    .map(serde_json::to_value)
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
             .collect();
-        self.commit_trust_work_acceptance_unlocked(
-            context,
-            request_payload,
-            &next,
-            side_records,
-        )
+        self.commit_trust_work_acceptance_unlocked(context, request_payload, &next, side_records)
     }
 
     pub fn create_trust_workspace_binding(
         &self,
         context: &MutationContext,
-        binding: MemberWorkspaceBinding,
+        mut binding: MemberWorkspaceBinding,
     ) -> StoreResult<CanonicalMutationResult<MemberWorkspaceBinding>> {
         self.init()?;
         let _trust_lock = self.acquire_write_lock()?;
@@ -2729,9 +2896,12 @@ impl HarnessStore {
         }
         let path = std::path::Path::new(&binding.canonical_root);
         if !path.is_absolute()
-            || path
-                .components()
-                .any(|component| matches!(component, std::path::Component::ParentDir))
+            || path.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir | std::path::Component::CurDir
+                )
+            })
         {
             return Err(trust_error(
                 TrustErrorCode::WorkspacePathUnsafe,
@@ -2803,6 +2973,59 @@ impl HarnessStore {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
                 Err(error) => return Err(StoreError::Io(error)),
             }
+        }
+        if path.exists() {
+            let observed = observe_workspace_safety(path)?;
+            if observed.canonical_root != path {
+                return Err(trust_error(
+                    TrustErrorCode::WorkspacePathUnsafe,
+                    "canonical_root must equal the filesystem canonical path",
+                    "workspace_binding",
+                    &binding.id,
+                    None,
+                ));
+            }
+            if !observed.link_escape_free {
+                return Err(trust_error(
+                    TrustErrorCode::WorkspaceLinkEscape,
+                    "workspace tree contains a symbolic-link escape",
+                    "workspace_binding",
+                    &binding.id,
+                    None,
+                ));
+            }
+            if matches!(
+                binding.mode,
+                WorkspaceMode::Worktree | WorkspaceMode::SharedLive
+            ) && observed.git_common_dir.is_none()
+            {
+                return Err(trust_error(
+                    TrustErrorCode::WorkspaceRepositoryMismatch,
+                    "worktree/shared_live workspace must resolve a Git common directory",
+                    "workspace_binding",
+                    &binding.id,
+                    None,
+                ));
+            }
+            if let (Some(expected), Some(actual)) = (
+                binding.git_common_dir.as_deref(),
+                observed.git_common_dir.as_ref(),
+            ) {
+                let expected = canonical_git_path(path, expected)?;
+                if &expected != actual {
+                    return Err(trust_error(
+                        TrustErrorCode::WorkspaceRepositoryMismatch,
+                        "workspace Git common directory does not match the binding",
+                        "workspace_binding",
+                        &binding.id,
+                        None,
+                    ));
+                }
+            }
+            binding.git_common_dir = observed
+                .git_common_dir
+                .map(|value| value.display().to_string());
+            binding.dirty_fingerprint = observed.dirty_fingerprint;
         }
         if binding.mode == WorkspaceMode::SharedLive {
             if binding.ownership != WorkspaceOwnership::SharedProject {
@@ -2909,19 +3132,124 @@ impl HarnessStore {
                 Some(binding.version),
             ));
         }
-        if proof.project_binding_id != binding.project_binding_id || !proof.repository_matches {
+        if proof.project_binding_id != binding.project_binding_id {
             return Err(trust_error(
                 TrustErrorCode::WorkspaceRepositoryMismatch,
-                "workspace repository or ProjectBinding does not match",
+                "workspace ProjectBinding does not match",
                 "workspace_binding",
                 binding_id,
                 Some(binding.version),
             ));
         }
-        if !proof.link_escape_free {
+        let root = Path::new(&binding.canonical_root);
+        let observed = if root.exists() {
+            Some(observe_workspace_safety(root)?)
+        } else {
+            None
+        };
+        if next == WorkspaceLifecycle::Removed {
+            if observed.is_some() {
+                return Err(trust_error(
+                    TrustErrorCode::WorkspaceCleanupBlocked,
+                    "workspace cleanup cannot complete while canonical_root still exists",
+                    "workspace_binding",
+                    binding_id,
+                    Some(binding.version),
+                ));
+            }
+        } else if next != WorkspaceLifecycle::Preparing && observed.is_none() {
+            return Err(trust_error(
+                TrustErrorCode::WorkspacePathUnsafe,
+                "workspace path is missing for the requested lifecycle transition",
+                "workspace_binding",
+                binding_id,
+                Some(binding.version),
+            ));
+        }
+        if let Some(observed) = observed.as_ref() {
+            if observed.canonical_root != root {
+                return Err(trust_error(
+                    TrustErrorCode::WorkspacePathUnsafe,
+                    "workspace path no longer equals its canonical filesystem path",
+                    "workspace_binding",
+                    binding_id,
+                    Some(binding.version),
+                ));
+            }
+            if !observed.link_escape_free || !proof.link_escape_free {
+                return Err(trust_error(
+                    TrustErrorCode::WorkspaceLinkEscape,
+                    "workspace contains a symlink/reparse escape",
+                    "workspace_binding",
+                    binding_id,
+                    Some(binding.version),
+                ));
+            }
+            if matches!(
+                binding.mode,
+                WorkspaceMode::Worktree | WorkspaceMode::SharedLive
+            ) && observed.git_common_dir.is_none()
+            {
+                return Err(trust_error(
+                    TrustErrorCode::WorkspaceRepositoryMismatch,
+                    "workspace no longer resolves the required Git repository",
+                    "workspace_binding",
+                    binding_id,
+                    Some(binding.version),
+                ));
+            }
+            if let Some(expected) = binding.git_common_dir.as_deref() {
+                let expected = canonical_git_path(root, expected)?;
+                if observed.git_common_dir.as_ref() != Some(&expected)
+                    || proof
+                        .git_common_dir
+                        .as_deref()
+                        .map(|value| canonical_git_path(root, value))
+                        .transpose()?
+                        .as_ref()
+                        != Some(&expected)
+                {
+                    return Err(trust_error(
+                        TrustErrorCode::WorkspaceRepositoryMismatch,
+                        "workspace Git identity differs from binding or safety proof",
+                        "workspace_binding",
+                        binding_id,
+                        Some(binding.version),
+                    ));
+                }
+            }
+            if !proof.repository_matches {
+                return Err(trust_error(
+                    TrustErrorCode::WorkspaceRepositoryMismatch,
+                    "workspace safety proof did not affirm the bound repository",
+                    "workspace_binding",
+                    binding_id,
+                    Some(binding.version),
+                ));
+            }
+            if observed.conflicted != proof.is_conflicted {
+                return Err(trust_error(
+                    TrustErrorCode::WorkspaceConflicted,
+                    "workspace conflict proof differs from the filesystem observation",
+                    "workspace_binding",
+                    binding_id,
+                    Some(binding.version),
+                ));
+            }
+            if observed.dirty != proof.is_dirty {
+                return Err(trust_error(
+                    TrustErrorCode::WorkspaceDirty,
+                    "workspace dirty proof differs from the filesystem observation",
+                    "workspace_binding",
+                    binding_id,
+                    Some(binding.version),
+                ));
+            }
+            binding.dirty_fingerprint = observed.dirty_fingerprint.clone();
+        } else if !proof.link_escape_free {
             return Err(trust_error(
                 TrustErrorCode::WorkspaceLinkEscape,
-                "workspace contains a symlink/reparse escape",
+                "workspace safety proof did not establish a link-safe path",
                 "workspace_binding",
                 binding_id,
                 Some(binding.version),

@@ -120,6 +120,7 @@ pub enum TrustCommand {
         binding: MemberWorkspaceBinding,
     },
     TransitionWorkspace {
+        member_run_id: String,
         binding_id: String,
         next: WorkspaceLifecycle,
         proof: WorkspaceSafetyProof,
@@ -247,11 +248,15 @@ impl TrustCommand {
             ) => &binding.member_run_id == id,
             (
                 Self::TransitionWorkspace {
-                    binding_id, next, ..
+                    member_run_id,
+                    binding_id,
+                    next,
+                    ..
                 },
-                ["v1", "member-runs", _, "workspace", action],
+                ["v1", "member-runs", member, "workspace", action],
             ) => {
-                !binding_id.is_empty()
+                member_run_id == member
+                    && !binding_id.is_empty()
                     && matches!(
                         (next, *action),
                         (WorkspaceLifecycle::Attached, "attach")
@@ -259,9 +264,10 @@ impl TrustCommand {
                             | (WorkspaceLifecycle::Removed, "cleanup")
                     )
             }
-            (Self::CreateWorkReport { team_id, report }, ["v1", "teams", team, "works", work, "reports"]) => {
-                team_id == team && &report.work_id == work
-            }
+            (
+                Self::CreateWorkReport { team_id, report },
+                ["v1", "teams", team, "works", work, "reports"],
+            ) => team_id == team && &report.work_id == work,
             (
                 Self::CreateWorkFinding { team_id, finding },
                 ["v1", "teams", team, "works", work, "findings"],
@@ -270,11 +276,15 @@ impl TrustCommand {
                 Self::CreateFailureAnalysis { team_id, analysis },
                 ["v1", "teams", team, "works", work, "failure-analyses"],
             ) => team_id == team && &analysis.work_id == work,
-            (Self::BindWorkModule { team_id, binding }, ["v1", "teams", team, "works", work, "modules"]) => {
-                team_id == team && &binding.work_id == work
-            }
             (
-                Self::CreateGateRequirement { team_id, requirement },
+                Self::BindWorkModule { team_id, binding },
+                ["v1", "teams", team, "works", work, "modules"],
+            ) => team_id == team && &binding.work_id == work,
+            (
+                Self::CreateGateRequirement {
+                    team_id,
+                    requirement,
+                },
                 ["v1", "teams", team, "works", work, "gate-requirements"],
             ) => team_id == team && &requirement.work_id == work,
             (
@@ -477,36 +487,71 @@ pub fn execute(
             result(store.create_trust_workspace_binding(&context, binding)?)
         }
         TrustCommand::TransitionWorkspace {
+            member_run_id,
             binding_id,
             next,
             proof,
             updated_at,
-        } => result(store.transition_trust_workspace_binding(
-            &context,
-            &binding_id,
-            next,
-            &proof,
-            &updated_at,
-        )?),
-        TrustCommand::CreateWorkReport { team_id, mut report } => {
+        } => {
+            let binding_matches_member = store
+                .trust_workspace_bindings(&context.execution_space_id)?
+                .into_iter()
+                .any(|binding| binding.id == binding_id && binding.member_run_id == member_run_id);
+            if !binding_matches_member {
+                return Err(StoreError::Conflict(
+                    serde_json::to_string(&harness_core::agentfirm_api::TrustError {
+                        code:
+                            harness_core::agentfirm_api::TrustErrorCode::WorkspaceGenerationFenced,
+                        message: "workspace binding does not belong to the addressed MemberRun"
+                            .into(),
+                        retryable: false,
+                        resource_kind: "workspace_binding".into(),
+                        resource_id: binding_id,
+                        current_version: None,
+                    })
+                    .expect("TrustError serializes"),
+                ));
+            }
+            result(store.transition_trust_workspace_binding(
+                &context,
+                &binding_id,
+                next,
+                &proof,
+                &updated_at,
+            )?)
+        }
+        TrustCommand::CreateWorkReport {
+            team_id,
+            mut report,
+        } => {
             report.authored_by = auth.actor;
             result(store.create_trust_work_report(&context, &team_id, report)?)
         }
-        TrustCommand::CreateWorkFinding { team_id, mut finding } => {
+        TrustCommand::CreateWorkFinding {
+            team_id,
+            mut finding,
+        } => {
             finding.reported_by = auth.actor;
             result(store.create_trust_finding(&context, &team_id, finding)?)
         }
-        TrustCommand::CreateFailureAnalysis { team_id, mut analysis } => {
+        TrustCommand::CreateFailureAnalysis {
+            team_id,
+            mut analysis,
+        } => {
             analysis.reported_by = auth.actor;
             result(store.create_trust_failure_analysis(&context, &team_id, analysis)?)
         }
-        TrustCommand::BindWorkModule { team_id, mut binding } => {
+        TrustCommand::BindWorkModule {
+            team_id,
+            mut binding,
+        } => {
             binding.attached_by = auth.actor;
             result(store.bind_trust_work_module(&context, &team_id, binding)?)
         }
-        TrustCommand::CreateGateRequirement { team_id, requirement } => {
-            result(store.create_trust_gate_requirement(&context, &team_id, requirement)?)
-        }
+        TrustCommand::CreateGateRequirement {
+            team_id,
+            requirement,
+        } => result(store.create_trust_gate_requirement(&context, &team_id, requirement)?),
         TrustCommand::AcceptWork {
             team_id,
             work_id,

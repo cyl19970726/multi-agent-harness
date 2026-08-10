@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/trust-error.schema.json",
+  "title": "Member Execution Trust Error",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "code",
+    "message",
+    "retryable",
+    "resource_kind",
+    "resource_id"
+  ],
+  "properties": {
+    "code": {
+      "type": "string",
+      "enum": [
+        "VERSION_CONFLICT",
+        "IDEMPOTENCY_KEY_REUSED",
+        "UNAUTHORIZED_ACTOR",
+        "INVALID_STATE_TRANSITION",
+        "AGENT_MEMBER_PAUSED",
+        "AGENT_MEMBER_RETIRED",
+        "MEMBER_RUN_CLOSED",
+        "MEMBER_RUN_RETIRED",
+        "MEMBER_RUN_GENERATION_FENCED",
+        "NATIVE_SESSION_MISSING",
+        "NATIVE_SESSION_INCOMPATIBLE",
+        "DELIVERY_CLAIM_CONFLICT",
+        "DELIVERY_RECEIPT_MISSING",
+        "DELIVERY_RECOVERY_UNCERTAIN",
+        "WORK_REVISION_STALE",
+        "WORKSPACE_PATH_UNSAFE",
+        "WORKSPACE_REPOSITORY_MISMATCH",
+        "WORKSPACE_LINK_ESCAPE",
+        "WORKSPACE_GENERATION_FENCED",
+        "WORKSPACE_DIRTY",
+        "WORKSPACE_CONFLICTED",
+        "WORKSPACE_CLEANUP_BLOCKED",
+        "MODULE_CONFIG_INVALID",
+        "MODULE_LIFECYCLE_VIOLATION",
+        "GATE_DEPENDENCY_CYCLE",
+        "GATE_REQUIREMENT_STALE",
+        "GATE_EVALUATION_REQUIRED",
+        "GATE_WAIVER_UNAUTHORIZED",
+        "REPORT_EVIDENCE_MISSING",
+        "FAILURE_ANALYSIS_MISSING"
+      ]
+    },
+    "message": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "retryable": {
+      "type": "boolean"
+    },
+    "resource_kind": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "resource_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "current_version": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    }
+  }
+}

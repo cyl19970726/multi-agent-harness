@@ -6,9 +6,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use firm_core::{
-    content_hash_hex16, provider_interaction_response_id, AgentTeam,
-    AgentTeamRun, Decision, DelegationRun, Evidence, ExecutionNode, ExecutionNodeStatus, Gap,
-    GitHubLink, HostAttention,
+    content_hash_hex16, provider_interaction_response_id, AgentTeam, AgentTeamRun, Decision,
+    DelegationRun, Evidence, ExecutionNode, ExecutionNodeStatus, Gap, GitHubLink, HostAttention,
     HostAttentionInbox, HostAttentionKind, HostAttentionStatus, HostBindingLease,
     HostBindingLeaseOwnerKind, HostBindingLeaseStatus, MemberAction, MemberRun, Message,
     MessageDelivery, MessageDeliveryStatus, MessageTerminalSource, Mission, MissionLogEntry,
@@ -18,16 +17,15 @@ use firm_core::{
     ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
     ProviderCompatibilityStatus, ProviderDispatchEvent, ProviderExecutionStatus,
     ProviderIntegrationProfile, ProviderInteractionRequestBody, ProviderInteractionResponseBody,
-    ProviderLaunchProfile, ProviderProcess, Review,
-    TeamActorKind, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
-    TeamMemberCloseStatus, TeamMessage, TeamMessageKind, TeamRunEvent, TeamRunStatus,
-    TeamSupervisorLease, TeamSupervisorLeaseStatus, Validate, Vision, Wave, WaveGateStatus,
-    WaveStatus, Work, WorkClaimMode, WorkCommandContext, WorkCondition, WorkConditionRecord,
-    WorkDelegation, WorkDelegationEvent, WorkDelegationRevision, WorkDelegationState,
-    WorkDelegationTransition, WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate, WorkEvent,
-    WorkEventKind, WorkEvidence, WorkOperation, WorkOperationalDecision,
-    WorkPhase, WorkRef, WorkReport, WorkResolution, WorkflowArtifactManifest, WorkflowPatch,
-    WorkflowRun, WorkflowStep,
+    ProviderLaunchProfile, ProviderProcess, Review, TeamActorKind, TeamDeliveryPolicy,
+    TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage,
+    TeamMessageKind, TeamRunEvent, TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus,
+    Validate, Vision, Wave, WaveGateStatus, WaveStatus, Work, WorkClaimMode, WorkCommandContext,
+    WorkCondition, WorkConditionRecord, WorkDelegation, WorkDelegationEvent,
+    WorkDelegationRevision, WorkDelegationState, WorkDelegationTransition, WorkDelivery,
+    WorkDeliveryStatus, WorkDeliveryUpdate, WorkEvent, WorkEventKind, WorkEvidence, WorkOperation,
+    WorkOperationalDecision, WorkPhase, WorkRef, WorkReport, WorkResolution,
+    WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
@@ -8753,17 +8751,16 @@ mod tests {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     use firm_core::{
-        DelegationMode, DelegationStatus, HostAttentionKind,
-        MemberActionStatus, MemberExecutionDriver, MemberRunStatus, MemberWorkspaceSnapshot,
-        MessageKind, Mission, MissionLogEntry, MissionLogEntryKind, MissionStatus,
-        NativeSessionAvailability, NativeSessionRef, OrdinaryMessageBoundary,
-        ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockSource,
-        ProviderEventFidelity, ProviderFeatureMode, ProviderInteractionMessageOption,
-        ProviderInteractionMode, ProviderInteractionRequestBody, ProviderInteractionResponseBody,
-        ProviderInteractionType, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy,
-        TeamDeliveryStatus, TeamMessageDelivery, TeamMessageKind, TeamMessageResponseIntent,
-        TeamRecipientKind, TeamRecipientRef, TeamRunEventSourceKind, TeamRunStatus, Wave,
-        WaveExecutorKind, WaveGateStatus, WaveStatus, WorkPriority,
+        DelegationMode, DelegationStatus, HostAttentionKind, MemberActionStatus,
+        MemberExecutionDriver, MemberRunStatus, MemberWorkspaceSnapshot, MessageKind, Mission,
+        MissionLogEntry, MissionLogEntryKind, MissionStatus, NativeSessionAvailability,
+        NativeSessionRef, OrdinaryMessageBoundary, ProviderCompatibilityBlockBoundary,
+        ProviderCompatibilityBlockSource, ProviderEventFidelity, ProviderFeatureMode,
+        ProviderInteractionMessageOption, ProviderInteractionMode, ProviderInteractionRequestBody,
+        ProviderInteractionResponseBody, ProviderInteractionType, SenderKind, TeamActorKind,
+        TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMessageDelivery, TeamMessageKind,
+        TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEventSourceKind,
+        TeamRunStatus, Wave, WaveExecutorKind, WaveGateStatus, WaveStatus, WorkPriority,
     };
 
     use super::*;

@@ -13,6 +13,7 @@
 | Canonical mutation event | [canonical-mutation-event.schema.json](canonical-mutation-event.schema.json) |
 | Crash-atomic canonical operation | [canonical-operation.schema.json](canonical-operation.schema.json) |
 | Team message | [team-message.schema.json](team-message.schema.json) |
+| Member execution trust error | [trust-error.schema.json](trust-error.schema.json) |
 | Message delivery | [message-delivery.schema.json](message-delivery.schema.json) |
 | Member workspace binding | [member-workspace-binding.schema.json](member-workspace-binding.schema.json) |
 | Agent Team Work | [work.schema.json](work.schema.json) |
@@ -28,15 +29,12 @@
 | Gate evaluation | [gate-evaluation.schema.json](gate-evaluation.schema.json) |
 | Gate waiver | [gate-waiver.schema.json](gate-waiver.schema.json) |
 | Agent Team Work evidence | [work-evidence.schema.json](work-evidence.schema.json) |
-| Agent Team Work gate evaluation | [work-gate-evaluation.schema.json](work-gate-evaluation.schema.json) |
 | Agent Team Work operational decision | [work-operational-decision.schema.json](work-operational-decision.schema.json) |
 | Team Supervisor lease | [team-supervisor-lease.schema.json](team-supervisor-lease.schema.json) |
-| Durable Member Close | [team-member-close-request.schema.json](team-member-close-request.schema.json) |
 | Member action | [member-action.schema.json](member-action.schema.json) |
 | Pending provider interaction | [pending-interaction.schema.json](pending-interaction.schema.json) |
 | Delegation run | [delegation-run.schema.json](delegation-run.schema.json) |
 | Team run event | [team-run-event.schema.json](team-run-event.schema.json) |
-| Message | [message.schema.json](message.schema.json) |
 | Provider child thread | [provider-child-thread.schema.json](provider-child-thread.schema.json) |
 | Proposal | [proposal.schema.json](proposal.schema.json) |
 | Evidence | [evidence.schema.json](evidence.schema.json) |

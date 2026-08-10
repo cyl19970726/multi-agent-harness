@@ -30,6 +30,7 @@ const requiredSchemas = [
   "schemas/gate-requirement.schema.json",
   "schemas/gate-evaluation.schema.json",
   "schemas/gate-waiver.schema.json",
+  "schemas/trust-error.schema.json",
 ];
 for (const path of requiredSchemas) {
   assert(existsSync(path), `${path}: canonical schema is required`);
@@ -39,9 +40,15 @@ const retiredPaths = [
   "schemas/durable-agent-member.schema.json",
   "schemas/agent-runtime.schema.json",
   "schemas/agent-event.schema.json",
+  "schemas/message.schema.json",
+  "schemas/team-member-close-request.schema.json",
+  "schemas/work-gate-evaluation.schema.json",
   "schemas/fixtures/durable-agent-member",
   "schemas/fixtures/agent-runtime",
   "schemas/fixtures/agent-event",
+  "schemas/fixtures/message",
+  "schemas/fixtures/team-member-close-request",
+  "schemas/fixtures/work-gate-evaluation",
 ];
 function pathContainsFiles(path) {
   if (!existsSync(path)) return false;
@@ -203,8 +210,19 @@ assert(
   "schemas/work-event.schema.json: canonical WorkEvent contract must be preserved",
 );
 
-const sourceRoots = ["crates", "apps", "scripts", "skills", "schemas"];
-const sourceExtensions = new Set([".rs", ".ts", ".tsx", ".js", ".mjs", ".json"]);
+const sourceRoots = [
+  "AGENTS.md",
+  ".agents/skills",
+  "crates",
+  "apps",
+  "scripts",
+  "skills",
+  "schemas",
+  "docs/current",
+  "docs/mental",
+  "plugins/star-harness/skills",
+];
+const sourceExtensions = new Set([".rs", ".ts", ".tsx", ".js", ".mjs", ".json", ".md"]);
 const thisScript = "scripts/check-member-execution-trust.mjs";
 const activeFiles = [];
 
@@ -212,13 +230,12 @@ function collect(path) {
   if (!existsSync(path)) return;
   const stat = statSync(path);
   if (stat.isDirectory()) {
-    if (["target", "node_modules", "fixtures"].includes(path.split("/").at(-1))) return;
+    if (["target", "node_modules"].includes(path.split("/").at(-1))) return;
     for (const entry of readdirSync(path).sort()) collect(join(path, entry));
     return;
   }
   const normalized = relative(process.cwd(), path);
   if (normalized === thisScript || !sourceExtensions.has(extname(path))) return;
-  if (normalized.includes("/tests/") || normalized.includes("/test/")) return;
   activeFiles.push(normalized);
 }
 for (const root of sourceRoots) collect(root);

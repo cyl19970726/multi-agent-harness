@@ -17,28 +17,26 @@
 use std::io::{BufRead, Write};
 
 use harness_core::{
-    MemberRunStatus,
-    PendingInteractionStatus, TeamActorKind, TeamActorRef, TeamRunEvent, TeamRunStatus,
-    TeamSupervisorLeaseStatus, WaveStatus, Work, WorkCausationRef, WorkClaimMode,
+    MemberRunStatus, PendingInteractionStatus, TeamActorKind, TeamActorRef, TeamRunEvent,
+    TeamRunStatus, TeamSupervisorLeaseStatus, WaveStatus, Work, WorkCausationRef, WorkClaimMode,
     WorkCommandContext, WorkCondition, WorkPhase, WorkPriority,
 };
 use harness_store::HarnessStore;
 use serde_json::{json, Value};
 
 use crate::{
-    acknowledge_team_message, add_team_run_member, agentfirm_api,
-    cancel_work_delegation_value, close_mission, close_team_member_value, create_mission,
-    create_team_run, create_work_delegation_value, current_unix_ms_u64, deactivate_team_run_member,
+    acknowledge_team_message, add_team_run_member, agentfirm_api, cancel_work_delegation_value,
+    close_mission, close_team_member_value, create_mission, create_team_run,
+    create_work_delegation_value, current_unix_ms_u64, deactivate_team_run_member,
     delegate_team_run_to_node_daemon, format_work_brief_line, generated_id,
     has_actionable_delivered_manual_ack, host_inbox_for_native_thread, interrupt_team_member_value,
     latest_member_runs_in_append_order, latest_pending_interactions_in_append_order,
     latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
     mutate_team_work_value, now_string, parse_team_actor_kind, parse_team_message_kind,
-    parse_team_message_response_intent,
-    reconcile_team_message_delivery_value, reconcile_team_work_delivery_value,
-    rename_team_run_member, reopen_team_member_value, reopened_member_requires_supervisor_start,
-    resolve_pending_interaction_value, retired_wave_write_error, revise_mission_context,
-    send_team_message_as_work, serde_snake_label,
+    parse_team_message_response_intent, reconcile_team_message_delivery_value,
+    reconcile_team_work_delivery_value, rename_team_run_member, reopen_team_member_value,
+    reopened_member_requires_supervisor_start, resolve_pending_interaction_value,
+    retired_wave_write_error, revise_mission_context, send_team_message_as_work, serde_snake_label,
     steer_team_member_value, team_member_specs_from_definition, team_run_board_summary_text,
     team_run_inbox, team_run_mission_id, team_run_wave_index, transition_team_run,
     visible_member_actions_in_append_order, work_operation_cursors, ResolvedStore, TeamMemberSpec,
@@ -1274,9 +1272,7 @@ fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result
             .filter(|member| member.team_run_id == team_run_id)
             .find(|member| match sender_kind {
                 TeamActorKind::MemberRun => member.id == sender_id,
-                TeamActorKind::AgentMember => {
-                    member.agent_member_id == sender_id
-                }
+                TeamActorKind::AgentMember => member.agent_member_id == sender_id,
                 _ => false,
             });
         match external_member {

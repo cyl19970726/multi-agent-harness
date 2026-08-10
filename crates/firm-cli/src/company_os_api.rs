@@ -11,9 +11,8 @@ use harness_core::{
     ActionCommand, ActionCommandStatus, ActionEffect, ActionPolicyDefinition, ActorRef, ActorType,
     Approval, ApprovalStatus, AuditEvent, AuditEventKind, Block, BusinessModule, Commitment,
     CommitmentStatus, CustomPageDefinition, CustomPagePackage, Document, DocumentKind, EntityKind,
-    LifecycleStatus, MemberStatus, Milestone, OrgUnit, OrganizationMembership, Payment,
-    Relation, RiskTier, TypedRecord, ValidateCompanyOs, View, Work,
-    WorkCondition, WorkPhase, WorkResolution,
+    LifecycleStatus, MemberStatus, Milestone, OrgUnit, OrganizationMembership, Payment, Relation,
+    RiskTier, TypedRecord, ValidateCompanyOs, View, Work, WorkCondition, WorkPhase, WorkResolution,
 };
 use harness_store::{ActionCommandClaimResult, CompanyActor, HarnessStore, StoreError};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};

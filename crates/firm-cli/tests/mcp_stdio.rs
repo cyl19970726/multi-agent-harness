@@ -38,7 +38,12 @@ fn seed_agent_team(home: &TempHome, project_root: &std::path::Path, suffix: &str
         home,
         project_root,
         &[
-            "space", "init", "--id", &space_id, "--project-binding", &project_id,
+            "space",
+            "init",
+            "--id",
+            &space_id,
+            "--project-binding",
+            &project_id,
         ],
     );
     assert!(space.status.success(), "space init failed: {space:?}");
@@ -63,17 +68,24 @@ fn seed_agent_team(home: &TempHome, project_root: &std::path::Path, suffix: &str
             "created_at": "unix-ms:1",
             "updated_at": "unix-ms:1"
         }
-    }).to_string();
+    })
+    .to_string();
     let host = run_firm(
         home,
         project_root,
         &[
-            "member-trust", "mutate",
-            "--actor-kind", "human",
-            "--actor-id", "test-operator",
-            "--idempotency-key", &format!("create-host-{suffix}"),
-            "--expected-version", "0",
-            "--json", &create_host,
+            "member-trust",
+            "mutate",
+            "--actor-kind",
+            "human",
+            "--actor-id",
+            "test-operator",
+            "--idempotency-key",
+            &format!("create-host-{suffix}"),
+            "--expected-version",
+            "0",
+            "--json",
+            &create_host,
         ],
     );
     assert!(host.status.success(), "host create failed: {host:?}");
@@ -169,7 +181,10 @@ fn seed_member_in_active_space(
             &command,
         ],
     );
-    assert!(created.status.success(), "member create failed: {created:?}");
+    assert!(
+        created.status.success(),
+        "member create failed: {created:?}"
+    );
     member_id
 }
 
@@ -231,7 +246,14 @@ fn seed_team_for_mission(
         let added = run_firm(
             home,
             project_root,
-            &["team", "add-member", "--id", &team_id, "--member", member_id],
+            &[
+                "team",
+                "add-member",
+                "--id",
+                &team_id,
+                "--member",
+                member_id,
+            ],
         );
         assert!(added.status.success(), "team add-member failed: {added:?}");
     }
@@ -526,17 +548,11 @@ fn mcp_stdio_agent_team_tools() {
     let project_id = init_project(&home, "mcp-proj");
     let project_root =
         std::fs::canonicalize(home.base().join("mcp-proj")).expect("canonical project root");
-    let stable_agent_id = seed_canonical_member(
-        &home,
-        &project_root,
-        &project_id,
-        "main",
-        "coordinator",
-    );
+    let stable_agent_id =
+        seed_canonical_member(&home, &project_root, &project_id, "main", "coordinator");
     let worker_agent_id =
         seed_member_in_active_space(&home, &project_root, "worker-main", "implementer");
-    let repair_agent_id =
-        seed_member_in_active_space(&home, &project_root, "repair-main", "fixer");
+    let repair_agent_id = seed_member_in_active_space(&home, &project_root, "repair-main", "fixer");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
     let fake_kimi = fake_bin.join("kimi").display().to_string();
     let mut mcp = McpClient::spawn(
@@ -1757,13 +1773,8 @@ fn mcp_stdio_work_rebind_and_successor_delivery_reconcile() {
     let project_id = init_project(&home, "mcp-work-control-proj");
     let project_root = std::fs::canonicalize(home.base().join("mcp-work-control-proj"))
         .expect("canonical project root");
-    let stable_agent_id = seed_canonical_member(
-        &home,
-        &project_root,
-        &project_id,
-        "rebind",
-        "implementer",
-    );
+    let stable_agent_id =
+        seed_canonical_member(&home, &project_root, &project_id, "rebind", "implementer");
     let mission = run_firm(
         &home,
         &project_root,

@@ -116,7 +116,6 @@ fn explicit_migration_copies_only_execution_truth_and_keeps_source() {
         "{\"id\":\"mission-legacy\"}\n",
     )
     .unwrap();
-    std::fs::write(source.join("members.jsonl"), "{\"id\":\"member-legacy\"}\n").unwrap();
     std::fs::write(
         source.join("host_attentions.jsonl"),
         b"{\"id\":\"host-attention-legacy\",\"status\":\"actionable\"}\n",
@@ -154,10 +153,6 @@ fn explicit_migration_copies_only_execution_truth_and_keeps_source() {
     assert_eq!(
         std::fs::read(source.join("missions.jsonl")).unwrap(),
         std::fs::read(target.join("missions.jsonl")).unwrap()
-    );
-    assert_eq!(
-        std::fs::read(source.join("members.jsonl")).unwrap(),
-        std::fs::read(target.join("members.jsonl")).unwrap()
     );
     assert_eq!(
         std::fs::read(source.join("host_attentions.jsonl")).unwrap(),

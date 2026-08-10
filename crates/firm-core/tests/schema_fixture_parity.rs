@@ -5,11 +5,11 @@
 //! The directory classification is therefore the shared expected verdict, not
 //! an independent JS-only rule set.
 
+use firm_core::agentfirm_api::TeamMessage;
 use firm_core::{
     AgentTeam, AgentTeamRun, ExecutionNode, Mission, NodeDaemonLease, NodeProjectRegistration,
     Review, TeamSupervisorLease, Validate, Work, WorkDelegation, WorkDelegationEvent,
 };
-use firm_core::agentfirm_api::TeamMessage;
 use serde::de::DeserializeOwned;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -136,14 +136,6 @@ fn team_message_wire_rejects_unknown_fields_at_every_closed_layer() {
             "unexpected {label} rejection: {error}"
         );
     }
-}
-
-#[test]
-fn omitted_and_explicit_empty_gate_configs_are_one_canonical_duplicate() {
-    let fixture = fixture_root().join("work/invalid/duplicate-gate-spec-omitted-config.json");
-    let bytes = fs::read(&fixture).expect("canonical duplicate fixture");
-    let work: Work = serde_json::from_slice(&bytes).expect("both old and canonical wires parse");
-    assert!(work.validate().is_err());
 }
 
 #[test]

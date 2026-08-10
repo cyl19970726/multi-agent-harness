@@ -2,8 +2,8 @@
 //! (goal-multi-project, project-migrate task).
 //!
 //! Migration moves a legacy repo-local `.harness/` store into the centralized
-//! `~/.firm/projects/<id>/` store: copying active JSONL ledgers plus prompts /
-//! runtimes, writing `metadata.json` with `migrated_from`, and dropping a
+//! `~/.firm/projects/<id>/` store: copying allowlisted canonical JSONL ledgers,
+//! writing `metadata.json` with `migrated_from`, and dropping a
 //! `MIGRATED_TO_CENTRAL` marker in the old store that points at the central one. It
 //! must preserve record counts, be idempotent, and fail safely.
 
@@ -17,8 +17,6 @@ use firm_env::{run_firm, TempHome};
 fn seed_local_store(home: &TempHome, name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     let repo = home.home().join(name);
     let local = repo.join(".harness");
-    std::fs::create_dir_all(local.join("prompts")).unwrap();
-    std::fs::create_dir_all(local.join("runtimes")).unwrap();
     // Active JSONL ledgers plus one retired provider-session ledger that must
     // not be copied into the new centralized store.
     std::fs::write(
@@ -27,10 +25,8 @@ fn seed_local_store(home: &TempHome, name: &str) -> (std::path::PathBuf, std::pa
     )
     .unwrap();
     std::fs::write(local.join("tasks.jsonl"), "{\"id\":\"t1\"}\n").unwrap();
-    std::fs::write(local.join("members.jsonl"), "{\"id\":\"m1\"}\n").unwrap();
+    std::fs::write(local.join("evidence.jsonl"), "{\"id\":\"e1\"}\n").unwrap();
     std::fs::write(local.join("provider_sessions.jsonl"), "{\"id\":\"ps1\"}\n").unwrap();
-    std::fs::write(local.join("prompts").join("worker.md"), "prompt body").unwrap();
-    std::fs::write(local.join("runtimes").join("rt.json"), "{}").unwrap();
     (repo, local)
 }
 
@@ -82,11 +78,9 @@ fn migrate_preserves_records_and_payloads_and_marks_old_store() {
         "{\"id\":\"g1\"}\n{\"id\":\"g2\"}\n"
     );
     assert!(central.join("tasks.jsonl").exists());
-    assert!(central.join("members.jsonl").exists());
+    assert!(central.join("evidence.jsonl").exists());
     assert!(!central.join("provider_sessions.jsonl").exists());
     assert!(!central.join("provider-sessions").exists());
-    assert!(central.join("prompts").join("worker.md").exists());
-    assert!(central.join("runtimes").join("rt.json").exists());
 
     // metadata.json records migrated_from pointing at the old store.
     let meta: serde_json::Value =

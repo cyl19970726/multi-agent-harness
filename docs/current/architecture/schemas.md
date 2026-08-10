@@ -43,8 +43,8 @@ must not depend on Goal, Task Graph, Plan Gate, or generic `Message`.
 | `AgentMember` | Rust + JSON schema | yes |
 | `Task` | historical compatibility schema; retired for new coordination | no for new work |
 | `Message` | Agent Membership/runtime compatibility message; Agent Team uses `TeamMessage` | no for Agent Team |
-| `AgentRuntime` | Rust + JSON schema | yes |
-| `AgentEvent` | Rust + JSON schema | yes |
+| `MemberRun` | Rust + JSON schema | yes |
+| `MemberRunEvent` | Rust + JSON schema | yes |
 | `ProviderChildThread` | Rust + JSON schema | yes |
 | `Proposal` | Rust + JSON schema | yes |
 | `Evidence` | Rust + JSON schema | yes |
@@ -73,8 +73,8 @@ schema contracts are checked with valid and invalid fixtures.
 | Work delivery | [work-delivery.schema.json](../../../schemas/work-delivery.schema.json) |
 | Provider-native session locator | [native-session-ref.schema.json](../../../schemas/native-session-ref.schema.json) |
 | Team message | [team-message.schema.json](../../../schemas/team-message.schema.json) |
+| Member execution trust error | [trust-error.schema.json](../../../schemas/trust-error.schema.json) |
 | Team Supervisor lease | [team-supervisor-lease.schema.json](../../../schemas/team-supervisor-lease.schema.json) |
-| Durable Member Close | [team-member-close-request.schema.json](../../../schemas/team-member-close-request.schema.json) |
 | Member action | [member-action.schema.json](../../../schemas/member-action.schema.json) |
 | Pending provider interaction | [pending-interaction.schema.json](../../../schemas/pending-interaction.schema.json) |
 | Delegation run | [delegation-run.schema.json](../../../schemas/delegation-run.schema.json) |
@@ -82,8 +82,6 @@ schema contracts are checked with valid and invalid fixtures.
 | Agent team | [agent-team.schema.json](../../../schemas/agent-team.schema.json) |
 | Agent member | [agent-member.schema.json](../../../schemas/agent-member.schema.json) |
 | Durable Organization Agent member | [durable-agent-member.schema.json](../../../schemas/durable-agent-member.schema.json) |
-| Message | [message.schema.json](../../../schemas/message.schema.json) |
-| Agent runtime | [agent-runtime.schema.json](../../../schemas/agent-runtime.schema.json) |
 | Agent event | [agent-event.schema.json](../../../schemas/agent-event.schema.json) |
 | Provider child thread | [provider-child-thread.schema.json](../../../schemas/provider-child-thread.schema.json) |
 | Proposal | [proposal.schema.json](../../../schemas/proposal.schema.json) |

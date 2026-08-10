@@ -56,12 +56,12 @@ if (!projectA || !projectB || !storeA || !storeB) {
 }
 
 /**
- * Subscribe to `${base}/v1/events?project=<id>` and collect every `agent_event`
+ * Subscribe to `${base}/v1/events?project=<id>` and collect every `team_run_event`
  * frame's id for `windowMs`, invoking `onReady` once the stream is open (the
  * initial `snapshot` frame arrived) so the caller can append AFTER subscription.
- * Returns the set of agent_event ids seen.
+ * Returns the set of TeamRun event ids seen.
  */
-async function collectAgentEventIds(projectId, windowMs, onReady) {
+async function collectTeamRunEventIds(projectId, windowMs, onReady) {
   const controller = new AbortController();
   const seen = new Set();
   const res = await fetch(`${base}/v1/events?project=${encodeURIComponent(projectId)}`, {
@@ -90,7 +90,7 @@ async function collectAgentEventIds(projectId, windowMs, onReady) {
         readyFired = true;
         Promise.resolve().then(onReady);
       }
-      if (event === "agent_event" && data) {
+      if (event === "team_run_event" && data) {
         try {
           const obj = JSON.parse(data);
           if (obj && obj.id) seen.add(obj.id);
@@ -123,27 +123,25 @@ async function collectAgentEventIds(projectId, windowMs, onReady) {
   return seen;
 }
 
-/** Append one AgentEvent row to a project's store; the watcher broadcasts it as an
- * `agent_event` SSE frame on THAT project's channel only. Returns the row id. */
-async function emitAgentEvent(storeRoot, label) {
+/** Append one TeamRunEvent row to a project's store; the watcher broadcasts it as a
+ * `team_run_event` SSE frame on THAT project's channel only. Returns the row id. */
+async function emitTeamRunEvent(storeRoot, label) {
   const id = `picker-check-${label}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
-  // Must be a fully-valid AgentEvent row: serde requires every non-defaulted
-  // field key to be present (the watcher silently drops a row it cannot
-  // deserialize, which would make the positive control never see its own frame).
-  // Required keys: id, agent_member_id, provider_runtime_id, provider,
-  // event_type, summary, payload_ref, created_at.
   const row = {
     id,
-    agent_member_id: "picker-check",
-    provider_runtime_id: null,
-    provider: "verify",
-    event_type: "verification",
+    seq: 1,
+    team_run_id: `picker-check-${label}`,
+    source_kind: "host",
+    member_run_id: null,
+    delegation_run_id: null,
+    entity_type: "verification",
+    entity_id: id,
+    operation: "project_isolation_probe",
     summary: `dashboard-browser-check ${label}`,
-    payload_ref: null,
-    created_at: new Date().toISOString(),
+    occurred_at: new Date().toISOString(),
   };
   await mkdir(storeRoot, { recursive: true });
-  await appendFile(join(storeRoot, "agent_events.jsonl"), `${JSON.stringify(row)}\n`);
+  await appendFile(join(storeRoot, "team_run_events.jsonl"), `${JSON.stringify(row)}\n`);
   return id;
 }
 
@@ -152,11 +150,11 @@ async function checkSseIsolation() {
   // to B (must arrive). A ~2.5s window comfortably exceeds the ~150ms watcher poll.
   let idA = null;
   let idB = null;
-  const seenByB = await collectAgentEventIds(projectB, 2500, async () => {
-    idA = await emitAgentEvent(storeA, "A");
+  const seenByB = await collectTeamRunEventIds(projectB, 2500, async () => {
+    idA = await emitTeamRunEvent(storeA, "A");
     // Small gap so ordering is unambiguous, then the positive control on B.
     await new Promise((r) => setTimeout(r, 300));
-    idB = await emitAgentEvent(storeB, "B");
+    idB = await emitTeamRunEvent(storeB, "B");
   });
 
   if (idB && seenByB.has(idB)) {

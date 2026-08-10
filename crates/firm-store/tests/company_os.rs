@@ -3,9 +3,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use firm_core::{
     ActionCommand, ActionCommandStatus, ActionEffect, ActionPolicyDefinition, ActorRef, ActorType,
-    Approval, ApprovalStatus, AuditEvent, AuditEventKind, Block, BlockKind, BusinessModule,
-    Commitment, CommitmentStatus, CustomPageDefinition, CustomPagePackage, CustomPagePackageKind,
-    AgentMembership, DataQueryDeclaration, Document, DocumentKind, EntityKind, EntityRef,
+    AgentMembership, Approval, ApprovalStatus, AuditEvent, AuditEventKind, Block, BlockKind,
+    BusinessModule, Commitment, CommitmentStatus, CustomPageDefinition, CustomPagePackage,
+    CustomPagePackageKind, DataQueryDeclaration, Document, DocumentKind, EntityKind, EntityRef,
     ExternalParticipant, HumanMember, LifecycleStatus, MemberStatus, Money, OrgUnit, OrgUnitStatus,
     OrganizationMembership, OrganizationMembershipRole, OrganizationMembershipStatus, Payment,
     PaymentStatus, Relation, RiskTier, TypedRecord, View, ViewMode,
@@ -87,7 +87,9 @@ fn agent_membership_identity_is_one_to_one() {
     let first = agent_membership("membership-one", "execution-member");
     store.store.append_agent_membership(&first).unwrap();
     let duplicate = agent_membership("membership-two", "execution-member");
-    let error = store.store.append_agent_membership(&duplicate)
+    let error = store
+        .store
+        .append_agent_membership(&duplicate)
         .expect_err("duplicate execution identity must fail");
     assert!(error.to_string().contains("relation must be one-to-one"));
 }
@@ -100,7 +102,10 @@ fn refreshing_an_agent_membership_preserves_canonical_identity() {
     let mut refreshed = owner.clone();
     refreshed.responsibility_summary = "Prepare trademark filings and renewals".into();
     store.store.append_agent_membership(&refreshed).unwrap();
-    assert_eq!(store.store.latest_agent_memberships().unwrap(), vec![refreshed]);
+    assert_eq!(
+        store.store.latest_agent_memberships().unwrap(),
+        vec![refreshed]
+    );
 }
 
 fn document(id: &str, owner: &ActorRef) -> Document {
@@ -147,7 +152,10 @@ fn seed_people_and_document(store: &HarnessStore) -> (ActorRef, ActorRef, String
         .append_human_member(&human("human-brand-owner"))
         .unwrap();
     store
-        .append_agent_membership(&agent_membership("agent-trademark", "execution-agent-trademark"))
+        .append_agent_membership(&agent_membership(
+            "agent-trademark",
+            "execution-agent-trademark",
+        ))
         .unwrap();
     let human_ref = actor(ActorType::Human, "human-brand-owner");
     let agent_ref = actor(ActorType::Agent, "agent-trademark");

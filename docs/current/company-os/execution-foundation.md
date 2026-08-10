@@ -152,7 +152,7 @@ must not invent lifecycle control over provider children it does not control.
 
 ### Provider foundation
 
-`AgentMember`, `AgentRuntime`, native provider-session bindings, provider child
+`AgentMember`, `MemberRun`, native provider-session bindings, provider child
 threads, capability snapshots, permission/budget ceilings, hooks, and plugins
 remain shared infrastructure. The provider-native store is the sole truth for
 one agent's transcript, tool/command/file events, turn lifecycle, and resume

@@ -222,7 +222,7 @@ The learning and governance layer remains domain-neutral.
 
 ## Agent Runtime And Native Session
 
-`AgentRuntime` and `NativeSessionRef` connect durable members, independent
+`MemberRun` and `NativeSessionRef` connect durable members, independent
 execution runs, and Host tools to external providers such as Codex, Claude, or
 Kimi.
 
