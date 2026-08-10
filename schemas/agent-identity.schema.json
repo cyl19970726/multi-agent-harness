@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/agent-identity.schema.json",
+  "title": "AgentIdentity",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "display_name", "organization_status", "permission_ceiling", "version", "created_at", "updated_at"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "display_name": {"type": "string", "minLength": 1},
+    "organization_status": {"enum": ["active", "paused", "retired"]},
+    "permission_ceiling": {"enum": ["read_only", "workspace_write", "full_access"]},
+    "version": {"type": "integer", "minimum": 1},
+    "created_at": {"type": "string", "minLength": 1},
+    "updated_at": {"type": "string", "minLength": 1}
+  }
+}

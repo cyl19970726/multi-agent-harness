@@ -1,13 +1,18 @@
 use crate::{HarnessStore, StoreError, StoreResult};
 use firm_core::agentfirm_api::{
-    integration_plan_module_v1, ActorKind, ActorRef, AgentMember, AgentMemberOrganizationStatus,
-    CanonicalMutationEvent, CanonicalOperation, DeliveryClaim, DeliveryReconcileOutcome,
-    FailureAnalysis, GateEvaluation, GateRequirement, GateRequirementSource, GateVerdict,
-    GateWaiver, GateWaiverState, MemberCoordinationStatus, MemberRun, MemberRuntimeStatus,
-    MemberWorkspaceBinding, MessageDelivery, MessageDeliveryStatus, MutationContext,
-    ProviderReceipt, TeamMessage, TrustError, TrustErrorCode, WorkDelivery, WorkDeliveryStatus,
-    WorkFinding, WorkModuleBinding, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
-    WorkspaceOwnership, WorkspaceSafetyProof,
+    integration_plan_module_v1, ActorKind, ActorRef, AgentIdentity, AgentMember,
+    AgentMemberOrganizationStatus, AgentSession, AgentSessionStatus, CanonicalMessageDelivery,
+    CanonicalMessageDeliveryStatus, CanonicalMutationEvent, CanonicalOperation,
+    ControlCommandEnvelope, DeliveryClaim, DeliveryReconcileOutcome, FailureAnalysis,
+    GateEvaluation, GateRequirement, GateRequirementSource, GateVerdict, GateWaiver,
+    GateWaiverState, MemberCoordinationStatus, MemberRun, MemberRuntimeStatus,
+    MemberWorkspaceBinding, Message, MessageDelivery, MessageDeliveryStatus, MessageRecipientKind,
+    MessageRouteJournal, MessageSubscription, MessageSubscriptionKind, MessageSubscriptionStatus,
+    MutationContext, ProviderDispatchEnvelope as CanonicalProviderDispatchEnvelope,
+    ProviderReceipt, RouteJournalStatus, SubscriptionCursor, TeamMembership, TeamMembershipStatus,
+    TeamMessage, TrustError, TrustErrorCode, WorkDelivery, WorkDeliveryStatus,
+    WorkExecutionBinding, WorkExecutionBindingStatus, WorkFinding, WorkModuleBinding, WorkReport,
+    WorkReportKind, WorkspaceLifecycle, WorkspaceMode, WorkspaceOwnership, WorkspaceSafetyProof,
 };
 use firm_core::{TeamActorKind, TeamActorRef, Work, WorkCommandContext, WorkDelegationRevision};
 use serde::{Deserialize, Serialize};
@@ -488,6 +493,16 @@ impl HarnessStore {
             .trust_operation_envelopes_unlocked()?
             .into_iter()
             .map(|envelope| envelope.operation)
+            .collect())
+    }
+
+    pub fn canonical_execution_space_ids(&self) -> StoreResult<Vec<String>> {
+        Ok(self
+            .trust_operation_envelopes_unlocked()?
+            .into_iter()
+            .map(|envelope| envelope.execution_space_id)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect())
     }
 
@@ -3839,6 +3854,1287 @@ impl HarnessStore {
     }
 }
 
+impl HarnessStore {
+    fn latest_fabric_side_records_unlocked<T, F>(
+        &self,
+        execution_space_id: &str,
+        mut id: F,
+    ) -> StoreResult<BTreeMap<String, T>>
+    where
+        T: for<'de> Deserialize<'de>,
+        F: FnMut(&T) -> String,
+    {
+        let mut rows = BTreeMap::new();
+        for row in self.trust_side_records::<T>(execution_space_id)? {
+            rows.insert(id(&row), row);
+        }
+        Ok(rows)
+    }
+
+    fn require_current_node_daemon_unlocked(
+        &self,
+        execution_space_id: &str,
+        node_id: &str,
+        daemon_id: &str,
+        daemon_generation: u64,
+        actor: &ActorRef,
+        resource_kind: &str,
+        resource_id: &str,
+    ) -> StoreResult<()> {
+        if actor.kind != ActorKind::Service || actor.id != daemon_id {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "runtime mutation requires the exact authenticated NodeDaemon service",
+                resource_kind,
+                resource_id,
+                None,
+            ));
+        }
+        let lease = self.latest_node_daemon_lease(node_id)?.ok_or_else(|| {
+            trust_error(
+                TrustErrorCode::SupervisorGenerationFenced,
+                "NodeDaemon lease is missing",
+                resource_kind,
+                resource_id,
+                None,
+            )
+        })?;
+        let registered = self
+            .latest_node_project_registrations()?
+            .iter()
+            .any(|registration| {
+                registration.node_id == node_id
+                    && registration.execution_space_id == execution_space_id
+                    && registration.status == firm_core::NodeProjectRegistrationStatus::Active
+            });
+        if !registered
+            || lease.daemon_id != daemon_id
+            || lease.generation != daemon_generation
+            || lease.status != firm_core::NodeDaemonLeaseStatus::Active
+            || lease.expires_unix_ms <= current_unix_ms()
+        {
+            return Err(trust_error(
+                TrustErrorCode::SupervisorGenerationFenced,
+                "runtime mutation used a stale, foreign, or expired NodeDaemon generation",
+                resource_kind,
+                resource_id,
+                None,
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn fabric_agent_identities(
+        &self,
+        execution_space_id: &str,
+    ) -> StoreResult<Vec<AgentIdentity>> {
+        self.latest_trust_envelopes_unlocked(execution_space_id, "agent_identity")?
+            .values()
+            .map(event_projection)
+            .collect()
+    }
+
+    pub fn create_agent_identity(
+        &self,
+        context: &MutationContext,
+        identity: AgentIdentity,
+    ) -> StoreResult<CanonicalMutationResult<AgentIdentity>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        required(&identity.id, "AgentIdentity.id")?;
+        required(&identity.display_name, "AgentIdentity.display_name")?;
+        if identity.version != 1 {
+            return Err(trust_error(
+                TrustErrorCode::VersionConflict,
+                "new AgentIdentity must start at version 1",
+                "agent_identity",
+                &identity.id,
+                Some(identity.version),
+            ));
+        }
+        self.commit_trust_projection_unlocked(
+            context,
+            "agent_identity",
+            &identity.id,
+            "created",
+            serde_json::to_value(&identity)?,
+            &identity,
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    pub fn fabric_agent_sessions(
+        &self,
+        execution_space_id: &str,
+    ) -> StoreResult<Vec<AgentSession>> {
+        self.latest_trust_envelopes_unlocked(execution_space_id, "agent_session")?
+            .values()
+            .map(event_projection)
+            .collect()
+    }
+
+    pub fn create_agent_session(
+        &self,
+        context: &MutationContext,
+        session: AgentSession,
+    ) -> StoreResult<CanonicalMutationResult<AgentSession>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        required(&session.id, "AgentSession.id")?;
+        required(&session.agent_identity_id, "AgentSession.agent_identity_id")?;
+        required(&session.node_id, "AgentSession.node_id")?;
+        required(&session.provider, "AgentSession.provider")?;
+        if session.execution_space_id != context.execution_space_id || session.version != 1 {
+            return Err(trust_error(
+                TrustErrorCode::VersionConflict,
+                "AgentSession must start at version 1 in the authenticated Execution Space",
+                "agent_session",
+                &session.id,
+                Some(session.version),
+            ));
+        }
+        self.require_current_node_daemon_unlocked(
+            &context.execution_space_id,
+            &session.node_id,
+            &session.node_daemon_id,
+            session.node_daemon_generation,
+            &context.authenticated_actor,
+            "agent_session",
+            &session.id,
+        )?;
+        if !self
+            .fabric_agent_identities(&context.execution_space_id)?
+            .iter()
+            .any(|identity| identity.id == session.agent_identity_id)
+        {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "AgentSession references a missing AgentIdentity",
+                "agent_session",
+                &session.id,
+                None,
+            ));
+        }
+        let current_count = self
+            .fabric_agent_sessions(&context.execution_space_id)?
+            .into_iter()
+            .filter(|row| {
+                row.agent_identity_id == session.agent_identity_id
+                    && matches!(
+                        row.status,
+                        AgentSessionStatus::Starting
+                            | AgentSessionStatus::Idle
+                            | AgentSessionStatus::Running
+                            | AgentSessionStatus::Waiting
+                    )
+            })
+            .count();
+        if current_count != 0 {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "AgentIdentity already has a current AgentSession; explicit stop or recovery is required",
+                "agent_identity",
+                &session.agent_identity_id,
+                None,
+            ));
+        }
+        self.commit_trust_projection_unlocked(
+            context,
+            "agent_session",
+            &session.id,
+            "created",
+            serde_json::to_value(&session)?,
+            &session,
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    pub fn fabric_team_memberships(
+        &self,
+        execution_space_id: &str,
+    ) -> StoreResult<Vec<TeamMembership>> {
+        self.latest_trust_envelopes_unlocked(execution_space_id, "team_membership")?
+            .values()
+            .map(event_projection)
+            .collect()
+    }
+
+    pub fn join_team_membership(
+        &self,
+        context: &MutationContext,
+        membership: TeamMembership,
+    ) -> StoreResult<CanonicalMutationResult<TeamMembership>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        required(&membership.id, "TeamMembership.id")?;
+        required(&membership.team_id, "TeamMembership.team_id")?;
+        required(&membership.team_run_id, "TeamMembership.team_run_id")?;
+        required(
+            &membership.agent_identity_id,
+            "TeamMembership.agent_identity_id",
+        )?;
+        if membership.version != 1 || membership.status != TeamMembershipStatus::Active {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "new TeamMembership must be active at version 1",
+                "team_membership",
+                &membership.id,
+                Some(membership.version),
+            ));
+        }
+        let run = self
+            .team_runs()?
+            .into_iter()
+            .rev()
+            .find(|run| run.id == membership.team_run_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "TeamMembership references a missing TeamRun",
+                    "team_membership",
+                    &membership.id,
+                    None,
+                )
+            })?;
+        if run.agent_team_id != membership.team_id || run.execution_node_id != membership.node_id {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "TeamMembership must remain on the TeamRun's one pinned machine",
+                "team_membership",
+                &membership.id,
+                None,
+            ));
+        }
+        if !self
+            .fabric_agent_identities(&context.execution_space_id)?
+            .iter()
+            .any(|identity| identity.id == membership.agent_identity_id)
+        {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "TeamMembership references a missing AgentIdentity",
+                "team_membership",
+                &membership.id,
+                None,
+            ));
+        }
+        let direct = MessageSubscription {
+            id: format!("direct:{}:{}", membership.agent_identity_id, membership.id),
+            recipient_identity_id: membership.agent_identity_id.clone(),
+            execution_space_id: context.execution_space_id.clone(),
+            kind: MessageSubscriptionKind::Direct,
+            team_membership_id: Some(membership.id.clone()),
+            team_id: None,
+            status: MessageSubscriptionStatus::Active,
+            version: 1,
+            created_at: membership.joined_at.clone(),
+            updated_at: membership.joined_at.clone(),
+        };
+        let team = MessageSubscription {
+            id: format!("team:{}:{}", membership.team_id, membership.id),
+            recipient_identity_id: membership.agent_identity_id.clone(),
+            execution_space_id: context.execution_space_id.clone(),
+            kind: MessageSubscriptionKind::Team,
+            team_membership_id: Some(membership.id.clone()),
+            team_id: Some(membership.team_id.clone()),
+            status: MessageSubscriptionStatus::Active,
+            version: 1,
+            created_at: membership.joined_at.clone(),
+            updated_at: membership.joined_at.clone(),
+        };
+        self.commit_trust_projection_unlocked(
+            context,
+            "team_membership",
+            &membership.id,
+            "joined",
+            serde_json::to_value(&membership)?,
+            &membership,
+            vec![serde_json::to_value(direct)?, serde_json::to_value(team)?],
+            Vec::new(),
+        )
+    }
+
+    pub fn fabric_message_subscriptions(
+        &self,
+        execution_space_id: &str,
+    ) -> StoreResult<Vec<MessageSubscription>> {
+        Ok(self
+            .latest_fabric_side_records_unlocked(
+                execution_space_id,
+                |row: &MessageSubscription| row.id.clone(),
+            )?
+            .into_values()
+            .collect())
+    }
+
+    pub fn leave_team_membership(
+        &self,
+        context: &MutationContext,
+        membership_id: &str,
+        ended_at: &str,
+    ) -> StoreResult<CanonicalMutationResult<TeamMembership>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut membership = self
+            .latest_trust_envelopes_unlocked(&context.execution_space_id, "team_membership")?
+            .remove(membership_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "TeamMembership not found",
+                    "team_membership",
+                    membership_id,
+                    None,
+                )
+            })
+            .and_then(|envelope| event_projection::<TeamMembership>(&envelope))?;
+        if membership.status != TeamMembershipStatus::Active {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "only an active TeamMembership can leave",
+                "team_membership",
+                membership_id,
+                Some(membership.version),
+            ));
+        }
+        let active_bindings = self
+            .fabric_work_execution_bindings(&context.execution_space_id)?
+            .into_iter()
+            .filter(|binding| {
+                binding.team_membership_id == membership.id
+                    && binding.status == WorkExecutionBindingStatus::Active
+            })
+            .map(|binding| binding.work_id)
+            .collect::<Vec<_>>();
+        if !active_bindings.is_empty() {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                format!(
+                    "TeamMembership cannot leave with active WorkExecutionBindings: {}",
+                    active_bindings.join(",")
+                ),
+                "team_membership",
+                membership_id,
+                Some(membership.version),
+            ));
+        }
+        if context.authenticated_actor.kind != ActorKind::AgentMember
+            || context.authenticated_actor.id != membership.agent_identity_id
+        {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "TeamMembership leave requires the exact stable AgentIdentity",
+                "team_membership",
+                membership_id,
+                Some(membership.version),
+            ));
+        }
+        let revoked = self
+            .fabric_message_subscriptions(&context.execution_space_id)?
+            .into_iter()
+            .filter(|subscription| {
+                subscription.team_membership_id.as_deref() == Some(membership_id)
+                    && subscription.status == MessageSubscriptionStatus::Active
+            })
+            .map(|mut subscription| {
+                subscription.status = MessageSubscriptionStatus::Revoked;
+                subscription.version += 1;
+                subscription.updated_at = ended_at.to_string();
+                serde_json::to_value(subscription)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        membership.status = TeamMembershipStatus::Left;
+        membership.version += 1;
+        membership.ended_at = Some(ended_at.to_string());
+        self.commit_trust_projection_unlocked(
+            context,
+            "team_membership",
+            membership_id,
+            "left",
+            serde_json::json!({"ended_at": ended_at}),
+            &membership,
+            revoked,
+            Vec::new(),
+        )
+    }
+
+    pub fn transition_agent_session(
+        &self,
+        context: &MutationContext,
+        session_id: &str,
+        next_status: AgentSessionStatus,
+        updated_at: &str,
+    ) -> StoreResult<CanonicalMutationResult<AgentSession>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut session = self
+            .latest_trust_envelopes_unlocked(&context.execution_space_id, "agent_session")?
+            .remove(session_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "AgentSession not found",
+                    "agent_session",
+                    session_id,
+                    None,
+                )
+            })
+            .and_then(|envelope| event_projection::<AgentSession>(&envelope))?;
+        self.require_current_node_daemon_unlocked(
+            &context.execution_space_id,
+            &session.node_id,
+            &session.node_daemon_id,
+            session.node_daemon_generation,
+            &context.authenticated_actor,
+            "agent_session",
+            session_id,
+        )?;
+        let allowed = matches!(
+            (session.status, next_status),
+            (AgentSessionStatus::Starting, AgentSessionStatus::Idle)
+                | (AgentSessionStatus::Starting, AgentSessionStatus::Failed)
+                | (AgentSessionStatus::Idle, AgentSessionStatus::Running)
+                | (AgentSessionStatus::Idle, AgentSessionStatus::Stopped)
+                | (AgentSessionStatus::Running, AgentSessionStatus::Waiting)
+                | (AgentSessionStatus::Running, AgentSessionStatus::Idle)
+                | (
+                    AgentSessionStatus::Running,
+                    AgentSessionStatus::Disconnected
+                )
+                | (AgentSessionStatus::Running, AgentSessionStatus::Failed)
+                | (AgentSessionStatus::Waiting, AgentSessionStatus::Running)
+                | (AgentSessionStatus::Waiting, AgentSessionStatus::Idle)
+                | (AgentSessionStatus::Waiting, AgentSessionStatus::Stopped)
+                | (
+                    AgentSessionStatus::Disconnected,
+                    AgentSessionStatus::Starting
+                )
+                | (
+                    AgentSessionStatus::Disconnected,
+                    AgentSessionStatus::Stopped
+                )
+        );
+        if !allowed {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                format!(
+                    "invalid AgentSession transition {:?}->{next_status:?}",
+                    session.status
+                ),
+                "agent_session",
+                session_id,
+                Some(session.version),
+            ));
+        }
+        session.status = next_status;
+        session.version += 1;
+        session.updated_at = updated_at.to_string();
+        self.commit_trust_projection_unlocked(
+            context,
+            "agent_session",
+            session_id,
+            "status_changed",
+            serde_json::json!({"status": next_status, "updated_at": updated_at}),
+            &session,
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    pub fn fabric_work_execution_bindings(
+        &self,
+        execution_space_id: &str,
+    ) -> StoreResult<Vec<WorkExecutionBinding>> {
+        self.latest_trust_envelopes_unlocked(execution_space_id, "work_execution_binding")?
+            .values()
+            .map(event_projection)
+            .collect()
+    }
+
+    pub fn bind_work_execution(
+        &self,
+        context: &MutationContext,
+        binding: WorkExecutionBinding,
+    ) -> StoreResult<CanonicalMutationResult<WorkExecutionBinding>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        if binding.version != 1 || binding.status != WorkExecutionBindingStatus::Active {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "new WorkExecutionBinding must be active at version 1",
+                "work_execution_binding",
+                &binding.id,
+                Some(binding.version),
+            ));
+        }
+        let membership = self
+            .fabric_team_memberships(&context.execution_space_id)?
+            .into_iter()
+            .find(|row| row.id == binding.team_membership_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "WorkExecutionBinding references a missing TeamMembership",
+                    "work_execution_binding",
+                    &binding.id,
+                    None,
+                )
+            })?;
+        let session = self
+            .fabric_agent_sessions(&context.execution_space_id)?
+            .into_iter()
+            .find(|row| row.id == binding.agent_session_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "WorkExecutionBinding references a missing AgentSession",
+                    "work_execution_binding",
+                    &binding.id,
+                    None,
+                )
+            })?;
+        let work = self
+            .latest_works_unlocked()?
+            .remove(&binding.work_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::WorkRevisionStale,
+                    "WorkExecutionBinding references a missing Work",
+                    "work",
+                    &binding.work_id,
+                    None,
+                )
+            })?;
+        if membership.status != TeamMembershipStatus::Active
+            || membership.agent_identity_id != binding.agent_identity_id
+            || session.agent_identity_id != binding.agent_identity_id
+            || session.node_id != membership.node_id
+            || session.generation != binding.agent_session_generation
+            || !matches!(
+                session.status,
+                AgentSessionStatus::Starting
+                    | AgentSessionStatus::Idle
+                    | AgentSessionStatus::Running
+                    | AgentSessionStatus::Waiting
+            )
+            || work.version != binding.work_revision
+            || work.team_id.as_deref() != Some(membership.team_id.as_str())
+            || work.team_run_id != membership.team_run_id
+        {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "WorkExecutionBinding identity, session generation, Team, or Work revision mismatch",
+                "work_execution_binding",
+                &binding.id,
+                None,
+            ));
+        }
+        if self
+            .fabric_work_execution_bindings(&context.execution_space_id)?
+            .iter()
+            .any(|row| {
+                row.work_id == binding.work_id && row.status == WorkExecutionBindingStatus::Active
+            })
+        {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "Work already has an active WorkExecutionBinding; explicit release is required",
+                "work",
+                &binding.work_id,
+                Some(work.version),
+            ));
+        }
+        self.commit_trust_projection_unlocked(
+            context,
+            "work_execution_binding",
+            &binding.id,
+            "bound",
+            serde_json::to_value(&binding)?,
+            &binding,
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    pub fn release_work_execution_binding(
+        &self,
+        context: &MutationContext,
+        binding_id: &str,
+        ended_at: &str,
+    ) -> StoreResult<CanonicalMutationResult<WorkExecutionBinding>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut binding = self
+            .latest_trust_envelopes_unlocked(&context.execution_space_id, "work_execution_binding")?
+            .remove(binding_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "WorkExecutionBinding not found",
+                    "work_execution_binding",
+                    binding_id,
+                    None,
+                )
+            })
+            .and_then(|envelope| event_projection::<WorkExecutionBinding>(&envelope))?;
+        if binding.status != WorkExecutionBindingStatus::Active {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "only an active WorkExecutionBinding can be released",
+                "work_execution_binding",
+                binding_id,
+                Some(binding.version),
+            ));
+        }
+        let exact_member = context.authenticated_actor.kind == ActorKind::AgentMember
+            && context.authenticated_actor.id == binding.agent_identity_id;
+        let host_or_operator = matches!(
+            context.authenticated_actor.kind,
+            ActorKind::Human | ActorKind::Service
+        );
+        if !exact_member && !host_or_operator {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "WorkExecutionBinding release requires exact member or control-plane authority",
+                "work_execution_binding",
+                binding_id,
+                Some(binding.version),
+            ));
+        }
+        binding.status = WorkExecutionBindingStatus::Released;
+        binding.version += 1;
+        binding.ended_at = Some(ended_at.to_string());
+        self.commit_trust_projection_unlocked(
+            context,
+            "work_execution_binding",
+            binding_id,
+            "released",
+            serde_json::json!({"ended_at": ended_at}),
+            &binding,
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    pub fn fabric_messages(&self, execution_space_id: &str) -> StoreResult<Vec<Message>> {
+        self.latest_trust_envelopes_unlocked(execution_space_id, "message")?
+            .values()
+            .map(event_projection)
+            .collect()
+    }
+
+    pub fn fabric_message_deliveries(
+        &self,
+        execution_space_id: &str,
+    ) -> StoreResult<Vec<CanonicalMessageDelivery>> {
+        Ok(self
+            .latest_fabric_side_records_unlocked(
+                execution_space_id,
+                |row: &CanonicalMessageDelivery| row.id.clone(),
+            )?
+            .into_values()
+            .collect())
+    }
+
+    pub fn author_message(
+        &self,
+        context: &MutationContext,
+        message: Message,
+    ) -> StoreResult<CanonicalMutationResult<Message>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        required(&message.id, "Message.id")?;
+        required(&message.sender_identity_id, "Message.sender_identity_id")?;
+        required(&message.body, "Message.body")?;
+        if message.execution_space_id != context.execution_space_id || message.recipients.is_empty()
+        {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "Message must have recipients in the authenticated Execution Space",
+                "message",
+                &message.id,
+                None,
+            ));
+        }
+        self.require_current_node_daemon_unlocked(
+            &context.execution_space_id,
+            &message.author_node_id,
+            &message.author_node_daemon_id,
+            message.author_node_daemon_generation,
+            &context.authenticated_actor,
+            "message",
+            &message.id,
+        )?;
+        let sender_sessions = self
+            .fabric_agent_sessions(&context.execution_space_id)?
+            .into_iter()
+            .filter(|session| {
+                session.agent_identity_id == message.sender_identity_id
+                    && session.node_id == message.author_node_id
+                    && session.node_daemon_generation == message.author_node_daemon_generation
+                    && matches!(
+                        session.status,
+                        AgentSessionStatus::Idle
+                            | AgentSessionStatus::Running
+                            | AgentSessionStatus::Waiting
+                    )
+            })
+            .count();
+        if sender_sessions != 1 {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "Message author must resolve to exactly one current local AgentSession",
+                "message",
+                &message.id,
+                None,
+            ));
+        }
+        let expected_fingerprint = canonical_json_fingerprint(&serde_json::json!({
+            "sender_identity_id": message.sender_identity_id,
+            "recipients": message.recipients,
+            "team_id": message.team_id,
+            "team_run_id": message.team_run_id,
+            "work_id": message.work_id,
+            "kind": message.kind,
+            "body": message.body,
+            "correlation_id": message.correlation_id,
+            "causation_id": message.causation_id,
+            "response_intent": message.response_intent,
+            "evidence_refs": message.evidence_refs,
+        }));
+        if message.content_fingerprint != expected_fingerprint {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "Message content_fingerprint does not match immutable authored content",
+                "message",
+                &message.id,
+                None,
+            ));
+        }
+        let subscriptions = self.fabric_message_subscriptions(&context.execution_space_id)?;
+        let sessions = self.fabric_agent_sessions(&context.execution_space_id)?;
+        let memberships = self.fabric_team_memberships(&context.execution_space_id)?;
+        let mut delivery_rows = Vec::new();
+        let mut delivered_identities = BTreeSet::new();
+        for recipient in &message.recipients {
+            let matching = subscriptions.iter().filter(|subscription| {
+                subscription.status == MessageSubscriptionStatus::Active
+                    && match recipient.kind {
+                        MessageRecipientKind::AgentIdentity => {
+                            subscription.kind == MessageSubscriptionKind::Direct
+                                && subscription.recipient_identity_id == recipient.id
+                        }
+                        MessageRecipientKind::Team => {
+                            subscription.kind == MessageSubscriptionKind::Team
+                                && subscription.team_id.as_deref() == Some(recipient.id.as_str())
+                        }
+                    }
+            });
+            for subscription in matching {
+                if !delivered_identities.insert(subscription.recipient_identity_id.clone()) {
+                    continue;
+                }
+                let current = sessions
+                    .iter()
+                    .filter(|session| {
+                        session.agent_identity_id == subscription.recipient_identity_id
+                            && matches!(
+                                session.status,
+                                AgentSessionStatus::Starting
+                                    | AgentSessionStatus::Idle
+                                    | AgentSessionStatus::Running
+                                    | AgentSessionStatus::Waiting
+                            )
+                    })
+                    .collect::<Vec<_>>();
+                if current.len() > 1 {
+                    return Err(trust_error(
+                        TrustErrorCode::InvalidStateTransition,
+                        "recipient identity has multiple current AgentSessions",
+                        "agent_identity",
+                        &subscription.recipient_identity_id,
+                        None,
+                    ));
+                }
+                let target_node_id = current
+                    .first()
+                    .map(|session| session.node_id.clone())
+                    .or_else(|| {
+                        subscription
+                            .team_membership_id
+                            .as_ref()
+                            .and_then(|membership_id| {
+                                memberships
+                                    .iter()
+                                    .find(|membership| &membership.id == membership_id)
+                                    .map(|membership| membership.node_id.clone())
+                            })
+                    })
+                    .ok_or_else(|| {
+                        trust_error(
+                            TrustErrorCode::InvalidStateTransition,
+                            "recipient identity has no routable Node placement",
+                            "agent_identity",
+                            &subscription.recipient_identity_id,
+                            None,
+                        )
+                    })?;
+                delivery_rows.push(CanonicalMessageDelivery {
+                    id: format!("{}:{}", message.id, subscription.recipient_identity_id),
+                    message_id: message.id.clone(),
+                    subscription_id: subscription.id.clone(),
+                    recipient_identity_id: subscription.recipient_identity_id.clone(),
+                    target_node_id,
+                    recipient_session_id: None,
+                    recipient_session_generation: None,
+                    status: CanonicalMessageDeliveryStatus::Queued,
+                    attempt: 1,
+                    claim_id: None,
+                    claimed_node_daemon_generation: None,
+                    provider_receipt_id: None,
+                    failure_code: None,
+                    failure_detail: None,
+                    version: 1,
+                    created_at: message.created_at.clone(),
+                    updated_at: message.created_at.clone(),
+                });
+            }
+        }
+        if delivery_rows.is_empty() {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "Message recipients resolved to no active subscription",
+                "message",
+                &message.id,
+                None,
+            ));
+        }
+        self.commit_trust_projection_unlocked(
+            context,
+            "message",
+            &message.id,
+            "authored",
+            serde_json::to_value(&message)?,
+            &message,
+            Vec::new(),
+            delivery_rows
+                .into_iter()
+                .map(serde_json::to_value)
+                .collect::<Result<_, _>>()?,
+        )
+    }
+
+    pub fn claim_message_for_provider(
+        &self,
+        context: &MutationContext,
+        delivery_id: &str,
+        node_id: &str,
+        daemon_id: &str,
+        daemon_generation: u64,
+        claim_id: &str,
+        dispatch_mode: firm_core::agentfirm_api::RuntimeDispatchMode,
+        updated_at: &str,
+    ) -> StoreResult<CanonicalMutationResult<CanonicalProviderDispatchEnvelope>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.require_current_node_daemon_unlocked(
+            &context.execution_space_id,
+            node_id,
+            daemon_id,
+            daemon_generation,
+            &context.authenticated_actor,
+            "message_delivery",
+            delivery_id,
+        )?;
+        let mut delivery = self
+            .latest_fabric_side_records_unlocked(
+                &context.execution_space_id,
+                |row: &CanonicalMessageDelivery| row.id.clone(),
+            )?
+            .remove(delivery_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "MessageDelivery not found",
+                    "message_delivery",
+                    delivery_id,
+                    None,
+                )
+            })?;
+        if delivery.target_node_id != node_id
+            || delivery.status != CanonicalMessageDeliveryStatus::Queued
+        {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "only the target NodeDaemon can claim a queued MessageDelivery",
+                "message_delivery",
+                delivery_id,
+                Some(delivery.version),
+            ));
+        }
+        let current = self
+            .fabric_agent_sessions(&context.execution_space_id)?
+            .into_iter()
+            .filter(|session| {
+                session.agent_identity_id == delivery.recipient_identity_id
+                    && session.node_id == node_id
+                    && session.node_daemon_id == daemon_id
+                    && session.node_daemon_generation == daemon_generation
+                    && matches!(
+                        session.status,
+                        AgentSessionStatus::Idle
+                            | AgentSessionStatus::Running
+                            | AgentSessionStatus::Waiting
+                    )
+            })
+            .collect::<Vec<_>>();
+        if current.len() != 1 {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                if current.is_empty() {
+                    "recipient has no current local AgentSession; delivery remains queued"
+                } else {
+                    "recipient identity has multiple current AgentSessions"
+                },
+                "message_delivery",
+                delivery_id,
+                Some(delivery.version),
+            ));
+        }
+        let session = &current[0];
+        let message = self
+            .latest_trust_envelopes_unlocked(&context.execution_space_id, "message")?
+            .remove(&delivery.message_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "MessageDelivery references a missing Message",
+                    "message_delivery",
+                    delivery_id,
+                    Some(delivery.version),
+                )
+            })
+            .and_then(|envelope| event_projection::<Message>(&envelope))?;
+        delivery.status = CanonicalMessageDeliveryStatus::Claimed;
+        delivery.recipient_session_id = Some(session.id.clone());
+        delivery.recipient_session_generation = Some(session.generation);
+        delivery.claim_id = Some(claim_id.to_string());
+        delivery.claimed_node_daemon_generation = Some(daemon_generation);
+        delivery.version += 1;
+        delivery.updated_at = updated_at.to_string();
+        let dispatch = CanonicalProviderDispatchEnvelope {
+            id: format!("provider-dispatch:{}:{}", delivery.id, delivery.attempt),
+            source_plane: "message".into(),
+            source_record_id: message.id,
+            recipient_identity_id: delivery.recipient_identity_id.clone(),
+            recipient_session_id: session.id.clone(),
+            recipient_session_generation: session.generation,
+            node_id: node_id.to_string(),
+            node_daemon_id: daemon_id.to_string(),
+            node_daemon_generation: daemon_generation,
+            provider: session.provider.clone(),
+            dispatch_mode,
+            permission_ceiling: session.effective_permission_ceiling,
+            content: message.body,
+            content_fingerprint: message.content_fingerprint,
+            created_at: updated_at.to_string(),
+        };
+        self.commit_trust_projection_unlocked(
+            context,
+            "provider_dispatch",
+            &dispatch.id,
+            "prepared",
+            serde_json::json!({
+                "delivery_id": delivery_id,
+                "claim_id": claim_id,
+                "dispatch_mode": dispatch_mode,
+            }),
+            &dispatch,
+            vec![serde_json::to_value(delivery)?],
+            Vec::new(),
+        )
+    }
+
+    pub fn record_message_provider_receipt(
+        &self,
+        context: &MutationContext,
+        delivery_id: &str,
+        node_id: &str,
+        daemon_id: &str,
+        daemon_generation: u64,
+        claim_id: &str,
+        provider_receipt_id: &str,
+        updated_at: &str,
+    ) -> StoreResult<CanonicalMutationResult<CanonicalMessageDelivery>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        self.require_current_node_daemon_unlocked(
+            &context.execution_space_id,
+            node_id,
+            daemon_id,
+            daemon_generation,
+            &context.authenticated_actor,
+            "message_delivery",
+            delivery_id,
+        )?;
+        let mut delivery = self
+            .latest_fabric_side_records_unlocked(
+                &context.execution_space_id,
+                |row: &CanonicalMessageDelivery| row.id.clone(),
+            )?
+            .remove(delivery_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "MessageDelivery not found",
+                    "message_delivery",
+                    delivery_id,
+                    None,
+                )
+            })?;
+        if delivery.target_node_id != node_id
+            || delivery.status != CanonicalMessageDeliveryStatus::Claimed
+            || delivery.claim_id.as_deref() != Some(claim_id)
+            || delivery.claimed_node_daemon_generation != Some(daemon_generation)
+        {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "provider receipt does not match the exact delivery claim and NodeDaemon generation",
+                "message_delivery",
+                delivery_id,
+                Some(delivery.version),
+            ));
+        }
+        let session_id = delivery.recipient_session_id.as_deref().ok_or_else(|| {
+            trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "claimed MessageDelivery did not freeze a recipient session",
+                "message_delivery",
+                delivery_id,
+                Some(delivery.version),
+            )
+        })?;
+        let current = self
+            .fabric_agent_sessions(&context.execution_space_id)?
+            .into_iter()
+            .find(|session| session.id == session_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::MemberRunGenerationFenced,
+                    "frozen recipient session no longer exists",
+                    "message_delivery",
+                    delivery_id,
+                    Some(delivery.version),
+                )
+            })?;
+        if Some(current.generation) != delivery.recipient_session_generation
+            || current.node_daemon_generation != daemon_generation
+        {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                "recipient session generation changed before provider receipt",
+                "message_delivery",
+                delivery_id,
+                Some(delivery.version),
+            ));
+        }
+        delivery.status = CanonicalMessageDeliveryStatus::ProviderReceived;
+        delivery.provider_receipt_id = Some(provider_receipt_id.to_string());
+        delivery.version += 1;
+        delivery.updated_at = updated_at.to_string();
+        self.commit_trust_projection_unlocked(
+            context,
+            "message_delivery_receipt",
+            delivery_id,
+            "provider_received",
+            serde_json::json!({
+                "delivery_id": delivery_id,
+                "claim_id": claim_id,
+                "provider_receipt_id": provider_receipt_id,
+            }),
+            &delivery,
+            vec![serde_json::to_value(&delivery)?],
+            Vec::new(),
+        )
+    }
+
+    pub fn acknowledge_message_delivery(
+        &self,
+        context: &MutationContext,
+        delivery_id: &str,
+        updated_at: &str,
+    ) -> StoreResult<CanonicalMutationResult<CanonicalMessageDelivery>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut delivery = self
+            .latest_fabric_side_records_unlocked(
+                &context.execution_space_id,
+                |row: &CanonicalMessageDelivery| row.id.clone(),
+            )?
+            .remove(delivery_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "MessageDelivery not found",
+                    "message_delivery",
+                    delivery_id,
+                    None,
+                )
+            })?;
+        if context.authenticated_actor.kind != ActorKind::AgentMember
+            || context.authenticated_actor.id != delivery.recipient_identity_id
+            || delivery.status != CanonicalMessageDeliveryStatus::ProviderReceived
+        {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "acknowledge requires the exact recipient identity after provider receipt",
+                "message_delivery",
+                delivery_id,
+                Some(delivery.version),
+            ));
+        }
+        delivery.status = CanonicalMessageDeliveryStatus::Acknowledged;
+        delivery.version += 1;
+        delivery.updated_at = updated_at.to_string();
+        let current_cursor = self
+            .latest_trust_envelopes_unlocked(&context.execution_space_id, "subscription_cursor")?
+            .remove(&delivery.subscription_id)
+            .map(|envelope| event_projection::<SubscriptionCursor>(&envelope))
+            .transpose()?;
+        let cursor = SubscriptionCursor {
+            id: delivery.subscription_id.clone(),
+            subscription_id: delivery.subscription_id.clone(),
+            recipient_identity_id: delivery.recipient_identity_id.clone(),
+            last_message_sequence: current_cursor
+                .as_ref()
+                .map(|cursor| cursor.last_message_sequence.saturating_add(1))
+                .unwrap_or(1),
+            version: current_cursor
+                .as_ref()
+                .map(|cursor| cursor.version + 1)
+                .unwrap_or(1),
+            updated_at: updated_at.to_string(),
+        };
+        self.commit_trust_projection_unlocked(
+            context,
+            "message_delivery_ack",
+            delivery_id,
+            "acknowledged",
+            serde_json::json!({"delivery_id": delivery_id, "updated_at": updated_at}),
+            &delivery,
+            vec![
+                serde_json::to_value(&delivery)?,
+                serde_json::to_value(cursor)?,
+            ],
+            Vec::new(),
+        )
+    }
+
+    pub fn route_message_cross_node(
+        &self,
+        context: &MutationContext,
+        route: MessageRouteJournal,
+    ) -> StoreResult<CanonicalMutationResult<MessageRouteJournal>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        if context.authenticated_actor.kind != ActorKind::Service
+            || route.version != 1
+            || route.status != RouteJournalStatus::Pending
+            || route.source_node_id == route.target_node_id
+        {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "cross-node route journal requires Control Plane service authority and distinct nodes",
+                "message_route_journal",
+                &route.id,
+                Some(route.version),
+            ));
+        }
+        if !self
+            .fabric_messages(&context.execution_space_id)?
+            .iter()
+            .any(|message| {
+                message.id == route.message_id && message.author_node_id == route.source_node_id
+            })
+        {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "route journal references a missing source-authored Message",
+                "message_route_journal",
+                &route.id,
+                None,
+            ));
+        }
+        self.commit_trust_projection_unlocked(
+            context,
+            "message_route_journal",
+            &route.id,
+            "prepared",
+            serde_json::to_value(&route)?,
+            &route,
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    pub fn validate_runtime_command(
+        &self,
+        command: &ControlCommandEnvelope,
+        now_unix_ms: u64,
+    ) -> StoreResult<()> {
+        required(&command.id, "ControlCommandEnvelope.id")?;
+        required(
+            &command.idempotency_key,
+            "ControlCommandEnvelope.idempotency_key",
+        )?;
+        required(
+            &command.required_capability,
+            "ControlCommandEnvelope.required_capability",
+        )?;
+        if command.payload_fingerprint != canonical_json_fingerprint(&command.payload) {
+            return Err(trust_error(
+                TrustErrorCode::IdempotencyKeyReused,
+                "runtime command payload fingerprint is invalid",
+                "runtime_command",
+                &command.id,
+                None,
+            ));
+        }
+        if command.authenticated_actor.kind == ActorKind::External {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "external actors cannot issue machine runtime commands",
+                "runtime_command",
+                &command.id,
+                None,
+            ));
+        }
+        if command.expires_unix_ms <= now_unix_ms {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "runtime command expired before NodeDaemon admission",
+                "runtime_command",
+                &command.id,
+                None,
+            ));
+        }
+        self.require_current_node_daemon_unlocked(
+            &command.execution_space_id,
+            &command.target_node_id,
+            &command.target_node_daemon_id,
+            command.target_node_daemon_generation,
+            &ActorRef {
+                kind: ActorKind::Service,
+                id: command.target_node_daemon_id.clone(),
+            },
+            "runtime_command",
+            &command.id,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3929,6 +5225,235 @@ mod tests {
             )
             .expect("same key in another authenticated actor scope");
         assert_eq!(store.canonical_operations().unwrap().len(), 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn service_context(command: &str, key: &str, expected: u64) -> MutationContext {
+        MutationContext {
+            execution_space_id: "space-test".into(),
+            authenticated_actor: ActorRef {
+                kind: ActorKind::Service,
+                id: "daemon-1".into(),
+            },
+            authority_actor: None,
+            command_name: command.into(),
+            idempotency_key: key.into(),
+            expected_version: expected,
+            request_fingerprint: None,
+        }
+    }
+
+    fn identity(id: &str) -> AgentIdentity {
+        AgentIdentity {
+            id: id.into(),
+            display_name: id.into(),
+            organization_status: AgentMemberOrganizationStatus::Active,
+            permission_ceiling: PermissionCeiling::WorkspaceWrite,
+            version: 1,
+            created_at: "t1".into(),
+            updated_at: "t1".into(),
+        }
+    }
+
+    fn session(id: &str, identity_id: &str) -> AgentSession {
+        AgentSession {
+            id: id.into(),
+            agent_identity_id: identity_id.into(),
+            node_id: "11111111-1111-4111-8111-111111111111".into(),
+            execution_space_id: "space-test".into(),
+            node_daemon_id: "daemon-1".into(),
+            node_daemon_generation: 1,
+            provider: "codex".into(),
+            provider_profile_ref: "codex-default".into(),
+            effective_permission_ceiling: PermissionCeiling::WorkspaceWrite,
+            status: AgentSessionStatus::Idle,
+            generation: 1,
+            native_session: None,
+            version: 1,
+            created_at: "t1".into(),
+            updated_at: "t1".into(),
+        }
+    }
+
+    fn fabric_store() -> (HarnessStore, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "firm-runtime-fabric-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let store = HarnessStore::new(&root);
+        store
+            .insert_execution_node(&firm_core::ExecutionNode {
+                id: "11111111-1111-4111-8111-111111111111".into(),
+                display_name: "local".into(),
+                status: firm_core::ExecutionNodeStatus::Active,
+                created_at: "t1".into(),
+                updated_at: "t1".into(),
+            })
+            .unwrap();
+        store
+            .register_node_project(
+                &firm_core::NodeProjectRegistration {
+                    node_id: "11111111-1111-4111-8111-111111111111".into(),
+                    execution_space_id: "space-test".into(),
+                    project_binding_id: "project-1".into(),
+                    status: firm_core::NodeProjectRegistrationStatus::Active,
+                    created_at: "t1".into(),
+                    updated_at: "t1".into(),
+                },
+                "space-test",
+            )
+            .unwrap();
+        store
+            .acquire_node_daemon_lease(
+                "11111111-1111-4111-8111-111111111111",
+                "daemon-1",
+                "instance-1",
+                current_unix_ms(),
+                60_000,
+            )
+            .unwrap();
+        (store, root)
+    }
+
+    #[test]
+    fn node_daemon_authors_and_claims_identity_first_message() {
+        let (store, root) = fabric_store();
+        for id in ["sender", "recipient"] {
+            store
+                .create_agent_identity(
+                    &context("host", "identity.create", &format!("identity-{id}"), 0),
+                    identity(id),
+                )
+                .unwrap();
+        }
+        store
+            .create_agent_session(
+                &service_context("session.create", "sender-session", 0),
+                session("session-sender", "sender"),
+            )
+            .unwrap();
+        store
+            .create_agent_session(
+                &service_context("session.create", "recipient-session", 0),
+                session("session-recipient", "recipient"),
+            )
+            .unwrap();
+
+        let subscription = MessageSubscription {
+            id: "direct-recipient".into(),
+            recipient_identity_id: "recipient".into(),
+            execution_space_id: "space-test".into(),
+            kind: MessageSubscriptionKind::Direct,
+            team_membership_id: None,
+            team_id: None,
+            status: MessageSubscriptionStatus::Active,
+            version: 1,
+            created_at: "t1".into(),
+            updated_at: "t1".into(),
+        };
+        {
+            let _lock = store.acquire_write_lock().unwrap();
+            store
+                .commit_trust_projection_unlocked(
+                    &context("host", "subscription.create", "subscription", 0),
+                    "message_subscription_set",
+                    "recipient",
+                    "created",
+                    serde_json::to_value(&subscription).unwrap(),
+                    &serde_json::json!({"recipient_identity_id": "recipient"}),
+                    vec![serde_json::to_value(&subscription).unwrap()],
+                    Vec::new(),
+                )
+                .unwrap();
+        }
+        let recipients = vec![firm_core::agentfirm_api::MessageRecipientRef {
+            kind: MessageRecipientKind::AgentIdentity,
+            id: "recipient".into(),
+        }];
+        let fingerprint = canonical_json_fingerprint(&serde_json::json!({
+            "sender_identity_id": "sender",
+            "recipients": recipients,
+            "team_id": null,
+            "team_run_id": null,
+            "work_id": null,
+            "kind": firm_core::agentfirm_api::MessageKind::Message,
+            "body": "hello",
+            "correlation_id": "corr-1",
+            "causation_id": null,
+            "response_intent": firm_core::agentfirm_api::ResponseIntent::Informational,
+            "evidence_refs": Vec::<String>::new(),
+        }));
+        let authored = store
+            .author_message(
+                &service_context("message.author", "message-1", 0),
+                Message {
+                    id: "message-1".into(),
+                    execution_space_id: "space-test".into(),
+                    author_node_id: "11111111-1111-4111-8111-111111111111".into(),
+                    author_node_daemon_id: "daemon-1".into(),
+                    author_node_daemon_generation: 1,
+                    sender_identity_id: "sender".into(),
+                    recipients,
+                    team_id: None,
+                    team_run_id: None,
+                    work_id: None,
+                    kind: firm_core::agentfirm_api::MessageKind::Message,
+                    body: "hello".into(),
+                    correlation_id: "corr-1".into(),
+                    causation_id: None,
+                    response_intent: firm_core::agentfirm_api::ResponseIntent::Informational,
+                    evidence_refs: Vec::new(),
+                    content_fingerprint: fingerprint.clone(),
+                    created_at: "t2".into(),
+                },
+            )
+            .unwrap();
+        assert!(!authored.replayed);
+        let delivery = store.fabric_message_deliveries("space-test").unwrap();
+        assert_eq!(delivery.len(), 1);
+        assert_eq!(delivery[0].recipient_session_id, None);
+
+        let dispatch = store
+            .claim_message_for_provider(
+                &service_context("message.claim", "claim-1", 0),
+                &delivery[0].id,
+                "11111111-1111-4111-8111-111111111111",
+                "daemon-1",
+                1,
+                "claim-1",
+                firm_core::agentfirm_api::RuntimeDispatchMode::StartIfIdle,
+                "t3",
+            )
+            .unwrap();
+        assert_eq!(dispatch.projection.recipient_identity_id, "recipient");
+        assert_eq!(
+            dispatch.projection.recipient_session_id,
+            "session-recipient"
+        );
+        assert_eq!(dispatch.projection.content_fingerprint, fingerprint);
+
+        let operations_before = store.canonical_operations().unwrap().len();
+        let stale = store
+            .claim_message_for_provider(
+                &service_context("message.claim", "claim-stale", 0),
+                &delivery[0].id,
+                "11111111-1111-4111-8111-111111111111",
+                "daemon-1",
+                0,
+                "claim-stale",
+                firm_core::agentfirm_api::RuntimeDispatchMode::QueueOnly,
+                "t4",
+            )
+            .expect_err("stale daemon is fenced");
+        assert!(stale.to_string().contains("SUPERVISOR_GENERATION_FENCED"));
+        assert_eq!(
+            store.canonical_operations().unwrap().len(),
+            operations_before
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }

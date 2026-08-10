@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/work-execution-binding.schema.json",
+  "title": "WorkExecutionBinding",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "work_id", "work_revision", "team_membership_id", "agent_identity_id", "agent_session_id", "agent_session_generation", "status", "version", "bound_at"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "work_id": {"type": "string", "minLength": 1},
+    "work_revision": {"type": "integer", "minimum": 1},
+    "team_membership_id": {"type": "string", "minLength": 1},
+    "agent_identity_id": {"type": "string", "minLength": 1},
+    "agent_session_id": {"type": "string", "minLength": 1},
+    "agent_session_generation": {"type": "integer", "minimum": 1},
+    "status": {"enum": ["active", "released", "completed", "cancelled"]},
+    "version": {"type": "integer", "minimum": 1},
+    "bound_at": {"type": "string", "minLength": 1},
+    "ended_at": {"type": ["string", "null"]}
+  }
+}

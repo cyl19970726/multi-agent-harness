@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/provider-dispatch-envelope.schema.json",
+  "title": "ProviderDispatchEnvelope",
+  "description": "Internal target-NodeDaemon output only; never a public authoring or claim input.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "source_plane", "source_record_id", "recipient_identity_id", "recipient_session_id", "recipient_session_generation", "node_id", "node_daemon_id", "node_daemon_generation", "provider", "dispatch_mode", "permission_ceiling", "content", "content_fingerprint", "created_at"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "source_plane": {"enum": ["message", "work_delivery", "runtime_command"]},
+    "source_record_id": {"type": "string", "minLength": 1},
+    "recipient_identity_id": {"type": "string", "minLength": 1},
+    "recipient_session_id": {"type": "string", "minLength": 1},
+    "recipient_session_generation": {"type": "integer", "minimum": 1},
+    "node_id": {"type": "string", "format": "uuid"},
+    "node_daemon_id": {"type": "string", "minLength": 1},
+    "node_daemon_generation": {"type": "integer", "minimum": 1},
+    "provider": {"type": "string", "minLength": 1},
+    "dispatch_mode": {"enum": ["queue_only", "start_if_idle", "inject_if_safe"]},
+    "permission_ceiling": {"enum": ["read_only", "workspace_write", "full_access"]},
+    "content": {"type": "string", "minLength": 1},
+    "content_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "created_at": {"type": "string", "minLength": 1}
+  }
+}

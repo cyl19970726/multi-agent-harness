@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/subscription-cursor.schema.json",
+  "title": "SubscriptionCursor",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "subscription_id", "recipient_identity_id", "last_message_sequence", "version", "updated_at"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "subscription_id": {"type": "string", "minLength": 1},
+    "recipient_identity_id": {"type": "string", "minLength": 1},
+    "last_message_sequence": {"type": "integer", "minimum": 1},
+    "version": {"type": "integer", "minimum": 1},
+    "updated_at": {"type": "string", "minLength": 1}
+  }
+}

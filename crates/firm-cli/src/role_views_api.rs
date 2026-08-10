@@ -118,6 +118,12 @@ struct Facts {
     member_runs: Vec<Value>,
     messages: Vec<Value>,
     message_deliveries: Vec<Value>,
+    agent_identities: Vec<Value>,
+    agent_sessions: Vec<Value>,
+    team_memberships: Vec<Value>,
+    work_execution_bindings: Vec<Value>,
+    canonical_messages: Vec<Value>,
+    canonical_message_deliveries: Vec<Value>,
     work_deliveries: Vec<Value>,
     side: Vec<Value>,
 }
@@ -319,6 +325,42 @@ impl Facts {
                 .collect(),
             message_deliveries: store
                 .trust_message_deliveries(space_id)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
+                .collect(),
+            agent_identities: store
+                .fabric_agent_identities(space_id)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
+                .collect(),
+            agent_sessions: store
+                .fabric_agent_sessions(space_id)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
+                .collect(),
+            team_memberships: store
+                .fabric_team_memberships(space_id)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
+                .collect(),
+            work_execution_bindings: store
+                .fabric_work_execution_bindings(space_id)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
+                .collect(),
+            canonical_messages: store
+                .fabric_messages(space_id)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
+                .collect(),
+            canonical_message_deliveries: store
+                .fabric_message_deliveries(space_id)
                 .map_err(|error| error.to_string())?
                 .into_iter()
                 .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
@@ -648,10 +690,23 @@ fn work_summary(facts: &Facts, team: &AgentTeam, work: &Work) -> Value {
 fn envelope(
     kind: &str,
     facts: &Facts,
-    data: Value,
+    mut data: Value,
     attention: Vec<Value>,
     actions: Vec<Value>,
 ) -> Value {
+    if let Some(object) = data.as_object_mut() {
+        object.insert(
+            "runtime_fabric".into(),
+            json!({
+                "agent_identities": record_summaries("agent_identity", facts.agent_identities.clone()),
+                "agent_sessions": record_summaries("agent_session", facts.agent_sessions.clone()),
+                "team_memberships": record_summaries("team_membership", facts.team_memberships.clone()),
+                "work_execution_bindings": record_summaries("work_execution_binding", facts.work_execution_bindings.clone()),
+                "messages": record_summaries("message", facts.canonical_messages.clone()),
+                "message_deliveries": record_summaries("canonical_message_delivery", facts.canonical_message_deliveries.clone()),
+            }),
+        );
+    }
     json!({"view_kind":kind,"schema_version":SCHEMA_VERSION,"source_execution_space_id":facts.space_id,
         "source_store_identity":facts.store_identity,"as_of_event_sequence":facts.sequence,"generated_at":now(),
         "freshness":"current","data":data,"attention":attention,"allowed_actions":actions})
@@ -946,6 +1001,12 @@ fn company_view(spaces: &[(String, HarnessStore)], query: &Query) -> ViewResult 
         member_runs: vec![],
         messages: vec![],
         message_deliveries: vec![],
+        agent_identities: vec![],
+        agent_sessions: vec![],
+        team_memberships: vec![],
+        work_execution_bindings: vec![],
+        canonical_messages: vec![],
+        canonical_message_deliveries: vec![],
         work_deliveries: vec![],
         side: vec![],
     };

@@ -734,6 +734,98 @@ export interface ProviderDispatchEnvelope {
   created_at?: string;
 }
 
+export type AgentSessionStatus = "starting" | "idle" | "running" | "waiting" | "disconnected" | "stopped" | "failed";
+
+export interface AgentIdentity {
+  id: string;
+  display_name: string;
+  organization_status: "active" | "paused" | "retired";
+  permission_ceiling: "read_only" | "workspace_write" | "full_access";
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentSession {
+  id: string;
+  agent_identity_id: string;
+  node_id: string;
+  execution_space_id: string;
+  node_daemon_id: string;
+  node_daemon_generation: number;
+  provider: string;
+  provider_profile_ref: string;
+  effective_permission_ceiling: "read_only" | "workspace_write" | "full_access";
+  status: AgentSessionStatus;
+  generation: number;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TeamMembership {
+  id: string;
+  team_id: string;
+  team_run_id: string;
+  agent_identity_id: string;
+  node_id: string;
+  role_snapshot: string;
+  status: "active" | "left" | "revoked";
+  version: number;
+  joined_at: string;
+  ended_at?: string | null;
+}
+
+export interface WorkExecutionBinding {
+  id: string;
+  work_id: string;
+  work_revision: number;
+  team_membership_id: string;
+  agent_identity_id: string;
+  agent_session_id: string;
+  agent_session_generation: number;
+  status: "active" | "released" | "completed" | "cancelled";
+  version: number;
+  bound_at: string;
+  ended_at?: string | null;
+}
+
+export interface CanonicalMessage {
+  id: string;
+  execution_space_id: string;
+  author_node_id: string;
+  author_node_daemon_id: string;
+  author_node_daemon_generation: number;
+  sender_identity_id: string;
+  recipients: Array<{kind: "agent_identity" | "team"; id: string}>;
+  team_id?: string | null;
+  team_run_id?: string | null;
+  work_id?: string | null;
+  kind: "message" | "reply" | "request_decision" | "provider_interaction_request" | "provider_interaction_response";
+  body: string;
+  correlation_id: string;
+  causation_id?: string | null;
+  response_intent: "informational" | "response_required";
+  evidence_refs?: string[];
+  content_fingerprint: string;
+  created_at: string;
+}
+
+export interface CanonicalMessageDelivery {
+  id: string;
+  message_id: string;
+  subscription_id: string;
+  recipient_identity_id: string;
+  target_node_id: string;
+  recipient_session_id?: string | null;
+  recipient_session_generation?: number | null;
+  status: "queued" | "routed" | "claimed" | "provider_received" | "acknowledged" | "failed" | "expired" | "invalidated";
+  attempt: number;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export type WorkPhase = "open" | "active" | "review" | "closed";
 export type WorkCondition = "normal" | "blocked" | "on_hold";
 export type WorkResolution = "accepted" | "cancelled" | "failed";
@@ -1032,6 +1124,13 @@ export interface DashboardSnapshot {
   team_runs?: TeamRun[];
   member_runs?: MemberRun[];
   team_messages?: ProviderDispatchEnvelope[];
+  /** Wave 4C canonical runtime/message fabric. Legacy `team_messages` is read-only history. */
+  agent_identities?: AgentIdentity[];
+  agent_sessions?: AgentSession[];
+  team_memberships?: TeamMembership[];
+  work_execution_bindings?: WorkExecutionBinding[];
+  canonical_messages?: CanonicalMessage[];
+  canonical_message_deliveries?: CanonicalMessageDelivery[];
   works?: Work[];
   work_events?: WorkEvent[];
   work_deliveries?: WorkDelivery[];

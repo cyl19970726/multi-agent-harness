@@ -27106,6 +27106,16 @@ struct AgentFirmHttpCredential {
     authority_actors: Vec<harness_core::agentfirm_api::ActorRef>,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeCommandHttpRequest {
+    target_node_id: String,
+    command: harness_core::agentfirm_api::RuntimeCommandKind,
+    required_capability: String,
+    expires_unix_ms: u64,
+    payload: serde_json::Value,
+}
+
 fn resolve_agentfirm_http_credential(
     presented_token: Option<&str>,
 ) -> Result<AgentFirmHttpCredential, String> {
@@ -27283,6 +27293,106 @@ fn handle_http_connection(
                 }
             }),
         )?;
+        return Ok(());
+    }
+    if method == "POST" && path_only == "/v1/agentfirm/runtime-commands" {
+        if trust_identity_override_header {
+            write_http_json(
+                &mut stream,
+                "401 Unauthorized",
+                &serde_json::json!({"ok": false, "error": {"code": "UNAUTHORIZED_ACTOR", "message": "request headers cannot select AgentFirm actor or authority identity"}}),
+            )?;
+            return Ok(());
+        }
+        let credential = match resolve_agentfirm_http_credential(trust_transport_token.as_deref()) {
+            Ok(value) => value,
+            Err(message) => {
+                write_http_json(
+                    &mut stream,
+                    "401 Unauthorized",
+                    &serde_json::json!({"ok": false, "error": {"code": "UNAUTHORIZED_ACTOR", "message": message}}),
+                )?;
+                return Ok(());
+            }
+        };
+        let Some(idempotency_key) = trust_idempotency_key.filter(|key| !key.trim().is_empty())
+        else {
+            write_http_json(
+                &mut stream,
+                "400 Bad Request",
+                &serde_json::json!({"ok": false, "error": {"code": "IDEMPOTENCY_KEY_REUSED", "message": "Idempotency-Key is required"}}),
+            )?;
+            return Ok(());
+        };
+        let Some(expected_version) = trust_expected_version else {
+            write_http_json(
+                &mut stream,
+                "400 Bad Request",
+                &serde_json::json!({"ok": false, "error": {"code": "VERSION_CONFLICT", "message": "If-Match exact expected version is required"}}),
+            )?;
+            return Ok(());
+        };
+        let request = match serde_json::from_slice::<RuntimeCommandHttpRequest>(&body) {
+            Ok(value) => value,
+            Err(error) => {
+                write_http_json(
+                    &mut stream,
+                    "400 Bad Request",
+                    &serde_json::json!({"ok": false, "error": {"code": "INVALID_STATE_TRANSITION", "message": error.to_string()}}),
+                )?;
+                return Ok(());
+            }
+        };
+        let registered = store_owned
+            .latest_node_project_registrations()?
+            .into_iter()
+            .any(|registration| {
+                registration.node_id == request.target_node_id
+                    && registration.execution_space_id == project_id
+                    && registration.status == NodeProjectRegistrationStatus::Active
+            });
+        let lease = store_owned.latest_node_daemon_lease(&request.target_node_id)?;
+        let Some(lease) = lease.filter(|lease| {
+            registered
+                && lease.status == NodeDaemonLeaseStatus::Active
+                && lease.expires_unix_ms > current_unix_ms_u64()
+        }) else {
+            write_http_json(
+                &mut stream,
+                "409 Conflict",
+                &serde_json::json!({"ok": false, "error": {"code": "SUPERVISOR_GENERATION_FENCED", "message": "target Node has no current daemon registered in this Execution Space"}}),
+            )?;
+            return Ok(());
+        };
+        let envelope = harness_core::agentfirm_api::ControlCommandEnvelope {
+            id: format!("runtime-command:{}", idempotency_key),
+            execution_space_id: project_id.clone(),
+            target_node_id: request.target_node_id,
+            target_node_daemon_id: lease.daemon_id,
+            target_node_daemon_generation: lease.generation,
+            authenticated_actor: credential.actor,
+            command: request.command,
+            required_capability: request.required_capability,
+            idempotency_key,
+            expected_version,
+            expires_unix_ms: request.expires_unix_ms,
+            payload_fingerprint: harness_store::canonical_json_fingerprint(&request.payload),
+            payload: request.payload,
+            issued_at: now_string(),
+        };
+        let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
+        match supervisor_daemon::runtime_command_via_socket(
+            &firm_home,
+            &envelope.target_node_id,
+            &envelope,
+        ) {
+            Ok(response) => write_http_json(&mut stream, "200 OK", &response)?,
+            Err(error) => write_http_json(
+                &mut stream,
+                "503 Service Unavailable",
+                &serde_json::json!({"ok": false, "error": {"code": "NODE_DAEMON_UNAVAILABLE", "message": error.to_string()}}),
+            )?,
+        }
         return Ok(());
     }
     if method == "POST" && agentfirm_api::is_http_mutation_path(&path_only) {
@@ -35951,7 +36061,20 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
             trust_scopes.insert(scope);
         }
     }
+    trust_scopes.extend(store.canonical_execution_space_ids()?);
+    let mut agent_identities = Vec::new();
+    let mut agent_sessions = Vec::new();
+    let mut team_memberships = Vec::new();
+    let mut work_execution_bindings = Vec::new();
+    let mut canonical_messages = Vec::new();
+    let mut canonical_message_deliveries = Vec::new();
     for execution_space_id in trust_scopes {
+        agent_identities.extend(store.fabric_agent_identities(&execution_space_id)?);
+        agent_sessions.extend(store.fabric_agent_sessions(&execution_space_id)?);
+        team_memberships.extend(store.fabric_team_memberships(&execution_space_id)?);
+        work_execution_bindings.extend(store.fabric_work_execution_bindings(&execution_space_id)?);
+        canonical_messages.extend(store.fabric_messages(&execution_space_id)?);
+        canonical_message_deliveries.extend(store.fabric_message_deliveries(&execution_space_id)?);
         let deliveries = store.trust_message_deliveries(&execution_space_id)?;
         for message in store.trust_team_messages(&execution_space_id)? {
             let message_deliveries = deliveries
@@ -36161,6 +36284,12 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "team_runs": team_runs,
         "member_runs": member_runs,
         "team_messages": team_messages,
+        "agent_identities": agent_identities,
+        "agent_sessions": agent_sessions,
+        "team_memberships": team_memberships,
+        "work_execution_bindings": work_execution_bindings,
+        "canonical_messages": canonical_messages,
+        "canonical_message_deliveries": canonical_message_deliveries,
         "works": works,
         "work_events": work_events,
         "work_deliveries": work_deliveries,

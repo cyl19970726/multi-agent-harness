@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/message-subscription.schema.json",
+  "title": "MessageSubscription",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "recipient_identity_id", "execution_space_id", "kind", "status", "version", "created_at", "updated_at"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "recipient_identity_id": {"type": "string", "minLength": 1},
+    "execution_space_id": {"type": "string", "minLength": 1},
+    "kind": {"enum": ["direct", "team"]},
+    "team_membership_id": {"type": ["string", "null"]},
+    "team_id": {"type": ["string", "null"]},
+    "status": {"enum": ["active", "revoked"]},
+    "version": {"type": "integer", "minimum": 1},
+    "created_at": {"type": "string", "minLength": 1},
+    "updated_at": {"type": "string", "minLength": 1}
+  }
+}
