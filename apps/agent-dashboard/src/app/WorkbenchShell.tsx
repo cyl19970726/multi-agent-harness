@@ -39,6 +39,7 @@ import { Kbd, MonoId, StatusDot } from "@/components/workbench/atoms";
 import { ProvenanceFooter } from "@/components/workbench/ProvenanceFooter";
 
 import type { WorkbenchModel } from "../model/readModel";
+import type { RoleActionExecutor } from "../model/roleViews";
 import type { Company, ExecutionSpace, Project } from "../types";
 import {
   AgentDetail,
@@ -96,6 +97,7 @@ interface WorkbenchShellProps {
   actionsEnabled: boolean;
   /** POST a harness action then refresh the snapshot. */
   onAction: (path: string, body?: unknown, options?: { headers?: Readonly<Record<string, string>> }) => Promise<boolean>;
+  onRoleAction: RoleActionExecutor;
   /** Whether opt-in interval polling of /v1/snapshot is currently on. */
   pollEnabled: boolean;
   /** Whether polling is meaningful right now (only against a live source). */
@@ -166,6 +168,7 @@ export function WorkbenchShell({
   domainFreshness,
   actionsEnabled,
   onAction,
+  onRoleAction,
   pollEnabled,
   canPoll,
   onTogglePoll,
@@ -173,6 +176,7 @@ export function WorkbenchShell({
   const memberFocusMode = selection.surface === "team" && Boolean(selection.memberRunId);
   const focusedTeamMode = selection.surface === "team" && Boolean(selection.teamId);
   const compactExecutionMode = memberFocusMode || focusedTeamMode;
+  const roleActionsCurrent = actionsEnabled && domainFreshness.works === "live" && domainFreshness.runtime === "live";
   function updateSelection(next: Partial<SelectionState>) {
     onSelectionChange({ ...selection, ...next });
   }
@@ -230,6 +234,8 @@ export function WorkbenchShell({
                 sourceLabel={sourceLabel}
                 actionsEnabled={actionsEnabled}
                 onAction={onAction}
+                onRoleAction={onRoleAction}
+                roleActionsCurrent={roleActionsCurrent}
                 apiUrl={apiUrl}
                 projectBindingId={selectedProjectId}
                 executionSpaceId={selectedSpaceId}
@@ -315,7 +321,7 @@ function TopBar({
   prototypeMode,
 }: Omit<
   WorkbenchShellProps,
-  "selection" | "onSelectionChange" | "actionsEnabled" | "onAction"
+  "selection" | "onSelectionChange" | "actionsEnabled" | "onAction" | "onRoleAction"
 > & {
   currentSurface: string;
   contextLabel: string;
@@ -952,6 +958,8 @@ function SurfaceSwitch({
   sourceLabel,
   actionsEnabled,
   onAction,
+  onRoleAction,
+  roleActionsCurrent,
   apiUrl,
   projectBindingId,
   executionSpaceId,
@@ -964,6 +972,8 @@ function SurfaceSwitch({
   sourceLabel: string;
   actionsEnabled: boolean;
   onAction: (path: string, body?: unknown, options?: { headers?: Readonly<Record<string, string>> }) => Promise<boolean>;
+  onRoleAction: RoleActionExecutor;
+  roleActionsCurrent: boolean;
   apiUrl: string;
   projectBindingId: string;
   executionSpaceId: string;
@@ -1024,16 +1034,16 @@ function SurfaceSwitch({
       );
     case "team":
       return selection.memberRunId ? (
-        <MemberWorkbench key={model.snapshot.generated_at} apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} memberRunId={selection.memberRunId} teamRunId={(model.snapshot.member_runs ?? []).find((run) => run.id === selection.memberRunId)?.team_run_id} teamId={(model.snapshot.team_runs ?? []).find((run) => run.id === (model.snapshot.member_runs ?? []).find((memberRun) => memberRun.id === selection.memberRunId)?.team_run_id)?.agent_team_id} onAction={onAction} />
+        <MemberWorkbench key={model.snapshot.generated_at} apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} memberRunId={selection.memberRunId} teamRunId={(model.snapshot.member_runs ?? []).find((run) => run.id === selection.memberRunId)?.team_run_id} teamId={(model.snapshot.team_runs ?? []).find((run) => run.id === (model.snapshot.member_runs ?? []).find((memberRun) => memberRun.id === selection.memberRunId)?.team_run_id)?.agent_team_id} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} />
       ) : selection.teamId ? (
-        <TeamWorkspace key={model.snapshot.generated_at} apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} teamId={(model.snapshot.team_runs ?? []).find((run) => run.id === selection.teamId)?.agent_team_id ?? selection.teamId} teamRunId={(model.snapshot.team_runs ?? []).find((run) => run.id === selection.teamId)?.id ?? (model.snapshot.team_runs ?? []).find((run) => run.agent_team_id === selection.teamId)?.id} refreshKey={model.snapshot.generated_at} selection={selection} onAction={onAction} onSelectionChange={onSelectionChange} />
+        <TeamWorkspace key={model.snapshot.generated_at} apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} teamId={(model.snapshot.team_runs ?? []).find((run) => run.id === selection.teamId)?.agent_team_id ?? selection.teamId} teamRunId={(model.snapshot.team_runs ?? []).find((run) => run.id === selection.teamId)?.id ?? (model.snapshot.team_runs ?? []).find((run) => run.agent_team_id === selection.teamId)?.id} refreshKey={model.snapshot.generated_at} selection={selection} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} onSelectionChange={onSelectionChange} />
       ) : (
         <AgentTeamsHome {...shared} />
       );
     case "operator": {
       const nodeId = selection.nodeId ?? model.snapshot.execution_nodes?.[0]?.id;
       return nodeId
-        ? <OperatorView key={model.snapshot.generated_at} apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} nodeId={nodeId} onAction={onAction} />
+        ? <OperatorView key={model.snapshot.generated_at} apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} nodeId={nodeId} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} />
         : <div className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">No Execution Node is registered.</div>;
     }
     case "debug":

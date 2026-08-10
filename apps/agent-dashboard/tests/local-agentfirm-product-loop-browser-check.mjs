@@ -13,18 +13,55 @@ const work={work_id:"work-fixture-1",work_revision:3,team_id:"team-fixture-1",mi
 fixtures["company-work"].data.items=[work];fixtures["company-work"].data.page.item_count=1;
 fixtures["team-workspace"].data.team={team_id:"team-fixture-1",team_revision:1,mission_id:"mission-fixture-1",node_id:"node-fixture-1",placement_generation:1,status:"active"};fixtures["team-workspace"].data.works=[work];fixtures["team-workspace"].data.members=[{agent_member_ref:{kind:"agent_member",id:"member-fixture-1"},capacity:"available",current_member_run_ref:"member-run-fixture-1"}];
 fixtures["host-console"].data.work_queues={ready:[],unassigned:[],blocked:[],review:[work],integration:[work]};
+fixtures["host-console"].allowed_actions=[{kind:"create_work",target_ref:{kind:"team_run",id:"run-fixture-1"},required_version:0,disabled_reason:null}];
 fixtures["member-workbench"].data.agent_member={id:"member-fixture-1"};fixtures["member-workbench"].data.member_run={id:"member-run-fixture-1"};fixtures["member-workbench"].data.my_works=[work];
 fixtures.operator.data.node={node_id:"node-fixture-1",daemon_generation:4,status:"active"};fixtures.operator.data.build={build_sha:"fbc401646f66b69a0269622c489441cfe643b54f",protocol_version:"agentfirm.local.v1",schema_version:"agentfirm.role_views.v1"};fixtures.operator.data.delivery_backlog={depth:0,oldest_age_ms:null,recovery_required:false};
 
 const vite=await createServer({configFile:join(dashboardRoot,"vite.config.ts"),server:{host:"127.0.0.1",port:0},logLevel:"silent"});await vite.listen();const base=`http://127.0.0.1:${vite.httpServer.address().port}`;const browser=await chromium.launch({headless:true});
 try{
  for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
-  const page=await browser.newPage({viewport});await page.addInitScript(()=>{window.__AGENTFIRM_BOOTSTRAP__={capabilityToken:"fixture-token"}});
-  await page.route("**/v1/**",async route=>{const url=new URL(route.request().url());let body={};if(url.pathname==="/v1/projects")body={projects:[{id:"fixture-project",name:"Fixture",is_current:true}]};else if(url.pathname==="/v1/spaces")body={spaces:[{id:"fixture-space",name:"Fixture",is_current:true}]};else if(url.pathname==="/v1/companies")body={companies:[]};else if(url.pathname==="/v1/snapshot")body={generated_at:"2026-08-10T00:00:00Z",teams:[{id:"team-fixture-1",name:"Fixture Team",mission_id:"mission-fixture-1",node_id:"node-fixture-1"}],team_runs:[],execution_nodes:[{id:"node-fixture-1"}],company_os:{}};else if(url.pathname==="/v1/workflows")body={workflows:[]};else if(url.pathname==="/v1/views/company-work")body=fixtures["company-work"];else if(url.pathname.includes("team-workspace"))body=fixtures["team-workspace"];else if(url.pathname.includes("host-console"))body=fixtures["host-console"];else if(url.pathname.includes("member-workbench"))body=fixtures["member-workbench"];else if(url.pathname.includes("operator"))body=fixtures.operator;else if(url.pathname==="/v1/events")return route.fulfill({status:200,contentType:"text/event-stream",body:"event: projection_invalidation\ndata: {}\n\n"});return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(body)});});
+  const page=await browser.newPage({viewport});await page.addInitScript(()=>{
+    window.__AGENTFIRM_BOOTSTRAP__={capabilityToken:"fixture-token"};
+    class LiveFixtureEventSource{
+      constructor(url){this.url=url;this.timers=[]}
+      addEventListener(kind,listener){if(kind==="snapshot")for(const delay of [0,100,500])this.timers.push(setTimeout(()=>listener(new MessageEvent("snapshot",{data:JSON.stringify({generated_at:"2026-08-10T00:00:00Z",execution_space_id:"fixture-space",stream_epoch:"fixture-live-1"})})),delay))}
+      close(){for(const timer of this.timers)clearTimeout(timer)}
+    }
+    Object.defineProperty(window,"EventSource",{value:LiveFixtureEventSource,configurable:true});
+  });
+  let actionExecuted=false,capabilityMismatch=false;
+  await page.route("**/v1/**",async route=>{
+    const request=route.request();const url=new URL(request.url());let body={};
+    if(request.method()==="POST"){
+      assert.equal(url.pathname,"/v1/agentfirm/team-runs/run-fixture-1/works","browser may call only the closed semantic endpoint");
+      assert.equal(request.headers()["x-agentfirm-token"],"fixture-token");
+      assert.equal(request.headers()["if-match"],"0");
+      assert.ok(request.headers()["idempotency-key"]);
+      const intent=request.postDataJSON();assert.deepEqual(Object.keys(intent).sort(),["action","claim_mode","completion_criteria_markdown","context_markdown","priority","title","work_id"].sort());
+      assert.equal(intent.action,"create_work");actionExecuted=true;
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,projection:{id:intent.work_id},event_id:"event-browser-1",resulting_version:1,store_sequence:8,replayed:false})});
+    }
+    if(url.pathname==="/v1/meta")body={schema_version:capabilityMismatch?"agentfirm.role_views.v999":"agentfirm.role_views.v1",protocol_version:"agentfirm-member-trust/1",action_manifest_version:"agentfirm.role_actions.v1",capability_auth:"x-agentfirm-token",build_sha:"fbc401646f66b69a0269622c489441cfe643b54f"};
+    else if(url.pathname==="/v1/projects")body={projects:[{id:"fixture-project",name:"Fixture",is_current:true}]};
+    else if(url.pathname==="/v1/spaces")body={spaces:[{id:"fixture-space",name:"Fixture",is_current:true}]};
+    else if(url.pathname==="/v1/companies")body={companies:[]};
+    else if(url.pathname==="/v1/snapshot"||url.pathname==="/v1/team-runs/run-fixture-1/snapshot")body={generated_at:"2026-08-10T00:00:00Z",teams:[{id:"team-fixture-1",name:"Fixture Team",mission_id:"mission-fixture-1",node_id:"node-fixture-1"}],team_runs:[{id:"run-fixture-1",agent_team_id:"team-fixture-1"}],execution_nodes:[{id:"node-fixture-1"}],company_os:{}};
+    else if(url.pathname==="/v1/workflows")body={workflows:[]};
+    else if(url.pathname==="/v1/views/company-work")body=fixtures["company-work"];
+    else if(url.pathname.includes("team-workspace"))body=fixtures["team-workspace"];
+    else if(url.pathname.includes("host-console"))body=fixtures["host-console"];
+    else if(url.pathname.includes("member-workbench"))body=fixtures["member-workbench"];
+    else if(url.pathname.includes("operator"))body=fixtures.operator;
+    else return route.fulfill({status:404,contentType:"application/json",body:JSON.stringify({error:{code:"UNEXPECTED_ROUTE",message:url.pathname}})});
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(body)});
+  });
   await page.goto(`${base}/?space=fixture-space&project=fixture-project`,{waitUntil:"networkidle"});await page.getByRole("heading",{name:"Company Work"}).waitFor();assert.equal(await page.getByText("work-fixture-1").count()>0,true);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth),true,"Company view overflows");
   await page.goto(`${base}/?surface=team&team=team-fixture-1&space=fixture-space&project=fixture-project`,{waitUntil:"networkidle"});await page.getByRole("heading",{name:"team-fixture-1"}).waitFor();await page.getByRole("button",{name:"Open Host Console"}).click();await page.getByRole("heading",{name:"Host Console"}).waitFor();
+  if(viewport.width===1440){await page.getByRole("button",{name:"create work"}).click();await page.getByLabel("Work ID").fill("work-browser-1");await page.getByLabel("Title").fill("Browser action");await page.getByLabel("Completion criteria").fill("Closed semantic POST observed");await page.getByRole("button",{name:"Execute action"}).click();await page.waitForTimeout(100);assert.equal(actionExecuted,true,"Dashboard did not execute the closed action");}
   await page.goto(`${base}/?surface=team&memberRun=member-run-fixture-1&space=fixture-space&project=fixture-project`,{waitUntil:"networkidle"});await page.getByRole("heading",{name:"Member Workbench"}).waitFor();
-  await page.goto(`${base}/?surface=operator&node=node-fixture-1&space=fixture-space&project=fixture-project`,{waitUntil:"networkidle"});await page.getByRole("heading",{name:"Operator View"}).waitFor();assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth),true,"Operator view overflows");await page.close();
+  await page.goto(`${base}/?surface=operator&node=node-fixture-1&space=fixture-space&project=fixture-project`,{waitUntil:"networkidle"});await page.getByRole("heading",{name:"Operator View"}).waitFor();assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth),true,"Operator view overflows");
+  if(viewport.width===390){capabilityMismatch=true;await page.goto(`${base}/?surface=team&team=team-fixture-1&space=fixture-space&project=fixture-project`,{waitUntil:"networkidle"});await page.getByRole("button",{name:"Open Host Console"}).click();await page.getByText(/Unsupported AgentFirm capabilities/).waitFor();assert.equal(await page.getByRole("button",{name:"create work"}).count(),0,"capability mismatch must fail closed");}
+  await page.close();
  }
  console.log("local AgentFirm product loop browser check: PASS");
 }finally{await browser.close();await vite.close();}

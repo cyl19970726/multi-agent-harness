@@ -10,47 +10,104 @@ export interface AttentionItem {
   reason_code: string; first_seen_at: string; last_seen_at: string; recommended_action: string;
 }
 export interface AllowedAction {
-  kind: string; target_ref: TargetRef; required_version: number | null; disabled_reason: string | null;
+  kind: string; target_ref: TargetRef; required_version: number; disabled_reason: string | null;
 }
+
+export interface AgentFirmActionError {
+  status?: number;
+  code: string;
+  message: string;
+  retryable?: boolean;
+  resource_kind?: string;
+  resource_id?: string;
+  current_version?: number | null;
+}
+
+export interface RoleActionExecutionResult { ok: boolean; error?: AgentFirmActionError }
 
 export type RoleActionExecutor = (
   path: string,
   body?: unknown,
   options?: {headers?: Readonly<Record<string,string>>},
-) => Promise<boolean>;
+) => Promise<RoleActionExecutionResult>;
 
-const TEAM_WORK_ACTIONS: Record<string,string> = {
+const TEAM_WORK_ACTIONS = {
   assign_work:"assign", rebind_work:"rebind", release_work:"release",
-  request_changes:"request-changes", cancel_work:"cancel", claim_work:"claim",
+  cancel_work:"cancel", claim_work:"claim",
   start_work:"start", block_work:"block", unblock_work:"resume",
-  submit_work:"submit", revise_work:"start",
-};
+  submit_work:"submit",
+} as const;
 
-/** Resolve a server-authorized action onto an existing canonical 4A route.
- * This is deliberately a closed adapter: unknown actions fail closed and UI
- * payloads can never select actor identity. */
+export type ExecutableRoleActionKind = "create_work" | "accept_work" | "reconcile_delivery" | keyof typeof TEAM_WORK_ACTIONS;
+export type RoleActionFields = Readonly<Record<string,string>>;
+export interface PreparedRoleAction {
+  path: string;
+  body: Record<string,unknown>;
+  headers: Readonly<Record<string,string>>;
+}
+
+/** Build one closed semantic intent. The browser cannot express actor,
+ * authority, event id, CAS, or idempotency inside the payload. */
+export function prepareRoleAction(
+  action:AllowedAction,
+  context:{teamId?:string;teamRunId?:string;nodeId?:string},
+  fields:RoleActionFields,
+  confirmed:boolean,
+):PreparedRoleAction|{error:string}{
+  if(action.disabled_reason)return {error:action.disabled_reason};
+  if(!Number.isSafeInteger(action.required_version)||Number(action.required_version)<0){
+    return {error:"Server did not provide an exact CAS version."};
+  }
+  const run=context.teamRunId&&encodeURIComponent(context.teamRunId);
+  const team=context.teamId&&encodeURIComponent(context.teamId);
+  const node=context.nodeId&&encodeURIComponent(context.nodeId);
+  const id=encodeURIComponent(action.target_ref.id);
+  const operation=TEAM_WORK_ACTIONS[action.kind as keyof typeof TEAM_WORK_ACTIONS];
+  const path=action.kind==="reconcile_delivery"&&node
+    ?`/v1/agentfirm/nodes/${node}/work-deliveries/${id}/reconcile`
+    :action.kind==="accept_work"&&team
+    ?`/v1/agentfirm/teams/${team}/works/${id}/accept`
+    :action.kind==="create_work"&&run
+    ?`/v1/agentfirm/team-runs/${run}/works`
+    :operation&&run?`/v1/agentfirm/team-runs/${run}/works/${id}/${operation}`:null;
+  if(!path)return {error:"Dashboard semantic adapter does not implement this action."};
+  const required=(name:string)=>{const value=fields[name]?.trim();if(!value)throw new Error(`${name.replace(/_/g," ")} is required.`);return value};
+  let body:Record<string,unknown>;
+  try{
+    switch(action.kind as ExecutableRoleActionKind){
+      case "create_work": body={action:"create_work",work_id:required("work_id"),title:required("title"),context_markdown:fields.context_markdown??"",completion_criteria_markdown:required("completion_criteria_markdown"),claim_mode:fields.claim_mode||"host_assign",priority:fields.priority||"normal"};break;
+      case "accept_work": body={action:"accept_work"};break;
+      case "reconcile_delivery": body={action:"reconcile_delivery",evidence_ref:required("evidence_ref")};break;
+      case "assign_work": body={action:"assign_work",member_run_id:required("member_run_id")};break;
+      case "rebind_work": body={action:"rebind_work",member_run_id:required("member_run_id")};break;
+      case "cancel_work": body={action:"cancel_work",reason:required("reason")};break;
+      case "block_work": body={action:"block_work",reason:required("reason")};break;
+      case "unblock_work": body={action:"unblock_work",resolution:required("resolution")};break;
+      case "submit_work": {
+        const artifact_refs=(fields.artifact_refs??"").split(",").map(value=>value.trim()).filter(Boolean);
+        const check_refs=(fields.check_refs??"").split(",").map(value=>value.trim()).filter(Boolean);
+        if(artifact_refs.length+check_refs.length===0)throw new Error("At least one artifact or check/evidence ref is required.");
+        body={action:"submit_work",result_summary:required("result_summary"),artifact_refs,check_refs,...(fields.base_revision?.trim()?{base_revision:fields.base_revision.trim()}:{}),candidate_revision:required("candidate_revision")};break;
+      }
+      case "release_work": body={action:"release_work"};break;
+      case "claim_work": body={action:"claim_work"};break;
+      case "start_work": body={action:"start_work"};break;
+    }
+  }catch(error){return {error:error instanceof Error?error.message:String(error)}}
+  if(["accept_work","cancel_work","reconcile_delivery"].includes(action.kind)&&!confirmed)return {error:"Server-enforced confirmation is required."};
+  return {path,body,headers:{"Idempotency-Key":crypto.randomUUID(),"If-Match":String(action.required_version),...(action.kind==="cancel_work"?{"X-AgentFirm-Confirm":"cancel"}:action.kind==="accept_work"?{"X-AgentFirm-Confirm":"accept"}:action.kind==="reconcile_delivery"?{"X-AgentFirm-Confirm":"reconcile_delivery"}:{})}};
+}
+
+/** Resolve only the semantic actions implemented by the closed adapter. */
 export function roleActionRoute(action:AllowedAction,context:{teamId?:string;teamRunId?:string;nodeId?:string}):string|null{
   const id=encodeURIComponent(action.target_ref.id);
   const run=context.teamRunId&&encodeURIComponent(context.teamRunId);
   const team=context.teamId&&encodeURIComponent(context.teamId);
-  if(action.kind in TEAM_WORK_ACTIONS&&run)return `/v1/team-runs/${run}/works/${id}/${TEAM_WORK_ACTIONS[action.kind]}`;
-  if(action.kind==="accept_work"&&team)return `/v1/teams/${team}/works/${id}/accept`;
-  if(action.kind==="write_report"&&team)return `/v1/teams/${team}/works/${id}/reports`;
-  if(action.kind==="write_finding"&&team)return `/v1/teams/${team}/works/${id}/findings`;
-  if(action.kind==="write_failure"&&team)return `/v1/teams/${team}/works/${id}/failure-analyses`;
-  if(action.kind==="request_gate_evaluation"&&team)return `/v1/teams/${team}/works/${id}/gate-requirements`;
-  if(action.kind==="create_work"&&run)return `/v1/team-runs/${run}/works`;
-  if(["send_message","reply_message","request_decision"].includes(action.kind)&&run)return `/v1/team-runs/${run}/messages`;
-  if(["close_member_run","reopen_member_run","retire_member_run"].includes(action.kind))return `/v1/member-runs/${id}/${action.kind.replace("_member_run","")}`;
-  if(["provision_workspace","attach_workspace","archive_workspace","cleanup_workspace"].includes(action.kind))return `/v1/member-runs/${id}/workspace/${action.kind.replace("_workspace","")}`;
-  if(action.kind==="evaluate_gate")return `/v1/gate-requirements/${id}/evaluate`;
-  if(action.kind==="waive_gate")return `/v1/gate-requirements/${id}/waive`;
-  if(action.kind==="revoke_waiver")return `/v1/gate-waivers/${id}/revoke`;
-  if(action.kind==="reconcile_delivery"&&action.target_ref.kind==="work_delivery")return `/v1/work-deliveries/${id}/reconcile`;
-  if(action.kind==="reconcile_delivery"&&action.target_ref.kind==="message_delivery")return `/v1/message-deliveries/${id}/reconcile`;
-  // Diagnostics is the current Operator RoleView GET itself, not a mutation.
-  // The caller refreshes that view instead of POSTing to a read endpoint.
-  if(action.kind==="daemon_diagnostics")return null;
+  const node=context.nodeId&&encodeURIComponent(context.nodeId);
+  if(action.kind in TEAM_WORK_ACTIONS&&run)return `/v1/agentfirm/team-runs/${run}/works/${id}/${TEAM_WORK_ACTIONS[action.kind as keyof typeof TEAM_WORK_ACTIONS]}`;
+  if(action.kind==="create_work"&&run)return `/v1/agentfirm/team-runs/${run}/works`;
+  if(action.kind==="accept_work"&&team)return `/v1/agentfirm/teams/${team}/works/${id}/accept`;
+  if(action.kind==="reconcile_delivery"&&node)return `/v1/agentfirm/nodes/${node}/work-deliveries/${id}/reconcile`;
   return null;
 }
 export interface RoleView<T> {
@@ -85,7 +142,7 @@ export interface MessageSummary {
 }
 export interface CompanyWorkIndexData {
   query: Record<string, string[]>; sort: Array<{field: string; direction: string}>; items: WorkSummary[];
-  page: { as_of_event_sequence: number; item_count: number; next_cursor: string | null };
+  page: { as_of_event_sequence: number; item_count: number; next_cursor: string | null; snapshot_vector:Array<{execution_space_id:string;store_identity:string;trust_store_sequence:number;work_operation_count:number;team_row_count:number;team_run_row_count:number}> };
   facets: Record<string, string[]>;
 }
 export interface TeamWorkspaceData {
@@ -114,6 +171,21 @@ export interface OperatorViewData {
 }
 
 export async function fetchRoleView<T>(apiUrl:string,path:string,scope:{project?:string;space?:string;company?:string}={}):Promise<RoleView<T>>{
+  const base=apiUrl.endsWith("/")?apiUrl:`${apiUrl}/`;
+  const metaUrl=new URL("/v1/meta",base);
+  if(scope.project)metaUrl.searchParams.set("project",scope.project);
+  if(scope.space)metaUrl.searchParams.set("space",scope.space);
+  const metaResponse=await fetch(metaUrl.toString(),{headers:{Accept:"application/json"}});
+  const meta=await metaResponse.json().catch(()=>({}));
+  if(!metaResponse.ok)throw new Error(`AgentFirm capability negotiation failed (${metaResponse.status})`);
+  const mismatches=[
+    meta.schema_version!==ROLE_VIEW_SCHEMA&&`schema ${String(meta.schema_version)}`,
+    meta.protocol_version!=="agentfirm-member-trust/1"&&`protocol ${String(meta.protocol_version)}`,
+    meta.action_manifest_version!=="agentfirm.role_actions.v1"&&`actions ${String(meta.action_manifest_version)}`,
+    meta.capability_auth!=="x-agentfirm-token"&&`auth ${String(meta.capability_auth)}`,
+    (typeof meta.build_sha!=="string"||!/^[0-9a-f]{40}$/.test(meta.build_sha))&&"invalid build SHA",
+  ].filter(Boolean);
+  if(mismatches.length)throw new Error(`Unsupported AgentFirm capabilities: ${mismatches.join(", ")}`);
   const url=new URL(path,apiUrl.endsWith("/")?apiUrl:`${apiUrl}/`);
   if(scope.project)url.searchParams.set("project",scope.project);
   if(scope.space)url.searchParams.set("space",scope.space);
@@ -123,5 +195,10 @@ export async function fetchRoleView<T>(apiUrl:string,path:string,scope:{project?
   const body=await response.json().catch(()=>({}));
   if(!response.ok)throw new Error(body?.error?.message??`RoleView request failed (${response.status})`);
   if(body.schema_version!==ROLE_VIEW_SCHEMA)throw new Error(`Unsupported RoleView schema: ${String(body.schema_version)}`);
+  const expectedKind=path.includes("company-work")?"company_work":path.includes("team-workspace")?"team_workspace":path.includes("host-console")?"host_console":path.includes("member-workbench")?"member_workbench":path.includes("operator")?"operator":null;
+  if(!expectedKind||body.view_kind!==expectedKind)throw new Error(`RoleView kind mismatch: expected ${String(expectedKind)}, received ${String(body.view_kind)}`);
+  if(body.source_execution_space_id!==scope.space&&expectedKind!=="company_work")throw new Error("RoleView execution-space identity mismatch");
+  if(!Number.isSafeInteger(body.as_of_event_sequence)||!["current","stale","unavailable","unknown"].includes(body.freshness)||!Array.isArray(body.allowed_actions)||!Array.isArray(body.attention))throw new Error("Malformed RoleView envelope");
+  for(const action of body.allowed_actions){if(!action||typeof action.kind!=="string"||!action.target_ref||typeof action.target_ref.id!=="string"||!Number.isSafeInteger(action.required_version)||action.required_version<0||!(action.disabled_reason===null||typeof action.disabled_reason==="string"))throw new Error("Malformed or non-CAS RoleView action")}
   return body as RoleView<T>;
 }

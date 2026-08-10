@@ -62,21 +62,21 @@ async function main() {
     streamSelectionKey,
   } = await loadApi();
 
-  // The exact race: /v1/snapshot starts, an SSE member_action arrives, then
-  // the older snapshot returns without that action. The client must replay it.
+  // Raw ledger rows are never browser truth. A crossing SSE member_action is
+  // ignored; App schedules a fresh authoritative GET instead of replaying it.
   const buffer = new SnapshotFrameBuffer();
   const request = buffer.beginReadRequest();
   buffer.recordFrame({ kind: "member_action", action: memberAction("action-live") });
   const merged = buffer.resolveResponse(request, { member_actions: [] });
-  if (merged?.member_actions?.some((action) => action.id === "action-live")) {
-    ok("member_action received during a snapshot request survives its response");
+  if (merged?.member_actions?.length === 0) {
+    ok("raw member_action is not folded into an authoritative response");
   } else {
-    bad("member_action received during a snapshot request was dropped");
+    bad("raw member_action became browser truth");
   }
 
   // Latest-wins applies among overlapping reads only. A late earlier response
-  // cannot overwrite the newer read, while the new response still replays its
-  // in-flight SSE frame.
+  // cannot overwrite the newer read, and the new response remains exactly the
+  // authoritative payload rather than replaying an in-flight ledger row.
   const concurrent = new SnapshotFrameBuffer();
   const earlier = concurrent.beginReadRequest();
   const newer = concurrent.beginReadRequest();
@@ -88,10 +88,10 @@ async function main() {
   } else {
     bad("an older read response was allowed to clobber the newer request");
   }
-  if (current?.member_actions?.map((action) => action.id).join(",") === "action-newer") {
-    ok("the newest response replays only its in-flight member_action delta");
+  if (current?.member_actions?.length === 0) {
+    ok("the newest response does not replay an in-flight durable row");
   } else {
-    bad("the newest response did not preserve its in-flight member_action delta");
+    bad("the newest response folded a raw SSE ledger row");
   }
 
   // A mutation causally outranks reads. A poll started after an action POST is

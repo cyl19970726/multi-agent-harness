@@ -5,7 +5,6 @@
 //! mutation service.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use harness_core::agentfirm_api::{ActorKind, ActorRef};
@@ -106,6 +105,12 @@ struct Facts {
     space_id: String,
     store_identity: String,
     sequence: u64,
+    work_sequence: u64,
+    team_sequence: u64,
+    run_sequence: u64,
+    team_revisions: BTreeMap<String, u64>,
+    run_revisions: BTreeMap<String, u64>,
+    canonical_versions: BTreeMap<(String, String), u64>,
     teams: Vec<AgentTeam>,
     runs: Vec<AgentTeamRun>,
     works: Vec<Work>,
@@ -117,23 +122,117 @@ struct Facts {
     side: Vec<Value>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+struct SnapshotPoint {
+    execution_space_id: String,
+    store_identity: String,
+    trust_store_sequence: u64,
+    work_operation_count: u64,
+    team_row_count: u64,
+    team_run_row_count: u64,
+}
+
+fn side_record_kind(value: &Value) -> Option<&'static str> {
+    if value.get("canonical_root").is_some() && value.get("member_run_id").is_some() {
+        Some("workspace_binding")
+    } else if value.get("requirement_set_fingerprint").is_some() {
+        Some("gate_requirement")
+    } else if value.get("verdict").is_some() && value.get("requirement_id").is_some() {
+        Some("gate_evaluation")
+    } else if value.get("authority_actor").is_some() && value.get("requirement_id").is_some() {
+        Some("gate_waiver")
+    } else if value.get("report_revision").is_some() && value.get("authored_by").is_some() {
+        Some("work_report")
+    } else if value.get("detail_markdown").is_some() && value.get("reported_by").is_some() {
+        Some("work_finding")
+    } else if value.get("observed_failure").is_some() && value.get("reported_by").is_some() {
+        Some("failure_analysis")
+    } else if value.get("module_id").is_some() && value.get("attached_by").is_some() {
+        Some("work_module_binding")
+    } else if value.get("source_work_ref").is_some() && value.get("target_work_ref").is_some() {
+        Some("work_delegation")
+    } else if value.get("message_id").is_some() && value.get("recipient_member_run_id").is_some() {
+        Some("message_delivery")
+    } else if value.get("work_id").is_some()
+        && value.get("recipient_member_run_id").is_some()
+        && value.get("work_revision").is_some()
+    {
+        Some("work_delivery")
+    } else if value.get("agent_member_id").is_some() && value.get("runtime_generation").is_some() {
+        Some("member_run")
+    } else {
+        None
+    }
+}
+
+fn fold_side_record(
+    latest: &mut BTreeMap<(String, String), Value>,
+    unkeyed: &mut Vec<Value>,
+    kind: Option<&str>,
+    value: Value,
+) -> Result<(), String> {
+    let kind = kind.or_else(|| side_record_kind(&value));
+    let id = value.get("id").and_then(Value::as_str);
+    let (Some(kind), Some(id)) = (kind, id) else {
+        unkeyed.push(value);
+        return Ok(());
+    };
+    let key = (kind.to_string(), id.to_string());
+    if let Some(existing) = latest.get(&key) {
+        match (
+            existing.get("version").and_then(Value::as_u64),
+            value.get("version").and_then(Value::as_u64),
+        ) {
+            (Some(current_version), Some(next_version)) if next_version < current_version => {
+                return Ok(())
+            }
+            (Some(current_version), Some(next_version))
+                if next_version == current_version && existing != &value =>
+            {
+                return Err(format!(
+                    "IDENTITY_CONFLICT: {kind} {id} has two different projections at version {next_version}"
+                ));
+            }
+            // Versionless immutable records are ordered by their containing
+            // CanonicalOperation. Later append wins; no revision is invented.
+            _ => {}
+        }
+    }
+    latest.insert(key, value);
+    Ok(())
+}
+
 impl Facts {
     fn read(space_id: &str, store: &HarnessStore) -> Result<Self, String> {
         let operations = store
-            .canonical_operations()
+            .canonical_operations_for_space(space_id)
             .map_err(|error| error.to_string())?;
         let sequence = operations
             .iter()
             .map(|op| op.event.store_sequence)
             .max()
             .unwrap_or(0);
+        let canonical_versions = operations.iter().fold(
+            BTreeMap::<(String, String), u64>::new(),
+            |mut versions, operation| {
+                versions.insert(
+                    (
+                        operation.event.aggregate_kind.clone(),
+                        operation.event.aggregate_id.clone(),
+                    ),
+                    operation.event.resulting_version,
+                );
+                versions
+            },
+        );
         let mut works = store
             .latest_works()
             .map_err(|error| error.to_string())?
             .into_iter()
             .map(|work| (work.id.clone(), work))
             .collect::<BTreeMap<_, _>>();
-        let mut side = Vec::new();
+        let mut latest_side = BTreeMap::new();
+        let mut unkeyed_side = Vec::new();
         for operation in &operations {
             if operation.event.aggregate_kind == "work" {
                 if let Ok(work) =
@@ -143,9 +242,38 @@ impl Facts {
                 }
             }
             if operation.event.aggregate_kind != "work" {
-                side.push(operation.resulting_projection.clone());
+                fold_side_record(
+                    &mut latest_side,
+                    &mut unkeyed_side,
+                    Some(&operation.event.aggregate_kind),
+                    operation.resulting_projection.clone(),
+                )?;
             }
-            side.extend(operation.immutable_side_records.clone());
+            for value in operation.immutable_side_records.clone() {
+                if let Ok(work) = serde_json::from_value::<Work>(value.clone()) {
+                    works.insert(work.id.clone(), work);
+                } else {
+                    fold_side_record(&mut latest_side, &mut unkeyed_side, None, value)?;
+                }
+            }
+        }
+        let mut side = latest_side.into_values().collect::<Vec<_>>();
+        side.extend(unkeyed_side);
+        let team_rows = store.teams().map_err(|error| error.to_string())?;
+        let run_rows = store.team_runs().map_err(|error| error.to_string())?;
+        let team_revisions = team_rows
+            .iter()
+            .fold(BTreeMap::new(), |mut revisions, team| {
+                *revisions.entry(team.id.clone()).or_insert(0) += 1;
+                revisions
+            });
+        let run_revisions = run_rows.iter().fold(BTreeMap::new(), |mut revisions, run| {
+            *revisions.entry(run.id.clone()).or_insert(0) += 1;
+            revisions
+        });
+        let mut latest_runs = BTreeMap::new();
+        for run in run_rows {
+            latest_runs.insert(run.id.clone(), run);
         }
         let store_identity = std::fs::canonicalize(store.root())
             .unwrap_or_else(|_| store.root().to_path_buf())
@@ -155,12 +283,21 @@ impl Facts {
             space_id: space_id.to_string(),
             store_identity,
             sequence,
+            work_sequence: store
+                .work_operations()
+                .map_err(|error| error.to_string())?
+                .len() as u64,
+            team_sequence: team_rows.len() as u64,
+            run_sequence: run_revisions.values().sum(),
+            team_revisions,
+            run_revisions,
+            canonical_versions,
             teams: store
                 .latest_teams()
                 .map_err(|error| error.to_string())?
                 .into_values()
                 .collect(),
-            runs: store.team_runs().map_err(|error| error.to_string())?,
+            runs: latest_runs.into_values().collect(),
             works: works.into_values().collect(),
             members: store
                 .trust_agent_members(space_id)
@@ -196,6 +333,17 @@ impl Facts {
         })
     }
 
+    fn snapshot_point(&self) -> SnapshotPoint {
+        SnapshotPoint {
+            execution_space_id: self.space_id.clone(),
+            store_identity: self.store_identity.clone(),
+            trust_store_sequence: self.sequence,
+            work_operation_count: self.work_sequence,
+            team_row_count: self.team_sequence,
+            team_run_row_count: self.run_sequence,
+        }
+    }
+
     fn latest_run(&self, team_id: &str) -> Option<&AgentTeamRun> {
         self.runs
             .iter()
@@ -204,12 +352,30 @@ impl Facts {
     }
 }
 
-fn now() -> String {
+pub(crate) fn now() -> String {
     let ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis();
-    format!("unix-ms:{ms}")
+        .as_millis() as i64;
+    let seconds = ms.div_euclid(1_000);
+    let millis = ms.rem_euclid(1_000);
+    let days = seconds.div_euclid(86_400);
+    let day_seconds = seconds.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 }.div_euclid(146_097);
+    let day_of_era = z - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    year += i64::from(month <= 2);
+    let hour = day_seconds / 3_600;
+    let minute = day_seconds % 3_600 / 60;
+    let second = day_seconds % 60;
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
 }
 
 fn enum_string<T: serde::Serialize>(value: &T) -> String {
@@ -323,8 +489,40 @@ fn latest_record_ref(facts: &Facts, work_id: &str, kind: &str) -> Option<String>
             }
     })
     .into_iter()
-    .rev()
-    .find_map(|v| v.get("id").and_then(Value::as_str).map(str::to_owned))
+    .max_by(|left, right| {
+        left.get("report_revision")
+            .and_then(Value::as_u64)
+            .cmp(&right.get("report_revision").and_then(Value::as_u64))
+            .then_with(|| {
+                left.get("updated_at")
+                    .or_else(|| left.get("created_at"))
+                    .and_then(Value::as_str)
+                    .cmp(
+                        &right
+                            .get("updated_at")
+                            .or_else(|| right.get("created_at"))
+                            .and_then(Value::as_str),
+                    )
+            })
+    })
+    .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_owned))
+}
+
+fn current_workspace<'a>(facts: &'a Facts, member_run_id: &str) -> Option<&'a Value> {
+    facts
+        .side
+        .iter()
+        .filter(|value| {
+            value["member_run_id"] == member_run_id && value.get("canonical_root").is_some()
+        })
+        .max_by(|left, right| {
+            left["updated_at"]
+                .as_str()
+                .cmp(&right["updated_at"].as_str())
+                .then_with(|| left["version"].as_u64().cmp(&right["version"].as_u64()))
+                .then_with(|| left["id"].as_str().cmp(&right["id"].as_str()))
+        })
+        .filter(|value| !matches!(value["lifecycle"].as_str(), Some("archived" | "removed")))
 }
 
 fn work_summary(facts: &Facts, team: &AgentTeam, work: &Work) -> Value {
@@ -357,19 +555,57 @@ fn work_summary(facts: &Facts, team: &AgentTeam, work: &Work) -> Value {
             && v.get("authority_actor").is_some()
             && v.get("requirement_id").is_some()
     });
+    let current_requirements = requirements
+        .iter()
+        .filter(|requirement| requirement["work_revision"].as_u64() == Some(work.version))
+        .collect::<Vec<_>>();
+    let stale_requirements = requirements
+        .len()
+        .saturating_sub(current_requirements.len());
+    let satisfied_evaluation = |requirement: &&Value, verdict: &str| {
+        evaluations.iter().any(|evaluation| {
+            evaluation["requirement_id"] == requirement["id"]
+                && evaluation["work_revision"] == requirement["work_revision"]
+                && evaluation["work_report_id"] == requirement["work_report_id"]
+                && evaluation["candidate_fingerprint"] == requirement["candidate_fingerprint"]
+                && evaluation["config_fingerprint"] == requirement["config_fingerprint"]
+                && evaluation["evaluator_fingerprint"] == requirement["evaluator_fingerprint"]
+                && evaluation["verdict"] == verdict
+        })
+    };
+    let active_waiver = |requirement: &&Value| {
+        waivers.iter().any(|waiver| {
+            waiver["requirement_id"] == requirement["id"]
+                && waiver["work_revision"] == requirement["work_revision"]
+                && waiver["candidate_fingerprint"] == requirement["candidate_fingerprint"]
+                && waiver["state"] == "active"
+        })
+    };
+    let passed = current_requirements
+        .iter()
+        .filter(|requirement| satisfied_evaluation(requirement, "passed"))
+        .count();
+    let failed = current_requirements
+        .iter()
+        .filter(|requirement| satisfied_evaluation(requirement, "failed"))
+        .count();
+    let waived = current_requirements
+        .iter()
+        .filter(|requirement| active_waiver(requirement))
+        .count();
+    let pending = current_requirements
+        .len()
+        .saturating_sub(passed + failed + waived);
     let deliveries = facts
         .work_deliveries
         .iter()
         .filter(|d| d["work_id"] == work.id)
         .collect::<Vec<_>>();
     let count_status = |status: &str| deliveries.iter().filter(|d| d["status"] == status).count();
-    let workspace = work.active_member_run_id.as_deref().and_then(|id| {
-        facts
-            .side
-            .iter()
-            .rev()
-            .find(|v| v["member_run_id"] == id && v.get("canonical_root").is_some())
-    });
+    let workspace = work
+        .active_member_run_id
+        .as_deref()
+        .and_then(|id| current_workspace(facts, id));
     let incoming = facts
         .side
         .iter()
@@ -397,7 +633,7 @@ fn work_summary(facts: &Facts, team: &AgentTeam, work: &Work) -> Value {
         "phase": enum_string(&work.phase), "condition": enum_string(&work.condition),
         "resolution": work.resolution.as_ref().map(enum_string), "priority": enum_string(&work.priority),
         "module_refs": module_refs,
-        "gate_summary": {"required": requirements.len(), "passed": evaluations.iter().filter(|v| v["verdict"] == "passed").count(), "failed": evaluations.iter().filter(|v| v["verdict"] == "failed").count(), "pending": requirements.len().saturating_sub(evaluations.len()+waivers.len()), "waived": waivers.iter().filter(|v| v["state"] == "active").count(), "stale": 0},
+        "gate_summary": {"required": current_requirements.len(), "passed": passed, "failed": failed, "pending": pending, "waived": waived, "stale": stale_requirements},
         "latest_report_ref": latest_record_ref(facts, &work.id, "report"),
         "latest_finding_refs": latest_record_ref(facts, &work.id, "finding").into_iter().collect::<Vec<_>>(),
         "latest_failure_ref": latest_record_ref(facts, &work.id, "failure"),
@@ -425,7 +661,7 @@ fn action(
     kind: &str,
     target_kind: &str,
     target_id: &str,
-    version: Option<u64>,
+    version: u64,
     disabled: Option<&str>,
 ) -> Value {
     json!({"kind":kind,"target_ref":{"kind":target_kind,"id":target_id},"required_version":version,"disabled_reason":disabled})
@@ -486,15 +722,33 @@ fn company_view(spaces: &[(String, HarnessStore)], query: &Query) -> ViewResult 
     let mut all = Vec::new();
     let mut max_sequence = 0;
     let mut identities = Vec::new();
+    let mut snapshot_vector = Vec::new();
+    let mut work_sources = BTreeMap::<String, String>::new();
     let mut facet_nodes = BTreeSet::new();
     let mut facet_hosts = BTreeSet::new();
     let mut facet_members = BTreeSet::new();
-    for (space_id, store) in spaces {
+    let mut ordered_spaces = spaces.iter().collect::<Vec<_>>();
+    ordered_spaces.sort_by(|left, right| left.0.cmp(&right.0));
+    for (space_id, store) in &ordered_spaces {
         let facts = Facts::read(space_id, store)
             .map_err(|e| ("500 Internal Server Error", "ROLE_VIEW_BUILD_FAILED", e))?;
         max_sequence = max_sequence.max(facts.sequence);
         identities.push(facts.store_identity.clone());
+        snapshot_vector.push(facts.snapshot_point());
         for work in &facts.works {
+            if let Some(previous_space) = work_sources.insert(work.id.clone(), (*space_id).clone())
+            {
+                if previous_space != **space_id {
+                    return Err((
+                        "409 Conflict",
+                        "WORK_ID_CONFLICT",
+                        format!(
+                            "Work {} exists in both {previous_space} and {space_id}",
+                            work.id
+                        ),
+                    ));
+                }
+            }
             let Some(team) = work
                 .team_id
                 .as_deref()
@@ -593,17 +847,35 @@ fn company_view(spaces: &[(String, HarnessStore)], query: &Query) -> ViewResult 
             .cmp(&a["updated_at"].as_str())
             .then_with(|| a["work_id"].as_str().cmp(&b["work_id"].as_str()))
     });
-    let mut hasher = DefaultHasher::new();
-    query.values.hash(&mut hasher);
-    query.delegated.hash(&mut hasher);
-    "updated_at:desc,work_id:asc".hash(&mut hasher);
-    let query_fingerprint = hasher.finish();
+    let stable_hash = |value: &Value| {
+        serde_json::to_vec(value)
+            .unwrap_or_default()
+            .into_iter()
+            .fold(0xcbf29ce484222325_u64, |hash, byte| {
+                (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+            })
+    };
+    let query_fingerprint = stable_hash(&json!({
+        "schema": SCHEMA_VERSION,
+        "filters": query.values,
+        "delegated": query.delegated,
+        "sort": "updated_at:desc,work_id:asc",
+        "limit": query.limit,
+    }));
+    let snapshot_fingerprint =
+        stable_hash(&serde_json::to_value(&snapshot_vector).map_err(|error| {
+            (
+                "500 Internal Server Error",
+                "ROLE_VIEW_BUILD_FAILED",
+                error.to_string(),
+            )
+        })?);
     let offset = if let Some(cursor) = &query.cursor {
         let parts = cursor.split(':').collect::<Vec<_>>();
         if parts.len() != 4
             || parts[0] != "rv1"
             || u64::from_str_radix(parts[1], 16).ok() != Some(query_fingerprint)
-            || parts[2].parse::<u64>().ok() != Some(max_sequence)
+            || u64::from_str_radix(parts[2], 16).ok() != Some(snapshot_fingerprint)
         {
             return Err((
                 "400 Bad Request",
@@ -629,10 +901,25 @@ fn company_view(spaces: &[(String, HarnessStore)], query: &Query) -> ViewResult 
         .collect::<Vec<_>>();
     let next = (offset + page_items.len() < all.len()).then(|| {
         format!(
-            "rv1:{query_fingerprint:016x}:{max_sequence}:{}",
+            "rv1:{query_fingerprint:016x}:{snapshot_fingerprint:016x}:{}",
             offset + page_items.len()
         )
     });
+    let mut after_vector = Vec::new();
+    for (space_id, store) in &ordered_spaces {
+        after_vector.push(
+            Facts::read(space_id, store)
+                .map_err(|e| ("500 Internal Server Error", "ROLE_VIEW_BUILD_FAILED", e))?
+                .snapshot_point(),
+        );
+    }
+    if snapshot_vector != after_vector {
+        return Err((
+            "503 Service Unavailable",
+            "SNAPSHOT_UNSTABLE",
+            "Company Work sources changed during projection; retry the read".into(),
+        ));
+    }
     let facets = |field: &str| {
         let mut values = all
             .iter()
@@ -646,6 +933,12 @@ fn company_view(spaces: &[(String, HarnessStore)], query: &Query) -> ViewResult 
         space_id: "company".into(),
         store_identity: identities.join("|"),
         sequence: max_sequence,
+        work_sequence: 0,
+        team_sequence: 0,
+        run_sequence: 0,
+        team_revisions: BTreeMap::new(),
+        run_revisions: BTreeMap::new(),
+        canonical_versions: BTreeMap::new(),
         teams: vec![],
         runs: vec![],
         works: vec![],
@@ -659,7 +952,7 @@ fn company_view(spaces: &[(String, HarnessStore)], query: &Query) -> ViewResult 
     Ok(envelope(
         "company_work",
         &facts,
-        json!({"query":query.values,"sort":[{"field":"updated_at","direction":"desc"},{"field":"work_id","direction":"asc"}],"items":page_items,"page":{"as_of_event_sequence":max_sequence,"item_count":all.len(),"next_cursor":next},"facets":{"teams":facets("team_id"),"missions":facets("mission_id"),"nodes":facet_nodes,"hosts":facet_hosts,"members":facet_members,"phases":facets("phase"),"conditions":facets("condition"),"resolutions":facets("resolution"),"modules":all.iter().flat_map(|v|v["module_refs"].as_array().into_iter().flatten()).filter_map(Value::as_str).collect::<BTreeSet<_>>(),"gate_states":["passed","failed","pending","waived","stale"]}}),
+        json!({"query":query.values,"sort":[{"field":"updated_at","direction":"desc"},{"field":"work_id","direction":"asc"}],"items":page_items,"page":{"as_of_event_sequence":max_sequence,"item_count":all.len(),"next_cursor":next,"snapshot_vector":snapshot_vector},"facets":{"teams":facets("team_id"),"missions":facets("mission_id"),"nodes":facet_nodes,"hosts":facet_hosts,"members":facet_members,"phases":facets("phase"),"conditions":facets("condition"),"resolutions":facets("resolution"),"modules":all.iter().flat_map(|v|v["module_refs"].as_array().into_iter().flatten()).filter_map(Value::as_str).collect::<BTreeSet<_>>(),"gate_states":["passed","failed","pending","waived","stale"]}}),
         vec![],
         vec![],
     ))
@@ -679,6 +972,30 @@ fn team_view(
         "TEAM_NOT_FOUND",
         team_id.to_string(),
     ))?;
+    let exact_host_identity = identity.is_some_and(|identity| {
+        (identity.actor.kind == ActorKind::AgentMember && identity.actor.id == team.host_agent_id)
+            || identity
+                .authority_actors
+                .iter()
+                .any(|actor| actor.kind == ActorKind::AgentMember && actor.id == team.host_agent_id)
+    });
+    let team_member_identity = identity.is_some_and(|identity| {
+        identity.actor.kind == ActorKind::AgentMember
+            && (identity.actor.id == team.host_agent_id
+                || team.member_ids.contains(&identity.actor.id))
+    }) || exact_host_identity;
+    if (host && !exact_host_identity) || (!host && !team_member_identity) {
+        return Err((
+            "403 Forbidden",
+            "NOT_AUTHORIZED",
+            if host {
+                "HostConsole requires this Team's exact Host authority"
+            } else {
+                "TeamWorkspace requires a Team-scoped AgentMember identity"
+            }
+            .into(),
+        ));
+    }
     let run = facts.latest_run(team_id);
     let run_id = run.map(|r| r.id.as_str());
     let works = facts
@@ -687,13 +1004,17 @@ fn team_view(
         .filter(|w| w.team_id.as_deref() == Some(team_id) || run_id == Some(w.team_run_id.as_str()))
         .map(|w| work_summary(&facts, team, w))
         .collect::<Vec<_>>();
+    let team_work_ids = works
+        .iter()
+        .filter_map(|work| work["work_id"].as_str())
+        .collect::<BTreeSet<_>>();
     let team_member_ids = team
         .member_ids
         .iter()
         .chain(std::iter::once(&team.host_agent_id))
         .collect::<BTreeSet<_>>();
     let members=facts.members.iter().filter(|m|m["id"].as_str().is_some_and(|id|team_member_ids.iter().any(|member|member.as_str()==id))).map(|member|{
-        let member_id=member["id"].as_str().unwrap_or_default(); let current=facts.member_runs.iter().filter(|r|r["agent_member_id"]==member_id&&run_id.is_some_and(|id|r["team_run_id"]==id)&&r["coordination_status"]=="active").max_by_key(|r|r["runtime_generation"].as_u64().unwrap_or(0));
+        let member_id=member["id"].as_str().unwrap_or_default(); let active=facts.member_runs.iter().filter(|r|r["agent_member_id"]==member_id&&run_id.is_some_and(|id|r["team_run_id"]==id)&&r["coordination_status"]=="active").collect::<Vec<_>>(); let current=if active.len()==1 { Some(active[0]) } else { None };
         json!({"agent_member_ref":{"kind":"agent_member","id":member_id},"role":member["role"],"organization_status":member["organization_status"],"current_member_run_ref":current.and_then(|r|r["id"].as_str()),"runtime_state":current.and_then(|r|r["runtime_status"].as_str()),"runtime_generation":current.and_then(|r|r["runtime_generation"].as_u64()),"capacity":match current.and_then(|r|r["runtime_status"].as_str()){Some("running")|Some("queued")=>"busy",Some("idle")|Some("waiting")=>"available",_=>"unknown"}})
     }).collect::<Vec<_>>();
     let messages = facts
@@ -721,23 +1042,84 @@ fn team_view(
             json!({"kind":"identity_conflict","severity":"critical","source_ref":{"kind":"agent_member","id":member_id},"reason_code":"multiple_active_member_runs","first_seen_at":observed_at,"last_seen_at":observed_at,"recommended_action":"Host must reconcile duplicate active MemberRuns before assigning or delivering Work"})
         })
         .collect::<Vec<_>>();
-    let raw_reports = records(&facts, |v| v.get("report_revision").is_some());
-    let raw_findings = records(&facts, |v| v.get("detail_markdown").is_some());
-    let raw_failures = records(&facts, |v| v.get("observed_failure").is_some());
-    let raw_requirements = records(&facts, |v| v.get("requirement_set_fingerprint").is_some());
+    let team_member_run_ids = facts
+        .member_runs
+        .iter()
+        .filter(|run| run_id.is_some_and(|id| run["team_run_id"] == id))
+        .filter_map(|run| run["id"].as_str())
+        .collect::<BTreeSet<_>>();
+    let belongs_to_team_work = |value: &Value| {
+        value
+            .get("work_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| team_work_ids.contains(id))
+    };
+    let raw_reports = records(&facts, |v| {
+        belongs_to_team_work(v) && v.get("report_revision").is_some()
+    });
+    let raw_findings = records(&facts, |v| {
+        belongs_to_team_work(v) && v.get("detail_markdown").is_some()
+    });
+    let raw_failures = records(&facts, |v| {
+        belongs_to_team_work(v) && v.get("observed_failure").is_some()
+    });
+    let raw_requirements = records(&facts, |v| {
+        belongs_to_team_work(v)
+            && v.get("requirement_set_fingerprint").is_some()
+            && facts.works.iter().any(|work| {
+                v["work_id"] == work.id && v["work_revision"].as_u64() == Some(work.version)
+            })
+    });
+    let matches_current_requirement = |candidate: &Value| {
+        raw_requirements.iter().any(|requirement| {
+            candidate["requirement_id"] == requirement["id"]
+                && candidate["work_revision"] == requirement["work_revision"]
+                && candidate["candidate_fingerprint"] == requirement["candidate_fingerprint"]
+        })
+    };
     let raw_evaluations = records(&facts, |v| {
-        v.get("verdict").is_some() && v.get("requirement_id").is_some()
+        belongs_to_team_work(v)
+            && v.get("verdict").is_some()
+            && v.get("requirement_id").is_some()
+            && matches_current_requirement(v)
+            && raw_requirements.iter().any(|requirement| {
+                v["requirement_id"] == requirement["id"]
+                    && v["work_report_id"] == requirement["work_report_id"]
+                    && v["config_fingerprint"] == requirement["config_fingerprint"]
+                    && v["evaluator_fingerprint"] == requirement["evaluator_fingerprint"]
+            })
     });
     let raw_waivers = records(&facts, |v| {
-        v.get("authority_actor").is_some() && v.get("requirement_id").is_some()
+        belongs_to_team_work(v)
+            && v.get("authority_actor").is_some()
+            && v.get("requirement_id").is_some()
+            && v["state"] == "active"
+            && matches_current_requirement(v)
     });
-    let raw_workspace_attention = records(&facts, |v| {
-        v.get("canonical_root").is_some() && v["lifecycle"] != "ready"
-    });
+    let raw_workspace_attention = team_member_run_ids
+        .iter()
+        .filter_map(|member_run_id| current_workspace(&facts, member_run_id))
+        .filter(|value| {
+            matches!(
+                value["lifecycle"].as_str(),
+                Some("dirty" | "conflicted" | "missing" | "cleanup_blocked")
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
     let raw_delegations = facts
         .side
         .iter()
-        .filter(|v| v.get("source_work_ref").is_some() || v.get("target_work_ref").is_some())
+        .filter(|v| {
+            v.get("source_work_ref")
+                .and_then(|reference| reference.get("work_id"))
+                .and_then(Value::as_str)
+                .is_some_and(|id| team_work_ids.contains(id))
+                || v.get("target_work_ref")
+                    .and_then(|reference| reference.get("work_id"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| team_work_ids.contains(id))
+        })
         .cloned()
         .collect::<Vec<_>>();
     let reports = record_summaries("work_report", raw_reports);
@@ -749,8 +1131,13 @@ fn team_view(
     let workspace_attention =
         record_summaries("workspace_binding", raw_workspace_attention.clone());
     let delegations = record_summaries("work_delegation", raw_delegations);
+    let team_revision = facts.team_revisions.get(&team.id).copied().ok_or((
+        "409 Conflict",
+        "PROJECTION_CONFLICT",
+        "selected Team has no durable revision".to_string(),
+    ))?;
     if !host {
-        let data = json!({"team":{"team_id":team.id,"team_revision":1,"mission_id":team.mission_id,"node_id":team.node_id,"placement_generation":run.map(|_|1),"status":enum_string(&team.status)},"works":works,"members":members,"messages":messages,"reports":reports,"findings":findings,"failures":failures,"gate_requirements":requirements,"gate_evaluations":evaluations,"gate_waivers":waivers,"workspace_attention":workspace_attention,"delegation_provenance":delegations,"page":{"as_of_event_sequence":facts.sequence,"item_count":works.len(),"next_cursor":null}});
+        let data = json!({"team":{"team_id":team.id,"team_revision":team_revision,"mission_id":team.mission_id,"node_id":team.node_id,"placement_generation":run.and_then(|run|facts.run_revisions.get(&run.id).copied()),"status":enum_string(&team.status)},"works":works,"members":members,"messages":messages,"reports":reports,"findings":findings,"failures":failures,"gate_requirements":requirements,"gate_evaluations":evaluations,"gate_waivers":waivers,"workspace_attention":workspace_attention,"delegation_provenance":delegations,"page":{"as_of_event_sequence":facts.sequence,"item_count":works.len(),"next_cursor":null}});
         return Ok(envelope(
             "team_workspace",
             &facts,
@@ -766,113 +1153,48 @@ fn team_view(
             .cloned()
             .collect::<Vec<_>>()
     };
-    let host_authorized = identity.is_some_and(|identity| {
-        identity.actor.id == team.host_agent_id
-            || identity
-                .authority_actors
-                .iter()
-                .any(|actor| actor.id == team.host_agent_id)
-    });
-    let disabled = (!host_authorized).then_some("authenticated actor is not this Team's Host");
+    let host_authorized = exact_host_identity;
+    let identity_conflicted = !identity_attention.is_empty();
+    let disabled =
+        (!host_authorized).then_some("authenticated actor is not this Team's exact Host");
     let mut actions = Vec::new();
     if let Some(run_id) = run_id {
-        actions.push(action("create_work", "team_run", run_id, None, disabled));
-        actions.push(action("send_message", "team_run", run_id, None, disabled));
+        actions.push(action("create_work", "team_run", run_id, 0, disabled));
     }
     for w in &works {
         let id = w["work_id"].as_str().unwrap_or_default();
-        let version = w["work_revision"].as_u64();
-        for kind in [
-            "assign_work",
-            "rebind_work",
-            "release_work",
-            "request_changes",
-            "accept_work",
-            "cancel_work",
-        ] {
-            actions.push(action(kind, "work", id, version, disabled));
-        }
-        actions.push(action(
-            "request_gate_evaluation",
-            "work",
-            id,
-            version,
-            disabled,
-        ));
-    }
-    for requirement in &raw_requirements {
-        let Some(id) = requirement["id"].as_str() else {
+        let Some(version) = w["work_revision"].as_u64() else {
             continue;
         };
-        let evaluator_enabled = identity.is_some_and(|identity| {
-            serde_json::to_value(&identity.actor).ok().as_ref() == requirement.get("evaluator_ref")
-        });
-        actions.push(action(
-            "evaluate_gate",
-            "gate_requirement",
-            id,
-            requirement["version"].as_u64(),
-            (!evaluator_enabled).then_some("authenticated actor is not the frozen evaluator"),
-        ));
-        let waiver_enabled = identity.is_some_and(|identity| !identity.authority_actors.is_empty());
-        actions.push(action(
-            "waive_gate",
-            "gate_requirement",
-            id,
-            requirement["version"].as_u64(),
-            (!waiver_enabled).then_some("credential has no waiver authority"),
-        ));
-    }
-    for waiver in &raw_waivers {
-        if waiver["state"] != "active" {
-            continue;
+        let phase = w["phase"].as_str().unwrap_or("unknown");
+        let condition = w["condition"].as_str().unwrap_or("unknown");
+        let assigned = !w["owner_actor_ref"].is_null();
+        if phase == "open" && condition == "normal" && !assigned {
+            actions.push(action("assign_work", "work", id, version, disabled));
         }
-        let Some(id) = waiver["id"].as_str() else {
-            continue;
-        };
-        let revoke_enabled = identity.is_some_and(|identity| {
-            serde_json::to_value(&identity.actor).ok().as_ref() == waiver.get("performed_by_actor")
-                && identity.authority_actors.iter().any(|actor| {
-                    serde_json::to_value(actor).ok().as_ref() == waiver.get("authority_actor")
-                })
-        });
-        actions.push(action(
-            "revoke_waiver",
-            "gate_waiver",
-            id,
-            waiver["version"].as_u64(),
-            (!revoke_enabled).then_some("credential does not match the waiver authority"),
-        ));
-    }
-    for member in &members {
-        if let Some(member_run_id) = member["current_member_run_ref"].as_str() {
-            for kind in ["close_member_run", "reopen_member_run", "retire_member_run"] {
-                actions.push(action(kind, "member_run", member_run_id, None, disabled));
-            }
-            for kind in [
-                "provision_workspace",
-                "attach_workspace",
-                "archive_workspace",
-                "cleanup_workspace",
-            ] {
-                actions.push(action(kind, "member_run", member_run_id, None, disabled));
+        if matches!(phase, "open" | "active") && assigned {
+            actions.push(action("rebind_work", "work", id, version, disabled));
+            actions.push(action("release_work", "work", id, version, disabled));
+        }
+        if phase == "review" && condition == "normal" {
+            let gates = &w["gate_summary"];
+            let gates_satisfied = gates["failed"].as_u64() == Some(0)
+                && gates["pending"].as_u64() == Some(0)
+                && gates["required"].as_u64()
+                    == Some(
+                        gates["passed"].as_u64().unwrap_or(0)
+                            + gates["waived"].as_u64().unwrap_or(0),
+                    );
+            if !w["latest_report_ref"].is_null() && gates_satisfied {
+                actions.push(action("accept_work", "work", id, version, disabled));
             }
         }
-    }
-    for delivery in facts
-        .work_deliveries
-        .iter()
-        .filter(|delivery| matches!(delivery["status"].as_str(), Some("failed" | "expired")))
-    {
-        if let Some(id) = delivery["id"].as_str() {
-            actions.push(action(
-                "reconcile_delivery",
-                "work_delivery",
-                id,
-                None,
-                disabled,
-            ));
+        if phase != "closed" {
+            actions.push(action("cancel_work", "work", id, version, disabled));
         }
+    }
+    if identity_conflicted {
+        actions.clear();
     }
     Ok(envelope(
         "host_console",
@@ -921,23 +1243,48 @@ fn member_view(
             member_id.to_string(),
         ))?;
     let team_run_id = run["team_run_id"].as_str().unwrap_or_default();
+    let active_generations = facts
+        .member_runs
+        .iter()
+        .filter(|candidate| {
+            candidate["agent_member_id"] == member_id
+                && candidate["team_run_id"] == team_run_id
+                && candidate["coordination_status"] == "active"
+        })
+        .count();
+    if active_generations > 1 {
+        return Err((
+            "409 Conflict",
+            "IDENTITY_CONFLICT",
+            format!(
+                "AgentMember {member_id} has {active_generations} active MemberRuns in TeamRun {team_run_id}"
+            ),
+        ));
+    }
     let team = facts
         .runs
         .iter()
         .find(|r| r.id == team_run_id)
         .and_then(|r| facts.teams.iter().find(|t| t.id == r.agent_team_id))
         .ok_or(("404 Not Found", "TEAM_NOT_FOUND", team_run_id.to_string()))?;
+    let team_work_ids = facts
+        .works
+        .iter()
+        .filter(|work| work.team_run_id == team_run_id)
+        .map(|work| work.id.as_str())
+        .collect::<BTreeSet<_>>();
     let my = facts
         .works
         .iter()
-        .filter(|w| w.owner_member_id.as_deref() == Some(member_id))
+        .filter(|w| w.team_run_id == team_run_id && w.owner_member_id.as_deref() == Some(member_id))
         .map(|w| work_summary(&facts, team, w))
         .collect::<Vec<_>>();
     let pool = facts
         .works
         .iter()
         .filter(|w| {
-            w.phase == WorkPhase::Open
+            w.team_run_id == team_run_id
+                && w.phase == WorkPhase::Open
                 && w.condition == WorkCondition::Normal
                 && (w.eligible_member_ids.is_empty()
                     || w.eligible_member_ids.iter().any(|id| id == member_id))
@@ -960,67 +1307,47 @@ fn member_view(
         .filter(|m| m["id"].as_str().is_some_and(|id| message_ids.contains(id)))
         .map(|message| message_summary(message, &facts.message_deliveries))
         .collect::<Vec<_>>();
-    let workspace = facts
-        .side
-        .iter()
-        .rev()
-        .find(|v| v["member_run_id"] == member_run_id && v.get("canonical_root").is_some())
-        .cloned();
+    let workspace = current_workspace(&facts, member_run_id).cloned();
     let mut actions = Vec::new();
+    let addressed_generation_is_current =
+        run["coordination_status"] == "active" && active_generations == 1;
     for w in &my {
+        if !addressed_generation_is_current {
+            break;
+        }
         let id = w["work_id"].as_str().unwrap_or_default();
-        let version = w["work_revision"].as_u64();
-        for kind in [
-            "start_work",
-            "block_work",
-            "unblock_work",
-            "submit_work",
-            "revise_work",
-            "write_report",
-            "write_finding",
-            "write_failure",
-        ] {
-            actions.push(action(kind, "work", id, version, None));
+        let Some(version) = w["work_revision"].as_u64() else {
+            continue;
+        };
+        let phase = w["phase"].as_str().unwrap_or("unknown");
+        let condition = w["condition"].as_str().unwrap_or("unknown");
+        if phase == "open" && condition == "normal" {
+            actions.push(action("start_work", "work", id, version, None));
+        } else if phase == "active" && condition == "normal" {
+            actions.push(action("block_work", "work", id, version, None));
+            actions.push(action("submit_work", "work", id, version, None));
+        } else if phase == "active" && condition == "blocked" {
+            actions.push(action("unblock_work", "work", id, version, None));
         }
     }
     for w in &pool {
+        if !addressed_generation_is_current {
+            break;
+        }
         actions.push(action(
             "claim_work",
             "work",
             w["work_id"].as_str().unwrap_or_default(),
-            w["work_revision"].as_u64(),
+            w["work_revision"]
+                .as_u64()
+                .expect("Work summary carries a durable revision"),
             None,
         ));
-    }
-    actions.push(action("send_message", "team_run", team_run_id, None, None));
-    actions.push(action(
-        "request_decision",
-        "team_run",
-        team_run_id,
-        None,
-        None,
-    ));
-    for requirement in records(&facts, |value| {
-        value.get("requirement_set_fingerprint").is_some()
-            && value.get("evaluator_ref")
-                == identity
-                    .and_then(|identity| serde_json::to_value(&identity.actor).ok())
-                    .as_ref()
-    }) {
-        if let Some(id) = requirement["id"].as_str() {
-            actions.push(action(
-                "evaluate_gate",
-                "gate_requirement",
-                id,
-                requirement["version"].as_u64(),
-                None,
-            ));
-        }
     }
     Ok(envelope(
         "member_workbench",
         &facts,
-        json!({"agent_member":agent_member_summary(&member),"member_run":member_run_summary(run),"my_works":my,"eligible_ready_pool":pool,"unread_messages":unread,"queued_deliveries":record_summaries("message_delivery",queued),"workspace_binding":workspace.as_ref().map(|value|record_summary("workspace_binding",value)),"native_session_health":run["native_session"].get("availability").cloned().unwrap_or(json!("unknown")),"pending_provider_interactions":[],"report_history":record_summaries("work_report",records(&facts,|v|v["authored_by"]["id"]==member_id&&v.get("report_revision").is_some())),"finding_history":record_summaries("work_finding",records(&facts,|v|v["reported_by"]["id"]==member_id&&v.get("detail_markdown").is_some())),"failure_history":record_summaries("failure_analysis",records(&facts,|v|v["reported_by"]["id"]==member_id&&v.get("observed_failure").is_some())),"gate_requirements":record_summaries("gate_requirement",records(&facts,|v|v.get("requirement_set_fingerprint").is_some()))}),
+        json!({"agent_member":agent_member_summary(&member),"member_run":member_run_summary(run),"my_works":my,"eligible_ready_pool":pool,"unread_messages":unread,"queued_deliveries":record_summaries("message_delivery",queued),"workspace_binding":workspace.as_ref().map(|value|record_summary("workspace_binding",value)),"native_session_health":run["native_session"].get("availability").cloned().unwrap_or(json!("unknown")),"pending_provider_interactions":[],"report_history":record_summaries("work_report",records(&facts,|v|v["authored_by"]["id"]==member_id&&v.get("report_revision").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"finding_history":record_summaries("work_finding",records(&facts,|v|v["reported_by"]["id"]==member_id&&v.get("detail_markdown").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"failure_history":record_summaries("failure_analysis",records(&facts,|v|v["reported_by"]["id"]==member_id&&v.get("observed_failure").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id)))),"gate_requirements":record_summaries("gate_requirement",records(&facts,|v|v.get("requirement_set_fingerprint").is_some()&&v["work_id"].as_str().is_some_and(|id|team_work_ids.contains(id))&&facts.works.iter().any(|work|v["work_id"]==work.id&&v["work_revision"].as_u64()==Some(work.version))))}),
         vec![],
         actions,
     ))
@@ -1047,6 +1374,16 @@ fn operator_view(
         .into_iter()
         .find(|n| n.id == node_id)
         .ok_or(("404 Not Found", "NODE_NOT_FOUND", node_id.to_string()))?;
+    let operator_authorized = identity.is_some_and(|identity| {
+        identity.actor.kind == ActorKind::Service && identity.actor.id == node_id
+    });
+    if !operator_authorized {
+        return Err((
+            "403 Forbidden",
+            "NOT_AUTHORIZED",
+            "OperatorView requires an exact machine-scoped Service authority".into(),
+        ));
+    }
     let lease = store.latest_node_daemon_lease(node_id).map_err(|e| {
         (
             "500 Internal Server Error",
@@ -1054,10 +1391,43 @@ fn operator_view(
             e.to_string(),
         )
     })?;
+    let node_revision = store
+        .execution_nodes()
+        .map_err(|e| {
+            (
+                "500 Internal Server Error",
+                "ROLE_VIEW_BUILD_FAILED",
+                e.to_string(),
+            )
+        })?
+        .into_iter()
+        .filter(|candidate| candidate.id == node_id)
+        .count() as u64;
     let backlog = facts
         .message_deliveries
         .iter()
         .chain(facts.work_deliveries.iter())
+        .filter(|delivery| {
+            let node_run_ids = facts
+                .runs
+                .iter()
+                .filter(|run| run.execution_node_id == node_id)
+                .map(|run| run.id.as_str())
+                .collect::<BTreeSet<_>>();
+            let node_member_run_ids = facts
+                .member_runs
+                .iter()
+                .filter(|run| {
+                    run["team_run_id"]
+                        .as_str()
+                        .is_some_and(|id| node_run_ids.contains(id))
+                })
+                .filter_map(|run| run["id"].as_str())
+                .collect::<BTreeSet<_>>();
+            delivery["recipient_member_run_id"]
+                .as_str()
+                .is_some_and(|id| node_member_run_ids.contains(id))
+        })
         .filter(|d| {
             matches!(
                 d["status"].as_str(),
@@ -1065,68 +1435,60 @@ fn operator_view(
             )
         })
         .count();
-    let operator_authorized = identity.is_some_and(|identity| {
-        matches!(identity.actor.kind, ActorKind::Human | ActorKind::Service)
-    });
+    let node_run_ids = facts
+        .runs
+        .iter()
+        .filter(|run| run.execution_node_id == node_id)
+        .map(|run| run.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let node_member_run_ids = facts
+        .member_runs
+        .iter()
+        .filter(|run| {
+            run["team_run_id"]
+                .as_str()
+                .is_some_and(|id| node_run_ids.contains(id))
+        })
+        .filter_map(|run| run["id"].as_str())
+        .collect::<BTreeSet<_>>();
+    let operator_actions = facts
+        .work_deliveries
+        .iter()
+        .filter(|delivery| {
+            delivery["status"] == "claimed"
+                && delivery["recipient_member_run_id"]
+                    .as_str()
+                    .is_some_and(|id| node_member_run_ids.contains(id))
+        })
+        .filter_map(|delivery| {
+            let delivery_id = delivery["id"].as_str()?;
+            Some(action(
+                "reconcile_delivery",
+                "work_delivery",
+                delivery_id,
+                *facts
+                    .canonical_versions
+                    .get(&("work_delivery".into(), delivery_id.into()))?,
+                None,
+            ))
+        })
+        .collect::<Vec<_>>();
     Ok(envelope(
         "operator",
         &facts,
         json!({
-            "node":{"node_id":node.id,"node_revision":1,"daemon_generation":lease.as_ref().map(|l|l.generation),"status":enum_string(&node.status)},
+            "node":{"node_id":node.id,"node_revision":node_revision,"daemon_generation":lease.as_ref().map(|l|l.generation),"status":enum_string(&node.status)},
             "build":{"build_sha":build_sha,"protocol_version":"agentfirm-member-trust/1","schema_version":SCHEMA_VERSION},
             "projects":record_summaries("node_project_registration",store.latest_node_project_registrations().unwrap_or_default().into_iter().filter(|p|p.node_id==node_id).filter_map(|value|serde_json::to_value(value).ok()).collect()),
             "team_supervisors":record_summaries("team_supervisor_lease",store.team_runs().unwrap_or_default().into_iter().filter(|r|r.execution_node_id==node_id).filter_map(|r|store.latest_team_supervisor_lease(&r.id).ok().flatten()).filter_map(|value|serde_json::to_value(value).ok()).collect()),
             "delivery_backlog":{"depth":backlog,"oldest_age_ms":null,"recovery_required":backlog>0},
-            "runtime_recovery":record_summaries("member_run",facts.member_runs.iter().filter(|r|matches!(r["runtime_status"].as_str(),Some("disconnected"|"failed"|"stopped"))).cloned().collect()),
+            "runtime_recovery":record_summaries("member_run",facts.member_runs.iter().filter(|r|r["id"].as_str().is_some_and(|id|node_member_run_ids.contains(id))).filter(|r|matches!(r["runtime_status"].as_str(),Some("disconnected"|"failed"|"stopped"))).cloned().collect()),
             "provider_admission":record_summaries("provider_compatibility_admission",store.latest_provider_compatibility_admissions().unwrap_or_default().into_iter().filter_map(|value|serde_json::to_value(value).ok()).collect()),
-            "workspace_safety":record_summaries("workspace_binding",facts.side.iter().filter(|v|v.get("canonical_root").is_some()).cloned().collect()),
+            "workspace_safety":record_summaries("workspace_binding",node_member_run_ids.iter().filter_map(|id|current_workspace(&facts,id)).cloned().collect()),
             "diagnostics":[{"kind":"daemon_lease","state":lease.as_ref().map(|l|enum_string(&l.status)).unwrap_or_else(||"unavailable".into())}]
         }),
         vec![],
-        std::iter::once(action(
-            "daemon_diagnostics",
-            "execution_node",
-            node_id,
-            None,
-            (!operator_authorized).then_some("operator credential required"),
-        ))
-        .chain(
-            facts
-                .work_deliveries
-                .iter()
-                .filter(|delivery| {
-                    matches!(delivery["status"].as_str(), Some("failed" | "expired"))
-                })
-                .filter_map(|delivery| delivery["id"].as_str())
-                .map(|id| {
-                    action(
-                        "reconcile_delivery",
-                        "work_delivery",
-                        id,
-                        None,
-                        (!operator_authorized).then_some("operator credential required"),
-                    )
-                }),
-        )
-        .chain(
-            facts
-                .message_deliveries
-                .iter()
-                .filter(|delivery| {
-                    matches!(delivery["status"].as_str(), Some("failed" | "expired"))
-                })
-                .filter_map(|delivery| delivery["id"].as_str())
-                .map(|id| {
-                    action(
-                        "reconcile_delivery",
-                        "message_delivery",
-                        id,
-                        None,
-                        (!operator_authorized).then_some("operator credential required"),
-                    )
-                }),
-        )
-        .collect(),
+        operator_actions,
     ))
 }
 

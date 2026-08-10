@@ -200,8 +200,19 @@ fn meta_shape_and_provenance_fields_on_an_empty_store() {
 #[test]
 fn latest_op_seq_advances_as_work_operations_are_appended() {
     let home = TempHome::new("meta-op-seq");
-    let (_project_id, team_id) = init_project(&home, "alpha");
-    let serve = ServeHandle::spawn(&home, home.base(), &[]);
+    let (project_id, team_id) = init_project(&home, "alpha");
+    let credentials = serde_json::json!([{
+        "token":"meta-host-token",
+        "actor":{"kind":"agent_member","id":"agent-meta-host-alpha"},
+        "authority_actors":[]
+    }])
+    .to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        home.base(),
+        &[],
+        &[("AGENTFIRM_HTTP_CREDENTIALS_JSON", credentials.as_str())],
+    );
 
     let (_status, before) = serve.get_json("/v1/meta");
     assert_eq!(before["latest_op_seq"].as_u64(), Some(0));
@@ -230,12 +241,19 @@ fn latest_op_seq_advances_as_work_operations_are_appended() {
     let team_run_id = created["result"]["team_run"]["id"]
         .as_str()
         .expect("run id");
-    let (status, work) = serve.post_json(
-        &format!("/v1/team-runs/{team_run_id}/works"),
+    let (status, work) = serve.post_json_with_headers(
+        &format!("/v1/agentfirm/team-runs/{team_run_id}/works?project={project_id}"),
         &serde_json::json!({
+            "action": "create_work",
+            "work_id": "work-meta-second",
             "title": "Second Work",
             "completion_criteria_markdown": "Exercise a second WorkOperation",
         }),
+        &[
+            ("X-AgentFirm-Token", "meta-host-token"),
+            ("Idempotency-Key", "meta-second-work"),
+            ("If-Match", "0"),
+        ],
     );
     assert_eq!(status, 200, "body: {work}");
 

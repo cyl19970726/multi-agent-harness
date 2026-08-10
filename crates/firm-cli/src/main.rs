@@ -67,6 +67,7 @@ mod native_session;
 mod pi_rpc;
 mod project;
 mod resident;
+mod role_actions_api;
 mod role_views_api;
 mod sse;
 #[cfg(unix)]
@@ -26978,6 +26979,7 @@ fn handle_http_connection(
     let mut trust_transport_token = None;
     let mut trust_idempotency_key = None;
     let mut trust_expected_version = None;
+    let mut trust_confirmed_action = None;
     let mut trust_identity_override_header = false;
     loop {
         let mut line = String::new();
@@ -27001,6 +27003,9 @@ fn handle_http_connection(
             }
             if name.eq_ignore_ascii_case("if-match") {
                 trust_expected_version = value.trim().trim_matches('"').parse::<u64>().ok();
+            }
+            if name.eq_ignore_ascii_case("x-agentfirm-confirm") {
+                trust_confirmed_action = Some(value.trim().to_string());
             }
             if matches!(
                 name.to_ascii_lowercase().as_str(),
@@ -27027,6 +27032,20 @@ fn handle_http_connection(
             &mut stream,
             "405 Method Not Allowed",
             &serde_json::json!({"error": "method_not_allowed"}),
+        )?;
+        return Ok(());
+    }
+    if method == "POST" && role_actions_api::is_retired_legacy_write_path(&path_only) {
+        write_http_json(
+            &mut stream,
+            "410 Gone",
+            &serde_json::json!({
+                "ok": false,
+                "error": {
+                    "code": "RETIRED_WRITE_AUTHORITY",
+                    "message": "legacy Work and WorkDelegation HTTP writers are retired; use the authenticated AgentFirm role-action or canonical acceptance service"
+                }
+            }),
         )?;
         return Ok(());
     }
@@ -27082,6 +27101,36 @@ fn handle_http_connection(
             )?;
             return Ok(());
         };
+        let auth = agentfirm_api::AuthenticatedMutation {
+            execution_space_id: project_id.clone(),
+            actor: credential.actor,
+            authorized_authority_actors: credential.authority_actors,
+            idempotency_key,
+            expected_version,
+        };
+        if role_actions_api::is_http_mutation_path(&path_only) {
+            match role_actions_api::execute(
+                &store_owned,
+                auth,
+                &path_only,
+                &body,
+                trust_confirmed_action.as_deref(),
+            ) {
+                Ok(result) => write_http_json(&mut stream, "200 OK", &result)?,
+                Err(StoreError::Conflict(encoded)) => {
+                    let error = serde_json::from_str::<serde_json::Value>(&encoded).unwrap_or_else(
+                        |_| serde_json::json!({"code": "INVALID_STATE_TRANSITION", "message": encoded}),
+                    );
+                    write_http_json(
+                        &mut stream,
+                        "409 Conflict",
+                        &serde_json::json!({"ok": false, "error": error}),
+                    )?;
+                }
+                Err(error) => return Err(error.into()),
+            }
+            return Ok(());
+        }
         let command = match serde_json::from_slice::<agentfirm_api::TrustCommand>(&body) {
             Ok(command) if command.matches_http_route(&path_only) => command,
             Ok(_) => {
@@ -27104,13 +27153,6 @@ fn handle_http_connection(
                 )?;
                 return Ok(());
             }
-        };
-        let auth = agentfirm_api::AuthenticatedMutation {
-            execution_space_id: project_id.clone(),
-            actor: credential.actor,
-            authorized_authority_actors: credential.authority_actors,
-            idempotency_key,
-            expected_version,
         };
         match agentfirm_api::execute(&store_owned, auth, command) {
             Ok(result) => write_http_json(&mut stream, "200 OK", &result)?,
@@ -30330,7 +30372,7 @@ fn write_http_response(
 ) -> CliResult<()> {
     write!(
         stream,
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: http://127.0.0.1:8787\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, X-Harness-Company-OS-Token, X-AgentFirm-Token, Idempotency-Key, If-Match\r\nVary: Origin\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
     stream.write_all(body)?;

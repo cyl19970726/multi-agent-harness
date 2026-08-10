@@ -5765,15 +5765,15 @@ fn post_team_run_transition_and_compatibility_lineage() {
 }
 
 #[test]
-fn sse_streams_team_run_events() {
+fn sse_invalidates_team_run_projection_and_snapshot_converges() {
     let home = TempHome::new("team-run-sse");
     let project_id = init_project(&home, "alpha");
 
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
     let mut sse = serve.open_sse("");
 
-    // Create a run AFTER the stream is live: the watcher tails
-    // team_run_events.jsonl and broadcasts each folded event.
+    // Create a run AFTER the stream is live. SSE carries freshness only; the
+    // durable TeamRun row must be recovered from the authoritative snapshot.
     let out = run_firm(
         &home,
         home.base(),
@@ -5797,18 +5797,31 @@ fn sse_streams_team_run_events() {
     );
     let run_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
 
-    // Native row frames are now multiplexed alongside the folded event rows,
-    // so collect the complete create burst rather than stopping after the first
-    // three typed projections.
+    // Collect the complete create burst and prove it contains only scoped
+    // invalidations, never a durable TeamRun row that the browser could fold.
     let frames = collect_sse_data(&mut sse, Duration::from_secs(6), 6);
     assert!(
         frames.iter().any(|frame| {
-            frame["entity_type"].as_str() == Some("team_run")
-                && frame["operation"].as_str() == Some("created")
-                && frame["team_run_id"].as_str() == Some(run_id.as_str())
+            frame["scope"].as_str() == Some("execution_space")
+                && frame["scope_id"].as_str() == Some(project_id.as_str())
+                && matches!(
+                    frame["ledger"].as_str(),
+                    Some("team_runs.jsonl" | "team_run_events.jsonl")
+                )
         }),
-        "expected a team_run created frame for {run_id}; got: {frames:?}"
+        "expected a scoped TeamRun invalidation for {run_id}; got: {frames:?}"
     );
+    assert!(
+        frames
+            .iter()
+            .all(|frame| frame.get("entity_type").is_none()),
+        "SSE must not publish durable TeamRun row truth: {frames:?}"
+    );
+    let (status, snapshot) = serve.get_json(&format!("/v1/snapshot?project={project_id}"));
+    assert_eq!(status, 200, "snapshot: {snapshot}");
+    assert!(snapshot["team_runs"]
+        .as_array()
+        .is_some_and(|runs| runs.iter().any(|run| run["id"] == run_id)));
 }
 
 #[test]

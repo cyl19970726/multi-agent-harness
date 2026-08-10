@@ -26,7 +26,8 @@ pub fn parse_actor_kind(value: &str) -> Option<ActorKind> {
 }
 
 pub fn is_http_mutation_path(path: &str) -> bool {
-    path == "/v1/agent-members"
+    crate::role_actions_api::is_http_mutation_path(path)
+        || path == "/v1/agent-members"
         || path.starts_with("/v1/agent-members/")
         || path.starts_with("/v1/member-runs/")
         || path.starts_with("/v1/message-deliveries/")
@@ -357,6 +358,72 @@ fn member_run_owned_by(
         .any(|run| run.id == member_run_id && run.agent_member_id == agent_member_id))
 }
 
+fn enforce_machine_scoped_service(
+    store: &HarnessStore,
+    auth: &AuthenticatedMutation,
+    command: &TrustCommand,
+) -> Result<(), StoreError> {
+    if auth.actor.kind != ActorKind::Service {
+        return Ok(());
+    }
+    let recipient_member_run_id = match command {
+        TrustCommand::RetryWorkDelivery { delivery_id, .. }
+        | TrustCommand::ReconcileWorkDelivery { delivery_id, .. } => store
+            .trust_work_deliveries(&auth.execution_space_id)?
+            .into_iter()
+            .find(|delivery| delivery.id == *delivery_id)
+            .map(|delivery| delivery.recipient_member_run_id),
+        TrustCommand::RetryMessageDelivery { delivery_id, .. }
+        | TrustCommand::ReconcileMessageDelivery { delivery_id, .. } => store
+            .trust_message_deliveries(&auth.execution_space_id)?
+            .into_iter()
+            .find(|delivery| delivery.id == *delivery_id)
+            .map(|delivery| delivery.recipient_member_run_id),
+        _ => return Ok(()),
+    };
+    let Some(member_run_id) = recipient_member_run_id else {
+        return Ok(());
+    };
+    let team_run_id = store
+        .trust_member_runs(&auth.execution_space_id)?
+        .into_iter()
+        .find(|run| run.id == member_run_id)
+        .map(|run| run.team_run_id)
+        .ok_or_else(|| {
+            unauthorized(
+                "member_run",
+                &member_run_id,
+                "delivery has no canonical MemberRun",
+            )
+        })?;
+    let node_id = store
+        .team_runs()?
+        .into_iter()
+        .rev()
+        .find(|run| run.id == team_run_id)
+        .map(|run| run.execution_node_id)
+        .ok_or_else(|| {
+            unauthorized(
+                "team_run",
+                &team_run_id,
+                "delivery has no canonical TeamRun",
+            )
+        })?;
+    let exact_node = auth.actor.id == node_id
+        || auth
+            .authorized_authority_actors
+            .iter()
+            .any(|actor| actor.kind == ActorKind::Service && actor.id == node_id);
+    if !exact_node {
+        return Err(unauthorized(
+            "execution_node",
+            &node_id,
+            "Service delivery recovery is scoped to its exact Execution Node",
+        ));
+    }
+    Ok(())
+}
+
 /// The transport proves who the caller is; this boundary decides what that
 /// identity may mutate. Wave 4A deliberately keeps the policy small: Human
 /// and Service actors operate the control plane, while AgentMember/External
@@ -385,6 +452,20 @@ fn authorize(
     }
 
     if actor.kind == ActorKind::AgentMember {
+        if let TrustCommand::AcceptWork { team_id, .. } = command {
+            let exact_host = store
+                .latest_teams()?
+                .get(team_id)
+                .is_some_and(|team| team.host_agent_id == actor.id);
+            if exact_host {
+                return Ok(());
+            }
+            return Err(unauthorized(
+                "agent_team",
+                team_id,
+                "only the exact Team Host may accept Work",
+            ));
+        }
         let own_run = match command {
             TrustCommand::CloseMemberRun { member_run_id, .. }
             | TrustCommand::ReopenMemberRun { member_run_id, .. }
@@ -432,6 +513,7 @@ pub fn execute(
     auth: AuthenticatedMutation,
     command: TrustCommand,
 ) -> Result<TrustCommandResult, StoreError> {
+    enforce_machine_scoped_service(store, &auth, &command)?;
     authorize(store, &auth.execution_space_id, &auth.actor, &command)?;
     let claimed_actor = match &command {
         TrustCommand::CreateAgentMember { member } => Some(&member.created_by),

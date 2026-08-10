@@ -36,6 +36,10 @@ const manifest=JSON.parse(fs.readFileSync(path.join(root,"schemas/role-views/rol
 assert.equal(manifest.schema_version,"agentfirm.role_actions.v1");
 assert.deepEqual(manifest.transport,{authentication:"X-AgentFirm-Token",idempotency:"Idempotency-Key",expected_version:"If-Match",identity_override:"forbidden"});
 const actions=new Set(manifest.actions.map(item=>item.ui_action));
-for(const required of ["create_work","assign_work","rebind_work","release_work","request_changes","accept_work","cancel_work","send_message","reply_message","request_decision","close_member_run","reopen_member_run","retire_member_run","provision_workspace","attach_workspace","archive_workspace","cleanup_workspace","request_gate_evaluation","evaluate_gate","waive_gate","revoke_waiver","claim_work","start_work","block_work","unblock_work","submit_work","revise_work","write_report","write_finding","write_failure","reconcile_delivery","daemon_diagnostics"])assert.ok(actions.has(required),`action manifest missing ${required}`);
+for(const required of ["create_work","assign_work","rebind_work","release_work","accept_work","cancel_work","claim_work","start_work","block_work","unblock_work","submit_work","reconcile_delivery"])assert.ok(actions.has(required),`action manifest missing ${required}`);
+assert.equal(actions.size,12,"manifest must not advertise unsupported actions");
 for(const item of manifest.actions){for(const field of ["http_endpoint","application_command","actor_policy","expected_version_source","resulting_event","returns"])assert.equal(typeof item[field],"string",`${item.ui_action}.${field}`)}
+for(const item of manifest.actions)assert.match(item.http_endpoint,/^POST \/v1\/agentfirm\//,`${item.ui_action} must use the authenticated semantic adapter`);
+const emitted=new Set([...rust.matchAll(/action\("([a-z_]+)"/g)].map(match=>match[1]));
+for(const action of emitted)assert.ok(actions.has(action),`RoleView emits unimplemented action ${action}`);
 console.log("role-view contract check: PASS");

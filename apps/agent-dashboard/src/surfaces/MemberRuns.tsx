@@ -14,6 +14,6 @@ export interface MemberRunFocusProps {
   onAction?: RoleActionExecutor;
 }
 
-export function MemberRunFocus({memberRunId,apiUrl="",projectBindingId="",executionSpaceId="",onAction=async()=>false}:MemberRunFocusProps){
-  return <MemberWorkbench apiUrl={apiUrl} project={projectBindingId??""} space={executionSpaceId??""} memberRunId={memberRunId} onAction={onAction}/>;
+export function MemberRunFocus({memberRunId,apiUrl="",projectBindingId="",executionSpaceId="",onAction=async()=>({ok:false,error:{code:"RETIRED_ROUTE",message:"Retired route",status:410}})}:MemberRunFocusProps){
+  return <MemberWorkbench apiUrl={apiUrl} project={projectBindingId??""} space={executionSpaceId??""} memberRunId={memberRunId} onAction={onAction} actionsCurrent={false}/>;
 }

@@ -437,6 +437,21 @@ impl HarnessStore {
             .collect())
     }
 
+    /// Scope-preserving canonical operation read for server-built RoleViews.
+    /// A physical Store may temporarily contain more than one Execution Space
+    /// during recovery/import; callers must never fold another scope's truth.
+    pub fn canonical_operations_for_space(
+        &self,
+        execution_space_id: &str,
+    ) -> StoreResult<Vec<CanonicalOperation>> {
+        Ok(self
+            .trust_operation_envelopes_unlocked()?
+            .into_iter()
+            .filter(|envelope| envelope.execution_space_id == execution_space_id)
+            .map(|envelope| envelope.operation)
+            .collect())
+    }
+
     pub(crate) fn trust_work_projections_unlocked(&self) -> StoreResult<Vec<Work>> {
         let mut works = Vec::new();
         for envelope in self.trust_operation_envelopes_unlocked()? {

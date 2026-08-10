@@ -7371,6 +7371,10 @@ impl HarnessStore {
         .collect())
     }
 
+    pub fn execution_nodes(&self) -> StoreResult<Vec<ExecutionNode>> {
+        self.read_jsonl("execution_nodes.jsonl")
+    }
+
     pub fn latest_node_project_registrations(&self) -> StoreResult<Vec<NodeProjectRegistration>> {
         Ok(latest_by_id(
             self.read_jsonl::<NodeProjectRegistration>("node_project_registrations.jsonl")?,

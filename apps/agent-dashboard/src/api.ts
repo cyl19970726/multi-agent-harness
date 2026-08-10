@@ -29,8 +29,29 @@ export interface ActionResponse {
   ok: boolean;
   result?: unknown;
   snapshot?: DashboardSnapshot;
-  error?: string;
+  error?: string | {
+    code?: string;
+    message?: string;
+    retryable?: boolean;
+    resource_kind?: string;
+    resource_id?: string;
+    current_version?: number | null;
+  };
   detail?: string;
+}
+
+export class AgentFirmApiError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly code: string,
+    message: string,
+    public readonly details: {
+      retryable?: boolean;
+      resource_kind?: string;
+      resource_id?: string;
+      current_version?: number | null;
+    } = {},
+  ) { super(message); this.name = "AgentFirmApiError"; }
 }
 
 export interface ActionRequestOptions {
@@ -628,115 +649,31 @@ export function openEventStream(
 }
 
 /**
- * Merge a single SSE delta frame into the in-memory snapshot, latest-wins by
- * id: an incoming record replaces the matching row in place (preserving order)
- * or is appended when new. A delta also advances `generated_at` to now so the
- * freshness chip reads "just now" while the stream is actively pushing. Returns
- * the same reference unchanged for the timestamp-only `snapshot` frame so React
- * can skip a needless re-render.
+ * SSE is a freshness signal, never an alternate read model. Durable rows are
+ * deliberately ignored here: only an authoritative HTTP snapshot may become
+ * browser truth. `member_activity` is the sole exception because it is an
+ * explicitly ephemeral, process-local preview and is stripped from server
+ * snapshots before use.
  */
 export function applyFrame(snapshot: DashboardSnapshot, frame: SseFrame): DashboardSnapshot {
   switch (frame.kind) {
     case "snapshot":
-      return frame.generatedAt && frame.generatedAt !== snapshot.generated_at
-        ? { ...snapshot, generated_at: frame.generatedAt }
-        : snapshot;
     case "projection_invalidated":
-      // The frame intentionally carries no row data. App owns the bounded
-      // authoritative refresh and never treats this token as business truth.
-      return snapshot;
     case "agent_event":
-      return {
-        ...snapshot,
-        events: upsertById(snapshot.events, frame.event),
-        generated_at: new Date().toISOString(),
-      };
     case "message":
-      return {
-        ...snapshot,
-        messages: upsertById(snapshot.messages, frame.message),
-        generated_at: new Date().toISOString(),
-      };
     case "workflow_run":
-      return {
-        ...snapshot,
-        workflow_runs: upsertById(snapshot.workflow_runs, frame.run),
-        generated_at: new Date().toISOString(),
-      };
     case "workflow_step":
-      return {
-        ...snapshot,
-        workflow_steps: upsertById(snapshot.workflow_steps, frame.step),
-        generated_at: new Date().toISOString(),
-      };
     case "team_run_event":
-      return {
-        ...snapshot,
-        team_run_events: upsertById(snapshot.team_run_events, frame.event),
-        generated_at: new Date().toISOString(),
-      };
     case "mission":
-      return {
-        ...snapshot,
-        missions: upsertById(snapshot.missions, frame.mission),
-        generated_at: new Date().toISOString(),
-      };
     case "wave":
-      return {
-        ...snapshot,
-        waves: upsertById(snapshot.waves, frame.wave),
-        generated_at: new Date().toISOString(),
-      };
     case "agent_team_run":
-      return {
-        ...snapshot,
-        team_runs: upsertById(snapshot.team_runs, frame.run),
-        generated_at: new Date().toISOString(),
-      };
     case "member_run":
-      return {
-        ...snapshot,
-        member_runs: upsertById(snapshot.member_runs, frame.member),
-        generated_at: new Date().toISOString(),
-      };
     case "team_message":
-      return {
-        ...snapshot,
-        team_messages: upsertById(snapshot.team_messages, frame.message),
-        generated_at: new Date().toISOString(),
-      };
     case "team_supervisor_lease":
-      return {
-        ...snapshot,
-        team_supervisor_leases: upsertByKey(
-          snapshot.team_supervisor_leases,
-          frame.lease,
-          "team_run_id",
-        ),
-        generated_at: new Date().toISOString(),
-      };
     case "team_member_close_request":
-      return {
-        ...snapshot,
-        team_member_close_requests: upsertByKey(
-          snapshot.team_member_close_requests,
-          frame.request,
-          "member_run_id",
-        ),
-        generated_at: new Date().toISOString(),
-      };
     case "member_action":
-      return {
-        ...snapshot,
-        member_actions: upsertById(snapshot.member_actions, frame.action),
-        generated_at: new Date().toISOString(),
-      };
     case "pending_interaction":
-      return {
-        ...snapshot,
-        pending_interactions: upsertById(snapshot.pending_interactions, frame.interaction),
-        generated_at: new Date().toISOString(),
-      };
+      return snapshot;
     case "member_activity": {
       const current = snapshot.live_member_activity ?? {};
       const existing = current[frame.activity.member_run_id];
@@ -843,11 +780,9 @@ export interface SnapshotRequestToken {
  * Coordinates full snapshot responses with the live SSE stream.
  *
  * A snapshot is a point-in-time read, but HTTP and SSE race in normal use: an
- * SSE delta may arrive after the HTTP request begins and before its response is
- * rendered. Replacing the client state with that response would lose the delta
- * until some unrelated future refresh. This small client-only journal fixes the
- * race by recording live frames and replaying the frames newer than each
- * request's starting position onto its response.
+ * SSE invalidation may arrive after the HTTP request begins and before its
+ * response is rendered. App reacts by issuing another authoritative GET. This
+ * coordinator never replays durable SSE rows into the response.
  *
  * Reads are latest-wins among reads. Mutations take causal priority over reads:
  * a read cannot begin while an action POST is in flight, and all pre-mutation
@@ -907,7 +842,7 @@ export class SnapshotFrameBuffer {
     this.dropPending(request.id);
   }
 
-  /** Record a delta; durable frames are journaled only while a request is pending. */
+  /** Record only ephemeral activity; durable frames are never journaled. */
   recordFrame(frame: SseFrame): void {
     if (frame.kind === "member_activity") {
       const current = this.liveMemberActivity.get(frame.activity.member_run_id);
@@ -915,7 +850,7 @@ export class SnapshotFrameBuffer {
         this.liveMemberActivity.set(frame.activity.member_run_id, frame.activity);
       }
     }
-    if (this.pendingRequests.size === 0) return;
+    if (frame.kind !== "member_activity" || this.pendingRequests.size === 0) return;
     this.frames.push({ sequence: ++this.nextFrameSequence, frame });
     if (this.frames.length > SnapshotFrameBuffer.MAX_BUFFERED_FRAMES) {
       this.frames = this.frames.slice(-SnapshotFrameBuffer.MAX_BUFFERED_FRAMES);
@@ -1055,9 +990,20 @@ export async function postAction(
     headers: { ...options.headers, "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  const payload = (await response.json()) as ActionResponse;
+  const payload = (await response.json().catch(() => ({}))) as ActionResponse;
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.detail || payload.error || `HTTP ${response.status}`);
+    const nested = payload.error && typeof payload.error === "object" ? payload.error : null;
+    throw new AgentFirmApiError(
+      response.status,
+      nested?.code ?? "HTTP_ERROR",
+      nested?.message ?? payload.detail ?? (typeof payload.error === "string" ? payload.error : `HTTP ${response.status}`),
+      nested ? {
+        retryable: nested.retryable,
+        resource_kind: nested.resource_kind,
+        resource_id: nested.resource_id,
+        current_version: nested.current_version,
+      } : {},
+    );
   }
   return payload;
 }
