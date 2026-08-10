@@ -220,7 +220,7 @@ const sourceRoots = [
   "schemas",
   "docs/current",
   "docs/mental",
-  "plugins/star-harness/skills",
+  "plugins/star-harness",
 ];
 const sourceExtensions = new Set([".rs", ".ts", ".tsx", ".js", ".mjs", ".json", ".md"]);
 const thisScript = "scripts/check-member-execution-trust.mjs";
@@ -261,6 +261,10 @@ const retiredPatterns = [
   ["legacy Work workspace", /\bWork\.workspace\b|\bwork\.workspace\b/g],
   ["legacy Work review tool", /team_run_work_review/g],
   ["legacy gate checker command", /work check-gates|check-gates/g],
+  ["legacy MemberRun workspace field", /\bworktree_ref\b|\bworkspace_snapshot\b/g],
+  ["legacy TeamMessage routing field", /\borigin_wave_id\b|\bfrom_member_id\b|\bto_member_ids\b/g],
+  ["legacy authored TeamMessage kind", /["']kind["']\s*:\s*["'](?:plan_request|plan_proposal|plan_feedback|plan_approval|broadcast|progress|handoff|blocker|review_request|review_result)["']/g],
+  ["disabled compatibility code", /#\s*\[\s*cfg\s*\(\s*any\s*\(\s*\)\s*\)\s*\]/g],
 ];
 
 for (const path of activeFiles) {
@@ -269,6 +273,22 @@ for (const path of activeFiles) {
     pattern.lastIndex = 0;
     if (pattern.test(text)) failures.push(`${path}: retired ${label} remains in active code`);
   }
+}
+
+const coreRoot = readFileSync("crates/firm-core/src/lib.rs", "utf8");
+for (const legacyRootDeclaration of [
+  /pub struct MemberRun\b/,
+  /pub struct TeamMessage\b/,
+  /pub struct MessageDelivery\b/,
+  /pub struct WorkDelivery\b/,
+  /pub struct Message\b/,
+  /pub enum TeamMessageKind\b/,
+  /pub enum MessageKind\b/,
+]) {
+  assert(
+    !legacyRootDeclaration.test(coreRoot),
+    `crates/firm-core/src/lib.rs: legacy root execution contract ${legacyRootDeclaration} must not be authoritative`,
+  );
 }
 
 if (failures.length > 0) {

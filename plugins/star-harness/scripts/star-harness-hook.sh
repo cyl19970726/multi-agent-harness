@@ -197,7 +197,7 @@ for message in messages[:5]:
     if len(body) > 180:
         body = body[:177] + "..."
     lines.append(
-        f"- from={message.get('from_member_id', '?')} "
+        f"- from={message.get('sender_runtime_id', '?')} "
         f"kind={message.get('kind', 'message')} message={message.get('id', '?')} "
         f"correlation={message.get('correlation_id', '?')}: {body}"
     )
@@ -260,7 +260,7 @@ for message in messages[:3]:
     if len(body) > 120:
         body = body[:117] + "..."
     print(
-        f"- from={message.get('from_member_id', '?')} "
+        f"- from={message.get('sender_runtime_id', '?')} "
         f"kind={message.get('kind', 'message')} message={message.get('id', '?')} "
         f"correlation={message.get('correlation_id', '?')}: {body}"
     )
@@ -352,7 +352,7 @@ for run_id, message in messages[:5]:
     if len(body) > 180:
         body = body[:177] + "..."
     lines.append(
-        f"- TeamRun={run_id} from={message.get('from_member_id', '?')} "
+        f"- TeamRun={run_id} from={message.get('sender_runtime_id', '?')} "
         f"kind={message.get('kind', 'message')} message={message.get('id', '?')} "
         f"correlation={message.get('correlation_id', '?')}: {body}"
     )
@@ -456,7 +456,7 @@ for entry in entries:
         if len(body) > 120:
             body = body[:117] + "..."
         print(
-            f"- from={message.get('from_member_id', '?')} "
+            f"- from={message.get('sender_runtime_id', '?')} "
             f"kind={message.get('kind', 'message')} message={message.get('id', '?')} "
             f"correlation={message.get('correlation_id', '?')}: {body}"
         )

@@ -246,9 +246,10 @@ async function main() {
   const informationalAck = intent(peer) === "informational"
     && intent({ ...peer, response_intent: "informational" }) === "informational"
     && intent({ kind: "message", sender_runtime_id: "member-run-2" }) === "informational";
-  const requiredByKind = intent({ kind: "handoff" }) === "response_required"
+  const requiredByKind = intent({ kind: "provider_interaction_request" }) === "response_required"
     && intent({ kind: "control" }) === "response_required"
-    && intent({ ...peer, kind: "handoff" }) === "response_required";
+    && intent({ ...peer, kind: "provider_interaction_request" }) === "response_required"
+    && intent({ kind: "provider_interaction_response" }) === "informational";
   // Sender-aware default: the coordination plane (Host, Operator via the
   // Dashboard, Service via routed inbox mail) wakes an idle member.
   const requiredBySender = intent({ kind: "message", sender_runtime_id: "host" }) === "response_required"

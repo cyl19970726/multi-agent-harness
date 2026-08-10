@@ -310,6 +310,7 @@ impl HarnessStore {
         Ok(latest)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn commit_trust_projection_unlocked<T: Serialize + for<'de> Deserialize<'de> + Clone>(
         &self,
         context: &MutationContext,
@@ -2598,7 +2599,6 @@ impl HarnessStore {
         let requirements = self
             .trust_gate_requirements_unlocked(execution_space_id)?
             .into_values()
-            .into_iter()
             .filter(|requirement| {
                 requirement.work_id == work_id
                     && requirement.work_revision == work_revision

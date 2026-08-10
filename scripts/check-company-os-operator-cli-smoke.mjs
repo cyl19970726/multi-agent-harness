@@ -80,7 +80,37 @@ function admin(record) {
 async function main() {
   execFileSync("cargo", ["build", "-q", "-p", "firm-cli"], { cwd: repoRoot, stdio: "inherit" });
   const root = await mkdtemp(join(tmpdir(), "company-os-operator-cli-smoke-"));
-  const env = { ...process.env, HARNESS_ROOT: join(root, "store"), HARNESS_COMPANY_OS_TOKEN: token };
+  const executionEnv = { ...process.env, FIRM_HOME: join(root, "firm-home") };
+  const env = { ...executionEnv, HARNESS_ROOT: join(root, "store"), HARNESS_COMPANY_OS_TOKEN: token };
+
+  run(["space", "init", "--id", "operator-smoke-space"], executionEnv);
+  run([
+    "member-trust", "mutate",
+    "--actor-kind", "human",
+    "--actor-id", "human-admin",
+    "--idempotency-key", "operator-smoke-create-member",
+    "--expected-version", "0",
+    "--json", JSON.stringify({
+      command: "create_agent_member",
+      member: {
+        id: "member-ops",
+        name: "Operations AgentMember",
+        description: "Canonical execution identity for the operator smoke.",
+        role: "operations governance",
+        capabilities: ["company.records.write", "company.work.execute", "finance.commitment.write"],
+        skill_refs: ["company-work-operator", "company-finance-operator"],
+        provider_profile_ref: "codex-default",
+        model_preference: null,
+        workspace_policy: "managed-worktree",
+        permission_ceiling: "workspace_write",
+        organization_status: "active",
+        version: 1,
+        created_by: { kind: "human", id: "human-admin" },
+        created_at: NOW,
+        updated_at: NOW,
+      },
+    }),
+  ], executionEnv);
 
   const socialReadiness = run(["company", "gateway", "social", "readiness"], env);
   check(socialReadiness.ok === true && socialReadiness.gateway === "social_content", "company gateway social readiness returns a social-content observation");
@@ -108,18 +138,13 @@ async function main() {
     "company", "org", "actor", "create-agent",
     "--authority", "human-admin",
     "--id", "agent-ops",
-    "--name", "Operations Agent",
-    "--role", "Operations governance",
+    "--agent-member", "member-ops",
+    "--execution-space", "operator-smoke-space",
     "--responsibility", "Routes work and requests finance effects.",
-    "--capability", "company.records.write",
-    "--capability", "company.work.execute",
-    "--capability", "finance.commitment.write",
     "--permission", "company.records.write",
     "--permission", "company.work.execute",
     "--permission", "finance.commitment.write",
     "--permission", "finance.payment.write",
-    "--skill", "company-work-operator",
-    "--skill", "company-finance-operator",
   ], env);
   check(agent.ok === true && agent.result?.actor?.id === "agent-ops", "org actor create-agent writes a Agent Membership");
 

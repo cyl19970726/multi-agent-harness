@@ -79,8 +79,9 @@ doc carries the contract behind each rule.
    Agent Team, and Workflow coordination; Project Bindings identify the
    repository where providers execute and discover instructions, Skills,
    plugins, and MCP configuration. Selecting `--project` never switches the
-   coordination store. Provider cwd resolves member `worktree_ref` > TeamRun
-   `execution_root` > binding `project_root` — never an Execution Space,
+   coordination store. Provider cwd resolves the attached
+   `MemberWorkspaceBinding.canonical_root` > TeamRun `execution_root` > binding
+   `project_root` — never an Execution Space,
    Company Store, or compatibility store root. Select space and project
    explicitly; never silently migrate or dual-write
    ([docs/current/operations/multi-project.md](docs/current/operations/multi-project.md), ADR 0033, ADR 0042).

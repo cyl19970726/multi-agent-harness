@@ -11793,7 +11793,7 @@ mod tests {
         append_sparse_row(
             &root,
             "team_messages.jsonl",
-            r#"{"id":"tm-sparse","team_run_id":"tr-1","sender_runtime_id":"host","kind":"broadcast","body":"hi","correlation_id":"corr-2","created_at":"unix-ms:3"}"#,
+            r#"{"id":"tm-sparse","team_run_id":"tr-1","sender_runtime_id":"host","kind":"message","body":"hi","correlation_id":"corr-2","created_at":"unix-ms:3"}"#,
         );
 
         let messages = store.team_messages().expect("read team messages");
@@ -12445,7 +12445,8 @@ mod tests {
         }
     }
 
-    fn handoff_is_fenced_until_newer_same_correlation_mail_reaches_provider() {
+    #[test]
+    fn response_required_mail_is_fenced_until_newer_correlation_reaches_provider() {
         let root = team_test_root("handoff-mail-fence");
         let store = HarnessStore::new(&root);
         let correction = ProviderDispatchEnvelope {
@@ -15937,21 +15938,6 @@ mod tests {
         ));
         let store = HarnessStore::new(&root);
         (root, store)
-    }
-
-    fn test_agent_team(id: &str, member_ids: &[&str]) -> AgentTeam {
-        AgentTeam {
-            id: id.into(),
-            name: format!("{id} name"),
-            description: format!("{id} description"),
-            mission_id: format!("mission-{id}"),
-            host_agent_id: "lead".into(),
-            node_id: "00000000-0000-4000-8000-000000000001".into(),
-            status: firm_core::AgentTeamStatus::Active,
-            member_ids: member_ids.iter().map(|id| id.to_string()).collect(),
-            created_at: "unix-ms:1".into(),
-            updated_at: "unix-ms:1".into(),
-        }
     }
 
     // ── Lane B: upstream event push — Work lifecycle → Host attention ──

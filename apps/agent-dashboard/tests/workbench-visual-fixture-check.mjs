@@ -197,16 +197,22 @@ async function main() {
       && latestDeliveries(workOperations).every((delivery) => delivery.team_run_id === manifest.team_run_id),
     "Work history rebuilds concrete same-TeamRun delivery projections",
   );
-  check(messages.some((item) => item.kind === "blocker") && messages.some((item) => item.kind === "review_request"), "Durable activity contains blocker and review request signals");
+  check(
+    messages.some((item) => item.id === "msg-qa-blocker")
+      && messages.some((item) => item.id === "msg-review-request")
+      && messages.filter((item) => ["msg-qa-blocker", "msg-review-request"].includes(item.id))
+        .every((item) => item.kind === "message" && item.work_id),
+    "Durable activity carries blocker and review requests as Work-linked canonical messages",
+  );
   check(
     messages.filter((item) => item.id !== "msg-kickoff").every((item) => workIds.includes(item.work_id)),
     "Work-related conversation uses explicit work_id relations instead of assignment-message ownership",
   );
   check(
-    ["plan_request", "plan_proposal", "plan_feedback", "plan_approval"].every(
-      (kind) => messages.some((item) => item.kind === kind),
+    ["msg-plan-request-research", "msg-plan-proposal-research-r1", "msg-plan-feedback-research", "msg-plan-approval-research"].every(
+      (id) => messages.some((item) => item.id === id && item.kind === "message" && item.correlation_id === "corr-wave2-research"),
     ),
-    "Fixture preserves the historical Member plan debate as readable messages",
+    "Fixture preserves the historical Member plan debate as canonical correlated messages",
   );
   check(messages.some((item) => item.deliveries?.some((delivery) => ["queued", "delivered"].includes(delivery.status))), "Fixture includes a concrete unacknowledged delivery");
   check(actions.some((item) => item.evidence_refs?.length) && events.length > 0, "Activity contains evidence-backed actions and folded events");

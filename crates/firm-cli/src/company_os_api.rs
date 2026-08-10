@@ -834,73 +834,10 @@ pub fn docs_health_report(store: &HarnessStore) -> Result<Value, StoreError> {
 #[cfg(test)]
 mod projection_tests {
     use super::*;
-    use harness_core::{
-        agentfirm_api::{
-            ActorKind, ActorRef, AgentMember, AgentMemberOrganizationStatus, MutationContext,
-            PermissionCeiling,
-        },
-        AgentMembership, AgentTeam, AgentTeamRun, AgentTeamStatus, ExecutionNode,
-        ExecutionNodeStatus, Mission, MissionStatus, ProviderRuntimeProjection,
+    use harness_core::agentfirm_api::{
+        ActorKind, ActorRef, AgentMember, AgentMemberOrganizationStatus, MutationContext,
+        PermissionCeiling,
     };
-
-    fn insert_projection_team(store: &HarnessStore, team_id: &str, mission_id: &str) {
-        const NODE_ID: &str = "00000000-0000-4000-8000-000000000001";
-        store
-            .append_mission(&Mission {
-                id: mission_id.to_string(),
-                title: "Projection mission".to_string(),
-                objective: "Exercise Company projection joins".to_string(),
-                context: String::new(),
-                desired_outcome: None,
-                status: MissionStatus::Planned,
-                wave_ids: Vec::new(),
-                outcome_summary: None,
-                completed_by: None,
-                created_at: "1".to_string(),
-                updated_at: "1".to_string(),
-                completed_at: None,
-            })
-            .unwrap();
-        store
-            .insert_execution_node(&ExecutionNode {
-                id: NODE_ID.to_string(),
-                display_name: "Projection node".to_string(),
-                status: ExecutionNodeStatus::Active,
-                created_at: "1".to_string(),
-                updated_at: "1".to_string(),
-            })
-            .unwrap();
-        store
-            .insert_agent_team_with_unique_mission(&AgentTeam {
-                id: team_id.to_string(),
-                name: "Projection Team".to_string(),
-                description: "Canonical Team join fixture".to_string(),
-                mission_id: mission_id.to_string(),
-                host_agent_id: "host".to_string(),
-                node_id: NODE_ID.to_string(),
-                status: AgentTeamStatus::Active,
-                member_ids: Vec::new(),
-                created_at: "1".to_string(),
-                updated_at: "1".to_string(),
-            })
-            .unwrap();
-    }
-
-    fn standing(id: &str, execution_ref: Option<&str>) -> AgentMembership {
-        serde_json::from_value(json!({
-            "id": id, "display_name": id, "role": "builder",
-            "agent_member_ref": execution_ref,
-            "status": "active", "availability": "available",
-            "assignment_capacity": 1, "exclusive_assignment_ref": null,
-            "membership_refs": [], "responsibility_summary": "Build",
-            "capability_refs": [], "system_prompt_ref": null, "tool_refs": [],
-            "skill_refs": [], "maintained_document_refs": [],
-            "accepted_work_type_refs": [], "escalation_policy_ref": null,
-            "permission_policy_refs": [], "runtime_refs": [],
-            "native_session_refs": [], "created_at": "1", "updated_at": "1"
-        }))
-        .unwrap()
-    }
 
     fn insert_test_work(store: &HarnessStore, id: &str, team_run_id: &str, event_id: &str) {
         store

@@ -1749,14 +1749,14 @@ fn post_team_run_message_and_start_async() {
         &serde_json::json!({
             "sender_runtime_id": member_ids[1],
             "recipient_runtime_ids": [member_ids[0]],
-            "kind": "handoff",
+            "kind": "message",
             "body": "take over the review",
             "work_id": worker_work_id,
         }),
     );
     assert_eq!(status, 200, "body: {body}");
     assert_eq!(body["ok"].as_bool(), Some(true), "body: {body}");
-    assert_eq!(body["result"]["kind"].as_str(), Some("handoff"));
+    assert_eq!(body["result"]["kind"].as_str(), Some("message"));
     assert!(body["result"]["correlation_id"]
         .as_str()
         .is_some_and(|value| !value.is_empty()));
@@ -2987,7 +2987,7 @@ fn codex_app_server_post_handoff_steer_is_independent_and_converges_before_follo
             "sender_kind": "member_run",
             "sender_id": member_id,
             "recipient_runtime_ids": ["host"],
-            "kind": "handoff",
+            "kind": "message",
             "body": "## RESULT\ndone\n## SUMMARY\nexplicit same-turn handoff",
             "work_id": work_id,
         }),

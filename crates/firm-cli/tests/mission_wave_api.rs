@@ -1163,7 +1163,7 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
             "sender_kind": "operator",
             "sender_id": "operator-test",
             "recipient_runtime_ids": ["host"],
-            "kind": "handoff",
+            "kind": "message",
             "body": "implementation handoff",
             "work_id": work_id,
             "correlation_id": conversation_correlation,

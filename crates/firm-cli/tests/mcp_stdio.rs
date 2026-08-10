@@ -13,7 +13,6 @@ use harness_core::{
     ProviderInteractionMessageOption, ProviderInteractionRequestBody, ProviderInteractionType,
     ProviderResponseIntent, ProviderWorkDispatchStatus, TeamActorKind, TeamActorRef,
     TeamDeliveryPolicy, TeamDeliveryStatus, TeamRecipientKind, TeamRecipientRef,
-    WorkCommandContext,
 };
 use harness_store::{HarnessStore, WorkDeliveryClaimResult};
 
@@ -975,7 +974,7 @@ fn mcp_stdio_agent_team_tools() {
                 "sender_runtime_id": member_ids[0],
                 "sender_kind": "member_run",
                 "recipient_runtime_ids": [member_ids[1]],
-                "kind": "handoff",
+                "kind": "message",
                 "body": "attempted member impersonation",
                 "work_id": initial_work_id.clone()
             }

@@ -346,7 +346,11 @@ try {
         `${viewport.label}: Activity conversation begins inside the first viewport`,
       );
     } else {
-      const requiredRows = viewport.mobile ? 1 : 3;
+      // Canonical messages carry explicit response-intent badges rather than
+      // compact legacy kind labels. On the 1000px desktop capture two complete
+      // durable rows are the honest first-viewport density; the taller tablet
+      // capture must still expose three.
+      const requiredRows = viewport.mobile ? 1 : viewport.height >= 1100 ? 3 : 2;
       check(
         activity.rowsAboveFold >= requiredRows,
         `${viewport.label}: Activity shows >= ${requiredRows} conversation rows above the fold (${activity.rowsAboveFold} of ${activity.conversationRows})`,

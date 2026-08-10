@@ -5771,6 +5771,7 @@ fn message_sender_kind_defaults_to_agent_and_persists_operator() {
     assert!(parsed.validate().is_ok());
 }
 
+#[cfg(test)]
 fn sample_member() -> ProviderLaunchProfile {
     ProviderLaunchProfile {
         id: "agent-1".to_string(),
@@ -5804,6 +5805,7 @@ fn sample_member() -> ProviderLaunchProfile {
     }
 }
 
+#[cfg(test)]
 fn sample_message() -> RegistryMessage {
     RegistryMessage {
         id: "msg-1".to_string(),
@@ -6273,6 +6275,7 @@ fn provider_execution_controls_separate_intent_from_native_receipt() {
     assert_eq!(decoded, controls);
 }
 
+#[cfg(test)]
 fn capacity_snapshot(
     state: ProviderCapacityState,
     observed_unix_ms: u64,
@@ -6416,6 +6419,7 @@ fn capacity_is_independent_of_adapter_compatibility_and_round_trips_json() {
     );
 }
 
+#[cfg(test)]
 fn provider_compatibility_admission(
     policy: ProviderCompatibilityAdmissionPolicy,
 ) -> ProviderCompatibilityAdmission {
@@ -6916,6 +6920,7 @@ fn node_and_daemon_fences_validate_generation_and_time() {
     assert!(lease.validate().is_err());
 }
 
+#[cfg(test)]
 fn test_actor(id: &str) -> TeamActorRef {
     TeamActorRef {
         kind: TeamActorKind::AgentMember,
