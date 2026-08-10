@@ -1969,6 +1969,18 @@ impl HarnessStore {
                     None,
                 )
             })?;
+        // Authority must be established before the stale-revision branch below:
+        // invalidation is an intentional durable mutation, not a rejection
+        // side effect available to an old or caller-invented Supervisor.
+        let team_run_id = self.trust_work_team_run_unlocked(&delivery.work_id)?;
+        self.require_current_trust_supervisor_unlocked(
+            context,
+            &team_run_id,
+            claim.supervisor_generation,
+            "work_delivery",
+            delivery_id,
+            Some(delivery.version),
+        )?;
         if delivery.work_revision != current_work_revision {
             delivery.status = WorkDeliveryStatus::Invalidated;
             delivery.failure_code = Some("WORK_REVISION_STALE".into());
@@ -2001,15 +2013,6 @@ impl HarnessStore {
                 Some(delivery.version),
             ));
         }
-        let team_run_id = self.trust_work_team_run_unlocked(&delivery.work_id)?;
-        self.require_current_trust_supervisor_unlocked(
-            context,
-            &team_run_id,
-            claim.supervisor_generation,
-            "work_delivery",
-            delivery_id,
-            Some(delivery.version),
-        )?;
         let run = self.claimable_member_run(
             &context.execution_space_id,
             &delivery.recipient_member_run_id,
