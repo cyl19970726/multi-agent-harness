@@ -219,7 +219,7 @@ fn enum_string<T: serde::Serialize>(value: &T) -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
-fn records<'a>(facts: &'a Facts, predicate: impl Fn(&Value) -> bool) -> Vec<Value> {
+fn records(facts: &Facts, predicate: impl Fn(&Value) -> bool) -> Vec<Value> {
     facts
         .side
         .iter()
@@ -239,8 +239,8 @@ fn latest_record_ref(facts: &Facts, work_id: &str, kind: &str) -> Option<String>
             }
     })
     .into_iter()
-    .filter_map(|v| v.get("id").and_then(Value::as_str).map(str::to_owned))
-    .last()
+    .rev()
+    .find_map(|v| v.get("id").and_then(Value::as_str).map(str::to_owned))
 }
 
 fn work_summary(facts: &Facts, team: &AgentTeam, work: &Work) -> Value {
