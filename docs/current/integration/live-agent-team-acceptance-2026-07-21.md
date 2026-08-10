@@ -66,7 +66,7 @@ provider-owned sessions:
   receipt is therefore a terminal fact for that delivery claim, not a
   cross-Supervisor globally increasing sequence. Native session identity plus
   Supervisor generation proves continuity.
-- The linked `agent-wcw-development` Standing Agent projected exactly one
+- The linked `agent-wcw-development` Agent Membership projected exactly one
   logical Assignment in each accepted TeamRun. Its mailbox count equalled the
   distinct addressed TeamMessage ids (`6/6` after each restart), with no
   identity conflict or duplicate physical-revision row.
@@ -100,9 +100,8 @@ event before it is accepted as an interrupt.
 
 Repair Wave `wave-1785351218971-p10701-0` removed the final
 `clippy::large-enum-variant` release blocker by boxing only the
-`CompanyActor::Agent(StandingAgent)` payload. It did not add an allow-list
-exception or change the serialized Standing Agent contract. Focused Store,
-Company execution-link, CLI, Dashboard, documentation-governance and Plugin
+legacy Company agent payload. It did not add an allow-list
+exception. Focused Store, CLI, Dashboard, documentation-governance and Plugin
 parity checks passed, followed by the complete CLI suite, `pnpm check`,
 `acceptance:mission-wave`, and `cargo clippy --all-targets -- -D warnings`.
 
@@ -118,7 +117,7 @@ A fresh read-only three-provider canary then ran on integration HEAD
 Each Member sent correlated Host progress, a Peer message, and a terminal
 Handoff. Terminal provider receipts proved the Peer ring in all directions;
 store visibility alone was not counted as delivery. The linked
-`agent-wcw-development` actor retained its `execution_agent_member_ref`, role,
+`agent-wcw-development` actor retained its then-current legacy execution link, role,
 capabilities, permissions, membership and compact Organization projection.
 The projection contained exactly one Standing Assignment, three distinct
 addressed messages and no identity conflict. The Host acknowledged all eight
@@ -309,12 +308,12 @@ An earlier exploratory run,
 revealed the former duplicate-Handoff behavior and was intentionally stopped
 before the replacement canary verified the fix.
 
-## Standing Agent identity canary — 2026-07-28
+## Historical organization-agent identity canary — 2026-07-28
 
 Wave 5 verified the explicit Organization-to-execution identity join without
 collapsing their lifecycles:
 
-- Company OS StandingAgent and reusable AgentMember
+- historical Company organization-agent row and reusable AgentMember
   `agent-org-runtime-dogfood`;
 - Mission-owned flat team `team-org-runtime-dogfood`;
 - TeamRun `team-run-1785235941106-p35827-0`;
@@ -337,7 +336,7 @@ Close through the same supervising service. Only then did the MemberRun become
 The canary was read-only. Organization availability remained its declared
 `available` value throughout and was not derived from `running`, `idle`, or
 `stopped`. No membership or authority row changed when execution completed.
-Unlinked MemberRuns remain absent from the Standing Agent projection.
+Unlinked MemberRuns remain absent from the Agent Membership projection.
 
 ## Acceptance boundary
 

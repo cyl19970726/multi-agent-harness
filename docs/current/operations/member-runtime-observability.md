@@ -53,7 +53,7 @@ Durable Harness data:
 - runtime identity and health;
 - current Team Supervisor generation, owner locator/heartbeat, reconnect state,
   typed Team actors, delivery claims/provider receipts/failures, and
-  `AgentMessageRoute`;
+  canonical `MessageDelivery`;
 - TeamRun `execution_root`, optional member `worktree_ref`, and the launch-time
   `workspace_snapshot` containing actual cwd, Git HEAD/branch, and only the
   instruction/skill directory paths Harness discovered relative to that cwd;

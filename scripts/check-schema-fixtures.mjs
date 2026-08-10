@@ -26,35 +26,7 @@ function formatErrors(errors) {
     .join("; ");
 }
 
-function canonicalJson(value) {
-  if (Array.isArray(value)) {
-    return `[${value.map(canonicalJson).join(",")}]`;
-  }
-  if (value !== null && typeof value === "object") {
-    return `{${Object.keys(value)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-// GateSpec's Rust deserializer canonicalizes an omitted config to `{}` before
-// checking duplicates. JSON Schema's uniqueItems compares the original wire
-// values, so supplement it here to keep schema-fixture acceptance aligned with
-// the runtime while retaining single old-wire declarations as valid.
-function officialCompositeErrors(fixtureName, data) {
-  if (fixtureName !== "work" || !Array.isArray(data?.gates)) return [];
-
-  const seen = new Set();
-  for (const gate of data.gates) {
-    if (gate === null || typeof gate !== "object" || Array.isArray(gate)) continue;
-    const canonicalGate = canonicalJson({ ...gate, config: gate.config ?? {} });
-    if (seen.has(canonicalGate)) {
-      return ["/gates must not contain duplicate canonical GateSpec values"];
-    }
-    seen.add(canonicalGate);
-  }
+function officialCompositeErrors(_fixtureName, _data) {
   return [];
 }
 

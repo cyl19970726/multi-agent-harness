@@ -26,7 +26,7 @@ use harness_store::HarnessStore;
 use serde_json::{json, Value};
 
 use crate::{
-    acknowledge_team_message, add_team_run_member, agentfirm_api, append_work_event,
+    acknowledge_team_message, add_team_run_member, agentfirm_api,
     cancel_work_delegation_value, close_mission, close_team_member_value, create_mission,
     create_team_run, create_work_delegation_value, current_unix_ms_u64, deactivate_team_run_member,
     delegate_team_run_to_node_daemon, format_work_brief_line, generated_id,
@@ -34,11 +34,11 @@ use crate::{
     latest_member_runs_in_append_order, latest_pending_interactions_in_append_order,
     latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
     mutate_team_work_value, now_string, parse_team_actor_kind, parse_team_message_kind,
-    parse_team_message_response_intent, parse_work_review_verdict,
+    parse_team_message_response_intent,
     reconcile_team_message_delivery_value, reconcile_team_work_delivery_value,
     rename_team_run_member, reopen_team_member_value, reopened_member_requires_supervisor_start,
     resolve_pending_interaction_value, retired_wave_write_error, revise_mission_context,
-    route_agent_inbox_messages, send_team_message_as_work, serde_snake_label,
+    send_team_message_as_work, serde_snake_label,
     steer_team_member_value, team_member_specs_from_definition, team_run_board_summary_text,
     team_run_inbox, team_run_mission_id, team_run_wave_index, transition_team_run,
     visible_member_actions_in_append_order, work_operation_cursors, ResolvedStore, TeamMemberSpec,
@@ -217,7 +217,6 @@ pub(crate) fn call_tool(
         "team_run_inbox" => tool_team_run_inbox(store, &arguments),
         "team_run_send_message" => tool_team_run_send_message(store, &arguments),
         "team_run_reconcile_delivery" => tool_team_run_reconcile_delivery(store, &arguments),
-        "agent_route_inbox" => tool_agent_route_inbox(store, &arguments),
         "team_run_resolve_interaction" => tool_team_run_resolve_interaction(store, &arguments),
         "team_run_steer_member" => tool_team_run_steer_member(store, &arguments),
         "team_run_interrupt_member" => tool_team_run_interrupt_member(store, &arguments),
@@ -1355,17 +1354,6 @@ fn tool_team_run_reconcile_delivery(
     .map_err(|error| error.to_string())
 }
 
-fn tool_agent_route_inbox(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
-    let routes = route_agent_inbox_messages(
-        store,
-        required_str(arguments, "agent_member_id")?,
-        optional_str(arguments, "member_run_id")?.as_deref(),
-        optional_str(arguments, "message_id")?.as_deref(),
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(json!({"routes": routes}))
-}
-
 /// `team_run_inbox` — latest-wins coordination mail addressed to one member.
 /// The default projection is actionable queued/delivered mail; `all=true`
 /// returns all received messages at their latest stored state.
@@ -1915,19 +1903,6 @@ fn tool_definitions() -> Value {
                     "reason": {"type": "string", "minLength": 1}
                 },
                 "required": ["team_run_id", "message_id", "member_run_id", "claim_id", "reason"]
-            }
-        },
-        {
-            "name": "agent_route_inbox",
-            "description": "Atomically route queued mail from a durable AgentMember identity Inbox into one concrete linked MemberRun. If exactly one active runtime exists it is selected; otherwise member_run_id is required. The source Message remains identity truth and the resulting TeamMessage owns runtime delivery.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "agent_member_id": {"type": "string"},
-                    "member_run_id": {"type": "string"},
-                    "message_id": {"type": "string"}
-                },
-                "required": ["agent_member_id"]
             }
         },
         {

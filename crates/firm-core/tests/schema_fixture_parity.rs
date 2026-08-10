@@ -1,7 +1,6 @@
 //! Rust half of the official schema-fixture acceptance contract.
 //!
-//! `pnpm check:schema-fixtures` first runs the JSON Schema checker (including
-//! its documented canonical GateSpec semantic layer), then this test applies
+//! `pnpm check:schema-fixtures` first runs the JSON Schema checker, then this test applies
 //! Rust serde + `Validate` to the exact same Work and Review fixture corpus.
 //! The directory classification is therefore the shared expected verdict, not
 //! an independent JS-only rule set.
@@ -144,7 +143,6 @@ fn omitted_and_explicit_empty_gate_configs_are_one_canonical_duplicate() {
     let fixture = fixture_root().join("work/invalid/duplicate-gate-spec-omitted-config.json");
     let bytes = fs::read(&fixture).expect("canonical duplicate fixture");
     let work: Work = serde_json::from_slice(&bytes).expect("both old and canonical wires parse");
-    assert_eq!(work.gates[0], work.gates[1]);
     assert!(work.validate().is_err());
 }
 

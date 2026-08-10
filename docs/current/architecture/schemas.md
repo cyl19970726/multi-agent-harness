@@ -17,7 +17,6 @@ outputs, adapters, and the Agent Dashboard.
 | `TeamMessage` | Typed sender/recipients, optional `work_id`, correlation/causation, optional origin Wave, response intent, claim/provider-receipt/ACK delivery state; conversation only |
 | `ExecutionNode` / `NodeProjectRegistration` / `NodeDaemonLease` | Machine identity, available Project Bindings, and the one daemon generation that owns all local TeamRuns |
 | `TeamSupervisorLease` | Latest-wins TeamRun control owner parent-fenced by NodeDaemon generation |
-| `AgentMessageRoute` | Idempotent bridge from stable Agent Inbox mail to a MemberRun/TeamMessage |
 | `MemberAction` | Transitional action schema; target scope is Harness-owned coordination/control facts, never mirrored provider activity |
 | `DelegationRun` | Honest attribution for observed or harness-controlled delegation |
 | `TeamRunEvent` | Ordered sanitized event projection for one TeamRun |
@@ -39,12 +38,11 @@ must not depend on Goal, Task Graph, Plan Gate, or generic `Message`.
 | `AgentTeamRun` family | Rust + JSON schemas + store + CLI/API/MCP/read model | yes |
 | `Work` / `WorkEvent` / `WorkDelivery` | Rust + JSON schemas + WorkOperation JSONL store + CLI/API/MCP/read model | yes |
 | `TeamSupervisorLease` | Rust + JSON schema + JSONL latest-wins store + cross-process routing | yes |
-| `AgentMessageRoute` | Rust + JSON schema + JSONL idempotent routing store | yes |
 | `Goal` | historical compatibility schema; retired for new coordination | no for new work |
 | `AgentTeam` | Rust + JSON schema | yes |
 | `AgentMember` | Rust + JSON schema | yes |
 | `Task` | historical compatibility schema; retired for new coordination | no for new work |
-| `Message` | Standing Agent/runtime compatibility message; Agent Team uses `TeamMessage` | no for Agent Team |
+| `Message` | Agent Membership/runtime compatibility message; Agent Team uses `TeamMessage` | no for Agent Team |
 | `AgentRuntime` | Rust + JSON schema | yes |
 | `AgentEvent` | Rust + JSON schema | yes |
 | `ProviderChildThread` | Rust + JSON schema | yes |
@@ -77,7 +75,6 @@ schema contracts are checked with valid and invalid fixtures.
 | Team message | [team-message.schema.json](../../../schemas/team-message.schema.json) |
 | Team Supervisor lease | [team-supervisor-lease.schema.json](../../../schemas/team-supervisor-lease.schema.json) |
 | Durable Member Close | [team-member-close-request.schema.json](../../../schemas/team-member-close-request.schema.json) |
-| Stable Agent message route | [agent-message-route.schema.json](../../../schemas/agent-message-route.schema.json) |
 | Member action | [member-action.schema.json](../../../schemas/member-action.schema.json) |
 | Pending provider interaction | [pending-interaction.schema.json](../../../schemas/pending-interaction.schema.json) |
 | Delegation run | [delegation-run.schema.json](../../../schemas/delegation-run.schema.json) |

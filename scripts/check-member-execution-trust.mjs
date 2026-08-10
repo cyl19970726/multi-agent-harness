@@ -239,6 +239,11 @@ const retiredPatterns = [
   ["StandingAgent legacy ledger", /company_os_standing_agents\.jsonl/g],
   ["agent runtime legacy ledger", /agent_runtimes\.jsonl/g],
   ["agent event legacy ledger", /agent_events\.jsonl/g],
+  ["legacy GateSpec model", /\bGateSpec\b/g],
+  ["legacy Work gates", /\bWork\.gates\b|\bwork\.gates\b/g],
+  ["legacy Work workspace", /\bWork\.workspace\b|\bwork\.workspace\b/g],
+  ["legacy Work review tool", /team_run_work_review/g],
+  ["legacy gate checker command", /work check-gates|check-gates/g],
 ];
 
 for (const path of activeFiles) {

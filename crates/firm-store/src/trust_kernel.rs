@@ -586,6 +586,18 @@ impl HarnessStore {
             .collect()
     }
 
+    pub fn trust_member_run_scope(&self, member_run_id: &str) -> StoreResult<Option<String>> {
+        Ok(self
+            .trust_operation_envelopes_unlocked()?
+            .into_iter()
+            .rev()
+            .find(|envelope| {
+                envelope.operation.event.aggregate_kind == "member_run"
+                    && envelope.operation.event.aggregate_id == member_run_id
+            })
+            .map(|envelope| envelope.execution_space_id))
+    }
+
     pub fn create_trust_member_run(
         &self,
         context: &MutationContext,
@@ -928,6 +940,13 @@ impl HarnessStore {
             latest.insert(delivery.id.clone(), delivery);
         }
         Ok(latest.into_values().collect())
+    }
+
+    pub fn trust_team_messages(&self, execution_space_id: &str) -> StoreResult<Vec<TeamMessage>> {
+        self.latest_trust_envelopes_unlocked(execution_space_id, "team_message")?
+            .values()
+            .map(event_projection)
+            .collect()
     }
 
     pub fn trust_work_deliveries(

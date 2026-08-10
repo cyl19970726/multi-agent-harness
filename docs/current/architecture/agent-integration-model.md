@@ -204,7 +204,7 @@ copies a requested value into the effective field merely because launch did
 not fail.
 
 These fields are execution configuration, not Organization authority. A
-Standing Agent may reuse a different model or provider without changing its
+Agent Membership may reuse a different model or provider without changing its
 company identity, Work ownership, or native-session provenance.
 
 ---

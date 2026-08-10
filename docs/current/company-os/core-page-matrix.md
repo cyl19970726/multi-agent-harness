@@ -24,8 +24,8 @@ without maintaining a second progress count.
 | 4 | Workboard | Who submitted, owns, executes, reviews, and approves company work? | Explicit responsibility and source-document provenance; never chat-as-work. |
 | 5 | TeamWork Focus | What is the complete accountable chain and execution/result state? | Requester, submitter, owner, contributors, reviewer, approver, source/result, execution, evidence, finance. |
 | 6 | Finance | Where is money planned, committed, invoiced, paid, or refunded, and why? | Typed FinancialRecords, business origin, permissions, approval, evidence, and audit. |
-| 7 | Organization | Which humans, Standing Agents, external contributors, and services make up the company? | Typed actors, OrgUnits, roles, authority, capacity, gaps, and governance proposals. |
-| 8 | Standing Agent Focus | What does this durable Agent own, can it safely accept work, and what has it delivered? | Explicit availability/capacity, maintained Docs, assignments, capabilities, permissions, runtime, sessions. |
+| 7 | Organization | Which humans, Agent Memberships, external contributors, and services make up the company? | Typed actors, OrgUnits, roles, authority, capacity, gaps, and governance proposals. |
+| 8 | Agent Membership Focus | What does this durable Agent own, can it safely accept work, and what has it delivered? | Explicit availability/capacity, maintained Docs, assignments, capabilities, permissions, runtime, sessions. |
 | 9 | Governance Proposal | Where should a new business domain live and what changes does it require? | Module structure, relations, actors, permissions, finance, migration, impact, and human gate. |
 | 10 | Approval Focus | What exactly am I authorizing, based on which evidence and policy? | Human identity, consequences, finance/legal effects, checks, evidence, immutable history. |
 | 11 | Business Module Focus | How does one domain compose knowledge, records, work, money, actors, and governance? | Module, Documents, Views, TypedRecords, Relations, TeamWorks, Approvals, finance, people, decisions. |
@@ -61,7 +61,7 @@ PLATFORM      Providers / Plugins / Settings
 ```
 
 All pages share the warm-white, fine-border, coral-accent visual language. They
-share components but not object semantics: Human, Standing Agent, External,
+share components but not object semantics: Human, Agent Membership, External,
 MemberRun, and provider session remain distinct lifecycles.
 
 ## Truth and safety requirements

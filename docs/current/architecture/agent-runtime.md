@@ -6,7 +6,7 @@ status: implementation reference; ADR 0050 Work/WorkDelivery cutover in progress
 
 This implementation reference defines the provider-neutral runtime substrate
 shared by Host execution, Agent Team members, Dynamic Workflow steps and future
-Standing Agent operation. Provider-specific files under `docs/current/integration/`
+Agent Membership operation. Provider-specific files under `docs/current/integration/`
 explain how a concrete provider implements the substrate.
 
 The provider-neutral rule for continuous, multi-cycle Member execution lives
@@ -43,7 +43,7 @@ select Mission-linked execution, Host-plan context, or direct TeamWork action
 | Question | Runtime answer |
 | --- | --- |
 | What requested execution? | Mission-linked run, Host action, Dynamic Workflow invocation, or linked TeamWork execution reference. |
-| Who or what is acting? | A run-scoped member, Host, optional Standing Agent link, human/service actor or external provider identity. |
+| Who or what is acting? | A run-scoped member, Host, optional Agent Membership link, human/service actor or external provider identity. |
 | What is running? | `AgentRuntime` process/session/control endpoint and health. |
 | What did the provider do? | Provider-native session via `NativeSessionRef`; ephemeral adapter projection for UI. |
 | How does a member receive work? | `WorkDelivery` projects the latest assigned Work id/version into a provider turn; the Member also reads My Works and the ready pool. |
@@ -69,7 +69,7 @@ contract does.
 | incompatible or unavailable native session | keep the old binding as historical evidence and start a new native session under an explicit replacement MemberRun; never replay Harness mail as a transcript |
 
 At no point may both generations drive the same writable Workspace. Durable
-Work/TeamWork ownership, Message correlation, Standing Agent identity, and accepted
+Work/TeamWork ownership, Message correlation, Agent Membership identity, and accepted
 evidence survive the transition. Provider upgrades still require explicit
 Human confirmation under ADR 0031; an ordinary Harness build update is not
 permission to upgrade Codex, Claude Code, or Kimi.
@@ -78,13 +78,13 @@ permission to upgrade Codex, Claude Code, or Kimi.
 
 | Object | Owns | Refuses |
 | --- | --- | --- |
-| `AgentMember` | compatibility/runtime configuration for an addressable agent; may be explicitly linked to a Standing Agent or MemberRun | automatic company identity, organization authority, or provider transcript as identity |
+| `AgentMember` | compatibility/runtime configuration for an addressable agent; may be explicitly linked to a Agent Membership or MemberRun | automatic company identity, organization authority, or provider transcript as identity |
 | `AgentRuntime` | lifecycle, pid/socket/control endpoint, protocol and delivery health | Work/TeamWork or acceptance ownership |
 | `WorkDelivery` | reliable delivery of one WorkEvent and Work id/version to a Member runtime | Work ownership or authored conversation |
 | `MessageDelivery` | delivery request for authored conversation and terminal delivery state | Work ownership or status |
 | `TeamSupervisorLease` | single cross-process owner generation for TeamRun controls and delivery claims | provider transcript or proof that an uncertain claim was consumed |
 | `TeamMemberCloseRequest` | durable pending/applied Host Close latch for one MemberRun | process-local control acknowledgement or provider transcript |
-| `AgentMessageRoute` | idempotent bridge from one stable Agent Inbox message to one active MemberRun/TeamMessage | implicit Organization identity, duplicate delivery, or transcript storage |
+| `MessageDelivery` | canonical queued/claimed/provider-received/acknowledged delivery bound to exact MemberRun generation | implicit Organization identity, duplicate delivery, or transcript storage |
 | `NativeSessionRef` | mode-aware provider session identity, availability, version, and resume capability | transcript or event copy |
 | `ProviderExecutionControls` | requested versus effective model, reasoning effort, and service tier with native receipt status | provider capability inference or Organization authority |
 | `ProviderCapacitySnapshot` | execution-mode-specific runtime availability of one provider ACCOUNT, with observation time, evidence source and confidence | adapter compatibility, a synthesised usage number, or an availability claim from an absent observation |

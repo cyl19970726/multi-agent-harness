@@ -53,7 +53,7 @@ section may explicitly state “not applicable” only after analysis.
 | Relations and integration | Required links to projects, brands, people/Agents, TeamWorks, outputs, evidence, other modules, and the direction/cardinality of important relations. State which links are references rather than copied values. |
 | Page composition | Which surfaces are basic rich documents, which use standard views, and which merit a custom page. For every custom page: primary question, declared data queries, approved components, navigation to underlying records, allowed Action Commands, fallback standard view, owner, and visual acceptance fixture. |
 | Metrics and reporting | KPIs, definitions, source records, calculation ownership, refresh cadence, threshold/alert policy, and the views that expose them. |
-| Actors and organization | Accountable human or Agent owner, participating humans, Standing Agents, external parties, roles, capacity/escalation path, and any organization changes required. |
+| Actors and organization | Accountable human or Agent owner, participating humans, Agent Memberships, external parties, roles, capacity/escalation path, and any organization changes required. |
 | Work management | TeamWork templates, source-document rules, submitter/requester/accountable/executor/reviewer/approver responsibilities, execution-reference rules, and where results return. |
 | Approvals and controls | Approval triggers, required actor types (including human-only requirements), separation of duties, legal/security/privacy controls, audit events, and failure/escalation handling. |
 | Permissions | Read/write/share/export boundaries, sensitive fields, external access, retention, and how embedded views inherit or restrict access. |
@@ -100,7 +100,7 @@ section may explicitly state “not applicable” only after analysis.
 | New automation that creates TeamWorks or updates records | Owner approval, visible audit trail, failure handling, and policy-scoped permission. |
 | Finance relation, financial record type, spending/payment workflow | Finance owner review and required financial approval controls. Parked at contract layer pending deferred Finance decommission (see issue #323). |
 | Legal/IP, personal data, external sharing, or retention rule | Relevant legal/security/privacy owner review; required human approval when policy says so. |
-| New Standing Agent, organization unit, permission model, or autonomous authority | Organization Governance review and explicit human approval for authority or access changes. |
+| New Agent Membership, organization unit, permission model, or autonomous authority | Organization Governance review and explicit human approval for authority or access changes. |
 | Migration, merge, or archive affecting existing shared content | Affected owners approve a reversible migration plan with provenance and rollback. |
 
 ## Compact example: trademark management

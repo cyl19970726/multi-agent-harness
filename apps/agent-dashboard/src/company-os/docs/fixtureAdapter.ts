@@ -98,7 +98,7 @@ function distinct<T>(values: T[]): T[] {
 function kindForActor(actor: JsonRecord): CompanyOsLink["actorType"] {
   const kind = text(actor.actor_type).toLowerCase();
   if (kind === "human") return "Human";
-  if (kind === "standing agent" || kind === "agent") return "Agent Membership";
+  if (kind === "agent membership" || kind === "agent") return "Agent Membership";
   if (kind === "external") return "External";
   return "Service";
 }

@@ -4,7 +4,7 @@
 //! projection and dispatch declared ActionCommands, but never receive a generic
 //! store-write primitive.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use harness_core::{
@@ -12,14 +12,12 @@ use harness_core::{
     Approval, ApprovalStatus, AuditEvent, AuditEventKind, Block, BusinessModule, Commitment,
     CommitmentStatus, CustomPageDefinition, CustomPagePackage, Document, DocumentKind, EntityKind,
     LifecycleStatus, MemberStatus, Milestone, OrgUnit, OrganizationMembership, Payment,
-    PendingInteractionStatus, Relation, RiskTier, TypedRecord, ValidateCompanyOs, View, Work,
+    Relation, RiskTier, TypedRecord, ValidateCompanyOs, View, Work,
     WorkCondition, WorkPhase, WorkResolution,
 };
 use harness_store::{ActionCommandClaimResult, CompanyActor, HarnessStore, StoreError};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
-
-use crate::team_run_mission_id;
 
 #[derive(Debug)]
 pub struct ApiResponse {
@@ -937,8 +935,6 @@ mod projection_tests {
                     artifact_refs: Vec::new(),
                     check_refs: Vec::new(),
                     github_links: Vec::new(),
-                    gates: Vec::new(),
-                    workspace: None,
                     version: 0,
                     created_at: String::new(),
                     updated_at: String::new(),

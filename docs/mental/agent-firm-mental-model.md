@@ -27,7 +27,7 @@ Organization answers "who exists and how are they organized."
 
 **Agent Teams**: An independent unit of execution with a Host Agent and Members. The Organization contains flat AgentTeams — no nesting or parent/child Team authority. Every Team belongs to exactly one Mission and has immutable `node_id` placement on one machine. No two AgentTeams may reference the same Mission. A Team's Members never cross machines. `labels` are optional filtering metadata; placement identity is not optional metadata.
 
-**Standing Agents**: Durable agent identities that persist across Team Runs. Not tied to any single execution. Examples: governance Agent auditing docs/works periodically, scheduled-task Agent running on a timer.
+**Agent Memberships**: Durable agent identities that persist across Team Runs. Not tied to any single execution. Examples: governance Agent auditing docs/works periodically, scheduled-task Agent running on a timer.
 
 **Actors**: Four types — Human, Agent, External, Service. `ActorRef` (type + id) references a participant wherever needed.
 
@@ -43,10 +43,10 @@ Execution answers "what work is being done right now."
 
 **Work**: The responsibility kernel. Title, context, criteria, owner (AgentMember), team scope, status (open→in_progress→review→done). Optional `document_refs` (links to Docs) and `labels` (filtering).
 
-Work creation answers five questions: WHERE, WHAT, HOW, WHO.
+Work creation answers WHAT and WHO; placement and verification are modular records.
 
-- **WHERE** — `workspace`: Where the member works. Three kinds: `worktree` (isolated git checkout, for code), `dir` (plain directory, for exploration), `inherit` (project root, for read-only). Harness creates before member start, cleans up on completion. CLI: `--worktree <path>`.
-- **HOW** — `gates`: Declarative verification gates that must pass before acceptance. Plugin names are non-empty and configs are JSON objects; old wire rows that omit config normalize to `{}`. Four typed built-ins are trusted by default: `github-pr`, `code-review`, `artifact-exists`, and `check-pass`. Custom declarations may persist, but default evaluation and Store acceptance fail unknown plugins closed; only an embedder with an explicit custom registry can evaluate one. Exact duplicate GateSpecs and more than one `code-review` Gate are rejected. `code-review.strategy` is required and limited to `peer | self | host`; omitting the whole Gate is the only no-review form. Candidate-bound Reviews persist caller-supplied performer attribution separately from authority; Store actor contexts are trusted inputs, not authentication, and Host reviews always use fixed `Host/host` authority. Artifact/check Gates match exact current-candidate refs only: they do not inspect files, prove truth, or rerun checks. Legacy unbound Reviews remain readable but cannot satisfy a Gate. `space migrate-from-project` validates and downgrades untrusted source Review bindings under the source Store writer lock, requires a new target id, and publishes a verified same-parent staging directory with one rename. Registration is a later recoverable step: failure retains the verified target with manifest status `pending` and `harness space switch <id>` recovery instructions. This is not a crash-atomic target-plus-registry transaction and assumes a trusted local filesystem; path/type/symlink checks are best effort. Empty Gates preserve manual Host accept compatibility. Store-managed `accept_work` enforces declared Gates and exposes no waiver flag. CLI: `--gate <plugin>[:key=val,...]`, `work check-gates`, `work accept`.
+- **WHERE** — `MemberWorkspaceBinding`: exact Execution Space, project, AgentMember, MemberRun, TeamRun, Work, absolute path, repository/base identity, generation and safety lifecycle.
+- **HOW** — `WorkModuleBinding + GateRequirement + GateEvaluation/GateWaiver`: a frozen candidate-scoped requirement set. Result submission and Host acceptance use exact Work/report/Candidate fingerprints; stale state rejects with zero side effects under one Store writer lock.
 - **WHO** — `owner_member_id`, `assignee`.
 
 **Views**: All Execution visible on one page. Filters by Agent Team, status, date range. Tags on Work entries. Per-team views unchanged.
@@ -85,7 +85,7 @@ One logical Firm may place different AgentTeams on different ExecutionNodes. Eac
 | Work — gates | ✅ Live | Open persistence/closed default registry, four built-ins, authority-bound Review, Store acceptance invariant |
 | Work — workspace | ✅ Live | PR #406 — WorkWorkspace, ensure/cleanup, --worktree CLI |
 | Organization — Agent Teams | ✅ Live | flat Mission-Team 1:1 + immutable node_id placement + labels |
-| Organization — Standing Agents | ❌ Not started | Design only |
+| Organization — Agent Memberships | ❌ Not started | Design only |
 | Work → Docs links | ❌ Not started | Optional document_refs |
 | Work → labels / tags | ❌ Not started | Filter + tag UI |
 | Docs system | ⚠️ Partial | PR #386 |

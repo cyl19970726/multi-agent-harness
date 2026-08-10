@@ -99,6 +99,13 @@ pub enum TrustCommand {
         evidence_ref: String,
         updated_at: String,
     },
+    CreateWorkDeliveries {
+        work_event_id: String,
+        work_id: String,
+        work_revision: u64,
+        recipient_member_run_ids: Vec<String>,
+        updated_at: String,
+    },
     RetryWorkDelivery {
         delivery_id: String,
         current_work_revision: u64,
@@ -172,6 +179,7 @@ impl TrustCommand {
             Self::CreateTeamMessage { .. } => "team_message.create",
             Self::RetryMessageDelivery { .. } => "message_delivery.retry",
             Self::ReconcileMessageDelivery { .. } => "message_delivery.reconcile",
+            Self::CreateWorkDeliveries { .. } => "work_delivery.create",
             Self::RetryWorkDelivery { .. } => "work_delivery.retry",
             Self::ReconcileWorkDelivery { .. } => "work_delivery.reconcile",
             Self::ProvisionWorkspace { .. } => "workspace.provision",
@@ -428,6 +436,20 @@ pub fn execute(
             &delivery_id,
             outcome,
             &evidence_ref,
+            &updated_at,
+        )?),
+        TrustCommand::CreateWorkDeliveries {
+            work_event_id,
+            work_id,
+            work_revision,
+            recipient_member_run_ids,
+            updated_at,
+        } => result(store.create_trust_work_deliveries(
+            &context,
+            &work_event_id,
+            &work_id,
+            work_revision,
+            &recipient_member_run_ids,
             &updated_at,
         )?),
         TrustCommand::RetryWorkDelivery {

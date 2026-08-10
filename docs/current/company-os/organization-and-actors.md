@@ -30,7 +30,7 @@ Company
 - Teams are independent, non-nested execution units.
 - Each Team has a Host Agent and Members.
 - A Team has one immutable `node_id`; its Members do not execute across machines.
-- Standing Agents are durable identities that persist across Team Runs (e.g. a governance Agent on a schedule).
+- Agent Memberships are durable identities that persist across Team Runs (e.g. a governance Agent on a schedule).
 
 ## Native actor identities
 
@@ -104,9 +104,9 @@ across all Teams. Both read the same Work identity and lifecycle.
 - A Member cannot assign a same-level peer unless it is that Team's Host.
 - Business modules still govern sensitive effects (approvals, finance, legal).
 
-## Standing Agents
+## Agent Memberships
 
-Standing Agents are durable agent identities not tied to any single Team Run.
+Agent Memberships are durable agent identities not tied to any single Team Run.
 They can be scheduled (e.g. periodic governance audits of Docs and Works) or
 role-based (e.g. a Chat governance agent). Their lifecycle is managed by the
 Company, not by a Team Run.

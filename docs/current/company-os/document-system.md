@@ -91,7 +91,7 @@ flowchart LR
   U["Human reviews UI"] --> C["Agent reads via CLI/API"]
   C --> D["Document / typed record"]
   D --> W["TeamWork and, when required, Approval"]
-  W --> A["Actors: human, Standing Agent, external participant"]
+  W --> A["Actors: human, Agent Membership, external participant"]
   A --> E["Execution reference\nMission/Mission Log, Agent Team, Workflow, direct work"]
   E --> R["Outcome, artifact, evidence, decision, metric"]
   R --> C

@@ -121,7 +121,7 @@ async function main() {
     "--skill", "company-work-operator",
     "--skill", "company-finance-operator",
   ], env);
-  check(agent.ok === true && agent.result?.actor?.id === "agent-ops", "org actor create-agent writes a Standing Agent");
+  check(agent.ok === true && agent.result?.actor?.id === "agent-ops", "org actor create-agent writes a Agent Membership");
 
   const unit = run([
     "company", "org", "unit", "create",

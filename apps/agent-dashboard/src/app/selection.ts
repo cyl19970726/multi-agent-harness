@@ -53,7 +53,7 @@ export interface SelectionState {
    * The selected Agent Team participation record, addressed as
    * `?memberRun=<id>`. This deliberately remains distinct from `memberId`:
    * a MemberRun is a one-attempt participation, while `memberId` identifies a
-   * standing AgentMember.
+   * durable AgentMember.
    */
   memberRunId?: string;
   /** Which tab is open on the agent detail page; defaults to "conversation". */
@@ -203,7 +203,7 @@ function selectionFromSearch(search: string, pathname = "/"): SelectionState {
     next.docsHealth = docsHealth;
     if (!surface) next.surface = "docs";
   }
-  // A MemberRun belongs to an AgentTeamRun attempt, not to the standing Agent
+  // A MemberRun belongs to an AgentTeamRun attempt, not to the durable AgentMember
   // directory. Do not translate it into `memberId` even if a future provider
   // happens to expose a related standing identity.
   const memberRun = params.get("memberRun");

@@ -24,13 +24,13 @@
     {
       "id": "actor-agent-trademark",
       "display_name": "Trademark Agent",
-      "actor_type": "Standing Agent",
+      "actor_type": "Agent Membership",
       "created_at": "2026-07-08T10:00:00+08:00"
     },
     {
       "id": "actor-agent-finance",
       "display_name": "Finance Agent",
-      "actor_type": "Standing Agent",
+      "actor_type": "Agent Membership",
       "created_at": "2026-07-01T09:15:00+08:00"
     },
     {
@@ -42,31 +42,31 @@
     {
       "id": "actor-agent-document-architecture",
       "display_name": "Document Architecture Agent",
-      "actor_type": "Standing Agent",
+      "actor_type": "Agent Membership",
       "created_at": "2026-07-01T09:30:00+08:00"
     },
     {
       "id": "actor-agent-content-strategy",
       "display_name": "Content Strategy Agent",
-      "actor_type": "Standing Agent",
+      "actor_type": "Agent Membership",
       "created_at": "2026-07-01T09:45:00+08:00"
     },
     {
       "id": "actor-agent-ip-lead",
       "display_name": "IP Lead Agent",
-      "actor_type": "Standing Agent",
+      "actor_type": "Agent Membership",
       "created_at": "2026-07-03T09:00:00+08:00"
     },
     {
       "id": "actor-agent-organization-governance",
       "display_name": "Organization Governance Agent",
-      "actor_type": "Standing Agent",
+      "actor_type": "Agent Membership",
       "created_at": "2026-07-01T10:00:00+08:00"
     },
     {
       "id": "actor-agent-analytics",
       "display_name": "Analytics Agent",
-      "actor_type": "Standing Agent",
+      "actor_type": "Agent Membership",
       "created_at": "2026-07-01T10:15:00+08:00"
     }
   ],
@@ -279,7 +279,7 @@
       "required_facts": ["Trademark Agent role is proposed and related to CN-2026-018", "Document Architecture Agent is available only because it is explicitly reported"],
       "prohibited_inferences": ["online status", "availability for actors without an explicit report"]
     },
-    "standing-agent-focus": {
+    "agent-member-focus": {
       "required_refs": ["actor-agent-document-architecture", "governance-proposal-trademark-management", "module-trademark-management"],
       "required_facts": ["Document Architecture Agent availability is explicitly reported as available", "The agent proposed Trademark Management"],
       "prohibited_inferences": ["MemberRun ownership", "capacity from idle runtime", "persistent thinking"]

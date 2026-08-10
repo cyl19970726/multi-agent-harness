@@ -40,8 +40,8 @@ No two AgentTeams may reference the same Mission. `NodeDaemonLease` is machine-s
 each machine has one machine-scoped NodeDaemon and the lease is never scoped to one Execution Space.
 Cross-Team responsibility uses explicit WorkDelegation rather than parent/child
 Team topology. Docs plus flat AgentTeam Organization is the accepted product
-direction; ADR 0052 is superseded historical evidence. Current StandingAgent
-remains compatibility implementation truth. Company Work is a
+direction; ADR 0052 is superseded historical evidence. AgentMember is the one
+durable organization-agent identity. Company Work is a
 read-only aggregate over authoritative TeamWork and must never regain a second
 task ledger or mutation path. Repository self-hosting remains the first
 execution-foundation scenario.
@@ -130,7 +130,7 @@ doc carries the contract behind each rule.
     AgentTeam authority is flat, Mission-Team identity is one-to-one, and every
     Team has immutable `node_id` placement under one machine-scoped NodeDaemon.
     The unified Work kernel is the shipped authority: do not
-    extend the compatibility StandingAgent-to-AgentMember join or recreate a
+    create a second organization-agent identity or recreate a
     Company task ledger, migration fallback, or dual-write Work path.
 11. **Skill optionality.** Skills are optional capabilities, never the
     authority for product architecture or Lead behavior. Do not load a skill

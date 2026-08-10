@@ -135,7 +135,7 @@ infrastructure contracts where possible.
 
 | Shared contract | Used by |
 | --- | --- |
-| Provider-neutral execution instance/session substrate | Agent Team member sessions, Dynamic Workflow leaves, Host-driven observed execution, future Standing Agents |
+| Provider-neutral execution instance/session substrate | Agent Team member sessions, Dynamic Workflow leaves, Host-driven observed execution, future Agent Memberships |
 | Capability snapshot and adapter metadata | host plugins, workflow leaves, Agent Team member provisioning |
 | Permission and budget ceiling | all executor kinds |
 | Artifact references and explicit outcome summaries | all executor kinds |
@@ -187,13 +187,13 @@ Host plugin
 The later layer is:
 
 ```text
-Standing Agents + Docs
+Agent Memberships + Docs
   -> long-lived business operations
   -> built on the same runtime/artifact/evidence substrate
   -> not part of the current implementation goal
 ```
 
-Standing Agents + Docs are the current product direction with additive
+Agent Memberships + Docs are the current product direction with additive
 contracts still being implemented. Documentation must distinguish those
 planned Company OS contracts from proven schemas and must never treat Agent
 Team runs as standing organizations.

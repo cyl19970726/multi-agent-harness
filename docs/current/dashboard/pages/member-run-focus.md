@@ -36,7 +36,7 @@ Required data:
   criteria, ownership, blockers, child Works, results and evidence;
 - `TeamMessage` with optional Work relation and conversational correlation;
 - typed message actors, delivery claim, provider receipt, recipient ACK, and
-  any explicit `AgentMessageRoute`;
+  canonical MessageDelivery state;
 - Harness-owned control/lifecycle facts, observed `DelegationRun`, artifacts,
   outcomes, and evidence/check references;
 - `PendingInteraction` records attributable to this MemberRun, with exact
@@ -52,15 +52,10 @@ Required data:
 The latest Work projection is the sole run-scoped responsibility proof; a
 Message or provider self-description does not replace it.
 
-`AgentMember` is the stable reusable execution identity/configuration.
-`MemberRun` is one participation of that identity in one TeamRun. A Company OS
-`StandingAgent` is a separate organization identity and authority record; it
-may join only through
-`StandingAgent.execution_agent_member_ref -> AgentMember.id`. Matching ids
-alone do not bind the objects.
-This explicit join allows shared layout and Inbox projections without
-collapsing lifecycle, permissions, or responsibility. An ad-hoc MemberRun
-remains temporary even when its name resembles a Standing Agent.
+`AgentMember` is the stable organization-agent identity.
+`MemberRun` is one participation of that identity in one TeamRun. Company
+Organization may project the canonical AgentMember ActorRef but never owns the
+runtime lifecycle or a second agent identity.
 
 Thinking is a best-effort live preview: sanitized, TTL-bound, local to the
 current project/session, never persisted, replayed, forwarded, or accepted as
@@ -274,8 +269,8 @@ checks pass without mutating the expected image.
 
 ## Explicit Boundaries
 
-- This page is for a `MemberRun`, not a StandingAgent profile. Shared identity
-  modules require an explicit stable AgentMember ↔ StandingAgent join.
+- This page is for a `MemberRun`; durable identity links directly to its exact
+  canonical AgentMember.
 - It does not require or display a legacy dependency graph as the ownership model.
 - Provider-native subagents remain observed delegation unless the harness owns
   their lifecycle.

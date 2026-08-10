@@ -40,7 +40,7 @@
   },
   "responsive_pages": [
     "document-focus",
-    "standing-agent-focus",
+    "agent-member-focus",
     "governance-proposal",
     "approval-focus",
     "business-module-focus",

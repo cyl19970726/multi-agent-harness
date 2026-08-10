@@ -38,7 +38,7 @@ Required data:
   claim/provider receipt/failure/invalidation;
 - typed Message sender and recipients, optional Work relation, conversational
   correlation, pending interactions, controls, artifacts, and checks;
-- `AgentMessageRoute` when stable Agent Inbox mail was explicitly routed to a
+- canonical `MessageDelivery` when AgentMember mail was addressed to a
   participating MemberRun;
 - provider-native activity read on demand, clearly labeled by source and
   availability.
@@ -247,7 +247,7 @@ disclosure; multi-recipient `+N` exposes the full accessible list.
 
 ## Explicit Boundaries
 
-- A TeamRun is not a Standing Agent or OrgUnit.
+- A TeamRun is not a Agent Membership or OrgUnit.
 - Work owns responsibility; Message carries conversation; Wave prose explains Host intent.
 - Provider-native subagents are observations unless a real orchestrated
   lifecycle exists.

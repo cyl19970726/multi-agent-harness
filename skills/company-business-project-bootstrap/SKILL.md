@@ -14,7 +14,7 @@ It does not replace the module operators:
 - `$company-docs-operator` owns durable company memory.
 - `$company-work-operator` reads the Company aggregate, routes native TeamWork
   lifecycle commands, and owns Milestone references and result provenance.
-- `$company-org-operator` owns humans, Standing Agents, org units, roles,
+- `$company-org-operator` owns humans, Agent Memberships, org units, roles,
   permissions, and capability lifecycle.
 - `$company-finance-operator` owns budgets, commitments, invoices, payments,
   refunds, and monetary evidence.
@@ -244,7 +244,7 @@ Label the bootstrap boundary explicitly. Current Company OS can author actors,
 units, memberships, permissions, and Milestones; Work mutations route only
 through `team-run work` in the authoritative Execution Space. Hierarchical `ScopedPermissionGrant`
 lineage, strict recursive subset checks, sibling resource reservation,
-ancestor fencing, autonomous approved-template Standing Agent creation, and
+ancestor fencing, autonomous approved-template Agent Membership creation, and
 their effective-authority UI are target capabilities until accepted schemas,
 Actions, authenticated transport, and tests exist.
 

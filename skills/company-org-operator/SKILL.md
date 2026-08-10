@@ -1,6 +1,6 @@
 ---
 name: company-org-operator
-description: Operate Company OS Organization through governed Store/API/Action contracts. Use when a Governance Agent needs to inspect, propose, or manage Humans, Standing Agents, OrgUnits, roles, reporting, permissions, and capability lifecycle without confusing standing actors with one-off Agent Team members.
+description: Operate Company OS Organization through governed Store/API/Action contracts. Use when a Governance Agent needs to inspect, propose, or manage Humans, Agent Memberships, OrgUnits, roles, reporting, permissions, and capability lifecycle without confusing standing actors with one-off Agent Team members.
 ---
 
 # Company Org Operator
@@ -8,7 +8,7 @@ description: Operate Company OS Organization through governed Store/API/Action c
 Operate the Company OS Organization surface. This skill is a procedural
 capability, not product authority. It helps an Agent inspect and prepare
 Organization changes while respecting Human approval, permissions, and the
-boundary between durable Standing Agents and one-off execution members.
+boundary between durable Agent Memberships and one-off execution members.
 
 ## Select the Company Store
 
@@ -53,7 +53,7 @@ that loop.
 Organization owns who exists and who may act:
 
 - `HumanMember`
-- `AgentMember` / durable Standing Agent
+- `AgentMember` / durable Agent Membership
 - external collaborator or service actor
 - `OrgUnit`
 - role and reporting relation
@@ -69,42 +69,17 @@ Organization does not own:
 - Mission/Wave, AgentTeamRun, MemberRun, provider-native sessions, or workflow
   steps.
 
-A Standing Agent is a durable company actor. An Agent Team MemberRun is a
-one-off execution participant bound to an AgentTeamRun and provider-native
-session. They may share UI components, but they are not the same product object.
-Link them only with the optional Company-owned
-`StandingAgent.execution_agent_member_ref -> AgentMember.id`; never infer a
-link from equal ids, names, roles, or providers. At creation time author the
-link with `--execution-agent-member-ref <agent-member-id>`. For a Standing Agent
-that already exists, use the governed relation commands instead:
-
-```bash
-harness company org link-execution \
-  --authority <human-id> --actor <standing-agent-id> \
-  --agent-member <agent-member-id> --execution-space <space-id>
-
-harness company org unlink-execution \
-  --authority <human-id> --actor <standing-agent-id> \
-  [--expect-agent-member <agent-member-id>]
-```
-
-`--execution-space` is required and never defaults: AgentMember truth lives in
-an Execution Space, and `harness company ...` resolves the Company Store only
-(ADR 0042). The named space is opened read-only to confirm the AgentMember
-exists, so a typo fails loudly instead of persisting a dangling reference. Type
-both ids even when they are equal. Re-running the same pair changes nothing
-(`changed: false`); repointing an existing link requires `--replace`.
-
-An absent link means the Standing Agent has no reusable execution identity,
-while an unlinked MemberRun remains ad-hoc execution. If the Dashboard reports
-`standing_assignment_conflicts`, two Standing Agents claim the same AgentMember:
-resolve it with `unlink-execution` on the wrong claimant rather than by editing
-a ledger.
+An AgentMember is the single durable company agent identity. Company
+membership stores only its canonical `ActorRef(kind=agent_member)` plus
+organization responsibility and permission-policy refs. A MemberRun is one
+execution attempt bound to that identity, TeamRun, workspace and provider
+session. Never create a second company-owned agent identity, copy runtime
+payload into Organization, or infer identity from display names.
 
 ## Docs page integration
 
-Business Docs pages may show responsible humans, Standing Agents, governance
-Agents, external collaborators, and services in right rails or module cards.
+Business Docs pages may show responsible humans, AgentMembers, external
+collaborators, and services in right rails or module cards.
 Those UI appearances are references only. Organization remains the source of
 truth for who exists, who reports to whom, and who may act.
 
@@ -122,9 +97,9 @@ If a page exposes an Agent detail or governance panel, it may reuse UI
 components from Agent Team member pages, but the underlying object must remain
 a durable Organization actor, not a MemberRun.
 
-## Gateway-facing Standing Agents
+## Gateway-facing Agent Memberships
 
-Business-facing Standing Agents may receive input through external gateways
+Business-facing Agent Memberships may receive input through external gateways
 such as WeCom, GitHub, email, social platforms, ecommerce/logistics systems, or
 future plugins. Organization owns the durable Agent identity, role,
 permissions, tools, skill refs, maintained Docs, accepted Work classifications, and
@@ -170,7 +145,7 @@ harness company org create-human \
   --responsibility <summary> \
   --authority <human-admin-id>
 harness company org create-agent \
-  --id <standing-agent-id> \
+  --id <agent-membership-id> \
   --display-name <name> \
   --role <role> \
   --responsibility <summary> \
@@ -228,7 +203,7 @@ Current v1 boundary:
 - For permission expansion, new durable actors, or org-structure changes,
   report the write as administrative v1 and preserve the follow-up need for a
   governed proposal/approval path.
-- A Standing Agent record is organization identity and authority context. It is
+- A Agent Membership record is organization identity and authority context. It is
   not an Agent Team MemberRun, provider-native session, or runtime health row.
 
 ## ADR 0052: AgentMember Identity Cutover CLI
@@ -243,7 +218,7 @@ and their Host authority relationships.
 ### Durable members
 
 ```bash
-# Create a durable AgentMember identity (writes durable_agent_members.jsonl)
+# Create a canonical AgentMember identity through the trust-operation ledger
 harness org member create \
   --name <name> \
   --description <description> \
@@ -308,12 +283,12 @@ it does not define a second Host-authority field.
 
 | Surface | Scope | Store |
 |---------|-------|-------|
-| `harness org member` | Durable AgentMember identity for Agent Teams | `durable_agent_members.jsonl`, `teams.jsonl` |
-| `harness company org` | Company OS Standing Agents, Humans, OrgUnits, Memberships | Company Store (`company_os_*.jsonl`) |
+| `harness member-trust mutate` | Canonical AgentMember identity for Agent Teams | `agentfirm_trust_operations.jsonl` |
+| `harness company org` | Company OS Agent Memberships, Humans, OrgUnits, Memberships | Company Store (`company_os_*.jsonl`) |
 
 The cutover CLI lives at the Execution Space level and feeds the Agent Team
 kernel. Company OS organization records are a separate durable surface.
-A Standing Agent may link to an AgentMember via `--execution-agent-member-ref`,
+A Agent Membership may link to an AgentMember via `--execution-agent-member-ref`,
 but the two surfaces are independently authored.
 
 
@@ -332,7 +307,7 @@ The first Company OS layer is governance:
 
 Business Agents sit under Org / HR governance. HR/Org may identify capability
 gaps, reuse existing agents, request temporary execution, propose a new
-Standing Agent, provision approved tools/skills/permissions, and later evaluate,
+Agent Membership, provision approved tools/skills/permissions, and later evaluate,
 adjust, or retire the actor. Skills are tools; they never grant authority.
 
 ### Root Company delegation model
@@ -343,7 +318,7 @@ Model the operating hierarchy as durable Organization truth:
 Human Principal / Constitution Owner / required Human gates
   -> Company Lead
      -> Governance Leads and Domain Leads
-        -> bounded Standing Agents, Humans, services, or external collaborators
+        -> bounded Agent Memberships, Humans, services, or external collaborators
 ```
 
 The Supervisor preserves intake provenance, runtime delivery, emergency
@@ -357,7 +332,7 @@ changes.
 A Domain Lead may autonomously delegate operational work only inside the
 currently implemented policy and its declared responsibility, accepted
 Work classifications, data/tool scope, budget/permission ceiling, and capacity. Recursive
-child-grant issuance and approved-template Standing Agent creation are target
+child-grant issuance and approved-template Agent Membership creation are target
 capabilities until the hierarchical grant lifecycle and authenticated
 transport are implemented and accepted.
 
@@ -369,8 +344,8 @@ authority-bearing dimension. Delegated work keeps one accountable owner and an
 explicit Work ownership and delivery in Work; provider subagents and MemberRuns do not
 become durable reports.
 
-Current truth is the Human-admin Organization CLI v1 plus explicit
-StandingAgent ↔ AgentMember execution links. Target truth is one hierarchical
+Current truth is the Human-admin Organization CLI v1 plus canonical AgentMember
+membership projections. Target truth is one hierarchical
 `ScopedPermissionGrant` family with exact root constitution/generation/digest,
 parent and approved-template lineage, bounded action/module/project/GitHub
 scope, TTL/budget/concurrency/depth ceilings, atomic sibling reservations, and
@@ -398,7 +373,7 @@ record unimplemented controls as `partial` or `planned`.
 2. Classify the request: view current org, route work to existing actor, propose
    new business agent, update permission, pause/retire actor, or review
    capability.
-3. Prefer reuse. Check whether an existing Human, Standing Agent, external
+3. Prefer reuse. Check whether an existing Human, Agent Membership, external
    collaborator, service, Agent Team, Dynamic Workflow, or Host execution path
    can do the work before adding a durable actor.
 4. For new actors or permission expansion, use the Org CLI only when the Human
@@ -416,7 +391,7 @@ record unimplemented controls as `partial` or `planned`.
 
 ## Validation checklist
 
-- Actor kind is explicit: Human, Standing Agent, external collaborator, service,
+- Actor kind is explicit: Human, Agent Membership, external collaborator, service,
   or one-off execution participant.
 - Reporting line and OrgUnit are explicit.
 - Role and permission set are bounded.

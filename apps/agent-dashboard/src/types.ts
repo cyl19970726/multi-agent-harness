@@ -902,16 +902,6 @@ export interface TeamMemberCloseRequest {
   applied_at?: string | null;
 }
 
-export interface AgentMessageRoute {
-  id: string;
-  agent_message_id: string;
-  agent_member_id: string;
-  team_run_id: string;
-  member_run_id: string;
-  team_message_id: string;
-  routed_at: string;
-}
-
 /** One recorded action of a member run (tool call, progress note, …). */
 export interface MemberAction {
   id: string;
@@ -1053,7 +1043,6 @@ export interface DashboardSnapshot {
   node_daemon_leases?: NodeDaemonLease[];
   team_supervisor_leases?: TeamSupervisorLease[];
   team_member_close_requests?: TeamMemberCloseRequest[];
-  agent_message_routes?: AgentMessageRoute[];
   member_actions?: MemberAction[];
   pending_interactions?: PendingInteraction[];
   delegation_runs?: DelegationRun[];

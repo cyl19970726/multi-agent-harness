@@ -344,31 +344,26 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
         Some("agent-review")
     );
     let snapshot = run_json(&home, &project_id, &["dashboard", "snapshot"]);
-    let standing_assignments = snapshot["company_os"]["standing_assignments"]
+    let membership_projections = snapshot["company_os"]["membership_projections"]
         .as_array()
-        .expect("standing assignment projection");
+        .expect("AgentMember membership projection");
     assert_eq!(
-        standing_assignments.len(),
+        membership_projections.len(),
         1,
-        "only a MemberRun explicitly linked by execution_agent_member_ref may appear"
+        "only a MemberRun carrying the canonical AgentMember identity may appear"
     );
     assert_eq!(
-        standing_assignments[0]["agent_member_id"].as_str(),
+        membership_projections[0]["agent_member_id"].as_str(),
         Some("agent-build")
     );
     assert_eq!(
-        standing_assignments[0]["member_run_id"].as_str(),
+        membership_projections[0]["member_run_id"].as_str(),
         created["member_runs"][0]["id"].as_str()
     );
     assert_eq!(
-        standing_assignments[0]["work_id"].as_str(),
+        membership_projections[0]["work_id"].as_str(),
         created["works"][0]["id"].as_str(),
-        "standing execution projection must derive from the member's durable Work"
-    );
-    assert_eq!(
-        standing_assignments[0]["standing_agent_id"].as_str(),
-        Some("agent-build"),
-        "projection carries the explicit StandingAgent backlink"
+        "AgentMember execution projection must derive from the member's durable Work"
     );
     assert!(created["team_run"]["wave_id"].is_null());
     let team_run_id = created["team_run"]["id"].as_str().unwrap();

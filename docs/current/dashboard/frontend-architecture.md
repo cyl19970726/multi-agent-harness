@@ -60,7 +60,7 @@ apps/agent-dashboard/src/
 
 Execution surfaces and Company OS surfaces share shell, typography, identity,
 status, relation, activity, and context primitives. They do not collapse their
-objects: a MemberRun is still different from a Standing Agent; a Wave gate is
+objects: a MemberRun is still different from a Agent Membership; a Wave gate is
 different from a Human Approval; an AgentTeamRun is different from an OrgUnit.
 
 ## Surface Ownership
@@ -70,7 +70,7 @@ different from a Human Approval; an AgentTeamRun is different from an OrgUnit.
 | Mission Canvas | durable Mission Markdown, its Mission-owned Team, ordered Host-plan Wave revisions, explicit judgment, closeout | dependency graph, runtime containment, mutable Team linking, or implicit acceptance |
 | Agent Teams Home | Mission-owned, Node-placed AgentTeam/TeamRun discovery | implying Teams are reusable across Missions or pretending every run belongs to one Wave |
 | Team War Room | stable Team identity, Mission relation, shared Works, current Supervisor, typed actors, WorkDelivery claim/receipt/failure, authored Message delivery/ACK, member presence, Work-linked conversation, unified activity, and controls | claiming a selected Wave owns the TeamRun, impersonating a Member, or fabricating provider control |
-| MemberRun Focus | one run-scoped member's contract, native-session binding, mailbox and evidence | Standing Agent identity or a copied provider transcript |
+| MemberRun Focus | one run-scoped member's contract, native-session binding, mailbox and evidence | Agent Membership identity or a copied provider transcript |
 | Workflows | WorkflowRun/WorkflowStep/result/artifacts | Agent Team semantics |
 | Company OS | Documents, TeamWorks, actors, approvals, finance, metrics, governance | unimplemented schema authority |
 | Debug | raw snapshot and diagnostics | primary product navigation |

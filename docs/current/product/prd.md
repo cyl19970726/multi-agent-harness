@@ -2,7 +2,7 @@
 
 ## Product mission
 
-Star Harness helps a person and a mixed organization of standing Agents run a
+Star Harness helps a person and a mixed organization of AgentMembers run a
 company through durable documents, explicit responsibility, governed actions,
 and provider-neutral execution tools.
 
@@ -126,7 +126,7 @@ retain their source.
 
 ## Execution foundation
 
-A TeamWork may be executed directly by a human or Standing Agent, or may start
+A TeamWork may be executed directly by a human or Agent Membership, or may start
 one of the product's one-time long-task capabilities:
 
 ```text
@@ -160,7 +160,7 @@ record. Results return through the TeamWork relation.
    relations, Module templates, embedded operating views, and governed custom
    pages for core surfaces.
 3. Organization shows a mixed company and distinct details for humans and
-   standing Agents.
+   AgentMembers.
 4. Work is the company-wide read-only aggregate of native TeamWorks plus
    Milestone groupings and makes submission, responsibility, remaining work,
    gates, and acceptance visible.

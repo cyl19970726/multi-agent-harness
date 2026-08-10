@@ -183,7 +183,7 @@ owned by one historical Wave.
 | `TeamMessage` | Run-scoped authored conversation envelope with delivery records and optional Work link. | Questions, answers, planning and coordination live here; it is not task state or a fake live-control protocol. |
 | `ExecutionNode` / `NodeDaemonLease` | Stable machine identity and its one active daemon generation. | One NodeDaemon owns all local Teams and registered Project Bindings. |
 | `TeamSupervisorLease` | Latest-wins cross-process authority for one active TeamRun generation. | Parent-fenced by NodeDaemon generation; owns this run's transports, claims, reconnect, and real controls. |
-| `AgentMessageRoute` | Stable bridge from a reusable Agent Inbox message to one active MemberRun/TeamMessage. | Makes external Agent-addressed mail explicit and idempotent without collapsing Agent identity into MemberRun identity. |
+| `MessageDelivery` | Delivery state for one canonical TeamMessage recipient at an exact MemberRun generation. | Makes provider acceptance, acknowledgement, retries, and uncertainty explicit without a second identity inbox. |
 | `MemberAction` | Transitional Harness action row. Target use is limited to Harness-owned coordination/control facts. | Provider tool, command, file, chat, turn, and reasoning streams stay solely in the native provider session. |
 | `DelegationRun` | Attribution record for observed or orchestrated delegation. | Parent permissions, paths, and budgets bound the child. |
 | `TeamRunEvent` | Transitional ordered event projection for Harness-owned run lifecycle. | It must not become a mirror of provider-native activity. |

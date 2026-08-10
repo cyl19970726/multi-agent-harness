@@ -48,7 +48,7 @@ async function main() {
   check(workPage.includes("phase") && workPage.includes("condition") && workPage.includes("resolution"), "Company Work page renders the independent TeamWork lifecycle axes");
   check(workPage.includes("records(aggregate.works)") && !workPage.includes("work_items"), "Company Work page reads native works without a fallback task ledger");
   check(approvalAction.includes('command_name: "approval.decide"'), "independent Human approval action remains available");
-  check(types.includes("linkedWork") && types.includes("StandingExecutionAssignment"), "operations view links raw TeamWork and explicit standing execution participation");
+  check(types.includes("linkedWork") && types.includes("AgentMemberExecutionAssignment"), "operations view links raw TeamWork and explicit AgentMember execution participation");
 
   const ts = (await import("typescript")).default;
   const directory = await mkdtemp(resolve(tmpdir(), "company-os-operations-"));
@@ -60,19 +60,19 @@ async function main() {
   const source = {
     actors: [
       { id: "human-1", actor_type: "human", display_name: "Human Owner" },
-      { id: "standing-1", actor_type: "standing_agent", display_name: "Docs Agent", actor: { execution_agent_member_ref: "member-1" } },
+      { id: "agent-membership-1", actor_type: "agent_membership", display_name: "Docs Agent", actor: { agent_member_ref: "member-1" } },
     ],
     organization: {
       org_units: [{ id: "unit-1", name: "Operations", parent_unit_id: null, human_lead_actor_ref: { actor_type: "human", actor_id: "human-1" } }],
-      memberships: [{ id: "membership-1", org_unit_id: "unit-1", actor_ref: { actor_type: "agent", actor_id: "standing-1" }, membership_role: "member" }],
+      memberships: [{ id: "membership-1", org_unit_id: "unit-1", actor_ref: { actor_type: "agent_membership", actor_id: "agent-membership-1" }, membership_role: "member" }],
     },
     work: {
       authority: "team_work",
       read_only: true,
       works: [{ id: "work-1", team_id: "team-1", team_run_id: "run-1", title: "Repair docs", phase: "review", condition: "normal", resolution: null }],
     },
-    standing_assignments: [{
-      id: "standing-assignment-1",
+    membership_projections: [{
+      id: "member-assignment-1",
       agent_member_id: "member-1",
       source_kind: "agent_team_work",
       work_id: "work-1",
@@ -87,8 +87,8 @@ async function main() {
   };
   const adapted = adapter.adaptTrademarkOperationsProjection(source);
   check(adapted.linkedWork?.id === "work-1" && adapted.linkedWork.phase === "review", "adapter preserves the exact native Work id and phase");
-  check(adapted.organization.rootUnitIds.join(",") === "unit-1" && adapted.organization.memberships[0].actorId === "standing-1", "organization projection preserves explicit roots and memberships");
-  check(adapted.standingAssignments[0].workId === "work-1" && adapted.standingAssignments[0].memberRunId === "member-run-1", "standing participation preserves exact Work and MemberRun identities");
+  check(adapted.organization.rootUnitIds.join(",") === "unit-1" && adapted.organization.memberships[0].actorId === "agent-membership-1", "organization projection preserves explicit roots and memberships");
+  check(adapted.membershipProjections[0].workId === "work-1" && adapted.membershipProjections[0].memberRunId === "member-run-1", "AgentMember participation preserves exact Work and MemberRun identities");
   check(!JSON.stringify(adapter.adaptTrademarkOperationsProjection({})).includes("Repair docs"), "empty projection remains empty without fixture fallback");
 
   await rm(directory, { recursive: true, force: true });

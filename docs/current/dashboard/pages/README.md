@@ -62,7 +62,7 @@ define the new information architecture.
 | [Mission/Wave Canvas](mission-wave-canvas.md) | implemented | durable context, Mission-owned Team, ordered Host-plan revisions |
 | [Agent Team War Room](team-run-war-room.md) | implemented | one Mission-owned, Node-placed long-lived TeamRun |
 | [MemberRun Focus](member-run-focus.md) | implemented candidate | run-scoped member detail |
-| [Standing Agent Focus](standing-agent-focus.md) | proposed | durable organization identity and collaboration |
+| [AgentMember Focus](agent-member-focus.md) | proposed | canonical identity, organization projection, and execution trust |
 | [Debug](debug.md) | planned secondary surface | current raw objects and source diagnosis |
 
 The deleted Team workspace, AgentMember workbench, Evidence/Review/Decision,

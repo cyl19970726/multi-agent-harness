@@ -31,7 +31,7 @@ app-server. A missing native receipt stays `requested` or becomes
 `review_required`; it is never reported as effective by copying launch input.
 
 The Dashboard therefore renders `requested -> effective` with a status for
-each control. Changing one of these controls for a long-lived Standing Agent is
+each control. Changing one of these controls for a long-lived Agent Membership is
 a runtime-contract change: drain or interrupt the old active turn, then
 reattach the reviewed native thread under the replacement runtime generation.
 

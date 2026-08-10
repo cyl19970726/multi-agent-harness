@@ -215,9 +215,9 @@ Codex and Claude do not own separate mailbox Skills. Both use the canonical
 differences remain Adapter capabilities, not different team semantics.
 
 Stable external Agent mail uses `agent route-inbox` and an
-`AgentMessageRoute` to join one Agent Inbox record to one active MemberRun and
+canonical `MessageDelivery` to bind one TeamMessage recipient to one active MemberRun and
 TeamMessage. This is an explicit transport relation, not evidence that the
-AgentMember, StandingAgent, and MemberRun are one object.
+AgentMember is the durable identity; MemberRun is one execution attempt, and Company membership is only an AgentMember ActorRef projection.
 
 An ACK means “the recipient consumed this envelope,” not “the recipient agrees”
 and not “the Host accepts the work.” A reviewer must inspect the submitted Work,

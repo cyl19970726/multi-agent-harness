@@ -72,7 +72,43 @@ async function post(base, path, body) {
 async function main() {
   execFileSync("cargo", ["build", "-q", "-p", "firm-cli"], { cwd: repoRoot, stdio: "inherit" });
   const root = await mkdtemp(join(tmpdir(), "company-os-org-cli-smoke-"));
-  const env = { ...process.env, HARNESS_ROOT: join(root, "store"), HARNESS_COMPANY_OS_TOKEN: token };
+  const executionEnv = {
+    ...process.env,
+    FIRM_HOME: join(root, "firm-home"),
+  };
+  const env = {
+    ...executionEnv,
+    HARNESS_ROOT: join(root, "store"),
+    HARNESS_COMPANY_OS_TOKEN: token,
+  };
+  run(["space", "init", "--id", "org-smoke-space"], executionEnv);
+  run([
+    "member-trust", "mutate",
+    "--actor-kind", "human",
+    "--actor-id", "human-org-owner",
+    "--idempotency-key", "org-smoke-create-member",
+    "--expected-version", "0",
+    "--json", JSON.stringify({
+      command: "create_agent_member",
+      member: {
+        id: "member-trademark",
+        name: "Trademark AgentMember",
+        description: "Canonical execution identity for the organization projection.",
+        role: "trademark operations",
+        capabilities: ["trademark.search"],
+        skill_refs: ["company-docs-operator", "company-work-operator"],
+        provider_profile_ref: "codex-default",
+        model_preference: null,
+        workspace_policy: "managed-worktree",
+        permission_ceiling: "workspace_write",
+        organization_status: "active",
+        version: 1,
+        created_by: { kind: "human", id: "human-org-owner" },
+        created_at: NOW,
+        updated_at: NOW,
+      },
+    }),
+  ], executionEnv);
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
   const server = spawn(harness, ["serve", "--addr", `127.0.0.1:${port}`, "--no-truncate"], {
@@ -130,6 +166,8 @@ async function main() {
   const agent = run([
     "company", "org", "create-agent",
     "--id", "agent-trademark",
+    "--agent-member", "member-trademark",
+    "--execution-space", "org-smoke-space",
     "--display-name", "Trademark Agent",
     "--role", "Trademark operations",
     "--responsibility", "Handles trademark preparation and filing work.",
@@ -141,7 +179,7 @@ async function main() {
     "--maintained-document", "document-trademark-root",
     "--authority", "human-org-owner",
   ], env);
-  check(agent.ok === true && agent.result?.record?.actor?.id === "agent-trademark", "org create-agent appends a durable Standing Agent");
+  check(agent.ok === true && agent.result?.record?.actor?.id === "agent-trademark", "org create-agent appends an AgentMember membership projection");
 
   const membership = run([
     "company", "org", "add-membership",
@@ -161,17 +199,15 @@ async function main() {
     "--actor", "agent-trademark",
     "--actor-kind", "agent",
     "--permission", "trademark.records.write",
-    "--capability", "trademark.filing.prepare",
     "--authority", "human-org-owner",
   ], env);
-  check(permission.ok === true && permission.result?.record?.actor?.permission_policy_refs?.includes("trademark.records.write"), "org update-permissions appends capability and permission refs");
+  check(permission.ok === true && permission.result?.record?.actor?.permission_policy_refs?.includes("trademark.records.write"), "org update-permissions appends membership permission refs");
 
   const paused = run([
     "company", "org", "transition-actor",
     "--actor", "agent-trademark",
     "--actor-kind", "agent",
     "--status", "paused",
-    "--availability", "paused",
     "--authority", "human-org-owner",
   ], env);
   check(paused.ok === true && paused.result?.record?.actor?.status === "paused", "org transition-actor updates declared actor status without runtime side effects");
@@ -182,7 +218,7 @@ async function main() {
 
   const listed = run(["company", "org", "list", "--unit", "org-brand-ip"], env);
   check(listed.ok === true && listed.result?.summary?.actor_count === 1, "org list filters actors by OrgUnit membership");
-  check(listed.result?.boundaries?.standing_agent_is_not_agent_team_member_run === true, "org list declares Standing Agent is not Agent Team MemberRun");
+  check(listed.result?.boundaries?.agent_membership_is_not_agent_team_member_run === true, "org list declares Agent Membership is not Agent Team MemberRun");
   check(listed.result?.boundaries?.runtime_health_does_not_grant_authority === true, "org list declares runtime health does not grant authority");
 
   await rm(root, { recursive: true, force: true });
