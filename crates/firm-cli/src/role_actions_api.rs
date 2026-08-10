@@ -332,10 +332,8 @@ fn role_action_scope(
         .unwrap_or_else(|_| store.root().to_path_buf())
         .display()
         .to_string();
-    let (project_binding_id, store_scope_id) = store
-        .provider_compatibility_scope()
-        .map(|(project, store)| (project, store))
-        .unwrap_or(("", ""));
+    let (project_binding_id, store_scope_id) =
+        store.provider_compatibility_scope().unwrap_or(("", ""));
     let registration_identity = format!("{node_id}:{execution_space_id}:{project_binding_id}");
     let registration_revision = store
         .node_project_registration_revision(node_id, execution_space_id, project_binding_id)
