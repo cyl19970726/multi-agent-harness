@@ -5,6 +5,15 @@ description: Shared Hard Invariants referenced by team coordination skills. Do n
 
 # Shared Hard Invariants
 
+## Local product responsibility views
+
+When the local AgentFirm Dashboard is available, read responsibility state from
+the five `agentfirm.role_views.v1` endpoints documented in
+`docs/agentfirm-role-views.md`. Treat SSE only as an invalidation signal and
+refetch the view. Never rebuild Company/Team/Host/Member/Operator state by
+joining raw ledgers, and never treat an `AllowedAction` as authority when it has
+a `disabled_reason`.
+
 These rules bind the Host Lead and every Agent Team Member. The Host-facing
 skill (`orchestrate-mission-waves`) and the Member-facing skill
 (`collaborate-as-agent-team-member`) both reference this file. Where this file

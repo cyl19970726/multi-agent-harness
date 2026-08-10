@@ -5,6 +5,14 @@ description: Use when a Host Agent must create, resume, or re-plan a long-runnin
 
 # Orchestrate Missions
 
+## Host Console projection
+
+For local product operation, use `GET /v1/views/host-console/{team_id}` as the
+bounded Host read model. It exposes Work queues, Member capacity, convergence,
+workspace/provider conflicts, delivery recovery, Gate attention and the
+machine-scoped daemon summary. Execute writes only through the action manifest
+and the canonical mutation service; the page itself grants no authority.
+
 This skill is a procedural capability, not product authority. Use the Harness CLI
 as the complete authority path. Treat this Skill as a thin operating guide;
 canonical architecture, schemas, store state, and native Provider records win

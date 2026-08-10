@@ -37,7 +37,14 @@ import {
   type FreshnessDomain,
 } from "./freshness";
 
-const apiDefault = "http://127.0.0.1:8787";
+declare global {
+  interface Window {
+    __AGENTFIRM_BOOTSTRAP__?: { apiBase?: string; capabilityToken?: string };
+  }
+}
+const apiDefault = typeof window !== "undefined" && /^https?:$/.test(window.location.protocol)
+  ? window.location.origin
+  : "http://127.0.0.1:8787";
 /**
  * Allow the harness API to be deep-linked via `?api=<url>` so a single link can
  * point the dashboard at a specific store (e.g. a second `harness serve`) without
@@ -46,7 +53,9 @@ const apiDefault = "http://127.0.0.1:8787";
 function apiFromLocation(): string {
   try {
     const fromUrl = new URLSearchParams(window.location.search).get("api");
-    return fromUrl && fromUrl.trim() ? fromUrl.trim() : apiDefault;
+    return fromUrl && fromUrl.trim()
+      ? fromUrl.trim()
+      : window.__AGENTFIRM_BOOTSTRAP__?.apiBase?.trim() || apiDefault;
   } catch {
     return apiDefault;
   }
@@ -1075,7 +1084,11 @@ export function App() {
     const request = beginMutationSnapshotRequest();
     let needsRefresh = false;
     try {
-      const response = await postAction(apiUrl, path, body, selectedProjectId, selectedCompanyId, options, selectedSpaceId);
+      const capabilityToken = window.__AGENTFIRM_BOOTSTRAP__?.capabilityToken;
+      const authenticatedOptions = capabilityToken
+        ? { ...options, headers: { "X-AgentFirm-Token": capabilityToken, ...options?.headers } }
+        : options;
+      const response = await postAction(apiUrl, path, body, selectedProjectId, selectedCompanyId, authenticatedOptions, selectedSpaceId);
       if (response.snapshot) {
         adoptSnapshotResponse(request, response.snapshot);
       } else {

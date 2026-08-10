@@ -45,16 +45,14 @@ export default defineConfig({
   define: {
     "import.meta.env.VITE_DASHBOARD_GIT_REV": JSON.stringify(resolveDashboardGitRev()),
   },
-  server: process.env.HARNESS_CAPTURE_API_PROXY
-    ? {
+  server: {
         // Screenshot acceptance keeps browser reads same-origin. The target is
         // supplied only by the capture runner; normal development is unchanged.
         proxy: {
-          "/v1": { target: process.env.HARNESS_CAPTURE_API_PROXY, changeOrigin: true },
-          "/health": { target: process.env.HARNESS_CAPTURE_API_PROXY, changeOrigin: true },
+          "/v1": { target: process.env.HARNESS_CAPTURE_API_PROXY ?? "http://127.0.0.1:8787", changeOrigin: true },
+          "/health": { target: process.env.HARNESS_CAPTURE_API_PROXY ?? "http://127.0.0.1:8787", changeOrigin: true },
         },
-      }
-    : undefined,
+      },
   build: {
     outDir: "web",
     emptyOutDir: true,

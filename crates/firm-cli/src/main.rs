@@ -67,6 +67,7 @@ mod native_session;
 mod pi_rpc;
 mod project;
 mod resident;
+mod role_views_api;
 mod sse;
 #[cfg(unix)]
 mod supervisor_daemon;
@@ -27160,11 +27161,41 @@ fn handle_http_connection(
     }
 
     if method == "GET" {
+        let role_view_identity = if path_only.starts_with("/v1/views/") {
+            match resolve_agentfirm_http_credential(trust_transport_token.as_deref()) {
+                Ok(credential) => Some(role_views_api::ReadIdentity {
+                    actor: credential.actor,
+                    authority_actors: credential.authority_actors,
+                }),
+                Err(message) => {
+                    write_http_json(
+                        &mut stream,
+                        "401 Unauthorized",
+                        &serde_json::json!({"ok":false,"error":{"code":"NOT_AUTHORIZED","message":message}}),
+                    )?;
+                    return Ok(());
+                }
+            }
+        } else {
+            None
+        };
         let execution_space_stores = projects
             .list_spaces()
             .into_iter()
             .map(|space| (space.id, HarnessStore::new(space.store_root)))
             .collect::<Vec<_>>();
+        if let Some(response) = role_views_api::handle_get(
+            &store_owned,
+            &execution_space_stores,
+            &project_id,
+            &path_only,
+            &path,
+            build_git_rev(),
+            role_view_identity.as_ref(),
+        ) {
+            write_http_json(&mut stream, response.status, &response.body)?;
+            return Ok(());
+        }
         if let Some(response) = company_os_api::handle_get(
             store,
             Some(&store_owned),
@@ -30299,7 +30330,7 @@ fn write_http_response(
 ) -> CliResult<()> {
     write!(
         stream,
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, X-Harness-Company-OS-Token, X-AgentFirm-Token, Idempotency-Key, If-Match\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: http://127.0.0.1:8787\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, X-Harness-Company-OS-Token, X-AgentFirm-Token, Idempotency-Key, If-Match\r\nVary: Origin\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
     stream.write_all(body)?;
@@ -35877,12 +35908,24 @@ fn dashboard_meta(store: &HarnessStore) -> CliResult<serde_json::Value> {
         .display()
         .to_string();
     let latest_op_seq = store.work_operations()?.len() as u64;
+    let daemon_lease = store
+        .latest_node_daemon_leases()?
+        .into_iter()
+        .filter(|lease| lease.status == NodeDaemonLeaseStatus::Active)
+        .max_by_key(|lease| (lease.renewed_unix_ms, lease.generation));
     Ok(serde_json::json!({
         "git_rev": build_git_rev(),
         "built_at": build_built_at(),
         "store_root": store_root,
         "latest_op_seq": latest_op_seq,
         "server_version": env!("CARGO_PKG_VERSION"),
+        "build_sha": build_git_rev(),
+        "node_id": daemon_lease.as_ref().map(|lease| lease.node_id.as_str()),
+        "daemon_generation": daemon_lease.as_ref().map(|lease| lease.generation),
+        "protocol_version": agentfirm_api::MEMBER_TRUST_PROTOCOL_VERSION,
+        "schema_version": "agentfirm.role_views.v1",
+        "action_manifest_version": "agentfirm.role_actions.v1",
+        "capability_auth": "x-agentfirm-token",
     }))
 }
 

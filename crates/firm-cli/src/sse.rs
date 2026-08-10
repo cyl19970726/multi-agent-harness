@@ -423,6 +423,7 @@ const EXECUTION_INVALIDATION_FILES: &[&str] = &[
     "work_operations.jsonl",
     "work_delivery_updates.jsonl",
     "host_attentions.jsonl",
+    "agentfirm_trust_operations.jsonl",
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]

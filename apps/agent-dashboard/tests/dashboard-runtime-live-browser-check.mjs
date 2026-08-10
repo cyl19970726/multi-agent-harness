@@ -21,6 +21,7 @@ const repoRoot = resolve(dashboardRoot, "../..");
 const harness = join(repoRoot, "target", "debug", "firm");
 const evidenceRoot = join(repoRoot, ".visual-evidence", "dashboard-runtime-live-e2e-v1");
 const token = `dashboard-runtime-live-${process.pid}`;
+const agentFirmToken = `agentfirm-runtime-live-${process.pid}`;
 const now = "2026-08-05T12:00:00+08:00";
 const actorRef = { actor_type: "human", actor_id: "human-live-owner" };
 
@@ -138,6 +139,11 @@ const env = {
   FIRM_COMPANY_OS_TOKEN: token,
   HARNESS_HOME: harnessHome,
   HARNESS_COMPANY_OS_TOKEN: token,
+  AGENTFIRM_HTTP_CREDENTIALS_JSON: JSON.stringify([{
+    token: agentFirmToken,
+    actor: { kind: "human", id: "host" },
+    authority_actors: [{ kind: "agent_member", id: "host" }],
+  }]),
 };
 delete env.FIRM_ROOT;
 delete env.FIRM_PROJECT;
@@ -335,6 +341,9 @@ try {
       get: () => window.__dashboardVisibility,
     });
   });
+  await page.addInitScript(({capabilityToken}) => {
+    window.__AGENTFIRM_BOOTSTRAP__ = { capabilityToken };
+  }, {capabilityToken: agentFirmToken});
 
   let snapshotReads = 0;
   let delayNextCompanyBSnapshotMs = 0;
@@ -395,7 +404,7 @@ try {
   createNativeWork("work-live-external", "External Work converged");
   await waitForDomain(page, "works", "stale");
   check(await page.locator('[data-freshness-domain="docs"][data-freshness-status="live"]').count() === 1, "Work invalidation leaves Docs freshness truthful and independent");
-  await waitForText(page, "External Work converged");
+  await waitForText(page, "work-live-external");
   check(true, "external Work write converges into the open page without reload");
 
   await navigate(page, "Docs");
@@ -488,6 +497,7 @@ try {
     company_scope: "company-a",
     snapshot_reads: snapshotReads,
     checks: { passed, failed },
+    candidate_sha: spawnSync("git", ["rev-parse", "HEAD"], {cwd: repoRoot, encoding:"utf8"}).stdout.trim(),
   }, null, 2)}\n`);
 } finally {
   if (context) await context.setOffline(false).catch(() => {});

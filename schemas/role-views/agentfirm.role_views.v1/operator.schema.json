@@ -1,0 +1,4 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"agentfirm.role_views.v1/operator.schema.json",
+  "allOf":[{"$ref":"role-view.schema.json"},{"type":"object","properties":{"view_kind":{"const":"operator"},"data":{"type":"object","additionalProperties":false,"required":["node","build","projects","team_supervisors","delivery_backlog","runtime_recovery","provider_admission","workspace_safety","diagnostics"],"properties":{"node":{"type":"object"},"build":{"type":"object"},"projects":{"type":"array"},"team_supervisors":{"type":"array"},"delivery_backlog":{"type":"object"},"runtime_recovery":{"type":"array"},"provider_admission":{"type":"array"},"workspace_safety":{"type":"array"},"diagnostics":{"type":"array"}}}}}]
+}

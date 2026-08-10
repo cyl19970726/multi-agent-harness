@@ -1,0 +1,4 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"agentfirm.role_views.v1/team-workspace.schema.json",
+  "allOf":[{"$ref":"role-view.schema.json"},{"type":"object","properties":{"view_kind":{"const":"team_workspace"},"data":{"type":"object","additionalProperties":false,"required":["team","works","members","messages","reports","findings","failures","gate_requirements","gate_evaluations","gate_waivers","workspace_attention","delegation_provenance","page"],"properties":{"team":{"type":"object"},"works":{"type":"array","items":{"$ref":"common.schema.json#/$defs/workSummary"}},"members":{"type":"array"},"messages":{"type":"array"},"reports":{"type":"array"},"findings":{"type":"array"},"failures":{"type":"array"},"gate_requirements":{"type":"array"},"gate_evaluations":{"type":"array"},"gate_waivers":{"type":"array"},"workspace_attention":{"type":"array"},"delegation_provenance":{"type":"array"},"page":{"$ref":"common.schema.json#/$defs/page"}}}}}]
+}

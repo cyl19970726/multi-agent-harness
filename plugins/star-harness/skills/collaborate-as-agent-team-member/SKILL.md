@@ -5,6 +5,15 @@ description: Use when a persistent Agent Team Member receives, claims, resumes, 
 
 # Collaborate As An Agent Team Member
 
+## Member Workbench projection
+
+For local product operation, read `GET
+/v1/views/member-workbench/{member_run_id}` using the authenticated
+AgentMember capability. A different actor must receive `NOT_AUTHORIZED`. The
+view contains outcome Work, messages/deliveries, Workspace/NativeSession health
+and Report/Finding/Failure/Gate history; private execution mechanics are not
+product Work.
+
 Own one shared-board Work end to end. This skill is a procedural capability, not
 product authority. You are a durable MemberRun with a Workspace, Provider-native
 session, mailbox, permission ceiling, and review responsibility. Your
