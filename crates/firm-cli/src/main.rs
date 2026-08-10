@@ -48,7 +48,7 @@ use harness_core::{
 };
 use harness_store::{
     canonical_surface, HarnessStore, HostAttentionClaimResult, MessageDeliveryClaimResult,
-    StoreError, TeamMessageDeliveryClaimResult,
+    StoreError,
 };
 use thiserror::Error;
 
@@ -17443,6 +17443,364 @@ fn canonical_delivery_context(
     }
 }
 
+#[derive(Debug, Clone)]
+struct ProviderEffectAdmission {
+    command_id: String,
+    settle_context: harness_core::agentfirm_api::MutationContext,
+}
+
+/// Durably admit one real provider turn before crossing the provider boundary.
+///
+/// The Team runtime is only a collaboration overlay here. The exact current
+/// machine-local AgentSession and NodeDaemon generation are resolved from the
+/// canonical store, and a replayed or ambiguous command never re-enters the
+/// provider transport.
+fn prepare_provider_effect(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+    source_record_id: &str,
+    content: &str,
+) -> CliResult<ProviderEffectAdmission> {
+    use harness_core::agentfirm_api::{
+        ActorKind, ActorRef, AgentSessionStatus, ControlCommandEnvelope, RuntimeCommandKind,
+        RuntimeCommandStatus, RuntimeEffectCertainty,
+    };
+
+    let mut matches = Vec::new();
+    for execution_space_id in ledger.store.canonical_execution_space_ids()? {
+        for session in ledger
+            .store
+            .fabric_agent_sessions(&execution_space_id)?
+            .into_iter()
+            .filter(|session| {
+                session.agent_identity_id == member.agent_member_id
+                    && session.lifecycle != AgentSessionStatus::Closed
+            })
+        {
+            matches.push((execution_space_id.clone(), session));
+        }
+    }
+    if matches.len() != 1 {
+        return Err(CliError::Usage(format!(
+            "AGENT_SESSION_AMBIGUOUS: provider effect for {} requires one current session, found {}",
+            member.agent_member_id,
+            matches.len()
+        )));
+    }
+    let (execution_space_id, session) = matches.pop().unwrap();
+    if session.lifecycle != AgentSessionStatus::Active {
+        return Err(CliError::Usage(format!(
+            "AGENT_SESSION_NOT_ACTIVE: provider effect requires Active session {}, found {:?}",
+            session.id, session.lifecycle
+        )));
+    }
+    let lease = ledger
+        .store
+        .latest_node_daemon_lease(&session.node_id)?
+        .filter(|lease| {
+            lease.daemon_id == session.node_daemon_id
+                && lease.generation == session.node_daemon_generation
+                && lease.status == NodeDaemonLeaseStatus::Active
+                && lease.expires_unix_ms > current_unix_ms_u64()
+        })
+        .ok_or_else(|| CliError::Usage("NODE_DAEMON_GENERATION_FENCED".into()))?;
+    crate::provider_adapter::map_permission(
+        &session.provider_kind,
+        session.effective_permission_ceiling,
+    )
+    .map_err(CliError::Usage)?;
+
+    let content_fingerprint =
+        harness_store::canonical_json_fingerprint(&serde_json::json!({"content": content}));
+    let payload = serde_json::json!({
+        "session_id": session.id,
+        "session_generation": session.runtime_generation,
+        "delivery_id": source_record_id,
+        "provider": session.provider_kind,
+        "permission_ceiling": session.effective_permission_ceiling,
+        "content_fingerprint": content_fingerprint,
+    });
+    let payload_fingerprint = harness_store::canonical_json_fingerprint(&payload);
+    let idempotency_key = format!(
+        "provider-effect:{}:{}:{}",
+        session.id, session.runtime_generation, content_fingerprint
+    );
+    let command_id = format!("runtime-command:{idempotency_key}");
+    let daemon_actor = ActorRef {
+        kind: ActorKind::Service,
+        id: lease.daemon_id.clone(),
+    };
+    let command = ControlCommandEnvelope {
+        id: command_id.clone(),
+        execution_space_id: execution_space_id.clone(),
+        target_node_id: session.node_id.clone(),
+        target_node_daemon_id: lease.daemon_id.clone(),
+        target_node_daemon_generation: lease.generation,
+        authenticated_actor: daemon_actor.clone(),
+        command: RuntimeCommandKind::DispatchProvider,
+        required_capability: "provider.effect".into(),
+        idempotency_key: idempotency_key.clone(),
+        expected_version: 0,
+        expires_unix_ms: current_unix_ms_u64().saturating_add(30_000),
+        payload,
+        payload_fingerprint: payload_fingerprint.clone(),
+        issued_at: now_string(),
+    };
+    let command_fingerprint = harness_store::canonical_json_fingerprint(
+        &serde_json::to_value(&command).map_err(CliError::Json)?,
+    );
+    let admission_context = harness_core::agentfirm_api::MutationContext {
+        execution_space_id: execution_space_id.clone(),
+        authenticated_actor: daemon_actor.clone(),
+        authority_actor: Some(daemon_actor.clone()),
+        command_name: "node_daemon.provider_effect.prepare".into(),
+        idempotency_key,
+        expected_version: 0,
+        request_fingerprint: Some(command_fingerprint),
+    };
+    let admission = ledger.store.prepare_runtime_command(
+        &admission_context,
+        &command,
+        current_unix_ms_u64(),
+        &now_string(),
+    )?;
+    if admission.replayed {
+        let code = match (
+            admission.projection.status,
+            admission.projection.effect_certainty,
+        ) {
+            (RuntimeCommandStatus::Applied, RuntimeEffectCertainty::Applied) => {
+                "RUNTIME_COMMAND_REPLAY_APPLIED"
+            }
+            (RuntimeCommandStatus::Failed, RuntimeEffectCertainty::NotApplied) => {
+                "RUNTIME_COMMAND_REPLAY_FAILED"
+            }
+            _ => "RUNTIME_COMMAND_RECOVERY_REQUIRED",
+        };
+        return Err(CliError::Usage(format!(
+            "{code}: provider effect {} will not be repeated",
+            admission.projection.id
+        )));
+    }
+    Ok(ProviderEffectAdmission {
+        command_id,
+        settle_context: harness_core::agentfirm_api::MutationContext {
+            execution_space_id: admission_context.execution_space_id,
+            authenticated_actor: daemon_actor,
+            authority_actor: None,
+            command_name: "node_daemon.provider_effect.settle".into(),
+            idempotency_key: format!("{}:settle", admission_context.idempotency_key),
+            expected_version: admission.projection.version,
+            request_fingerprint: None,
+        },
+    })
+}
+
+fn settle_provider_effect(
+    ledger: &TeamRunLedger,
+    admission: &ProviderEffectAdmission,
+    applied: bool,
+    result: Option<serde_json::Value>,
+    failure_code: Option<String>,
+) -> CliResult<()> {
+    use harness_core::agentfirm_api::{RuntimeCommandStatus, RuntimeEffectCertainty};
+    ledger.store.settle_runtime_command(
+        &admission.settle_context,
+        &admission.command_id,
+        if applied {
+            RuntimeCommandStatus::Applied
+        } else {
+            RuntimeCommandStatus::RecoveryRequired
+        },
+        if applied {
+            RuntimeEffectCertainty::Applied
+        } else {
+            RuntimeEffectCertainty::Unknown
+        },
+        result,
+        failure_code,
+        &now_string(),
+    )?;
+    Ok(())
+}
+
+fn settle_provider_effect_not_applied(
+    ledger: &TeamRunLedger,
+    admission: &ProviderEffectAdmission,
+    failure_code: String,
+) -> CliResult<()> {
+    ledger.store.settle_runtime_command(
+        &admission.settle_context,
+        &admission.command_id,
+        harness_core::agentfirm_api::RuntimeCommandStatus::Failed,
+        harness_core::agentfirm_api::RuntimeEffectCertainty::NotApplied,
+        None,
+        Some(failure_code),
+        &now_string(),
+    )?;
+    Ok(())
+}
+
+fn prepare_provider_process_effect(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+) -> CliResult<ProviderEffectAdmission> {
+    use harness_core::agentfirm_api::{
+        ActorKind, ActorRef, AgentSessionStatus, ControlCommandEnvelope, RuntimeCommandKind,
+    };
+    let mut matches = Vec::new();
+    for execution_space_id in ledger.store.canonical_execution_space_ids()? {
+        for session in ledger
+            .store
+            .fabric_agent_sessions(&execution_space_id)?
+            .into_iter()
+            .filter(|session| {
+                session.agent_identity_id == member.agent_member_id
+                    && session.lifecycle != AgentSessionStatus::Closed
+            })
+        {
+            matches.push((execution_space_id.clone(), session));
+        }
+    }
+    if matches.len() != 1 {
+        return Err(CliError::Usage(format!(
+            "AGENT_SESSION_AMBIGUOUS: provider process for {} requires one current session, found {}",
+            member.agent_member_id,
+            matches.len()
+        )));
+    }
+    let (execution_space_id, session) = matches.pop().unwrap();
+    let lease = ledger
+        .store
+        .latest_node_daemon_lease(&session.node_id)?
+        .filter(|lease| {
+            lease.daemon_id == session.node_daemon_id
+                && lease.generation == session.node_daemon_generation
+                && lease.status == NodeDaemonLeaseStatus::Active
+                && lease.expires_unix_ms > current_unix_ms_u64()
+        })
+        .ok_or_else(|| CliError::Usage("NODE_DAEMON_GENERATION_FENCED".into()))?;
+    crate::provider_adapter::map_permission(
+        &session.provider_kind,
+        session.effective_permission_ceiling,
+    )
+    .map_err(CliError::Usage)?;
+    let kind = if member.native_session.is_some() {
+        RuntimeCommandKind::ResumeSession
+    } else {
+        RuntimeCommandKind::StartSession
+    };
+    let payload = serde_json::json!({
+        "session_id": session.id,
+        "session_generation": session.runtime_generation,
+        "provider": session.provider_kind,
+        "permission_ceiling": session.effective_permission_ceiling,
+        "native_resume_ref": member.native_session.as_ref().map(|value| &value.native_session_id),
+    });
+    let fingerprint = harness_store::canonical_json_fingerprint(&payload);
+    let idempotency_key = format!(
+        "provider-process:{}:{}:{kind:?}",
+        session.id, session.runtime_generation
+    );
+    let command_id = format!("runtime-command:{idempotency_key}");
+    let daemon_actor = ActorRef {
+        kind: ActorKind::Service,
+        id: lease.daemon_id.clone(),
+    };
+    let command = ControlCommandEnvelope {
+        id: command_id.clone(),
+        execution_space_id: execution_space_id.clone(),
+        target_node_id: session.node_id,
+        target_node_daemon_id: lease.daemon_id,
+        target_node_daemon_generation: lease.generation,
+        authenticated_actor: daemon_actor.clone(),
+        command: kind,
+        required_capability: if kind == RuntimeCommandKind::StartSession {
+            "agent_session.start"
+        } else {
+            "agent_session.resume"
+        }
+        .into(),
+        idempotency_key: idempotency_key.clone(),
+        expected_version: 0,
+        expires_unix_ms: current_unix_ms_u64().saturating_add(30_000),
+        payload,
+        payload_fingerprint: fingerprint.clone(),
+        issued_at: now_string(),
+    };
+    let command_fingerprint = harness_store::canonical_json_fingerprint(
+        &serde_json::to_value(&command).map_err(CliError::Json)?,
+    );
+    let context = harness_core::agentfirm_api::MutationContext {
+        execution_space_id,
+        authenticated_actor: daemon_actor.clone(),
+        authority_actor: Some(daemon_actor.clone()),
+        command_name: "node_daemon.provider_process.prepare".into(),
+        idempotency_key: idempotency_key.clone(),
+        expected_version: 0,
+        request_fingerprint: Some(command_fingerprint),
+    };
+    let admission = ledger.store.prepare_runtime_command(
+        &context,
+        &command,
+        current_unix_ms_u64(),
+        &now_string(),
+    )?;
+    if admission.replayed {
+        return Err(CliError::Usage(format!(
+            "RUNTIME_COMMAND_RECOVERY_REQUIRED: provider process command {} already exists as {:?}/{:?}; reconcile before spawn",
+            admission.projection.id,
+            admission.projection.status,
+            admission.projection.effect_certainty
+        )));
+    }
+    Ok(ProviderEffectAdmission {
+        command_id,
+        settle_context: harness_core::agentfirm_api::MutationContext {
+            execution_space_id: context.execution_space_id,
+            authenticated_actor: daemon_actor,
+            authority_actor: None,
+            command_name: "node_daemon.provider_process.settle".into(),
+            idempotency_key: format!("{idempotency_key}:settle"),
+            expected_version: admission.projection.version,
+            request_fingerprint: None,
+        },
+    })
+}
+
+fn send_claude_provider_input(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+    send: &mut impl FnMut(serde_json::Value) -> CliResult<()>,
+    input_id: &str,
+    kind: &str,
+    sender_runtime_id: &str,
+    correlation_id: &str,
+    body: String,
+) -> CliResult<ProviderEffectAdmission> {
+    transition_provider_session_for_member(
+        ledger,
+        member,
+        harness_core::agentfirm_api::AgentSessionStatus::Active,
+    )?;
+    let admission = prepare_provider_effect(ledger, member, input_id, &body)?;
+    let send_result = send(serde_json::json!({
+        "command": "deliver",
+        "payload": {
+            "id": input_id,
+            "kind": kind,
+            "sender_runtime_id": sender_runtime_id,
+            "correlation_id": correlation_id,
+            "body": body,
+        }
+    }));
+    if let Err(error) = send_result {
+        settle_provider_effect(ledger, &admission, false, None, Some(error.to_string()))?;
+        return Err(error);
+    }
+    Ok(admission)
+}
+
 fn transition_provider_session_for_member(
     ledger: &TeamRunLedger,
     member: &ProviderRuntimeProjection,
@@ -17518,6 +17876,57 @@ fn transition_provider_session_for_member(
     Ok(())
 }
 
+fn require_provider_session_authority(
+    ledger: &TeamRunLedger,
+    agent_identity_id: &str,
+    require_active: bool,
+) -> CliResult<harness_core::agentfirm_api::AgentSession> {
+    use harness_core::agentfirm_api::AgentSessionStatus;
+    let mut matches = Vec::new();
+    for execution_space_id in ledger.store.canonical_execution_space_ids()? {
+        for session in ledger
+            .store
+            .fabric_agent_sessions(&execution_space_id)?
+            .into_iter()
+            .filter(|session| {
+                session.agent_identity_id == agent_identity_id
+                    && session.lifecycle != AgentSessionStatus::Closed
+            })
+        {
+            matches.push(session);
+        }
+    }
+    if matches.len() != 1 {
+        return Err(CliError::Usage(format!(
+            "AGENT_SESSION_AMBIGUOUS: provider authority for {agent_identity_id} requires one current session, found {}",
+            matches.len()
+        )));
+    }
+    let session = matches.pop().unwrap();
+    if require_active && session.lifecycle != AgentSessionStatus::Active {
+        return Err(CliError::Usage(format!(
+            "AGENT_SESSION_NOT_ACTIVE: provider authority requires Active session {}, found {:?}",
+            session.id, session.lifecycle
+        )));
+    }
+    ledger
+        .store
+        .latest_node_daemon_lease(&session.node_id)?
+        .filter(|lease| {
+            lease.daemon_id == session.node_daemon_id
+                && lease.generation == session.node_daemon_generation
+                && lease.status == NodeDaemonLeaseStatus::Active
+                && lease.expires_unix_ms > current_unix_ms_u64()
+        })
+        .ok_or_else(|| CliError::Usage("NODE_DAEMON_GENERATION_FENCED".into()))?;
+    crate::provider_adapter::map_permission(
+        &session.provider_kind,
+        session.effective_permission_ceiling,
+    )
+    .map_err(CliError::Usage)?;
+    Ok(session)
+}
+
 fn claim_canonical_messages_for_member(
     ledger: &TeamRunLedger,
     member: &ProviderRuntimeProjection,
@@ -17580,7 +17989,7 @@ fn claim_canonical_messages_for_member(
     // trigger. Keep it queued until a response-required message arrives; the
     // resulting round then consumes the entire ordered batch exactly once.
     // This is the canonical-ledger equivalent of
-    // `claim_round_triggering_messages_for` for the retired projection.
+    // `claim_canonical_round_messages_for` for the provider inbox adapter.
     let triggers_round = queued.iter().any(|delivery| {
         messages.get(&delivery.message_id).is_some_and(|message| {
             message.response_intent == harness_core::agentfirm_api::ResponseIntent::ResponseRequired
@@ -19111,7 +19520,7 @@ impl TeamRunLedger {
         Ok(queued)
     }
 
-    fn claim_next_work_for(&self, member_id: &str) -> CliResult<Option<ClaimedWork>> {
+    fn claim_canonical_work_for(&self, member_id: &str) -> CliResult<Option<ClaimedWork>> {
         let member = self
             .latest_member_run(member_id)?
             .ok_or_else(|| CliError::Usage(format!("member run not found: {member_id}")))?;
@@ -19380,29 +19789,7 @@ impl TeamRunLedger {
             .collect())
     }
 
-    fn claim_message(
-        &self,
-        message_id: &str,
-        member_id: &str,
-    ) -> CliResult<Option<TeamMessageProjection>> {
-        self.require_supervisor_lease()?;
-        let claim_id = generated_id("delivery-claim");
-        match store_conflict_as_usage(self.store.claim_team_message_delivery(
-            &self.run_id,
-            message_id,
-            member_id,
-            &self.supervisor_id,
-            self.supervisor_generation,
-            &claim_id,
-            current_unix_ms_u64(),
-            team_supervisor_lease_ttl_ms(),
-            &now_string(),
-        ))? {
-            TeamMessageDeliveryClaimResult::Claimed(message) => Ok(Some(*message)),
-            TeamMessageDeliveryClaimResult::NotQueued => Ok(None),
-        }
-    }
-
+    #[cfg(test)]
     fn complete_provider_interaction_response(
         &self,
         message: &TeamMessageProjection,
@@ -19466,7 +19853,7 @@ impl TeamRunLedger {
     /// claimed in order so the whole batch is delivered exactly once with
     /// that round's provider receipt. Informational-only mail stays queued
     /// and durable without starting a round, which bounds peer convergence.
-    fn claim_round_triggering_messages_for(
+    fn claim_canonical_round_messages_for(
         &self,
         member_id: &str,
     ) -> CliResult<Vec<TeamMessageProjection>> {
@@ -19852,7 +20239,7 @@ fn wait_for_idle_member_wake(
         match decision {
             supervisor_wake::WakeDecision::DeliverPending => {
                 // Try work deliveries first (work contract prompt).
-                if let Some(claimed) = ledger.claim_next_work_for(&member_row.id)? {
+                if let Some(claimed) = ledger.claim_canonical_work_for(&member_row.id)? {
                     backoff.reset();
                     let expected = member_row.clone();
                     member_row.status = MemberRunStatus::Running;
@@ -19874,7 +20261,7 @@ fn wait_for_idle_member_wake(
                         // peer messages). Without this, a Host reply sent
                         // between rounds is silently lost when the wake
                         // reason is ActiveWorkContinuation.
-                        let pending = ledger.claim_round_triggering_messages_for(&member_row.id)?;
+                        let pending = ledger.claim_canonical_round_messages_for(&member_row.id)?;
                         if !pending.is_empty() {
                             backoff.reset();
                             let expected = member_row.clone();
@@ -19910,9 +20297,9 @@ fn wait_for_idle_member_wake(
                 // EXIT_AFTER_FIRST_TURN=1) do not lose queued follow-up
                 // messages to disconnect handling between separate deliveries.
                 let mut notifs = ledger.claim_terminal_work_notifications_for(&member_row.id)?;
-                let mut claimed = ledger.claim_round_triggering_messages_for(&member_row.id)?;
+                let mut claimed = ledger.claim_canonical_round_messages_for(&member_row.id)?;
                 notifs.append(&mut claimed);
-                // Deduplicate by message id: claim_round_triggering_messages_for
+                // Deduplicate by message id: claim_canonical_round_messages_for
                 // may re-claim messages that claim_terminal_work_notifications_for
                 // already published (informational work notifications). Keep the
                 // last entry — the claimed version — because
@@ -21559,7 +21946,7 @@ fn run_codex_member(
     member: &ProviderRuntimeProjection,
     context: &MemberRuntimeContext,
 ) -> CliResult<MemberOutcome> {
-    ledger.require_supervisor_lease()?;
+    require_provider_session_authority(ledger, &member.agent_member_id, true)?;
     let project_id = context.project_id.as_deref();
     let project_selector = context.project_selector.as_deref();
     let cwd = &context.cwd;
@@ -21568,7 +21955,7 @@ fn run_codex_member(
     let turn_leases = &context.turn_leases;
     let mut member_row = member.clone();
     if let Some(profile) = member_row.provider_profile.as_mut() {
-        ledger.require_supervisor_lease()?;
+        require_provider_session_authority(ledger, &member.agent_member_id, true)?;
         apply_provider_version(profile, provider_version_output("codex").ok());
     }
     ledger.fold_event(
@@ -21595,8 +21982,8 @@ fn run_codex_member(
     let collaboration_env = envelope.environment();
     // Fence immediately before app-server start/resume. Durable preparation
     // above is replay-safe; the provider process is not.
-    ledger.require_supervisor_lease()?;
-    let mut app_server = codex_app_server::CodexAppServerClient::spawn(
+    let process_effect = prepare_provider_process_effect(ledger, &member_row)?;
+    let app_server_result = codex_app_server::CodexAppServerClient::spawn(
         cwd,
         codex_app_server::CodexAppServerSpawnOptions {
             model: member.model.as_deref(),
@@ -21614,7 +22001,23 @@ fn run_codex_member(
             collaboration_env: &collaboration_env,
             plan_mode: false,
         },
-    )?;
+    );
+    let mut app_server = match app_server_result {
+        Ok(client) => {
+            settle_provider_effect(
+                ledger,
+                &process_effect,
+                true,
+                Some(serde_json::json!({"provider": "codex", "process": "ready"})),
+                None,
+            )?;
+            client
+        }
+        Err(error) => {
+            settle_provider_effect_not_applied(ledger, &process_effect, error.to_string())?;
+            return Err(error);
+        }
+    };
     let expected = member.clone();
     member_row.provider_controls.model.mark_effective(
         Some(app_server.model().to_string()),
@@ -21798,9 +22201,15 @@ fn run_codex_member(
             active_assignment_for_round(active_assignment.as_ref(), &accepted_messages);
         let round_trigger = accepted_messages.last().cloned();
         let handoffs_before_round = member_handoff_ids(ledger, &member.id)?;
-        let turn = {
+        let source_record_id = active_work
+            .as_ref()
+            .map(|claimed| claimed.delivery.id.as_str())
+            .or_else(|| accepted_messages.last().map(|message| message.id.as_str()))
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("continuation:{}:{round}", member_row.id));
+        let effect = prepare_provider_effect(ledger, &member_row, &source_record_id, &prompt_text)?;
+        let turn_result = {
             let _turn_lease = turn_leases.acquire();
-            ledger.require_supervisor_lease()?;
             run_codex_app_server_turn(
                 &mut app_server,
                 &prompt_text,
@@ -21822,7 +22231,27 @@ fn run_codex_member(
                         handoffs_before_round: &handoffs_before_round,
                     },
                 },
-            )?
+            )
+        };
+        let turn = match turn_result {
+            Ok(turn) => {
+                settle_provider_effect(
+                    ledger,
+                    &effect,
+                    true,
+                    Some(serde_json::json!({
+                        "provider": "codex",
+                        "thread_id": turn.thread_id,
+                        "round": round,
+                    })),
+                    None,
+                )?;
+                turn
+            }
+            Err(error) => {
+                settle_provider_effect(ledger, &effect, false, None, Some(error.to_string()))?;
+                return Err(error);
+            }
         };
         // Fence the caller as well: no native-session, Handoff, action, or
         // ProviderRuntimeProjection write may follow a terminal transport result from a stale
@@ -22170,7 +22599,7 @@ fn run_codex_app_server_turn(
         active_work,
         lineage,
     } = context;
-    ledger.require_supervisor_lease()?;
+    require_provider_session_authority(ledger, &member.agent_member_id, true)?;
     let mut turn_id = client.start_turn(prompt)?;
     // The turn/start response is the earliest honest evidence that the
     // provider accepted this turn, so the Work receipt lands here — beside
@@ -22198,7 +22627,7 @@ fn run_codex_app_server_turn(
     let mut close_requested = false;
     let mut tool_call_count: u32 = 0;
     loop {
-        ledger.require_supervisor_lease()?;
+        require_provider_session_authority(ledger, &member.agent_member_id, true)?;
         while let Ok(command) = controls.try_recv() {
             match command {
                 MemberControlCommand::Steer {
@@ -22214,8 +22643,12 @@ fn run_codex_app_server_turn(
                     .and_then(|handoff| {
                         let handoff_lineage =
                             handoff.map(|handoff| (handoff.correlation_id, handoff.id));
-                        ledger
-                            .require_supervisor_lease()
+                        require_provider_session_authority(
+                            ledger,
+                            &member.agent_member_id,
+                            true,
+                        )
+                            .map(|_| ())
                             .and_then(|()| client.steer(&turn_id, &content))
                             .and_then(|active_turn| {
                             turn_id = active_turn;
@@ -22242,24 +22675,25 @@ fn run_codex_app_server_turn(
                     requested_by,
                     reply,
                 } => {
-                    let result = ledger
-                        .require_supervisor_lease()
-                        .and_then(|()| client.interrupt(&turn_id))
-                        .and_then(|()| {
-                            interrupt_requested = true;
-                            ledger.append_action(
-                                &member.id,
-                                "interrupt_requested",
-                                MemberActionStatus::Progress,
-                                "Codex interruption requested",
-                                &format!("{requested_by}: {reason}"),
-                            )?;
-                            Ok(serde_json::json!({
-                                "member_run_id": member.id,
-                                "turn_id": turn_id,
-                                "status": "interrupt_requested",
-                            }))
-                        });
+                    let result =
+                        require_provider_session_authority(ledger, &member.agent_member_id, true)
+                            .map(|_| ())
+                            .and_then(|()| client.interrupt(&turn_id))
+                            .and_then(|()| {
+                                interrupt_requested = true;
+                                ledger.append_action(
+                                    &member.id,
+                                    "interrupt_requested",
+                                    MemberActionStatus::Progress,
+                                    "Codex interruption requested",
+                                    &format!("{requested_by}: {reason}"),
+                                )?;
+                                Ok(serde_json::json!({
+                                    "member_run_id": member.id,
+                                    "turn_id": turn_id,
+                                    "status": "interrupt_requested",
+                                }))
+                            });
                     let _ = reply.send(result);
                 }
                 MemberControlCommand::Close {
@@ -22267,26 +22701,27 @@ fn run_codex_app_server_turn(
                     requested_by,
                     reply,
                 } => {
-                    let result = ledger
-                        .require_supervisor_lease()
-                        .and_then(|()| client.interrupt(&turn_id))
-                        .and_then(|()| {
-                            interrupt_requested = true;
-                            close_requested = true;
-                            ledger.append_action(
-                                &member.id,
-                                "close_requested",
-                                MemberActionStatus::Progress,
-                                "Codex member close requested",
-                                &format!("{requested_by}: {reason}"),
-                            )?;
-                            Ok(serde_json::json!({
-                                "member_run_id": member.id,
-                                "turn_id": turn_id,
-                                "status": "close_requested",
-                                "provider_ack": "turn_interrupt_accepted",
-                            }))
-                        });
+                    let result =
+                        require_provider_session_authority(ledger, &member.agent_member_id, true)
+                            .map(|_| ())
+                            .and_then(|()| client.interrupt(&turn_id))
+                            .and_then(|()| {
+                                interrupt_requested = true;
+                                close_requested = true;
+                                ledger.append_action(
+                                    &member.id,
+                                    "close_requested",
+                                    MemberActionStatus::Progress,
+                                    "Codex member close requested",
+                                    &format!("{requested_by}: {reason}"),
+                                )?;
+                                Ok(serde_json::json!({
+                                    "member_run_id": member.id,
+                                    "turn_id": turn_id,
+                                    "status": "close_requested",
+                                    "provider_ack": "turn_interrupt_accepted",
+                                }))
+                            });
                     let _ = reply.send(result);
                 }
             }
@@ -22300,7 +22735,7 @@ fn run_codex_app_server_turn(
                 }
                 // The receive above is blocking. Re-fence before interpreting
                 // even a terminal frame or projecting any semantic state.
-                ledger.require_supervisor_lease()?;
+                require_provider_session_authority(ledger, &member.agent_member_id, true)?;
                 last_activity = Instant::now();
                 let params = frame.get("params").unwrap_or(&frame);
                 // app-server may emit notifications for another turn on the
@@ -22405,9 +22840,9 @@ fn run_codex_app_server_turn(
                         });
                     }
                     _ if frame.get("id").is_some() && method.is_some() => {
-                        ledger.require_supervisor_lease()?;
+                        require_provider_session_authority(ledger, &member.agent_member_id, true)?;
                         let reply = handle_codex_provider_request(ledger, member, &frame)?;
-                        ledger.require_supervisor_lease()?;
+                        require_provider_session_authority(ledger, &member.agent_member_id, true)?;
                         client.respond(frame.get("id").expect("checked"), reply.result.clone())?;
                         complete_provider_interaction_reply(
                             ledger,
@@ -22424,7 +22859,7 @@ fn run_codex_app_server_turn(
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 if last_activity.elapsed() >= idle_timeout {
-                    ledger.require_supervisor_lease()?;
+                    require_provider_session_authority(ledger, &member.agent_member_id, true)?;
                     client.interrupt(&turn_id)?;
                     interrupt_requested = true;
                     last_activity = Instant::now();
@@ -22579,7 +23014,6 @@ fn run_claude_agent_sdk_team_member(
     // Fence immediately before starting or resuming the provider-owned
     // session. ProviderChildGuard guarantees a lease-loss return cannot orphan
     // the runner after this point.
-    ledger.require_supervisor_lease()?;
     let mut command = Command::new("node");
     command
         .arg(&runner)
@@ -22589,13 +23023,30 @@ fn run_claude_agent_sdk_team_member(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     isolate_provider_child_process_group(&mut command);
-    let mut child = ProviderChildGuard::new(command.spawn().map_err(|error| {
+    let process_effect = prepare_provider_process_effect(ledger, &member_row)?;
+    let child_result = command.spawn().map_err(|error| {
         CliError::Usage(format!(
             "failed to spawn claude_agent_sdk runner for {}: {error}. \
                  The runner needs `node` on PATH.",
             member.name
         ))
-    })?);
+    });
+    let mut child = match child_result {
+        Ok(child) => {
+            settle_provider_effect(
+                ledger,
+                &process_effect,
+                true,
+                Some(serde_json::json!({"provider": "claude", "process": "ready"})),
+                None,
+            )?;
+            ProviderChildGuard::new(child)
+        }
+        Err(error) => {
+            settle_provider_effect_not_applied(ledger, &process_effect, error.to_string())?;
+            return Err(error);
+        }
+    };
 
     let mut stdin = child
         .stdin
@@ -22626,7 +23077,7 @@ fn run_claude_agent_sdk_team_member(
     });
 
     let mut send = |command: serde_json::Value| -> CliResult<()> {
-        ledger.require_supervisor_lease()?;
+        require_provider_session_authority(ledger, &member.agent_member_id, false)?;
         stdin
             .write_all(format!("{command}\n").as_bytes())
             .and_then(|_| stdin.flush())
@@ -22639,6 +23090,7 @@ fn run_claude_agent_sdk_team_member(
     let mut delivered_message_ids = HashSet::<String>::new();
     let mut delivered_messages = HashMap::<String, TeamMessageProjection>::new();
     let mut handoffs_before_by_message = HashMap::<String, HashSet<String>>::new();
+    let mut inflight_effects = HashMap::<String, ProviderEffectAdmission>::new();
 
     send(serde_json::json!({
         "command": "start",
@@ -22705,18 +23157,20 @@ fn run_claude_agent_sdk_team_member(
             Some(&work),
         )?;
         turn_lease = Some(turn_leases.acquire());
-        send(serde_json::json!({
-            "command": "deliver",
-            "payload": {
-                "id": generated_id("active-work-continuation"),
-                "kind": "work_continuation",
-                "sender_runtime_id": "host",
-                "correlation_id": work.id,
-                "body": active_work_continuation_prompt(objective, &member_row, &work, &work_envelope),
-            }
-        }))?;
+        let input_id = format!("work-continuation:{}:{}", work.id, work.version);
+        let effect = send_claude_provider_input(
+            ledger,
+            &member_row,
+            &mut send,
+            &input_id,
+            "work_continuation",
+            "host",
+            &work.id,
+            active_work_continuation_prompt(objective, &member_row, &work, &work_envelope),
+        )?;
+        inflight_effects.insert(input_id, effect);
         active_work_continuation_inflight = true;
-    } else if let Some(claimed) = ledger.claim_next_work_for(&member.id)? {
+    } else if let Some(claimed) = ledger.claim_canonical_work_for(&member.id)? {
         let work_envelope = member_work_collaboration_envelope(
             ledger,
             context.execution_space_id.as_deref(),
@@ -22726,16 +23180,17 @@ fn run_claude_agent_sdk_team_member(
             Some(&claimed.work),
         )?;
         turn_lease = Some(turn_leases.acquire());
-        send(serde_json::json!({
-            "command": "deliver",
-            "payload": {
-                "id": claimed.delivery.id,
-                "kind": "work",
-                "sender_runtime_id": "host",
-                "correlation_id": claimed.work.id,
-                "body": work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope),
-            }
-        }))?;
+        let effect = send_claude_provider_input(
+            ledger,
+            &member_row,
+            &mut send,
+            &claimed.delivery.id,
+            "work",
+            "host",
+            &claimed.work.id,
+            work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope),
+        )?;
+        inflight_effects.insert(claimed.delivery.id.clone(), effect);
         inflight_works.insert(claimed.delivery.id.clone(), claimed);
     } else if claude_agent_sdk_idle_grace().is_none() {
         if let Some(work) = ledger.active_work_continuation_for(&member.id)? {
@@ -22748,16 +23203,18 @@ fn run_claude_agent_sdk_team_member(
                 Some(&work),
             )?;
             turn_lease = Some(turn_leases.acquire());
-            send(serde_json::json!({
-                "command": "deliver",
-                "payload": {
-                    "id": generated_id("active-work-continuation"),
-                    "kind": "work_continuation",
-                    "sender_runtime_id": "host",
-                    "correlation_id": work.id,
-                    "body": active_work_continuation_prompt(objective, &member_row, &work, &work_envelope),
-                }
-            }))?;
+            let input_id = format!("work-continuation:{}:{}", work.id, work.version);
+            let effect = send_claude_provider_input(
+                ledger,
+                &member_row,
+                &mut send,
+                &input_id,
+                "work_continuation",
+                "host",
+                &work.id,
+                active_work_continuation_prompt(objective, &member_row, &work, &work_envelope),
+            )?;
+            inflight_effects.insert(input_id, effect);
             active_work_continuation_inflight = true;
         }
     }
@@ -22792,7 +23249,7 @@ fn run_claude_agent_sdk_team_member(
     let mut idle_since = inflight_works.is_empty().then(Instant::now);
 
     loop {
-        ledger.require_supervisor_lease()?;
+        require_provider_session_authority(ledger, &member.agent_member_id, false)?;
         while let Ok(command) = live_control.try_recv() {
             match command {
                 MemberControlCommand::Interrupt {
@@ -22877,7 +23334,7 @@ fn run_claude_agent_sdk_team_member(
         };
         // The wait above is intentionally blocking. Re-fence before consuming
         // its provider event or writing a response.
-        ledger.require_supervisor_lease()?;
+        require_provider_session_authority(ledger, &member.agent_member_id, false)?;
 
         if let Some(line) = waited {
             let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
@@ -23013,6 +23470,21 @@ fn run_claude_agent_sdk_team_member(
                     let trigger_message_id = data
                         .get("triggerMessageId")
                         .and_then(|value| value.as_str());
+                    if let Some(trigger_id) = trigger_message_id {
+                        if let Some(effect) = inflight_effects.remove(trigger_id) {
+                            settle_provider_effect(
+                                ledger,
+                                &effect,
+                                true,
+                                Some(serde_json::json!({
+                                    "provider": "claude",
+                                    "trigger_id": trigger_id,
+                                    "session_id": data.get("sessionId"),
+                                })),
+                                None,
+                            )?;
+                        }
+                    }
                     let trigger = trigger_message_id
                         .and_then(|message_id| delivered_messages.remove(message_id));
                     let trigger_work = trigger_message_id
@@ -23072,6 +23544,11 @@ fn run_claude_agent_sdk_team_member(
                     member_row.finished_at = None;
                     member_row.last_event_at = Some(now_string());
                     ledger.save_member_run(&expected, &member_row)?;
+                    transition_provider_session_for_member(
+                        ledger,
+                        &member_row,
+                        harness_core::agentfirm_api::AgentSessionStatus::Idle,
+                    )?;
                     final_status = MemberRunStatus::Idle;
                     final_summary = summary;
                     turn_text.clear();
@@ -23138,7 +23615,7 @@ fn run_claude_agent_sdk_team_member(
         // queued until response-required mail triggers a round, then batches it.
         let mut delivered_any = false;
         if inflight_works.is_empty() && delivered_works.is_empty() {
-            if let Some(claimed) = ledger.claim_next_work_for(&member.id)? {
+            if let Some(claimed) = ledger.claim_canonical_work_for(&member.id)? {
                 if turn_lease.is_none() {
                     turn_lease = Some(turn_leases.acquire());
                 }
@@ -23150,16 +23627,17 @@ fn run_claude_agent_sdk_team_member(
                     &member_row,
                     Some(&claimed.work),
                 )?;
-                send(serde_json::json!({
-                    "command": "deliver",
-                    "payload": {
-                        "id": claimed.delivery.id,
-                        "kind": "work",
-                        "sender_runtime_id": "host",
-                        "correlation_id": claimed.work.id,
-                        "body": work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope),
-                    }
-                }))?;
+                let effect = send_claude_provider_input(
+                    ledger,
+                    &member_row,
+                    &mut send,
+                    &claimed.delivery.id,
+                    "work",
+                    "host",
+                    &claimed.work.id,
+                    work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope),
+                )?;
+                inflight_effects.insert(claimed.delivery.id.clone(), effect);
                 inflight_works.insert(claimed.delivery.id.clone(), claimed);
                 delivered_any = true;
             } else if claude_agent_sdk_idle_grace().is_none() && !active_work_continuation_inflight
@@ -23176,22 +23654,29 @@ fn run_claude_agent_sdk_team_member(
                         &member_row,
                         Some(&work),
                     )?;
-                    send(serde_json::json!({
-                        "command": "deliver",
-                        "payload": {
-                            "id": generated_id("active-work-continuation"),
-                            "kind": "work_continuation",
-                            "sender_runtime_id": "host",
-                            "correlation_id": work.id,
-                            "body": active_work_continuation_prompt(objective, &member_row, &work, &work_envelope),
-                        }
-                    }))?;
+                    let input_id = format!("work-continuation:{}:{}", work.id, work.version);
+                    let effect = send_claude_provider_input(
+                        ledger,
+                        &member_row,
+                        &mut send,
+                        &input_id,
+                        "work_continuation",
+                        "host",
+                        &work.id,
+                        active_work_continuation_prompt(
+                            objective,
+                            &member_row,
+                            &work,
+                            &work_envelope,
+                        ),
+                    )?;
+                    inflight_effects.insert(input_id, effect);
                     active_work_continuation_inflight = true;
                     delivered_any = true;
                 }
             }
         }
-        let queued = ledger.claim_round_triggering_messages_for(&member.id)?;
+        let queued = ledger.claim_canonical_round_messages_for(&member.id)?;
         for message in queued {
             if inflight_messages.contains_key(&message.id)
                 || delivered_message_ids.contains(&message.id)
@@ -23203,16 +23688,17 @@ fn run_claude_agent_sdk_team_member(
             }
             handoffs_before_by_message
                 .insert(message.id.clone(), member_handoff_ids(ledger, &member.id)?);
-            send(serde_json::json!({
-                "command": "deliver",
-                "payload": {
-                    "id": message.id,
-                    "kind": team_message_kind_label(&message.kind),
-                    "sender_runtime_id": message.sender_runtime_id,
-                    "correlation_id": message.correlation_id,
-                    "body": message.body,
-                }
-            }))?;
+            let effect = send_claude_provider_input(
+                ledger,
+                &member_row,
+                &mut send,
+                &message.id,
+                team_message_kind_label(&message.kind),
+                &message.sender_runtime_id,
+                &message.correlation_id,
+                message.body.clone(),
+            )?;
+            inflight_effects.insert(message.id.clone(), effect);
             inflight_messages.insert(message.id.clone(), message);
             delivered_any = true;
         }
@@ -23670,9 +24156,9 @@ fn run_kimi_member(
     let collaboration_env = envelope.environment();
     // Fence immediately before ACP session start/resume. A successor may
     // reattach this same native session after this generation quiesces.
-    ledger.require_supervisor_lease()?;
     let resumed_native_session = member.native_session.is_some();
-    let mut client = kimi_acp::KimiAcpClient::spawn(
+    let process_effect = prepare_provider_process_effect(ledger, &member_row)?;
+    let client_result = kimi_acp::KimiAcpClient::spawn(
         cwd,
         member.model.as_deref(),
         member
@@ -23685,7 +24171,23 @@ fn run_kimi_member(
             .as_ref()
             .map(|session| session.native_session_id.as_str()),
         &collaboration_env,
-    )?;
+    );
+    let mut client = match client_result {
+        Ok(client) => {
+            settle_provider_effect(
+                ledger,
+                &process_effect,
+                true,
+                Some(serde_json::json!({"provider": "kimi", "process": "ready"})),
+                None,
+            )?;
+            client
+        }
+        Err(error) => {
+            settle_provider_effect_not_applied(ledger, &process_effect, error.to_string())?;
+            return Err(error);
+        }
+    };
     let expected = member_row.clone();
     member_row.status = MemberRunStatus::Idle;
     if let Some(profile) = member_row.provider_profile.as_mut() {
@@ -23804,7 +24306,7 @@ fn run_kimi_member(
             &mut member_row,
             &live_control,
             || {
-                ledger.require_supervisor_lease()?;
+                require_provider_session_authority(ledger, &member.agent_member_id, false)?;
                 client.ensure_transport_alive()
             },
             zero_output_streak,
@@ -23898,9 +24400,15 @@ fn run_kimi_member(
         let mut close_requested = false;
         let expected_round = member_row.clone();
         let mut mapper = MemberUpdateMapper::new(ledger, member_row.clone(), live_sink.clone());
-        let outcome = {
+        let source_record_id = active_work
+            .as_ref()
+            .map(|claimed| claimed.delivery.id.as_str())
+            .or_else(|| accepted_messages.last().map(|message| message.id.as_str()))
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("continuation:{}:{round}", member_row.id));
+        let effect = prepare_provider_effect(ledger, &member_row, &source_record_id, &prompt_text)?;
+        let outcome_result = {
             let _turn_lease = turn_leases.acquire();
-            ledger.require_supervisor_lease()?;
             let claimed_reverse_response = Arc::new(Mutex::new(None::<TeamMessageProjection>));
             let claimed_for_request = Arc::clone(&claimed_reverse_response);
             let claimed_after_write = Arc::clone(&claimed_reverse_response);
@@ -23918,7 +24426,7 @@ fn run_kimi_member(
                 },
                 |update| mapper.handle(update),
                 |request| {
-                    ledger.require_supervisor_lease()?;
+                    require_provider_session_authority(ledger, &member.agent_member_id, true)?;
                     let reply = handle_kimi_provider_request(ledger, &member_row, request)?;
                     *claimed_for_request
                         .lock()
@@ -23931,9 +24439,11 @@ fn run_kimi_member(
                         .unwrap_or_else(|error| error.into_inner())
                         .take();
                     if let Some(message) = claimed {
-                        ledger.complete_provider_interaction_response(
+                        mark_message_delivered(
+                            ledger,
                             &message,
                             &member.id,
+                            &member.name,
                             &format!(
                                 "kimi-acp-reverse:{}",
                                 request.get("id").unwrap_or(&serde_json::Value::Null)
@@ -23943,7 +24453,7 @@ fn run_kimi_member(
                     Ok(())
                 },
                 || {
-                    ledger.require_supervisor_lease()?;
+                    require_provider_session_authority(ledger, &member.agent_member_id, true)?;
                     let mut control = kimi_acp::PromptControl::Continue;
                     while let Ok(command) = live_control.try_recv() {
                         match command {
@@ -23994,13 +24504,33 @@ fn run_kimi_member(
                     }
                     Ok(control)
                 },
-            )?
+            )
+        };
+        let outcome = match outcome_result {
+            Ok(outcome) => {
+                settle_provider_effect(
+                    ledger,
+                    &effect,
+                    true,
+                    Some(serde_json::json!({
+                        "provider": "kimi",
+                        "round": round,
+                        "stop_reason": outcome.stop_reason,
+                    })),
+                    None,
+                )?;
+                outcome
+            }
+            Err(error) => {
+                settle_provider_effect(ledger, &effect, false, None, Some(error.to_string()))?;
+                return Err(error);
+            }
         };
         // `prompt` owns its blocking receive loop. Its terminal result can
         // arrive after the last control callback, so barrier then fence before
         // consuming the result or writing any semantic state.
         supervisor_test_terminal_receive_barrier("kimi")?;
-        ledger.require_supervisor_lease()?;
+        require_provider_session_authority(ledger, &member.agent_member_id, true)?;
         let round_trigger = accepted_messages.last().cloned();
         accepted_messages.clear();
         active_work = None;
@@ -24191,7 +24721,7 @@ fn run_kimi_member(
             &mut member_row,
             &live_control,
             || {
-                ledger.require_supervisor_lease()?;
+                require_provider_session_authority(ledger, &member.agent_member_id, false)?;
                 client.ensure_transport_alive()
             },
             zero_output_streak,
@@ -24396,8 +24926,8 @@ fn run_pi_team_member(
     let pi_bin = resolve_pi_bin();
 
     // Fence immediately before pi process start/resume.
-    ledger.require_supervisor_lease()?;
-    let mut pi_client = pi_rpc::PiRpcClient::spawn(
+    let process_effect = prepare_provider_process_effect(ledger, &member_row)?;
+    let pi_client_result = pi_rpc::PiRpcClient::spawn(
         &pi_bin,
         pi_rpc::PiSpawnOptions {
             cwd,
@@ -24414,7 +24944,23 @@ fn run_pi_team_member(
             member_name: &member.name,
             collaboration_env: &collaboration_env,
         },
-    )?;
+    );
+    let mut pi_client = match pi_client_result {
+        Ok(client) => {
+            settle_provider_effect(
+                ledger,
+                &process_effect,
+                true,
+                Some(serde_json::json!({"provider": "pi", "process": "ready"})),
+                None,
+            )?;
+            client
+        }
+        Err(error) => {
+            settle_provider_effect_not_applied(ledger, &process_effect, error.to_string())?;
+            return Err(error);
+        }
+    };
 
     member_row.native_session = Some(native_session_ref(
         &member_row,
@@ -24446,7 +24992,7 @@ fn run_pi_team_member(
         &mut member_row,
         &live_control,
         || {
-            ledger.require_supervisor_lease()?;
+            require_provider_session_authority(ledger, &member.agent_member_id, false)?;
             pi_client.ensure_transport_alive()
         },
         zero_output_streak,
@@ -24528,10 +25074,16 @@ fn run_pi_team_member(
         let prompt = prompt_text.clone();
         let member_id_clone = member.id.clone();
         let member_provider = member.provider.clone();
+        let source_record_id = active_work
+            .as_ref()
+            .map(|claimed| claimed.delivery.id.as_str())
+            .or_else(|| accepted_messages.last().map(|message| message.id.as_str()))
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("continuation:{}:{round}", member_row.id));
+        let effect = prepare_provider_effect(ledger, &member_row, &source_record_id, &prompt)?;
 
-        let turn = {
+        let turn_result = {
             let _turn_lease = turn_leases.acquire();
-            ledger.require_supervisor_lease()?;
             pi_client.prompt(
                 &prompt,
                 idle_timeout,
@@ -24557,10 +25109,30 @@ fn run_pi_team_member(
                     }
                     (false, false)
                 },
-            )?
+            )
+        };
+        let turn = match turn_result {
+            Ok(turn) => {
+                settle_provider_effect(
+                    ledger,
+                    &effect,
+                    true,
+                    Some(serde_json::json!({
+                        "provider": "pi",
+                        "round": round,
+                        "session_file": pi_client.session_file(),
+                    })),
+                    None,
+                )?;
+                turn
+            }
+            Err(error) => {
+                settle_provider_effect(ledger, &effect, false, None, Some(error.to_string()))?;
+                return Err(error);
+            }
         };
 
-        ledger.require_supervisor_lease()?;
+        require_provider_session_authority(ledger, &member.agent_member_id, true)?;
         // Update native session ref with current session file.
         let expected = member_row.clone();
         member_row.native_session = Some(native_session_ref(
@@ -24680,7 +25252,7 @@ fn run_pi_team_member(
             &mut member_row,
             &live_control,
             || {
-                ledger.require_supervisor_lease()?;
+                require_provider_session_authority(ledger, &member.agent_member_id, false)?;
                 pi_client.ensure_transport_alive()
             },
             zero_output_streak,
@@ -24943,49 +25515,10 @@ fn mark_message_delivered(
         let _ = received;
         return Ok(());
     }
-    let delivery = message
-        .deliveries
-        .iter()
-        .find(|delivery| delivery.member_id == member_id)
-        .ok_or_else(|| {
-            CliError::Usage(format!(
-                "message {} has no delivery for {member_id}",
-                message.id
-            ))
-        })?;
-    if delivery.status == TeamDeliveryStatus::Delivered {
-        return Ok(());
-    }
-    let claim_id = delivery.claim_id.as_deref().ok_or_else(|| {
-        CliError::Usage(format!(
-            "message {} delivery to {member_id} has no durable claim",
-            message.id
-        ))
-    })?;
-    store_conflict_as_usage(ledger.store.complete_team_message_delivery_claim(
-        &ledger.run_id,
-        &message.id,
-        member_id,
-        &ledger.supervisor_id,
-        ledger.supervisor_generation,
-        claim_id,
-        provider_receipt_id,
-        current_unix_ms_u64(),
-        &now_string(),
-    ))?;
-    ledger.fold_event(
-        TeamRunEventSourceKind::Member,
-        Some(member_id.to_string()),
-        "message",
-        &message.id,
-        "updated",
-        &format!(
-            "{} accepted by provider for {} ({provider_receipt_id})",
-            team_message_kind_label(&message.kind),
-            member_name
-        ),
-    )?;
-    Ok(())
+    Err(CliError::Usage(format!(
+        "RETIRED_RUNTIME_READER: provider inbox item {} lacks a canonical MessageDelivery reference",
+        message.id
+    )))
 }
 
 /// Acknowledge one delivery and fold the state change into the TeamRun event
@@ -24996,65 +25529,10 @@ pub(crate) fn acknowledge_team_message(
     message_id: &str,
     member_id: &str,
 ) -> CliResult<TeamMessageProjection> {
-    let message = latest_team_messages_in_append_order(store)?
-        .into_iter()
-        .find(|message| message.id == message_id)
-        .ok_or_else(|| CliError::Usage(format!("team message not found: {message_id}")))?;
-    let was_acknowledged = message.deliveries.iter().any(|delivery| {
-        delivery.member_id == member_id && delivery.status == TeamDeliveryStatus::Acknowledged
-    });
-    // A declared external interactive member has no Supervisor to claim the
-    // delivery and record provider receipt, so its mail never leaves `queued`
-    // on its own: the trusted loopback inbox read IS its delivery channel and
-    // its ack may proceed straight from `queued`. Driven members keep the
-    // delivered-first invariant enforced by the store.
-    let delivery_member = latest_member_runs_in_append_order(store)?
-        .into_iter()
-        .find(|member| member.id == member_id && member.team_run_id == message.team_run_id);
-    if let Some(member) = delivery_member.as_ref() {
-        ensure_member_coordination_open(member)?;
-    }
-    let queued_external_delivery = message.deliveries.iter().any(|delivery| {
-        delivery.member_id == member_id && delivery.status == TeamDeliveryStatus::Queued
-    }) && delivery_member
-        .is_some_and(|member| member.is_external_interactive());
-    let message = if queued_external_delivery {
-        let mut updated = message.clone();
-        let delivery = updated
-            .deliveries
-            .iter_mut()
-            .find(|delivery| delivery.member_id == member_id)
-            .expect("queued external delivery checked above");
-        delivery.status = TeamDeliveryStatus::Acknowledged;
-        delivery.updated_at = now_string();
-        store_conflict_as_usage(store.append_team_message(&updated))?;
-        updated
-    } else {
-        store_conflict_as_usage(store.acknowledge_team_message_delivery(
-            &message.team_run_id,
-            message_id,
-            member_id,
-            &now_string(),
-        ))?
-    };
-    if !was_acknowledged {
-        append_team_run_event(
-            store,
-            &message.team_run_id,
-            0,
-            if member_id == "host" {
-                TeamRunEventSourceKind::Host
-            } else {
-                TeamRunEventSourceKind::Member
-            },
-            (member_id != "host").then(|| member_id.to_string()),
-            "message",
-            message_id,
-            "updated",
-            &format!("message acknowledged by {member_id}"),
-        )?;
-    }
-    Ok(message)
+    let _ = store;
+    Err(CliError::Usage(format!(
+        "RETIRED_RUNTIME_WRITER: legacy Team message acknowledgement for {message_id}/{member_id} is closed; use canonical MessageDelivery acknowledgement"
+    )))
 }
 
 /// Where a member's ACP session runs: its pinned worktree when set, else the
@@ -25224,21 +25702,49 @@ fn provider_interaction_request_message(
     let canonical_body = body.to_canonical_json().map_err(CliError::Usage)?;
     let correlation_id = body.correlation_id();
     let _guard = ledger.write_lock();
-    let existing = latest_team_messages_in_append_order(&ledger.store)?
-        .into_iter()
-        .filter(|message| {
-            message.team_run_id == ledger.run_id
-                && message.kind == ProviderDispatchIntent::ProviderInteractionRequest
-                && message.correlation_id == correlation_id
-        })
-        .collect::<Vec<_>>();
-    if let Some(request) = existing.first() {
-        if existing.len() != 1 || request.body != canonical_body {
+    let mut existing = Vec::new();
+    for execution_space_id in ledger.store.canonical_execution_space_ids()? {
+        existing.extend(
+            ledger
+                .store
+                .fabric_messages(&execution_space_id)?
+                .into_iter()
+                .filter(|message| {
+                    message.team_run_id.as_deref() == Some(ledger.run_id.as_str())
+                        && message.kind
+                            == harness_core::agentfirm_api::MessageKind::ProviderInteractionRequest
+                        && message.correlation_id == correlation_id
+                }),
+        );
+    }
+    if let Some(existing_request) = existing.first() {
+        if existing.len() != 1 || existing_request.body != canonical_body {
             return Err(CliError::Usage(format!(
                 "provider request {provider_request_id} was replayed with different semantics"
             )));
         }
-        return Ok((request.clone(), false));
+        let mut replay = prepare_team_message_as(
+            &ledger.store,
+            &ledger.run_id,
+            &TeamActorRef {
+                kind: TeamActorKind::ProviderRuntimeProjection,
+                id: member.id.clone(),
+                display_name: Some(member.name.clone()),
+                authn_source: Some("provider_reverse_request".into()),
+            },
+            vec!["host".into()],
+            ProviderDispatchIntent::ProviderInteractionRequest,
+            &canonical_body,
+            None,
+            Some(correlation_id.clone()),
+            None,
+            None,
+            TeamMessageDeliveryMode::Routed,
+            Some(ProviderResponseIntent::ResponseRequired),
+        )?;
+        replay.id = existing_request.id.clone();
+        replay.deliveries.clear();
+        return Ok((replay, false));
     }
 
     let created_at = now_string();
@@ -25282,20 +25788,8 @@ fn provider_interaction_request_message(
         }],
         created_at,
     };
-    ledger.store.append_team_message_checked(&request)?;
-    let seq = next_team_run_seq(&ledger.store, &ledger.run_id)?;
-    append_team_run_event(
-        &ledger.store,
-        &ledger.run_id,
-        seq,
-        TeamRunEventSourceKind::Member,
-        Some(member.id.clone()),
-        "message",
-        &request.id,
-        "created",
-        "provider interaction request awaiting Host response",
-    )?;
-    Ok((request, true))
+    let published = publish_team_message(&ledger.store, &sender, request)?;
+    Ok((published, true))
 }
 
 fn wait_for_provider_interaction_response(
@@ -25309,7 +25803,7 @@ fn wait_for_provider_interaction_response(
     )>,
 > {
     loop {
-        ledger.require_supervisor_lease()?;
+        require_provider_session_authority(ledger, &member.agent_member_id, true)?;
         let latest_member = ledger
             .latest_member_run(&member.id)?
             .ok_or_else(|| CliError::Usage(format!("member run {} not found", member.id)))?;
@@ -25326,7 +25820,7 @@ fn wait_for_provider_interaction_response(
             return Ok(None);
         }
 
-        let messages = ledger.team_messages()?;
+        let messages = claim_canonical_messages_for_member(ledger, &latest_member)?;
         let response = messages
             .iter()
             .find(|message| {
@@ -25337,44 +25831,7 @@ fn wait_for_provider_interaction_response(
         if let Some(response) = response {
             let body = ProviderInteractionResponseBody::parse_canonical_json(&response.body)
                 .map_err(CliError::Usage)?;
-            let delivery = response
-                .deliveries
-                .iter()
-                .find(|delivery| delivery.member_id == member.id)
-                .ok_or_else(|| {
-                    CliError::Usage(format!(
-                        "provider response {} has no delivery for {}",
-                        response.id, member.id
-                    ))
-                })?;
-            return match delivery.status {
-                TeamDeliveryStatus::Queued => {
-                    let Some(claimed) = ledger.claim_message(&response.id, &member.id)? else {
-                        continue;
-                    };
-                    Ok(Some((body, Some(claimed))))
-                }
-                TeamDeliveryStatus::Delivered | TeamDeliveryStatus::Acknowledged => {
-                    Ok(Some((body, None)))
-                }
-                TeamDeliveryStatus::Claimed => Err(CliError::Usage(format!(
-                    "provider response {} has an uncertain claimed delivery; reconcile it before replay",
-                    response.id
-                ))),
-                TeamDeliveryStatus::Failed | TeamDeliveryStatus::Expired => Ok(None),
-            };
-        }
-        if messages
-            .iter()
-            .find(|message| message.id == request.id)
-            .is_some_and(|latest_request| {
-                latest_request.deliveries.iter().any(|delivery| {
-                    delivery.member_id == "host"
-                        && delivery.status == TeamDeliveryStatus::Acknowledged
-                })
-            })
-        {
-            return Ok(None);
+            return Ok(Some((body, Some(response))));
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -25387,7 +25844,16 @@ fn complete_provider_interaction_reply(
     provider_receipt_id: &str,
 ) -> CliResult<()> {
     if let Some(message) = reply.claimed_response.as_ref() {
-        ledger.complete_provider_interaction_response(message, member_id, provider_receipt_id)?;
+        let member = ledger
+            .latest_member_run(member_id)?
+            .ok_or_else(|| CliError::Usage(format!("member run not found: {member_id}")))?;
+        mark_message_delivered(
+            ledger,
+            message,
+            member_id,
+            &member.name,
+            provider_receipt_id,
+        )?;
     }
     Ok(())
 }
@@ -49782,7 +50248,7 @@ package:com.tencent.mm
             Arc::new(AtomicBool::new(true)),
         );
         let claimed = ledger
-            .claim_next_work_for(&member.id)
+            .claim_canonical_work_for(&member.id)
             .expect("claim scan")
             .expect("queued delivery for the member");
         assert_eq!(

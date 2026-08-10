@@ -826,6 +826,9 @@ impl MultiTeamDaemon {
                         return Ok(());
                     }
                 };
+                let command_fingerprint = harness_store::canonical_json_fingerprint(
+                    &serde_json::to_value(&envelope).map_err(CliError::Json)?,
+                );
                 let store = HarnessStore::new(space.store_root);
                 if let Err(error) = store.validate_runtime_command(&envelope, current_unix_ms_u64())
                 {
@@ -845,7 +848,7 @@ impl MultiTeamDaemon {
                     command_name: format!("runtime.{:?}", envelope.command).to_lowercase(),
                     idempotency_key: envelope.idempotency_key.clone(),
                     expected_version: envelope.expected_version,
-                    request_fingerprint: Some(envelope.payload_fingerprint.clone()),
+                    request_fingerprint: Some(command_fingerprint),
                 };
                 let accepted_at = format!("unix-ms:{}", current_unix_ms_u64());
                 let admission = match store.prepare_runtime_command(

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agent-harness.local/schemas/provider-dispatch-envelope.schema.json",
-  "title": "TeamMessageProjection",
-  "description": "Internal target-NodeDaemon output only; never a public authoring or claim input.",
+  "$id": "https://agent-harness.local/schemas/provider-invocation.schema.json",
+  "title": "ProviderInvocation",
+  "description": "Internal target-NodeDaemon output only; public callers cannot author or claim it.",
   "type": "object",
   "additionalProperties": false,
   "required": ["id", "source_plane", "source_record_id", "recipient_identity_id", "recipient_session_id", "recipient_session_generation", "node_id", "node_daemon_id", "node_daemon_generation", "provider", "dispatch_mode", "permission_ceiling", "content", "content_fingerprint", "created_at"],

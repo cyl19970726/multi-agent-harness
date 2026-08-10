@@ -5510,6 +5510,48 @@ impl HarnessStore {
     ) -> StoreResult<CanonicalMutationResult<RuntimeCommandRecord>> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
+        let command_fingerprint = canonical_json_fingerprint(&serde_json::to_value(command)?);
+        if context.request_fingerprint.as_deref() != Some(command_fingerprint.as_str()) {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "RuntimeCommand full envelope fingerprint was not server-bound",
+                "runtime_command",
+                &command.id,
+                None,
+            ));
+        }
+        // Resolve exact replay before mutable lease/session checks. This
+        // returns the original durable result without repeating an effect;
+        // changing any envelope field under the same key conflicts.
+        if let Some(replay) =
+            self.trust_operation_envelopes_unlocked()?
+                .into_iter()
+                .find(|envelope| {
+                    envelope.execution_space_id == context.execution_space_id
+                        && envelope.authenticated_actor_kind == context.authenticated_actor.kind
+                        && envelope.authenticated_actor_id == context.authenticated_actor.id
+                        && envelope.command_name == context.command_name
+                        && envelope.operation.event.idempotency_key == context.idempotency_key
+                })
+        {
+            if replay.operation.event.canonical_request_fingerprint != command_fingerprint
+                || replay.operation.event.aggregate_kind != "runtime_command"
+                || replay.operation.event.aggregate_id != command.id
+            {
+                return Err(trust_error(
+                    TrustErrorCode::IdempotencyKeyReused,
+                    "RuntimeCommand idempotency key was reused with a different full envelope",
+                    "runtime_command",
+                    &command.id,
+                    Some(replay.operation.event.resulting_version),
+                ));
+            }
+            return Ok(CanonicalMutationResult {
+                projection: event_projection(&replay)?,
+                event: replay.operation.event,
+                replayed: true,
+            });
+        }
         self.validate_runtime_command(command, now_unix_ms)?;
         if command.execution_space_id != context.execution_space_id
             || command.authenticated_actor
@@ -5517,8 +5559,6 @@ impl HarnessStore {
                     .authority_actor
                     .clone()
                     .unwrap_or_else(|| context.authenticated_actor.clone())
-            || command.payload_fingerprint
-                != context.request_fingerprint.clone().unwrap_or_default()
         {
             return Err(trust_error(
                 TrustErrorCode::UnauthorizedActor,
@@ -5641,6 +5681,46 @@ impl HarnessStore {
                 )
             })
             .and_then(|envelope| event_projection::<RuntimeCommandRecord>(&envelope))?;
+        self.require_current_node_daemon_unlocked(
+            &context.execution_space_id,
+            &record.target_node_id,
+            &record.target_node_daemon_id,
+            record.target_node_daemon_generation,
+            &context.authenticated_actor,
+            "runtime_command",
+            command_id,
+        )?;
+        if let (Some(session_id), Some(session_generation)) = (
+            record.target_session_id.as_deref(),
+            record.target_session_generation,
+        ) {
+            let session = self
+                .fabric_agent_sessions(&context.execution_space_id)?
+                .into_iter()
+                .find(|session| session.id == session_id)
+                .ok_or_else(|| {
+                    trust_error(
+                        TrustErrorCode::InvalidStateTransition,
+                        "RuntimeCommand target AgentSession disappeared before settlement",
+                        "runtime_command",
+                        command_id,
+                        Some(record.version),
+                    )
+                })?;
+            if session.runtime_generation != session_generation
+                || session.node_id != record.target_node_id
+                || session.node_daemon_id != record.target_node_daemon_id
+                || session.node_daemon_generation != record.target_node_daemon_generation
+            {
+                return Err(trust_error(
+                    TrustErrorCode::MemberRunGenerationFenced,
+                    "RuntimeCommand settlement no longer owns the exact AgentSession/NodeDaemon generation",
+                    "runtime_command",
+                    command_id,
+                    Some(record.version),
+                ));
+            }
+        }
         if record.target_node_daemon_id != context.authenticated_actor.id
             || context.authenticated_actor.kind != ActorKind::Service
             || !matches!(
@@ -5851,6 +5931,7 @@ mod tests {
                 .as_nanos()
         ));
         let store = HarnessStore::new(&root);
+        store.init().unwrap();
         store
             .insert_execution_node(&firm_core::ExecutionNode {
                 id: "11111111-1111-4111-8111-111111111111".into(),
@@ -6086,6 +6167,8 @@ mod tests {
             payload_fingerprint: fingerprint.clone(),
             issued_at: "t2".into(),
         };
+        let command_fingerprint =
+            canonical_json_fingerprint(&serde_json::to_value(&command).unwrap());
         let admission_context = MutationContext {
             execution_space_id: "space-test".into(),
             authenticated_actor: ActorRef {
@@ -6096,7 +6179,7 @@ mod tests {
             command_name: "runtime.stop".into(),
             idempotency_key: "runtime-command-1".into(),
             expected_version: 0,
-            request_fingerprint: Some(fingerprint),
+            request_fingerprint: Some(command_fingerprint),
         };
         let accepted = store
             .prepare_runtime_command(&admission_context, &command, current_unix_ms(), "t2")
@@ -6117,6 +6200,9 @@ mod tests {
         let before = store.canonical_operations().unwrap().len();
         let mut second_context = admission_context.clone();
         second_context.idempotency_key = "runtime-command-2".into();
+        second_context.request_fingerprint = Some(canonical_json_fingerprint(
+            &serde_json::to_value(&second).unwrap(),
+        ));
         let error = store
             .prepare_runtime_command(&second_context, &second, current_unix_ms(), "t3")
             .expect_err("ambiguous accepted command fences a successor");
@@ -6141,6 +6227,94 @@ mod tests {
                 "t4",
             )
             .unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn runtime_command_replay_precedes_successor_fence_but_stale_settlement_is_zero_effect() {
+        let (store, root) = fabric_store();
+        store
+            .create_agent_identity(
+                &context("host", "identity.create", "identity-runtime-fence", 0),
+                identity("runtime-fence"),
+            )
+            .unwrap();
+        store
+            .create_agent_session(
+                &service_context("session.create", "runtime-session-fence", 0),
+                session("session-runtime-fence", "runtime-fence"),
+            )
+            .unwrap();
+        let payload = serde_json::json!({
+            "session_id": "session-runtime-fence",
+            "session_generation": 1,
+            "delivery_id": "delivery-1",
+        });
+        let command = ControlCommandEnvelope {
+            id: "runtime-command-fence".into(),
+            execution_space_id: "space-test".into(),
+            target_node_id: "11111111-1111-4111-8111-111111111111".into(),
+            target_node_daemon_id: "daemon-1".into(),
+            target_node_daemon_generation: 1,
+            authenticated_actor: actor("host"),
+            command: firm_core::agentfirm_api::RuntimeCommandKind::DispatchProvider,
+            required_capability: "provider.effect".into(),
+            idempotency_key: "runtime-command-fence".into(),
+            expected_version: 0,
+            expires_unix_ms: current_unix_ms() + 120_000,
+            payload_fingerprint: canonical_json_fingerprint(&payload),
+            payload,
+            issued_at: "t2".into(),
+        };
+        let mut admission_context = service_context(
+            "runtime.provider_effect.prepare",
+            "runtime-command-fence",
+            0,
+        );
+        admission_context.authority_actor = Some(actor("host"));
+        admission_context.request_fingerprint = Some(canonical_json_fingerprint(
+            &serde_json::to_value(&command).unwrap(),
+        ));
+        store
+            .prepare_runtime_command(&admission_context, &command, current_unix_ms(), "t2")
+            .unwrap();
+
+        let successor_time = current_unix_ms() + 60_001;
+        store
+            .acquire_node_daemon_lease(
+                "11111111-1111-4111-8111-111111111111",
+                "daemon-2",
+                "instance-2",
+                successor_time,
+                60_000,
+            )
+            .unwrap();
+
+        let replay = store
+            .prepare_runtime_command(&admission_context, &command, successor_time, "t3")
+            .expect("exact replay is resolved before mutable successor state");
+        assert!(replay.replayed);
+
+        let operations_before = store.canonical_operations().unwrap();
+        let settle_context = MutationContext {
+            command_name: "runtime.provider_effect.settle".into(),
+            idempotency_key: "runtime-command-fence:settle".into(),
+            expected_version: 1,
+            ..service_context("unused", "unused", 0)
+        };
+        let error = store
+            .settle_runtime_command(
+                &settle_context,
+                "runtime-command-fence",
+                RuntimeCommandStatus::Applied,
+                RuntimeEffectCertainty::Applied,
+                Some(serde_json::json!({"provider_receipt": "spoofed"})),
+                None,
+                "t4",
+            )
+            .expect_err("superseded daemon cannot settle an effect");
+        assert!(error.to_string().contains("SUPERVISOR_GENERATION_FENCED"));
+        assert_eq!(store.canonical_operations().unwrap(), operations_before);
         fs::remove_dir_all(root).unwrap();
     }
 }
