@@ -7384,6 +7384,27 @@ impl HarnessStore {
         .collect())
     }
 
+    /// Monotonic revision of one exact Node + Execution Space + Project
+    /// registration identity. This is used to bind remote operational actions
+    /// to the registry row they were projected from rather than merely to its
+    /// latest value.
+    pub fn node_project_registration_revision(
+        &self,
+        node_id: &str,
+        execution_space_id: &str,
+        project_binding_id: &str,
+    ) -> StoreResult<u64> {
+        Ok(self
+            .read_jsonl::<NodeProjectRegistration>("node_project_registrations.jsonl")?
+            .into_iter()
+            .filter(|registration| {
+                registration.node_id == node_id
+                    && registration.execution_space_id == execution_space_id
+                    && registration.project_binding_id == project_binding_id
+            })
+            .count() as u64)
+    }
+
     pub fn latest_node_daemon_lease(&self, node_id: &str) -> StoreResult<Option<NodeDaemonLease>> {
         Ok(latest_by_id(
             self.read_jsonl::<NodeDaemonLease>("node_daemon_leases.jsonl")?,

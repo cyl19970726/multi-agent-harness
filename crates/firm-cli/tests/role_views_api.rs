@@ -35,6 +35,32 @@ fn ledger_digest(root: &std::path::Path) -> Vec<(String, Vec<u8>)> {
     rows
 }
 
+fn file_tree_digest(root: &std::path::Path) -> Vec<(String, Vec<u8>)> {
+    fn visit(base: &std::path::Path, current: &std::path::Path, out: &mut Vec<(String, Vec<u8>)>) {
+        let Ok(entries) = std::fs::read_dir(current) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                visit(base, &path, out);
+            } else if path.is_file() {
+                out.push((
+                    path.strip_prefix(base)
+                        .expect("digest path belongs to base")
+                        .display()
+                        .to_string(),
+                    std::fs::read(&path).expect("read digest file"),
+                ));
+            }
+        }
+    }
+    let mut files = Vec::new();
+    visit(root, root, &mut files);
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    files
+}
+
 fn action_headers<'a>(token: &'a str, key: &'a str, version: &'a str) -> [(&'a str, &'a str); 3] {
     [
         ("X-AgentFirm-Token", token),
@@ -1516,6 +1542,115 @@ fn operator_eligible_daemon_and_server_probed_admission_are_real_and_fail_closed
         serve.post_json_with_headers(&admission_route, &intent, &admission_headers);
     assert_eq!(status, 200, "provider admission replay: {replay}");
     assert_eq!(replay["replayed"], true);
+
+    // A Project Binding is selected independently from its shared Execution
+    // Space. The server must rebuild admission eligibility for B and must not
+    // replay A's completed external-effect receipt under the same key.
+    let project_b_root = home.base().join("project-b");
+    std::fs::create_dir_all(&project_b_root).expect("project B root");
+    let project_b = run_firm(
+        &home,
+        &project_b_root,
+        &[
+            "project",
+            "add",
+            project_b_root.to_str().expect("project B UTF-8 path"),
+        ],
+    );
+    assert!(project_b.status.success(), "project B add: {project_b:?}");
+    let project_b_json: serde_json::Value =
+        serde_json::from_slice(&project_b.stdout).expect("project B JSON");
+    let project_b_id = project_b_json["id"]
+        .as_str()
+        .expect("project B id")
+        .to_string();
+    run(&[
+        "node",
+        "project",
+        "register",
+        "--node-id",
+        node_id,
+        "--execution-space-id",
+        &space_id,
+        "--project-binding-id",
+        &project_b_id,
+    ]);
+    let operator_b_route = format!("/v1/views/operator/{node_id}?project={project_b_id}");
+    let (status, operator_b) =
+        serve.get_json_with_headers(&operator_b_route, &[("X-AgentFirm-Token", OPERATOR_TOKEN)]);
+    assert_eq!(status, 200, "Project B Operator view: {operator_b}");
+    let binding_b = operator_b["allowed_actions"]
+        .as_array()
+        .and_then(|actions| {
+            actions.iter().find(|action| {
+                action["kind"] == "admit_provider"
+                    && action["intent_binding"]["provider"] == "codex"
+                    && action["intent_binding"]["execution_mode"] == "codex_app_server"
+            })
+        })
+        .and_then(|action| action["intent_binding"].as_object())
+        .expect("Project B server-built admission binding");
+    assert_eq!(binding_b["project_binding_id"], project_b_id);
+    assert!(binding_b["registration_identity"]
+        .as_str()
+        .is_some_and(|identity| identity.ends_with(&project_b_id)));
+    assert_eq!(binding_b["registration_revision"], 1);
+    let b_intent = serde_json::json!({
+        "action":"admit_provider",
+        "provider":"codex",
+        "execution_mode":"codex_app_server",
+        "eligibility_fingerprint":binding_b["eligibility_fingerprint"],
+    });
+    let admission_b_route =
+        format!("/v1/agentfirm/nodes/{node_id}/provider-admission?project={project_b_id}");
+    let store_before_project_switch = ledger_digest(serve.fixture_store_root());
+    let receipts_root = home
+        .firm_home()
+        .join("runtime")
+        .join("operator-action-receipts");
+    let receipts_before_project_switch = file_tree_digest(&receipts_root);
+    let daemon_generation_before_project_switch =
+        operator_b["data"]["node"]["daemon_generation"].clone();
+    let admissions_before_project_switch = store
+        .latest_provider_compatibility_admissions()
+        .expect("admissions before Project switch replay")
+        .len();
+    let (status, project_switch_rejected) =
+        serve.post_json_with_headers(&admission_b_route, &b_intent, &admission_headers);
+    assert_eq!(
+        status, 409,
+        "same key cannot cross Project Binding scope: {project_switch_rejected}"
+    );
+    assert_eq!(
+        project_switch_rejected["error"]["code"],
+        "IDEMPOTENCY_CONFLICT"
+    );
+    assert_eq!(
+        ledger_digest(serve.fixture_store_root()),
+        store_before_project_switch,
+        "cross-Project replay has zero Store side effects"
+    );
+    assert_eq!(
+        file_tree_digest(&receipts_root),
+        receipts_before_project_switch,
+        "cross-Project replay cannot rewrite the completed receipt"
+    );
+    assert_eq!(
+        store
+            .latest_provider_compatibility_admissions()
+            .expect("admissions after Project switch replay")
+            .len(),
+        admissions_before_project_switch,
+        "cross-Project replay cannot perform provider admission"
+    );
+    let (status, operator_b_after) =
+        serve.get_json_with_headers(&operator_b_route, &[("X-AgentFirm-Token", OPERATOR_TOKEN)]);
+    assert_eq!(status, 200, "Project B after rejection: {operator_b_after}");
+    assert_eq!(
+        operator_b_after["data"]["node"]["daemon_generation"],
+        daemon_generation_before_project_switch,
+        "cross-Project replay cannot affect the NodeDaemon"
+    );
     let hostile = serde_json::json!({"action":"admit_provider","provider":"codex","execution_mode":"codex_app_server","eligibility_fingerprint":admission_fingerprint,"provider_version":"browser-spoof","evidence_refs":["browser-proof"]});
     let hostile_headers = action_headers(
         OPERATOR_TOKEN,

@@ -26611,6 +26611,60 @@ impl ServeProjects {
         }
     }
 
+    /// Resolve a Project Binding as an authority-bearing registry object.
+    /// Unlike `context_for`, this never fabricates an `_unbound`/path-derived
+    /// compatibility context for a remotely supplied selector.
+    fn exact_project_context_for(
+        &self,
+        project_binding_id: Option<&str>,
+        execution_space_id: &str,
+    ) -> CliResult<ProjectContext> {
+        let selected = project_binding_id
+            .filter(|id| !id.is_empty())
+            .map(ToString::to_string)
+            .or_else(|| {
+                self.space_context_for(execution_space_id)
+                    .and_then(|space| space.default_project_binding_id)
+            })
+            .or_else(|| self.default_context.as_ref().map(|context| context.id.clone()))
+            .ok_or_else(|| {
+                CliError::Usage(
+                    "an exact registered Project Binding is required for AgentFirm RoleViews and actions"
+                        .to_string(),
+                )
+            })?;
+        if let Some(default) = &self.default_context {
+            if default.id == selected {
+                return Ok(default.clone());
+            }
+        }
+        if let Some(home) = &self.firm_home {
+            return project::context_for_id(home, &selected)
+                .map_err(project_err)?
+                .ok_or_else(|| CliError::Usage(format!("unknown project binding: {selected}")));
+        }
+        Err(CliError::Usage(format!(
+            "unknown project binding: {selected}"
+        )))
+    }
+
+    fn scoped_store_for_project(
+        &self,
+        store: &HarnessStore,
+        execution_space_id: &str,
+        project_binding_id: Option<&str>,
+    ) -> CliResult<HarnessStore> {
+        let project = self.exact_project_context_for(project_binding_id, execution_space_id)?;
+        let store_scope = if self.default_space.is_some() {
+            format!("execution-space:{execution_space_id}")
+        } else {
+            format!("project-store:{}", project.id)
+        };
+        Ok(store
+            .clone()
+            .with_provider_compatibility_scope(project.id, store_scope))
+    }
+
     fn current_space_id(&self) -> String {
         if let Some(home) = &self.firm_home {
             if let Ok(Some(id)) = execution_space::active_space_id(home) {
@@ -27244,8 +27298,27 @@ fn handle_http_connection(
             request_fingerprint: None,
         };
         if role_actions_api::is_http_mutation_path(&path_only) {
-            match role_actions_api::execute(
+            let role_store = match projects.scoped_store_for_project(
                 &store_owned,
+                &project_id,
+                project_param.as_deref(),
+            ) {
+                Ok(store) => store,
+                Err(error) => {
+                    let detail = error.to_string();
+                    write_http_json(
+                        &mut stream,
+                        "404 Not Found",
+                        &serde_json::json!({
+                            "ok": false,
+                            "error": {"code": "PROJECT_BINDING_NOT_FOUND", "message": detail}
+                        }),
+                    )?;
+                    return Ok(());
+                }
+            };
+            match role_actions_api::execute(
+                &role_store,
                 auth,
                 &path_only,
                 &body,
@@ -27361,8 +27434,28 @@ fn handle_http_connection(
             .into_iter()
             .map(|space| (space.id, HarnessStore::new(space.store_root)))
             .collect::<Vec<_>>();
+        let role_view_store = if path_only.starts_with("/v1/views/") {
+            match projects.scoped_store_for_project(
+                &store_owned,
+                &project_id,
+                project_param.as_deref(),
+            ) {
+                Ok(store) => store,
+                Err(error) => {
+                    let detail = error.to_string();
+                    write_http_json(
+                        &mut stream,
+                        "404 Not Found",
+                        &serde_json::json!({"ok":false,"error":{"code":"PROJECT_BINDING_NOT_FOUND","message":detail}}),
+                    )?;
+                    return Ok(());
+                }
+            }
+        } else {
+            store_owned.clone()
+        };
         if let Some(response) = role_views_api::handle_get(
-            &store_owned,
+            &role_view_store,
             &execution_space_stores,
             &project_id,
             &path_only,

@@ -40,12 +40,12 @@ operatorFixture.allowed_actions=[{kind:"diagnose",target_ref:{kind:"execution_no
 assert.equal(operatorValidate(operatorFixture),false,"non-daemon actions must not carry a daemon authority generation");
 operatorFixture.allowed_actions=[{kind:"diagnose",target_ref:{kind:"execution_node",id:"node-1"},required_version:1,disabled_reason:null,__unknown_authority:true}];
 assert.equal(operatorValidate(operatorFixture),false,"unknown action fields remain fail-closed");
-const admissionBinding={provider:"codex",execution_mode:"codex_app_server",eligibility:"eligible",eligibility_fingerprint:"0123456789abcdef"};
+const admissionBinding={provider:"codex",execution_mode:"codex_app_server",eligibility:"eligible",eligibility_fingerprint:"0123456789abcdef",project_binding_id:"project-1",source_store_identity:"/store/space-1",registration_identity:"node-1:space-1:project-1",registration_revision:1};
 operatorFixture.allowed_actions=[{kind:"admit_provider",target_ref:{kind:"execution_node",id:"node-1"},required_version:1,disabled_reason:null,intent_binding:admissionBinding}];
 assert.equal(operatorValidate(operatorFixture),true,`tuple-bound admission action: ${ajv.errorsText(operatorValidate.errors)}`);
 delete admissionBinding.eligibility_fingerprint;
 assert.equal(operatorValidate(operatorFixture),false,"provider admission requires a complete server tuple fingerprint");
-operatorFixture.allowed_actions=[{kind:"diagnose",target_ref:{kind:"execution_node",id:"node-1"},required_version:1,disabled_reason:null,intent_binding:{provider:"codex",execution_mode:"codex_app_server",eligibility:"eligible",eligibility_fingerprint:"0123456789abcdef"}}];
+operatorFixture.allowed_actions=[{kind:"diagnose",target_ref:{kind:"execution_node",id:"node-1"},required_version:1,disabled_reason:null,intent_binding:{provider:"codex",execution_mode:"codex_app_server",eligibility:"eligible",eligibility_fingerprint:"0123456789abcdef",project_binding_id:"project-1",source_store_identity:"/store/space-1",registration_identity:"node-1:space-1:project-1",registration_revision:1}}];
 assert.equal(operatorValidate(operatorFixture),false,"only provider admission may carry a tuple binding");
 
 const rust=fs.readFileSync(path.join(root,"crates/firm-cli/src/role_views_api.rs"),"utf8");

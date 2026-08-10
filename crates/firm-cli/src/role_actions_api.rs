@@ -223,6 +223,10 @@ pub(crate) struct ProviderAdmissionActionBinding {
     pub execution_mode: String,
     pub eligibility: &'static str,
     pub eligibility_fingerprint: String,
+    pub project_binding_id: String,
+    pub source_store_identity: String,
+    pub registration_identity: String,
+    pub registration_revision: u64,
     #[serde(skip_serializing)]
     pub disabled_reason: Option<String>,
 }
@@ -237,6 +241,11 @@ pub(crate) fn provider_admission_action_binding(
 ) -> ProviderAdmissionActionBinding {
     let registered = OPERATOR_PROVIDER_ADMISSION_TUPLES.contains(&(provider, execution_mode));
     let scope = store.provider_compatibility_scope();
+    let source_store_identity = std::fs::canonicalize(store.root())
+        .unwrap_or_else(|_| store.root().to_path_buf())
+        .display()
+        .to_string();
+    let scoped_project_id = scope.map(|(project_id, _)| project_id).unwrap_or("");
     let active_registration = store
         .latest_node_project_registrations()
         .unwrap_or_default()
@@ -244,6 +253,7 @@ pub(crate) fn provider_admission_action_binding(
         .find(|registration| {
             registration.node_id == node_id
                 && registration.execution_space_id == execution_space_id
+                && registration.project_binding_id == scoped_project_id
                 && registration.status == harness_core::NodeProjectRegistrationStatus::Active
         });
     let scope_reason = if !registered {
@@ -266,6 +276,10 @@ pub(crate) fn provider_admission_action_binding(
         Err(reason) => ("disabled", Some(reason), None, None),
     };
     let (project_id, store_id) = scope.unwrap_or(("", ""));
+    let registration_identity = format!("{node_id}:{execution_space_id}:{project_id}");
+    let registration_revision = store
+        .node_project_registration_revision(node_id, execution_space_id, project_id)
+        .unwrap_or_default();
     let eligibility_fingerprint = canonical_json_fingerprint(&json!({
         "protocol":"agentfirm.provider_admission.action.v1",
         "execution_space_id":execution_space_id,
@@ -273,6 +287,9 @@ pub(crate) fn provider_admission_action_binding(
         "node_revision":node_revision,
         "project_id":project_id,
         "store_id":store_id,
+        "source_store_identity":source_store_identity,
+        "registration_identity":registration_identity,
+        "registration_revision":registration_revision,
         "provider":provider,
         "execution_mode":execution_mode,
         "eligibility":eligibility,
@@ -285,8 +302,62 @@ pub(crate) fn provider_admission_action_binding(
         execution_mode: execution_mode.to_string(),
         eligibility,
         eligibility_fingerprint,
+        project_binding_id: project_id.to_string(),
+        source_store_identity,
+        registration_identity,
+        registration_revision,
         disabled_reason,
     }
+}
+
+fn role_action_scope(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    path: &str,
+) -> serde_json::Value {
+    let provider_node_id = match parse_canonical_route(path) {
+        Some(CanonicalRoute::Operator {
+            node_id,
+            operation: "provider-admission",
+        }) => Some(node_id),
+        _ => None,
+    };
+    let Some(node_id) = provider_node_id else {
+        // Daemon lifecycle, diagnostics and delivery reconciliation are Node /
+        // Execution-Space operations. They intentionally do not acquire a
+        // Project Binding merely because the HTTP request carried a selector.
+        return serde_json::Value::Null;
+    };
+    let source_store_identity = std::fs::canonicalize(store.root())
+        .unwrap_or_else(|_| store.root().to_path_buf())
+        .display()
+        .to_string();
+    let (project_binding_id, store_scope_id) = store
+        .provider_compatibility_scope()
+        .map(|(project, store)| (project, store))
+        .unwrap_or(("", ""));
+    let registration_identity = format!("{node_id}:{execution_space_id}:{project_binding_id}");
+    let registration_revision = store
+        .node_project_registration_revision(node_id, execution_space_id, project_binding_id)
+        .unwrap_or_default();
+    let registration_active = store
+        .latest_node_project_registrations()
+        .unwrap_or_default()
+        .into_iter()
+        .any(|registration| {
+            registration.node_id == node_id
+                && registration.execution_space_id == execution_space_id
+                && registration.project_binding_id == project_binding_id
+                && registration.status == harness_core::NodeProjectRegistrationStatus::Active
+        });
+    json!({
+        "project_binding_id": project_binding_id,
+        "source_store_identity": source_store_identity,
+        "store_scope_id": store_scope_id,
+        "registration_identity": registration_identity,
+        "registration_revision": registration_revision,
+        "registration_active": registration_active,
+    })
 }
 
 fn default_true() -> bool {
@@ -3109,6 +3180,7 @@ pub fn execute(
         "intent":serde_json::from_slice::<serde_json::Value>(body).unwrap_or(serde_json::Value::Null),
         "expected_version":auth.expected_version,
         "confirmation":confirmed_action,
+        "project_scope":role_action_scope(store, &auth.execution_space_id, path),
     })));
     if let Some(route) = parse_canonical_route(path) {
         return execute_canonical_role_action(store, auth, route, body, confirmed_action);
