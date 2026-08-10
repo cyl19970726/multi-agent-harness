@@ -128,6 +128,22 @@ const api = createHttpServer((request, response) => {
     latest_op_seq: 0,
     server_version: "test",
   });
+  if (url.pathname.startsWith("/v1/views/team-workspace/")) return jsonResponse(response, 200, {
+    view_kind: "team_workspace",
+    schema_version: "agentfirm.role_views.v1",
+    source_execution_space_id: url.searchParams.get("space") || "space-a",
+    source_store_identity: "self-heal-fixture-store",
+    as_of_event_sequence: 1,
+    generated_at: new Date().toISOString(),
+    freshness: "current",
+    data: {
+      team: {team_id: fixtureSnapshot.team_runs[0]?.agent_team_id, team_revision: 1, mission_id: fixtureSnapshot.missions[0]?.id, node_id: "node-fixture", placement_generation: 1, status: "active"},
+      works: [], members: [], messages: [], reports: [], findings: [], failures: [],
+      gate_requirements: [], gate_evaluations: [], gate_waivers: [], workspace_attention: [], delegation_provenance: [],
+      page: {as_of_event_sequence: 1, item_count: 0, next_cursor: null},
+    },
+    attention: [], allowed_actions: [],
+  });
   if (/^\/v1\/(spaces|companies|projects)\/switch$/.test(url.pathname)) {
     state.switchPaths.push(url.pathname);
     return jsonResponse(response, 200, { ok: true });
@@ -465,7 +481,7 @@ try {
   state.titles.set(scopeKey("space-a", "company-a"), "full projection after team exit");
   const teamRoute = new URLSearchParams({ api: apiBase, project: "project-a", space: "space-a", company: "company-a", surface: "team", team: teamRunId });
   await boundaryPage.goto(`${appBase}/?${teamRoute}`, { waitUntil: "domcontentloaded", timeout: 15_000 });
-  await boundaryPage.getByText("Shared Works", { exact: true }).waitFor({ timeout: 8_000 });
+  await boundaryPage.getByText("Team Workspace", { exact: true }).waitFor({ timeout: 8_000 });
   await waitFor(
     () => Promise.resolve([...state.streams].some((stream) => stream.space === "space-a" && stream.company === "company-a")),
     "Team stream connected",
@@ -481,7 +497,7 @@ try {
     window.dispatchEvent(new PopStateEvent("popstate"));
   });
   await freshness(boundaryPage, "live");
-  await boundaryPage.locator('[data-company-os-data-mode="store-live"]').first().waitFor({ timeout: 8_000 });
+  await boundaryPage.getByText("Company Work", { exact: true }).waitFor({ timeout: 8_000 });
   await boundaryPage.evaluate(() => {
     const url = new URL(window.location.href);
     url.searchParams.set("surface", "debug");
