@@ -72,7 +72,7 @@ flowchart TD
 | Module | Owns | Refuses | Invariant |
 | --- | --- | --- | --- |
 | Docs | Documents, Blocks, TypedRecords, Relations, Views and BusinessModules | task lifecycle, actor authority or monetary state | company context and accepted results have a durable home |
-| Organization | humans, Standing Agents, external/services, OrgUnits, reporting, permission and authority | TeamWork state, document content or payment state | durable identity is distinct from runtime/session identity |
+| Organization | humans, Agent Memberships, external/services, OrgUnits, reporting, permission and authority | TeamWork state, document content or payment state | durable identity is distinct from runtime/session identity |
 | Work | TeamWorks, Milestones, responsibility, Assignment, lifecycle, evidence and result routing | source knowledge, organization identity or finance ledger truth | every commitment says who owns it and where its result returns |
 | Finance | budgets, Commitments, invoices, Payments, refunds and financial evidence | general task or document truth | requested, authorized and actual monetary effects remain distinct |
 | Governance | module/organization evolution, policy, Approval and audit | hidden prompt authority or silent structural mutation | high-risk effects stop at the required Human boundary |

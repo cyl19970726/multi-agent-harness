@@ -1,0 +1,14 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://agent-harness.local/schemas/gate-waiver.schema.json","title":"GateWaiver",
+  "type":"object","additionalProperties":false,
+  "required":["id","requirement_id","work_id","work_revision","candidate_fingerprint","authority_actor","performed_by_actor","reason","state","version","created_at"],
+  "properties":{
+    "id":{"type":"string","minLength":1},"requirement_id":{"type":"string","minLength":1},"work_id":{"type":"string","minLength":1},"work_revision":{"type":"integer","minimum":1},"candidate_fingerprint":{"type":"string","minLength":1},
+    "authority_actor":{"$ref":"#/$defs/actor"},"performed_by_actor":{"$ref":"#/$defs/actor"},"reason":{"type":"string","minLength":1},"evidence_refs":{"$ref":"#/$defs/refs"},
+    "state":{"enum":["active","revoked"]},"version":{"type":"integer","minimum":1},"created_at":{"type":"string","minLength":1},"revoked_at":{"type":["string","null"],"minLength":1}
+  },
+  "$defs":{
+    "actor":{"type":"object","additionalProperties":false,"required":["kind","id"],"properties":{"kind":{"enum":["human","agent_member","external","service"]},"id":{"type":"string","minLength":1}}},
+    "refs":{"type":"array","items":{"type":"string","minLength":1},"uniqueItems":true}
+  }
+}

@@ -41,7 +41,7 @@ export function freshnessDomainsForInvalidation(
   if (/document|block|relation|page|module|typed_record|view/.test(ledger)) {
     return ["docs", "runtime"];
   }
-  if (/human|standing_agent|org_|membership|governance/.test(ledger)) {
+  if (/human|agent_membership|org_|membership|governance/.test(ledger)) {
     return ["organization", "runtime"];
   }
   return freshnessDomains;

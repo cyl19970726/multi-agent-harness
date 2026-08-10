@@ -53,7 +53,6 @@ const snapshot = {
   workflow_artifact_manifests: [],
   team_supervisor_leases: [],
   team_member_close_requests: [],
-  agent_message_routes: [],
   pending_interactions: [],
   company_os: {},
 };

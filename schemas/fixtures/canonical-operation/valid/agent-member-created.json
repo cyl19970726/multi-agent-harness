@@ -1,0 +1,28 @@
+{
+  "event": {
+    "id": "trust-event-1",
+    "aggregate_kind": "agent_member",
+    "aggregate_id": "agent-worker-1",
+    "sequence": 1,
+    "store_sequence": 1,
+    "transition": "created",
+    "expected_version": 0,
+    "resulting_version": 1,
+    "performed_by_actor": {
+      "kind": "human",
+      "id": "operator-1"
+    },
+    "authority_actor": null,
+    "causation_ref": null,
+    "idempotency_key": "create-agent-worker-1",
+    "canonical_request_fingerprint": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "payload": {},
+    "created_at": "unix-ms:1"
+  },
+  "resulting_projection": {
+    "id": "agent-worker-1",
+    "version": 1
+  },
+  "immutable_side_records": [],
+  "initial_outbox_records": []
+}

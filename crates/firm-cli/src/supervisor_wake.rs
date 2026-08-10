@@ -21,7 +21,7 @@ use harness_core::MemberRunStatus;
 pub enum WakeDecision {
     /// Continue the member's active in_progress Work (work_id).
     Continue(String),
-    /// Unconsumed WorkDelivery or response-required messages are waiting.
+    /// Unconsumed ProviderWorkDispatch or response-required messages are waiting.
     DeliverPending,
     /// Idle member + eligible ready team_claim Work exists → board-discovery
     /// hint. The member must perform the atomic claim itself.

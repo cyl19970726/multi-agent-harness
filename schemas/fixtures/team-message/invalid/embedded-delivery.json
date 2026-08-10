@@ -1,0 +1,1 @@
+{"id":"message-1","team_run_id":"team-run-1","sender":{"kind":"agent_member","id":"agent-lead"},"recipients":[{"kind":"agent_member","id":"agent-worker"}],"kind":"message","body":"Do work.","correlation_id":"corr-1","response_intent":"response_required","created_at":"unix-ms:1","deliveries":[]}

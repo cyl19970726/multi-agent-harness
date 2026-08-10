@@ -1,0 +1,17 @@
+{
+  "id": "agent-worker-1",
+  "name": "Implementation Worker",
+  "description": "Durable identity must not own mutable execution state.",
+  "role": "worker",
+  "workspace_policy": "managed_worktree",
+  "permission_ceiling": "workspace_write",
+  "organization_status": "active",
+  "version": 1,
+  "created_by": {
+    "kind": "human",
+    "id": "operator-1"
+  },
+  "created_at": "unix-ms:1",
+  "updated_at": "unix-ms:1",
+  "current_work_id": "work-1"
+}

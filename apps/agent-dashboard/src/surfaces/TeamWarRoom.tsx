@@ -65,7 +65,7 @@ import { buildAgentTeamOrgModel, orgTeamPath } from "../model/orgSelectors";
 import type { WorkbenchModel } from "../model/readModel";
 import { acknowledgeHostAttention, acknowledgeTeamMessage, addTeamMember, resolvePendingInteraction, sendTeamMessage, startTeamRun, transitionTeamRun, type ActionDescriptor } from "../api/actions";
 import { fetchHostAttentions } from "../api";
-import { workIsTerminal, type HostAttention, type MemberRun, type TeamMessage, type TeamMessageResponseIntent, type Wave, type Work } from "../types";
+import { workIsTerminal, type HostAttention, type MemberRun, type ProviderDispatchEnvelope, type ProviderResponseIntent, type Wave, type Work } from "../types";
 import type { SelectionState } from "../app/selection";
 
 export interface TeamWarRoomProps {
@@ -150,9 +150,9 @@ export function TeamWarRoom({
   const [composerOpen, setComposerOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [kind, setKind] = useState("message");
-  const [responseIntent, setResponseIntent] = useState<TeamMessageResponseIntent>("response_required");
+  const [responseIntent, setResponseIntent] = useState<ProviderResponseIntent>("response_required");
   const [addMemberOpen, setAddMemberOpen] = useState(false);
-  const [replyAnchor, setReplyAnchor] = useState<TeamMessage>();
+  const [replyAnchor, setReplyAnchor] = useState<ProviderDispatchEnvelope>();
   const [composerWorkId, setComposerWorkId] = useState("");
   const [showAllMembers, setShowAllMembers] = useState(false);
   const [showFullActivity, setShowFullActivity] = useState(false);
@@ -224,8 +224,8 @@ export function TeamWarRoom({
     .sort((left, right) => timestamp(left.created_at) - timestamp(right.created_at));
   const leadInboxMessages = messages
     .filter((message) =>
-      message.from_member_id !== "host"
-      && message.to_member_ids?.includes("host")
+      message.sender_runtime_id !== "host"
+      && message.recipient_runtime_ids?.includes("host")
       && message.kind !== "handoff",
     )
     .sort((left, right) => timestamp(right.created_at) - timestamp(left.created_at));
@@ -440,7 +440,7 @@ export function TeamWarRoom({
           {replyAnchor && (
             <div className="flex min-w-0 items-center gap-2 text-[10px]">
               <Badge tone="decision">Reply in conversation</Badge>
-              <span className="truncate text-muted-foreground">{memberLabel(memberById, replyAnchor.from_member_id ?? "")} · {shortId(replyAnchor.correlation_id ?? "")}</span>
+              <span className="truncate text-muted-foreground">{memberLabel(memberById, replyAnchor.sender_runtime_id ?? "")} · {shortId(replyAnchor.correlation_id ?? "")}</span>
               <button type="button" onClick={() => setReplyAnchor(undefined)} className="text-primary hover:underline">New message</button>
             </div>
           )}
@@ -486,7 +486,7 @@ export function TeamWarRoom({
             <Select
               aria-label="Response intent"
               value={responseIntent}
-              onChange={(event) => setResponseIntent(event.target.value as TeamMessageResponseIntent)}
+              onChange={(event) => setResponseIntent(event.target.value as ProviderResponseIntent)}
               className="h-11 w-full sm:h-9"
             >
               <option value="response_required">Needs reply</option>
@@ -507,7 +507,7 @@ export function TeamWarRoom({
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               placeholder={replyAnchor
-                ? `Reply to ${memberLabel(memberById, replyAnchor.from_member_id ?? "")} in this conversation…`
+                ? `Reply to ${memberLabel(memberById, replyAnchor.sender_runtime_id ?? "")} in this conversation…`
                 : composerTarget === "team" ? "Message team or @member…" : `Message ${memberById.get(composerTarget)?.name ?? "member"}…`}
               className="min-h-11 resize-none py-2 sm:min-h-9"
               rows={1}
@@ -718,10 +718,10 @@ export function TeamWarRoom({
                   members={memberById}
                   actionsEnabled={actionsEnabled}
                   onAnswer={(message) => {
-                    if (!message.from_member_id || message.from_member_id === "host") return;
+                    if (!message.sender_runtime_id || message.sender_runtime_id === "host") return;
                     setReplyAnchor(message);
                     setComposerWorkId(message.work_id ?? "");
-                    setComposerTarget(message.from_member_id);
+                    setComposerTarget(message.sender_runtime_id);
                     setKind("message");
                     revealComposer();
                   }}
@@ -1110,7 +1110,7 @@ function SelectedMemberModule({ member, work, currentAction, onMessage, onOpen }
   return (
     <ContextModule title={member.name ?? member.id} kicker="Selected member" tone={memberTone(member.status)}>
       <div className="flex items-center gap-2"><Avatar name={member.name ?? member.id} tone={memberTone(member.status)} /><p className="min-w-0 truncate text-[11px] text-muted-foreground" title={`${member.role ?? "member"} · ${providerStackLine(member.provider, member.provider_profile?.execution_mode ?? member.native_session?.execution_mode, memberModelLabel(member))}`}>{member.role ?? "member"} · {providerStackLine(member.provider, member.provider_profile?.execution_mode ?? member.native_session?.execution_mode, memberModelLabel(member))}</p></div>
-      <div className="mt-2 space-y-1.5 text-[11px]"><Fact label="Current Work" value={work ?? "No Work owned"} /><Fact label="Now" value={currentAction ?? "No durable action"} /><Fact label="Worktree override" value={member.worktree_ref ?? "None"} mono /><Fact label="Actual cwd" value={member.workspace_snapshot?.cwd ?? "Not captured (legacy run)"} mono title="Runs started before workspace capture was introduced did not record their cwd. Reopen the member to capture it." /><Fact label="Native session" value={member.native_session?.native_session_id ?? "Not recorded"} mono /><Fact label="Provider account" value={member.provider_capacity ? `${member.provider_capacity.state} · ${member.provider_capacity.evidence_source}` : "Not observed"} /></div>
+      <div className="mt-2 space-y-1.5 text-[11px]"><Fact label="Current Work" value={work ?? "No Work owned"} /><Fact label="Now" value={currentAction ?? "No durable action"} /><Fact label="Worktree override" value={member.provider_cwd_hint ?? "None"} mono /><Fact label="Actual cwd" value={member.provider_environment_observation?.cwd ?? "Not captured (legacy run)"} mono title="Runs started before workspace capture was introduced did not record their cwd. Reopen the member to capture it." /><Fact label="Native session" value={member.native_session?.native_session_id ?? "Not recorded"} mono /><Fact label="Provider account" value={member.provider_capacity ? `${member.provider_capacity.state} · ${member.provider_capacity.evidence_source}` : "Not observed"} /></div>
       <div className="mt-3 flex gap-2"><Button size="sm" variant="secondary" onClick={onMessage}><MessageSquare className="size-3.5" /> Message</Button><Button size="sm" variant="secondary" onClick={onOpen}><ExternalLink className="size-3.5" /> Open member</Button></div>
     </ContextModule>
   );
@@ -1118,7 +1118,7 @@ function SelectedMemberModule({ member, work, currentAction, onMessage, onOpen }
 
 function ResourcesModule({ members, delegationCount, liveCount }: { members: MemberRun[]; delegationCount: number; liveCount: number }) {
   const sessions = members.filter((member) => member.native_session).length;
-  const worktrees = members.filter((member) => member.worktree_ref).length;
+  const worktrees = members.filter((member) => member.provider_cwd_hint).length;
   const observedCapacity = members.filter((member) => member.provider_capacity).length;
   return <ContextModule title="Resources" kicker="Observed runtime"><div className="space-y-1.5 text-[11px]"><Fact label="Sessions" value={`${sessions} / ${members.length}`} /><Fact label="Worktrees" value={String(worktrees)} /><Fact label="Delegations" value={String(delegationCount)} /><Fact label="Live previews" value={String(liveCount)} /><Fact label="Capacity observed" value={`${observedCapacity} / ${members.length}`} /></div><p className="mt-2 text-[10px] text-muted-foreground">Observed resources only; no termination control is implied.</p></ContextModule>;
 }

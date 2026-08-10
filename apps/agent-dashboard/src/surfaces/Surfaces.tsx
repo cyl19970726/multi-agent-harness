@@ -35,7 +35,7 @@ function runtimeTone(status?: string): "good" | "running" | "warn" | "idle" {
 }
 
 /**
- * Compatibility directory for execution AgentMembers. Durable Standing Agents
+ * Compatibility directory for execution AgentMembers. Durable Agent Memberships
  * live in Company OS Organization; MemberRuns live under an AgentTeamRun. This
  * page intentionally does not project either identity into superseded work objects.
  */
@@ -49,7 +49,7 @@ export function AgentsList({ model, onSelectionChange, actionsEnabled, onAction 
           <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Execution directory</p>
           <h1 id="execution-members-title" className="mt-1 text-2xl font-semibold tracking-tight">Agent members</h1>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            Provider-backed execution identities. Standing Agents are managed from Organization and per-attempt members from Agent Teams.
+            Provider-backed execution identities. Agent Memberships are managed from Organization and per-attempt members from Agent Teams.
           </p>
         </div>
         <Button

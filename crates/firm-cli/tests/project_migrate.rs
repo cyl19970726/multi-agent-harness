@@ -2,8 +2,8 @@
 //! (goal-multi-project, project-migrate task).
 //!
 //! Migration moves a legacy repo-local `.harness/` store into the centralized
-//! `~/.firm/projects/<id>/` store: copying active JSONL ledgers plus prompts /
-//! runtimes, writing `metadata.json` with `migrated_from`, and dropping a
+//! `~/.firm/projects/<id>/` store: copying allowlisted canonical JSONL ledgers,
+//! writing `metadata.json` with `migrated_from`, and dropping a
 //! `MIGRATED_TO_CENTRAL` marker in the old store that points at the central one. It
 //! must preserve record counts, be idempotent, and fail safely.
 
@@ -17,20 +17,17 @@ use firm_env::{run_firm, TempHome};
 fn seed_local_store(home: &TempHome, name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     let repo = home.home().join(name);
     let local = repo.join(".harness");
-    std::fs::create_dir_all(local.join("prompts")).unwrap();
-    std::fs::create_dir_all(local.join("runtimes")).unwrap();
-    // Active JSONL ledgers plus one retired provider-session ledger that must
-    // not be copied into the new centralized store.
+    std::fs::create_dir_all(&local).expect("create legacy local store");
+    // One active canonical ledger plus retired Goal/Task/provider-session
+    // ledgers that must not be copied into the new centralized store.
     std::fs::write(
         local.join("goals.jsonl"),
         "{\"id\":\"g1\"}\n{\"id\":\"g2\"}\n",
     )
     .unwrap();
     std::fs::write(local.join("tasks.jsonl"), "{\"id\":\"t1\"}\n").unwrap();
-    std::fs::write(local.join("members.jsonl"), "{\"id\":\"m1\"}\n").unwrap();
+    std::fs::write(local.join("evidence.jsonl"), "{\"id\":\"e1\"}\n").unwrap();
     std::fs::write(local.join("provider_sessions.jsonl"), "{\"id\":\"ps1\"}\n").unwrap();
-    std::fs::write(local.join("prompts").join("worker.md"), "prompt body").unwrap();
-    std::fs::write(local.join("runtimes").join("rt.json"), "{}").unwrap();
     (repo, local)
 }
 
@@ -65,28 +62,23 @@ fn migrate_preserves_records_and_payloads_and_marks_old_store() {
     let project_id = result["project_id"].as_str().unwrap().to_string();
     assert_eq!(project_id, "legacyrepo");
 
-    // The retired duplicate provider-session ledger is intentionally discarded.
+    // Retired Goal/Task/provider-session ledgers are intentionally discarded.
     let central = home.projects_dir().join(&project_id);
     let after = ledger_record_count(&central);
     assert_eq!(
         after,
-        before - 1,
-        "retired provider session should be omitted"
+        before - 4,
+        "all retired Goal/Task/provider-session rows should be omitted"
     );
     assert_eq!(result["records_before"], before as u64);
     assert_eq!(result["records_after"], after as u64);
 
-    // Specific ledgers + payloads landed in the central store.
-    assert_eq!(
-        std::fs::read_to_string(central.join("goals.jsonl")).unwrap(),
-        "{\"id\":\"g1\"}\n{\"id\":\"g2\"}\n"
-    );
-    assert!(central.join("tasks.jsonl").exists());
-    assert!(central.join("members.jsonl").exists());
+    // Only the canonical ledger + payload landed in the central store.
+    assert!(!central.join("goals.jsonl").exists());
+    assert!(!central.join("tasks.jsonl").exists());
+    assert!(central.join("evidence.jsonl").exists());
     assert!(!central.join("provider_sessions.jsonl").exists());
     assert!(!central.join("provider-sessions").exists());
-    assert!(central.join("prompts").join("worker.md").exists());
-    assert!(central.join("runtimes").join("rt.json").exists());
 
     // metadata.json records migrated_from pointing at the old store.
     let meta: serde_json::Value =

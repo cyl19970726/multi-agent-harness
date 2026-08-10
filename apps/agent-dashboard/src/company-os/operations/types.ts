@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
  * An actor is not a provider session, and a MemberRun is not an organization
  * member. Containers can adapt API records into these small view models.
  */
-export type ActorKind = "human" | "standing_agent" | "external" | "service";
+export type ActorKind = "human" | "agent_membership" | "external" | "service";
 export type ActorAvailability = "available" | "away" | "unavailable";
 
 export interface ActorSummary {
@@ -85,7 +85,7 @@ export interface OrganizationIntegrityFinding {
 }
 
 /** Read-only execution participation joined by explicit MemberRun.agent_member_id. */
-export interface StandingExecutionAssignment {
+export interface AgentMemberExecutionAssignment {
   id: string;
   agentMemberId: string;
   sourceKind: "agent_team_work" | "agent_team_participation";
@@ -106,23 +106,6 @@ export interface StandingExecutionAssignment {
     native_session_id?: string;
     availability?: string;
   };
-}
-
-/**
- * A Company OS integrity signal, not an execution record: two or more
- * StandingAgents declared the same execution_agent_member_ref, so the
- * affected participation is withheld from standingAssignments until a human
- * unlinks one of the competing actors.
- */
-export interface StandingLinkConflict {
-  id: string;
-  kind: string;
-  severity: string;
-  agentMemberId: string;
-  standingAgentIds: string[];
-  affectedMemberRunIds: string[];
-  detail: string;
-  resolutionHint?: string;
 }
 
 export interface FinancialRecordView {
@@ -226,9 +209,7 @@ export interface TrademarkOperationsProjection {
   linkedTypedRecords?: RelatedLink[];
   linkedApproval?: ApprovalView;
   linkedCommitment?: FinancialRecordView;
-  standingAssignments?: StandingExecutionAssignment[];
-  /** Empty/absent means no conflict; a healthy snapshot renders nothing extra. */
-  standingAssignmentConflicts?: StandingLinkConflict[];
+  membershipProjections?: AgentMemberExecutionAssignment[];
   commitment: FinancialRecordView;
   approval: ApprovalView;
   evidence: RelatedLink[];

@@ -86,7 +86,7 @@ All executable mutations use:
 ```bash
 firm team-run work list|show|create|assign|claim|start|block|resume|release
 firm team-run work submit|review|request-changes|accept|cancel|retarget
-firm team-run work check-gates|reconcile-delivery|poll-github-ci
+firm team-run work reconcile-delivery|poll-github-ci
 ```
 
 Every transition reads the latest version and supplies the expected revision.
@@ -116,7 +116,7 @@ These states are independent:
 | Work | phase, condition, resolution, owner, report, gate, decision |
 | runtime | MemberRun, provider session, process lifecycle |
 | delivery | queued, provider received, acknowledged, failed |
-| organization | Standing Agent identity and authority |
+| organization | Agent Membership identity and authority |
 | company governance | Approval, Finance, Docs, Milestone |
 
 Adapters may correlate these planes by exact ids. They must not infer Work

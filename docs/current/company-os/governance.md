@@ -28,7 +28,7 @@ authority.
 | Legal reviewer | Reviews legal obligations, jurisdiction, evidence, retention, and external counsel boundaries. | Human or authorized-counsel sign-off required by policy. |
 | Human gate | Grants explicit authority for high-risk decisions reserved to people. | Evidence, review, or documented policy. |
 
-The Lead may be a human or Standing Agent if policy permits. A human gate is a
+The Lead may be a human or Agent Membership if policy permits. A human gate is a
 named `ActorRef` with `actor_type=human`; an Agent is never presented as a
 human approver.
 
@@ -36,7 +36,7 @@ human approver.
 
 A proposal is required before material change to a document module, directory,
 database/template, relation, retention rule, company-wide view, organization
-unit, standing Agent role, human membership, accountability, capacity,
+unit, Agent Membership role, human membership, accountability, capacity,
 permission, sensitive access, financial authority, or a new business domain
 that has no approved module.
 
@@ -82,7 +82,7 @@ they must never silently lower one.
 
 The Human-rooted Company Constitution governs
 delegation under an already approved root. A child grant or approved-template
-Standing Agent is routine consumption of that envelope only when it strictly
+Agent Membership is routine consumption of that envelope only when it strictly
 narrows at least one authority or resource dimension, no scope or resource
 dimension is broader, policy is known, the effect is reversible, blast radius
 is bounded, and there is no material external commitment. Root
@@ -104,7 +104,7 @@ ModuleDesign
   -> permissions, approvals, retention, and audit policy
 ```
 
-A new Standing Agent additionally has a sponsoring Lead, organization unit,
+A new Agent Membership additionally has a sponsoring Lead, organization unit,
 purpose, capability and permission limits, capacity, maintained documents,
 escalation target, review cadence, and retirement/replacement plan.
 

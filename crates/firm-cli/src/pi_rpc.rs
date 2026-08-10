@@ -524,7 +524,7 @@ fn ensure_session_has_no_persisted_thinking(path: &Path) -> CliResult<()> {
         })?;
         if value_contains_persisted_thinking(&value) {
             return Err(CliError::Usage(format!(
-                "refusing to resume Pi session {} because line {} contains persisted provider thinking; start a fresh Pi MemberRun with thinking disabled",
+                "refusing to resume Pi session {} because line {} contains persisted provider thinking; start a fresh Pi ProviderRuntimeProjection with thinking disabled",
                 path.display(),
                 index + 1
             )));

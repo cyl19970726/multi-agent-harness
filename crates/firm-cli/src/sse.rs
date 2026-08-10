@@ -10,9 +10,9 @@ use std::time::Duration;
 
 use crossbeam::channel::{bounded, Receiver, Sender};
 use harness_core::{
-    AgentEvent, AgentMessageRoute, AgentTeamRun, MemberAction, MemberRun, Message, Mission,
-    PendingInteraction, TeamMemberCloseRequest, TeamMessage, TeamRunEvent, TeamSupervisorLease,
-    Wave, WorkflowRun, WorkflowStep,
+    AgentTeamRun, MemberAction, Mission, PendingInteraction, ProviderDispatchEnvelope,
+    ProviderDispatchEvent, ProviderRuntimeProjection, RegistryMessage, TeamMemberCloseRequest,
+    TeamRunEvent, TeamSupervisorLease, Wave, WorkflowRun, WorkflowStep,
 };
 
 /// An event frame sent to SSE clients. Durable frames are reconstructed by tailing
@@ -23,14 +23,14 @@ use harness_core::{
 pub enum SseEventFrame {
     /// Snapshot of all current events (sent on initial connection)
     Snapshot {
-        agent_events: Vec<AgentEvent>,
-        messages: Vec<Message>,
+        agent_events: Vec<ProviderDispatchEvent>,
+        messages: Vec<RegistryMessage>,
         generated_at: String,
     },
     /// A new agent event was recorded
-    AgentEvent(AgentEvent),
+    ProviderDispatchEvent(ProviderDispatchEvent),
     /// A message was created or delivery status changed
-    Message(Message),
+    RegistryMessage(RegistryMessage),
     /// A workflow run status changed (WP2)
     WorkflowRun(WorkflowRun),
     /// A workflow step started or completed (WP2)
@@ -44,15 +44,13 @@ pub enum SseEventFrame {
     /// An Agent Team attempt was created or updated.
     AgentTeamRun(AgentTeamRun),
     /// An Agent Team member's durable run state changed.
-    MemberRun(Box<MemberRun>),
+    ProviderRuntimeProjection(Box<ProviderRuntimeProjection>),
     /// A routed Agent Team message was created or its delivery state changed.
-    TeamMessage(TeamMessage),
+    ProviderDispatchEnvelope(ProviderDispatchEnvelope),
     /// Durable ownership of one TeamRun's provider-native controls.
     TeamSupervisorLease(TeamSupervisorLease),
-    /// Durable Host Close latch for one MemberRun.
+    /// Durable Host Close latch for one ProviderRuntimeProjection.
     TeamMemberCloseRequest(TeamMemberCloseRequest),
-    /// Stable Agent Inbox mail was atomically routed to one concrete MemberRun.
-    AgentMessageRoute(AgentMessageRoute),
     /// A durable member action was appended or updated. These rows are the
     /// operator-visible execution trace for an Agent Team attempt, so they are
     /// tail-replayed and merged latest-wins like the other run records.
@@ -394,7 +392,7 @@ fn seed_offsets_at_eof(
 /// The JSONL files tailed in every Execution Space or compatibility
 /// coordination store.
 const WATCHED_FILES: &[&str] = &[
-    "agent_events.jsonl",
+    "provider_dispatch_events.jsonl",
     "messages.jsonl",
     "workflow_runs.jsonl",
     "workflow_steps.jsonl",
@@ -406,7 +404,6 @@ const WATCHED_FILES: &[&str] = &[
     "team_messages.jsonl",
     "team_supervisor_leases.jsonl",
     "team_member_close_requests.jsonl",
-    "agent_message_routes.jsonl",
     "member_actions.jsonl",
     "pending_interactions.jsonl",
 ];
@@ -415,9 +412,9 @@ const WATCHED_FILES: &[&str] = &[
 /// one typed row. Any complete external append invalidates the scoped snapshot.
 const EXECUTION_INVALIDATION_FILES: &[&str] = &[
     "teams.jsonl",
-    "members.jsonl",
-    "durable_agent_members.jsonl",
-    "agent_runtimes.jsonl",
+    "provider_launch_profiles.jsonl",
+    "durable_agent_provider_launch_profiles.jsonl",
+    "provider_processes.jsonl",
     "evidence.jsonl",
     "provider_child_threads.jsonl",
     "workflow_patches.jsonl",
@@ -694,11 +691,11 @@ fn poll_project(
     check_and_broadcast_appends(
         project_id,
         store_root,
-        "agent_events.jsonl",
+        "provider_dispatch_events.jsonl",
         consumed_offsets,
         |line| {
-            if let Ok(event) = serde_json::from_str::<AgentEvent>(line) {
-                vec![SseEventFrame::AgentEvent(event)]
+            if let Ok(event) = serde_json::from_str::<ProviderDispatchEvent>(line) {
+                vec![SseEventFrame::ProviderDispatchEvent(event)]
             } else {
                 Vec::new()
             }
@@ -760,9 +757,9 @@ fn poll_project(
         "member_runs.jsonl",
         consumed_offsets,
         |line| {
-            serde_json::from_str::<MemberRun>(line)
+            serde_json::from_str::<ProviderRuntimeProjection>(line)
                 .ok()
-                .map(|member| SseEventFrame::MemberRun(Box::new(member)))
+                .map(|member| SseEventFrame::ProviderRuntimeProjection(Box::new(member)))
                 .into_iter()
                 .collect()
         },
@@ -775,9 +772,9 @@ fn poll_project(
         "team_messages.jsonl",
         consumed_offsets,
         |line| {
-            serde_json::from_str::<TeamMessage>(line)
+            serde_json::from_str::<ProviderDispatchEnvelope>(line)
                 .ok()
-                .map(SseEventFrame::TeamMessage)
+                .map(SseEventFrame::ProviderDispatchEnvelope)
                 .into_iter()
                 .collect()
         },
@@ -817,21 +814,6 @@ fn poll_project(
     check_and_broadcast_appends(
         project_id,
         store_root,
-        "agent_message_routes.jsonl",
-        consumed_offsets,
-        |line| {
-            serde_json::from_str::<AgentMessageRoute>(line)
-                .ok()
-                .map(SseEventFrame::AgentMessageRoute)
-                .into_iter()
-                .collect()
-        },
-        manager,
-    );
-
-    check_and_broadcast_appends(
-        project_id,
-        store_root,
         "member_actions.jsonl",
         consumed_offsets,
         member_action_frames,
@@ -859,8 +841,8 @@ fn poll_project(
         "messages.jsonl",
         consumed_offsets,
         |line| {
-            if let Ok(msg) = serde_json::from_str::<Message>(line) {
-                vec![SseEventFrame::Message(msg)]
+            if let Ok(msg) = serde_json::from_str::<RegistryMessage>(line) {
+                vec![SseEventFrame::RegistryMessage(msg)]
             } else {
                 Vec::new()
             }
@@ -1041,8 +1023,8 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use harness_core::{
-        MemberActionStatus, Message, MessageDeliveryStatus, MessageKind, SenderKind,
-        WorkflowRunStatus, WorkflowStepStatus,
+        MemberActionStatus, RegistryDeliveryStatus, RegistryMessage, RegistryMessageIntent,
+        SenderKind, WorkflowRunStatus, WorkflowStepStatus,
     };
 
     use super::*;
@@ -1061,15 +1043,15 @@ mod tests {
         ))
     }
 
-    fn test_message(id: &str) -> Message {
-        Message {
+    fn test_message(id: &str) -> RegistryMessage {
+        RegistryMessage {
             id: id.into(),
             task_id: Some("task-1".into()),
             from_agent_id: "leader".into(),
             to_agent_id: Some("agent-1".into()),
             channel: Some("assignment".into()),
-            kind: MessageKind::Assignment,
-            delivery_status: MessageDeliveryStatus::Queued,
+            kind: RegistryMessageIntent::Message,
+            delivery_status: RegistryDeliveryStatus::Queued,
             content: "Do the task".into(),
             evidence_ids: Vec::new(),
             created_at: "unix-ms:1".into(),
@@ -1119,9 +1101,9 @@ mod tests {
     }
 
     fn message_frame(line: &str) -> Vec<SseEventFrame> {
-        serde_json::from_str::<Message>(line)
+        serde_json::from_str::<RegistryMessage>(line)
             .ok()
-            .map(SseEventFrame::Message)
+            .map(SseEventFrame::RegistryMessage)
             .into_iter()
             .collect()
     }
@@ -1241,7 +1223,7 @@ mod tests {
         let mut received = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             match frame {
-                SseEventFrame::Message(m) => received.push(m.id),
+                SseEventFrame::RegistryMessage(m) => received.push(m.id),
                 other => panic!("unexpected frame {other:?}"),
             }
         }
@@ -1333,7 +1315,7 @@ mod tests {
         let mut received = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             match frame {
-                SseEventFrame::Message(message) => received.push(message.id),
+                SseEventFrame::RegistryMessage(message) => received.push(message.id),
                 other => panic!("unexpected frame {other:?}"),
             }
         }
@@ -1406,7 +1388,7 @@ mod tests {
         let mut received = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             match frame {
-                SseEventFrame::Message(message) => received.push(message.id),
+                SseEventFrame::RegistryMessage(message) => received.push(message.id),
                 other => panic!("unexpected frame {other:?}"),
             }
         }
@@ -1559,11 +1541,14 @@ mod tests {
         let rx_a = manager.subscribe("proj-a");
         let rx_b = manager.subscribe("proj-b");
 
-        manager.broadcast("proj-a", SseEventFrame::Message(test_message("only-a")));
+        manager.broadcast(
+            "proj-a",
+            SseEventFrame::RegistryMessage(test_message("only-a")),
+        );
 
         // A receives it.
         match rx_a.try_recv() {
-            Ok(SseEventFrame::Message(m)) => assert_eq!(m.id, "only-a"),
+            Ok(SseEventFrame::RegistryMessage(m)) => assert_eq!(m.id, "only-a"),
             other => panic!("project A should receive its own frame, got {other:?}"),
         }
         // B receives nothing.
@@ -1613,7 +1598,7 @@ mod tests {
         );
 
         match rx_a.try_recv() {
-            Ok(SseEventFrame::Message(m)) => assert_eq!(m.id, "a-row"),
+            Ok(SseEventFrame::RegistryMessage(m)) => assert_eq!(m.id, "a-row"),
             other => panic!("A should receive its row, got {other:?}"),
         }
         assert!(rx_b.try_recv().is_err(), "B must not see A's row");
@@ -1651,14 +1636,6 @@ mod tests {
                 "team_runs.jsonl",
                 include_str!("../../../schemas/fixtures/agent-team-run/valid/basic.json"),
             ),
-            (
-                "member_runs.jsonl",
-                include_str!("../../../schemas/fixtures/member-run/valid/basic.json"),
-            ),
-            (
-                "team_messages.jsonl",
-                include_str!("../../../schemas/fixtures/team-message/valid/basic.json"),
-            ),
         ];
         for (filename, row) in rows {
             // Fixture files are pretty-printed JSON, whereas a JSONL ledger has
@@ -1677,8 +1654,12 @@ mod tests {
                 SseEventFrame::Mission(mission) => kinds.push(("mission", mission.id)),
                 SseEventFrame::Wave(wave) => kinds.push(("wave", wave.id)),
                 SseEventFrame::AgentTeamRun(run) => kinds.push(("team_run", run.id)),
-                SseEventFrame::MemberRun(member) => kinds.push(("member_run", member.id)),
-                SseEventFrame::TeamMessage(message) => kinds.push(("team_message", message.id)),
+                SseEventFrame::ProviderRuntimeProjection(member) => {
+                    kinds.push(("member_run", member.id))
+                }
+                SseEventFrame::ProviderDispatchEnvelope(message) => {
+                    kinds.push(("team_message", message.id))
+                }
                 other => panic!("unexpected native-ledger frame {other:?}"),
             }
         }
@@ -1689,8 +1670,6 @@ mod tests {
                 ("mission", "mission-1".into()),
                 ("wave", "wave-1".into()),
                 ("team_run", "trun-1".into()),
-                ("member_run", "mrun-1".into()),
-                ("team_message", "tmsg-1".into()),
             ]
         );
         for (filename, _) in rows {
@@ -1760,9 +1739,9 @@ mod tests {
     fn snapshot_only_execution_ledgers_have_an_invalidation_path() {
         for ledger in [
             "teams.jsonl",
-            "members.jsonl",
-            "durable_agent_members.jsonl",
-            "agent_runtimes.jsonl",
+            "provider_launch_profiles.jsonl",
+            "durable_agent_provider_launch_profiles.jsonl",
+            "provider_processes.jsonl",
             "evidence.jsonl",
             "provider_child_threads.jsonl",
             "workflow_patches.jsonl",

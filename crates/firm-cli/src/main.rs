@@ -14,45 +14,46 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
-    build_launch_spec, content_hash_hex16, provider_interaction_response_id, validate_gate_specs,
-    AgentEvent, AgentMember, AgentMemberStatus, AgentMessageRoute, AgentProviderConfig,
-    AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamRun, AgentTeamStatus,
-    DelegationRun, DurableAgentMember, DurableAgentMemberStatus, Evidence, ExecutionNode,
-    ExecutionNodeStatus, ExecutionSpace, GateEngine, GateSpec, GitHubLink, GitHubLinkKind,
-    HostAttention, HostAttentionStatus, HostBindingLease, HostBindingLeaseOwnerKind,
-    HostControlMode, HostDispatchConfig, LaunchMcp, LaunchPermission, LaunchSpec, MemberAction,
-    MemberActionStatus, MemberCoordinationStatus, MemberExecutionDriver, MemberRun,
-    MemberRunStatus, MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus,
-    MessageKind, MessageTerminalSource, Mission, MissionLogEntry, MissionLogEntryKind,
-    MissionStatus, NativeSessionAvailability, NativeSessionRef, NodeDaemonLeaseStatus,
-    NodeProjectRegistration, NodeProjectRegistrationStatus, OrdinaryMessageBoundary,
-    PendingInteraction, PendingInteractionKind, PendingInteractionRoute, PendingInteractionStatus,
-    ProjectContext, ProjectKind, ProviderAccountRef, ProviderCapabilities,
-    ProviderCapacityConfidence, ProviderCapacityEvidence, ProviderCapacitySnapshot,
-    ProviderCapacityState, ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
+    build_launch_spec, content_hash_hex16, provider_interaction_response_id, AgentTeam,
+    AgentTeamRun, AgentTeamStatus, DelegationRun, Evidence, ExecutionNode, ExecutionNodeStatus,
+    ExecutionSpace, GitHubLink, GitHubLinkKind, HostAttention, HostAttentionStatus,
+    HostBindingLease, HostBindingLeaseOwnerKind, HostControlMode, HostDispatchConfig, LaunchMcp,
+    LaunchPermission, LaunchSpec, MemberAction, MemberActionStatus, MemberCoordinationStatus,
+    MemberExecutionDriver, MemberRunStatus, MemberWorkspaceSnapshot, MessageTerminalSource,
+    Mission, MissionLogEntry, MissionLogEntryKind, MissionStatus, NativeSessionAvailability,
+    NativeSessionRef, NodeDaemonLeaseStatus, NodeProjectRegistration,
+    NodeProjectRegistrationStatus, OrdinaryMessageBoundary, PendingInteraction,
+    PendingInteractionKind, PendingInteractionRoute, PendingInteractionStatus, ProjectContext,
+    ProjectKind, ProviderAccountRef, ProviderCapabilities, ProviderCapacityConfidence,
+    ProviderCapacityEvidence, ProviderCapacitySnapshot, ProviderCapacityState,
+    ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
     ProviderCompatibilityAdmissionPolicy, ProviderCompatibilityBlockBoundary,
     ProviderCompatibilityBlockCause, ProviderCompatibilityBlockSource, ProviderCompatibilityStatus,
-    ProviderControlValue, ProviderEventFidelity, ProviderExecutionControls,
+    ProviderControlValue, ProviderDispatchAttempt, ProviderDispatchEnvelope, ProviderDispatchEvent,
+    ProviderDispatchIntent, ProviderEventFidelity, ProviderExecutionControls,
     ProviderExecutionStatus, ProviderFeatureMode, ProviderIntegrationProfile,
     ProviderInteractionMessageOption, ProviderInteractionMode, ProviderInteractionRequestBody,
-    ProviderInteractionResponseBody, ProviderInteractionType, ProviderRuntimeContextFact, Review,
-    ReviewVerdict, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus,
-    TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery,
-    TeamMessageKind, TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
-    TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Validate, Wave, Work,
+    ProviderInteractionResponseBody, ProviderInteractionType, ProviderLaunchConfig,
+    ProviderLaunchProfile, ProviderLaunchStatus, ProviderProcess, ProviderProcessHealth,
+    ProviderProcessStatus, ProviderResponseIntent, ProviderRuntimeContextFact,
+    ProviderRuntimeProjection, ProviderWorkDispatch, ProviderWorkDispatchStatus,
+    RegistryDeliveryAttempt, RegistryDeliveryStatus, RegistryMessage, RegistryMessageIntent,
+    Review, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus,
+    TeamMemberCloseRequest, TeamMemberCloseStatus, TeamRecipientKind, TeamRecipientRef,
+    TeamRunEvent, TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Validate, Wave, Work,
     WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkCondition, WorkDelegation,
-    WorkDelegationState, WorkDelivery, WorkDeliveryStatus, WorkPhase, WorkPriority, WorkRef,
-    WorkResolution, WorkWorkspace, WorkWorkspaceKind, WorkflowArtifactFile,
+    WorkDelegationState, WorkPhase, WorkPriority, WorkRef, WorkResolution, WorkflowArtifactFile,
     WorkflowArtifactManifest, WorkflowArtifactManifestStatus, WorkflowPatch, WorkflowPatchStatus,
     WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus, WorkflowTerminalReason,
     EXECUTION_MODE_EXTERNAL_INTERACTIVE,
 };
 use harness_store::{
     canonical_surface, HarnessStore, HostAttentionClaimResult, MessageDeliveryClaimResult,
-    StoreError, TeamMessageDeliveryClaimResult, WorkDeliveryClaimResult, WorkReviewPayload,
+    StoreError, TeamMessageDeliveryClaimResult, WorkDeliveryClaimResult,
 };
 use thiserror::Error;
 
+mod agentfirm_api;
 mod codex_app_server;
 mod company_os_api;
 mod company_store;
@@ -104,7 +105,7 @@ impl CliError {
 /// injected, failed, expired, and already-acknowledged deliveries. A message is
 /// counted once when at least one recipient has a `manual_ack` delivery that has
 /// reached `delivered`.
-pub(crate) fn has_actionable_delivered_manual_ack(message: &TeamMessage) -> bool {
+pub(crate) fn has_actionable_delivered_manual_ack(message: &ProviderDispatchEnvelope) -> bool {
     message.deliveries.iter().any(|delivery| {
         delivery.policy == TeamDeliveryPolicy::ManualAck
             && delivery.status == TeamDeliveryStatus::Delivered
@@ -928,31 +929,20 @@ fn execution_space_command(args: &[String]) -> CliResult<()> {
 const EXECUTION_LEDGER_NAMES: &[&str] = &[
     "missions.jsonl",
     "waves.jsonl",
-    "members.jsonl",
-    "durable_agent_members.jsonl",
     "teams.jsonl",
-    "agent_runtimes.jsonl",
-    "agent_events.jsonl",
     "proposals.jsonl",
-    "messages.jsonl",
-    "agent_message_routes.jsonl",
     "evidence.jsonl",
     "decisions.jsonl",
-    "reviews.jsonl",
     "gaps.jsonl",
     "provider_child_threads.jsonl",
     "team_runs.jsonl",
-    "member_runs.jsonl",
-    "team_messages.jsonl",
     "work_operations.jsonl",
-    "work_delivery_updates.jsonl",
     "host_attentions.jsonl",
     "team_supervisor_leases.jsonl",
-    "team_member_close_requests.jsonl",
-    "member_actions.jsonl",
     "pending_interactions.jsonl",
     "delegation_runs.jsonl",
     "team_run_events.jsonl",
+    "agentfirm_trust_operations.jsonl",
     "workflow_runs.jsonl",
     "workflow_steps.jsonl",
     "workflow_patches.jsonl",
@@ -1701,9 +1691,10 @@ fn project_show(firm_home: &Path, args: &[String]) -> CliResult<()> {
     print_json(&project_context_json(&ctx, &current))
 }
 
-/// Subdirectories of a store that hold non-JSONL payloads and must be copied
-/// wholesale during migration (provider session logs, prompts, runtime files).
-const STORE_PAYLOAD_DIRS: &[&str] = &["prompts", "runtimes"];
+/// The clean-cutover project migration copies only canonical ledgers. Provider
+/// native sessions, launch payloads and runtime files remain provider truth and
+/// are never imported into an Execution Space.
+const STORE_PAYLOAD_DIRS: &[&str] = &[];
 
 /// `harness project migrate [<local-store>] [--switch]` — move an existing
 /// repo-local `.harness/` store into the centralized per-project store
@@ -1835,8 +1826,7 @@ fn count_store_records(store_root: &Path) -> CliResult<u64> {
     Ok(total)
 }
 
-/// Copy active `*.jsonl` ledgers and the `prompts/` / `runtimes/` payload dirs
-/// from `src` into `dst`, preserving filenames. Returns the
+/// Copy allowlisted canonical `*.jsonl` ledgers from `src` into `dst`, preserving filenames. Returns the
 /// number of top-level entries copied. Existing destination files are overwritten
 /// (merge-copy under `--force`); missing source payload dirs are skipped.
 fn copy_store_contents(src: &Path, dst: &Path) -> CliResult<u64> {
@@ -1846,40 +1836,41 @@ fn copy_store_contents(src: &Path, dst: &Path) -> CliResult<u64> {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
             if let Some(name) = path.file_name() {
-                if name == "provider_sessions.jsonl" {
+                let name = name.to_string_lossy();
+                if !project_migration_ledger_allowed(&name) {
                     continue;
                 }
-                std::fs::copy(&path, dst.join(name))?;
+                std::fs::copy(&path, dst.join(name.as_ref()))?;
                 copied += 1;
             }
         }
     }
-    // 2. Payload directories (recursive).
-    for dir in STORE_PAYLOAD_DIRS {
-        let from = src.join(dir);
-        if from.is_dir() {
-            copy_dir_recursive(&from, &dst.join(dir))?;
-            copied += 1;
-        }
-    }
+    debug_assert!(STORE_PAYLOAD_DIRS.is_empty());
     Ok(copied)
 }
 
-/// Recursively copy a directory tree (files + subdirs), creating `dst` as needed.
-fn copy_dir_recursive(src: &Path, dst: &Path) -> CliResult<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)?.flatten() {
-        let path = entry.path();
-        let target = dst.join(entry.file_name());
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            copy_dir_recursive(&path, &target)?;
-        } else if file_type.is_file() {
-            std::fs::copy(&path, &target)?;
-        }
-        // Symlinks in a store are not expected; skip them rather than following.
-    }
-    Ok(())
+fn project_migration_ledger_allowed(name: &str) -> bool {
+    matches!(
+        name,
+        "missions.jsonl"
+            | "waves.jsonl"
+            | "teams.jsonl"
+            | "team_runs.jsonl"
+            | "work_operations.jsonl"
+            | "evidence.jsonl"
+            | "decisions.jsonl"
+            | "gaps.jsonl"
+            | "host_attentions.jsonl"
+            | "team_supervisor_leases.jsonl"
+            | "pending_interactions.jsonl"
+            | "delegation_runs.jsonl"
+            | "team_run_events.jsonl"
+            | "agentfirm_trust_operations.jsonl"
+            | "workflow_runs.jsonl"
+            | "workflow_steps.jsonl"
+            | "workflow_patches.jsonl"
+            | "workflow_artifact_manifests.jsonl"
+    )
 }
 
 /// Return a stable relative-file index without following symlinks.
@@ -1981,7 +1972,7 @@ fn run() -> CliResult<()> {
         }
         "project" => project_command(&args[1..])?,
         "space" => execution_space_command(&args[1..])?,
-        "agent" => agent_command(&store, resolved.context.as_ref(), &args[1..])?,
+        "agent" => return Err(retired_surface_error("agent")),
         "org" => org_command(&store, &args[1..])?,
         "node" => node_command(&store, &resolved, &args[1..])?,
         "team" => team_command(&store, &args[1..])?,
@@ -1990,6 +1981,7 @@ fn run() -> CliResult<()> {
         "team-run" => team_run_command(&store, &resolved, &args[1..])?,
         "member-run" => member_run_command(&store, &args[1..])?,
         "member" => member_command(&store, &args[1..])?,
+        "member-trust" => member_trust_command(&store, &resolved, &args[1..])?,
         "provider" => provider_command(&store, &resolved, &args[1..])?,
         "company" => company_command(&store, &args[1..])?,
         "dashboard" => dashboard_command(&store, &resolved, &args[1..])?,
@@ -2003,6 +1995,68 @@ fn run() -> CliResult<()> {
         command => return Err(CliError::Usage(format!("unknown command: {command}"))),
     }
     Ok(())
+}
+
+fn member_trust_command(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    args: &[String],
+) -> CliResult<()> {
+    require_subcommand(args, "member-trust mutate --actor-kind <kind> --actor-id <id> --idempotency-key <key> --expected-version <n> --json <TrustCommand JSON>")?;
+    if args[0] != "mutate" {
+        return Err(CliError::Usage(format!(
+            "unknown member-trust command: {}",
+            args[0]
+        )));
+    }
+    let execution_space_id = resolved
+        .execution_space_context
+        .as_ref()
+        .map(|space| space.id.clone())
+        .ok_or_else(|| {
+            CliError::Usage("member-trust mutations require an explicit Execution Space".into())
+        })?;
+    let actor_kind_raw = required(args, "--actor-kind")?;
+    let actor_kind = agentfirm_api::parse_actor_kind(&actor_kind_raw).ok_or_else(|| {
+        CliError::Usage("--actor-kind must be human|agent_member|external|service".into())
+    })?;
+    let actor_id = required(args, "--actor-id")?;
+    let idempotency_key = required(args, "--idempotency-key")?;
+    let expected_version = required(args, "--expected-version")?
+        .parse::<u64>()
+        .map_err(|_| CliError::Usage("--expected-version must be an unsigned integer".into()))?;
+    let command = serde_json::from_str::<agentfirm_api::TrustCommand>(&required(args, "--json")?)?;
+    let authority_actor = match (
+        value(args, "--authority-kind"),
+        value(args, "--authority-id"),
+    ) {
+        (None, None) => None,
+        (Some(kind), Some(id)) => Some(harness_core::agentfirm_api::ActorRef {
+            kind: agentfirm_api::parse_actor_kind(&kind)
+                .ok_or_else(|| CliError::Usage("--authority-kind is invalid".into()))?,
+            id,
+        }),
+        _ => {
+            return Err(CliError::Usage(
+                "--authority-kind and --authority-id must be provided together".into(),
+            ))
+        }
+    };
+    let auth = agentfirm_api::AuthenticatedMutation {
+        execution_space_id,
+        actor: harness_core::agentfirm_api::ActorRef {
+            kind: actor_kind,
+            id: actor_id,
+        },
+        authorized_authority_actors: authority_actor.into_iter().collect(),
+        idempotency_key,
+        expected_version,
+    };
+    match agentfirm_api::execute(store, auth, command) {
+        Ok(result) => print_json(&result),
+        Err(StoreError::Conflict(encoded)) => Err(CliError::Usage(encoded)),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn retired_command(command: &str) -> bool {
@@ -2492,7 +2546,8 @@ const ACTIVE_COMPANY_OS_LEDGER_FILES: &[&str] = &[
     "company_os_views.jsonl",
     "company_os_business_modules.jsonl",
     "company_os_human_members.jsonl",
-    "company_os_standing_agents.jsonl",
+    "company_os_human_provider_launch_profiles.jsonl",
+    "company_os_agent_memberships.jsonl",
     "company_os_external_participants.jsonl",
     "company_os_service_actors.jsonl",
     "company_os_org_units.jsonl",
@@ -2695,8 +2750,9 @@ fn company_org_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         "add-membership" => company_org_add_membership_command(store, &args[1..]),
         "transition-actor" => company_org_transition_actor_command(store, &args[1..]),
         "update-permissions" => company_org_update_permissions_command(store, &args[1..]),
-        "link-execution" => company_org_link_execution_command(store, &args[1..]),
-        "unlink-execution" => company_org_unlink_execution_command(store, &args[1..]),
+        "link-execution" | "unlink-execution" => Err(CliError::Usage(
+            "AgentMembership requires its canonical AgentMember ActorRef at creation; relink/unlink compatibility commands are retired".into(),
+        )),
         other => Err(CliError::Usage(format!(
             "unknown company org command: {other}; usage: harness company org actor|unit|membership | list|query|create-human|create-agent|create-unit|add-membership|transition-actor|update-permissions|link-execution|unlink-execution"
         ))),
@@ -2862,52 +2918,53 @@ fn company_org_create_human_command(store: &HarnessStore, args: &[String]) -> Cl
     )
 }
 
-fn company_org_create_agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let authority = required(args, "--authority")?;
+fn company_agent_membership_actor_value(args: &[String]) -> CliResult<serde_json::Value> {
+    let agent_member_id = required(args, "--agent-member")?;
+    let execution_space_id = required(args, "--execution-space")?;
+    let (space, execution_store) = company_execution_space_store(&execution_space_id)?;
+    let member = execution_store
+        .trust_agent_members(&space.id)?
+        .into_iter()
+        .find(|member| member.id == agent_member_id)
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "canonical AgentMember not found in Execution Space {}: {agent_member_id}",
+                space.id
+            ))
+        })?;
+    if member.organization_status
+        != harness_core::agentfirm_api::AgentMemberOrganizationStatus::Active
+    {
+        return Err(CliError::Usage(format!(
+            "canonical AgentMember {agent_member_id} is not active"
+        )));
+    }
     let now = now_string();
-    let id = value(args, "--id").unwrap_or_else(|| generated_id("standing-agent-cli"));
-    let capacity = value(args, "--capacity")
-        .map(|raw| {
-            raw.parse::<u32>()
-                .map_err(|_| CliError::Usage("--capacity must be an integer".into()))
-        })
-        .transpose()?;
-    let actor = serde_json::json!({
+    Ok(serde_json::json!({
         "actor_type": "agent",
         "actor": {
-            "id": id,
-            "display_name": required(args, "--display-name")?,
-            "role": required(args, "--role")?,
-            "execution_agent_member_ref": value(args, "--execution-agent-member-ref"),
+            "id": value(args, "--id").unwrap_or_else(|| generated_id("agent-membership-cli")),
+            "agent_member_ref": { "kind": "agent_member", "id": agent_member_id },
             "status": value(args, "--status").unwrap_or_else(|| "active".to_string()),
-            "availability": value(args, "--availability").unwrap_or_else(|| "available".to_string()),
-            "assignment_capacity": capacity,
-            "exclusive_assignment_ref": value(args, "--exclusive-assignment"),
             "membership_refs": many(args, "--membership"),
             "responsibility_summary": required(args, "--responsibility")?,
-            "capability_refs": many(args, "--capability"),
-            "system_prompt_ref": value(args, "--system-prompt"),
-            "tool_refs": many(args, "--tool"),
-            "skill_refs": many(args, "--skill"),
-            "maintained_document_refs": many(args, "--maintained-document"),
-            "accepted_work_type_refs": many(args, "--accepted-work-type"),
-            "escalation_policy_ref": value(args, "--escalation-policy"),
             "permission_policy_refs": many(args, "--permission"),
-            "runtime_refs": many(args, "--runtime"),
-            "native_session_refs": many(args, "--native-session"),
             "created_at": now,
             "updated_at": now
         }
-    });
+    }))
+}
+
+fn company_org_create_agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let authority = required(args, "--authority")?;
     company_org_admin_append(
         store,
         "/v1/company-os/actors",
         &authority,
-        actor,
-        "administrative_standing_agent_append",
+        company_agent_membership_actor_value(args)?,
+        "administrative_agent_membership_append",
     )
 }
-
 fn company_org_create_unit_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     let authority = required(args, "--authority")?;
     let now = now_string();
@@ -2971,8 +3028,15 @@ fn company_org_transition_actor_command(store: &HarnessStore, args: &[String]) -
     let actor_kind = value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string());
     let mut actor = latest_company_actor_value(store, &actor_kind, &actor_id)?;
     actor["actor"]["status"] = serde_json::json!(required(args, "--status")?);
-    if let Some(availability) = value(args, "--availability") {
-        actor["actor"]["availability"] = serde_json::json!(availability);
+    if actor_kind != "agent" {
+        if let Some(availability) = value(args, "--availability") {
+            actor["actor"]["availability"] = serde_json::json!(availability);
+        }
+    } else if value(args, "--availability").is_some() {
+        return Err(CliError::Usage(
+            "Agent Membership has no independent availability; inspect the canonical AgentMember/ProviderRuntimeProjection projection"
+                .to_string(),
+        ));
     }
     actor["actor"]["updated_at"] = serde_json::json!(now_string());
     company_org_admin_append(
@@ -2989,21 +3053,31 @@ fn company_org_update_permissions_command(store: &HarnessStore, args: &[String])
     let actor_id = required(args, "--actor")?;
     let actor_kind = value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string());
     let mut actor = latest_company_actor_value(store, &actor_kind, &actor_id)?;
+    if actor_kind == "agent"
+        && (!many(args, "--authority-policy").is_empty() || !many(args, "--capability").is_empty())
+    {
+        return Err(CliError::Usage(
+            "Agent Membership stores only permission_policy_refs; capabilities and authority live on the canonical AgentMember or Human authority"
+                .to_string(),
+        ));
+    }
     append_string_values(
         &mut actor["actor"],
         "permission_policy_refs",
         many(args, "--permission"),
     );
-    append_string_values(
-        &mut actor["actor"],
-        "authority_policy_refs",
-        many(args, "--authority-policy"),
-    );
-    append_string_values(
-        &mut actor["actor"],
-        "capability_refs",
-        many(args, "--capability"),
-    );
+    if actor_kind != "agent" {
+        append_string_values(
+            &mut actor["actor"],
+            "authority_policy_refs",
+            many(args, "--authority-policy"),
+        );
+        append_string_values(
+            &mut actor["actor"],
+            "capability_refs",
+            many(args, "--capability"),
+        );
+    }
     actor["actor"]["updated_at"] = serde_json::json!(now_string());
     company_org_admin_append(
         store,
@@ -3014,24 +3088,12 @@ fn company_org_update_permissions_command(store: &HarnessStore, args: &[String])
     )
 }
 
-/// Require an active Human `company_os.admin` authority without writing a row.
-///
-/// The relation commands are idempotent, so some invocations append nothing.
-/// Those still have to prove authority up front: otherwise an unknown or
-/// non-admin `--authority` would appear to succeed whenever the relation
-/// already had the requested shape.
-fn company_org_require_admin_authority(store: &HarnessStore, authority: &str) -> CliResult<()> {
-    let authority_ref = company_actor_ref_json("human", authority)?;
-    company_os_api::authorize_administrative_actor_write(store, &authority_ref)
-        .map_err(CliError::Usage)
-}
-
-/// Open the Execution Space that owns AgentMember truth for a Company OS link.
+/// Open the Execution Space that owns ProviderLaunchProfile truth for a Company OS link.
 ///
 /// `harness company ...` resolves its store from the Company Store registry and
 /// returns from [`resolve_store`] *before* the global `--space` selector is
 /// consumed, so a Company CLI command never holds an execution store. Per ADR
-/// 0042 the Company Store does not own AgentMember truth and a Project Binding
+/// 0042 the Company Store does not own ProviderLaunchProfile truth and a Project Binding
 /// only describes cwd, so the relation command names its Execution Space
 /// explicitly and this function is the single read-only bridge across the
 /// boundary. It deliberately has no fallback to the active space or to a
@@ -3049,144 +3111,6 @@ fn company_execution_space_store(
         })?;
     let store = HarnessStore::new(space.store_root.clone());
     Ok((space, store))
-}
-
-/// Link an EXISTING StandingAgent to an EXISTING AgentMember.
-///
-/// Both ids are explicit and neither is ever inferred from the other: equal ids
-/// must be typed twice. The StandingAgent is read latest-row-wins and re-appended
-/// with only `execution_agent_member_ref` and `updated_at` changed, so every other
-/// actor field round-trips. The write goes through the administrative governance
-/// envelope, never through a raw JSONL edit.
-fn company_org_link_execution_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let authority = required(args, "--authority")?;
-    let actor_id = required(args, "--actor")?;
-    let agent_member_id = required(args, "--agent-member")?;
-    let space_id = required(args, "--execution-space")?;
-    let replace = has_flag(args, "--replace");
-    // Authorize every invocation, including the ones that turn out to change
-    // nothing: an idempotent no-op must not become an authorization bypass.
-    company_org_require_admin_authority(store, &authority)?;
-
-    let (space, execution_store) = company_execution_space_store(&space_id)?;
-    let members = latest_members(&execution_store)?;
-    let member = members.get(&agent_member_id).ok_or_else(|| {
-        CliError::Usage(format!(
-            "AgentMember not found in execution space {}: {agent_member_id} (store {})",
-            space.id,
-            space.store_root.display()
-        ))
-    })?;
-
-    let mut actor = latest_company_actor_value(store, "agent", &actor_id)?;
-    let previous = actor["actor"]["execution_agent_member_ref"]
-        .as_str()
-        .map(str::to_string);
-    let validated_against = serde_json::json!({
-        "execution_space_id": space.id,
-        "execution_store_root": space.store_root.to_string_lossy(),
-        "agent_member_id": member.id,
-        "agent_member_name": member.name,
-        "agent_member_provider": member.provider,
-    });
-    if previous.as_deref() == Some(agent_member_id.as_str()) {
-        // Idempotent: a re-run of the same explicit pair appends no row.
-        return print_json(&serde_json::json!({
-            "ok": true,
-            "command": "harness company org actor link-execution",
-            "result": {
-                "relation": "standing_agent_execution_member",
-                "changed": false,
-                "reason": "already_linked",
-                "standing_agent_id": actor_id,
-                "agent_member_id": agent_member_id,
-                "validated_against": validated_against,
-                "boundaries": company_org_boundaries()
-            }
-        }));
-    }
-    if let Some(previous_ref) = previous.as_deref() {
-        if !replace {
-            return Err(CliError::Usage(format!(
-                "StandingAgent {actor_id} already links execution AgentMember {previous_ref}; pass --replace to repoint it to {agent_member_id}"
-            )));
-        }
-    }
-    actor["actor"]["execution_agent_member_ref"] = serde_json::json!(agent_member_id);
-    actor["actor"]["updated_at"] = serde_json::json!(now_string());
-    company_org_admin_append_detail(
-        store,
-        "/v1/company-os/actors",
-        &authority,
-        actor,
-        "administrative_standing_agent_execution_link_append",
-        serde_json::json!({
-            "relation": "standing_agent_execution_member",
-            "changed": true,
-            "standing_agent_id": actor_id,
-            "agent_member_id": agent_member_id,
-            "previous_agent_member_ref": previous,
-            "validated_against": validated_against,
-            "inference": "none_explicit_ids_only",
-            "execution_space_persistence": "write_time_assertion_not_persisted_on_standing_agent",
-        }),
-    )
-}
-
-/// Unlink an EXISTING StandingAgent from its execution AgentMember.
-///
-/// No Execution Space is required because clearing a reference validates
-/// nothing in the execution store. `--expect-agent-member` is an optional
-/// optimistic guard for scripted relink flows.
-fn company_org_unlink_execution_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let authority = required(args, "--authority")?;
-    let actor_id = required(args, "--actor")?;
-    let expected = value(args, "--expect-agent-member");
-    // Authorize every invocation, including the ones that turn out to change
-    // nothing: an idempotent no-op must not become an authorization bypass.
-    company_org_require_admin_authority(store, &authority)?;
-
-    let mut actor = latest_company_actor_value(store, "agent", &actor_id)?;
-    let previous = actor["actor"]["execution_agent_member_ref"]
-        .as_str()
-        .map(str::to_string);
-    let Some(previous_ref) = previous else {
-        // Idempotent: unlinking an unlinked Standing Agent appends no row.
-        return print_json(&serde_json::json!({
-            "ok": true,
-            "command": "harness company org actor unlink-execution",
-            "result": {
-                "relation": "standing_agent_execution_member",
-                "changed": false,
-                "reason": "already_unlinked",
-                "standing_agent_id": actor_id,
-                "boundaries": company_org_boundaries()
-            }
-        }));
-    };
-    if let Some(expected) = expected.as_deref() {
-        if expected != previous_ref {
-            return Err(CliError::Usage(format!(
-                "StandingAgent {actor_id} links execution AgentMember {previous_ref}, not {expected}; refusing to unlink"
-            )));
-        }
-    }
-    actor["actor"]["execution_agent_member_ref"] = serde_json::Value::Null;
-    actor["actor"]["updated_at"] = serde_json::json!(now_string());
-    company_org_admin_append_detail(
-        store,
-        "/v1/company-os/actors",
-        &authority,
-        actor,
-        "administrative_standing_agent_execution_unlink_append",
-        serde_json::json!({
-            "relation": "standing_agent_execution_member",
-            "changed": true,
-            "standing_agent_id": actor_id,
-            "agent_member_id": serde_json::Value::Null,
-            "previous_agent_member_ref": previous_ref,
-        }),
-    )
 }
 
 fn company_org_admin_append(
@@ -3243,7 +3167,7 @@ fn company_org_boundaries() -> serde_json::Value {
         "write_model": "human_administrative_append_v1",
         "organization_side_effects": true,
         "execution_side_effects": false,
-        "standing_agent_is_not_agent_team_member_run": true,
+        "agent_membership_is_not_agent_team_member_run": true,
         "runtime_health_does_not_grant_authority": true
     })
 }
@@ -3870,8 +3794,9 @@ fn company_org_actor_command(store: &HarnessStore, args: &[String]) -> CliResult
             }
             company_org_transition_actor_command(store, &forwarded)
         }
-        "link-execution" => company_org_link_execution_command(store, &args[1..]),
-        "unlink-execution" => company_org_unlink_execution_command(store, &args[1..]),
+        "link-execution" | "unlink-execution" => Err(CliError::Usage(
+            "AgentMembership references a canonical AgentMember at creation; relink/unlink compatibility commands are retired".into(),
+        )),
         other => Err(CliError::Usage(format!(
             "unknown company org actor command: {other}; usage: harness company org actor list|show|create-human|create-agent|update-status|link-execution|unlink-execution"
         ))),
@@ -3968,46 +3893,18 @@ fn company_org_actor_create_human_command(store: &HarnessStore, args: &[String])
 
 fn company_org_actor_create_agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     let authority = required(args, "--authority")?;
-    let id = value(args, "--id").unwrap_or_else(|| generated_id("standing-agent-cli"));
-    let now = now_string();
-    let record = serde_json::json!({
-        "actor_type": "agent",
-        "actor": {
-            "id": id,
-            "display_name": required(args, "--display-name")?,
-            "role": required(args, "--role")?,
-            "execution_agent_member_ref": value(args, "--execution-agent-member-ref"),
-            "status": value(args, "--status").unwrap_or_else(|| "active".to_string()),
-            "availability": value(args, "--availability").unwrap_or_else(|| "available".to_string()),
-            "assignment_capacity": value(args, "--assignment-capacity").map(|v| v.parse::<u32>()).transpose().map_err(|_| CliError::Usage("--assignment-capacity must be a positive integer".into()))?,
-            "exclusive_assignment_ref": value(args, "--exclusive-assignment"),
-            "membership_refs": many(args, "--membership"),
-            "responsibility_summary": required(args, "--responsibility")?,
-            "capability_refs": many(args, "--capability"),
-            "system_prompt_ref": value(args, "--system-prompt"),
-            "tool_refs": many(args, "--tool"),
-            "skill_refs": many(args, "--skill"),
-            "maintained_document_refs": many(args, "--maintained-document"),
-            "accepted_work_type_refs": many(args, "--accepted-work-type"),
-            "escalation_policy_ref": value(args, "--escalation-policy"),
-            "permission_policy_refs": many(args, "--permission"),
-            "runtime_refs": many(args, "--runtime"),
-            "native_session_refs": many(args, "--native-session"),
-            "created_at": now,
-            "updated_at": now
-        }
-    });
     let result = dispatch_company_admin_append_value(
         store,
         "/v1/company-os/actors",
         Some(company_actor_ref_json("human", &authority)?),
-        record,
+        company_agent_membership_actor_value(args)?,
     )?;
-    print_json(
-        &serde_json::json!({"ok": true, "result": result, "command": "harness company org actor create-agent"}),
-    )
+    print_json(&serde_json::json!({
+        "ok": true,
+        "result": result,
+        "command": "harness company org actor create-agent"
+    }))
 }
-
 fn company_org_unit_create_nested_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     let authority = required(args, "--authority")?;
     let now = now_string();
@@ -7925,17 +7822,17 @@ where
 }
 
 fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "member register|list|providers|preflight")?;
+    require_subcommand(args, "member providers|preflight")?;
     match args[0].as_str() {
         // Runtime availability of each provider ACCOUNT, reported separately
         // from adapter compatibility. See `member providers` for the latter.
         "preflight" => member_preflight_command(store, &args[1..])?,
-        "register" => {
-            let member = build_member_from_args(args, AgentMemberStatus::Idle)?;
-            store.append_member(&member)?;
-            print_json(&member)?;
+        "register" | "list" => {
+            return Err(CliError::Usage(
+                "member identity registration moved to `member-trust mutate`; legacy registry routes are retired"
+                    .into(),
+            ));
         }
-        "list" => print_json(&store.members()?)?,
         // The provider-neutral capability matrix (goal-provider-neutral acceptance
         // #4): every REGISTERED provider with the capabilities its adapter
         // declares (streaming / resume / schema / cost / …). Derived from the
@@ -7979,325 +7876,12 @@ fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     Ok(())
 }
 
-fn agent_command(
-    store: &HarnessStore,
-    project_context: Option<&ProjectContext>,
-    args: &[String],
-) -> CliResult<()> {
-    require_subcommand(
-        args,
-        "agent create|list|show|start|health|hooks|send|route-inbox|deliver|retry-delivery|reconcile-delivery|gateway|close",
-    )?;
-    match args[0].as_str() {
-        "create" => {
-            if value(args, "--wave").is_some() {
-                return Err(CliError::Usage(
-                    "--wave was retired; link the run with --wave-id and derive order from the native Wave"
-                        .to_string(),
-                ));
-            }
-            let mut member = build_member_from_args(args, AgentMemberStatus::Creating)?;
-            if latest_members(store)?.contains_key(&member.id) {
-                return Err(CliError::Usage(format!(
-                    "AgentMember already exists: {}",
-                    member.id
-                )));
-            }
-            let prompt_ref = ensure_agent_prompt(store, &member, args)?;
-            member.prompt_ref = Some(prompt_ref);
-            if has_flag(args, "--start") {
-                store.append_member(&member)?;
-                let runtime = start_provider_runtime(store, &member)?;
-                let now = now_string();
-                member.status = AgentMemberStatus::Idle;
-                member.provider_runtime_id = Some(runtime.id.clone());
-                member.control_endpoint = runtime.control_endpoint.clone();
-                member.last_seen_at = Some(now);
-                store.append_runtime(&runtime)?;
-                append_agent_event(
-                    store,
-                    &member.id,
-                    Some(runtime.id.as_str()),
-                    None,
-                    "runtime_started",
-                    "Codex app-server runtime started",
-                    None,
-                )?;
-                store.append_member(&member)?;
-                append_agent_event(
-                    store,
-                    &member.id,
-                    member.provider_runtime_id.as_deref(),
-                    None,
-                    "agent_created",
-                    "Agent Member created",
-                    member.prompt_ref.as_deref(),
-                )?;
-            } else {
-                // No runtime requested: persist the member and emit the
-                // creation event via the shared path used by POST /v1/agents.
-                member.status = AgentMemberStatus::Idle;
-                finalize_member_creation(store, &member)?;
-            }
-            print_json(&member)?;
-        }
-        "list" => print_json(&latest_members(store)?.into_values().collect::<Vec<_>>())?,
-        "start" => {
-            let id = required(args, "--id").or_else(|_| required(args, "--agent"))?;
-            let member = start_agent_runtime(store, &id)?;
-            print_json(&member)?;
-        }
-        "health" => {
-            let id = required(args, "--id").or_else(|_| required(args, "--agent"))?;
-            print_json(&agent_health(store, &id)?)?;
-        }
-        "show" => {
-            let id = required(args, "--id")?;
-            let member = latest_member(store, &id)?;
-            let runtimes: Vec<_> = store
-                .runtimes()?
-                .into_iter()
-                .filter(|runtime| runtime.agent_member_id == id)
-                .collect();
-            let events: Vec<_> = store
-                .events()?
-                .into_iter()
-                .filter(|event| event.agent_member_id == id)
-                .collect();
-            let proposals: Vec<_> = store
-                .proposals()?
-                .into_iter()
-                .filter(|proposal| proposal.agent_member_id == id)
-                .collect();
-            let messages: Vec<_> = store
-                .messages()?
-                .into_iter()
-                .filter(|message| {
-                    message.from_agent_id == id
-                        || message.to_agent_id.as_deref() == Some(id.as_str())
-                })
-                .collect();
-            let provider_child_threads: Vec<_> = store
-                .provider_child_threads()?
-                .into_iter()
-                .filter(|thread| thread.agent_member_id == id)
-                .collect();
-            print_json(&serde_json::json!({
-                "member": member,
-                "runtimes": runtimes,
-                "events": events,
-                "proposals": proposals,
-                "messages": messages,
-                "provider_child_threads": provider_child_threads
-            }))?;
-        }
-        "send" => {
-            let to_agent_id = required(args, "--to")?;
-            let target = latest_member(store, &to_agent_id)?;
-            ensure_member_accepts_delivery(&target)?;
-            let message = Message {
-                id: value(args, "--id").unwrap_or_else(|| generated_id("msg")),
-                task_id: value(args, "--task"),
-                from_agent_id: required(args, "--from")?,
-                to_agent_id: Some(to_agent_id.clone()),
-                channel: Some(value(args, "--channel").unwrap_or_else(|| "agent-direct".into())),
-                kind: parse_message_kind(
-                    &value(args, "--kind").unwrap_or_else(|| "message".into()),
-                )?,
-                delivery_status: MessageDeliveryStatus::Queued,
-                content: required(args, "--content")?,
-                evidence_ids: many(args, "--evidence"),
-                created_at: now_string(),
-                delivery: None,
-                sender_kind: sender_kind_from_args(args)?,
-            };
-            store.append_message(&message)?;
-            append_agent_event(
-                store,
-                &target.id,
-                target.provider_runtime_id.as_deref(),
-                message.task_id.as_deref(),
-                "message_queued",
-                "Message queued for Agent Member",
-                None,
-            )?;
-            print_json(&message)?;
-        }
-        "route-inbox" => {
-            let agent_id = required(args, "--id").or_else(|_| required(args, "--agent"))?;
-            let routes = route_agent_inbox_messages(
-                store,
-                &agent_id,
-                value(args, "--member-run-id").as_deref(),
-                value(args, "--message").as_deref(),
-            )?;
-            print_json(&serde_json::json!({
-                "agent_member_id": agent_id,
-                "routes": routes,
-                "note": if routes.is_empty() {
-                    "no uniquely routable queued Agent Inbox mail"
-                } else {
-                    "routed to MemberRun mailbox"
-                }
-            }))?;
-        }
-        "deliver" => deliver_agent_messages(store, project_context, args)?,
-        "retry-delivery" => {
-            let result = retry_delivery_value(
-                store,
-                &required(args, "--agent").or_else(|_| required(args, "--id"))?,
-                &required(args, "--message")?,
-                value(args, "--delivery").as_deref(),
-                &value(args, "--reason").unwrap_or_else(|| "operator requested retry".into()),
-                has_flag(args, "--force"),
-            )?;
-            print_json(&result)?;
-        }
-        "reconcile-delivery" => {
-            let result = reconcile_delivery_value(
-                store,
-                &required(args, "--agent").or_else(|_| required(args, "--id"))?,
-                &required(args, "--delivery")?,
-                parse_provider_execution_status(&required(args, "--status")?)?,
-                parse_terminal_source(
-                    value(args, "--terminal-source")
-                        .as_deref()
-                        .unwrap_or("unknown"),
-                )?,
-                &value(args, "--reason").unwrap_or_else(|| "operator reconciliation".into()),
-            )?;
-            print_json(&result)?;
-        }
-        "gateway" => run_provider_gateway(store, project_context, args)?,
-        "close" => {
-            let id = required(args, "--id")?;
-            print_json(&close_agent_member_value(store, &id)?)?;
-        }
-        other => return Err(CliError::Usage(format!("unknown agent command: {other}"))),
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Organization durable AgentMember identity (ADR 0052).
-//
-// This surface is intentionally CLI/store-only in this slice. HTTP/MCP wiring
-// belongs to the application-service follow-up and must not create a second
-// implementation of Host-authority resolution.
-// ---------------------------------------------------------------------------
-
-fn durable_member_status(value: Option<String>) -> CliResult<DurableAgentMemberStatus> {
-    match value.as_deref().unwrap_or("active") {
-        "active" => Ok(DurableAgentMemberStatus::Active),
-        "paused" => Ok(DurableAgentMemberStatus::Paused),
-        "retired" => Ok(DurableAgentMemberStatus::Retired),
-        other => Err(CliError::Usage(format!(
-            "unknown durable AgentMember status: {other}; expected active|paused|retired"
-        ))),
-    }
-}
-
-fn build_durable_member_from_args(args: &[String]) -> CliResult<DurableAgentMember> {
-    let now = now_string();
-    Ok(DurableAgentMember {
-        id: value(args, "--id").unwrap_or_else(|| generated_id("agent-member")),
-        name: required(args, "--name")?,
-        description: required(args, "--description")?,
-        role: required(args, "--role")?,
-        provider_profile: value(args, "--provider-profile"),
-        model: value(args, "--model"),
-        workspace_policy: value(args, "--workspace-policy"),
-        project_binding_id: value(args, "--project-binding"),
-        business_access_ceiling_refs: many(args, "--business-access-ceiling"),
-        status: durable_member_status(value(args, "--status"))?,
-        created_by_member_id: value(args, "--created-by-member"),
-        created_at: now.clone(),
-        updated_at: now,
-    })
-}
-
-fn converge_durable_member(
-    store: &HarnessStore,
-    id: &str,
-    args: &[String],
-) -> CliResult<DurableAgentMember> {
-    let source = latest_members(store)?
-        .remove(id)
-        .ok_or_else(|| CliError::Usage(format!("compatibility AgentMember not found: {id}")))?;
-    let status = match source.status {
-        AgentMemberStatus::Retired => DurableAgentMemberStatus::Retired,
-        AgentMemberStatus::Paused
-        | AgentMemberStatus::Stale
-        | AgentMemberStatus::Closed
-        | AgentMemberStatus::Closing => DurableAgentMemberStatus::Paused,
-        _ => DurableAgentMemberStatus::Active,
-    };
-    let member = DurableAgentMember {
-        id: source.id,
-        name: source.name,
-        description: source.description,
-        role: source.role,
-        provider_profile: source.profile.or(Some(source.provider)),
-        model: source.model,
-        workspace_policy: source.workspace_policy,
-        project_binding_id: value(args, "--project-binding"),
-        business_access_ceiling_refs: many(args, "--business-access-ceiling"),
-        status,
-        created_by_member_id: value(args, "--created-by-member"),
-        // Deterministic projection: re-running convergence produces the same
-        // identity row rather than introducing a wall-clock difference.
-        created_at: source.created_at.clone(),
-        updated_at: source.created_at,
-    };
-    Ok(store.converge_registry_member(&member)?)
-}
-
 fn org_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(args, "org member|bootstrap-lead|host|cutover-audit")?;
     match args[0].as_str() {
-        "member" => {
-            let member_args = args.get(1..).unwrap_or(&[]);
-            require_subcommand(member_args, "org member create|converge|list|show")?;
-            match member_args[0].as_str() {
-                "create" => {
-                    let member = build_durable_member_from_args(&member_args[1..])?;
-                    store.insert_durable_member(&member)?;
-                    print_json(&member)?;
-                }
-                "converge" => {
-                    let rest = &member_args[1..];
-                    let member = converge_durable_member(store, &required(rest, "--id")?, rest)?;
-                    print_json(&member)?;
-                }
-                "list" => print_json(
-                    &store
-                        .latest_durable_members()?
-                        .into_values()
-                        .collect::<Vec<_>>(),
-                )?,
-                "show" => {
-                    let id = required(&member_args[1..], "--id")?;
-                    let member = store.latest_durable_members()?.remove(&id).ok_or_else(|| {
-                        CliError::Usage(format!("durable AgentMember not found: {id}"))
-                    })?;
-                    print_json(&member)?;
-                }
-                other => {
-                    return Err(CliError::Usage(format!(
-                        "unknown org member command: {other}"
-                    )))
-                }
-            }
-        }
-        "bootstrap-lead" => {
-            let rest = &args[1..];
-            let team_id = value(rest, "--team")
-                .or_else(|| value(rest, "--team-id"))
-                .ok_or_else(|| CliError::Usage("missing required option --team".to_string()))?;
-            let member = build_durable_member_from_args(rest)?;
-            let team = store.bootstrap_root_lead_member(&team_id, &member)?;
-            print_json(&serde_json::json!({"member": member, "team": team}))?;
-        }
+        "member" | "bootstrap-lead" => return Err(CliError::Usage(
+            "organization member identity uses canonical member-trust mutate; legacy convergence/bootstrap ledgers were removed".into(),
+        )),
         "host" => {
             let rest = &args[1..];
             let team_id = value(rest, "--team")
@@ -8315,7 +7899,11 @@ fn org_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         }
         "cutover-audit" => {
             let teams = store.latest_teams()?;
-            let members = store.latest_durable_members()?;
+            let members = store
+                .all_trust_agent_members()?
+                .into_iter()
+                .map(|member| (member.id.clone(), member))
+                .collect::<BTreeMap<_, _>>();
             let missions = store.latest_missions()?;
             let nodes = store.latest_execution_nodes()?;
             let mut mission_ids = BTreeSet::new();
@@ -8350,7 +7938,7 @@ fn org_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             print_json(&serde_json::json!({
                 "ready": true,
                 "team_count": teams.len(),
-                "durable_member_count": members.len(),
+                "agent_member_count": members.len(),
                 "authority": "host_agent_id",
                 "flat_team_model": true
             }))?;
@@ -9050,7 +8638,7 @@ fn latest_wave(store: &HarnessStore, id: &str) -> CliResult<Wave> {
 // cannot diverge (same pattern as the WP-ii entity helpers). The `start` arm
 // is the v0 orchestrator (see the "team-run start orchestration" block below);
 // create/send only journal planning rows — a handoff/blocker message sent via
-// `send` is only folded into the event log, the MemberRun row is untouched.
+// `send` is only folded into the event log, the ProviderRuntimeProjection row is untouched.
 // ---------------------------------------------------------------------------
 
 /// Next event seq for a team run: max existing seq + 1 (1 when the run has no
@@ -9129,7 +8717,7 @@ fn append_work_event(
 /// `external_interactive` declares the user's own already-open interactive
 /// session that Harness never spawns or drives (it polls its own inbox).
 struct TeamMemberSpec {
-    agent_member_id: Option<String>,
+    agent_member_id: String,
     name: String,
     role: String,
     provider: String,
@@ -9137,7 +8725,7 @@ struct TeamMemberSpec {
     model: Option<String>,
     effort: Option<String>,
     service_tier: Option<String>,
-    worktree_ref: Option<String>,
+    provider_cwd_hint: Option<String>,
     owned_paths: Vec<String>,
     resume_native_session_id: Option<String>,
     /// This member's own brief. `objective` is the run-level intent; when every
@@ -9157,7 +8745,11 @@ fn team_member_specs_from_definition(
     let team = latest_teams(store)?
         .remove(team_id)
         .ok_or_else(|| CliError::Usage(format!("team not found: {team_id}")))?;
-    let members = latest_members(store)?;
+    let members = store
+        .all_trust_agent_members()?
+        .into_iter()
+        .map(|member| (member.id.clone(), member))
+        .collect::<BTreeMap<_, _>>();
     team.member_ids
         .iter()
         .map(|member_id| {
@@ -9167,20 +8759,22 @@ fn team_member_specs_from_definition(
                 ))
             })?;
             Ok(TeamMemberSpec {
-                agent_member_id: Some(member.id.clone()),
+                agent_member_id: member.id.clone(),
                 name: member.name.clone(),
                 role: member.role.clone(),
-                provider: member.provider.clone(),
+                provider: member
+                    .provider_profile_ref
+                    .as_deref()
+                    .and_then(|profile| profile.split('/').next())
+                    .unwrap_or("codex")
+                    .to_string(),
                 execution_mode: None,
-                model: member.model.clone(),
-                effort: member.provider_config.effort.clone(),
-                service_tier: member.provider_config.service_tier.clone(),
-                worktree_ref: member.worktree_ref.clone(),
+                model: member.model_preference.clone(),
+                effort: None,
+                service_tier: None,
+                provider_cwd_hint: None,
                 owned_paths: Vec::new(),
-                resume_native_session_id: member
-                    .native_session
-                    .as_ref()
-                    .map(|session| session.native_session_id.clone()),
+                resume_native_session_id: None,
                 initial_work: None,
             })
         })
@@ -9238,17 +8832,19 @@ fn validate_team_member_execution_mode(member: &TeamMemberSpec) -> CliResult<()>
 }
 
 fn validate_team_member_identity(store: &HarnessStore, member: &TeamMemberSpec) -> CliResult<()> {
-    let Some(agent_member_id) = member.agent_member_id.as_deref() else {
-        return Ok(());
-    };
+    let agent_member_id = member.agent_member_id.as_str();
     if agent_member_id.trim().is_empty() {
         return Err(CliError::Usage(
             "team member agent_member_id must not be empty".to_string(),
         ));
     }
-    if !latest_members(store)?.contains_key(agent_member_id) {
+    if !store.all_trust_agent_members()?.iter().any(|candidate| {
+        candidate.id == agent_member_id
+            && candidate.organization_status
+                == harness_core::agentfirm_api::AgentMemberOrganizationStatus::Active
+    }) {
         return Err(CliError::Usage(format!(
-            "team member {} references missing AgentMember {agent_member_id}",
+            "team member {} references missing canonical AgentMember {agent_member_id}",
             member.name
         )));
     }
@@ -9568,12 +9164,12 @@ fn apply_provider_version(
 /// its version-specific compatibility snapshot without touching its native
 /// session. The caller decides whether and how to journal the refreshed row.
 fn refreshed_team_member_provider_profile(
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
 ) -> CliResult<(ProviderIntegrationProfile, Option<String>)> {
     // Base the refresh on the CURRENT adapter registry, not the stored
     // profile. The stored profile's reviewed_provider_versions is frozen at
     // member-creation time, so a registry update could never unblock an
-    // existing durable MemberRun. The gate persists the refreshed profile
+    // existing durable ProviderRuntimeProjection. The gate persists the refreshed profile
     // back, so existing members can self-heal on the next boundary.
     let stored_mode = member
         .provider_profile
@@ -9590,7 +9186,7 @@ fn refreshed_team_member_provider_profile(
 /// Stage a refreshed compatibility snapshot without creating an in-memory
 /// revision that was never persisted. Callers CAS only when this returns true.
 fn apply_refreshed_provider_profile(
-    member: &mut MemberRun,
+    member: &mut ProviderRuntimeProjection,
     profile: ProviderIntegrationProfile,
 ) -> bool {
     if member.provider_profile.as_ref() == Some(&profile) {
@@ -9623,7 +9219,7 @@ const PROVIDER_COMPATIBILITY_BLOCK_SCHEMA: &str = "provider_compatibility_block/
 
 impl ProviderCompatibilityBlockProvenance {
     fn for_refusal(
-        member: &MemberRun,
+        member: &ProviderRuntimeProjection,
         profile: &ProviderIntegrationProfile,
         resolution: &ProviderCompatibilityResolution,
         boundary: &str,
@@ -9739,7 +9335,7 @@ fn resolve_provider_compatibility(
 }
 
 fn provider_compatibility_block_reason(
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     profile: &ProviderIntegrationProfile,
     resolution: &ProviderCompatibilityResolution,
     boundary: &str,
@@ -9756,7 +9352,7 @@ fn provider_compatibility_block_reason(
 }
 
 fn provider_compatibility_block_cause(
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     profile: &ProviderIntegrationProfile,
     resolution: &ProviderCompatibilityResolution,
     boundary: ProviderCompatibilityBlockBoundary,
@@ -9792,7 +9388,7 @@ fn provider_compatibility_block_cause(
 
 fn compatibility_recovery_status(
     store: &HarnessStore,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
 ) -> CliResult<MemberRunStatus> {
     if member.native_session.is_some() {
         return Ok(MemberRunStatus::Disconnected);
@@ -9800,11 +9396,10 @@ fn compatibility_recovery_status(
     let has_assigned_work = store.latest_works()?.into_iter().any(|work| {
         !work.is_terminal()
             && (work.active_member_run_id.as_deref() == Some(member.id.as_str())
-                || member.agent_member_id.is_some()
-                    && work.owner_member_id.as_deref() == member.agent_member_id.as_deref())
+                || work.owner_member_id.as_deref() == Some(member.agent_member_id.as_str()))
     });
     Ok(
-        if member.workspace_snapshot.is_some() || has_assigned_work {
+        if member.provider_environment_observation.is_some() || has_assigned_work {
             MemberRunStatus::Queued
         } else {
             MemberRunStatus::Idle
@@ -9814,7 +9409,7 @@ fn compatibility_recovery_status(
 
 #[cfg(test)]
 fn compatibility_block_matches_current_tuple(
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     profile: &ProviderIntegrationProfile,
 ) -> bool {
     member.status == MemberRunStatus::Blocked
@@ -9841,7 +9436,7 @@ fn compatibility_block_matches_current_tuple(
 /// durable blocked outcome instead of entering the transport recovery loop.
 fn provider_compatibility_start_gate(
     ledger: &TeamRunLedger,
-    member: &mut MemberRun,
+    member: &mut ProviderRuntimeProjection,
     boundary: ProviderCompatibilityBlockBoundary,
 ) -> CliResult<Option<MemberOutcome>> {
     if member.is_external_interactive() {
@@ -9922,7 +9517,7 @@ fn provider_compatibility_start_gate(
 }
 
 fn native_session_ref(
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     native_session_id: impl Into<String>,
     native_locator_kind: &str,
 ) -> NativeSessionRef {
@@ -10775,7 +10370,7 @@ fn reconcile_recorded_capacity(
 /// recovered account is not gated by yesterday's 403.
 fn capacity_from_recorded_provider_errors(
     ledger: &TeamRunLedger,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     execution_mode: &str,
     now_unix_ms: u64,
     ttl_ms: u64,
@@ -10844,7 +10439,7 @@ fn parse_unix_ms_timestamp(raw: &str) -> Option<u64> {
 
 /// Clear only the Blocked projection that this capacity gate itself authored.
 /// Other Blocked reasons deliberately survive a successful capacity probe.
-fn recover_capacity_origin_block(member: &mut MemberRun) {
+fn recover_capacity_origin_block(member: &mut ProviderRuntimeProjection) {
     let was_capacity_blocked = member.status == MemberRunStatus::Blocked
         && member
             .provider_capacity
@@ -10861,7 +10456,7 @@ fn recover_capacity_origin_block(member: &mut MemberRun) {
 }
 
 fn apply_nonblocking_capacity_observation(
-    member: &mut MemberRun,
+    member: &mut ProviderRuntimeProjection,
     snapshot: ProviderCapacitySnapshot,
 ) {
     // Recovery provenance lives on the previous observation. Clear the
@@ -10874,7 +10469,7 @@ fn apply_nonblocking_capacity_observation(
 
 fn reconcile_pending_close_during_capacity_recovery(
     ledger: &TeamRunLedger,
-    member: &mut MemberRun,
+    member: &mut ProviderRuntimeProjection,
 ) -> CliResult<Option<MemberOutcome>> {
     if let Some(close) = pending_member_close(&ledger.store, &member.id)? {
         for _ in 0..PROVIDER_MEMBER_CAS_RETRIES {
@@ -10931,7 +10526,7 @@ fn reconcile_pending_close_during_capacity_recovery(
 /// its queued Assignment untouched and re-deliverable.
 fn provider_capacity_start_gate(
     ledger: &TeamRunLedger,
-    member: &mut MemberRun,
+    member: &mut ProviderRuntimeProjection,
     cwd: &Path,
 ) -> CliResult<Option<MemberOutcome>> {
     provider_capacity_start_gate_with_hook(ledger, member, cwd, |_, _| Ok(()))
@@ -10939,9 +10534,9 @@ fn provider_capacity_start_gate(
 
 fn provider_capacity_start_gate_with_hook(
     ledger: &TeamRunLedger,
-    member: &mut MemberRun,
+    member: &mut ProviderRuntimeProjection,
     cwd: &Path,
-    before_capacity_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
+    before_capacity_cas: impl FnMut(usize, &ProviderRuntimeProjection) -> CliResult<()>,
 ) -> CliResult<Option<MemberOutcome>> {
     if !capacity_preflight_enabled() {
         return Ok(None);
@@ -11001,7 +10596,7 @@ fn provider_capacity_start_gate_with_hook(
     member.provider_capacity = Some(snapshot.clone());
     member.last_event_at = Some(now_string());
     // Blocked: record provider_unavailable and stop. Nothing above this point
-    // claimed, delivered, or consumed a TeamMessage.
+    // claimed, delivered, or consumed a ProviderDispatchEnvelope.
     //
     // Every write below is BEST EFFORT and this function still returns the
     // blocking outcome. A `?` here would turn a journal failure into `Err`,
@@ -11092,10 +10687,10 @@ fn provider_capacity_start_gate_with_hook(
 /// re-read after a successful CAS so Close wins the latch-before-CAS window.
 fn persist_capacity_recovery_with_hook(
     ledger: &TeamRunLedger,
-    anchor: &MemberRun,
-    member: &mut MemberRun,
+    anchor: &ProviderRuntimeProjection,
+    member: &mut ProviderRuntimeProjection,
     snapshot: ProviderCapacitySnapshot,
-    before_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
+    before_cas: impl FnMut(usize, &ProviderRuntimeProjection) -> CliResult<()>,
 ) -> CliResult<Option<MemberOutcome>> {
     persist_capacity_recovery_with_hooks(
         ledger,
@@ -11109,11 +10704,11 @@ fn persist_capacity_recovery_with_hook(
 
 fn persist_capacity_recovery_with_hooks(
     ledger: &TeamRunLedger,
-    anchor: &MemberRun,
-    member: &mut MemberRun,
+    anchor: &ProviderRuntimeProjection,
+    member: &mut ProviderRuntimeProjection,
     snapshot: ProviderCapacitySnapshot,
-    mut before_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
-    mut after_successful_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
+    mut before_cas: impl FnMut(usize, &ProviderRuntimeProjection) -> CliResult<()>,
+    mut after_successful_cas: impl FnMut(usize, &ProviderRuntimeProjection) -> CliResult<()>,
 ) -> CliResult<Option<MemberOutcome>> {
     let mut expected = anchor.clone();
     for attempt in 0..PROVIDER_MEMBER_CAS_RETRIES {
@@ -11179,10 +10774,10 @@ fn persist_capacity_recovery_with_hooks(
 /// the same active runtime generation may be rebased, and retries are bounded.
 fn persist_capacity_block_with_hook(
     ledger: &TeamRunLedger,
-    anchor: &MemberRun,
-    member: &mut MemberRun,
+    anchor: &ProviderRuntimeProjection,
+    member: &mut ProviderRuntimeProjection,
     snapshot: ProviderCapacitySnapshot,
-    mut before_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
+    mut before_cas: impl FnMut(usize, &ProviderRuntimeProjection) -> CliResult<()>,
 ) -> CliResult<Option<MemberOutcome>> {
     let mut expected = anchor.clone();
     for attempt in 0..PROVIDER_MEMBER_CAS_RETRIES {
@@ -11190,7 +10785,7 @@ fn persist_capacity_block_with_hook(
         before_cas(attempt, &expected)?;
         match ledger.save_member_run(&expected, member) {
             Ok(()) => {
-                // A Close latch does not mutate MemberRun until its control
+                // A Close latch does not mutate ProviderRuntimeProjection until its control
                 // path marks coordination Closed, so it can land immediately
                 // before this CAS without causing a conflict. Mirror the
                 // provider-start claim fence: re-read the latch after the
@@ -11490,7 +11085,7 @@ fn parse_team_member_spec(raw: &str) -> CliResult<TeamMemberSpec> {
         _ => (parts[2].to_string(), None),
     };
     Ok(TeamMemberSpec {
-        agent_member_id: None,
+        agent_member_id: parts[0].to_string(),
         name: parts[0].to_string(),
         role: parts[1].to_string(),
         provider,
@@ -11501,7 +11096,7 @@ fn parse_team_member_spec(raw: &str) -> CliResult<TeamMemberSpec> {
             .filter(|model| !model.is_empty()),
         effort: None,
         service_tier: None,
-        worktree_ref: None,
+        provider_cwd_hint: None,
         owned_paths,
         resume_native_session_id: None,
         initial_work: inline_work,
@@ -11606,7 +11201,7 @@ fn default_execution_root(project_context: Option<&ProjectContext>) -> String {
 /// render it.
 struct CreatedTeamRun {
     team_run: AgentTeamRun,
-    member_runs: Vec<MemberRun>,
+    member_runs: Vec<ProviderRuntimeProjection>,
     works: Vec<Work>,
 }
 
@@ -11614,7 +11209,7 @@ fn build_member_run_for_team(
     project_context: Option<&ProjectContext>,
     team_run_id: &str,
     member: &TeamMemberSpec,
-) -> CliResult<MemberRun> {
+) -> CliResult<ProviderRuntimeProjection> {
     let profile =
         team_member_provider_profile_for_mode(&member.provider, member.execution_mode.as_deref());
     let native_session =
@@ -11642,7 +11237,7 @@ fn build_member_run_for_team(
                 last_verified_at: None,
                 parent_native_session_id: Some(session_id.clone()),
             });
-    Ok(MemberRun {
+    Ok(ProviderRuntimeProjection {
         id: generated_id("member-run"),
         team_run_id: team_run_id.to_string(),
         slot_id: None,
@@ -11665,12 +11260,14 @@ fn build_member_run_for_team(
         runtime_generation: 1,
         status: MemberRunStatus::Idle,
         native_session,
-        worktree_ref: member
-            .worktree_ref
+        provider_cwd_hint: member
+            .provider_cwd_hint
             .as_deref()
-            .map(|value| validate_workspace_override(project_context, value, "member worktree_ref"))
+            .map(|value| {
+                validate_workspace_override(project_context, value, "member provider_cwd_hint")
+            })
             .transpose()?,
-        workspace_snapshot: None,
+        provider_environment_observation: None,
         owned_paths: member.owned_paths.clone(),
         started_at: now_string(),
         last_event_at: None,
@@ -11678,6 +11275,98 @@ fn build_member_run_for_team(
         zero_output_streak: 0,
         last_consumed_work_version: None,
     })
+}
+
+fn materialize_canonical_member_run(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    runtime: &ProviderRuntimeProjection,
+) -> CliResult<()> {
+    let native_session = runtime.native_session.as_ref().map(|session| {
+        harness_core::agentfirm_api::NativeSessionRef {
+            provider: session.provider.clone(),
+            execution_mode: session.execution_mode.clone(),
+            native_session_id: session.native_session_id.clone(),
+            native_locator_kind: session.native_locator_kind.clone(),
+            provider_version: session.provider_version.clone(),
+            adapter_contract_version: session.adapter_contract_version.clone(),
+            availability: match session.availability {
+                NativeSessionAvailability::Available => {
+                    harness_core::agentfirm_api::NativeSessionAvailability::Available
+                }
+                NativeSessionAvailability::Stale => {
+                    harness_core::agentfirm_api::NativeSessionAvailability::Stale
+                }
+                NativeSessionAvailability::Missing => {
+                    harness_core::agentfirm_api::NativeSessionAvailability::Missing
+                }
+                NativeSessionAvailability::Incompatible => {
+                    harness_core::agentfirm_api::NativeSessionAvailability::Incompatible
+                }
+                NativeSessionAvailability::Unknown => {
+                    harness_core::agentfirm_api::NativeSessionAvailability::Unknown
+                }
+            },
+            supports_resume: session.supports_resume,
+            last_verified_at: session.last_verified_at.clone(),
+            parent_native_session_id: session.parent_native_session_id.clone(),
+        }
+    });
+    let run = harness_core::agentfirm_api::MemberRun {
+        id: runtime.id.clone(),
+        agent_member_id: runtime.agent_member_id.clone(),
+        team_run_id: runtime.team_run_id.clone(),
+        role_snapshot: runtime.role.clone(),
+        provider_profile_snapshot: runtime
+            .provider_profile
+            .as_ref()
+            .map(|profile| format!("{}/{}", profile.provider, profile.execution_mode)),
+        requested_controls: serde_json::json!({
+            "model": runtime.provider_controls.model.requested,
+            "reasoning_effort": runtime.provider_controls.reasoning_effort.requested,
+            "service_tier": runtime.provider_controls.service_tier.requested,
+        }),
+        effective_controls: serde_json::json!({
+            "model": runtime.provider_controls.model.effective,
+            "reasoning_effort": runtime.provider_controls.reasoning_effort.effective,
+            "service_tier": runtime.provider_controls.service_tier.effective,
+        }),
+        coordination_status: match runtime.coordination_status {
+            MemberCoordinationStatus::Active => {
+                harness_core::agentfirm_api::MemberCoordinationStatus::Active
+            }
+            MemberCoordinationStatus::Closed => {
+                harness_core::agentfirm_api::MemberCoordinationStatus::Closed
+            }
+            MemberCoordinationStatus::Retired => {
+                harness_core::agentfirm_api::MemberCoordinationStatus::Retired
+            }
+        },
+        runtime_status: harness_core::agentfirm_api::MemberRuntimeStatus::Idle,
+        runtime_generation: runtime.runtime_generation,
+        workspace_binding_id: None,
+        native_session,
+        version: 1,
+        started_at: runtime.started_at.clone(),
+        last_event_at: runtime.last_event_at.clone(),
+        finished_at: runtime.finished_at.clone(),
+    };
+    let context = harness_core::agentfirm_api::MutationContext {
+        execution_space_id: execution_space_id.to_string(),
+        authenticated_actor: harness_core::agentfirm_api::ActorRef {
+            kind: harness_core::agentfirm_api::ActorKind::Service,
+            id: "node-daemon:team-run-create".into(),
+        },
+        authority_actor: Some(harness_core::agentfirm_api::ActorRef {
+            kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+            id: runtime.agent_member_id.clone(),
+        }),
+        command_name: "team_run.materialize_member_run".into(),
+        idempotency_key: format!("team-run-member-run:{}", runtime.id),
+        expected_version: 0,
+    };
+    store_conflict_as_usage(store.create_trust_member_run(&context, run))?;
+    Ok(())
 }
 
 fn created_team_run_json(created: &CreatedTeamRun) -> serde_json::Value {
@@ -11689,7 +11378,7 @@ fn created_team_run_json(created: &CreatedTeamRun) -> serde_json::Value {
 }
 
 /// Persist a new team run: the AgentTeamRun (status planning), one idle
-/// MemberRun per member, an optional initial Work for each explicitly supplied
+/// ProviderRuntimeProjection per member, an optional initial Work for each explicitly supplied
 /// member brief, and a folded TeamRunEvent per created entity. A run-level
 /// objective is context, never an implicit duplicate assignment to every
 /// member. Shared by the `team-run create` CLI
@@ -11796,6 +11485,71 @@ fn ensure_legacy_unit_test_team_binding(
     ))
 }
 
+#[cfg(test)]
+fn ensure_unit_test_canonical_members(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    team_id: &str,
+    members: &[TeamMemberSpec],
+) -> CliResult<()> {
+    let creator = harness_core::agentfirm_api::ActorRef {
+        kind: harness_core::agentfirm_api::ActorKind::Service,
+        id: "unit-test-fixture".into(),
+    };
+    let existing = store
+        .trust_agent_members(execution_space_id)?
+        .into_iter()
+        .map(|member| member.id)
+        .collect::<BTreeSet<_>>();
+    for member in members {
+        if existing.contains(&member.agent_member_id) {
+            continue;
+        }
+        let now = "unix-ms:1".to_string();
+        store.create_trust_agent_member(
+            &harness_core::agentfirm_api::MutationContext {
+                execution_space_id: execution_space_id.to_string(),
+                authenticated_actor: creator.clone(),
+                authority_actor: None,
+                command_name: "unit_test.agent_member.create".into(),
+                idempotency_key: format!("unit-test-member:{}", member.agent_member_id),
+                expected_version: 0,
+            },
+            harness_core::agentfirm_api::AgentMember {
+                id: member.agent_member_id.clone(),
+                name: member.name.clone(),
+                description: "canonical unit-test AgentMember".into(),
+                role: member.role.clone(),
+                capabilities: Vec::new(),
+                skill_refs: Vec::new(),
+                provider_profile_ref: Some(member.provider.clone()),
+                model_preference: member.model.clone(),
+                workspace_policy: "managed-worktree".into(),
+                permission_ceiling: harness_core::agentfirm_api::PermissionCeiling::WorkspaceWrite,
+                organization_status:
+                    harness_core::agentfirm_api::AgentMemberOrganizationStatus::Active,
+                version: 1,
+                created_by: creator.clone(),
+                created_at: now.clone(),
+                updated_at: now,
+            },
+        )?;
+    }
+    let mut team = latest_teams(store)?
+        .remove(team_id)
+        .ok_or_else(|| CliError::Usage(format!("team not found: {team_id}")))?;
+    for member in members {
+        if team.host_agent_id != member.agent_member_id
+            && !team.member_ids.contains(&member.agent_member_id)
+        {
+            team.member_ids.push(member.agent_member_id.clone());
+        }
+    }
+    team.updated_at = "unix-ms:2".into();
+    store.append_team(&team)?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn create_team_run(
     store: &HarnessStore,
@@ -11875,6 +11629,17 @@ fn create_team_run(
         Some(root) => validate_workspace_override(project_context, &root, "execution_root")?,
         None => default_execution_root(project_context),
     };
+    #[cfg(test)]
+    if legacy_test_binding.is_some() {
+        ensure_unit_test_canonical_members(
+            store,
+            execution_space_id,
+            agent_team_id
+                .as_deref()
+                .expect("legacy unit-test binding supplies a team"),
+            members,
+        )?;
+    }
     let mut member_names = std::collections::HashSet::new();
     for member in members {
         if member.name.trim().is_empty()
@@ -11901,11 +11666,15 @@ fn create_team_run(
                 member.name
             )));
         }
-        if let Some(worktree_ref) = member.worktree_ref.as_deref() {
-            validate_workspace_override(project_context, worktree_ref, "member worktree_ref")?;
+        if let Some(provider_cwd_hint) = member.provider_cwd_hint.as_deref() {
+            validate_workspace_override(
+                project_context,
+                provider_cwd_hint,
+                "member provider_cwd_hint",
+            )?;
         }
-        validate_team_member_identity(store, member)?;
         validate_team_member_execution_mode(member)?;
+        validate_team_member_identity(store, member)?;
     }
     if mission_id.is_some() || wave_id.is_some() {
         return Err(CliError::Usage(
@@ -11923,6 +11692,16 @@ fn create_team_run(
         return Err(CliError::Usage(format!(
             "team {agent_team_id} is not active"
         )));
+    }
+    for member in members {
+        if team.host_agent_id != member.agent_member_id
+            && !team.member_ids.contains(&member.agent_member_id)
+        {
+            return Err(CliError::Usage(format!(
+                "AgentMember {} is not part of AgentTeam {}",
+                member.agent_member_id, team.id
+            )));
+        }
     }
     let project_context = project_context.ok_or_else(|| {
         CliError::Usage("a project binding is required for every AgentTeamRun".to_string())
@@ -11983,9 +11762,10 @@ fn create_team_run(
 
     let mut works = Vec::new();
     // `member_runs` is built from `members` in order above, so zip pairs each
-    // MemberRun with the spec that produced it and its optional initial Work.
+    // ProviderRuntimeProjection with the spec that produced it and its optional initial Work.
     for (member, member_run) in members.iter().zip(&member_runs) {
         store.materialize_initial_member_run(member_run)?;
+        materialize_canonical_member_run(store, execution_space_id, member_run)?;
         append_team_run_event(
             store,
             &run_id,
@@ -12029,8 +11809,6 @@ fn create_team_run(
                     artifact_refs: Vec::new(),
                     check_refs: Vec::new(),
                     github_links: Vec::new(),
-                    gates: Vec::new(),
-                    workspace: None,
                     version: 0,
                     created_at: String::new(),
                     updated_at: String::new(),
@@ -12074,10 +11852,10 @@ fn add_team_run_member(
     team_run_id: &str,
     member: &TeamMemberSpec,
     initial_work: Option<&str>,
-    origin_wave_id: Option<String>,
-) -> CliResult<(AgentTeamRun, MemberRun, Option<Work>)> {
-    validate_team_member_identity(store, member)?;
+    source_plan_ref: Option<String>,
+) -> CliResult<(AgentTeamRun, ProviderRuntimeProjection, Option<Work>)> {
     validate_team_member_execution_mode(member)?;
+    validate_team_member_identity(store, member)?;
     if initial_work.is_some_and(|value| value.trim().is_empty()) {
         return Err(CliError::Usage(
             "new member initial Work must not be empty".to_string(),
@@ -12132,7 +11910,7 @@ fn add_team_run_member(
                         created_by_member_id: None,
                         parent_work_id: None,
                         title: format!("{}: {}", member_run.name, member_run.role),
-                        context_markdown: origin_wave_id
+                        context_markdown: source_plan_ref
                             .as_deref()
                             .map(|wave| format!("Origin Wave: `{wave}`"))
                             .unwrap_or_default(),
@@ -12152,8 +11930,6 @@ fn add_team_run_member(
                         artifact_refs: Vec::new(),
                         check_refs: Vec::new(),
                         github_links: Vec::new(),
-                        gates: Vec::new(),
-                        workspace: None,
                         version: 0,
                         created_at: String::new(),
                         updated_at: String::new(),
@@ -12179,7 +11955,7 @@ fn rename_team_run_member(
     team_run_id: &str,
     member_run_id: &str,
     name: &str,
-) -> CliResult<MemberRun> {
+) -> CliResult<ProviderRuntimeProjection> {
     if name.trim().is_empty() {
         return Err(CliError::Usage(
             "member display name must not be empty".to_string(),
@@ -12234,7 +12010,7 @@ fn deactivate_team_run_member(
     team_run_id: &str,
     member_run_id: &str,
     reason: &str,
-) -> CliResult<MemberRun> {
+) -> CliResult<ProviderRuntimeProjection> {
     if reason.trim().is_empty() {
         return Err(CliError::Usage(
             "member deactivation reason must not be empty".to_string(),
@@ -12302,7 +12078,7 @@ fn compatibility_team_actor(id: &str, authn_source: &str) -> TeamActorRef {
         } else if id.starts_with("agent-member:") {
             TeamActorKind::AgentMember
         } else {
-            TeamActorKind::MemberRun
+            TeamActorKind::ProviderRuntimeProjection
         },
         id: id.to_string(),
         display_name: None,
@@ -12317,47 +12093,36 @@ fn compatibility_team_recipient(id: &str) -> TeamRecipientRef {
         } else if id.starts_with("agent-member:") {
             TeamRecipientKind::AgentMember
         } else {
-            TeamRecipientKind::MemberRun
+            TeamRecipientKind::ProviderRuntimeProjection
         },
         id: id.to_string(),
     }
 }
 
-fn queued_team_delivery(member_id: &str) -> TeamMessageDelivery {
-    TeamMessageDelivery {
-        member_id: member_id.to_string(),
-        policy: TeamDeliveryPolicy::Queue,
-        status: TeamDeliveryStatus::Queued,
-        attempt: 0,
-        claim_id: None,
-        claimed_by_supervisor_id: None,
-        claimed_generation: None,
-        claimed_unix_ms: None,
-        claim_expires_unix_ms: None,
-        provider_receipt_id: None,
-        failure_reason: None,
-        updated_at: now_string(),
-    }
-}
-
 fn parse_team_actor_kind(value: &str) -> CliResult<TeamActorKind> {
-    serde_json::from_value(serde_json::Value::String(value.to_string())).map_err(|_| {
-        CliError::Usage(format!(
-            "unknown actor kind `{value}` (host|member_run|agent_member|operator|service)"
-        ))
-    })
+    match value {
+        "host" => Ok(TeamActorKind::Host),
+        "agent_member" => Ok(TeamActorKind::AgentMember),
+        "operator" => Ok(TeamActorKind::Operator),
+        "service" => Ok(TeamActorKind::Service),
+        _ => Err(CliError::Usage(format!(
+            "unknown actor kind `{value}` (host|agent_member|operator|service)"
+        ))),
+    }
 }
 
 fn team_event_source_for_actor(actor: &TeamActorRef) -> TeamRunEventSourceKind {
     match actor.kind {
         TeamActorKind::Host => TeamRunEventSourceKind::Host,
-        TeamActorKind::MemberRun | TeamActorKind::AgentMember => TeamRunEventSourceKind::Member,
+        TeamActorKind::ProviderRuntimeProjection | TeamActorKind::AgentMember => {
+            TeamRunEventSourceKind::Member
+        }
         TeamActorKind::Operator => TeamRunEventSourceKind::Operator,
         TeamActorKind::Service => TeamRunEventSourceKind::Service,
     }
 }
 
-fn ensure_member_coordination_open(member: &MemberRun) -> CliResult<()> {
+fn ensure_member_coordination_open(member: &ProviderRuntimeProjection) -> CliResult<()> {
     if !member.coordination_is_active()
         || matches!(
             member.status,
@@ -12383,38 +12148,38 @@ enum TeamMessageDeliveryMode {
 /// Route a message inside a team run and fold it into the event log. Shared
 /// by the `team-run send` CLI arm and POST /v1/team-runs/{id}/messages. v0
 /// does not drive the member state machine: a handoff/blocker from a member is
-/// only recorded as an event — the member's MemberRun row is left untouched.
+/// only recorded as an event — the member's ProviderRuntimeProjection row is left untouched.
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 fn send_team_message(
     store: &HarnessStore,
     team_run_id: &str,
-    from_member_id: &str,
-    to_member_ids: Vec<String>,
-    kind: TeamMessageKind,
+    sender_runtime_id: &str,
+    recipient_runtime_ids: Vec<String>,
+    kind: ProviderDispatchIntent,
     body: &str,
     correlation_id: Option<String>,
     causation_id: Option<String>,
-    origin_wave_id: Option<String>,
-    response_intent: Option<TeamMessageResponseIntent>,
-) -> CliResult<TeamMessage> {
+    source_plan_ref: Option<String>,
+    response_intent: Option<ProviderResponseIntent>,
+) -> CliResult<ProviderDispatchEnvelope> {
     send_team_message_as(
         store,
         team_run_id,
         compatibility_team_actor(
-            from_member_id,
-            if from_member_id == "host" {
+            sender_runtime_id,
+            if sender_runtime_id == "host" {
                 "host_cli"
             } else {
                 "member_runtime"
             },
         ),
-        to_member_ids,
+        recipient_runtime_ids,
         kind,
         body,
         correlation_id,
         causation_id,
-        origin_wave_id,
+        source_plan_ref,
         response_intent,
     )
 }
@@ -12425,25 +12190,25 @@ fn send_team_message_as(
     store: &HarnessStore,
     team_run_id: &str,
     sender: TeamActorRef,
-    to_member_ids: Vec<String>,
-    kind: TeamMessageKind,
+    recipient_runtime_ids: Vec<String>,
+    kind: ProviderDispatchIntent,
     body: &str,
     correlation_id: Option<String>,
     causation_id: Option<String>,
-    origin_wave_id: Option<String>,
-    response_intent: Option<TeamMessageResponseIntent>,
-) -> CliResult<TeamMessage> {
+    source_plan_ref: Option<String>,
+    response_intent: Option<ProviderResponseIntent>,
+) -> CliResult<ProviderDispatchEnvelope> {
     send_team_message_as_work(
         store,
         team_run_id,
         sender,
-        to_member_ids,
+        recipient_runtime_ids,
         kind,
         body,
         None,
         correlation_id,
         causation_id,
-        origin_wave_id,
+        source_plan_ref,
         response_intent,
     )
 }
@@ -12453,26 +12218,26 @@ fn send_team_message_as_work(
     store: &HarnessStore,
     team_run_id: &str,
     sender: TeamActorRef,
-    to_member_ids: Vec<String>,
-    kind: TeamMessageKind,
+    recipient_runtime_ids: Vec<String>,
+    kind: ProviderDispatchIntent,
     body: &str,
     work_id: Option<String>,
     correlation_id: Option<String>,
     causation_id: Option<String>,
-    origin_wave_id: Option<String>,
-    response_intent: Option<TeamMessageResponseIntent>,
-) -> CliResult<TeamMessage> {
+    source_plan_ref: Option<String>,
+    response_intent: Option<ProviderResponseIntent>,
+) -> CliResult<ProviderDispatchEnvelope> {
     let message = prepare_team_message_as(
         store,
         team_run_id,
         &sender,
-        to_member_ids,
+        recipient_runtime_ids,
         kind,
         body,
         work_id,
         correlation_id,
         causation_id,
-        origin_wave_id,
+        source_plan_ref,
         TeamMessageDeliveryMode::Routed,
         response_intent,
     )?;
@@ -12484,16 +12249,16 @@ fn prepare_team_message_as(
     store: &HarnessStore,
     team_run_id: &str,
     sender: &TeamActorRef,
-    to_member_ids: Vec<String>,
-    kind: TeamMessageKind,
+    recipient_runtime_ids: Vec<String>,
+    kind: ProviderDispatchIntent,
     body: &str,
     work_id: Option<String>,
     correlation_id: Option<String>,
     causation_id: Option<String>,
-    origin_wave_id: Option<String>,
+    source_plan_ref: Option<String>,
     delivery_mode: TeamMessageDeliveryMode,
-    response_intent: Option<TeamMessageResponseIntent>,
-) -> CliResult<TeamMessage> {
+    response_intent: Option<ProviderResponseIntent>,
+) -> CliResult<ProviderDispatchEnvelope> {
     // Fail fast on an unknown run id rather than journaling an orphan message.
     let run = latest_team_run(store, team_run_id)?;
     if body.trim().is_empty() {
@@ -12506,7 +12271,7 @@ fn prepare_team_message_as(
         .into_iter()
         .filter(|member| member.team_run_id == team_run_id)
         .collect::<Vec<_>>();
-    let from_member_id = match sender.kind {
+    let sender_runtime_id = match sender.kind {
         TeamActorKind::Host => {
             if sender.id != "host"
                 && run
@@ -12521,7 +12286,7 @@ fn prepare_team_message_as(
             }
             "host".to_string()
         }
-        TeamActorKind::MemberRun => {
+        TeamActorKind::ProviderRuntimeProjection => {
             let member = member_runs
                 .iter()
                 .find(|member| member.id == sender.id)
@@ -12537,7 +12302,7 @@ fn prepare_team_message_as(
         TeamActorKind::AgentMember => {
             let linked = member_runs
                 .iter()
-                .filter(|member| member.agent_member_id.as_deref() == Some(sender.id.as_str()))
+                .filter(|member| member.agent_member_id == sender.id)
                 .collect::<Vec<_>>();
             match linked.as_slice() {
                 [member] => {
@@ -12546,7 +12311,7 @@ fn prepare_team_message_as(
                 }
                 [] => {
                     return Err(CliError::Usage(format!(
-                        "Agent identity {} has no MemberRun in team run {team_run_id}",
+                        "Agent identity {} has no ProviderRuntimeProjection in team run {team_run_id}",
                         sender.id
                     )))
                 }
@@ -12561,13 +12326,13 @@ fn prepare_team_message_as(
         TeamActorKind::Operator => format!("operator:{}", sender.id),
         TeamActorKind::Service => format!("service:{}", sender.id),
     };
-    if to_member_ids.is_empty() {
+    if recipient_runtime_ids.is_empty() {
         return Err(CliError::Usage(
             "team message requires at least one recipient".to_string(),
         ));
     }
     let mut recipients = std::collections::HashSet::new();
-    for recipient in &to_member_ids {
+    for recipient in &recipient_runtime_ids {
         if !valid_member(recipient) {
             return Err(CliError::Usage(format!(
                 "message recipient {recipient} does not belong to team run {team_run_id}"
@@ -12584,18 +12349,18 @@ fn prepare_team_message_as(
                 .find(|member| member.id == recipient.as_str())
                 .ok_or_else(|| {
                     CliError::Usage(format!(
-                        "message recipient {recipient} has no MemberRun projection in team run {team_run_id}"
+                        "message recipient {recipient} has no ProviderRuntimeProjection projection in team run {team_run_id}"
                     ))
                 })?;
             ensure_member_coordination_open(member)?;
         }
     }
-    if let Some(origin_wave_id) = origin_wave_id.as_deref() {
+    if let Some(source_plan_ref) = source_plan_ref.as_deref() {
         let mission_id = team_run_mission_id(store, &run)?;
-        let wave = latest_wave(store, origin_wave_id)?;
+        let wave = latest_wave(store, source_plan_ref)?;
         if wave.mission_id != mission_id {
             return Err(CliError::Usage(format!(
-                "origin Wave {origin_wave_id} belongs to Mission {}, not TeamRun Mission {mission_id}",
+                "origin Wave {source_plan_ref} belongs to Mission {}, not TeamRun Mission {mission_id}",
                 wave.mission_id
             )));
         }
@@ -12615,27 +12380,27 @@ fn prepare_team_message_as(
     }
     let (correlation_id, causation_id) =
         resolve_team_message_lineage(store, team_run_id, &kind, correlation_id, causation_id)?;
-    let message = TeamMessage {
+    let message = ProviderDispatchEnvelope {
         id: generated_id("tmsg"),
         team_run_id: team_run_id.to_string(),
         work_id,
-        origin_wave_id,
+        source_plan_ref,
         sender: Some(sender.clone()),
-        from_member_id: from_member_id.clone(),
-        recipients: to_member_ids
+        sender_runtime_id: sender_runtime_id.clone(),
+        recipients: recipient_runtime_ids
             .iter()
             .map(|member_id| compatibility_team_recipient(member_id))
             .collect(),
-        to_member_ids: to_member_ids.clone(),
+        recipient_runtime_ids: recipient_runtime_ids.clone(),
         kind,
         body: body.to_string(),
         correlation_id,
         causation_id,
         response_intent,
         evidence_refs: Vec::new(),
-        deliveries: to_member_ids
+        deliveries: recipient_runtime_ids
             .iter()
-            .map(|member_id| TeamMessageDelivery {
+            .map(|member_id| ProviderDispatchAttempt {
                 member_id: member_id.clone(),
                 // The Host control plane receives member-originated mail at
                 // creation time. Provider members, by contrast, consume
@@ -12685,8 +12450,8 @@ fn prepare_team_message_as(
 fn publish_team_message(
     store: &HarnessStore,
     sender: &TeamActorRef,
-    message: TeamMessage,
-) -> CliResult<TeamMessage> {
+    message: ProviderDispatchEnvelope,
+) -> CliResult<ProviderDispatchEnvelope> {
     store_conflict_as_usage(store.append_team_message_checked(&message))?;
     let seq = next_team_run_seq(store, &message.team_run_id)?;
     append_team_run_event(
@@ -12696,9 +12461,9 @@ fn publish_team_message(
         team_event_source_for_actor(sender),
         matches!(
             sender.kind,
-            TeamActorKind::MemberRun | TeamActorKind::AgentMember
+            TeamActorKind::ProviderRuntimeProjection | TeamActorKind::AgentMember
         )
-        .then(|| message.from_member_id.clone()),
+        .then(|| message.sender_runtime_id.clone()),
         "message",
         &message.id,
         "created",
@@ -12706,168 +12471,10 @@ fn publish_team_message(
             "{} from {} to [{}]",
             team_message_kind_label(&message.kind),
             sender.id,
-            message.to_member_ids.join(",")
+            message.recipient_runtime_ids.join(",")
         ),
     )?;
     Ok(message)
-}
-
-fn active_member_runs_for_agent(
-    store: &HarnessStore,
-    agent_member_id: &str,
-) -> CliResult<Vec<MemberRun>> {
-    Ok(latest_member_runs_in_append_order(store)?
-        .into_iter()
-        .filter(|member| member.agent_member_id.as_deref() == Some(agent_member_id))
-        .filter(|member| member.coordination_is_active())
-        .filter(|member| {
-            !matches!(
-                member.status,
-                MemberRunStatus::Completed | MemberRunStatus::Failed | MemberRunStatus::Stopped
-            )
-        })
-        .collect())
-}
-
-fn actor_for_agent_inbox_message(message: &Message) -> TeamActorRef {
-    match message.sender_kind {
-        SenderKind::Agent => TeamActorRef {
-            kind: TeamActorKind::AgentMember,
-            id: message.from_agent_id.clone(),
-            display_name: None,
-            authn_source: Some("agent_inbox".to_string()),
-        },
-        SenderKind::Operator => TeamActorRef {
-            kind: TeamActorKind::Operator,
-            id: message.from_agent_id.clone(),
-            display_name: None,
-            authn_source: Some("agent_inbox".to_string()),
-        },
-        SenderKind::System => TeamActorRef {
-            kind: TeamActorKind::Service,
-            id: message.from_agent_id.clone(),
-            display_name: None,
-            authn_source: Some("agent_inbox".to_string()),
-        },
-    }
-}
-
-/// Promote waiting stable-Agent mail into one concrete MemberRun. A missing
-/// runtime is a normal queued state; more than one eligible runtime is
-/// intentionally ambiguous unless the caller names one.
-fn route_agent_inbox_messages(
-    store: &HarnessStore,
-    agent_member_id: &str,
-    explicit_member_run_id: Option<&str>,
-    message_filter: Option<&str>,
-) -> CliResult<Vec<AgentMessageRoute>> {
-    let eligible = active_member_runs_for_agent(store, agent_member_id)?;
-    let target = if let Some(member_run_id) = explicit_member_run_id {
-        eligible
-            .iter()
-            .find(|member| member.id == member_run_id)
-            .cloned()
-            .ok_or_else(|| {
-                CliError::Usage(format!(
-                    "MemberRun {member_run_id} is not an active runtime for Agent {agent_member_id}"
-                ))
-            })?
-    } else {
-        match eligible.as_slice() {
-            [] => return Ok(Vec::new()),
-            [member] => member.clone(),
-            _ => {
-                return Err(CliError::Usage(format!(
-                    "Agent {agent_member_id} has {} eligible MemberRuns; pass --member-run-id explicitly",
-                    eligible.len()
-                )))
-            }
-        }
-    };
-    let existing_routes = store
-        .agent_message_routes()?
-        .into_iter()
-        .map(|route| route.agent_message_id)
-        .collect::<HashSet<_>>();
-    let waiting = latest_messages_in_append_order(store)?
-        .into_iter()
-        .filter(|message| message.to_agent_id.as_deref() == Some(agent_member_id))
-        .filter(|message| message.delivery_status == MessageDeliveryStatus::Queued)
-        .filter(|message| !existing_routes.contains(&message.id))
-        .filter(|message| message_filter.is_none_or(|id| message.id == id))
-        .collect::<Vec<_>>();
-    let mut routes = Vec::new();
-    for source in waiting {
-        let team_message_id = generated_id("tmsg");
-        let correlation_id = generated_id("corr");
-        if source.kind == MessageKind::Assignment {
-            return Err(CliError::Usage(format!(
-                "Agent Inbox Assignment {} cannot be routed into Agent Team conversation; create a Team Work instead",
-                source.id
-            )));
-        }
-        let team_kind = TeamMessageKind::Message;
-        let actor = actor_for_agent_inbox_message(&source);
-        let team_message = TeamMessage {
-            id: team_message_id.clone(),
-            team_run_id: target.team_run_id.clone(),
-            work_id: None,
-            origin_wave_id: None,
-            sender: Some(actor.clone()),
-            from_member_id: match actor.kind {
-                TeamActorKind::Operator => format!("operator:{}", actor.id),
-                TeamActorKind::Service => format!("service:{}", actor.id),
-                _ => format!("agent-member:{}", actor.id),
-            },
-            recipients: vec![TeamRecipientRef {
-                kind: TeamRecipientKind::MemberRun,
-                id: target.id.clone(),
-            }],
-            to_member_ids: vec![target.id.clone()],
-            kind: team_kind,
-            body: source.content.clone(),
-            correlation_id,
-            causation_id: None,
-            // Kind-derived intent: routed Assignments require a response
-            // round; routed ordinary mail stays informational.
-            response_intent: None,
-            evidence_refs: source
-                .evidence_ids
-                .iter()
-                .cloned()
-                .chain(std::iter::once(format!("agent-message:{}", source.id)))
-                .collect(),
-            deliveries: vec![queued_team_delivery(&target.id)],
-            created_at: now_string(),
-        };
-        let route = AgentMessageRoute {
-            id: generated_id("agent-message-route"),
-            agent_message_id: source.id.clone(),
-            agent_member_id: agent_member_id.to_string(),
-            team_run_id: target.team_run_id.clone(),
-            member_run_id: target.id.clone(),
-            team_message_id,
-            routed_at: now_string(),
-        };
-        let route =
-            store_conflict_as_usage(store.route_agent_message_to_team(&route, &team_message))?;
-        append_team_run_event(
-            store,
-            &target.team_run_id,
-            next_team_run_seq(store, &target.team_run_id)?,
-            team_event_source_for_actor(&actor),
-            None,
-            "message",
-            &team_message.id,
-            "created",
-            &format!(
-                "Agent Inbox message {} routed to MemberRun {}",
-                source.id, target.id
-            ),
-        )?;
-        routes.push(route);
-    }
-    Ok(routes)
 }
 
 /// Latest-wins read model for one TeamRun recipient.
@@ -12882,7 +12489,7 @@ pub(crate) fn team_run_inbox(
     team_run_id: &str,
     member_run_id: &str,
     include_all: bool,
-) -> CliResult<Vec<TeamMessage>> {
+) -> CliResult<Vec<ProviderDispatchEnvelope>> {
     let run = latest_team_run(store, team_run_id)?;
     if member_run_id != "host" {
         if !run
@@ -12902,12 +12509,12 @@ pub(crate) fn team_run_inbox(
             return Ok(Vec::new());
         }
     }
-    Ok(latest_team_messages_in_append_order(store)?
+    let mut messages = latest_team_messages_in_append_order(store)?
         .into_iter()
         .filter(|message| message.team_run_id == team_run_id)
         .filter(|message| {
             message
-                .to_member_ids
+                .recipient_runtime_ids
                 .iter()
                 .any(|recipient| recipient == member_run_id)
                 && message.deliveries.iter().any(|delivery| {
@@ -12919,7 +12526,138 @@ pub(crate) fn team_run_inbox(
                             ))
                 })
         })
-        .collect())
+        .collect::<Vec<_>>();
+
+    // The member-trust kernel is the canonical message authority. Project its
+    // immutable ProviderDispatchEnvelope + RegistryDeliveryAttempt rows into the existing
+    // read shape while callers migrate; never require a retired shadow append
+    // merely to make a canonical message visible in an inbox.
+    if member_run_id != "host" {
+        if let Some(execution_space_id) = store.trust_member_run_scope(member_run_id)? {
+            let canonical_messages = store
+                .trust_team_messages(&execution_space_id)?
+                .into_iter()
+                .filter(|message| message.team_run_id == team_run_id)
+                .map(|message| (message.id.clone(), message))
+                .collect::<BTreeMap<_, _>>();
+            for delivery in store
+                .trust_message_deliveries(&execution_space_id)?
+                .into_iter()
+                .filter(|delivery| delivery.recipient_member_run_id == member_run_id)
+                .filter(|delivery| {
+                    include_all
+                        || delivery.status
+                            == harness_core::agentfirm_api::MessageDeliveryStatus::Queued
+                })
+            {
+                let Some(message) = canonical_messages.get(&delivery.message_id) else {
+                    continue;
+                };
+                let status = match delivery.status {
+                    harness_core::agentfirm_api::MessageDeliveryStatus::Queued => {
+                        TeamDeliveryStatus::Queued
+                    }
+                    harness_core::agentfirm_api::MessageDeliveryStatus::Claimed => {
+                        TeamDeliveryStatus::Claimed
+                    }
+                    harness_core::agentfirm_api::MessageDeliveryStatus::ProviderReceived => {
+                        TeamDeliveryStatus::Delivered
+                    }
+                    harness_core::agentfirm_api::MessageDeliveryStatus::Acknowledged => {
+                        TeamDeliveryStatus::Acknowledged
+                    }
+                    harness_core::agentfirm_api::MessageDeliveryStatus::Failed
+                    | harness_core::agentfirm_api::MessageDeliveryStatus::Invalidated => {
+                        TeamDeliveryStatus::Failed
+                    }
+                    harness_core::agentfirm_api::MessageDeliveryStatus::Expired => {
+                        TeamDeliveryStatus::Expired
+                    }
+                };
+                let sender = match message.sender.kind {
+                    harness_core::agentfirm_api::ActorKind::AgentMember => TeamActorRef {
+                        kind: TeamActorKind::AgentMember,
+                        id: message.sender.id.clone(),
+                        display_name: None,
+                        authn_source: Some("canonical_trust_kernel".into()),
+                    },
+                    harness_core::agentfirm_api::ActorKind::Human
+                    | harness_core::agentfirm_api::ActorKind::External => TeamActorRef {
+                        kind: TeamActorKind::Operator,
+                        id: message.sender.id.clone(),
+                        display_name: None,
+                        authn_source: Some("canonical_trust_kernel".into()),
+                    },
+                    harness_core::agentfirm_api::ActorKind::Service => TeamActorRef {
+                        kind: TeamActorKind::Service,
+                        id: message.sender.id.clone(),
+                        display_name: None,
+                        authn_source: Some("canonical_trust_kernel".into()),
+                    },
+                };
+                messages.push(ProviderDispatchEnvelope {
+                    id: message.id.clone(),
+                    team_run_id: message.team_run_id.clone(),
+                    work_id: message.work_id.clone(),
+                    source_plan_ref: None,
+                    sender: Some(sender),
+                    sender_runtime_id: message.sender.id.clone(),
+                    recipients: vec![TeamRecipientRef {
+                        kind: TeamRecipientKind::ProviderRuntimeProjection,
+                        id: member_run_id.to_string(),
+                    }],
+                    recipient_runtime_ids: vec![member_run_id.to_string()],
+                    kind: match message.kind {
+                        harness_core::agentfirm_api::TeamMessageKind::Control => {
+                            ProviderDispatchIntent::Control
+                        }
+                        harness_core::agentfirm_api::TeamMessageKind::ProviderInteractionRequest => {
+                            ProviderDispatchIntent::ProviderInteractionRequest
+                        }
+                        harness_core::agentfirm_api::TeamMessageKind::ProviderInteractionResponse => {
+                            ProviderDispatchIntent::ProviderInteractionResponse
+                        }
+                        harness_core::agentfirm_api::TeamMessageKind::Message => {
+                            ProviderDispatchIntent::Message
+                        }
+                    },
+                    body: message.body.clone(),
+                    correlation_id: message.correlation_id.clone(),
+                    causation_id: message.causation_id.clone(),
+                    response_intent: Some(match message.response_intent {
+                        harness_core::agentfirm_api::ResponseIntent::Informational => {
+                            ProviderResponseIntent::Informational
+                        }
+                        harness_core::agentfirm_api::ResponseIntent::ResponseRequired => {
+                            ProviderResponseIntent::ResponseRequired
+                        }
+                    }),
+                    evidence_refs: message.evidence_refs.clone(),
+                    deliveries: vec![ProviderDispatchAttempt {
+                        member_id: member_run_id.to_string(),
+                        policy: TeamDeliveryPolicy::Queue,
+                        status,
+                        attempt: delivery.attempt,
+                        claim_id: delivery.claim_id.clone(),
+                        claimed_by_supervisor_id: None,
+                        claimed_generation: delivery.claimed_supervisor_generation,
+                        claimed_unix_ms: None,
+                        claim_expires_unix_ms: None,
+                        provider_receipt_id: delivery.provider_receipt_id.clone(),
+                        failure_reason: delivery.failure_detail.clone(),
+                        updated_at: delivery.updated_at.clone(),
+                    }],
+                    created_at: message.created_at.clone(),
+                });
+            }
+        }
+    }
+    messages.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(messages)
 }
 
 /// Aggregate Host mail for the exact provider-native Host thread bound to each
@@ -12979,7 +12717,7 @@ pub(crate) fn host_inbox_for_native_thread(
 fn resolve_team_message_lineage(
     store: &HarnessStore,
     team_run_id: &str,
-    _kind: &TeamMessageKind,
+    _kind: &ProviderDispatchIntent,
     supplied_correlation_id: Option<String>,
     supplied_causation_id: Option<String>,
 ) -> CliResult<(String, Option<String>)> {
@@ -13095,7 +12833,7 @@ fn parse_team_run_status(s: &str) -> CliResult<TeamRunStatus> {
 /// attempt is the explicit rejection path that permits a later retry without
 /// falsely making the failed attempt acceptance-eligible. Anything else is a usage error
 /// (HTTP 400) so an attempt cannot skip review or resurrect after termination.
-/// Completing a running TeamRun deliberately does not close any MemberRun:
+/// Completing a running TeamRun deliberately does not close any ProviderRuntimeProjection:
 /// persistent member runtimes may carry work into a later run of the same Team. A running attempt
 /// still cannot be status-cancelled until provider execution has a real
 /// cooperative interruption path.
@@ -13207,14 +12945,19 @@ impl DeliveryReconciliationFailure {
 /// failure carries the exact successful prefix so append-only partial success
 /// remains honest and a retry can safely skip the now-queued deliveries.
 fn reconcile_stale_delivery_claims<F>(
-    deliveries: &[WorkDelivery],
+    deliveries: &[ProviderWorkDispatch],
     supervisor: Option<&harness_core::TeamSupervisorLease>,
     now: u64,
     now_str: &str,
     mut reconcile: F,
 ) -> Result<Vec<String>, DeliveryReconciliationFailure>
 where
-    F: FnMut(&WorkDelivery, &harness_core::TeamSupervisorLease, u64, &str) -> Result<(), String>,
+    F: FnMut(
+        &ProviderWorkDispatch,
+        &harness_core::TeamSupervisorLease,
+        u64,
+        &str,
+    ) -> Result<(), String>,
 {
     let mut succeeded_ids = Vec::new();
     let Some(lease) = supervisor else {
@@ -13224,7 +12967,7 @@ where
         return Ok(succeeded_ids);
     }
     for delivery in deliveries {
-        let is_stale_claim = delivery.status == WorkDeliveryStatus::Claimed
+        let is_stale_claim = delivery.status == ProviderWorkDispatchStatus::Claimed
             && delivery
                 .claimed_generation
                 .is_some_and(|generation| generation < lease.generation);
@@ -13246,7 +12989,7 @@ where
 /// Pure function: classify a member's recovery path. Does not perform I/O or
 /// mutation. Unit-testable across every edge case without a store.
 fn classify_member_recovery_path(
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     supervisor_current: bool,
 ) -> MemberRecoveryPath {
     // Retired members are permanently dead.
@@ -13337,7 +13080,7 @@ fn team_run_recover(
     json: bool,
 ) -> CliResult<serde_json::Value> {
     let run = latest_team_run(store, team_run_id)?;
-    let mut members: Vec<MemberRun> = latest_member_runs_in_append_order(store)?
+    let mut members: Vec<ProviderRuntimeProjection> = latest_member_runs_in_append_order(store)?
         .into_iter()
         .filter(|member| member.team_run_id == team_run_id)
         .collect();
@@ -13346,7 +13089,7 @@ fn team_run_recover(
         .into_iter()
         .filter(|work| work.team_run_id == team_run_id)
         .collect();
-    let deliveries: Vec<WorkDelivery> = store
+    let deliveries: Vec<ProviderWorkDispatch> = store
         .latest_work_deliveries()?
         .into_iter()
         .filter(|delivery| delivery.team_run_id == team_run_id)
@@ -13367,7 +13110,7 @@ fn team_run_recover(
         println!();
     }
 
-    // Recovery must not mutate a MemberRun generation, reconcile a delivery,
+    // Recovery must not mutate a ProviderRuntimeProjection generation, reconcile a delivery,
     // or rebound Work until every candidate that would reopen/rebind has an
     // adapter-reviewed installed version. Historical native-session locators
     // remain untouched even when this gate records a refreshed profile.
@@ -13452,7 +13195,7 @@ fn team_run_recover(
                 .iter()
                 .filter(|w| {
                     w.active_member_run_id.as_deref() == Some(&member.id)
-                        || w.owner_member_id.as_deref() == member.agent_member_id.as_deref()
+                        || w.owner_member_id.as_deref() == Some(member.agent_member_id.as_str())
                 })
                 .collect();
             let path = classify_member_recovery_path(member, supervisor_current);
@@ -13469,7 +13212,7 @@ fn team_run_recover(
     }
 
     // ── Gather recovery plan ─────────────────────────────────────────
-    let recovery_plan: Vec<(&MemberRun, MemberRecoveryPath)> = members
+    let recovery_plan: Vec<(&ProviderRuntimeProjection, MemberRecoveryPath)> = members
         .iter()
         .map(|member| {
             (
@@ -13795,19 +13538,19 @@ fn recover_interrupted_team_run(
 }
 
 /// Parse a team message kind from its snake_case wire name.
-fn parse_team_message_kind(s: &str) -> CliResult<TeamMessageKind> {
+fn parse_team_message_kind(s: &str) -> CliResult<ProviderDispatchIntent> {
     let kind = serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
         CliError::Usage(format!(
-            "unknown team message kind `{s}` (message|handoff|control)"
+            "unknown provider dispatch intent `{s}` (message|control)"
         ))
     })?;
     if !matches!(
         kind,
-        TeamMessageKind::Message | TeamMessageKind::Handoff | TeamMessageKind::Control
+        ProviderDispatchIntent::Message | ProviderDispatchIntent::Control
     ) {
-        return Err(CliError::Usage(format!(
-            "team message kind `{s}` is historical and read-only; use message|handoff|control"
-        )));
+        return Err(CliError::Usage(
+            "provider interaction intents are runtime-owned; use message|control".to_string(),
+        ));
     }
     Ok(kind)
 }
@@ -13815,7 +13558,7 @@ fn parse_team_message_kind(s: &str) -> CliResult<TeamMessageKind> {
 /// Parse an explicit team message response intent from its snake_case wire
 /// name (HTTP API and MCP tool surface; the CLI spells the same two values as
 /// --response-required and --informational).
-fn parse_team_message_response_intent(s: &str) -> CliResult<TeamMessageResponseIntent> {
+fn parse_team_message_response_intent(s: &str) -> CliResult<ProviderResponseIntent> {
     serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
         CliError::Usage(format!(
             "unknown team message response intent `{s}` (informational|response_required)"
@@ -13823,24 +13566,12 @@ fn parse_team_message_response_intent(s: &str) -> CliResult<TeamMessageResponseI
     })
 }
 
-fn team_message_kind_label(kind: &TeamMessageKind) -> &'static str {
+fn team_message_kind_label(kind: &ProviderDispatchIntent) -> &'static str {
     match kind {
-        TeamMessageKind::Message => "message",
-        TeamMessageKind::PlanRequest => "plan_request",
-        TeamMessageKind::PlanProposal => "plan_proposal",
-        TeamMessageKind::PlanFeedback => "plan_feedback",
-        TeamMessageKind::PlanApproval => "plan_approval",
-        TeamMessageKind::Question => "question",
-        TeamMessageKind::Answer => "answer",
-        TeamMessageKind::Progress => "progress",
-        TeamMessageKind::Blocker => "blocker",
-        TeamMessageKind::Handoff => "handoff",
-        TeamMessageKind::ReviewRequest => "review_request",
-        TeamMessageKind::ReviewResult => "review_result",
-        TeamMessageKind::Control => "control",
-        TeamMessageKind::ProviderInteractionRequest => "provider_interaction_request",
-        TeamMessageKind::ProviderInteractionResponse => "provider_interaction_response",
-        TeamMessageKind::Broadcast => "broadcast",
+        ProviderDispatchIntent::Message => "message",
+        ProviderDispatchIntent::Control => "control",
+        ProviderDispatchIntent::ProviderInteractionRequest => "provider_interaction_request",
+        ProviderDispatchIntent::ProviderInteractionResponse => "provider_interaction_response",
     }
 }
 
@@ -13869,16 +13600,6 @@ fn parse_work_priority(value: &str) -> CliResult<WorkPriority> {
     })
 }
 
-fn parse_work_review_verdict(value: &str) -> CliResult<ReviewVerdict> {
-    let verdict = ReviewVerdict::from(value.to_string());
-    if matches!(verdict, ReviewVerdict::Other(_)) {
-        return Err(CliError::Usage(format!(
-            "unknown Work review verdict `{value}` (pass|fail|blocked|needs_changes)"
-        )));
-    }
-    Ok(verdict)
-}
-
 fn work_priority_rank(priority: WorkPriority) -> u8 {
     match priority {
         WorkPriority::Low => 0,
@@ -13886,130 +13607,6 @@ fn work_priority_rank(priority: WorkPriority) -> u8 {
         WorkPriority::High => 2,
         WorkPriority::Urgent => 3,
     }
-}
-
-struct UniqueJsonObject(serde_json::Map<String, serde_json::Value>);
-
-impl<'de> serde::Deserialize<'de> for UniqueJsonObject {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct Visitor;
-
-        impl<'de> serde::de::Visitor<'de> for Visitor {
-            type Value = UniqueJsonObject;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("a JSON object with unique keys")
-            }
-
-            fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
-            where
-                A: serde::de::MapAccess<'de>,
-            {
-                let mut values = serde_json::Map::new();
-                while let Some((key, value)) = access.next_entry::<String, serde_json::Value>()? {
-                    if values.contains_key(&key) {
-                        return Err(serde::de::Error::custom(format!(
-                            "duplicate JSON object key `{key}`"
-                        )));
-                    }
-                    values.insert(key, value);
-                }
-                Ok(UniqueJsonObject(values))
-            }
-        }
-
-        deserializer.deserialize_map(Visitor)
-    }
-}
-
-fn parse_unique_json_object(raw: &str) -> CliResult<serde_json::Value> {
-    let mut deserializer = serde_json::Deserializer::from_str(raw);
-    let object = <UniqueJsonObject as serde::Deserialize>::deserialize(&mut deserializer)
-        .map_err(|error| CliError::Usage(format!("invalid --gate JSON config: {error}")))?;
-    deserializer
-        .end()
-        .map_err(|error| CliError::Usage(format!("invalid --gate JSON config: {error}")))?;
-    Ok(serde_json::Value::Object(object.0))
-}
-
-/// Parse `--gate plugin[:key=val[,key=val...]]` flags into [`GateSpec`]s.
-///
-/// Format (repeatable):
-///   --gate github-pr
-///   --gate github-pr:require_merged=true,require_ci_pass=true
-///   --gate artifact-exists:{"paths":["docs/report.md"]}
-fn parse_gate_specs(args: &[String]) -> CliResult<Vec<GateSpec>> {
-    let mut specs = Vec::new();
-    let mut i = 0;
-    while i < args.len() {
-        if args[i] == "--gate" {
-            if i + 1 >= args.len() {
-                return Err(CliError::Usage(
-                    "--gate requires a value (e.g. --gate github-pr or --gate github-pr:key=val,...)"
-                        .to_string(),
-                ));
-            }
-            let raw = &args[i + 1];
-            let (plugin, config_str) = match raw.split_once(':') {
-                Some((p, c)) => (p.to_string(), c),
-                None => (raw.clone(), ""),
-            };
-            if plugin.is_empty() {
-                return Err(CliError::Usage(
-                    "--gate plugin name must not be empty".to_string(),
-                ));
-            }
-            let config = if config_str.is_empty() {
-                serde_json::Value::Object(serde_json::Map::new())
-            } else if config_str.starts_with('{') {
-                parse_unique_json_object(config_str)?
-            } else {
-                let mut map = serde_json::Map::new();
-                for pair in config_str.split(',') {
-                    let (k, v) = pair.split_once('=').ok_or_else(|| {
-                        CliError::Usage(format!(
-                            "invalid --gate config pair `{pair}`; expected key=value"
-                        ))
-                    })?;
-                    if k.is_empty() {
-                        return Err(CliError::Usage(
-                            "--gate config key must not be empty".to_string(),
-                        ));
-                    }
-                    if map.contains_key(k) {
-                        return Err(CliError::Usage(format!(
-                            "duplicate --gate config key `{k}`"
-                        )));
-                    }
-                    // Try to parse as bool, then integer, fall back to string.
-                    let val = if v == "true" {
-                        serde_json::Value::Bool(true)
-                    } else if v == "false" {
-                        serde_json::Value::Bool(false)
-                    } else if let Ok(n) = v.parse::<i64>() {
-                        serde_json::Value::Number(n.into())
-                    } else {
-                        serde_json::Value::String(v.to_string())
-                    };
-                    map.insert(k.to_string(), val);
-                }
-                serde_json::Value::Object(map)
-            };
-            let spec = GateSpec { plugin, config };
-            spec.validate()
-                .map_err(|reason| CliError::Usage(format!("invalid --gate: {reason}")))?;
-            specs.push(spec);
-            i += 2; // skip value
-        } else {
-            i += 1;
-        }
-    }
-    validate_gate_specs(&specs)
-        .map_err(|reason| CliError::Usage(format!("invalid --gate declarations: {reason}")))?;
-    Ok(specs)
 }
 
 fn parse_work_phase(value: &str) -> CliResult<WorkPhase> {
@@ -14042,126 +13639,6 @@ fn work_lifecycle_label(work: &Work) -> String {
         (_, WorkCondition::OnHold, _) => "on_hold".to_string(),
         (WorkPhase::Closed, _, Some(resolution)) => serde_snake_label(&resolution),
         (phase, _, _) => serde_snake_label(&phase),
-    }
-}
-
-fn parse_workspace(args: &[String]) -> CliResult<Option<WorkWorkspace>> {
-    // Shorthand: --worktree <path> implies kind=worktree, base=origin/master
-    if let Some(path) = value(args, "--worktree") {
-        return Ok(Some(WorkWorkspace {
-            kind: WorkWorkspaceKind::Worktree,
-            path,
-            base_ref: value(args, "--workspace-base"),
-            auto_cleanup: !has_flag(args, "--workspace-no-cleanup"),
-        }));
-    }
-    // Explicit: --workspace-kind worktree|dir|inherit --workspace-path <path>
-    if let Some(kind_str) = value(args, "--workspace-kind") {
-        let kind = match kind_str.as_str() {
-            "worktree" => WorkWorkspaceKind::Worktree,
-            "dir" => WorkWorkspaceKind::Dir,
-            "inherit" => WorkWorkspaceKind::Inherit,
-            other => {
-                return Err(CliError::Usage(format!(
-                    "unknown workspace kind `{other}` (worktree|dir|inherit)"
-                )));
-            }
-        };
-        if kind == WorkWorkspaceKind::Inherit {
-            return Ok(Some(WorkWorkspace {
-                kind,
-                path: String::new(),
-                base_ref: None,
-                auto_cleanup: false,
-            }));
-        }
-        let path = required(args, "--workspace-path").map_err(|_| {
-            CliError::Usage(
-                "--workspace-path is required for worktree/dir workspace kinds".to_string(),
-            )
-        })?;
-        return Ok(Some(WorkWorkspace {
-            kind,
-            path,
-            base_ref: value(args, "--workspace-base"),
-            auto_cleanup: !has_flag(args, "--workspace-no-cleanup"),
-        }));
-    }
-    Ok(None)
-}
-
-/// Create the workspace declared by a Work (or ensure it exists if
-/// it's a plain directory). For worktrees, calls `git worktree add`.
-/// Returns the resolved path.
-fn ensure_workspace(
-    workspace: &WorkWorkspace,
-    project_root: &std::path::Path,
-) -> CliResult<std::path::PathBuf> {
-    let path = if workspace.path.starts_with('/') {
-        std::path::PathBuf::from(&workspace.path)
-    } else {
-        project_root.join(&workspace.path)
-    };
-    match workspace.kind {
-        WorkWorkspaceKind::Worktree => {
-            if path.exists() {
-                return Ok(path); // already exists
-            }
-            let base = workspace.base_ref.as_deref().unwrap_or("origin/master");
-            let output = std::process::Command::new("git")
-                .args(["worktree", "add", &workspace.path, base])
-                .current_dir(project_root)
-                .output()
-                .map_err(|e| CliError::Usage(format!("git worktree add failed: {e}")))?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(CliError::Usage(format!(
-                    "git worktree add failed: {stderr}"
-                )));
-            }
-            Ok(path)
-        }
-        WorkWorkspaceKind::Dir => {
-            std::fs::create_dir_all(&path)
-                .map_err(|e| CliError::Usage(format!("mkdir failed: {e}")))?;
-            Ok(path)
-        }
-        WorkWorkspaceKind::Inherit => Ok(project_root.to_path_buf()),
-    }
-}
-
-/// Remove the workspace created for a Work (if auto_cleanup is
-/// enabled). For worktrees, calls `git worktree remove --force`.
-fn cleanup_workspace(workspace: &WorkWorkspace, project_root: &std::path::Path) -> CliResult<()> {
-    if !workspace.auto_cleanup {
-        return Ok(());
-    }
-    let path: std::path::PathBuf = if workspace.path.starts_with('/') {
-        workspace.path.clone().into()
-    } else {
-        project_root.join(&workspace.path)
-    };
-    match workspace.kind {
-        WorkWorkspaceKind::Worktree => {
-            if !path.exists() {
-                return Ok(());
-            }
-            std::process::Command::new("git")
-                .args(["worktree", "remove", "--force"])
-                .arg(&path)
-                .current_dir(project_root)
-                .output()
-                .map_err(|e| CliError::Usage(format!("git worktree remove failed: {e}")))?;
-            Ok(())
-        }
-        WorkWorkspaceKind::Dir => {
-            if path.exists() {
-                std::fs::remove_dir_all(&path)
-                    .map_err(|e| CliError::Usage(format!("rmdir failed: {e}")))?;
-            }
-            Ok(())
-        }
-        WorkWorkspaceKind::Inherit => Ok(()),
     }
 }
 
@@ -14216,7 +13693,7 @@ fn member_work_context(
         })?;
     if bound_member != member_run_id {
         return Err(CliError::Usage(format!(
-            "bound MemberRun is {bound_member}, not {member_run_id}"
+            "bound ProviderRuntimeProjection is {bound_member}, not {member_run_id}"
         )));
     }
     if let Ok(bound_team) =
@@ -14231,7 +13708,7 @@ fn member_work_context(
     Ok(WorkCommandContext {
         event_id: value(args, "--event-id").unwrap_or_else(|| generated_id("work-event")),
         performed_by_actor: TeamActorRef {
-            kind: TeamActorKind::MemberRun,
+            kind: TeamActorKind::ProviderRuntimeProjection,
             id: member_run_id.to_string(),
             display_name: None,
             authn_source: Some("bound_runtime_env".to_string()),
@@ -14321,7 +13798,7 @@ fn work_operation_cursors(
 }
 
 /// Bucket one member into the `board-summary` per-member line. Reads BOTH
-/// signals the summary promises: owned Work content and MemberRun process
+/// signals the summary promises: owned Work content and ProviderRuntimeProjection process
 /// state.
 ///
 /// A member owning any Work in `review` is `awaiting-review` -- a submission
@@ -14333,7 +13810,7 @@ fn work_operation_cursors(
 /// `idle`: none of those states are "a Host decision is pending on this
 /// member" and the summary has only three buckets to spend.
 fn member_board_state<'a>(
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     owned_works: impl Iterator<Item = &'a Work>,
 ) -> &'static str {
     let mut awaiting_review = false;
@@ -14403,7 +13880,7 @@ fn team_run_board_summary_text(store: &HarnessStore, team_run_id: &str) -> CliRe
         .filter(|work| work.is_claim_ready(&works))
         .count();
 
-    let members: Vec<MemberRun> = latest_member_runs_in_append_order(store)?
+    let members: Vec<ProviderRuntimeProjection> = latest_member_runs_in_append_order(store)?
         .into_iter()
         .filter(|member| member.team_run_id == team_run_id && member.coordination_is_active())
         .collect();
@@ -14773,20 +14250,6 @@ pub(crate) fn poll_team_run_github_linkages(
                 })?;
         }
     }
-    // After refreshing links, re-evaluate gates on every non-terminal
-    // Work in the run that has declared gates. Flag works where all gates
-    // pass so the Host knows they're ready for accept.
-    let refreshed_works = store.latest_works()?;
-    let reviews = store.reviews().unwrap_or_default();
-    for work in refreshed_works {
-        if work.team_run_id != run_id || work.is_terminal() || work.gates.is_empty() {
-            continue;
-        }
-        let results = GateEngine::evaluate_work_gates_with_reviews(&work, &reviews);
-        if results.iter().all(|r| r.verdict.is_pass()) {
-            summary.gate_ready.push(work.id.clone());
-        }
-    }
     Ok(summary)
 }
 
@@ -14827,7 +14290,7 @@ fn github_poll_host_context(run_id: &str, work_id: &str) -> WorkCommandContext {
 fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run work list|show|create|delegate|delegation|assign|claim|start|block|resume|release|submit|review|request-changes|accept|cancel|retarget|reconcile-projection|reconcile-delivery|poll-github-ci|check-gates|workspace",
+        "team-run work list|show|create|delegate|delegation|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|retarget|reconcile-projection|reconcile-delivery|poll-github-ci",
     )?;
     match args[0].as_str() {
         "list" => {
@@ -15057,8 +14520,6 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 artifact_refs: Vec::new(),
                 check_refs: Vec::new(),
                 github_links: Vec::new(),
-                gates: parse_gate_specs(args)?,
-                workspace: None,
                 version: 0,
                 created_at: String::new(),
                 updated_at: String::new(),
@@ -15194,30 +14655,7 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 }
                 github_links.push(link);
             }
-            // Parse `--gate plugin[:key=val[,key=val...]]` flags.
-            let gates = parse_gate_specs(args)?;
-            // Parse `--workspace-*` / `--worktree` flags.
-            let workspace = parse_workspace(args)?;
-            // Append declared gates to context so the worker sees them.
-            let context_markdown = {
-                let mut ctx = value(args, "--context").unwrap_or_default();
-                if !gates.is_empty() {
-                    if !ctx.is_empty() {
-                        ctx.push_str("\n\n");
-                    }
-                    ctx.push_str("## Verification Gates\n\n");
-                    ctx.push_str("This work must pass the following gates before acceptance:\n\n");
-                    for gate in &gates {
-                        let config_str = if gate.config.as_object().is_none_or(|m| m.is_empty()) {
-                            String::new()
-                        } else {
-                            format!(" ({})", gate.config)
-                        };
-                        ctx.push_str(&format!("- **{}**{}\n", gate.plugin, config_str));
-                    }
-                }
-                ctx
-            };
+            let context_markdown = value(args, "--context").unwrap_or_default();
             let work = Work {
                 id: value(args, "--work-id").unwrap_or_else(|| generated_id("work")),
                 team_run_id,
@@ -15245,8 +14683,6 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 artifact_refs,
                 check_refs,
                 github_links,
-                gates,
-                workspace,
                 version: 0,
                 created_at: String::new(),
                 updated_at: String::new(),
@@ -15474,32 +14910,6 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             )?;
             print_json(&work)
         }
-        "review" => {
-            let team_run_id = required(args, "--team-run-id")?;
-            let work_id = required(args, "--work-id")?;
-            let expected_version = required_work_version(args)?;
-            let context = if let Some(member_run_id) = value(args, "--member-run-id") {
-                member_work_context(args, &team_run_id, &member_run_id)?
-            } else {
-                host_work_context(args)
-            };
-            let payload = WorkReviewPayload {
-                id: value(args, "--review-id").unwrap_or_else(|| generated_id("review")),
-                verdict: parse_work_review_verdict(&required(args, "--verdict")?)?,
-                summary: required(args, "--summary")?,
-                blockers: many(args, "--blocker"),
-                residual_risk: value(args, "--residual-risk"),
-                missing_validation: many(args, "--missing-validation"),
-                evidence_ids: many(args, "--evidence-id"),
-            };
-            let review = store.record_work_review(
-                &work_id,
-                expected_version,
-                payload,
-                context,
-            )?;
-            print_json(&review)
-        }
         "poll-github-ci" => {
             let team_run_id = required(args, "--team-run-id")?;
             let summary = poll_team_run_github_linkages(store, &team_run_id)?;
@@ -15512,73 +14922,6 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 "gate_ready": summary.gate_ready,
                 "gh_unavailable": summary.gh_unavailable,
             }))
-        }
-        "check-gates" => {
-            let work_id = required(args, "--work-id")?;
-            let work = store
-                .latest_works()?
-                .into_iter()
-                .find(|w| w.id == work_id)
-                .ok_or_else(|| CliError::Usage(format!("Work not found: {work_id}")))?;
-            let reviews = store.reviews().unwrap_or_default();
-            let results = GateEngine::evaluate_work_gates_with_reviews(&work, &reviews);
-            let all_pass = results.iter().all(|r| r.verdict.is_pass());
-            print_json(&serde_json::json!({
-                "work_id": work_id,
-                "gate_count": results.len(),
-                "all_pass": all_pass,
-                "results": results,
-            }))?;
-            if !all_pass {
-                return Err(CliError::Usage(
-                    "one or more gates did not pass (see results above)".to_string(),
-                ));
-            }
-            Ok(())
-        }
-        "workspace" => {
-            require_subcommand(args, "team-run work workspace ensure|cleanup")?;
-            match args[1].as_str() {
-                "ensure" => {
-                    let work_id = required(args, "--work-id")?;
-                    let work = store
-                        .latest_works()?
-                        .into_iter()
-                        .find(|w| w.id == work_id)
-                        .ok_or_else(|| CliError::Usage(format!("Work not found: {work_id}")))?;
-                    let ws = work.workspace.as_ref().ok_or_else(|| {
-                        CliError::Usage(format!("Work {work_id} has no workspace declaration"))
-                    })?;
-                    let project_root = std::env::current_dir()
-                        .map_err(|e| CliError::Usage(format!("cannot determine cwd: {e}")))?;
-                    let path = ensure_workspace(ws, &project_root)?;
-                    print_json(&serde_json::json!({
-                        "work_id": work_id,
-                        "workspace": ws,
-                        "resolved_path": path,
-                    }))
-                }
-                "cleanup" => {
-                    let work_id = required(args, "--work-id")?;
-                    let work = store
-                        .latest_works()?
-                        .into_iter()
-                        .find(|w| w.id == work_id)
-                        .ok_or_else(|| CliError::Usage(format!("Work not found: {work_id}")))?;
-                    let ws = work.workspace.as_ref().ok_or_else(|| {
-                        CliError::Usage(format!("Work {work_id} has no workspace declaration"))
-                    })?;
-                    let project_root = std::env::current_dir()
-                        .map_err(|e| CliError::Usage(format!("cannot determine cwd: {e}")))?;
-                    cleanup_workspace(ws, &project_root)?;
-                    print_json(&serde_json::json!({
-                        "work_id": work_id,
-                        "workspace": ws,
-                        "status": "cleaned_up",
-                    }))
-                }
-                other => Err(CliError::Usage(format!("unknown workspace command: {other}"))),
-            }
         }
         "request-changes" => {
             let reason = required(args, "--reason")?;
@@ -15948,12 +15291,12 @@ fn synthetic_headless_host_member(
     run: &AgentTeamRun,
     provider: &str,
     thread_id: &str,
-) -> AgentMember {
-    let provider_config = AgentProviderConfig {
+) -> ProviderLaunchProfile {
+    let provider_config = ProviderLaunchConfig {
         sandbox_policy: Some("read-only".to_string()),
-        ..AgentProviderConfig::default()
+        ..ProviderLaunchConfig::default()
     };
-    AgentMember {
+    ProviderLaunchProfile {
         id: format!("headless-host:{}", run.id),
         name: "headless-host-triage".to_string(),
         description: "Read-only dispatcher for the exact bound Host session".to_string(),
@@ -15967,10 +15310,10 @@ fn synthetic_headless_host_member(
         prompt_ref: None,
         skill_refs: Vec::new(),
         workspace_policy: Some("read_only".to_string()),
-        worktree_ref: None,
+        provider_cwd_hint: None,
         permission_profile: Some("read_only".to_string()),
         runtime_workspace_roots: Vec::new(),
-        status: AgentMemberStatus::Idle,
+        status: ProviderLaunchStatus::Idle,
         current_task_id: None,
         current_proposal_id: None,
         provider_runtime_id: None,
@@ -16075,11 +15418,11 @@ fn dispatch_headless_host_once(
     let claim_id = generated_id("host-dispatch-claim");
     let delivery_id = generated_id("host-dispatch-delivery");
     let member = synthetic_headless_host_member(&run, &provider, thread_id);
-    let runtime = AgentRuntime {
+    let runtime = ProviderProcess {
         id: format!("runtime:{delivery_id}"),
         agent_member_id: member.id.clone(),
         provider: provider.clone(),
-        status: AgentRuntimeStatus::Running,
+        status: ProviderProcessStatus::Running,
         pid: None,
         control_endpoint: Some(format!("headless-host://{provider}/{thread_id}")),
         command: provider.clone(),
@@ -16087,7 +15430,7 @@ fn dispatch_headless_host_once(
         started_at: now_string(),
         ended_at: None,
         last_event_at: Some(now_string()),
-        health: AgentRuntimeHealth {
+        health: ProviderProcessHealth {
             process_alive: true,
             socket_exists: false,
             protocol_probe: Some("exact-native-session-resume".to_string()),
@@ -16112,14 +15455,14 @@ fn dispatch_headless_host_once(
                     .iter()
                     .map(|attention| attention.id.clone())
                     .collect::<Vec<_>>();
-                let message = Message {
+                let message = RegistryMessage {
                     id: delivery_id.clone(),
                     task_id: None,
                     from_agent_id: "system:host-dispatcher".to_string(),
                     to_agent_id: Some(member.id.clone()),
                     channel: Some("host-triage".to_string()),
-                    kind: MessageKind::Message,
-                    delivery_status: MessageDeliveryStatus::Acknowledged,
+                    kind: RegistryMessageIntent::Message,
+                    delivery_status: RegistryDeliveryStatus::Acknowledged,
                     content: host_dispatcher::build_headless_host_prompt(
                         &run.id,
                         &run.objective,
@@ -16344,7 +15687,7 @@ fn team_run_command(
                 member.resume_native_session_id = Some(session_id.to_string());
             }
             for override_spec in many(args, "--member-worktree") {
-                let (name, worktree_ref) = override_spec.split_once(':').ok_or_else(|| {
+                let (name, provider_cwd_hint) = override_spec.split_once(':').ok_or_else(|| {
                     CliError::Usage("--member-worktree expects name:path".to_string())
                 })?;
                 let member = members
@@ -16353,7 +15696,7 @@ fn team_run_command(
                     .ok_or_else(|| {
                         CliError::Usage(format!("--member-worktree names unknown member {name}"))
                     })?;
-                member.worktree_ref = Some(worktree_ref.to_string());
+                member.provider_cwd_hint = Some(provider_cwd_hint.to_string());
             }
             for override_spec in many(args, "--member-owned-path") {
                 let (name, owned_path) = override_spec.split_once(':').ok_or_else(|| {
@@ -16587,10 +15930,11 @@ fn team_run_command(
         "status" => {
             let id = required(args, "--id")?;
             let run = latest_team_run(store, &id)?;
-            let member_runs: Vec<MemberRun> = latest_member_runs_in_append_order(store)?
-                .into_iter()
-                .filter(|member| member.team_run_id == id)
-                .collect();
+            let member_runs: Vec<ProviderRuntimeProjection> =
+                latest_member_runs_in_append_order(store)?
+                    .into_iter()
+                    .filter(|member| member.team_run_id == id)
+                    .collect();
             let actions = visible_member_actions_in_append_order(store)?;
             let messages = latest_team_messages_in_append_order(store)?;
             let works: Vec<Work> = store
@@ -16757,7 +16101,7 @@ fn team_run_command(
                             "{}\t{}\tfrom={}\t{}",
                             run_id,
                             message["id"].as_str().unwrap_or("?"),
-                            message["from_member_id"].as_str().unwrap_or("?"),
+                            message["sender_runtime_id"].as_str().unwrap_or("?"),
                             message["body"]
                                 .as_str()
                                 .unwrap_or_default()
@@ -16898,7 +16242,7 @@ fn team_run_command(
                         "{}\t{}\tfrom={}\t{}\t{}",
                         message.id,
                         team_message_kind_label(&message.kind),
-                        message.from_member_id,
+                        message.sender_runtime_id,
                         delivery,
                         message.body.lines().next().unwrap_or_default()
                     );
@@ -16998,13 +16342,13 @@ fn team_run_command(
             }
         }
         "send" => {
-            let to_member_ids: Vec<String> = required(args, "--to")?
+            let recipient_runtime_ids: Vec<String> = required(args, "--to")?
                 .split(',')
                 .map(str::trim)
                 .filter(|id| !id.is_empty())
                 .map(str::to_string)
                 .collect();
-            if to_member_ids.is_empty() {
+            if recipient_runtime_ids.is_empty() {
                 return Err(CliError::Usage(
                     "--to must name at least one member id".to_string(),
                 ));
@@ -17028,8 +16372,8 @@ fn team_run_command(
                             .to_string(),
                     ))
                 }
-                (true, false) => Some(TeamMessageResponseIntent::ResponseRequired),
-                (false, true) => Some(TeamMessageResponseIntent::Informational),
+                (true, false) => Some(ProviderResponseIntent::ResponseRequired),
+                (false, true) => Some(ProviderResponseIntent::Informational),
                 (false, false) => None,
             };
             let message = if let Some(actor_kind) = value(args, "--actor-kind") {
@@ -17042,7 +16386,7 @@ fn team_run_command(
                         display_name: value(args, "--actor-name"),
                         authn_source: Some("local_cli_explicit".to_string()),
                     },
-                    to_member_ids,
+                    recipient_runtime_ids,
                     kind,
                     &body,
                     value(args, "--work-id"),
@@ -17065,7 +16409,7 @@ fn team_run_command(
                             "member_runtime"
                         },
                     ),
-                    to_member_ids,
+                    recipient_runtime_ids,
                     kind,
                     &body,
                     value(args, "--work-id"),
@@ -17368,7 +16712,9 @@ fn member_run_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             } else {
                 let member = detail
                     .get("member_run")
-                    .and_then(|value| serde_json::from_value::<MemberRun>(value.clone()).ok())
+                    .and_then(|value| {
+                        serde_json::from_value::<ProviderRuntimeProjection>(value.clone()).ok()
+                    })
                     .ok_or_else(|| CliError::Usage("invalid member detail projection".into()))?;
                 let inbox_count = detail
                     .pointer("/mailbox/inbox")
@@ -17396,9 +16742,10 @@ fn member_run_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                     "team_run={}\tinbox={inbox_count}\toutbox={outbox_count}",
                     member.team_run_id
                 );
-                if let Some(agent_member_id) = member.agent_member_id.as_deref() {
-                    println!("agent_member_id={agent_member_id}\tidentity_link=explicit");
-                }
+                println!(
+                    "agent_member_id={}\tidentity_link=explicit",
+                    member.agent_member_id
+                );
                 if let Some(session) = member.native_session.as_ref() {
                     println!(
                         "native_session={}\tlocator_kind={}",
@@ -17447,7 +16794,7 @@ fn member_run_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
 /// Resolve an explicit provider-owned UI target without changing the native
 /// session binding. Claude Desktop imports SDK/CLI sessions through this deep
 /// link and deterministically exposes them as `local_<native-id>`.
-fn native_session_open_target(member: &MemberRun) -> CliResult<serde_json::Value> {
+fn native_session_open_target(member: &ProviderRuntimeProjection) -> CliResult<serde_json::Value> {
     let session = member.native_session.as_ref().ok_or_else(|| {
         CliError::Usage(format!(
             "member run {} has no bound provider-native session",
@@ -17524,12 +16871,17 @@ fn member_run_detail_json(
         .collect::<Vec<_>>();
     let inbox = messages
         .iter()
-        .filter(|message| message.to_member_ids.iter().any(|id| id == member_run_id))
+        .filter(|message| {
+            message
+                .recipient_runtime_ids
+                .iter()
+                .any(|id| id == member_run_id)
+        })
         .cloned()
         .collect::<Vec<_>>();
     let outbox = messages
         .iter()
-        .filter(|message| message.from_member_id == member_run_id)
+        .filter(|message| message.sender_runtime_id == member_run_id)
         .cloned()
         .collect::<Vec<_>>();
     let works = store
@@ -17538,16 +16890,17 @@ fn member_run_detail_json(
         .filter(|work| work.team_run_id == member.team_run_id)
         .filter(|work| {
             work.active_member_run_id.as_deref() == Some(member_run_id)
-                || work.owner_member_id.as_deref() == member.agent_member_id.as_deref()
-                || work.eligible_member_ids.iter().any(|id| {
-                    id == member_run_id || Some(id.as_str()) == member.agent_member_id.as_deref()
-                })
+                || work.owner_member_id.as_deref() == Some(member.agent_member_id.as_str())
+                || work
+                    .eligible_member_ids
+                    .iter()
+                    .any(|id| id == member_run_id || id == &member.agent_member_id)
         })
         .collect::<Vec<_>>();
     let latest_handoff = outbox
         .iter()
         .rev()
-        .find(|message| message.kind == TeamMessageKind::Handoff);
+        .find(|message| message.kind == ProviderDispatchIntent::Message);
     let actions = visible_member_actions_in_append_order(store)?
         .into_iter()
         .filter(|action| {
@@ -17563,16 +16916,6 @@ fn member_run_detail_json(
         .collect::<Vec<_>>();
     let supervisor = store.latest_team_supervisor_lease(&member.team_run_id)?;
     let close_request = store.latest_team_member_close_request(member_run_id)?;
-    let stable_agent_routes = match member.agent_member_id.as_deref() {
-        Some(agent_member_id) => store
-            .agent_message_routes()?
-            .into_iter()
-            .filter(|route| {
-                route.agent_member_id == agent_member_id && route.member_run_id == member_run_id
-            })
-            .collect::<Vec<_>>(),
-        None => Vec::new(),
-    };
     let actionable_inbox = if member.coordination_is_active() {
         inbox
             .iter()
@@ -17596,7 +16939,7 @@ fn member_run_detail_json(
         "mission_id": team_run_mission_id(store, &team_run)?,
         "agent_team_id": team_run.agent_team_id,
         "works": works,
-        "workspace": member.workspace_snapshot,
+        "workspace": member.provider_environment_observation,
         "provider_profile": member.provider_profile,
         "native_session": member.native_session,
         "mailbox": {
@@ -17607,7 +16950,6 @@ fn member_run_detail_json(
         "pending_interactions": pending_interactions,
         "supervisor": supervisor,
         "close_request": close_request,
-        "stable_agent_routes": stable_agent_routes,
         "actions": actions,
         "latest_handoff": latest_handoff,
     }))
@@ -17696,7 +17038,7 @@ static LIVE_MEMBER_ACTIVITY_REVISION: AtomicU64 = AtomicU64::new(1);
 static LIVE_MEMBER_ACTIVITY_INGRESS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
 
 /// Process-local control plane for provider sessions started by `serve` or the
-/// MCP server. The durable TeamMessage remains the conversation record; this
+/// MCP server. The durable ProviderDispatchEnvelope remains the conversation record; this
 /// registry is only the live transport into the currently running provider
 /// turn and is deliberately not reconstructed after process restart.
 static LIVE_MEMBER_CONTROLS: OnceLock<Mutex<HashMap<String, LiveMemberControl>>> = OnceLock::new();
@@ -17791,10 +17133,199 @@ enum MemberControlCommand {
 enum IdleMemberWake {
     Work(Box<ClaimedWork>),
     ActiveWorkContinuation(Box<Work>),
-    Messages(Vec<TeamMessage>),
+    Messages(Vec<ProviderDispatchEnvelope>),
     Closed,
     TestRetired,
     Degraded(String),
+}
+
+const CANONICAL_MESSAGE_DELIVERY_REF: &str = "canonical-message-delivery:";
+const CANONICAL_EXECUTION_SPACE_REF: &str = "canonical-execution-space:";
+
+fn canonical_delivery_context(
+    execution_space_id: &str,
+    supervisor_id: &str,
+    command_name: &str,
+    idempotency_key: String,
+    expected_version: u64,
+) -> harness_core::agentfirm_api::MutationContext {
+    harness_core::agentfirm_api::MutationContext {
+        execution_space_id: execution_space_id.to_string(),
+        authenticated_actor: harness_core::agentfirm_api::ActorRef {
+            kind: harness_core::agentfirm_api::ActorKind::Service,
+            id: supervisor_id.to_string(),
+        },
+        authority_actor: None,
+        command_name: command_name.to_string(),
+        idempotency_key,
+        expected_version,
+    }
+}
+
+fn claim_canonical_messages_for_member(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+) -> CliResult<Vec<ProviderDispatchEnvelope>> {
+    let Some(execution_space_id) = ledger.store.trust_member_run_scope(&member.id)? else {
+        return Ok(Vec::new());
+    };
+    let messages = ledger
+        .store
+        .trust_team_messages(&execution_space_id)?
+        .into_iter()
+        .map(|message| (message.id.clone(), message))
+        .collect::<BTreeMap<_, _>>();
+    let mut queued = ledger
+        .store
+        .trust_message_deliveries(&execution_space_id)?
+        .into_iter()
+        .filter(|delivery| {
+            delivery.recipient_member_run_id == member.id
+                && delivery.status == harness_core::agentfirm_api::MessageDeliveryStatus::Queued
+        })
+        .collect::<Vec<_>>();
+    queued.sort_by(|left, right| {
+        let left_message = messages.get(&left.message_id);
+        let right_message = messages.get(&right.message_id);
+        left_message
+            .map(|message| message.created_at.as_str())
+            .cmp(&right_message.map(|message| message.created_at.as_str()))
+            .then_with(|| {
+                let sequence = |id: &str| id.rsplit('-').next()?.parse::<u64>().ok();
+                sequence(&left.message_id)
+                    .cmp(&sequence(&right.message_id))
+                    .then_with(|| left.message_id.cmp(&right.message_id))
+            })
+    });
+    // Informational-only mail is durable context, not a provider-round
+    // trigger. Keep it queued until a response-required message arrives; the
+    // resulting round then consumes the entire ordered batch exactly once.
+    // This is the canonical-ledger equivalent of
+    // `claim_round_triggering_messages_for` for the retired projection.
+    let triggers_round = queued.iter().any(|delivery| {
+        messages.get(&delivery.message_id).is_some_and(|message| {
+            message.response_intent == harness_core::agentfirm_api::ResponseIntent::ResponseRequired
+        })
+    });
+    if !triggers_round {
+        return Ok(Vec::new());
+    }
+    let mut claimed_messages = Vec::new();
+    for delivery in queued {
+        let source = messages.get(&delivery.message_id).ok_or_else(|| {
+            CliError::Usage(format!(
+                "canonical RegistryDeliveryAttempt {} references missing ProviderDispatchEnvelope {}",
+                delivery.id, delivery.message_id
+            ))
+        })?;
+        if source.team_run_id != ledger.run_id {
+            continue;
+        }
+        let claim_id = generated_id("canonical-message-claim");
+        let claim = harness_core::agentfirm_api::DeliveryClaim {
+            claim_id: claim_id.clone(),
+            supervisor_generation: ledger.supervisor_generation,
+            member_generation: member.runtime_generation,
+            claim_expires_at: format!("unix-ms:{}", current_unix_ms_u64().saturating_add(30_000)),
+        };
+        ledger.store.claim_trust_message_delivery(
+            &canonical_delivery_context(
+                &execution_space_id,
+                &ledger.supervisor_id,
+                "node_daemon.message_delivery.claim",
+                format!(
+                    "supervisor:{}:{}:claim",
+                    ledger.supervisor_generation, delivery.id
+                ),
+                delivery.version.saturating_sub(1),
+            ),
+            &delivery.id,
+            claim,
+            &now_string(),
+        )?;
+        let sender = match source.sender.kind {
+            harness_core::agentfirm_api::ActorKind::AgentMember => TeamActorRef {
+                kind: TeamActorKind::AgentMember,
+                id: source.sender.id.clone(),
+                display_name: None,
+                authn_source: Some("canonical_trust_kernel".into()),
+            },
+            harness_core::agentfirm_api::ActorKind::Service => TeamActorRef {
+                kind: TeamActorKind::Service,
+                id: source.sender.id.clone(),
+                display_name: None,
+                authn_source: Some("canonical_trust_kernel".into()),
+            },
+            harness_core::agentfirm_api::ActorKind::Human
+            | harness_core::agentfirm_api::ActorKind::External => TeamActorRef {
+                kind: TeamActorKind::Operator,
+                id: source.sender.id.clone(),
+                display_name: None,
+                authn_source: Some("canonical_trust_kernel".into()),
+            },
+        };
+        claimed_messages.push(ProviderDispatchEnvelope {
+            id: source.id.clone(),
+            team_run_id: source.team_run_id.clone(),
+            work_id: source.work_id.clone(),
+            source_plan_ref: None,
+            sender: Some(sender),
+            sender_runtime_id: source.sender.id.clone(),
+            recipients: vec![TeamRecipientRef {
+                kind: TeamRecipientKind::ProviderRuntimeProjection,
+                id: member.id.clone(),
+            }],
+            recipient_runtime_ids: vec![member.id.clone()],
+            kind: match source.kind {
+                harness_core::agentfirm_api::TeamMessageKind::ProviderInteractionRequest => {
+                    ProviderDispatchIntent::ProviderInteractionRequest
+                }
+                harness_core::agentfirm_api::TeamMessageKind::ProviderInteractionResponse => {
+                    ProviderDispatchIntent::ProviderInteractionResponse
+                }
+                harness_core::agentfirm_api::TeamMessageKind::Control
+                | harness_core::agentfirm_api::TeamMessageKind::Message => {
+                    ProviderDispatchIntent::Message
+                }
+            },
+            body: source.body.clone(),
+            correlation_id: source.correlation_id.clone(),
+            causation_id: source.causation_id.clone(),
+            response_intent: Some(match source.response_intent {
+                harness_core::agentfirm_api::ResponseIntent::Informational => {
+                    ProviderResponseIntent::Informational
+                }
+                harness_core::agentfirm_api::ResponseIntent::ResponseRequired => {
+                    ProviderResponseIntent::ResponseRequired
+                }
+            }),
+            evidence_refs: source
+                .evidence_refs
+                .iter()
+                .cloned()
+                .chain([
+                    format!("{CANONICAL_EXECUTION_SPACE_REF}{execution_space_id}"),
+                    format!("{CANONICAL_MESSAGE_DELIVERY_REF}{}", delivery.id),
+                ])
+                .collect(),
+            deliveries: vec![ProviderDispatchAttempt {
+                member_id: member.id.clone(),
+                policy: TeamDeliveryPolicy::Inject,
+                status: TeamDeliveryStatus::Claimed,
+                attempt: delivery.attempt,
+                claim_id: Some(claim_id),
+                claimed_by_supervisor_id: Some(ledger.supervisor_id.clone()),
+                claimed_generation: Some(ledger.supervisor_generation),
+                claimed_unix_ms: Some(current_unix_ms_u64()),
+                claim_expires_unix_ms: Some(current_unix_ms_u64().saturating_add(30_000)),
+                provider_receipt_id: None,
+                failure_reason: None,
+                updated_at: now_string(),
+            }],
+            created_at: source.created_at.clone(),
+        });
+    }
+    Ok(claimed_messages)
 }
 
 #[derive(Clone, Copy)]
@@ -18104,7 +17635,7 @@ impl Drop for LiveMemberControlRegistration {
 }
 
 fn register_live_member_control(
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     capacity: usize,
 ) -> (
     ControlReceiver<MemberControlCommand>,
@@ -18232,7 +17763,7 @@ fn mark_member_coordination_closed(
     store: &HarnessStore,
     team_run_id: &str,
     member_run_id: &str,
-) -> CliResult<MemberRun> {
+) -> CliResult<ProviderRuntimeProjection> {
     let mut member = latest_member_runs_in_append_order(store)?
         .into_iter()
         .find(|member| member.id == member_run_id && member.team_run_id == team_run_id)
@@ -18357,7 +17888,7 @@ where
     match request.requirement() {
         LiveMemberControlRequirement::Steer if !control.supports_steer => {
             return Err(CliError::Usage(format!(
-                "{} does not support mid-turn steer; send a queued TeamMessage instead",
+                "{} does not support mid-turn steer; send a queued ProviderDispatchEnvelope instead",
                 control.execution_mode
             )));
         }
@@ -18600,7 +18131,91 @@ struct TeamRunLedger {
 #[derive(Debug, Clone)]
 struct ClaimedWork {
     work: Work,
-    delivery: WorkDelivery,
+    delivery: ProviderWorkDispatch,
+    canonical_execution_space_id: Option<String>,
+}
+
+fn claim_canonical_work_for_member(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+) -> CliResult<Option<ClaimedWork>> {
+    let Some(execution_space_id) = ledger.store.trust_member_run_scope(&member.id)? else {
+        return Ok(None);
+    };
+    let works = ledger
+        .store
+        .latest_works()?
+        .into_iter()
+        .filter(|work| work.team_run_id == ledger.run_id)
+        .map(|work| (work.id.clone(), work))
+        .collect::<BTreeMap<_, _>>();
+    let mut queued = ledger
+        .store
+        .trust_work_deliveries(&execution_space_id)?
+        .into_iter()
+        .filter(|delivery| {
+            delivery.recipient_member_run_id == member.id
+                && delivery.status == harness_core::agentfirm_api::WorkDeliveryStatus::Queued
+        })
+        .collect::<Vec<_>>();
+    queued.sort_by(|left, right| left.id.cmp(&right.id));
+    for delivery in queued {
+        let Some(work) = works.get(&delivery.work_id) else {
+            continue;
+        };
+        if work.version != delivery.work_revision
+            || work.active_member_run_id.as_deref() != Some(member.id.as_str())
+            || work.is_terminal()
+        {
+            continue;
+        }
+        let claim_id = generated_id("canonical-work-claim");
+        ledger.store.claim_trust_work_delivery(
+            &canonical_delivery_context(
+                &execution_space_id,
+                &ledger.supervisor_id,
+                "node_daemon.work_delivery.claim",
+                format!(
+                    "supervisor:{}:{}:claim",
+                    ledger.supervisor_generation, delivery.id
+                ),
+                delivery.version.saturating_sub(1),
+            ),
+            &delivery.id,
+            harness_core::agentfirm_api::DeliveryClaim {
+                claim_id: claim_id.clone(),
+                supervisor_generation: ledger.supervisor_generation,
+                member_generation: member.runtime_generation,
+                claim_expires_at: format!(
+                    "unix-ms:{}",
+                    current_unix_ms_u64().saturating_add(30_000)
+                ),
+            },
+            work.version,
+            &now_string(),
+        )?;
+        return Ok(Some(ClaimedWork {
+            work: work.clone(),
+            delivery: ProviderWorkDispatch {
+                id: delivery.id,
+                work_event_id: delivery.work_event_id,
+                team_run_id: ledger.run_id.clone(),
+                work_id: delivery.work_id,
+                work_version: delivery.work_revision,
+                recipient_member_run_id: delivery.recipient_member_run_id,
+                status: ProviderWorkDispatchStatus::Claimed,
+                attempt: delivery.attempt,
+                claim_id: Some(claim_id),
+                claimed_by_supervisor_id: Some(ledger.supervisor_id.clone()),
+                claimed_generation: Some(ledger.supervisor_generation),
+                provider_receipt_id: None,
+                failure_reason: None,
+                updated_at: now_string(),
+            },
+            canonical_execution_space_id: Some(execution_space_id),
+        }));
+    }
+    Ok(None)
 }
 
 fn is_active_work_continuation_candidate(work: &Work, member_id: &str, all_works: &[Work]) -> bool {
@@ -18828,7 +18443,7 @@ impl TeamRunLedger {
         Ok(action)
     }
 
-    /// Append at most one durable `provider_control` receipt per MemberRun
+    /// Append at most one durable `provider_control` receipt per ProviderRuntimeProjection
     /// and receipt identity. The convergence key is the stable
     /// (member_run_id, "provider_control", title) triple, so an unrelated
     /// provider_control row never suppresses a distinct receipt. The first
@@ -18839,7 +18454,7 @@ impl TeamRunLedger {
     /// when this call wrote the receipt.
     fn append_provider_control_receipt_once(
         &self,
-        expected_member: &MemberRun,
+        expected_member: &ProviderRuntimeProjection,
         title: &str,
         summary: &str,
     ) -> CliResult<bool> {
@@ -18850,7 +18465,7 @@ impl TeamRunLedger {
 
     fn append_provider_control_receipt_once_with_hook<F>(
         &self,
-        expected_member: &MemberRun,
+        expected_member: &ProviderRuntimeProjection,
         title: &str,
         summary: &str,
         before_atomic_append: F,
@@ -18891,26 +18506,33 @@ impl TeamRunLedger {
             .append_member_action_if_member_run_current(expected_member, &action)?)
     }
 
-    fn save_member_run(&self, expected: &MemberRun, next: &MemberRun) -> CliResult<()> {
+    fn save_member_run(
+        &self,
+        expected: &ProviderRuntimeProjection,
+        next: &ProviderRuntimeProjection,
+    ) -> CliResult<()> {
         let _guard = self.write_lock();
         Ok(self.store.compare_and_append_member_run(expected, next)?)
     }
 
-    fn latest_member_run(&self, member_run_id: &str) -> CliResult<Option<MemberRun>> {
+    fn latest_member_run(
+        &self,
+        member_run_id: &str,
+    ) -> CliResult<Option<ProviderRuntimeProjection>> {
         Ok(latest_member_runs_in_append_order(&self.store)?
             .into_iter()
             .find(|member| member.id == member_run_id))
     }
 
     /// Latest-wins messages of this run, in append order.
-    fn team_messages(&self) -> CliResult<Vec<TeamMessage>> {
+    fn team_messages(&self) -> CliResult<Vec<ProviderDispatchEnvelope>> {
         Ok(latest_team_messages_in_append_order(&self.store)?
             .into_iter()
             .filter(|message| message.team_run_id == self.run_id)
             .collect())
     }
 
-    fn queued_works_for(&self, member_id: &str) -> CliResult<Vec<(Work, WorkDelivery)>> {
+    fn queued_works_for(&self, member_id: &str) -> CliResult<Vec<(Work, ProviderWorkDispatch)>> {
         let works = self
             .store
             .latest_works()?
@@ -18925,7 +18547,7 @@ impl TeamRunLedger {
             .filter(|delivery| {
                 delivery.team_run_id == self.run_id
                     && delivery.recipient_member_run_id == member_id
-                    && delivery.status == WorkDeliveryStatus::Queued
+                    && delivery.status == ProviderWorkDispatchStatus::Queued
             })
             .filter_map(|delivery| {
                 let work = works.get(&delivery.work_id)?;
@@ -18962,6 +18584,7 @@ impl TeamRunLedger {
                     return Ok(Some(ClaimedWork {
                         work,
                         delivery: *delivery,
+                        canonical_execution_space_id: None,
                     }));
                 }
                 WorkDeliveryClaimResult::NotQueued => continue,
@@ -18973,7 +18596,7 @@ impl TeamRunLedger {
     /// Return the member's sole durable active Work, or the next ready shared-
     /// pool Work it is eligible to claim, when no ownership delivery exists.
     /// This drives another provider-native cycle without fabricating a
-    /// WorkDelivery: self-claim is discovered from the shared board and the
+    /// ProviderWorkDispatch: self-claim is discovered from the shared board and the
     /// Member must perform the explicit atomic claim itself.
     fn active_work_continuation_for(&self, member_id: &str) -> CliResult<Option<Work>> {
         let all_works = self.store.latest_works()?;
@@ -19007,11 +18630,7 @@ impl TeamRunLedger {
             .rev()
             .find(|member| member.id == member_id)
             .ok_or_else(|| CliError::Usage(format!("member run not found: {member_id}")))?;
-        let stable_member_id = member
-            .agent_member_id
-            .as_deref()
-            .or(member.slot_id.as_deref())
-            .unwrap_or(member.id.as_str());
+        let stable_member_id = member.agent_member_id.as_str();
         let mut claimable = all_works
             .iter()
             .filter(|work| {
@@ -19056,7 +18675,7 @@ impl TeamRunLedger {
             .any(|delivery| {
                 delivery.team_run_id == self.run_id
                     && delivery.recipient_member_run_id == member_id
-                    && delivery.status == WorkDeliveryStatus::Claimed
+                    && delivery.status == ProviderWorkDispatchStatus::Claimed
                     && delivery
                         .claimed_generation
                         .is_some_and(|generation| generation < self.supervisor_generation)
@@ -19088,7 +18707,7 @@ impl TeamRunLedger {
                             && delivery.work_id == work.id
                             && delivery.work_version == work.version
                             && delivery.recipient_member_run_id == member_id
-                            && delivery.status == WorkDeliveryStatus::ProviderReceived
+                            && delivery.status == ProviderWorkDispatchStatus::ProviderReceived
                     })
             })
             .cloned()
@@ -19105,10 +18724,43 @@ impl TeamRunLedger {
         self.require_supervisor_lease()?;
         let claim_id = claimed.delivery.claim_id.as_deref().ok_or_else(|| {
             CliError::Usage(format!(
-                "WorkDelivery {} has no durable claim",
+                "ProviderWorkDispatch {} has no durable claim",
                 claimed.delivery.id
             ))
         })?;
+        if let Some(execution_space_id) = claimed.canonical_execution_space_id.as_deref() {
+            let current = self
+                .store
+                .trust_work_deliveries(execution_space_id)?
+                .into_iter()
+                .find(|delivery| delivery.id == claimed.delivery.id)
+                .ok_or_else(|| {
+                    CliError::Usage(format!(
+                        "canonical ProviderWorkDispatch disappeared before provider receipt: {}",
+                        claimed.delivery.id
+                    ))
+                })?;
+            self.store.receive_trust_work_delivery(
+                &canonical_delivery_context(
+                    execution_space_id,
+                    &self.supervisor_id,
+                    "node_daemon.work_delivery.provider_received",
+                    format!("{claim_id}:provider-received"),
+                    current.version.saturating_sub(1),
+                ),
+                &claimed.delivery.id,
+                harness_core::agentfirm_api::ProviderReceipt {
+                    claim_id: claim_id.to_string(),
+                    supervisor_generation: self.supervisor_generation,
+                    member_generation: current
+                        .claimed_member_generation
+                        .unwrap_or(claimed.delivery.claimed_generation.unwrap_or(1)),
+                    provider_receipt_id: receipt.to_string(),
+                },
+                &now_string(),
+            )?;
+            return Ok(());
+        }
         store_conflict_as_usage(self.store.complete_work_delivery_claim(
             &self.run_id,
             &claimed.delivery.id,
@@ -19130,6 +18782,34 @@ impl TeamRunLedger {
     /// carry a provider receipt are never selected and therefore never replayed.
     fn fail_unreceived_work_claims_for(&self, member_id: &str, reason: &str) -> CliResult<()> {
         self.require_supervisor_lease()?;
+        if let Some(execution_space_id) = self.store.trust_member_run_scope(member_id)? {
+            for delivery in self
+                .store
+                .trust_work_deliveries(&execution_space_id)?
+                .into_iter()
+                .filter(|delivery| {
+                    delivery.recipient_member_run_id == member_id
+                        && delivery.status
+                            == harness_core::agentfirm_api::WorkDeliveryStatus::Claimed
+                        && delivery.claimed_supervisor_generation
+                            == Some(self.supervisor_generation)
+                        && delivery.provider_receipt_id.is_none()
+                })
+            {
+                self.store.reconcile_trust_work_delivery(
+                    &canonical_delivery_context(
+                        &execution_space_id,
+                        &self.supervisor_id,
+                        "node_daemon.work_delivery.negative_ack",
+                        format!("{}:negative-ack", delivery.id),
+                        delivery.version.saturating_sub(1),
+                    ),
+                    &delivery.id,
+                    &format!("provider-negative-ack:{reason}"),
+                    &now_string(),
+                )?;
+            }
+        }
         for delivery in self
             .store
             .latest_work_deliveries()?
@@ -19137,7 +18817,7 @@ impl TeamRunLedger {
             .filter(|delivery| {
                 delivery.team_run_id == self.run_id
                     && delivery.recipient_member_run_id == member_id
-                    && delivery.status == WorkDeliveryStatus::Claimed
+                    && delivery.status == ProviderWorkDispatchStatus::Claimed
                     && delivery.claimed_by_supervisor_id.as_deref() == Some(&self.supervisor_id)
                     && delivery.claimed_generation == Some(self.supervisor_generation)
                     && delivery.provider_receipt_id.is_none()
@@ -19161,7 +18841,7 @@ impl TeamRunLedger {
         Ok(())
     }
 
-    /// Fail every TeamMessage delivery for `member_id` that is still
+    /// Fail every ProviderDispatchEnvelope delivery for `member_id` that is still
     /// `Queued` or `Claimed`.
     ///
     /// Pre-bind failures never claim a message, so `Queued` deliveries
@@ -19170,6 +18850,35 @@ impl TeamRunLedger {
     /// belongs to the current Supervisor generation.
     fn fail_team_messages_for(&self, member_id: &str, reason: &str) -> CliResult<()> {
         self.require_supervisor_lease()?;
+        if let Some(execution_space_id) = self.store.trust_member_run_scope(member_id)? {
+            for delivery in self
+                .store
+                .trust_message_deliveries(&execution_space_id)?
+                .into_iter()
+                .filter(|delivery| {
+                    delivery.recipient_member_run_id == member_id
+                        && delivery.status
+                            == harness_core::agentfirm_api::MessageDeliveryStatus::Claimed
+                        && delivery.claimed_supervisor_generation
+                            == Some(self.supervisor_generation)
+                        && delivery.provider_receipt_id.is_none()
+                })
+            {
+                self.store.reconcile_trust_message_delivery(
+                    &canonical_delivery_context(
+                        &execution_space_id,
+                        &self.supervisor_id,
+                        "node_daemon.message_delivery.negative_ack",
+                        format!("{}:negative-ack", delivery.id),
+                        delivery.version.saturating_sub(1),
+                    ),
+                    &delivery.id,
+                    harness_core::agentfirm_api::DeliveryReconcileOutcome::RetrySafeFailure,
+                    &format!("provider-negative-ack:{reason}"),
+                    &now_string(),
+                )?;
+            }
+        }
         let messages = self.team_messages()?;
         for message in messages {
             let Some(delivery) = message
@@ -19208,11 +18917,11 @@ impl TeamRunLedger {
 
     /// Messages with a still-queued delivery to `member_id` (excluding the
     /// member's own sends, which it obviously already "has").
-    fn queued_messages_for(&self, member_id: &str) -> CliResult<Vec<TeamMessage>> {
+    fn queued_messages_for(&self, member_id: &str) -> CliResult<Vec<ProviderDispatchEnvelope>> {
         Ok(self
             .team_messages()?
             .into_iter()
-            .filter(|message| message.from_member_id != member_id)
+            .filter(|message| message.sender_runtime_id != member_id)
             .filter(|message| {
                 message.deliveries.iter().any(|delivery| {
                     delivery.member_id == member_id
@@ -19223,7 +18932,11 @@ impl TeamRunLedger {
             .collect())
     }
 
-    fn claim_message(&self, message_id: &str, member_id: &str) -> CliResult<Option<TeamMessage>> {
+    fn claim_message(
+        &self,
+        message_id: &str,
+        member_id: &str,
+    ) -> CliResult<Option<ProviderDispatchEnvelope>> {
         self.require_supervisor_lease()?;
         let claim_id = generated_id("delivery-claim");
         match store_conflict_as_usage(self.store.claim_team_message_delivery(
@@ -19244,7 +18957,7 @@ impl TeamRunLedger {
 
     fn complete_provider_interaction_response(
         &self,
-        message: &TeamMessage,
+        message: &ProviderDispatchEnvelope,
         member_id: &str,
         provider_receipt_id: &str,
     ) -> CliResult<()> {
@@ -19282,9 +18995,9 @@ impl TeamRunLedger {
     /// Claim queued terminal-work notifications for an idle member.
     ///
     /// When a Work the member owns reaches a terminal status (Done or
-    /// Cancelled), the store may hold a queued [`WorkDelivery`] for that
+    /// Cancelled), the store may hold a queued [`ProviderWorkDispatch`] for that
     /// transition. This method claims those notification deliveries and
-    /// converts each into an informational [`TeamMessage`] from the Host
+    /// converts each into an informational [`ProviderDispatchEnvelope`] from the Host
     /// so the member sees the transition as mail rather than as a new
     /// work assignment.
     ///
@@ -19295,7 +19008,7 @@ impl TeamRunLedger {
     fn claim_terminal_work_notifications_for(
         &self,
         member_id: &str,
-    ) -> CliResult<Vec<TeamMessage>> {
+    ) -> CliResult<Vec<ProviderDispatchEnvelope>> {
         self.require_supervisor_lease()?;
 
         let works = self
@@ -19313,7 +19026,7 @@ impl TeamRunLedger {
             .filter(|d| {
                 d.team_run_id == self.run_id
                     && d.recipient_member_run_id == member_id
-                    && d.status == WorkDeliveryStatus::Queued
+                    && d.status == ProviderWorkDispatchStatus::Queued
             })
             .filter(|d| {
                 works.get(&d.work_id).is_some_and(|w| {
@@ -19356,14 +19069,14 @@ impl TeamRunLedger {
                 &self.run_id,
                 &sender,
                 vec![member_id.to_string()],
-                TeamMessageKind::Message,
+                ProviderDispatchIntent::Message,
                 &body,
                 Some(work.id.clone()),
                 None,
                 None,
                 None,
                 TeamMessageDeliveryMode::Routed,
-                Some(TeamMessageResponseIntent::Informational),
+                Some(ProviderResponseIntent::Informational),
             )?;
             let message = publish_team_message(&self.store, &sender, message)?;
             let receipt_id = message.id.clone();
@@ -19390,12 +19103,23 @@ impl TeamRunLedger {
     /// claimed in order so the whole batch is delivered exactly once with
     /// that round's provider receipt. Informational-only mail stays queued
     /// and durable without starting a round, which bounds peer convergence.
-    fn claim_round_triggering_messages_for(&self, member_id: &str) -> CliResult<Vec<TeamMessage>> {
+    fn claim_round_triggering_messages_for(
+        &self,
+        member_id: &str,
+    ) -> CliResult<Vec<ProviderDispatchEnvelope>> {
+        let member = self
+            .latest_member_run(member_id)?
+            .ok_or_else(|| CliError::Usage(format!("member run not found: {member_id}")))?;
+        let mut canonical = claim_canonical_messages_for_member(self, &member)?;
         let queued = self.queued_messages_for(member_id)?;
-        if !queued.iter().any(TeamMessage::requires_response) {
-            return Ok(Vec::new());
+        if !queued
+            .iter()
+            .any(ProviderDispatchEnvelope::requires_response)
+        {
+            return Ok(canonical);
         }
-        let mut claimed = Vec::with_capacity(queued.len());
+        let mut claimed = Vec::with_capacity(canonical.len() + queued.len());
+        claimed.append(&mut canonical);
         for message in queued {
             if let Some(message) = self.claim_message(&message.id, member_id)? {
                 claimed.push(message);
@@ -19411,7 +19135,10 @@ const PROVIDER_MEMBER_CAS_RETRIES: usize = 3;
 /// `last_event_at` fields while a round is in flight.  Accepting any other
 /// drift here would let a stale transport overwrite lifecycle authority,
 /// runtime generation, native-session provenance, or operator changes.
-fn validate_provider_callback_drift(supplied: &MemberRun, latest: &MemberRun) -> CliResult<()> {
+fn validate_provider_callback_drift(
+    supplied: &ProviderRuntimeProjection,
+    latest: &ProviderRuntimeProjection,
+) -> CliResult<()> {
     // Name/profile/capacity may be refreshed by same-generation operator and
     // probe paths while the provider is paused. Those fields are intentionally
     // rebased from `latest`. Everything that establishes execution identity,
@@ -19428,8 +19155,8 @@ fn validate_provider_callback_drift(supplied: &MemberRun, latest: &MemberRun) ->
         || latest.coordination_status != supplied.coordination_status
         || latest.runtime_generation != supplied.runtime_generation
         || latest.native_session != supplied.native_session
-        || latest.worktree_ref != supplied.worktree_ref
-        || latest.workspace_snapshot != supplied.workspace_snapshot
+        || latest.provider_cwd_hint != supplied.provider_cwd_hint
+        || latest.provider_environment_observation != supplied.provider_environment_observation
         || latest.owned_paths != supplied.owned_paths
         || latest.zero_output_streak != supplied.zero_output_streak
         || latest.last_consumed_work_version != supplied.last_consumed_work_version
@@ -19437,7 +19164,7 @@ fn validate_provider_callback_drift(supplied: &MemberRun, latest: &MemberRun) ->
         || latest.finished_at != supplied.finished_at
     {
         return Err(CliError::Usage(format!(
-            "provider callback for MemberRun {} crossed identity, provenance, lifecycle, native-session, or provider-control authority",
+            "provider callback for ProviderRuntimeProjection {} crossed identity, provenance, lifecycle, native-session, or provider-control authority",
             supplied.id
         )));
     }
@@ -19446,7 +19173,7 @@ fn validate_provider_callback_drift(supplied: &MemberRun, latest: &MemberRun) ->
 
 #[allow(clippy::large_enum_variant)]
 enum ProviderInteractionMemberTransition {
-    Applied(MemberRun),
+    Applied(ProviderRuntimeProjection),
     LifecycleSuperseded,
 }
 
@@ -19457,7 +19184,7 @@ enum ProviderInteractionMemberTransition {
 /// generation and every non-transient mutation fail closed.
 fn transition_provider_interaction_member(
     ledger: &TeamRunLedger,
-    supplied: &MemberRun,
+    supplied: &ProviderRuntimeProjection,
     desired: MemberRunStatus,
 ) -> CliResult<ProviderInteractionMemberTransition> {
     transition_provider_interaction_member_with_hook(ledger, supplied, desired, |_, _| Ok(()))
@@ -19465,9 +19192,9 @@ fn transition_provider_interaction_member(
 
 fn transition_provider_interaction_member_with_hook(
     ledger: &TeamRunLedger,
-    supplied: &MemberRun,
+    supplied: &ProviderRuntimeProjection,
     desired: MemberRunStatus,
-    mut before_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
+    mut before_cas: impl FnMut(usize, &ProviderRuntimeProjection) -> CliResult<()>,
 ) -> CliResult<ProviderInteractionMemberTransition> {
     for attempt in 0..PROVIDER_MEMBER_CAS_RETRIES {
         let latest = ledger
@@ -19475,7 +19202,7 @@ fn transition_provider_interaction_member_with_hook(
             .ok_or_else(|| CliError::Usage(format!("member run {} not found", supplied.id)))?;
         if latest.runtime_generation != supplied.runtime_generation {
             return Err(CliError::Usage(format!(
-                "provider callback for MemberRun {} belongs to runtime generation {}, latest is {}",
+                "provider callback for ProviderRuntimeProjection {} belongs to runtime generation {}, latest is {}",
                 supplied.id, supplied.runtime_generation, latest.runtime_generation
             )));
         }
@@ -19489,7 +19216,7 @@ fn transition_provider_interaction_member_with_hook(
                 return Ok(ProviderInteractionMemberTransition::LifecycleSuperseded);
             }
             return Err(CliError::Usage(format!(
-                "provider callback for MemberRun {} was superseded by coordination lifecycle {:?}",
+                "provider callback for ProviderRuntimeProjection {} was superseded by coordination lifecycle {:?}",
                 supplied.id, latest.coordination_status
             )));
         }
@@ -19507,7 +19234,7 @@ fn transition_provider_interaction_member_with_hook(
         };
         if !valid_status {
             return Err(CliError::Usage(format!(
-                "provider interaction cannot transition MemberRun {} from {:?} to {:?}",
+                "provider interaction cannot transition ProviderRuntimeProjection {} from {:?} to {:?}",
                 supplied.id, latest.status, desired
             )));
         }
@@ -19525,7 +19252,7 @@ fn transition_provider_interaction_member_with_hook(
             Err(error) => return Err(error),
         }
     }
-    unreachable!("bounded provider MemberRun CAS loop returns on every path")
+    unreachable!("bounded provider ProviderRuntimeProjection CAS loop returns on every path")
 }
 
 /// Refresh the outer provider driver after all blocking callbacks have
@@ -19534,8 +19261,8 @@ fn transition_provider_interaction_member_with_hook(
 /// be overwritten by an outer Idle/Stopped write.
 fn refresh_member_after_provider_callbacks(
     ledger: &TeamRunLedger,
-    round_start: &MemberRun,
-) -> CliResult<MemberRun> {
+    round_start: &ProviderRuntimeProjection,
+) -> CliResult<ProviderRuntimeProjection> {
     let latest = ledger
         .latest_member_run(&round_start.id)?
         .ok_or_else(|| CliError::Usage(format!("member run {} not found", round_start.id)))?;
@@ -19549,19 +19276,19 @@ fn refresh_member_after_provider_callbacks(
             });
         let messages = ledger.team_messages()?;
         let message_unresolved = messages.iter().any(|request| {
-            request.kind == TeamMessageKind::ProviderInteractionRequest
-                && request.from_member_id == latest.id
+            request.kind == ProviderDispatchIntent::ProviderInteractionRequest
+                && request.sender_runtime_id == latest.id
                 && request.deliveries.iter().any(|delivery| {
                     delivery.member_id == "host" && delivery.status == TeamDeliveryStatus::Delivered
                 })
                 && !messages.iter().any(|response| {
-                    response.kind == TeamMessageKind::ProviderInteractionResponse
+                    response.kind == ProviderDispatchIntent::ProviderInteractionResponse
                         && response.causation_id.as_deref() == Some(request.id.as_str())
                 })
         });
         if legacy_unresolved || message_unresolved {
             return Err(CliError::Usage(format!(
-                "provider round for MemberRun {} cannot finalize while an interaction remains pending",
+                "provider round for ProviderRuntimeProjection {} cannot finalize while an interaction remains pending",
                 latest.id
             )));
         }
@@ -19580,7 +19307,7 @@ fn pending_member_close(
 
 fn stop_member_for_latched_close(
     ledger: &TeamRunLedger,
-    member_row: &mut MemberRun,
+    member_row: &mut ProviderRuntimeProjection,
     close: &TeamMemberCloseRequest,
 ) -> CliResult<()> {
     if close.team_run_id != ledger.run_id {
@@ -19647,7 +19374,7 @@ fn stop_member_for_latched_close(
 #[allow(clippy::too_many_arguments)]
 fn wait_for_idle_member_wake(
     ledger: &TeamRunLedger,
-    member_row: &mut MemberRun,
+    member_row: &mut ProviderRuntimeProjection,
     controls: &ControlReceiver<MemberControlCommand>,
     mut ensure_transport_alive: impl FnMut() -> CliResult<()>,
     zero_output_streak: u32,
@@ -19713,7 +19440,7 @@ fn wait_for_idle_member_wake(
                 }
                 MemberControlCommand::Steer { reply, .. } => {
                     let _ = reply.send(Err(CliError::Usage(
-                        "member is idle; assign Work or send a response-required TeamMessage to start a new turn"
+                        "member is idle; assign Work or send a response-required ProviderDispatchEnvelope to start a new turn"
                             .to_string(),
                     )));
                 }
@@ -19730,13 +19457,25 @@ fn wait_for_idle_member_wake(
         // the intentionally-uncertain `claimed` state before turn/start even
         // reached the provider.
         ensure_transport_alive()?;
-        if let Some(agent_member_id) = member_row.agent_member_id.as_deref() {
-            let eligible = active_member_runs_for_agent(&ledger.store, agent_member_id)?;
-            if eligible.len() == 1 && eligible[0].id == member_row.id {
-                route_agent_inbox_messages(&ledger.store, agent_member_id, None, None)?;
-            }
+        if let Some(claimed) = claim_canonical_work_for_member(ledger, member_row)? {
+            backoff.reset();
+            let expected = member_row.clone();
+            member_row.status = MemberRunStatus::Running;
+            member_row.finished_at = None;
+            member_row.last_event_at = Some(now_string());
+            ledger.save_member_run(&expected, member_row)?;
+            return Ok(IdleMemberWake::Work(Box::new(claimed)));
         }
-
+        let canonical_messages = claim_canonical_messages_for_member(ledger, member_row)?;
+        if !canonical_messages.is_empty() {
+            backoff.reset();
+            let expected = member_row.clone();
+            member_row.status = MemberRunStatus::Running;
+            member_row.finished_at = None;
+            member_row.last_event_at = Some(now_string());
+            ledger.save_member_run(&expected, member_row)?;
+            return Ok(IdleMemberWake::Messages(canonical_messages));
+        }
         // Build pure views from the store for the decision function.
         let member_view = build_member_wake_view(
             ledger,
@@ -19888,7 +19627,7 @@ fn wait_for_idle_member_wake(
 /// Build a pure `MemberWakeView` from store reads.
 fn build_member_wake_view(
     ledger: &TeamRunLedger,
-    member_row: &MemberRun,
+    member_row: &ProviderRuntimeProjection,
     zero_output_streak: u32,
     last_consumed_work_version: Option<u64>,
 ) -> CliResult<supervisor_wake::MemberWakeView> {
@@ -19924,14 +19663,10 @@ fn build_member_wake_view(
 /// Build a pure `BoardWakeView` from store reads.
 fn build_board_wake_view(
     ledger: &TeamRunLedger,
-    member_row: &MemberRun,
+    member_row: &ProviderRuntimeProjection,
 ) -> CliResult<supervisor_wake::BoardWakeView> {
     let all_works = ledger.store.latest_works()?;
-    let stable_member_id = member_row
-        .agent_member_id
-        .as_deref()
-        .or(member_row.slot_id.as_deref())
-        .unwrap_or(member_row.id.as_str());
+    let stable_member_id = member_row.agent_member_id.as_str();
     let eligible_claim_work_ids: Vec<String> = all_works
         .iter()
         .filter(|work| {
@@ -20044,7 +19779,7 @@ impl Drop for ProviderChildGuard {
 }
 
 impl MemberOutcome {
-    fn new(member: &MemberRun, status: MemberRunStatus, summary: String) -> Self {
+    fn new(member: &ProviderRuntimeProjection, status: MemberRunStatus, summary: String) -> Self {
         Self {
             name: member.name.clone(),
             role: member.role.clone(),
@@ -20059,14 +19794,14 @@ pub(crate) struct PreparedTeamRunBody {
     run_id: String,
     objective: String,
     run: AgentTeamRun,
-    members: Vec<MemberRun>,
+    members: Vec<ProviderRuntimeProjection>,
 }
 
 pub(crate) struct PreparedTeamRunStart {
     run_id: String,
     objective: String,
     running: AgentTeamRun,
-    members: Vec<MemberRun>,
+    members: Vec<ProviderRuntimeProjection>,
     ledger: Arc<TeamRunLedger>,
     supervisor_registration: TeamSupervisorRegistration,
 }
@@ -20086,7 +19821,7 @@ pub(crate) fn prepare_team_run_start_body(
             serde_snake_label(&run.status)
         )));
     }
-    let mut members: Vec<MemberRun> = latest_member_runs_in_append_order(store)?
+    let mut members: Vec<ProviderRuntimeProjection> = latest_member_runs_in_append_order(store)?
         .into_iter()
         .filter(|member| member.team_run_id == run_id && member.coordination_is_active())
         .filter(|member| {
@@ -20099,7 +19834,7 @@ pub(crate) fn prepare_team_run_start_body(
     // Fail the whole start/reattach before reserving a Supervisor or moving the
     // TeamRun to running when any persistent adapter version is unreviewed.
     // The refreshed profile is still durable operator evidence; native-session
-    // locators and Work/WorkDelivery rows are intentionally untouched.
+    // locators and Work/ProviderWorkDispatch rows are intentionally untouched.
     for member in &mut members {
         if member.is_external_interactive() {
             continue;
@@ -20238,22 +19973,22 @@ pub(crate) fn delegate_team_run_to_node_daemon_in_space(
 /// Publish the workspace facts at the last boundary before a provider thread
 /// is created. The prepared roster may be arbitrarily stale: Close and Reopen
 /// are durable concurrent operations, so neither can be overwritten by a
-/// starter that still holds the old MemberRun version.
+/// starter that still holds the old ProviderRuntimeProjection version.
 fn prepare_member_workspace_for_spawn(
     ledger: &TeamRunLedger,
-    prepared: &MemberRun,
-    workspace_snapshot: &MemberWorkspaceSnapshot,
+    prepared: &ProviderRuntimeProjection,
+    provider_environment_observation: &MemberWorkspaceSnapshot,
 ) -> CliResult<PreSpawnWorkspacePreparation> {
     prepare_member_workspace_for_spawn_with_hook(
         ledger,
         prepared,
-        workspace_snapshot,
+        provider_environment_observation,
         |_, _| Ok(()),
     )
 }
 
 enum PreSpawnWorkspacePreparation {
-    Ready(Box<MemberRun>),
+    Ready(Box<ProviderRuntimeProjection>),
     Superseded,
     Retry,
 }
@@ -20264,8 +19999,8 @@ enum PreSpawnWorkspacePreparation {
 /// must never be started a second time.
 fn successor_may_take_over_active_member(
     ledger: &TeamRunLedger,
-    takeover_anchor: &MemberRun,
-    latest: &MemberRun,
+    takeover_anchor: &ProviderRuntimeProjection,
+    latest: &ProviderRuntimeProjection,
 ) -> CliResult<bool> {
     if ledger.supervisor_generation <= 1
         || takeover_anchor.status != latest.status
@@ -20296,9 +20031,9 @@ fn successor_may_take_over_active_member(
 
 fn prepare_member_workspace_for_spawn_with_hook(
     ledger: &TeamRunLedger,
-    prepared: &MemberRun,
-    workspace_snapshot: &MemberWorkspaceSnapshot,
-    mut before_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
+    prepared: &ProviderRuntimeProjection,
+    provider_environment_observation: &MemberWorkspaceSnapshot,
+    mut before_cas: impl FnMut(usize, &ProviderRuntimeProjection) -> CliResult<()>,
 ) -> CliResult<PreSpawnWorkspacePreparation> {
     for attempt in 0..PROVIDER_MEMBER_CAS_RETRIES {
         ledger.require_supervisor_lease()?;
@@ -20350,7 +20085,7 @@ fn prepare_member_workspace_for_spawn_with_hook(
             || latest.runtime_generation != prepared.runtime_generation
             || latest.status != prepared.status
             || latest.native_session != prepared.native_session
-            || latest.worktree_ref != prepared.worktree_ref
+            || latest.provider_cwd_hint != prepared.provider_cwd_hint
             || latest.owned_paths != prepared.owned_paths
             || latest.zero_output_streak != prepared.zero_output_streak
             || latest.last_consumed_work_version != prepared.last_consumed_work_version
@@ -20360,7 +20095,7 @@ fn prepare_member_workspace_for_spawn_with_hook(
             return Ok(PreSpawnWorkspacePreparation::Superseded);
         }
         let expected = latest.clone();
-        latest.workspace_snapshot = Some(workspace_snapshot.clone());
+        latest.provider_environment_observation = Some(provider_environment_observation.clone());
         before_cas(attempt, &expected)?;
         match ledger.save_member_run(&expected, &latest) {
             Ok(()) => return Ok(PreSpawnWorkspacePreparation::Ready(Box::new(latest))),
@@ -20372,7 +20107,7 @@ fn prepare_member_workspace_for_spawn_with_hook(
             Err(error) => return Err(error),
         }
     }
-    unreachable!("bounded pre-spawn MemberRun CAS loop returns on every path")
+    unreachable!("bounded pre-spawn ProviderRuntimeProjection CAS loop returns on every path")
 }
 
 pub(crate) fn drive_prepared_team_run(
@@ -20479,14 +20214,14 @@ pub(crate) fn drive_prepared_team_run(
                 }
                 let member_objective = objective.clone();
                 let cwd = member_spawn_cwd(project_context.as_ref(), &running, &member);
-                let workspace_snapshot = snapshot_member_workspace(
+                let provider_environment_observation = snapshot_member_workspace(
                     &cwd,
                     project_context.as_ref().map(|context| context.id.as_str()),
                     project_context
                         .as_ref()
                         .map(|context| context.project_root.as_path()),
                     if member
-                        .worktree_ref
+                        .provider_cwd_hint
                         .as_deref()
                         .is_some_and(|value| !value.is_empty())
                     {
@@ -20506,7 +20241,7 @@ pub(crate) fn drive_prepared_team_run(
                 let published_member = match prepare_member_workspace_for_spawn(
                     &member_ledger,
                     &member,
-                    &workspace_snapshot,
+                    &provider_environment_observation,
                 )? {
                     PreSpawnWorkspacePreparation::Ready(member) => *member,
                     PreSpawnWorkspacePreparation::Superseded => {
@@ -20529,7 +20264,7 @@ pub(crate) fn drive_prepared_team_run(
                     Some(member.id.clone()),
                     "member_run",
                     &member.id,
-                    "workspace_snapshot",
+                    "provider_environment_observation",
                     &format!("member workspace resolved to {}", cwd.display()),
                 )?;
                 let handle_member = member.clone();
@@ -20738,12 +20473,15 @@ pub(crate) fn drive_prepared_team_run(
 }
 
 enum MemberProviderStartClaim {
-    Claimed(MemberRun),
-    Superseded(MemberRun),
+    Claimed(ProviderRuntimeProjection),
+    Superseded(ProviderRuntimeProjection),
     Retry,
 }
 
-fn member_requested_controls_match(anchor: &MemberRun, candidate: &MemberRun) -> bool {
+fn member_requested_controls_match(
+    anchor: &ProviderRuntimeProjection,
+    candidate: &ProviderRuntimeProjection,
+) -> bool {
     anchor.provider_controls.model.requested == candidate.provider_controls.model.requested
         && anchor.provider_controls.reasoning_effort.requested
             == candidate.provider_controls.reasoning_effort.requested
@@ -20751,7 +20489,10 @@ fn member_requested_controls_match(anchor: &MemberRun, candidate: &MemberRun) ->
             == candidate.provider_controls.service_tier.requested
 }
 
-fn member_runtime_anchor_matches(anchor: &MemberRun, candidate: &MemberRun) -> bool {
+fn member_runtime_anchor_matches(
+    anchor: &ProviderRuntimeProjection,
+    candidate: &ProviderRuntimeProjection,
+) -> bool {
     candidate.id == anchor.id
         && candidate.team_run_id == anchor.team_run_id
         && candidate.slot_id == anchor.slot_id
@@ -20761,15 +20502,15 @@ fn member_runtime_anchor_matches(anchor: &MemberRun, candidate: &MemberRun) -> b
         && candidate.model == anchor.model
         && member_requested_controls_match(anchor, candidate)
         && candidate.runtime_generation == anchor.runtime_generation
-        && candidate.worktree_ref == anchor.worktree_ref
+        && candidate.provider_cwd_hint == anchor.provider_cwd_hint
         && candidate.owned_paths == anchor.owned_paths
         && candidate.started_at == anchor.started_at
 }
 
 fn member_runtime_progress_matches(
-    anchor: &MemberRun,
-    accepted: &MemberRun,
-    candidate: &MemberRun,
+    anchor: &ProviderRuntimeProjection,
+    accepted: &ProviderRuntimeProjection,
+    candidate: &ProviderRuntimeProjection,
     allow_owned_initial_bind: bool,
 ) -> bool {
     member_runtime_anchor_matches(anchor, candidate)
@@ -20796,7 +20537,7 @@ fn member_runtime_progress_matches(
 /// newly owned transport.
 fn claim_member_provider_start(
     ledger: &TeamRunLedger,
-    scheduled: &MemberRun,
+    scheduled: &ProviderRuntimeProjection,
 ) -> CliResult<MemberProviderStartClaim> {
     claim_member_provider_start_with_takeover_anchor_and_hook(
         ledger,
@@ -20809,8 +20550,8 @@ fn claim_member_provider_start(
 #[cfg(test)]
 fn claim_member_provider_start_with_hook(
     ledger: &TeamRunLedger,
-    scheduled: &MemberRun,
-    mut before_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
+    scheduled: &ProviderRuntimeProjection,
+    mut before_cas: impl FnMut(usize, &ProviderRuntimeProjection) -> CliResult<()>,
 ) -> CliResult<MemberProviderStartClaim> {
     claim_member_provider_start_with_takeover_anchor_and_hook(
         ledger,
@@ -20822,9 +20563,9 @@ fn claim_member_provider_start_with_hook(
 
 fn claim_member_provider_start_with_takeover_anchor_and_hook(
     ledger: &TeamRunLedger,
-    scheduled: &MemberRun,
-    takeover_anchor: &MemberRun,
-    mut before_cas: impl FnMut(usize, &MemberRun) -> CliResult<()>,
+    scheduled: &ProviderRuntimeProjection,
+    takeover_anchor: &ProviderRuntimeProjection,
+    mut before_cas: impl FnMut(usize, &ProviderRuntimeProjection) -> CliResult<()>,
 ) -> CliResult<MemberProviderStartClaim> {
     for attempt in 0..PROVIDER_MEMBER_CAS_RETRIES {
         ledger.require_supervisor_lease()?;
@@ -20858,7 +20599,7 @@ fn claim_member_provider_start_with_takeover_anchor_and_hook(
             || latest.provider != scheduled.provider
             || latest.model != scheduled.model
             || latest.provider_controls != scheduled.provider_controls
-            || latest.worktree_ref != scheduled.worktree_ref
+            || latest.provider_cwd_hint != scheduled.provider_cwd_hint
             || latest.owned_paths != scheduled.owned_paths
             || (!matches!(
                 latest.status,
@@ -20906,7 +20647,7 @@ fn claim_member_provider_start_with_takeover_anchor_and_hook(
 
 fn reconcile_member_lifecycle_after_provider_error(
     ledger: &TeamRunLedger,
-    member: &mut MemberRun,
+    member: &mut ProviderRuntimeProjection,
 ) -> CliResult<bool> {
     if let Some(close) = pending_member_close(&ledger.store, &member.id)? {
         stop_member_for_latched_close(ledger, member, &close)?;
@@ -20922,14 +20663,14 @@ fn reconcile_member_lifecycle_after_provider_error(
 }
 
 /// One persistent member supervisor. Provider transports and turns are
-/// disposable generations beneath the durable MemberRun/native-session
+/// disposable generations beneath the durable ProviderRuntimeProjection/native-session
 /// binding. A transport that disappears after binding is journaled as
 /// disconnected and resumed; it does not silently turn the Member into a
 /// terminal failure.
 fn run_member_orchestration(
     ledger: &TeamRunLedger,
     objective: &str,
-    member: MemberRun,
+    member: ProviderRuntimeProjection,
     context: MemberRuntimeContext,
 ) -> MemberOutcome {
     // Belt and braces: the supervisor drain already skips declared external
@@ -21007,7 +20748,7 @@ fn run_member_orchestration(
         // fresh row and therefore loses to Close or any later mutation.
         accepted = current.clone();
         // Re-probe every transport generation. This is the last fence before
-        // capacity checks, WorkDelivery claim, process spawn, or native-session
+        // capacity checks, ProviderWorkDispatch claim, process spawn, or native-session
         // attach, so a binary upgraded to an unreviewed version cannot fall
         // into the reconnect loop or replay a rebound Work.
         let compatibility_boundary = if current.native_session.is_some() {
@@ -21199,7 +20940,7 @@ fn run_member_orchestration(
                         &latest,
                         MemberRunStatus::Failed,
                         format!(
-                            "provider transport disconnected, but its queued TeamMessage could not be failed safely: {failure_error}"
+                            "provider transport disconnected, but its queued ProviderDispatchEnvelope could not be failed safely: {failure_error}"
                         ),
                     );
                 }
@@ -21221,7 +20962,7 @@ fn run_member_orchestration(
 fn run_codex_member(
     ledger: &TeamRunLedger,
     objective: &str,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     context: &MemberRuntimeContext,
 ) -> CliResult<MemberOutcome> {
     ledger.require_supervisor_lease()?;
@@ -21328,7 +21069,7 @@ fn run_codex_member(
     let mut prompt_text;
     let mut accepted_messages = Vec::new();
     let mut active_work: Option<ClaimedWork> = None;
-    let mut active_assignment: Option<TeamMessage> = None;
+    let mut active_assignment: Option<ProviderDispatchEnvelope> = None;
     let mut final_summary = String::new();
     // Supervisor wake-policy tracking.
     let wake_policy = supervisor_wake::WakePolicy::default();
@@ -21356,7 +21097,7 @@ fn run_codex_member(
             MemberActionStatus::Progress,
             "Codex runtime resumed active Work",
             &format!(
-                "Work {} remains bound to this MemberRun; continue through native session {} without replaying ownership delivery",
+                "Work {} remains bound to this ProviderRuntimeProjection; continue through native session {} without replaying ownership delivery",
                 work.id,
                 member_row
                     .native_session
@@ -21426,7 +21167,7 @@ fn run_codex_member(
             for message in &messages {
                 prompt_text.push_str(&format!(
                     "--- {} ({}, correlation_id={}) ---\n{}\n\n",
-                    message.from_member_id,
+                    message.sender_runtime_id,
                     team_message_kind_label(&message.kind),
                     message.correlation_id,
                     message.body
@@ -21490,7 +21231,7 @@ fn run_codex_member(
             )?
         };
         // Fence the caller as well: no native-session, Handoff, action, or
-        // MemberRun write may follow a terminal transport result from a stale
+        // ProviderRuntimeProjection write may follow a terminal transport result from a stale
         // Supervisor generation.
         ledger.require_supervisor_lease()?;
         member_row = refresh_member_after_provider_callbacks(ledger, &expected_round)?;
@@ -21661,7 +21402,7 @@ fn run_codex_member(
                 for message in &messages {
                     prompt_text.push_str(&format!(
                         "--- {} ({}, correlation_id={}) ---\n{}\n\n",
-                        message.from_member_id,
+                        message.sender_runtime_id,
                         team_message_kind_label(&message.kind),
                         message.correlation_id,
                         message.body
@@ -21708,12 +21449,12 @@ struct CodexTeamTurn {
 }
 
 struct CodexTeamTurnContext<'a> {
-    member: &'a MemberRun,
+    member: &'a ProviderRuntimeProjection,
     idle_timeout: Duration,
     live_sink: Option<LiveMemberActivitySink>,
     ledger: &'a TeamRunLedger,
     controls: &'a ControlReceiver<MemberControlCommand>,
-    accepted_messages: &'a [TeamMessage],
+    accepted_messages: &'a [ProviderDispatchEnvelope],
     /// Work claim carried by this turn, when the turn exists to deliver one.
     /// Its provider receipt is recorded at turn/start acceptance (the earliest
     /// honest evidence), never at end of turn.
@@ -21723,7 +21464,7 @@ struct CodexTeamTurnContext<'a> {
 
 fn project_codex_team_event_live(
     ledger: &TeamRunLedger,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     raw: &serde_json::Value,
     live_sink: Option<&LiveMemberActivitySink>,
 ) {
@@ -21852,7 +21593,7 @@ fn run_codex_app_server_turn(
     // The turn/start response is authoritative. A prior interrupted turn may
     // still flush item activity after the next turn has started; rebinding on
     // that stale item would make the real turn/completed look foreign and
-    // strand the MemberRun as running. Provider-native Goal/Plan continuation
+    // strand the ProviderRuntimeProjection as running. Provider-native Goal/Plan continuation
     // may move work to another turn, but only an explicit turn/started frame
     // is allowed to change this active scope.
     let mut active_turn_id = turn_id.clone();
@@ -22120,220 +21861,6 @@ fn codex_frame_matches_active_turn(
     frame_turn_id.is_none_or(|frame_turn_id| frame_turn_id == active_turn_id.as_str())
 }
 
-/// Drive one Claude Code Team Member without mirroring its stream-json output.
-/// The provider-owned `~/.claude/projects/**/<session>.jsonl` remains the
-/// execution history; Harness stores only the session locator, assignment,
-/// handoff, and explicit round outcome.
-#[cfg(any())] // retired with Assignment Message; bounded Claude CLI belongs to Workflow
-fn run_claude_team_member(
-    ledger: &TeamRunLedger,
-    objective: &str,
-    project_id: Option<&str>,
-    member: &MemberRun,
-    cwd: &Path,
-    idle_timeout: Duration,
-    live_sink: Option<LiveMemberActivitySink>,
-) -> CliResult<MemberOutcome> {
-    let mut member_row = member.clone();
-    let expected = member_row.clone();
-    member_row.status = MemberRunStatus::Starting;
-    if let Some(profile) = member_row.provider_profile.as_mut() {
-        apply_provider_version(profile, provider_version_output("claude").ok());
-    }
-    member_row.last_event_at = Some(now_string());
-    ledger.save_member_run(&expected, &member_row)?;
-    ledger.fold_event(
-        TeamRunEventSourceKind::Member,
-        Some(member.id.clone()),
-        "member_run",
-        &member.id,
-        "updated",
-        &format!(
-            "member {} starting (claude cli, cwd {})",
-            member.name,
-            cwd.display()
-        ),
-    )?;
-    let assignment = latest_queued_assignment(ledger, &member.id)?;
-    let assignment_body = assignment
-        .as_ref()
-        .map(|message| message.body.clone())
-        .unwrap_or_else(|| objective.to_string());
-    let envelope = member_collaboration_envelope(
-        ledger,
-        None,
-        project_id,
-        Some(cwd.to_string_lossy().as_ref()),
-        &member_row,
-        assignment.as_ref(),
-    )?;
-    let collaboration_env = envelope.environment();
-
-    let mut round = 0u32;
-    let mut next_prompt = Some(contract_prompt(
-        objective,
-        &member_row,
-        &assignment_body,
-        &envelope,
-    ));
-    let mut final_status = MemberRunStatus::Failed;
-    let mut final_summary = String::new();
-    while let Some(prompt) = next_prompt.take() {
-        round += 1;
-        let turn = run_claude_team_turn(
-            &prompt,
-            cwd,
-            &member_row,
-            idle_timeout,
-            live_sink.clone(),
-            ledger,
-            &collaboration_env,
-        )?;
-        if round == 1 {
-            if let Some(assignment) = &assignment {
-                // `claude_cli` has no live delivery receipt. A successfully
-                // completed first provider turn is the earliest honest proof
-                // that the one-shot process accepted its Assignment.
-                mark_message_delivered(
-                    ledger,
-                    assignment,
-                    &member.id,
-                    &member.name,
-                    &turn.session_id,
-                )?;
-            }
-        }
-        let expected = member_row.clone();
-        member_row.native_session = Some(native_session_ref(
-            &member_row,
-            &turn.session_id,
-            "claude_project_session",
-        ));
-        ledger.save_member_run(&expected, &member_row)?;
-
-        let handoff = TeamMessage {
-            id: generated_id("tmsg"),
-            team_run_id: ledger.run_id.clone(),
-            origin_wave_id: assignment
-                .as_ref()
-                .and_then(|message| message.origin_wave_id.clone()),
-            sender: Some(compatibility_team_actor(&member.id, "member_runtime")),
-            from_member_id: member.id.clone(),
-            recipients: vec![compatibility_team_recipient("host")],
-            to_member_ids: vec!["host".to_string()],
-            kind: TeamMessageKind::Handoff,
-            body: turn.final_text.clone(),
-            correlation_id: assignment
-                .as_ref()
-                .map(|message| message.correlation_id.clone())
-                .unwrap_or_else(|| generated_id("corr")),
-            causation_id: assignment.as_ref().map(|message| message.id.clone()),
-            response_intent: None,
-            evidence_refs: turn.evidence_refs,
-            deliveries: vec![TeamMessageDelivery {
-                member_id: "host".to_string(),
-                policy: TeamDeliveryPolicy::ManualAck,
-                status: TeamDeliveryStatus::Delivered,
-                attempt: 1,
-                claim_id: None,
-                claimed_by_supervisor_id: None,
-                claimed_generation: None,
-                claimed_unix_ms: None,
-                claim_expires_unix_ms: None,
-                provider_receipt_id: Some("harness-control-plane".to_string()),
-                updated_at: now_string(),
-            }],
-            created_at: now_string(),
-        };
-        ledger.save_message(&handoff)?;
-        ledger.fold_event(
-            TeamRunEventSourceKind::Member,
-            Some(member.id.clone()),
-            "message",
-            &handoff.id,
-            "created",
-            &format!("handoff from {} to host (round {round})", member.name),
-        )?;
-
-        let result = parse_round_result(&turn.final_text);
-        let (action_type, action_status, member_status) = match result {
-            MemberRoundResult::Done => (
-                "completed",
-                MemberActionStatus::Succeeded,
-                MemberRunStatus::Completed,
-            ),
-            MemberRoundResult::Blocked => (
-                "blocked",
-                MemberActionStatus::Failed,
-                MemberRunStatus::Blocked,
-            ),
-            MemberRoundResult::Failed => {
-                ("error", MemberActionStatus::Failed, MemberRunStatus::Failed)
-            }
-        };
-        let result_section = extract_report_section(&turn.final_text, "RESULT")
-            .unwrap_or_else(|| "done".to_string());
-        let action = ledger.append_action(
-            &member.id,
-            action_type,
-            action_status,
-            &format!("round {round} {action_type}"),
-            &result_section,
-        )?;
-        ledger.fold_event(
-            TeamRunEventSourceKind::Member,
-            Some(member.id.clone()),
-            "action",
-            &action.id,
-            "created",
-            &format!("{} round {round}: {action_type}", member.name),
-        )?;
-        let expected = member_row.clone();
-        member_row.status = member_status;
-        member_row.finished_at = Some(now_string());
-        member_row.last_event_at = Some(now_string());
-        ledger.save_member_run(&expected, &member_row)?;
-        final_status = member_status;
-        final_summary = extract_report_section(&turn.final_text, "SUMMARY").unwrap_or_else(|| {
-            turn.final_text
-                .lines()
-                .take(3)
-                .collect::<Vec<_>>()
-                .join("\n")
-        });
-
-        if round >= TEAM_RUN_START_MAX_ROUNDS {
-            break;
-        }
-        let queued = ledger.claim_queued_messages_for(&member.id)?;
-        if queued.is_empty() {
-            break;
-        }
-        let mut follow_up = String::from("FOLLOW-UP MESSAGES arrived while you worked. Address them and report again with ## RESULT and ## SUMMARY.\n\n");
-        for message in &queued {
-            follow_up.push_str(&format!(
-                "--- {} ({}) ---\n{}\n\n",
-                message.from_member_id,
-                team_message_kind_label(&message.kind),
-                message.body
-            ));
-            mark_message_delivered(
-                ledger,
-                message,
-                &member.id,
-                &member.name,
-                &format!("historical-claude-cli-round-{}", round + 1),
-            )?;
-        }
-        let expected = member_row.clone();
-        member_row.status = MemberRunStatus::Running;
-        member_row.finished_at = None;
-        ledger.save_member_run(&expected, &member_row)?;
-        next_prompt = Some(follow_up);
-    }
-    Ok(MemberOutcome::new(member, final_status, final_summary))
-}
-
 /// Test-only compatibility timeout. Production has no implicit idle close:
 /// Agent Team members remain addressable until the Host explicitly closes
 /// them. Integration tests may set this variable to bound a foreground run.
@@ -22410,7 +21937,7 @@ fn claude_agent_sdk_runner_path_from(
 fn run_claude_agent_sdk_team_member(
     ledger: &TeamRunLedger,
     objective: &str,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     context: &MemberRuntimeContext,
 ) -> CliResult<MemberOutcome> {
     use std::io::Write as _;
@@ -22512,11 +22039,11 @@ fn run_claude_agent_sdk_team_member(
             .map_err(|error| CliError::Usage(format!("runner stdin write failed: {error}")))
     };
 
-    let mut inflight_messages = HashMap::<String, TeamMessage>::new();
+    let mut inflight_messages = HashMap::<String, ProviderDispatchEnvelope>::new();
     let mut inflight_works = HashMap::<String, ClaimedWork>::new();
     let mut delivered_works = HashMap::<String, ClaimedWork>::new();
     let mut delivered_message_ids = HashSet::<String>::new();
-    let mut delivered_messages = HashMap::<String, TeamMessage>::new();
+    let mut delivered_messages = HashMap::<String, ProviderDispatchEnvelope>::new();
     let mut handoffs_before_by_message = HashMap::<String, HashSet<String>>::new();
 
     send(serde_json::json!({
@@ -22558,7 +22085,7 @@ fn run_claude_agent_sdk_team_member(
             MemberActionStatus::Progress,
             "Claude runtime resumed active Work",
             &format!(
-                "Work {} remains bound to this MemberRun; continue through native session {} without replaying ownership delivery",
+                "Work {} remains bound to this ProviderRuntimeProjection; continue through native session {} without replaying ownership delivery",
                 work.id,
                 member_row
                     .native_session
@@ -22589,7 +22116,7 @@ fn run_claude_agent_sdk_team_member(
             "payload": {
                 "id": generated_id("active-work-continuation"),
                 "kind": "work_continuation",
-                "from_member_id": "host",
+                "sender_runtime_id": "host",
                 "correlation_id": work.id,
                 "body": active_work_continuation_prompt(objective, &member_row, &work, &work_envelope),
             }
@@ -22610,7 +22137,7 @@ fn run_claude_agent_sdk_team_member(
             "payload": {
                 "id": claimed.delivery.id,
                 "kind": "work",
-                "from_member_id": "host",
+                "sender_runtime_id": "host",
                 "correlation_id": claimed.work.id,
                 "body": work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope),
             }
@@ -22632,7 +22159,7 @@ fn run_claude_agent_sdk_team_member(
                 "payload": {
                     "id": generated_id("active-work-continuation"),
                     "kind": "work_continuation",
-                    "from_member_id": "host",
+                    "sender_runtime_id": "host",
                     "correlation_id": work.id,
                     "body": active_work_continuation_prompt(objective, &member_row, &work, &work_envelope),
                 }
@@ -22739,7 +22266,7 @@ fn run_claude_agent_sdk_team_member(
                 }
                 MemberControlCommand::Steer { reply, .. } => {
                     let _ = reply.send(Err(CliError::Usage(
-                        "claude_agent_sdk does not expose content steer; send a TeamMessage"
+                        "claude_agent_sdk does not expose content steer; send a ProviderDispatchEnvelope"
                             .to_string(),
                     )));
                 }
@@ -23034,7 +22561,7 @@ fn run_claude_agent_sdk_team_member(
                     "payload": {
                         "id": claimed.delivery.id,
                         "kind": "work",
-                        "from_member_id": "host",
+                        "sender_runtime_id": "host",
                         "correlation_id": claimed.work.id,
                         "body": work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope),
                     }
@@ -23060,7 +22587,7 @@ fn run_claude_agent_sdk_team_member(
                         "payload": {
                             "id": generated_id("active-work-continuation"),
                             "kind": "work_continuation",
-                            "from_member_id": "host",
+                            "sender_runtime_id": "host",
                             "correlation_id": work.id,
                             "body": active_work_continuation_prompt(objective, &member_row, &work, &work_envelope),
                         }
@@ -23087,7 +22614,7 @@ fn run_claude_agent_sdk_team_member(
                 "payload": {
                     "id": message.id,
                     "kind": team_message_kind_label(&message.kind),
-                    "from_member_id": message.from_member_id,
+                    "sender_runtime_id": message.sender_runtime_id,
                     "correlation_id": message.correlation_id,
                     "body": message.body,
                 }
@@ -23168,9 +22695,9 @@ fn run_claude_agent_sdk_team_member(
 }
 
 fn active_assignment_for_round(
-    current: Option<&TeamMessage>,
-    accepted_messages: &[TeamMessage],
-) -> Option<TeamMessage> {
+    current: Option<&ProviderDispatchEnvelope>,
+    accepted_messages: &[ProviderDispatchEnvelope],
+) -> Option<ProviderDispatchEnvelope> {
     accepted_messages
         .iter()
         .rev()
@@ -23184,7 +22711,8 @@ fn member_handoff_ids(ledger: &TeamRunLedger, member_run_id: &str) -> CliResult<
         .team_messages()?
         .into_iter()
         .filter(|message| {
-            message.from_member_id == member_run_id && message.kind == TeamMessageKind::Handoff
+            message.sender_runtime_id == member_run_id
+                && message.kind == ProviderDispatchIntent::Message
         })
         .map(|message| message.id)
         .collect())
@@ -23198,8 +22726,8 @@ struct MemberTurnLineage<'a> {
 }
 
 fn handoff_has_valid_turn_lineage(
-    messages: &[TeamMessage],
-    message: &TeamMessage,
+    messages: &[ProviderDispatchEnvelope],
+    message: &ProviderDispatchEnvelope,
     member_run_id: &str,
     lineage: &MemberTurnLineage<'_>,
 ) -> bool {
@@ -23209,8 +22737,8 @@ fn handoff_has_valid_turn_lineage(
     ) else {
         return false;
     };
-    if message.from_member_id != member_run_id
-        || message.kind != TeamMessageKind::Handoff
+    if message.sender_runtime_id != member_run_id
+        || message.kind != ProviderDispatchIntent::Message
         || message.correlation_id != correlation_id
         || lineage.handoffs_before_round.contains(&message.id)
     {
@@ -23224,7 +22752,7 @@ fn handoff_has_valid_turn_lineage(
     }
     let Some(control) = messages.iter().find(|candidate| {
         candidate.id == causation_id
-            && candidate.kind == TeamMessageKind::Control
+            && candidate.kind == ProviderDispatchIntent::Control
             && candidate.correlation_id == correlation_id
             && candidate.deliveries.iter().any(|delivery| {
                 delivery.member_id == member_run_id
@@ -23243,8 +22771,8 @@ fn handoff_has_valid_turn_lineage(
     control_cause_id == trigger_id
         || messages.iter().any(|candidate| {
             candidate.id == control_cause_id
-                && candidate.from_member_id == member_run_id
-                && candidate.kind == TeamMessageKind::Handoff
+                && candidate.sender_runtime_id == member_run_id
+                && candidate.kind == ProviderDispatchIntent::Message
                 && candidate.correlation_id == correlation_id
                 && candidate.causation_id.as_deref() == Some(trigger_id)
                 && !lineage.handoffs_before_round.contains(&candidate.id)
@@ -23255,278 +22783,13 @@ fn latest_member_handoff_for_turn(
     ledger: &TeamRunLedger,
     member_run_id: &str,
     lineage: &MemberTurnLineage<'_>,
-) -> CliResult<Option<TeamMessage>> {
+) -> CliResult<Option<ProviderDispatchEnvelope>> {
     let messages = ledger.team_messages()?;
     Ok(messages
         .iter()
         .rev()
         .find(|message| handoff_has_valid_turn_lineage(&messages, message, member_run_id, lineage))
         .cloned())
-}
-
-#[cfg(any())] // retired with Assignment Message
-struct MemberRoundRecord<'a> {
-    assignment: Option<&'a TeamMessage>,
-    trigger: Option<&'a TeamMessage>,
-    final_text: &'a str,
-    evidence_refs: &'a [String],
-    round: u32,
-    handoffs_before_round: &'a HashSet<String>,
-    /// Set when the provider reported the turn itself as failed (issue #293).
-    /// `final_text` then holds provider error text, not a member report.
-    provider_error: Option<&'a str>,
-    /// The transport's OWN terminal fields, when this execution mode reports
-    /// them. Prose is never a substitute: this is the only input a capacity
-    /// classifier is allowed to read.
-    provider_terminal: Option<&'a ProviderTerminalFailure>,
-}
-
-#[cfg(any())] // retired with Assignment Message
-enum RoundHandoffRecord {
-    Recorded(Box<TeamMessage>),
-    Deferred {
-        pending_count: usize,
-    },
-    /// The round produced no member report AND the member published no Handoff
-    /// of its own, so there is nothing to hand off. Fabricating one here would
-    /// publish an empty Handoff and a `completed` action no member ever wrote.
-    /// The caller records a provider error instead.
-    EmptyProviderRound,
-}
-
-#[cfg(any())] // retired with Assignment Message
-fn record_round_handoff(
-    ledger: &TeamRunLedger,
-    member_row: &MemberRun,
-    record: &MemberRoundRecord<'_>,
-) -> CliResult<RoundHandoffRecord> {
-    let (origin_wave_id, correlation_id, causation_id) =
-        member_round_lineage(record.assignment, record.trigger);
-    let pending = ledger.pending_messages_for_correlation(&member_row.id, &correlation_id)?;
-    if !pending.is_empty() {
-        ledger.fold_event(
-            TeamRunEventSourceKind::Member,
-            Some(member_row.id.clone()),
-            "handoff",
-            &member_row.id,
-            "deferred",
-            &format!(
-                "withheld stale handoff from {} because {} inbound message(s) still await provider delivery",
-                member_row.name,
-                pending.len()
-            ),
-        )?;
-        return Ok(RoundHandoffRecord::Deferred {
-            pending_count: pending.len(),
-        });
-    }
-    if let Some(mut explicit) = latest_member_handoff_for_turn(
-        ledger,
-        &member_row.id,
-        &MemberTurnLineage {
-            assignment_correlation_id: record
-                .assignment
-                .map(|message| message.correlation_id.as_str()),
-            consumed_trigger_id: record.trigger.map(|message| message.id.as_str()),
-            handoffs_before_round: record.handoffs_before_round,
-        },
-    )? {
-        let mut changed = false;
-        for evidence_ref in record.evidence_refs {
-            if !explicit.evidence_refs.contains(evidence_ref) {
-                explicit.evidence_refs.push(evidence_ref.clone());
-                changed = true;
-            }
-        }
-        if changed {
-            ledger.save_message(&explicit)?;
-        }
-        return Ok(RoundHandoffRecord::Recorded(Box::new(explicit)));
-    }
-    // Only reached when Harness would MINT the handoff. A member that published
-    // its own Handoff, or a round deferred behind newer mail, already returned
-    // above — so classifying silence here cannot mislabel either of them.
-    if canonical_member_report_text(record.final_text)
-        .trim()
-        .is_empty()
-    {
-        return Ok(RoundHandoffRecord::EmptyProviderRound);
-    }
-    let handoff = TeamMessage {
-        id: generated_id("tmsg"),
-        team_run_id: ledger.run_id.clone(),
-        work_id: None,
-        origin_wave_id,
-        sender: Some(compatibility_team_actor(&member_row.id, "member_runtime")),
-        from_member_id: member_row.id.clone(),
-        recipients: vec![compatibility_team_recipient("host")],
-        to_member_ids: vec!["host".to_string()],
-        kind: TeamMessageKind::Handoff,
-        // Provider streams may contain several ordinary assistant messages
-        // before the terminal structured report. Harness owns the explicit
-        // outcome, not a mirror of that provider narration.
-        body: canonical_member_report_text(record.final_text).to_string(),
-        correlation_id,
-        causation_id,
-        response_intent: None,
-        evidence_refs: record.evidence_refs.to_vec(),
-        deliveries: vec![TeamMessageDelivery {
-            member_id: "host".to_string(),
-            policy: TeamDeliveryPolicy::ManualAck,
-            status: TeamDeliveryStatus::Delivered,
-            attempt: 1,
-            claim_id: None,
-            claimed_by_supervisor_id: None,
-            claimed_generation: None,
-            claimed_unix_ms: None,
-            claim_expires_unix_ms: None,
-            provider_receipt_id: Some("harness-control-plane".to_string()),
-            updated_at: now_string(),
-        }],
-        created_at: now_string(),
-    };
-    {
-        let _guard = ledger.write_lock();
-        store_conflict_as_usage(ledger.store.append_team_message_checked(&handoff))?;
-    }
-    ledger.fold_event(
-        TeamRunEventSourceKind::Member,
-        Some(member_row.id.clone()),
-        "message",
-        &handoff.id,
-        "created",
-        &format!(
-            "handoff from {} to host (round {})",
-            member_row.name, record.round
-        ),
-    )?;
-    Ok(RoundHandoffRecord::Recorded(Box::new(handoff)))
-}
-
-/// Record a round the provider failed: a failed `provider_error` action, no
-/// handoff, and a member that stays `idle` and re-deliverable.
-#[cfg(any())] // retired with Assignment Message
-fn record_provider_error_round(
-    ledger: &TeamRunLedger,
-    member_row: &mut MemberRun,
-    record: &MemberRoundRecord<'_>,
-    provider_error: &str,
-) -> CliResult<(MemberRunStatus, String)> {
-    let detail = format!(
-        "provider turn failed: {provider_error}: {}",
-        record.final_text.lines().next().unwrap_or("")
-    );
-    let action = ledger.append_action_with_provider_status(
-        &member_row.id,
-        "provider_error",
-        MemberActionStatus::Failed,
-        &format!("round {} provider_error", record.round),
-        &detail,
-        record
-            .provider_terminal
-            .map(ProviderTerminalFailure::to_provider_status),
-        &[],
-    )?;
-    ledger.fold_event(
-        TeamRunEventSourceKind::Member,
-        Some(member_row.id.clone()),
-        "action",
-        &action.id,
-        "created",
-        &format!("{} round {}: provider_error", member_row.name, record.round),
-    )?;
-    member_row.status = MemberRunStatus::Idle;
-    member_row.finished_at = None;
-    member_row.last_event_at = Some(now_string());
-    ledger.save_member_run(&expected, member_row)?;
-    Ok((
-        MemberRunStatus::Idle,
-        format!("provider turn failed: {provider_error}"),
-    ))
-}
-
-/// Ledger writes for one completed member round: handoff to Host, action row,
-/// and member status.
-#[cfg(any())] // retired with Assignment Message
-fn record_member_round(
-    ledger: &TeamRunLedger,
-    member_row: &mut MemberRun,
-    record: &MemberRoundRecord<'_>,
-) -> CliResult<(MemberRunStatus, String)> {
-    // A provider-error round produced no member report: the provider itself
-    // failed the turn. Recording a handoff here would impersonate a member
-    // answer, so the ledger gets a failed provider_error action instead.
-    if let Some(provider_error) = record.provider_error {
-        return record_provider_error_round(ledger, member_row, record, provider_error);
-    }
-
-    let handoff = record_round_handoff(ledger, member_row, record)?;
-
-    let (action_type, action_status, action_summary) = match handoff {
-        // Silence that would have MINTED a handoff is the same failure as a
-        // classified provider error, wearing a different mask: a terminal error
-        // the adapter could not label still ends the round with no text, and
-        // `parse_round_result("")` reads as `Done`. Deferred rounds and rounds
-        // whose member published its own Handoff never reach here.
-        RoundHandoffRecord::EmptyProviderRound => {
-            return record_provider_error_round(
-                ledger,
-                member_row,
-                record,
-                "empty_final_report (the provider ended the round without an agent message)",
-            );
-        }
-        RoundHandoffRecord::Deferred { pending_count } => (
-            "continued",
-            MemberActionStatus::Progress,
-            format!(
-                "provider round ended, but {pending_count} newer inbound message(s) require a follow-up round before Handoff"
-            ),
-        ),
-        RoundHandoffRecord::Recorded(message) => {
-            let (action_type, action_status) = match parse_round_result(record.final_text) {
-                MemberRoundResult::Done => ("completed", MemberActionStatus::Succeeded),
-                MemberRoundResult::Blocked => ("blocked", MemberActionStatus::Failed),
-                MemberRoundResult::Failed => ("error", MemberActionStatus::Failed),
-            };
-            (
-                action_type,
-                action_status,
-                extract_report_section(record.final_text, "RESULT")
-                    .unwrap_or_else(|| format!("handoff {}", message.id)),
-            )
-        }
-    };
-    let action = ledger.append_action(
-        &member_row.id,
-        action_type,
-        action_status,
-        &format!("round {} {action_type}", record.round),
-        &action_summary,
-    )?;
-    ledger.fold_event(
-        TeamRunEventSourceKind::Member,
-        Some(member_row.id.clone()),
-        "action",
-        &action.id,
-        "created",
-        &format!("{} round {}: {action_type}", member_row.name, record.round),
-    )?;
-    let expected = member_row.clone();
-    member_row.status = MemberRunStatus::Idle;
-    member_row.finished_at = None;
-    member_row.last_event_at = Some(now_string());
-    ledger.save_member_run(&expected, member_row)?;
-
-    let summary = extract_report_section(record.final_text, "SUMMARY").unwrap_or_else(|| {
-        record
-            .final_text
-            .lines()
-            .take(3)
-            .collect::<Vec<_>>()
-            .join("\n")
-    });
-    Ok((MemberRunStatus::Idle, summary))
 }
 
 #[allow(dead_code)] // retained for historical claude_cli record diagnostics
@@ -23544,7 +22807,7 @@ fn claude_team_permission_mode() -> &'static str {
 fn run_claude_team_turn(
     prompt: &str,
     cwd: &Path,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     idle_timeout: Duration,
     live_sink: Option<LiveMemberActivitySink>,
     ledger: &TeamRunLedger,
@@ -23683,7 +22946,7 @@ fn run_claude_team_turn(
 #[allow(dead_code)] // historical claude_cli projection helper
 fn project_claude_team_event_live(
     ledger: &TeamRunLedger,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     raw: &serde_json::Value,
     live_sink: Option<&LiveMemberActivitySink>,
 ) {
@@ -23777,7 +23040,7 @@ fn kimi_error_looks_quota_like(error: &str) -> bool {
 fn run_kimi_member(
     ledger: &TeamRunLedger,
     objective: &str,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     context: &MemberRuntimeContext,
 ) -> CliResult<MemberOutcome> {
     ledger.require_supervisor_lease()?;
@@ -23801,7 +23064,7 @@ fn run_kimi_member(
         ),
     )?;
 
-    let mut active_assignment: Option<TeamMessage> = None;
+    let mut active_assignment: Option<ProviderDispatchEnvelope> = None;
     let envelope = member_work_collaboration_envelope(
         ledger,
         context.execution_space_id.as_deref(),
@@ -23852,7 +23115,7 @@ fn run_kimi_member(
         // A model switch may intentionally discard the previous model's
         // thinking option when set_config_option does not return refreshed
         // model-specific controls. Reinitialize the durable projection too:
-        // a resumed MemberRun must not keep an old model's effective effort,
+        // a resumed ProviderRuntimeProjection must not keep an old model's effective effort,
         // status, or receipt note merely because the new client has no
         // evidence to replace it.
         let requested = member_row
@@ -23922,7 +23185,7 @@ fn run_kimi_member(
             MemberActionStatus::Progress,
             "Kimi runtime resumed active Work",
             &format!(
-                "Work {} remains bound to this MemberRun; continue through native session {} without replaying ownership delivery",
+                "Work {} remains bound to this ProviderRuntimeProjection; continue through native session {} without replaying ownership delivery",
                 work.id,
                 member_row
                     .native_session
@@ -23969,8 +23232,8 @@ fn run_kimi_member(
             prompt_text =
                 work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope);
             last_consumed_work_version = Some(claimed.work.version);
-            active_work =
-                (claimed.delivery.status == WorkDeliveryStatus::Claimed).then_some(*claimed);
+            active_work = (claimed.delivery.status == ProviderWorkDispatchStatus::Claimed)
+                .then_some(*claimed);
             active_assignment = None;
         }
         IdleMemberWake::ActiveWorkContinuation(work) => {
@@ -24000,7 +23263,7 @@ fn run_kimi_member(
             for message in &messages {
                 prompt_text.push_str(&format!(
                     "--- {} ({}) ---\n{}\n\n",
-                    message.from_member_id,
+                    message.sender_runtime_id,
                     team_message_kind_label(&message.kind),
                     message.body
                 ));
@@ -24043,7 +23306,7 @@ fn run_kimi_member(
         let outcome = {
             let _turn_lease = turn_leases.acquire();
             ledger.require_supervisor_lease()?;
-            let claimed_reverse_response = Arc::new(Mutex::new(None::<TeamMessage>));
+            let claimed_reverse_response = Arc::new(Mutex::new(None::<ProviderDispatchEnvelope>));
             let claimed_for_request = Arc::clone(&claimed_reverse_response);
             let claimed_after_write = Arc::clone(&claimed_reverse_response);
             client.prompt(
@@ -24354,8 +23617,8 @@ fn run_kimi_member(
                 prompt_text =
                     work_contract_prompt(objective, &member_row, &claimed.work, &work_envelope);
                 last_consumed_work_version = Some(claimed.work.version);
-                active_work =
-                    (claimed.delivery.status == WorkDeliveryStatus::Claimed).then_some(*claimed);
+                active_work = (claimed.delivery.status == ProviderWorkDispatchStatus::Claimed)
+                    .then_some(*claimed);
                 active_assignment = None;
                 accepted_messages.clear();
             }
@@ -24382,7 +23645,7 @@ fn run_kimi_member(
                 for message in &messages {
                     prompt_text.push_str(&format!(
                         "--- {} ({}) ---\n{}\n\n",
-                        message.from_member_id,
+                        message.sender_runtime_id,
                         team_message_kind_label(&message.kind),
                         message.body
                     ));
@@ -24455,7 +23718,7 @@ fn resolve_pi_bin() -> String {
 fn run_pi_team_member(
     ledger: &TeamRunLedger,
     objective: &str,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     context: &MemberRuntimeContext,
 ) -> CliResult<MemberOutcome> {
     ledger.require_supervisor_lease()?;
@@ -24633,7 +23896,7 @@ fn run_pi_team_member(
             for message in &messages {
                 prompt_text.push_str(&format!(
                     "--- {} ({}, correlation_id={}) ---\n{}\n\n",
-                    message.from_member_id,
+                    message.sender_runtime_id,
                     team_message_kind_label(&message.kind),
                     message.correlation_id,
                     message.body
@@ -24867,7 +24130,7 @@ fn run_pi_team_member(
                 for message in &messages {
                     prompt_text.push_str(&format!(
                         "--- {} ({}, correlation_id={}) ---\n{}\n\n",
-                        message.from_member_id,
+                        message.sender_runtime_id,
                         team_message_kind_label(&message.kind),
                         message.correlation_id,
                         message.body
@@ -24903,7 +24166,11 @@ fn run_pi_team_member(
 
 /// Journal a member failure on any error path (best-effort: we are already on
 /// the failure path, so secondary journaling errors are dropped).
-fn journal_member_failure(ledger: &TeamRunLedger, member: &MemberRun, reason: &str) {
+fn journal_member_failure(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+    reason: &str,
+) {
     let mut failed = ledger
         .latest_member_run(&member.id)
         .ok()
@@ -24933,7 +24200,7 @@ fn journal_member_failure(ledger: &TeamRunLedger, member: &MemberRun, reason: &s
 
 fn journal_member_disconnected(
     ledger: &TeamRunLedger,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     generation: u64,
     reason: &str,
 ) {
@@ -24970,46 +24237,96 @@ fn journal_member_disconnected(
     );
 }
 
-/// The most recent Assignment message with a still-queued delivery to
-/// `member_id` (append order is chronological under the single-writer v0).
-#[cfg(any())] // retired with Assignment Message
-fn latest_queued_assignment(
-    ledger: &TeamRunLedger,
-    member_id: &str,
-) -> CliResult<Option<TeamMessage>> {
-    let candidate = ledger.team_messages()?.into_iter().rfind(|message| {
-        message.kind == TeamMessageKind::Assignment
-            && message.deliveries.iter().any(|delivery| {
-                delivery.member_id == member_id && delivery.status == TeamDeliveryStatus::Queued
-            })
-    });
-    match candidate {
-        Some(message) => ledger.claim_message(&message.id, member_id),
-        None => Ok(None),
-    }
-}
-
-#[cfg(any())] // retired with Assignment Message
-fn assignment_for_correlation(
-    ledger: &TeamRunLedger,
-    correlation_id: &str,
-) -> CliResult<Option<TeamMessage>> {
-    Ok(ledger.team_messages()?.into_iter().rfind(|message| {
-        message.kind == TeamMessageKind::Assignment && message.correlation_id == correlation_id
-    }))
-}
-
 /// Flip every queued delivery of `message` addressed to `member_id` to
-/// delivered (append a new TeamMessage row — the store is latest-wins) and
+/// delivered (append a new ProviderDispatchEnvelope row — the store is latest-wins) and
 /// fold the delivery event.
 fn mark_message_delivered(
     ledger: &TeamRunLedger,
-    message: &TeamMessage,
+    message: &ProviderDispatchEnvelope,
     member_id: &str,
     member_name: &str,
     provider_receipt_id: &str,
 ) -> CliResult<()> {
     ledger.require_supervisor_lease()?;
+    let canonical_delivery_id = message
+        .evidence_refs
+        .iter()
+        .find_map(|reference| reference.strip_prefix(CANONICAL_MESSAGE_DELIVERY_REF));
+    let canonical_execution_space = message
+        .evidence_refs
+        .iter()
+        .find_map(|reference| reference.strip_prefix(CANONICAL_EXECUTION_SPACE_REF));
+    if let (Some(delivery_id), Some(execution_space_id)) =
+        (canonical_delivery_id, canonical_execution_space)
+    {
+        let claimed = ledger
+            .store
+            .trust_message_deliveries(execution_space_id)?
+            .into_iter()
+            .find(|delivery| delivery.id == delivery_id)
+            .ok_or_else(|| {
+                CliError::Usage(format!(
+                    "canonical RegistryDeliveryAttempt disappeared before provider receipt: {delivery_id}"
+                ))
+            })?;
+        let claim_id = claimed.claim_id.clone().ok_or_else(|| {
+            CliError::Usage(format!(
+                "canonical RegistryDeliveryAttempt {delivery_id} has no active claim"
+            ))
+        })?;
+        let member_generation = claimed.claimed_member_generation.ok_or_else(|| {
+            CliError::Usage(format!(
+                "canonical RegistryDeliveryAttempt {delivery_id} has no member generation"
+            ))
+        })?;
+        let supervisor_generation = claimed.claimed_supervisor_generation.ok_or_else(|| {
+            CliError::Usage(format!(
+                "canonical RegistryDeliveryAttempt {delivery_id} has no supervisor generation"
+            ))
+        })?;
+        let received = ledger.store.receive_trust_message_delivery(
+            &canonical_delivery_context(
+                execution_space_id,
+                &ledger.supervisor_id,
+                "node_daemon.message_delivery.provider_received",
+                format!("{claim_id}:provider-received"),
+                claimed.version.saturating_sub(1),
+            ),
+            delivery_id,
+            harness_core::agentfirm_api::ProviderReceipt {
+                claim_id: claim_id.clone(),
+                supervisor_generation,
+                member_generation,
+                provider_receipt_id: provider_receipt_id.to_string(),
+            },
+            &now_string(),
+        )?;
+        ledger.store.acknowledge_trust_message_delivery(
+            &canonical_delivery_context(
+                execution_space_id,
+                &ledger.supervisor_id,
+                "node_daemon.message_delivery.acknowledge",
+                format!("{claim_id}:acknowledge"),
+                received.projection.version.saturating_sub(1),
+            ),
+            delivery_id,
+            &claim_id,
+            member_generation,
+            &now_string(),
+        )?;
+        ledger.fold_event(
+            TeamRunEventSourceKind::Member,
+            Some(member_id.to_string()),
+            "message_delivery",
+            delivery_id,
+            "acknowledged",
+            &format!(
+                "canonical ProviderDispatchEnvelope {} accepted by provider for {} ({provider_receipt_id})",
+                message.id, member_name
+            ),
+        )?;
+        return Ok(());
+    }
     let delivery = message
         .deliveries
         .iter()
@@ -25062,7 +24379,7 @@ pub(crate) fn acknowledge_team_message(
     store: &HarnessStore,
     message_id: &str,
     member_id: &str,
-) -> CliResult<TeamMessage> {
+) -> CliResult<ProviderDispatchEnvelope> {
     let message = latest_team_messages_in_append_order(store)?
         .into_iter()
         .find(|message| message.id == message_id)
@@ -25129,9 +24446,9 @@ pub(crate) fn acknowledge_team_message(
 fn member_spawn_cwd(
     project_context: Option<&ProjectContext>,
     run: &AgentTeamRun,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
 ) -> PathBuf {
-    if let Some(worktree) = &member.worktree_ref {
+    if let Some(worktree) = &member.provider_cwd_hint {
         if !worktree.is_empty() {
             return PathBuf::from(worktree);
         }
@@ -25259,21 +24576,21 @@ fn kimi_interaction_prompt(frame: &serde_json::Value) -> String {
 #[derive(Debug)]
 struct ProviderInteractionReply {
     result: serde_json::Value,
-    claimed_response: Option<TeamMessage>,
+    claimed_response: Option<ProviderDispatchEnvelope>,
 }
 
 fn provider_interaction_request_message(
     ledger: &TeamRunLedger,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     provider_request_id: &str,
     method: &str,
     interaction_type: ProviderInteractionType,
     prompt: String,
     options: Vec<ProviderInteractionMessageOption>,
-) -> CliResult<(TeamMessage, bool)> {
+) -> CliResult<(ProviderDispatchEnvelope, bool)> {
     let native_session = member.native_session.as_ref().ok_or_else(|| {
         CliError::Usage(format!(
-            "MemberRun {} has no native session for provider interaction",
+            "ProviderRuntimeProjection {} has no native session for provider interaction",
             member.id
         ))
     })?;
@@ -25295,7 +24612,7 @@ fn provider_interaction_request_message(
         .into_iter()
         .filter(|message| {
             message.team_run_id == ledger.run_id
-                && message.kind == TeamMessageKind::ProviderInteractionRequest
+                && message.kind == ProviderDispatchIntent::ProviderInteractionRequest
                 && message.correlation_id == correlation_id
         })
         .collect::<Vec<_>>();
@@ -25310,30 +24627,30 @@ fn provider_interaction_request_message(
 
     let created_at = now_string();
     let sender = TeamActorRef {
-        kind: TeamActorKind::MemberRun,
+        kind: TeamActorKind::ProviderRuntimeProjection,
         id: member.id.clone(),
         display_name: Some(member.name.clone()),
         authn_source: Some("provider_reverse_request".to_string()),
     };
-    let request = TeamMessage {
+    let request = ProviderDispatchEnvelope {
         id: format!(
             "tmsg-provider-request-{}",
             content_hash_hex16(&correlation_id)
         ),
         team_run_id: ledger.run_id.clone(),
         work_id: None,
-        origin_wave_id: None,
+        source_plan_ref: None,
         sender: Some(sender.clone()),
-        from_member_id: member.id.clone(),
+        sender_runtime_id: member.id.clone(),
         recipients: vec![compatibility_team_recipient("host")],
-        to_member_ids: vec!["host".to_string()],
-        kind: TeamMessageKind::ProviderInteractionRequest,
+        recipient_runtime_ids: vec!["host".to_string()],
+        kind: ProviderDispatchIntent::ProviderInteractionRequest,
         body: canonical_body,
         correlation_id,
         causation_id: None,
-        response_intent: Some(TeamMessageResponseIntent::ResponseRequired),
+        response_intent: Some(ProviderResponseIntent::ResponseRequired),
         evidence_refs: Vec::new(),
-        deliveries: vec![TeamMessageDelivery {
+        deliveries: vec![ProviderDispatchAttempt {
             member_id: "host".to_string(),
             policy: TeamDeliveryPolicy::ManualAck,
             status: TeamDeliveryStatus::Delivered,
@@ -25367,9 +24684,14 @@ fn provider_interaction_request_message(
 
 fn wait_for_provider_interaction_response(
     ledger: &TeamRunLedger,
-    member: &MemberRun,
-    request: &TeamMessage,
-) -> CliResult<Option<(ProviderInteractionResponseBody, Option<TeamMessage>)>> {
+    member: &ProviderRuntimeProjection,
+    request: &ProviderDispatchEnvelope,
+) -> CliResult<
+    Option<(
+        ProviderInteractionResponseBody,
+        Option<ProviderDispatchEnvelope>,
+    )>,
+> {
     loop {
         ledger.require_supervisor_lease()?;
         let latest_member = ledger
@@ -25392,7 +24714,7 @@ fn wait_for_provider_interaction_response(
         let response = messages
             .iter()
             .find(|message| {
-                message.kind == TeamMessageKind::ProviderInteractionResponse
+                message.kind == ProviderDispatchIntent::ProviderInteractionResponse
                     && message.causation_id.as_deref() == Some(request.id.as_str())
             })
             .cloned();
@@ -25456,7 +24778,7 @@ fn complete_provider_interaction_reply(
 
 fn handle_codex_provider_request(
     ledger: &TeamRunLedger,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     frame: &serde_json::Value,
 ) -> CliResult<ProviderInteractionReply> {
     let supplied_member = member;
@@ -25689,7 +25011,7 @@ fn handle_codex_provider_request(
 
 fn handle_kimi_provider_request(
     ledger: &TeamRunLedger,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     frame: &serde_json::Value,
 ) -> CliResult<ProviderInteractionReply> {
     let supplied_member = member;
@@ -25750,7 +25072,7 @@ fn handle_kimi_provider_request(
         })
         .unwrap_or_else(|| generated_id("provider-request"));
     let prompt = kimi_interaction_prompt(frame);
-    // Re-read and validate the canonical MemberRun before any callback branch
+    // Re-read and validate the canonical ProviderRuntimeProjection before any callback branch
     // can acknowledge provider work. In particular, the bounded full-access
     // receipt below must never be written from a stale callback snapshot.
     let member = ledger
@@ -25764,7 +25086,7 @@ fn handle_kimi_provider_request(
     // it directly and retain only a bounded control receipt; persisting a
     // synthetic pending -> approved pair floods the Lead inbox and falsely
     // implies that a Human or policy decision was required. The receipt is
-    // bounded to the first safe acknowledgement per MemberRun: one durable row
+    // bounded to the first safe acknowledgement per ProviderRuntimeProjection: one durable row
     // proves the policy became active, later per-tool prompts are answered the
     // same way without new rows, and no tool title or command text is logged.
     if interaction_type == ProviderInteractionType::ToolApproval {
@@ -25803,7 +25125,7 @@ fn handle_kimi_provider_request(
     // ACP can only answer `session/request_permission` with a provider option.
     // An unknown request with no options has no recoverable native responder;
     // fail closed in-process instead of creating a durable request that no
-    // valid TeamMessage response could ever deliver.
+    // valid ProviderDispatchEnvelope response could ever deliver.
     if interaction_type == ProviderInteractionType::Unknown {
         return Ok(ProviderInteractionReply {
             result: serde_json::json!({"outcome": {"outcome": "cancelled"}}),
@@ -25893,7 +25215,7 @@ fn handle_kimi_provider_request(
 /// without changing this ledger contract.
 struct MemberUpdateMapper<'a> {
     ledger: &'a TeamRunLedger,
-    member: MemberRun,
+    member: ProviderRuntimeProjection,
     live_sink: Option<LiveMemberActivitySink>,
     last_live_activity_at: Instant,
     text: String,
@@ -25905,7 +25227,7 @@ struct MemberUpdateMapper<'a> {
 impl<'a> MemberUpdateMapper<'a> {
     fn new(
         ledger: &'a TeamRunLedger,
-        member: MemberRun,
+        member: ProviderRuntimeProjection,
         live_sink: Option<LiveMemberActivitySink>,
     ) -> Self {
         Self {
@@ -26009,7 +25331,7 @@ impl<'a> MemberUpdateMapper<'a> {
         &self.text
     }
 
-    fn into_member(self) -> MemberRun {
+    fn into_member(self) -> ProviderRuntimeProjection {
         self.member
     }
 }
@@ -26101,8 +25423,8 @@ struct MemberCollaborationEnvelope {
     member_run_id: String,
     work_id: Option<String>,
     work_version: Option<u64>,
-    origin_wave_id: Option<String>,
-    roster: Vec<MemberRun>,
+    source_plan_ref: Option<String>,
+    roster: Vec<ProviderRuntimeProjection>,
 }
 
 impl MemberCollaborationEnvelope {
@@ -26128,7 +25450,7 @@ impl MemberCollaborationEnvelope {
             ("PROJECT_ID", self.project_id.as_deref()),
             ("MISSION_ID", self.mission_id.as_deref()),
             ("WORK_ID", self.work_id.as_deref()),
-            ("ORIGIN_WAVE_ID", self.origin_wave_id.as_deref()),
+            ("ORIGIN_WAVE_ID", self.source_plan_ref.as_deref()),
         ] {
             if let Some(value) = value {
                 values.push((format!("FIRM_{suffix}"), value.to_string()));
@@ -26148,7 +25470,7 @@ fn member_collaboration_envelope(
     execution_space_id: Option<&str>,
     project_id: Option<&str>,
     project_selector: Option<&str>,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
 ) -> CliResult<MemberCollaborationEnvelope> {
     let run = latest_team_run(&ledger.store, &ledger.run_id)?;
     let roster = latest_member_runs_in_append_order(&ledger.store)?
@@ -26167,7 +25489,7 @@ fn member_collaboration_envelope(
         member_run_id: member.id.clone(),
         work_id: None,
         work_version: None,
-        origin_wave_id: None,
+        source_plan_ref: None,
         roster,
     })
 }
@@ -26177,7 +25499,7 @@ fn member_work_collaboration_envelope(
     execution_space_id: Option<&str>,
     project_id: Option<&str>,
     project_selector: Option<&str>,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     work: Option<&Work>,
 ) -> CliResult<MemberCollaborationEnvelope> {
     let mut envelope = member_collaboration_envelope(
@@ -26194,7 +25516,7 @@ fn member_work_collaboration_envelope(
 
 fn work_contract_prompt(
     objective: &str,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     work: &Work,
     envelope: &MemberCollaborationEnvelope,
 ) -> String {
@@ -26219,7 +25541,7 @@ fn work_contract_prompt(
          \n\
          CURRENT WORK (the Works board is the sole ownership authority)\n\
          - TeamRun: {team_run_id}\n\
-         - MemberRun: {member_run_id}\n\
+         - ProviderRuntimeProjection: {member_run_id}\n\
          - Work: {work_id} version {work_version}\n\
          - Title: {title}\n\
          - Context:\n{work_context}\n\
@@ -26229,11 +25551,12 @@ fn work_contract_prompt(
          TEAM ROSTER\n{roster}\n\
          \n\
          OPERATING CONTRACT\n\
+         - Do NOT use EnterPlanMode, ExitPlanMode, or any provider-native plan gate. Harness has no Plan Gate; discuss a Markdown plan through the Work-linked conversation when the Host requests one.\n\
          - Before implementation, mark this assigned Work in progress:\n\
            \"$HARNESS_BIN\" team-run work start --team-run-id {team_run_id} --work-id {work_id} --member-run-id {member_run_id} --expected-version {work_version}\n\
          - Read the board: \"$HARNESS_BIN\" team-run work list --team-run-id {team_run_id}\n\
          - Inspect the latest version before every transition: \"$HARNESS_BIN\" team-run work show --work-id {work_id}\n\
-         - Ordinary TeamMessage is conversation only. Link discussion with --work-id {work_id}; never create or transfer ownership through chat.\n\
+         - Ordinary ProviderDispatchEnvelope is conversation only. Link discussion with --work-id {work_id}; never create or transfer ownership through chat.\n\
          - Ask Host: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to host --kind message --work-id {work_id} --body \"QUESTION: <question and recommendation>\" --json\n\
          - Ask a peer to act: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to <peer-member-run-id> --kind message --work-id {work_id} --response-required --body \"COORDINATION: <request>\" --json\n\
          - If blocked, run team-run work block with team/member/work ids, the latest expected version, and a reason; then send a concise Work-linked message explaining the decision needed.\n\
@@ -26256,7 +25579,7 @@ fn work_contract_prompt(
 
 fn active_work_continuation_prompt(
     objective: &str,
-    member: &MemberRun,
+    member: &ProviderRuntimeProjection,
     work: &Work,
     envelope: &MemberCollaborationEnvelope,
 ) -> String {
@@ -26266,7 +25589,7 @@ fn active_work_continuation_prompt(
     {
         return format!(
             "SHARED WORK AVAILABLE\n\
-             Work {work_id} version {work_version} is ready on the Team Works board and this Member is eligible to claim it. No WorkDelivery or Assignment Message was created. Inspect the latest board, then use the bound member CLI to claim it atomically before doing any work; if the claim loses a race, refresh the board and do not duplicate effects.\n\n{}",
+             Work {work_id} version {work_version} is ready on the Team Works board and this Member is eligible to claim it. No ProviderWorkDispatch or Assignment RegistryMessage was created. Inspect the latest board, then use the bound member CLI to claim it atomically before doing any work; if the claim loses a race, refresh the board and do not duplicate effects.\n\n{}",
             work_contract_prompt(objective, member, work, envelope),
             work_id = work.id,
             work_version = work.version,
@@ -26274,98 +25597,10 @@ fn active_work_continuation_prompt(
     }
     format!(
         "ACTIVE WORK CONTINUATION\n\
-         Work {work_id} version {work_version} is still assigned to this MemberRun and has not reached review or a terminal state. No new WorkDelivery or TeamMessage was created: continue the same durable responsibility in the same provider-native session. Inspect the native session and Workspace before acting so you do not duplicate completed effects.\n\n{}",
+         Work {work_id} version {work_version} is still assigned to this ProviderRuntimeProjection and has not reached review or a terminal state. No new ProviderWorkDispatch or ProviderDispatchEnvelope was created: continue the same durable responsibility in the same provider-native session. Inspect the native session and Workspace before acting so you do not duplicate completed effects.\n\n{}",
         work_contract_prompt(objective, member, work, envelope),
         work_id = work.id,
         work_version = work.version,
-    )
-}
-
-#[cfg(any())] // delete after the Work-first provider prompt migration is fully green
-fn contract_prompt(
-    objective: &str,
-    member: &MemberRun,
-    assignment_body: &str,
-    envelope: &MemberCollaborationEnvelope,
-) -> String {
-    let owned_paths = if member.owned_paths.is_empty() {
-        "(none — read-only)".to_string()
-    } else {
-        member.owned_paths.join(", ")
-    };
-    let roster = envelope
-        .roster
-        .iter()
-        .map(|peer| {
-            format!(
-                "- {}: {} ({}, provider {}, owned paths: {})",
-                peer.id,
-                peer.name,
-                peer.role,
-                peer.provider,
-                if peer.owned_paths.is_empty() {
-                    "read-only".to_string()
-                } else {
-                    peer.owned_paths.join(", ")
-                }
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let assignment_id = envelope.assignment_message_id.as_deref().unwrap_or("none");
-    let correlation_id = envelope
-        .assignment_correlation_id
-        .as_deref()
-        .unwrap_or("none");
-    let mission_id = envelope.mission_id.as_deref().unwrap_or("none");
-    let origin_wave_id = envelope.origin_wave_id.as_deref().unwrap_or("none");
-    format!(
-        "You are {name}, the {role} member of agent team run \"{objective}\".\n\
-         \n\
-         COORDINATION IDENTITY\n\
-         - Mission: {mission_id}\n\
-         - TeamRun: {team_run_id}\n\
-         - MemberRun: {member_run_id}\n\
-         - Assignment message: {assignment_id}\n\
-         - Assignment correlation: {correlation_id}\n\
-         - Origin Wave (Host-plan provenance only): {origin_wave_id}\n\
-         \n\
-         TEAM ROSTER\n\
-         {roster}\n\
-         \n\
-         CONTRACT\n\
-         - Owned paths (only modify files under these; empty = read-only): {owned_paths}\n\
-         - Definition of done: {assignment_body}\n\
-         - Evidence: every claim in your report must be backed by something another agent can re-run (commands, tests, file diffs).\n\
-         - Permission boundary: the provider currently has full local execution permission, but owned paths and this Assignment remain the product/acceptance boundary. Do NOT deploy, push, merge, or delete anything; do not modify files outside owned paths. Sensitive or ambiguous external actions must be escalated to Host/Policy/Human.\n\
-         - You may use provider-native subagents freely inside your own plan. They are your implementation detail: do not create an implicit MemberRun, and keep responsibility, permissions, and evidence under this MemberRun.\n\
-         - You own this Assignment across multiple turns until Host explicitly accepts your handoff. Ask questions and coordinate early rather than silently guessing.\n\
-         - PLANNING: Present plans as ordinary Markdown messages to Host. Do NOT use EnterPlanMode, ExitPlanMode, or any provider-native plan/gate approval feature — they block you indefinitely in headless team context (the approval UI auto-dismisses and creates a loop). Harness has no Plan Gate. Write the plan as text, then send it to Host as a message.\n\
-         \n\
-         COORDINATION CLI (run from this Workspace)\n\
-         - Use the exact Host binary from `HARNESS_BIN`; do not substitute another `harness` found on PATH.\n\
-         - Read actionable inbox: \"$HARNESS_BIN\" team-run inbox --id {team_run_id} --member-run-id {member_run_id} --json\n\
-         - Read all received coordination messages (latest stored state): \"$HARNESS_BIN\" team-run inbox --id {team_run_id} --member-run-id {member_run_id} --all --json\n\
-         - Ask Host: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to host --kind message --body \"QUESTION: <question and recommendation>\" --correlation-id {correlation_id} --causation-id {assignment_id} --json\n\
-         - Message a peer: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to <peer-member-run-id> --kind message --body \"COORDINATION: <what the peer needs>\" --correlation-id {correlation_id} --json\n\
-         - Response intent: mail to Host is response-required by default, so your questions, blockers, and plans always reach Host. Ordinary message mail to a PEER member is informational by default — durable and correlated, but it never wakes that idle peer into a new provider round, so acknowledgement-only peer notes converge instead of ping-ponging. Add --response-required when you need a peer to act and reply (QUESTION, BLOCKER, review request); add --informational when a note to Host is genuinely FYI-only.\n\
-         - Submit handoff: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to host --kind handoff --body \"<result and evidence>\" --correlation-id {correlation_id} --causation-id {assignment_id} --json\n\
-         - Submit a requested plan/revision: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to host --kind message --body \"<Markdown plan>\" --correlation-id {correlation_id} --causation-id <host-message-id> --json\n\
-         \n\
-         Report format (your final message MUST follow this):\n\
-         ## RESULT\n\
-         done | blocked | failed\n\
-         ## SUMMARY\n\
-         <=10 lines\n\
-         ## FILES CHANGED\n\
-         ## COMMANDS & TESTS\n\
-         ## EVIDENCE\n\
-         ## BLOCKERS / DECISIONS NEEDED\n\
-         ## SUGGESTED NEXT\n",
-        name = member.name,
-        role = member.role,
-        team_run_id = envelope.team_run_id,
-        member_run_id = envelope.member_run_id,
     )
 }
 
@@ -26499,20 +25734,41 @@ fn dashboard_doctor_command(store: &HarnessStore, args: &[String]) -> CliResult<
         ));
     }
 
+    let member_runs = latest_member_runs_in_append_order(store)?;
+    let mut message_ids = latest_team_messages_in_append_order(store)?
+        .into_iter()
+        .filter(|message| message.team_run_id == team_run_id)
+        .map(|message| message.id)
+        .collect::<BTreeSet<_>>();
+    let mut trust_scopes = BTreeSet::new();
+    for member in member_runs
+        .iter()
+        .filter(|member| member.team_run_id == team_run_id)
+    {
+        if let Some(scope) = store.trust_member_run_scope(&member.id)? {
+            trust_scopes.insert(scope);
+        }
+    }
+    for scope in trust_scopes {
+        message_ids.extend(
+            store
+                .trust_team_messages(&scope)?
+                .into_iter()
+                .filter(|message| message.team_run_id == team_run_id)
+                .map(|message| message.id),
+        );
+    }
     let store_counts = DoctorStoreCounts {
         works: store
             .latest_works()?
             .into_iter()
             .filter(|work| work.team_run_id == team_run_id)
             .count(),
-        members: latest_member_runs_in_append_order(store)?
-            .into_iter()
+        members: member_runs
+            .iter()
             .filter(|member| member.team_run_id == team_run_id)
             .count(),
-        messages: latest_team_messages_in_append_order(store)?
-            .into_iter()
-            .filter(|message| message.team_run_id == team_run_id)
-            .count(),
+        messages: message_ids.len(),
     };
 
     let (meta_status, meta) = http_get_json(&api, "/v1/meta")?;
@@ -26964,14 +26220,14 @@ fn handle_sse_stream(
                     sse::SseEventFrame::Snapshot { .. } => {
                         // Don't re-send snapshots after initial
                     }
-                    sse::SseEventFrame::AgentEvent(event) => {
+                    sse::SseEventFrame::ProviderDispatchEvent(event) => {
                         if let Ok(json) = serde_json::to_value(&event) {
                             if sse::write_sse_frame(&mut stream, "agent_event", &json).is_err() {
                                 break; // Client disconnected
                             }
                         }
                     }
-                    sse::SseEventFrame::Message(msg) => {
+                    sse::SseEventFrame::RegistryMessage(msg) => {
                         if let Ok(json) = serde_json::to_value(&msg) {
                             if sse::write_sse_frame(&mut stream, "message", &json).is_err() {
                                 break; // Client disconnected
@@ -27023,14 +26279,14 @@ fn handle_sse_stream(
                             }
                         }
                     }
-                    sse::SseEventFrame::MemberRun(member) => {
+                    sse::SseEventFrame::ProviderRuntimeProjection(member) => {
                         if let Ok(json) = serde_json::to_value(&member) {
                             if sse::write_sse_frame(&mut stream, "member_run", &json).is_err() {
                                 break;
                             }
                         }
                     }
-                    sse::SseEventFrame::TeamMessage(message) => {
+                    sse::SseEventFrame::ProviderDispatchEnvelope(message) => {
                         if let Ok(json) = serde_json::to_value(&message) {
                             if sse::write_sse_frame(&mut stream, "team_message", &json).is_err() {
                                 break;
@@ -27049,15 +26305,6 @@ fn handle_sse_stream(
                     sse::SseEventFrame::TeamMemberCloseRequest(request) => {
                         if let Ok(json) = serde_json::to_value(&request) {
                             if sse::write_sse_frame(&mut stream, "team_member_close_request", &json)
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                    }
-                    sse::SseEventFrame::AgentMessageRoute(route) => {
-                        if let Ok(json) = serde_json::to_value(&route) {
-                            if sse::write_sse_frame(&mut stream, "agent_message_route", &json)
                                 .is_err()
                             {
                                 break;
@@ -27612,6 +26859,49 @@ fn daemon_command(args: &[String]) -> CliResult<()> {
     Ok(())
 }
 
+#[derive(Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgentFirmHttpCredential {
+    token: String,
+    actor: harness_core::agentfirm_api::ActorRef,
+    #[serde(default)]
+    authority_actors: Vec<harness_core::agentfirm_api::ActorRef>,
+}
+
+fn resolve_agentfirm_http_credential(
+    presented_token: Option<&str>,
+) -> Result<AgentFirmHttpCredential, String> {
+    let encoded = std::env::var("AGENTFIRM_HTTP_CREDENTIALS_JSON")
+        .map_err(|_| "member-trust HTTP credential registry is not configured".to_string())?;
+    let credentials = serde_json::from_str::<Vec<AgentFirmHttpCredential>>(&encoded)
+        .map_err(|error| format!("member-trust HTTP credential registry is invalid: {error}"))?;
+    let mut unique_tokens = std::collections::BTreeSet::new();
+    if credentials
+        .iter()
+        .any(|credential| !unique_tokens.insert(credential.token.clone()))
+    {
+        return Err("member-trust HTTP credential registry contains a duplicate token".into());
+    }
+    if credentials.iter().any(|credential| {
+        credential.actor.id.trim().is_empty()
+            || credential.token.trim().is_empty()
+            || credential
+                .authority_actors
+                .iter()
+                .any(|authority| authority.id.trim().is_empty())
+    }) {
+        return Err("member-trust HTTP credential registry contains an empty identity".into());
+    }
+    let token = presented_token
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "member-trust HTTP credential is missing".to_string())?;
+    let credential = credentials
+        .into_iter()
+        .find(|credential| credential.token == token)
+        .ok_or_else(|| "member-trust HTTP credential is invalid".to_string())?;
+    Ok(credential)
+}
+
 fn handle_http_connection(
     projects: &ServeProjects,
     mut stream: TcpStream,
@@ -27684,6 +26974,10 @@ fn handle_http_connection(
         .unwrap_or(&store_owned);
     let mut content_length = 0usize;
     let mut company_os_token = None;
+    let mut trust_transport_token = None;
+    let mut trust_idempotency_key = None;
+    let mut trust_expected_version = None;
+    let mut trust_identity_override_header = false;
     loop {
         let mut line = String::new();
         reader.read_line(&mut line)?;
@@ -27697,6 +26991,24 @@ fn handle_http_connection(
             }
             if name.eq_ignore_ascii_case("x-harness-company-os-token") {
                 company_os_token = Some(value.trim().to_string());
+            }
+            if name.eq_ignore_ascii_case("x-agentfirm-token") {
+                trust_transport_token = Some(value.trim().to_string());
+            }
+            if name.eq_ignore_ascii_case("idempotency-key") {
+                trust_idempotency_key = Some(value.trim().to_string());
+            }
+            if name.eq_ignore_ascii_case("if-match") {
+                trust_expected_version = value.trim().trim_matches('"').parse::<u64>().ok();
+            }
+            if matches!(
+                name.to_ascii_lowercase().as_str(),
+                "x-agentfirm-actor-kind"
+                    | "x-agentfirm-actor-id"
+                    | "x-agentfirm-authority-kind"
+                    | "x-agentfirm-authority-id"
+            ) {
+                trust_identity_override_header = true;
             }
         }
     }
@@ -27715,6 +27027,104 @@ fn handle_http_connection(
             "405 Method Not Allowed",
             &serde_json::json!({"error": "method_not_allowed"}),
         )?;
+        return Ok(());
+    }
+    if method == "POST" && agentfirm_api::is_http_mutation_path(&path_only) {
+        if trust_identity_override_header {
+            write_http_json(
+                &mut stream,
+                "401 Unauthorized",
+                &serde_json::json!({
+                    "ok": false,
+                    "error": {
+                        "code": "UNAUTHORIZED_ACTOR",
+                        "message": "request headers cannot select AgentFirm actor or authority identity"
+                    }
+                }),
+            )?;
+            return Ok(());
+        }
+        let credential = match resolve_agentfirm_http_credential(trust_transport_token.as_deref()) {
+            Ok(credential) => credential,
+            Err(message) => {
+                write_http_json(
+                    &mut stream,
+                    "401 Unauthorized",
+                    &serde_json::json!({
+                        "ok": false,
+                            "error": {"code": "UNAUTHORIZED_ACTOR", "message": message}
+                    }),
+                )?;
+                return Ok(());
+            }
+        };
+        let Some(idempotency_key) = trust_idempotency_key.filter(|key| !key.trim().is_empty())
+        else {
+            write_http_json(
+                &mut stream,
+                "400 Bad Request",
+                &serde_json::json!({
+                    "ok": false,
+                    "error": {"code": "IDEMPOTENCY_KEY_REUSED", "message": "Idempotency-Key is required"}
+                }),
+            )?;
+            return Ok(());
+        };
+        let Some(expected_version) = trust_expected_version else {
+            write_http_json(
+                &mut stream,
+                "400 Bad Request",
+                &serde_json::json!({
+                    "ok": false,
+                    "error": {"code": "VERSION_CONFLICT", "message": "If-Match exact expected version is required"}
+                }),
+            )?;
+            return Ok(());
+        };
+        let command = match serde_json::from_slice::<agentfirm_api::TrustCommand>(&body) {
+            Ok(command) if command.matches_http_route(&path_only) => command,
+            Ok(_) => {
+                write_http_json(
+                    &mut stream,
+                    "400 Bad Request",
+                    &serde_json::json!({
+                        "ok": false, "error": {"code": "INVALID_STATE_TRANSITION", "message": "command payload does not match the exact endpoint"}
+                    }),
+                )?;
+                return Ok(());
+            }
+            Err(error) => {
+                write_http_json(
+                    &mut stream,
+                    "400 Bad Request",
+                    &serde_json::json!({
+                        "ok": false, "error": {"code": "INVALID_STATE_TRANSITION", "message": error.to_string()}
+                    }),
+                )?;
+                return Ok(());
+            }
+        };
+        let auth = agentfirm_api::AuthenticatedMutation {
+            execution_space_id: project_id.clone(),
+            actor: credential.actor,
+            authorized_authority_actors: credential.authority_actors,
+            idempotency_key,
+            expected_version,
+        };
+        match agentfirm_api::execute(&store_owned, auth, command) {
+            Ok(result) => write_http_json(&mut stream, "200 OK", &result)?,
+            Err(StoreError::Conflict(encoded)) => {
+                let error = serde_json::from_str::<serde_json::Value>(&encoded).unwrap_or_else(
+                    |_| serde_json::json!({"code": "INVALID_STATE_TRANSITION", "message": encoded}),
+                );
+                write_http_json(
+                    &mut stream,
+                    "409 Conflict",
+                    &serde_json::json!({"ok": false, "error": error}),
+                )?;
+            }
+            Err(error) => return Err(error.into()),
+        }
         return Ok(());
     }
     if retired_http_path(&path_only) {
@@ -28424,7 +27834,7 @@ fn handle_http_connection(
     }
 
     // POST /v1/team-runs/{id}/members/{member-id}/reopen — reactivate the same
-    // MemberRun and, when no Supervisor currently owns the run, start one so a
+    // ProviderRuntimeProjection and, when no Supervisor currently owns the run, start one so a
     // managed adapter process resumes the recorded provider-native session.
     if let Some(rest) = path_only.strip_prefix("/v1/team-runs/") {
         let parts = rest.split('/').collect::<Vec<_>>();
@@ -28861,7 +28271,7 @@ fn handle_http_action(
         .and_then(|rest| rest.strip_suffix("/members"))
     {
         let member = TeamMemberSpec {
-            agent_member_id: optional_json_string(body, "agent_member_id")?,
+            agent_member_id: required_json_string(body, "agent_member_id")?,
             name: required_json_string(body, "name")?,
             role: required_json_string(body, "role")?,
             provider: required_json_string(body, "provider")?,
@@ -28869,7 +28279,7 @@ fn handle_http_action(
             model: optional_json_string(body, "model")?,
             effort: optional_json_string(body, "effort")?,
             service_tier: optional_json_string(body, "service_tier")?,
-            worktree_ref: optional_json_string(body, "worktree_ref")?,
+            provider_cwd_hint: optional_json_string(body, "provider_cwd_hint")?,
             owned_paths: optional_json_string_array(body, "owned_paths")?,
             resume_native_session_id: optional_json_string(body, "resume_native_session_id")?,
             initial_work: None,
@@ -28881,7 +28291,7 @@ fn handle_http_action(
             team_run_id,
             &member,
             initial_work.as_deref(),
-            optional_json_string(body, "origin_wave_id")?,
+            optional_json_string(body, "source_plan_ref")?,
         )?;
         return Ok(serde_json::json!({
             "team_run": run,
@@ -28950,9 +28360,6 @@ fn handle_http_action(
     if path == "/v1/teams" {
         return create_team_value(store, body);
     }
-    if path == "/v1/agents" {
-        return create_agent_value(store, body);
-    }
     if path == "/v1/gateway/tick" {
         return provider_gateway_tick_value(
             store,
@@ -28964,78 +28371,6 @@ fn handle_http_action(
                 claim_ttl_ms: json_u64(body, "claim_ttl_ms").unwrap_or(300_000),
             },
         );
-    }
-    if let Some(agent_id) = path
-        .strip_prefix("/v1/agents/")
-        .and_then(|rest| rest.strip_suffix("/route-inbox"))
-    {
-        let routes = route_agent_inbox_messages(
-            store,
-            agent_id,
-            optional_json_string(body, "member_run_id")?.as_deref(),
-            optional_json_string(body, "message_id")?.as_deref(),
-        )?;
-        return Ok(serde_json::json!({"routes": routes}));
-    }
-    if let Some(agent_id) = path
-        .strip_prefix("/v1/agents/")
-        .and_then(|rest| rest.strip_suffix("/deliver"))
-    {
-        return deliver_agent_messages_value(
-            store,
-            project_context,
-            DeliveryOptions {
-                agent_id: agent_id.into(),
-                message_filter: json_string(body, "message_id"),
-                dry_run: json_bool(body, "dry_run").unwrap_or(false),
-                start_runtime: json_bool(body, "start_runtime").unwrap_or(false),
-                timeout_ms: json_u64(body, "timeout_ms").unwrap_or(3_000),
-            },
-        );
-    }
-    if let Some(agent_id) = path
-        .strip_prefix("/v1/agents/")
-        .and_then(|rest| rest.strip_suffix("/retry-delivery"))
-    {
-        return retry_delivery_value(
-            store,
-            agent_id,
-            &required_json_string(body, "message_id")?,
-            json_string(body, "delivery_id").as_deref(),
-            json_string(body, "reason")
-                .as_deref()
-                .unwrap_or("dashboard requested retry"),
-            json_bool(body, "force").unwrap_or(false),
-        );
-    }
-    if let Some(agent_id) = path
-        .strip_prefix("/v1/agents/")
-        .and_then(|rest| rest.strip_suffix("/reconcile-delivery"))
-    {
-        return reconcile_delivery_value(
-            store,
-            agent_id,
-            &required_json_string(body, "delivery_id")?,
-            parse_provider_execution_status(
-                json_string(body, "status").as_deref().unwrap_or("failed"),
-            )?,
-            parse_terminal_source(
-                json_string(body, "terminal_source")
-                    .as_deref()
-                    .unwrap_or("failed"),
-            )?,
-            json_string(body, "reason")
-                .as_deref()
-                .unwrap_or("dashboard reconciliation"),
-        );
-    }
-    if let Some(agent_id) = path
-        .strip_prefix("/v1/agents/")
-        .and_then(|rest| rest.strip_suffix("/close"))
-    {
-        return Ok(serde_json::to_value(close_agent_member_value(
-            store, agent_id,
-        )?)?);
     }
     Err(CliError::Usage(format!("unknown action path: {path}")))
 }
@@ -29071,12 +28406,12 @@ fn steer_team_member_value(
         team_run_id,
         &sender,
         vec![member_run_id.to_string()],
-        TeamMessageKind::Control,
+        ProviderDispatchIntent::Control,
         &content,
         None,
         correlation_id,
         causation_id,
-        json_string(body, "origin_wave_id"),
+        json_string(body, "source_plan_ref"),
         TeamMessageDeliveryMode::InjectDelivered,
         None,
     )?;
@@ -29150,15 +28485,15 @@ fn cancel_pending_member_interactions(
     requested_by: &str,
     reason: &str,
 ) -> CliResult<()> {
-    // Message-bridged provider requests have no PendingInteraction row. ACK
+    // RegistryMessage-bridged provider requests have no PendingInteraction row. ACK
     // the delivered Host request without fabricating an answer; the blocked
     // provider callback observes the ACK and returns a native cancellation.
     for request in latest_team_messages_in_append_order(store)?
         .into_iter()
         .filter(|message| {
             message.team_run_id == team_run_id
-                && message.kind == TeamMessageKind::ProviderInteractionRequest
-                && message.from_member_id == member_run_id
+                && message.kind == ProviderDispatchIntent::ProviderInteractionRequest
+                && message.sender_runtime_id == member_run_id
                 && message.deliveries.iter().any(|delivery| {
                     delivery.member_id == "host" && delivery.status == TeamDeliveryStatus::Delivered
                 })
@@ -29469,7 +28804,7 @@ pub(crate) fn reopen_team_member_value(
         .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
     if member.coordination_is_retired() {
         return Err(CliError::Usage(format!(
-            "member run {member_run_id} is retired; create a new MemberRun instead"
+            "member run {member_run_id} is retired; create a new ProviderRuntimeProjection instead"
         )));
     }
     if member.coordination_is_active() {
@@ -29795,7 +29130,7 @@ fn resolve_provider_interaction_message_value(
         .find(|message| message.id == request_id)
         .ok_or_else(|| CliError::Usage(format!("interaction not found: {request_id}")))?;
     if request.team_run_id != team_run_id
-        || request.kind != TeamMessageKind::ProviderInteractionRequest
+        || request.kind != ProviderDispatchIntent::ProviderInteractionRequest
     {
         return Err(CliError::Usage(format!(
             "interaction {request_id} is not a provider request in team run {team_run_id}"
@@ -29860,30 +29195,30 @@ fn resolve_provider_interaction_message_value(
     let existed = latest_team_messages_in_append_order(store)?
         .into_iter()
         .any(|message| {
-            message.kind == TeamMessageKind::ProviderInteractionResponse
+            message.kind == ProviderDispatchIntent::ProviderInteractionResponse
                 && message.causation_id.as_deref() == Some(request_id)
         });
-    let response = TeamMessage {
+    let response = ProviderDispatchEnvelope {
         id: response_id,
         team_run_id: team_run_id.to_string(),
         work_id: request.work_id.clone(),
-        origin_wave_id: request.origin_wave_id.clone(),
+        source_plan_ref: request.source_plan_ref.clone(),
         sender: Some(sender.clone()),
-        from_member_id: match sender.kind {
+        sender_runtime_id: match sender.kind {
             TeamActorKind::Host => "host".to_string(),
             TeamActorKind::Operator => format!("operator:{}", sender.id),
             TeamActorKind::Service => format!("service:{}", sender.id),
             _ => unreachable!("provider response authority is coordination-plane only"),
         },
         recipients: vec![compatibility_team_recipient(&request_body.member)],
-        to_member_ids: vec![request_body.member.clone()],
-        kind: TeamMessageKind::ProviderInteractionResponse,
+        recipient_runtime_ids: vec![request_body.member.clone()],
+        kind: ProviderDispatchIntent::ProviderInteractionResponse,
         body: response_json,
         correlation_id: request.correlation_id.clone(),
         causation_id: Some(request.id.clone()),
-        response_intent: Some(TeamMessageResponseIntent::Informational),
+        response_intent: Some(ProviderResponseIntent::Informational),
         evidence_refs: Vec::new(),
-        deliveries: vec![TeamMessageDelivery {
+        deliveries: vec![ProviderDispatchAttempt {
             member_id: request_body.member.clone(),
             policy: TeamDeliveryPolicy::Inject,
             status: TeamDeliveryStatus::Queued,
@@ -30220,7 +29555,7 @@ fn create_message_value(
     if let Some(member) = target.as_ref() {
         ensure_member_accepts_delivery(member)?;
     }
-    let message = Message {
+    let message = RegistryMessage {
         id: json_string(body, "id").unwrap_or_else(|| generated_id("msg")),
         task_id: json_string(body, "task_id").or_else(|| json_string(body, "task")),
         from_agent_id: required_json_string(body, "from_agent_id")
@@ -30228,7 +29563,7 @@ fn create_message_value(
         to_agent_id,
         channel: json_string(body, "channel"),
         kind: parse_message_kind(json_string(body, "kind").as_deref().unwrap_or("message"))?,
-        delivery_status: MessageDeliveryStatus::Queued,
+        delivery_status: RegistryDeliveryStatus::Queued,
         content: required_json_string(body, "content")?,
         evidence_ids: json_string_array(body, "evidence_ids"),
         created_at: now_string(),
@@ -30246,7 +29581,7 @@ fn create_message_value(
             member.provider_runtime_id.as_deref(),
             message.task_id.as_deref(),
             "message_queued",
-            "Message queued for Agent Member",
+            "RegistryMessage queued for Agent Member",
             None,
         )?;
     }
@@ -30286,7 +29621,7 @@ fn persist_new_team(store: &HarnessStore, team: &AgentTeam) -> CliResult<()> {
         }
         if !members.contains(member_id) {
             return Err(CliError::Usage(format!(
-                "AgentTeam references missing AgentMember: {member_id}"
+                "AgentTeam references missing ProviderLaunchProfile: {member_id}"
             )));
         }
     }
@@ -30301,26 +29636,6 @@ fn persist_new_team(store: &HarnessStore, team: &AgentTeam) -> CliResult<()> {
 }
 
 /// Persist a freshly-built Agent Member. Mirrors the `agent create` CLI arm.
-fn finalize_member_creation(store: &HarnessStore, member: &AgentMember) -> CliResult<()> {
-    if latest_members(store)?.contains_key(&member.id) {
-        return Err(CliError::Usage(format!(
-            "AgentMember already exists: {}",
-            member.id
-        )));
-    }
-    store.append_member(member)?;
-    append_agent_event(
-        store,
-        &member.id,
-        member.provider_runtime_id.as_deref(),
-        None,
-        "agent_created",
-        "Agent Member created",
-        member.prompt_ref.as_deref(),
-    )?;
-    Ok(())
-}
-
 fn http_host_work_context(body: &serde_json::Value) -> CliResult<WorkCommandContext> {
     Ok(WorkCommandContext {
         event_id: json_string(body, "event_id").unwrap_or_else(|| generated_id("work-event")),
@@ -30402,17 +29717,6 @@ fn create_team_work_value(
             WorkClaimMode::TeamClaim
         });
     let context = http_host_work_context(body)?;
-    let gates = match body.get("gates") {
-        None => Vec::new(),
-        Some(value) => {
-            let gates: Vec<GateSpec> = serde_json::from_value(value.clone()).map_err(|error| {
-                CliError::Usage(format!("invalid Work gates JSON array: {error}"))
-            })?;
-            validate_gate_specs(&gates)
-                .map_err(|reason| CliError::Usage(format!("invalid Work gates: {reason}")))?;
-            gates
-        }
-    };
     let work = Work {
         id: json_string(body, "id").unwrap_or_else(|| generated_id("work")),
         team_run_id: team_run_id.to_string(),
@@ -30440,8 +29744,6 @@ fn create_team_work_value(
         artifact_refs: Vec::new(),
         check_refs: Vec::new(),
         github_links: Vec::new(),
-        gates,
-        workspace: None,
         version: 0,
         created_at: String::new(),
         updated_at: String::new(),
@@ -30494,17 +29796,6 @@ pub(crate) fn create_work_delegation_value(
     }
     let target_run = &target_runs[0];
     let context = http_host_work_context(body)?;
-    let gates = match body.get("gates") {
-        None => Vec::new(),
-        Some(value) => {
-            let gates: Vec<GateSpec> = serde_json::from_value(value.clone()).map_err(|error| {
-                CliError::Usage(format!("invalid delegated Work gates JSON array: {error}"))
-            })?;
-            validate_gate_specs(&gates)
-                .map_err(|reason| CliError::Usage(format!("invalid Work gates: {reason}")))?;
-            gates
-        }
-    };
     let request_hash = content_hash_hex16(&context.idempotency_key);
     let target_work_id = json_string(body, "target_work_id")
         .unwrap_or_else(|| format!("delegated-work-{request_hash}"));
@@ -30539,8 +29830,6 @@ pub(crate) fn create_work_delegation_value(
         artifact_refs: Vec::new(),
         check_refs: Vec::new(),
         github_links: Vec::new(),
-        gates,
-        workspace: None,
         version: 0,
         created_at: String::new(),
         updated_at: String::new(),
@@ -30599,7 +29888,7 @@ fn mutate_team_work_value(
 ) -> CliResult<serde_json::Value> {
     if operation == "review" {
         return Err(CliError::Usage(
-            "HTTP Work review is retired: use the typed host-only MCP `team_run_work_review` tool or the local CLI"
+            "legacy Work review is retired; use canonical AgentFirm GateEvaluation and accept_work"
                 .to_string(),
         ));
     }
@@ -30757,7 +30046,7 @@ fn create_team_run_value(
             }
         };
         members.push(TeamMemberSpec {
-            agent_member_id: optional_json_string(member, "agent_member_id")?,
+            agent_member_id: required_json_string(member, "agent_member_id")?,
             name: required_json_string(member, "name")?,
             role: required_json_string(member, "role")?,
             provider: required_json_string(member, "provider")?,
@@ -30765,7 +30054,7 @@ fn create_team_run_value(
             model: optional_json_string(member, "model")?,
             effort: optional_json_string(member, "effort")?,
             service_tier: optional_json_string(member, "service_tier")?,
-            worktree_ref: optional_json_string(member, "worktree_ref")?,
+            provider_cwd_hint: optional_json_string(member, "provider_cwd_hint")?,
             owned_paths,
             resume_native_session_id: optional_json_string(member, "resume_native_session_id")?,
             initial_work: optional_json_string(member, "initial_work")?,
@@ -30823,22 +30112,22 @@ fn send_team_message_value(
     team_run_id: &str,
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
-    let to_member_ids = json_string_array(body, "to_member_ids");
-    if to_member_ids.is_empty() {
+    let recipient_runtime_ids = json_string_array(body, "recipient_runtime_ids");
+    if recipient_runtime_ids.is_empty() {
         return Err(CliError::Usage(
-            "missing JSON field: to_member_ids".to_string(),
+            "missing JSON field: recipient_runtime_ids".to_string(),
         ));
     }
     // Bare Dashboard writes default to the Operator control plane, which is
     // response-required under the sender-aware default (ADR 0012: the
     // Dashboard is a control plane, so an Operator reply must wake an idle
     // member). An HTTP caller speaking FOR a member must say so explicitly
-    // with `sender_kind`/`sender_id`; `from_member_id` alone is a historical
+    // with `sender_kind`/`sender_id`; `sender_runtime_id` alone is a historical
     // projection field and does not carry provenance.
     let sender_kind = json_string(body, "sender_kind").unwrap_or_else(|| "operator".to_string());
     let sender_id = json_string(body, "sender_id").unwrap_or_else(|| {
         if sender_kind == "host" || sender_kind == "member_run" {
-            json_string(body, "from_member_id").unwrap_or_else(|| "operator".to_string())
+            json_string(body, "sender_runtime_id").unwrap_or_else(|| "operator".to_string())
         } else {
             "operator".to_string()
         }
@@ -30852,13 +30141,13 @@ fn send_team_message_value(
             display_name: json_string(body, "sender_name"),
             authn_source: Some("http_request".to_string()),
         },
-        to_member_ids,
+        recipient_runtime_ids,
         parse_team_message_kind(&required_json_string(body, "kind")?)?,
         &required_json_string(body, "body")?,
         json_string(body, "work_id"),
         json_string(body, "correlation_id"),
         json_string(body, "causation_id"),
-        json_string(body, "origin_wave_id"),
+        json_string(body, "source_plan_ref"),
         // Strict: a present-but-not-a-string `response_intent` is a caller
         // error, never a silent fall-through to the default.
         optional_json_string(body, "response_intent")?
@@ -30870,66 +30159,6 @@ fn send_team_message_value(
 
 /// POST /v1/agents — build an Agent Member from the JSON body and persist it.
 /// Does NOT start a runtime: `--start` / runtime spawn stays a separate action.
-fn create_agent_value(
-    store: &HarnessStore,
-    body: &serde_json::Value,
-) -> CliResult<serde_json::Value> {
-    let mut member = build_member_from_json(body)?;
-    let prompt_ref =
-        ensure_agent_prompt_with_override(store, &member, json_string(body, "prompt"))?;
-    member.prompt_ref = Some(prompt_ref);
-    member.status = AgentMemberStatus::Idle;
-    finalize_member_creation(store, &member)?;
-    Ok(serde_json::to_value(member)?)
-}
-
-/// Build an Agent Member from a POST /v1/agents JSON body (see `create_agent_value`).
-fn build_member_from_json(body: &serde_json::Value) -> CliResult<AgentMember> {
-    Ok(AgentMember {
-        id: json_string(body, "id").unwrap_or_else(|| generated_id("agent")),
-        name: required_json_string(body, "name")?,
-        description: json_string(body, "description")
-            .unwrap_or_else(|| "Codex-backed Agent Member".into()),
-        role: required_json_string(body, "role")?,
-        provider: json_string(body, "provider").unwrap_or_else(|| "codex".into()),
-        model: json_string(body, "model"),
-        profile: json_string(body, "profile"),
-        provider_config: AgentProviderConfig {
-            service_tier: json_string(body, "service_tier"),
-            collaboration_mode: json_string(body, "collaboration_mode"),
-            effort: json_string(body, "effort"),
-            output_schema: body.get("output_schema").filter(|v| !v.is_null()).cloned(),
-            approval_policy: json_string(body, "approval_policy"),
-            approvals_reviewer: json_string(body, "approvals_reviewer"),
-            sandbox_policy: json_string(body, "sandbox_policy"),
-            permission_profile: json_string(body, "permission_profile"),
-            runtime_workspace_roots: json_string_array(body, "runtime_workspace_root"),
-            environment_id: json_string(body, "environment"),
-            mcp: None,
-        },
-        capabilities: json_string_array(body, "capability"),
-        team_ids: json_string_array(body, "team"),
-        prompt_ref: json_string(body, "prompt_ref"),
-        skill_refs: json_string_array(body, "skill"),
-        workspace_policy: json_string(body, "workspace_policy"),
-        worktree_ref: json_string(body, "worktree"),
-        permission_profile: json_string(body, "permission_profile"),
-        runtime_workspace_roots: json_string_array(body, "runtime_workspace_root"),
-        status: AgentMemberStatus::Creating,
-        current_task_id: None,
-        current_proposal_id: None,
-        provider_runtime_id: None,
-        native_session: None,
-        provider_thread_id: None,
-        provider_agent_path: json_string(body, "provider_agent_path"),
-        provider_agent_nickname: json_string(body, "provider_agent_nickname"),
-        provider_agent_role: json_string(body, "provider_agent_role"),
-        control_endpoint: None,
-        created_at: now_string(),
-        last_seen_at: None,
-    })
-}
-
 fn json_string(body: &serde_json::Value, key: &str) -> Option<String> {
     body.get(key)
         .and_then(|value| value.as_str())
@@ -31070,14 +30299,14 @@ fn write_http_response(
 ) -> CliResult<()> {
     write!(
         stream,
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, X-Harness-Company-OS-Token\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, X-Harness-Company-OS-Token, X-AgentFirm-Token, Idempotency-Key, If-Match\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
     stream.write_all(body)?;
     Ok(())
 }
 
-fn start_agent_runtime(store: &HarnessStore, agent_id: &str) -> CliResult<AgentMember> {
+fn start_agent_runtime(store: &HarnessStore, agent_id: &str) -> CliResult<ProviderLaunchProfile> {
     let mut member = latest_member(store, agent_id)?;
     ensure_member_accepts_delivery(&member)?;
     if let Some(runtime_id) = member.provider_runtime_id.as_deref() {
@@ -31087,13 +30316,13 @@ fn start_agent_runtime(store: &HarnessStore, agent_id: &str) -> CliResult<AgentM
             }
         }
     }
-    member.status = AgentMemberStatus::Creating;
+    member.status = ProviderLaunchStatus::Creating;
     member.last_seen_at = Some(now_string());
     store.append_member(&member)?;
     let runtime = match start_provider_runtime(store, &member) {
         Ok(runtime) => runtime,
         Err(error) => {
-            member.status = AgentMemberStatus::Error;
+            member.status = ProviderLaunchStatus::Error;
             member.last_seen_at = Some(now_string());
             store.append_member(&member)?;
             append_agent_event(
@@ -31108,7 +30337,7 @@ fn start_agent_runtime(store: &HarnessStore, agent_id: &str) -> CliResult<AgentM
             return Err(error);
         }
     };
-    member.status = AgentMemberStatus::Idle;
+    member.status = ProviderLaunchStatus::Idle;
     member.provider_runtime_id = Some(runtime.id.clone());
     member.control_endpoint = runtime.control_endpoint.clone();
     member.last_seen_at = Some(now_string());
@@ -31126,64 +30355,7 @@ fn start_agent_runtime(store: &HarnessStore, agent_id: &str) -> CliResult<AgentM
     Ok(member)
 }
 
-fn close_agent_member_value(store: &HarnessStore, agent_id: &str) -> CliResult<AgentMember> {
-    let mut member = latest_member(store, agent_id)?;
-    member.status = AgentMemberStatus::Closing;
-    member.last_seen_at = Some(now_string());
-    store.append_member(&member)?;
-
-    let runtimes: Vec<_> = latest_runtimes(store)?
-        .into_values()
-        .filter(|runtime| runtime.agent_member_id == member.id)
-        .filter(|runtime| runtime.status != AgentRuntimeStatus::Stopped)
-        .collect();
-    for mut runtime in runtimes {
-        runtime.status = AgentRuntimeStatus::Stopping;
-        runtime.last_event_at = Some(now_string());
-        store.append_runtime(&runtime)?;
-        if let Some(pid) = runtime.pid {
-            if pid_is_alive(pid) {
-                stop_pid(pid)?;
-            }
-        }
-        runtime.status = AgentRuntimeStatus::Stopped;
-        runtime.ended_at = Some(now_string());
-        runtime.last_event_at = runtime.ended_at.clone();
-        store.append_runtime(&runtime)?;
-        append_agent_event(
-            store,
-            &member.id,
-            Some(runtime.id.as_str()),
-            None,
-            "runtime_stopped",
-            "Codex app-server runtime stopped",
-            None,
-        )?;
-    }
-
-    mark_running_delivery_attempts_terminal(
-        store,
-        &member.id,
-        ProviderExecutionStatus::Canceled,
-        Some(MessageTerminalSource::Failed),
-    )?;
-    member.status = AgentMemberStatus::Closed;
-    member.current_task_id = None;
-    member.last_seen_at = Some(now_string());
-    store.append_member(&member)?;
-    append_agent_event(
-        store,
-        &member.id,
-        member.provider_runtime_id.as_deref(),
-        None,
-        "agent_closed",
-        "Agent Member closed",
-        None,
-    )?;
-    Ok(member)
-}
-
-fn ensure_member_accepts_delivery(member: &AgentMember) -> CliResult<()> {
+fn ensure_member_accepts_delivery(member: &ProviderLaunchProfile) -> CliResult<()> {
     if member_status_rejects_delivery(&member.status) {
         return Err(CliError::Usage(format!(
             "agent {} is {:?}; closed, closing, or retired members cannot receive delivery or be restarted",
@@ -31193,64 +30365,19 @@ fn ensure_member_accepts_delivery(member: &AgentMember) -> CliResult<()> {
     Ok(())
 }
 
-fn member_status_rejects_delivery(status: &AgentMemberStatus) -> bool {
+fn member_status_rejects_delivery(status: &ProviderLaunchStatus) -> bool {
     matches!(
         status,
-        AgentMemberStatus::Closing | AgentMemberStatus::Closed | AgentMemberStatus::Retired
+        ProviderLaunchStatus::Closing
+            | ProviderLaunchStatus::Closed
+            | ProviderLaunchStatus::Retired
     )
 }
 
-fn agent_health(store: &HarnessStore, agent_id: &str) -> CliResult<serde_json::Value> {
-    let member = latest_member(store, agent_id)?;
-    let mut runtime = member
-        .provider_runtime_id
-        .as_deref()
-        .and_then(|runtime_id| latest_runtime(store, runtime_id).ok().flatten());
-    let runtime_alive = runtime.as_ref().is_some_and(runtime_is_alive);
-    let socket_path: Option<std::path::PathBuf> = None; // Exec-based delivery has no persistent socket
-    let queued_messages = latest_messages_in_append_order(store)?
-        .into_iter()
-        .filter(|message| message.to_agent_id.as_deref() == Some(agent_id))
-        .filter(|message| message.delivery_status == MessageDeliveryStatus::Queued)
-        .count();
-    let pid_alive = runtime
-        .as_ref()
-        .and_then(|runtime| runtime.pid)
-        .is_some_and(pid_is_alive);
-    let socket_exists = socket_path.as_ref().is_some_and(|path| path.exists());
-    let protocol_probe = Some("exec-stream".into()); // Codex uses exec-stream, no protocol probe needed
-    if let Some(runtime_value) = runtime.as_mut() {
-        runtime_value.health.process_alive = pid_alive;
-        runtime_value.health.socket_exists = socket_exists;
-        runtime_value.health.protocol_probe = protocol_probe.clone();
-        runtime_value.health.checked_at = Some(now_string());
-        store.append_runtime(runtime_value)?;
-    }
-    Ok(serde_json::json!({
-        "agent_member_id": member.id,
-        "member_status": member.status,
-        "runtime_id": runtime.as_ref().map(|runtime| runtime.id.clone()),
-        "runtime_status": runtime.as_ref().map(|runtime| runtime.status.clone()),
-        "pid": runtime.as_ref().and_then(|runtime| runtime.pid),
-        "pid_alive": pid_alive,
-        "socket_path": socket_path.as_ref().map(|path| path.display().to_string()),
-        "socket_exists": socket_exists,
-        "runtime_alive": runtime_alive,
-        "health": {
-            "process_alive": pid_alive,
-            "socket_exists": socket_exists,
-            "protocol_probe": protocol_probe,
-            "delivery_probe": runtime.as_ref().and_then(|runtime| runtime.health.delivery_probe.clone())
-        },
-        "queued_messages": queued_messages,
-        "provider_thread_id": member.provider_thread_id
-    }))
-}
-
-fn runtime_is_alive(runtime: &AgentRuntime) -> bool {
+fn runtime_is_alive(runtime: &ProviderProcess) -> bool {
     // Exec-stream runtimes don't have persistent PIDs or sockets.
     // Runtime is considered alive if its status is Running.
-    runtime.status == AgentRuntimeStatus::Running && runtime.control_endpoint.is_some()
+    runtime.status == ProviderProcessStatus::Running && runtime.control_endpoint.is_some()
 }
 
 fn pid_is_alive(pid: u32) -> bool {
@@ -31263,28 +30390,6 @@ fn pid_is_alive(pid: u32) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-fn deliver_agent_messages(
-    store: &HarnessStore,
-    project_context: Option<&ProjectContext>,
-    args: &[String],
-) -> CliResult<()> {
-    let result = deliver_agent_messages_value(
-        store,
-        project_context,
-        DeliveryOptions {
-            agent_id: required(args, "--agent").or_else(|_| required(args, "--id"))?,
-            message_filter: value(args, "--message"),
-            dry_run: has_flag(args, "--dry-run"),
-            start_runtime: has_flag(args, "--start-runtime"),
-            timeout_ms: value(args, "--timeout-ms")
-                .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(3_000),
-        },
-    )?;
-    print_json(&result)
-}
-
-#[derive(Debug, Clone)]
 struct DeliveryOptions {
     agent_id: String,
     message_filter: Option<String>,
@@ -31293,55 +30398,16 @@ struct DeliveryOptions {
     timeout_ms: u64,
 }
 
-// ---------------------------------------------------------------------------
-// Workflow runtime CLI (WP1)
-//
-// `harness workflow run --name <name> [--prompt <text>] [--timeout-ms N] [--model <m>] [--effort <e>] [--dry-run]`
-//
-// Creates a WorkflowRun (status running), dispatches the named built-in Rust
-// workflow through the registry, journals each WorkflowStep, and sets the run
-// to completed/failed. Each `agent()` node references a PROVIDER ("codex" |
-// "claude") and spins up a NEW one-shot ephemeral worker (Stage B: real spawn
-// of codex exec / claude -p; Stage A: a mock driver returns a provider-carrying
-// StepResult). The runtime stays provider-neutral — the injected driver carries
-// the provider + optional isolation through (ADR-0011 provider-neutral).
-// ---------------------------------------------------------------------------
-
-/// Options controlling how the real (non-mock) agent step spins up its ephemeral
-/// worker. `dry_run` selects the mock driver (CI default, no spawning);
-/// otherwise the real `codex exec` / `claude -p` ephemeral spawn runs with a
-/// per-node `timeout_ms`. `start_runtime` is reserved (the ephemeral path does
-/// not need a resident runtime).
 #[derive(Debug, Clone)]
 struct WorkflowDeliveryOptions {
     dry_run: bool,
     #[allow(dead_code)]
     start_runtime: bool,
     timeout_ms: u64,
-    /// Run-level default model for real workflow leaves. A leaf's own
-    /// `model = ...` still wins.
     default_model: Option<String>,
-    /// Run-level default reasoning effort for real workflow leaves. A leaf's own
-    /// `effort = ...` still wins.
     default_effort: Option<String>,
-    /// Per-WORKER spend backstop in USD (the run's `--max-budget-usd`). Passed to
-    /// claude as `--max-budget-usd` so a single worker can never exceed the whole
-    /// run's ceiling between the cumulative tally's barrier-granular checks. `None`
-    /// = no per-worker cap. Codex has no native budget flag, so this is claude-only.
     max_budget_usd: Option<f64>,
-    /// When true, emit a compact NDJSON progress line to STDERR as each step goes
-    /// `running` then terminal — so an agent caller that invoked us via its shell
-    /// tool sees the phase-by-phase timeline (which step/phase is live) alongside
-    /// the clean final result on STDOUT. Off by default (opt-in `--progress`) so
-    /// quiet callers and stdout-parsers are unaffected. Stderr is the conventional
-    /// progress stream; stdout stays a single parseable JSON document.
     progress: bool,
-    /// The project this run executes against (goal-multi-project P3/P4). Its
-    /// `project_root` — NOT the harness process cwd — is the worker's shared cwd and
-    /// the base for git worktrees; its `store_root` is where the JSONL ledgers live.
-    /// `is_git_repo` / `kind` drive the GLOBAL / non-git policy. The two roots are
-    /// deliberately split so the centralized store can live off the repo while
-    /// worktrees + CLAUDE.md stay pinned to the project tree.
     project: ProjectContext,
 }
 
@@ -31401,7 +30467,7 @@ fn workflow_effective_effort<'a>(
 }
 
 /// The REAL agent-step driver. Drives one provider delivery through the neutral
-/// seam: (1) queue a Message addressed to the member, (2) deliver exactly that
+/// seam: (1) queue a RegistryMessage addressed to the member, (2) deliver exactly that
 /// message via `deliver_agent_messages_value` (which claims + runs
 /// `run_provider_delivery`), and (3) reduce the explicit provider outcome into
 /// a [`workflow::StepResult`]. Provider history remains in its native session.
@@ -31867,7 +30933,7 @@ fn workflow_repo_root(project: &ProjectContext) -> PathBuf {
 
 /// Resolve the cwd a PERSISTENT provider delivery (codex / claude) runs from
 /// (goal-multi-project P3, Stage 3). Precedence:
-///   1. `member.worktree_ref` — an explicitly pinned workspace always wins.
+///   1. `member.provider_cwd_hint` — an explicitly pinned workspace always wins.
 ///   2. `project.project_root` — the SELECTED project's root, so the worker reads
 ///      the right `CLAUDE.md` / `AGENTS.md` / `.claude/` even when a long-running
 ///      `serve` switched projects and never `cd`d.
@@ -31877,8 +30943,8 @@ fn workflow_repo_root(project: &ProjectContext) -> PathBuf {
 ///
 /// Returns a display string (the `Command::current_dir` callers already pass a
 /// string) defaulting to `"."` only if even the process cwd is unreadable.
-fn delivery_worker_cwd(member: &AgentMember, project: &ProjectContext) -> String {
-    if let Some(worktree) = member.worktree_ref.clone() {
+fn delivery_worker_cwd(member: &ProviderLaunchProfile, project: &ProjectContext) -> String {
+    if let Some(worktree) = member.provider_cwd_hint.clone() {
         return worktree;
     }
     let project_root = project.project_root.as_path();
@@ -35484,10 +34550,10 @@ fn deliver_agent_messages_value(
             member.id
         )));
     }
-    let queued: Vec<Message> = latest_messages_in_append_order(store)?
+    let queued: Vec<RegistryMessage> = latest_messages_in_append_order(store)?
         .into_iter()
         .filter(|message| message.to_agent_id.as_deref() == Some(agent_id.as_str()))
-        .filter(|message| message.delivery_status == MessageDeliveryStatus::Queued)
+        .filter(|message| message.delivery_status == RegistryDeliveryStatus::Queued)
         .filter(|message| {
             message_filter
                 .as_ref()
@@ -35519,7 +34585,7 @@ fn deliver_agent_messages_value(
             None => continue,
         };
 
-        member.status = AgentMemberStatus::Running;
+        member.status = ProviderLaunchStatus::Running;
         member.current_task_id = claimed_message.task_id.clone();
         member.last_seen_at = Some(now_string());
         store.append_member(&member)?;
@@ -35662,7 +34728,7 @@ fn deliver_agent_messages_value(
         let delivery_unresolved = provider_status_blocks_delivery(&delivery.status);
         let mut delivered_message = latest_message(store, &claimed_message.id)?;
         delivered_message.delivery_status = message_status_for_delivery(&delivery.status);
-        delivered_message.delivery = Some(MessageDelivery {
+        delivered_message.delivery = Some(RegistryDeliveryAttempt {
             delivery_id: Some(delivery_id.clone()),
             execution_status: Some(delivery.status.clone()),
             native_session: delivery.native_session.clone(),
@@ -35679,14 +34745,14 @@ fn deliver_agent_messages_value(
         });
         store.append_message(&delivered_message)?;
         if !delivery_unresolved {
-            let report = Message {
+            let report = RegistryMessage {
                 id: generated_id("msg"),
                 task_id: delivered_message.task_id.clone(),
                 from_agent_id: member.id.clone(),
                 to_agent_id: None,
                 channel: Some("provider-report".into()),
-                kind: MessageKind::Report,
-                delivery_status: MessageDeliveryStatus::Delivered,
+                kind: RegistryMessageIntent::Report,
+                delivery_status: RegistryDeliveryStatus::Delivered,
                 content: delivery.summary.clone(),
                 evidence_ids: delivery.evidence_ids.clone(),
                 created_at: now_string(),
@@ -35723,13 +34789,13 @@ fn deliver_agent_messages_value(
             runtime = Some(runtime_value);
         }
         if delivery.status == ProviderExecutionStatus::Running {
-            member.status = AgentMemberStatus::Running;
+            member.status = ProviderLaunchStatus::Running;
             member.current_task_id = delivered_message.task_id.clone();
         } else if delivery.status == ProviderExecutionStatus::Stale {
-            member.status = AgentMemberStatus::Stale;
+            member.status = ProviderLaunchStatus::Stale;
             member.current_task_id = delivered_message.task_id.clone();
         } else {
-            member.status = AgentMemberStatus::Idle;
+            member.status = ProviderLaunchStatus::Idle;
             member.current_task_id = None;
         }
         member.last_seen_at = Some(now_string());
@@ -35782,36 +34848,6 @@ struct GatewayOptions {
     claim_ttl_ms: u64,
 }
 
-fn run_provider_gateway(
-    store: &HarnessStore,
-    project_context: Option<&ProjectContext>,
-    args: &[String],
-) -> CliResult<()> {
-    let options = GatewayOptions {
-        dry_run: has_flag(args, "--dry-run"),
-        start_runtime: has_flag(args, "--start-runtime"),
-        timeout_ms: value(args, "--timeout-ms")
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(3_000),
-        claim_ttl_ms: value(args, "--claim-ttl-ms")
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(300_000),
-    };
-    let once = has_flag(args, "--once");
-    let interval_ms = value(args, "--interval-ms")
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(1_000);
-    loop {
-        let result = provider_gateway_tick_value(store, project_context, options.clone())?;
-        print_json(&result)?;
-        if once {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(interval_ms));
-    }
-    Ok(())
-}
-
 fn provider_gateway_tick_value(
     store: &HarnessStore,
     project_context: Option<&ProjectContext>,
@@ -35820,7 +34856,7 @@ fn provider_gateway_tick_value(
     let expired_claims = expire_safe_delivery_claims_value(store, options.claim_ttl_ms)?;
     let mut agent_ids = Vec::new();
     for message in latest_messages_in_append_order(store)? {
-        if message.delivery_status == MessageDeliveryStatus::Queued {
+        if message.delivery_status == RegistryDeliveryStatus::Queued {
             if let Some(agent_id) = message.to_agent_id {
                 if !agent_ids.contains(&agent_id) {
                     agent_ids.push(agent_id);
@@ -35872,7 +34908,7 @@ fn expire_safe_delivery_claims_value(
     let messages = latest_messages(store)?;
     let mut expired = Vec::new();
     for message in messages.values() {
-        if message.delivery_status != MessageDeliveryStatus::Acknowledged {
+        if message.delivery_status != RegistryDeliveryStatus::Acknowledged {
             continue;
         }
         let Some(delivery) = message.delivery.as_ref() else {
@@ -35933,12 +34969,12 @@ struct DeliveryOutcome {
 
 fn claim_message_for_delivery(
     store: &HarnessStore,
-    member: &AgentMember,
-    _runtime: Option<&AgentRuntime>,
-    message: &Message,
+    member: &ProviderLaunchProfile,
+    _runtime: Option<&ProviderProcess>,
+    message: &RegistryMessage,
     delivery_id: &str,
-) -> CliResult<Option<Message>> {
-    let delivery = MessageDelivery {
+) -> CliResult<Option<RegistryMessage>> {
+    let delivery = RegistryDeliveryAttempt {
         delivery_id: Some(delivery_id.to_string()),
         execution_status: Some(ProviderExecutionStatus::Running),
         native_session: member.native_session.clone(),
@@ -36013,7 +35049,7 @@ fn retry_delivery_value(
         &format!("delivery-attempt:{delivery_id}"),
         reason,
     )?;
-    message.delivery_status = MessageDeliveryStatus::Queued;
+    message.delivery_status = RegistryDeliveryStatus::Queued;
     message.delivery = None;
     store.append_message(&message)?;
     append_agent_event(
@@ -36034,82 +35070,6 @@ fn retry_delivery_value(
         "execution_status": ProviderExecutionStatus::Canceled,
         "evidence_id": evidence_id,
         "forced": force
-    }))
-}
-
-fn reconcile_delivery_value(
-    store: &HarnessStore,
-    agent_id: &str,
-    delivery_id: &str,
-    status: ProviderExecutionStatus,
-    terminal_source: MessageTerminalSource,
-    reason: &str,
-) -> CliResult<serde_json::Value> {
-    if matches!(
-        status,
-        ProviderExecutionStatus::Queued | ProviderExecutionStatus::Running
-    ) {
-        return Err(CliError::Usage(
-            "reconcile-delivery requires a terminal status".into(),
-        ));
-    }
-    let mut message = latest_messages_in_append_order(store)?
-        .into_iter()
-        .find(|message| {
-            message.to_agent_id.as_deref() == Some(agent_id)
-                && message
-                    .delivery
-                    .as_ref()
-                    .is_some_and(|delivery| delivery.delivery_id.as_deref() == Some(delivery_id))
-        })
-        .ok_or_else(|| CliError::Usage(format!("delivery attempt not found: {delivery_id}")))?;
-    let evidence_id = record_operator_evidence(
-        store,
-        message.task_id.clone(),
-        "delivery_reconciliation",
-        &format!("delivery-attempt:{delivery_id}"),
-        reason,
-    )?;
-    message.delivery_status = message_status_for_terminal(&status, Some(&terminal_source));
-    let delivery = message.delivery.as_mut().expect("delivery checked");
-    delivery.execution_status = Some(status.clone());
-    delivery.terminal_source = Some(terminal_source.clone());
-    delivery.delivered_at = Some(now_string());
-    delivery.last_error = delivery_error_message(&status, reason);
-    if !message.evidence_ids.contains(&evidence_id) {
-        message.evidence_ids.push(evidence_id.clone());
-    }
-    store.append_message(&message)?;
-    if let Ok(mut member) = latest_member(store, agent_id) {
-        if matches!(
-            member.status,
-            AgentMemberStatus::Running | AgentMemberStatus::Stale
-        ) && member
-            .current_task_id
-            .as_ref()
-            .map_or_else(|| true, |task_id| message.task_id.as_ref() == Some(task_id))
-        {
-            member.status = AgentMemberStatus::Idle;
-            member.current_task_id = None;
-            member.last_seen_at = Some(now_string());
-            store.append_member(&member)?;
-        }
-    }
-    append_agent_event(
-        store,
-        agent_id,
-        None,
-        message.task_id.as_deref(),
-        "delivery_reconciled",
-        reason,
-        None,
-    )?;
-    Ok(serde_json::json!({
-        "agent_member_id": agent_id,
-        "delivery_id": delivery_id,
-        "status": status,
-        "terminal_source": terminal_source,
-        "evidence_id": evidence_id
     }))
 }
 
@@ -36139,7 +35099,7 @@ fn record_operator_evidence(
 fn record_claimed_delivery_terminal(
     store: &HarnessStore,
     delivery_id: &str,
-    message: &Message,
+    message: &RegistryMessage,
     _status: ProviderExecutionStatus,
     _provider_thread_id: Option<String>,
     _provider_turn_id: Option<String>,
@@ -36166,23 +35126,23 @@ fn record_claimed_delivery_terminal(
     Ok(vec![evidence_id])
 }
 
-fn message_status_for_delivery(status: &ProviderExecutionStatus) -> MessageDeliveryStatus {
+fn message_status_for_delivery(status: &ProviderExecutionStatus) -> RegistryDeliveryStatus {
     message_status_for_terminal(status, None)
 }
 
 fn message_status_for_terminal(
     status: &ProviderExecutionStatus,
     terminal_source: Option<&MessageTerminalSource>,
-) -> MessageDeliveryStatus {
+) -> RegistryDeliveryStatus {
     match status {
-        ProviderExecutionStatus::Succeeded => MessageDeliveryStatus::Delivered,
-        ProviderExecutionStatus::Running => MessageDeliveryStatus::Acknowledged,
+        ProviderExecutionStatus::Succeeded => RegistryDeliveryStatus::Delivered,
+        ProviderExecutionStatus::Running => RegistryDeliveryStatus::Acknowledged,
         ProviderExecutionStatus::Stale
             if terminal_source != Some(&MessageTerminalSource::Failed) =>
         {
-            MessageDeliveryStatus::Acknowledged
+            RegistryDeliveryStatus::Acknowledged
         }
-        _ => MessageDeliveryStatus::Failed,
+        _ => RegistryDeliveryStatus::Failed,
     }
 }
 
@@ -36203,7 +35163,7 @@ fn delivery_error_message(status: &ProviderExecutionStatus, summary: &str) -> Op
     .then(|| summary.to_string())
 }
 
-fn provider_developer_instructions(member: &AgentMember) -> String {
+fn provider_developer_instructions(member: &ProviderLaunchProfile) -> String {
     let Some(prompt_ref) = member.prompt_ref.as_deref() else {
         return "Use harness messages as source of truth.".into();
     };
@@ -36218,7 +35178,7 @@ fn provider_developer_instructions(member: &AgentMember) -> String {
 // Test-only helper: builds the codex app-server turn input envelope. Exercised by
 // unit tests; not yet wired into the live delivery path (kept for the WP that lands it).
 #[cfg(test)]
-fn build_turn_input(message: &Message, delivery_attempt_id: &str) -> serde_json::Value {
+fn build_turn_input(message: &RegistryMessage, delivery_attempt_id: &str) -> serde_json::Value {
     serde_json::json!([{
         "type": "text",
         "text": format!(
@@ -36260,7 +35220,7 @@ fn reconcile_running_delivery_attempts(
         .into_iter()
         .filter(|message| {
             message.to_agent_id.as_deref() == Some(agent_member_id)
-                && message.delivery_status == MessageDeliveryStatus::Acknowledged
+                && message.delivery_status == RegistryDeliveryStatus::Acknowledged
                 && task_id.is_none_or(|task_id| message.task_id.as_deref() == Some(task_id))
                 && message.delivery.as_ref().is_some_and(|delivery| {
                     matches!(
@@ -36277,7 +35237,7 @@ fn reconcile_running_delivery_attempts(
                 })
         })
     {
-        message.delivery_status = MessageDeliveryStatus::Delivered;
+        message.delivery_status = RegistryDeliveryStatus::Delivered;
         if let Some(delivery) = message.delivery.as_mut() {
             delivery.execution_status = Some(ProviderExecutionStatus::Succeeded);
             delivery.terminal_source = Some(terminal_source.clone());
@@ -36299,14 +35259,14 @@ fn reconcile_running_delivery_attempts(
             .as_ref()
             .and_then(|delivery| delivery.delivery_id.as_deref())
             .unwrap_or("unknown");
-        store.append_message(&Message {
+        store.append_message(&RegistryMessage {
             id: generated_id("msg"),
             task_id: message.task_id.clone(),
             from_agent_id: agent_member_id.into(),
             to_agent_id: None,
             channel: Some("provider-report".into()),
-            kind: MessageKind::Report,
-            delivery_status: MessageDeliveryStatus::Delivered,
+            kind: RegistryMessageIntent::Report,
+            delivery_status: RegistryDeliveryStatus::Delivered,
             content: format!("Delivery {delivery_id} completed from provider-native activity"),
             evidence_ids: message.evidence_ids.clone(),
             created_at: now_string(),
@@ -36322,13 +35282,13 @@ fn reconcile_running_delivery_attempts(
             }
             if matches!(
                 member.status,
-                AgentMemberStatus::Running | AgentMemberStatus::Stale
+                ProviderLaunchStatus::Running | ProviderLaunchStatus::Stale
             ) && member
                 .current_task_id
                 .as_ref()
                 .map_or_else(|| true, |task_id| reconciled_task_ids.contains(task_id))
             {
-                member.status = AgentMemberStatus::Idle;
+                member.status = ProviderLaunchStatus::Idle;
                 member.current_task_id = None;
                 member.last_seen_at = Some(now_string());
                 store.append_member(&member)?;
@@ -36438,7 +35398,7 @@ fn mark_running_delivery_attempts_terminal(
         if let Ok(mut member) = latest_member(store, agent_member_id) {
             if matches!(
                 member.status,
-                AgentMemberStatus::Running | AgentMemberStatus::Stale
+                ProviderLaunchStatus::Running | ProviderLaunchStatus::Stale
             ) {
                 if let Some(runtime_id) = member.provider_runtime_id.clone() {
                     mark_runtime_delivery_terminal(
@@ -36448,7 +35408,7 @@ fn mark_running_delivery_attempts_terminal(
                         terminal_source.as_ref(),
                     )?;
                 }
-                member.status = AgentMemberStatus::Idle;
+                member.status = ProviderLaunchStatus::Idle;
                 member.current_task_id = None;
                 member.last_seen_at = Some(now_string());
                 store.append_member(&member)?;
@@ -36635,7 +35595,123 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     // event log is capped per run so a chatty run cannot bloat the snapshot.
     let team_runs = latest_team_runs_in_append_order(store)?;
     let member_runs = latest_member_runs_in_append_order(store)?;
-    let team_messages = latest_team_messages_in_append_order(store)?;
+    let mut team_messages = latest_team_messages_in_append_order(store)?;
+    let mut trust_scopes = BTreeSet::new();
+    for member_run in &member_runs {
+        if let Some(scope) = store.trust_member_run_scope(&member_run.id)? {
+            trust_scopes.insert(scope);
+        }
+    }
+    for execution_space_id in trust_scopes {
+        let deliveries = store.trust_message_deliveries(&execution_space_id)?;
+        for message in store.trust_team_messages(&execution_space_id)? {
+            let message_deliveries = deliveries
+                .iter()
+                .filter(|delivery| delivery.message_id == message.id)
+                .map(|delivery| ProviderDispatchAttempt {
+                    member_id: delivery.recipient_member_run_id.clone(),
+                    policy: TeamDeliveryPolicy::Queue,
+                    status: match delivery.status {
+                        harness_core::agentfirm_api::MessageDeliveryStatus::Queued => {
+                            TeamDeliveryStatus::Queued
+                        }
+                        harness_core::agentfirm_api::MessageDeliveryStatus::Claimed => {
+                            TeamDeliveryStatus::Claimed
+                        }
+                        harness_core::agentfirm_api::MessageDeliveryStatus::ProviderReceived => {
+                            TeamDeliveryStatus::Delivered
+                        }
+                        harness_core::agentfirm_api::MessageDeliveryStatus::Acknowledged => {
+                            TeamDeliveryStatus::Acknowledged
+                        }
+                        harness_core::agentfirm_api::MessageDeliveryStatus::Failed
+                        | harness_core::agentfirm_api::MessageDeliveryStatus::Invalidated => {
+                            TeamDeliveryStatus::Failed
+                        }
+                        harness_core::agentfirm_api::MessageDeliveryStatus::Expired => {
+                            TeamDeliveryStatus::Expired
+                        }
+                    },
+                    attempt: delivery.attempt,
+                    claim_id: delivery.claim_id.clone(),
+                    claimed_by_supervisor_id: None,
+                    claimed_generation: delivery.claimed_supervisor_generation,
+                    claimed_unix_ms: None,
+                    claim_expires_unix_ms: None,
+                    provider_receipt_id: delivery.provider_receipt_id.clone(),
+                    failure_reason: delivery.failure_detail.clone(),
+                    updated_at: delivery.updated_at.clone(),
+                })
+                .collect::<Vec<_>>();
+            let recipient_runtime_ids = message_deliveries
+                .iter()
+                .map(|delivery| delivery.member_id.clone())
+                .collect::<Vec<_>>();
+            team_messages.push(ProviderDispatchEnvelope {
+                id: message.id.clone(),
+                team_run_id: message.team_run_id.clone(),
+                work_id: message.work_id.clone(),
+                source_plan_ref: None,
+                sender: Some(TeamActorRef {
+                    kind: match message.sender.kind {
+                        harness_core::agentfirm_api::ActorKind::AgentMember => {
+                            TeamActorKind::AgentMember
+                        }
+                        harness_core::agentfirm_api::ActorKind::Service => TeamActorKind::Service,
+                        harness_core::agentfirm_api::ActorKind::Human
+                        | harness_core::agentfirm_api::ActorKind::External => {
+                            TeamActorKind::Operator
+                        }
+                    },
+                    id: message.sender.id.clone(),
+                    display_name: None,
+                    authn_source: Some("canonical_trust_kernel".into()),
+                }),
+                sender_runtime_id: message.sender.id.clone(),
+                recipients: recipient_runtime_ids
+                    .iter()
+                    .map(|id| TeamRecipientRef {
+                        kind: TeamRecipientKind::ProviderRuntimeProjection,
+                        id: id.clone(),
+                    })
+                    .collect(),
+                recipient_runtime_ids,
+                kind: match message.kind {
+                    harness_core::agentfirm_api::TeamMessageKind::Message => {
+                        ProviderDispatchIntent::Message
+                    }
+                    harness_core::agentfirm_api::TeamMessageKind::Control => {
+                        ProviderDispatchIntent::Control
+                    }
+                    harness_core::agentfirm_api::TeamMessageKind::ProviderInteractionRequest => {
+                        ProviderDispatchIntent::ProviderInteractionRequest
+                    }
+                    harness_core::agentfirm_api::TeamMessageKind::ProviderInteractionResponse => {
+                        ProviderDispatchIntent::ProviderInteractionResponse
+                    }
+                },
+                body: message.body,
+                correlation_id: message.correlation_id,
+                causation_id: message.causation_id,
+                response_intent: Some(match message.response_intent {
+                    harness_core::agentfirm_api::ResponseIntent::Informational => {
+                        ProviderResponseIntent::Informational
+                    }
+                    harness_core::agentfirm_api::ResponseIntent::ResponseRequired => {
+                        ProviderResponseIntent::ResponseRequired
+                    }
+                }),
+                evidence_refs: message.evidence_refs,
+                deliveries: message_deliveries,
+                created_at: message.created_at,
+            });
+        }
+    }
+    team_messages.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
     let works = store.latest_works()?;
     let work_events = store.work_events()?;
     let work_deliveries = store.latest_work_deliveries()?;
@@ -36646,7 +35722,6 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     let node_daemon_leases = store.latest_node_daemon_leases()?;
     let team_supervisor_leases = latest_team_supervisor_leases_in_append_order(store)?;
     let team_member_close_requests = latest_team_member_close_requests_in_append_order(store)?;
-    let agent_message_routes = store.agent_message_routes()?;
     // Old ledgers can contain v0 `thinking` rows. Keep the JSONL history
     // intact for migration/audit, but never project those rows into a new
     // snapshot: thinking is not product state or evidence.
@@ -36673,7 +35748,7 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
             let queued_count = messages
                 .iter()
                 .filter(|message| message.to_agent_id.as_ref() == Some(&member.id))
-                .filter(|message| message.delivery_status == MessageDeliveryStatus::Queued)
+                .filter(|message| message.delivery_status == RegistryDeliveryStatus::Queued)
                 .count();
             let child_thread_count = provider_child_threads
                 .iter()
@@ -36702,13 +35777,13 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
                 "prompt_ref": member.prompt_ref,
                 "skill_refs": member.skill_refs,
                 // Config-tab + identity-rail data (Multica layout): these live on
-                // the AgentMember but were not previously projected into the
+                // the ProviderLaunchProfile but were not previously projected into the
                 // snapshot. Additive — no schema change.
                 "model": member.model,
                 "profile": member.profile,
                 "provider_config": member.provider_config,
                 // Reverse membership is derived from the latest Mission-owned
-                // Team definitions. AgentMember.team_ids is compatibility input,
+                // Team definitions. ProviderLaunchProfile.team_ids is compatibility input,
                 // never authoritative read-model state.
                 "team_ids": derived_team_ids,
                 "created_at": member.created_at,
@@ -36747,7 +35822,6 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "node_daemon_leases": node_daemon_leases,
         "team_supervisor_leases": team_supervisor_leases,
         "team_member_close_requests": team_member_close_requests,
-        "agent_message_routes": agent_message_routes,
         "member_actions": member_actions,
         "pending_interactions": pending_interactions,
         "delegation_runs": delegation_runs,
@@ -36839,17 +35913,6 @@ fn dashboard_team_run_snapshot(
         .and_then(|value| value.as_str())
         .map(str::to_owned);
 
-    let member_run_ids = snapshot["member_runs"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|row| json_field_eq(row, "team_run_id", team_run_id))
-        .filter_map(|row| {
-            row.get("id")
-                .and_then(|value| value.as_str())
-                .map(str::to_owned)
-        })
-        .collect::<HashSet<_>>();
     let agent_member_ids = snapshot["member_runs"]
         .as_array()
         .into_iter()
@@ -36907,11 +35970,6 @@ fn dashboard_team_run_snapshot(
             .as_deref()
             .is_some_and(|id| json_field_eq(row, "mission_id", id))
     });
-    retain_json_rows(&mut snapshot, "agent_message_routes", |row| {
-        row.get("member_run_id")
-            .and_then(|value| value.as_str())
-            .is_some_and(|id| member_run_ids.contains(id))
-    });
     for key in [
         "messages",
         "events",
@@ -36947,19 +36005,19 @@ fn retain_json_rows(
     }
 }
 
-fn latest_member(store: &HarnessStore, member_id: &str) -> CliResult<AgentMember> {
+fn latest_member(store: &HarnessStore, member_id: &str) -> CliResult<ProviderLaunchProfile> {
     latest_members(store)?
         .remove(member_id)
         .ok_or_else(|| CliError::Usage(format!("agent member not found: {member_id}")))
 }
 
-fn latest_message(store: &HarnessStore, message_id: &str) -> CliResult<Message> {
+fn latest_message(store: &HarnessStore, message_id: &str) -> CliResult<RegistryMessage> {
     latest_messages(store)?
         .remove(message_id)
         .ok_or_else(|| CliError::Usage(format!("message not found: {message_id}")))
 }
 
-fn latest_messages(store: &HarnessStore) -> CliResult<BTreeMap<String, Message>> {
+fn latest_messages(store: &HarnessStore) -> CliResult<BTreeMap<String, RegistryMessage>> {
     let mut messages = BTreeMap::new();
     for message in store.messages()? {
         messages.insert(message.id.clone(), message);
@@ -36967,7 +36025,7 @@ fn latest_messages(store: &HarnessStore) -> CliResult<BTreeMap<String, Message>>
     Ok(messages)
 }
 
-fn latest_runtime(store: &HarnessStore, runtime_id: &str) -> CliResult<Option<AgentRuntime>> {
+fn latest_runtime(store: &HarnessStore, runtime_id: &str) -> CliResult<Option<ProviderProcess>> {
     let mut runtimes = BTreeMap::new();
     for runtime in store.runtimes()? {
         runtimes.insert(runtime.id.clone(), runtime);
@@ -36997,7 +36055,9 @@ fn latest_team_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec<Agent
     Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
 }
 
-fn latest_member_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec<MemberRun>> {
+fn latest_member_runs_in_append_order(
+    store: &HarnessStore,
+) -> CliResult<Vec<ProviderRuntimeProjection>> {
     let mut ids = Vec::new();
     let mut by_id = BTreeMap::new();
     for run in store.member_runs()? {
@@ -37008,7 +36068,9 @@ fn latest_member_runs_in_append_order(store: &HarnessStore) -> CliResult<Vec<Mem
     Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
 }
 
-fn latest_team_messages_in_append_order(store: &HarnessStore) -> CliResult<Vec<TeamMessage>> {
+fn latest_team_messages_in_append_order(
+    store: &HarnessStore,
+) -> CliResult<Vec<ProviderDispatchEnvelope>> {
     let mut ids = Vec::new();
     let mut by_id = BTreeMap::new();
     for message in store.team_messages()? {
@@ -37560,7 +36622,7 @@ fn latest_workflow_steps_in_append_order(store: &HarnessStore) -> CliResult<Vec<
     Ok(ids.into_iter().filter_map(|id| by_id.remove(&id)).collect())
 }
 
-fn latest_messages_in_append_order(store: &HarnessStore) -> CliResult<Vec<Message>> {
+fn latest_messages_in_append_order(store: &HarnessStore) -> CliResult<Vec<RegistryMessage>> {
     let mut message_ids = Vec::new();
     let mut messages_by_id = BTreeMap::new();
     for message in store.messages()? {
@@ -37574,7 +36636,7 @@ fn latest_messages_in_append_order(store: &HarnessStore) -> CliResult<Vec<Messag
         .collect())
 }
 
-fn latest_runtimes(store: &HarnessStore) -> CliResult<BTreeMap<String, AgentRuntime>> {
+fn latest_runtimes(store: &HarnessStore) -> CliResult<BTreeMap<String, ProviderProcess>> {
     let mut runtimes = BTreeMap::new();
     for runtime in store.runtimes()? {
         runtimes.insert(runtime.id.clone(), runtime);
@@ -37582,7 +36644,7 @@ fn latest_runtimes(store: &HarnessStore) -> CliResult<BTreeMap<String, AgentRunt
     Ok(runtimes)
 }
 
-fn latest_members(store: &HarnessStore) -> CliResult<BTreeMap<String, AgentMember>> {
+fn latest_members(store: &HarnessStore) -> CliResult<BTreeMap<String, ProviderLaunchProfile>> {
     let mut members = BTreeMap::new();
     for member in store.members()? {
         members.insert(member.id.clone(), member);
@@ -37592,7 +36654,12 @@ fn latest_members(store: &HarnessStore) -> CliResult<BTreeMap<String, AgentMembe
 
 fn known_agent_member_ids(store: &HarnessStore) -> CliResult<BTreeSet<String>> {
     let mut ids = latest_members(store)?.into_keys().collect::<BTreeSet<_>>();
-    ids.extend(store.latest_durable_members()?.into_keys());
+    ids.extend(
+        store
+            .all_trust_agent_members()?
+            .into_iter()
+            .map(|member| member.id),
+    );
     Ok(ids)
 }
 
@@ -37604,107 +36671,6 @@ fn latest_teams(store: &HarnessStore) -> CliResult<BTreeMap<String, AgentTeam>> 
     Ok(teams)
 }
 
-fn build_member_from_args(args: &[String], status: AgentMemberStatus) -> CliResult<AgentMember> {
-    let output_schema = output_schema_from_args(args)?;
-    Ok(AgentMember {
-        id: value(args, "--id").unwrap_or_else(|| generated_id("agent")),
-        name: required(args, "--name")?,
-        description: value(args, "--description")
-            .unwrap_or_else(|| "Codex-backed Agent Member".into()),
-        role: required(args, "--role")?,
-        provider: value(args, "--provider").unwrap_or_else(|| "codex".into()),
-        model: value(args, "--model"),
-        profile: value(args, "--profile"),
-        provider_config: AgentProviderConfig {
-            service_tier: value(args, "--service-tier"),
-            collaboration_mode: value(args, "--collaboration-mode"),
-            effort: value(args, "--effort"),
-            output_schema,
-            approval_policy: value(args, "--approval-policy"),
-            approvals_reviewer: value(args, "--approvals-reviewer"),
-            sandbox_policy: value(args, "--sandbox-policy"),
-            permission_profile: value(args, "--permission-profile"),
-            runtime_workspace_roots: many(args, "--runtime-workspace-root"),
-            environment_id: value(args, "--environment"),
-            mcp: None,
-        },
-        capabilities: many(args, "--capability"),
-        team_ids: many(args, "--team"),
-        prompt_ref: value(args, "--prompt-ref"),
-        skill_refs: many(args, "--skill"),
-        workspace_policy: value(args, "--workspace-policy"),
-        worktree_ref: value(args, "--worktree"),
-        permission_profile: value(args, "--permission-profile"),
-        runtime_workspace_roots: many(args, "--runtime-workspace-root"),
-        status,
-        current_task_id: None,
-        current_proposal_id: None,
-        provider_runtime_id: None,
-        native_session: None,
-        provider_thread_id: None,
-        provider_agent_path: value(args, "--provider-agent-path"),
-        provider_agent_nickname: value(args, "--provider-agent-nickname"),
-        provider_agent_role: value(args, "--provider-agent-role"),
-        control_endpoint: None,
-        created_at: now_string(),
-        last_seen_at: None,
-    })
-}
-
-fn output_schema_from_args(args: &[String]) -> CliResult<Option<serde_json::Value>> {
-    let Some(path) = value(args, "--output-schema-file") else {
-        return Ok(None);
-    };
-    let contents = fs::read_to_string(&path)
-        .map_err(|e| CliError::Usage(format!("failed to read --output-schema-file {path}: {e}")))?;
-    let schema = serde_json::from_str::<serde_json::Value>(&contents).map_err(|e| {
-        CliError::Usage(format!(
-            "failed to parse --output-schema-file {path} as JSON: {e}"
-        ))
-    })?;
-    Ok(Some(schema))
-}
-
-fn ensure_agent_prompt(
-    store: &HarnessStore,
-    member: &AgentMember,
-    args: &[String],
-) -> CliResult<String> {
-    ensure_agent_prompt_with_override(store, member, value(args, "--prompt"))
-}
-
-/// Persist (or reuse) the bootstrap prompt for a member. Shared by the CLI
-/// (`--prompt`) and the HTTP create route (`prompt` JSON field). When the member
-/// already carries an explicit `prompt_ref` it is returned untouched; otherwise a
-/// prompt file is written under the store's `prompts/` dir, using the caller's
-/// override text or a generated bootstrap prompt.
-fn ensure_agent_prompt_with_override(
-    store: &HarnessStore,
-    member: &AgentMember,
-    prompt_override: Option<String>,
-) -> CliResult<String> {
-    if let Some(prompt_ref) = member.prompt_ref.clone() {
-        return Ok(prompt_ref);
-    }
-
-    store.init()?;
-    let prompt_path = store
-        .root()
-        .join("prompts")
-        .join(format!("{}.md", member.id));
-    let prompt = prompt_override.unwrap_or_else(|| build_bootstrap_prompt(member));
-    fs::write(&prompt_path, prompt)?;
-    Ok(prompt_path.display().to_string())
-}
-
-fn build_bootstrap_prompt(member: &AgentMember) -> String {
-    format!(
-        "# Agent Bootstrap\n\nid: {}\nname: {}\ndescription: {}\nrole: {}\nprovider: {}\n\nUse harness messages as the source of truth. Report task progress with evidence refs. Respect worktree, branch, PR, and owned-path boundaries.\n",
-        member.id, member.name, member.description, member.role, member.provider
-    )
-}
-
-// ---------------------------------------------------------------------------
 // Provider dispatch seam (BE-WP6)
 //
 // The harness core stays provider-neutral (ADR 0011); all provider-specific
@@ -37783,22 +36749,26 @@ trait ProviderAdapter: Sync {
     }
 
     /// Spawn (or attach) the persistent runtime for a member of this provider.
-    fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime>;
+    fn start_runtime(
+        &self,
+        store: &HarnessStore,
+        member: &ProviderLaunchProfile,
+    ) -> CliResult<ProviderProcess>;
 
     /// Run a single message delivery against this provider's persistent runtime.
     ///
     /// `project` is the selected [`ProjectContext`] (goal-multi-project P3): the
     /// worker's cwd derives from `project.project_root` when the member is not
-    /// pinned to a specific `worktree_ref`, so a long-running `serve` that switched
+    /// pinned to a specific `provider_cwd_hint`, so a long-running `serve` that switched
     /// projects (and never `cd`d) still spawns the worker in the right tree where
     /// its `CLAUDE.md` / `AGENTS.md` live.
     #[allow(clippy::too_many_arguments)]
     fn run_delivery(
         &self,
         store: &HarnessStore,
-        member: &AgentMember,
-        runtime: &AgentRuntime,
-        message: &Message,
+        member: &ProviderLaunchProfile,
+        runtime: &ProviderProcess,
+        message: &RegistryMessage,
         delivery_id: &str,
         timeout_ms: u64,
         project: &ProjectContext,
@@ -37833,7 +36803,11 @@ impl ProviderAdapter for CodexAdapter {
         }
     }
 
-    fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
+    fn start_runtime(
+        &self,
+        store: &HarnessStore,
+        member: &ProviderLaunchProfile,
+    ) -> CliResult<ProviderProcess> {
         start_codex_exec_runtime(store, member)
     }
 
@@ -37841,9 +36815,9 @@ impl ProviderAdapter for CodexAdapter {
     fn run_delivery(
         &self,
         store: &HarnessStore,
-        member: &AgentMember,
-        runtime: &AgentRuntime,
-        message: &Message,
+        member: &ProviderLaunchProfile,
+        runtime: &ProviderProcess,
+        message: &RegistryMessage,
         delivery_id: &str,
         timeout_ms: u64,
         project: &ProjectContext,
@@ -37901,7 +36875,11 @@ impl ProviderAdapter for ClaudeAdapter {
         }
     }
 
-    fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
+    fn start_runtime(
+        &self,
+        store: &HarnessStore,
+        member: &ProviderLaunchProfile,
+    ) -> CliResult<ProviderProcess> {
         start_claude_runtime(store, member)
     }
 
@@ -37909,9 +36887,9 @@ impl ProviderAdapter for ClaudeAdapter {
     fn run_delivery(
         &self,
         store: &HarnessStore,
-        member: &AgentMember,
-        runtime: &AgentRuntime,
-        message: &Message,
+        member: &ProviderLaunchProfile,
+        runtime: &ProviderProcess,
+        message: &RegistryMessage,
         delivery_id: &str,
         timeout_ms: u64,
         project: &ProjectContext,
@@ -38185,7 +37163,10 @@ fn spawn_kimi_ephemeral(
 /// Start the (on-demand) Kimi runtime. Like claude/codex, no persistent process
 /// is held; each delivery spawns a fresh `kimi -p` turn. Mirrors
 /// [`start_claude_runtime`] with the `kimi` binary.
-fn start_kimi_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
+fn start_kimi_runtime(
+    store: &HarnessStore,
+    member: &ProviderLaunchProfile,
+) -> CliResult<ProviderProcess> {
     let runtime_id = generated_id("runtime");
     let runtime_dir = store.root().join("runtimes").join(&member.id);
     fs::create_dir_all(&runtime_dir)?;
@@ -38202,11 +37183,11 @@ fn start_kimi_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<A
             .map(|output| output.status.success())
             .unwrap_or(false)
     };
-    Ok(AgentRuntime {
+    Ok(ProviderProcess {
         id: runtime_id,
         agent_member_id: member.id.clone(),
         provider: member.provider.clone(),
-        status: AgentRuntimeStatus::Running,
+        status: ProviderProcessStatus::Running,
         pid: None, // Kimi runs on-demand; no persistent PID
         control_endpoint: Some(endpoint),
         command: "kimi".into(),
@@ -38214,7 +37195,7 @@ fn start_kimi_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<A
         started_at: now_string(),
         ended_at: None,
         last_event_at: Some(now_string()),
-        health: AgentRuntimeHealth {
+        health: ProviderProcessHealth {
             process_alive,
             socket_exists: true,
             protocol_probe: Some("unknown".into()),
@@ -38232,8 +37213,8 @@ fn start_kimi_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<A
 /// `--allowedTools` / `--json-schema` / `--mcp-config` / `--add-dir`) are dropped.
 fn run_kimi_exec_delivery_real(
     session_dir: &Path,
-    member: &AgentMember,
-    message: &Message,
+    member: &ProviderLaunchProfile,
+    message: &RegistryMessage,
     timeout_ms: u64,
     project: &ProjectContext,
 ) -> CliResult<ClaudeDeliveryRun> {
@@ -38310,9 +37291,9 @@ fn run_kimi_exec_delivery_real(
 #[allow(clippy::too_many_arguments)]
 fn run_kimi_delivery(
     store: &HarnessStore,
-    member: &AgentMember,
-    _runtime: &AgentRuntime,
-    message: &Message,
+    member: &ProviderLaunchProfile,
+    _runtime: &ProviderProcess,
+    message: &RegistryMessage,
     delivery_id: &str,
     timeout_ms: u64,
     project: &ProjectContext,
@@ -38411,7 +37392,11 @@ impl ProviderAdapter for KimiAdapter {
         }
     }
 
-    fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
+    fn start_runtime(
+        &self,
+        store: &HarnessStore,
+        member: &ProviderLaunchProfile,
+    ) -> CliResult<ProviderProcess> {
         start_kimi_runtime(store, member)
     }
 
@@ -38419,9 +37404,9 @@ impl ProviderAdapter for KimiAdapter {
     fn run_delivery(
         &self,
         store: &HarnessStore,
-        member: &AgentMember,
-        runtime: &AgentRuntime,
-        message: &Message,
+        member: &ProviderLaunchProfile,
+        runtime: &ProviderProcess,
+        message: &RegistryMessage,
         delivery_id: &str,
         timeout_ms: u64,
         project: &ProjectContext,
@@ -38490,8 +37475,8 @@ impl ProviderAdapter for PiAdapter {
     fn start_runtime(
         &self,
         _store: &HarnessStore,
-        _member: &AgentMember,
-    ) -> CliResult<AgentRuntime> {
+        _member: &ProviderLaunchProfile,
+    ) -> CliResult<ProviderProcess> {
         Err(CliError::Usage(
             "pi persistent Team Member is orchestrated by run_pi_team_member, not start_provider_runtime"
                 .to_string(),
@@ -38502,9 +37487,9 @@ impl ProviderAdapter for PiAdapter {
     fn run_delivery(
         &self,
         _store: &HarnessStore,
-        _member: &AgentMember,
-        _runtime: &AgentRuntime,
-        _message: &Message,
+        _member: &ProviderLaunchProfile,
+        _runtime: &ProviderProcess,
+        _message: &RegistryMessage,
         _delivery_id: &str,
         _timeout_ms: u64,
         _project: &ProjectContext,
@@ -38550,7 +37535,10 @@ fn unknown_provider_error(provider: &str, concern: &str) -> CliError {
 }
 
 /// Spawn (or attach) the runtime for a member, routed by `member.provider`.
-fn start_provider_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
+fn start_provider_runtime(
+    store: &HarnessStore,
+    member: &ProviderLaunchProfile,
+) -> CliResult<ProviderProcess> {
     match provider_adapter(&member.provider) {
         Some(adapter) => adapter.start_runtime(store, member),
         None => Err(unknown_provider_error(&member.provider, "runtime start")),
@@ -38972,8 +37960,8 @@ fn write_temp_mcp_config(mcp: Option<&LaunchMcp>) -> CliResult<Option<String>> {
 
 fn run_codex_exec_process(
     session_dir: &Path,
-    member: &AgentMember,
-    message: &Message,
+    member: &ProviderLaunchProfile,
+    message: &RegistryMessage,
     delivery_id: &str,
     timeout_ms: u64,
     project: &ProjectContext,
@@ -38990,7 +37978,7 @@ fn run_codex_exec_process(
     );
 
     let developer_instructions = provider_developer_instructions(member);
-    // cwd precedence (P3, Stage 3): member.worktree_ref → selected
+    // cwd precedence (P3, Stage 3): member.provider_cwd_hint → selected
     // project.project_root → process cwd. Codex discovers AGENTS.md from its cwd,
     // so a `serve` that switched projects must still spawn here in the project root.
     let cwd = delivery_worker_cwd(member, project);
@@ -39137,7 +38125,7 @@ fn codex_mcp_id_key(id: &str) -> String {
 // session truth. The provider owns the transcript, tool history, and resume data.
 struct ExecDeliverySessionRecord<'a> {
     delivery_id: &'a str,
-    message: &'a Message,
+    message: &'a RegistryMessage,
     provider_thread_id: Option<String>,
 }
 
@@ -39171,9 +38159,9 @@ fn record_exec_delivery_session(
 #[allow(clippy::too_many_arguments)]
 fn run_codex_exec_delivery(
     store: &HarnessStore,
-    member: &AgentMember,
-    _runtime: &AgentRuntime,
-    message: &Message,
+    member: &ProviderLaunchProfile,
+    _runtime: &ProviderProcess,
+    message: &RegistryMessage,
     delivery_id: &str,
     timeout_ms: u64,
     project: &ProjectContext,
@@ -39268,9 +38256,9 @@ fn run_codex_exec_delivery(
 #[allow(clippy::too_many_arguments)]
 fn run_provider_delivery(
     store: &HarnessStore,
-    member: &AgentMember,
-    runtime: &AgentRuntime,
-    message: &Message,
+    member: &ProviderLaunchProfile,
+    runtime: &ProviderProcess,
+    message: &RegistryMessage,
     delivery_id: &str,
     timeout_ms: u64,
     project: &ProjectContext,
@@ -39301,7 +38289,10 @@ type ClaudeDeliveryRun = (
     String,
 );
 
-fn start_codex_exec_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
+fn start_codex_exec_runtime(
+    store: &HarnessStore,
+    member: &ProviderLaunchProfile,
+) -> CliResult<ProviderProcess> {
     let runtime_id = generated_id("runtime");
     let runtime_dir = store.root().join("runtimes").join(&member.id);
     fs::create_dir_all(&runtime_dir)?;
@@ -39323,11 +38314,11 @@ fn start_codex_exec_runtime(store: &HarnessStore, member: &AgentMember) -> CliRe
         .map(|output| output.status.success())
         .unwrap_or(false);
 
-    Ok(AgentRuntime {
+    Ok(ProviderProcess {
         id: runtime_id,
         agent_member_id: member.id.clone(),
         provider: member.provider.clone(),
-        status: AgentRuntimeStatus::Running,
+        status: ProviderProcessStatus::Running,
         pid: None, // Codex exec runs on-demand; no persistent PID
         control_endpoint: Some(endpoint),
         command: "codex".into(),
@@ -39335,7 +38326,7 @@ fn start_codex_exec_runtime(store: &HarnessStore, member: &AgentMember) -> CliRe
         started_at: now_string(),
         ended_at: None,
         last_event_at: Some(now_string()),
-        health: AgentRuntimeHealth {
+        health: ProviderProcessHealth {
             process_alive,
             socket_exists: true,                        // Runtime dir exists
             protocol_probe: Some("exec-stream".into()), // Codex uses exec-stream
@@ -39349,7 +38340,10 @@ fn start_codex_exec_runtime(store: &HarnessStore, member: &AgentMember) -> CliRe
 // The claude CLI shape: spawn the claude binary as a local process, run message
 // delivery exchanges via stdin/stdout, record sessions and evidence.
 
-fn start_claude_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
+fn start_claude_runtime(
+    store: &HarnessStore,
+    member: &ProviderLaunchProfile,
+) -> CliResult<ProviderProcess> {
     let runtime_id = generated_id("runtime");
     let runtime_dir = store.root().join("runtimes").join(&member.id);
     fs::create_dir_all(&runtime_dir)?;
@@ -39373,11 +38367,11 @@ fn start_claude_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult
         .map(|output| output.status.success())
         .unwrap_or(false);
 
-    Ok(AgentRuntime {
+    Ok(ProviderProcess {
         id: runtime_id,
         agent_member_id: member.id.clone(),
         provider: member.provider.clone(),
-        status: AgentRuntimeStatus::Running,
+        status: ProviderProcessStatus::Running,
         pid: None, // Claude runs on-demand; no persistent PID
         control_endpoint: Some(endpoint),
         command: "claude".into(),
@@ -39385,7 +38379,7 @@ fn start_claude_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult
         started_at: now_string(),
         ended_at: None,
         last_event_at: Some(now_string()),
-        health: AgentRuntimeHealth {
+        health: ProviderProcessHealth {
             process_alive,
             socket_exists: true,                    // Runtime dir exists
             protocol_probe: Some("unknown".into()), // Will probe on first delivery
@@ -39398,9 +38392,9 @@ fn start_claude_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult
 #[allow(clippy::too_many_arguments)]
 fn run_claude_delivery(
     store: &HarnessStore,
-    member: &AgentMember,
-    _runtime: &AgentRuntime,
-    message: &Message,
+    member: &ProviderLaunchProfile,
+    _runtime: &ProviderProcess,
+    message: &RegistryMessage,
     delivery_id: &str,
     timeout_ms: u64,
     project: &ProjectContext,
@@ -39493,8 +38487,8 @@ fn run_claude_delivery(
 /// WP-3: Real implementation replacing the stub; parses session_id and events.
 fn run_claude_exec_delivery_real(
     session_dir: &Path,
-    member: &AgentMember,
-    message: &Message,
+    member: &ProviderLaunchProfile,
+    message: &RegistryMessage,
     timeout_ms: u64,
     project: &ProjectContext,
 ) -> CliResult<ClaudeDeliveryRun> {
@@ -39511,7 +38505,7 @@ fn run_claude_exec_delivery_real(
     // Compose system prompt (developer instructions from member prompt_ref).
     let system_prompt = provider_developer_instructions(member);
 
-    // cwd precedence (P3, Stage 3): member.worktree_ref → selected
+    // cwd precedence (P3, Stage 3): member.provider_cwd_hint → selected
     // project.project_root → process cwd. Claude Code discovers CLAUDE.md /
     // .claude/ (and keys per-project memory) from its cwd, so a `serve` that
     // switched projects must still spawn here in the selected project root.
@@ -39625,14 +38619,14 @@ fn apply_claude_output_schema_arg(cmd: &mut Command, spec: &LaunchSpec) {
 /// path uses, so the resident invocation surface matches `claude -p` flag for
 /// flag (only `-p <prompt>` becomes `--input-format stream-json`).
 fn build_resident_config(
-    member: &AgentMember,
-    message: &Message,
+    member: &ProviderLaunchProfile,
+    message: &RegistryMessage,
     project: &ProjectContext,
 ) -> resident::ResidentConfig {
     let spec = build_launch_spec(member, message);
     let system_prompt = provider_developer_instructions(member);
     // Same cwd precedence as the default Claude path (P3, Stage 3):
-    // member.worktree_ref → selected project.project_root → process cwd.
+    // member.provider_cwd_hint → selected project.project_root → process cwd.
     let cwd = delivery_worker_cwd(member, project);
 
     let mcp_config_path = write_temp_mcp_config(spec.mcp.as_ref()).ok().flatten();
@@ -39674,8 +38668,8 @@ fn build_resident_config(
 /// stdin and reaps the child without creating a second lifecycle controller.
 fn run_claude_resident_delivery_real(
     session_dir: &Path,
-    member: &AgentMember,
-    message: &Message,
+    member: &ProviderLaunchProfile,
+    message: &RegistryMessage,
     timeout_ms: u64,
     project: &ProjectContext,
 ) -> CliResult<ClaudeDeliveryRun> {
@@ -39817,7 +38811,7 @@ fn record_provider_hook_event(
     let provider_turn_id =
         json_str(&payload, "turn_id").or_else(|| turn_id_from_container(&payload));
     let now = now_string();
-    let event = AgentEvent {
+    let event = ProviderDispatchEvent {
         id: generated_id("event"),
         agent_member_id: agent_id.clone(),
         provider_runtime_id: runtime_id.clone(),
@@ -39836,9 +38830,9 @@ fn record_provider_hook_event(
         member.last_seen_at = Some(now.clone());
         member.status = if hook_event_name.eq_ignore_ascii_case("stop") {
             member.current_task_id = None;
-            AgentMemberStatus::Idle
+            ProviderLaunchStatus::Idle
         } else {
-            AgentMemberStatus::Running
+            ProviderLaunchStatus::Running
         };
         store.append_member(&member)?;
     }
@@ -39870,7 +38864,7 @@ fn append_agent_event(
     summary: &str,
     payload_ref: Option<&str>,
 ) -> CliResult<()> {
-    let event = AgentEvent {
+    let event = ProviderDispatchEvent {
         id: generated_id("event"),
         agent_member_id: agent_member_id.into(),
         provider_runtime_id: runtime_id.map(str::to_string),
@@ -39886,15 +38880,6 @@ fn append_agent_event(
     };
     store.append_event(&event)?;
     Ok(())
-}
-
-fn stop_pid(pid: u32) -> CliResult<()> {
-    let status = Command::new("kill").arg(pid.to_string()).status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(CliError::Usage(format!("failed to stop pid {pid}")))
-    }
 }
 
 fn require_subcommand(args: &[String], usage: &str) -> CliResult<()> {
@@ -39925,22 +38910,20 @@ fn has_flag(args: &[String], name: &str) -> bool {
     args.iter().any(|arg| arg == name)
 }
 
-fn parse_message_kind(value: &str) -> CliResult<MessageKind> {
+fn parse_message_kind(value: &str) -> CliResult<RegistryMessageIntent> {
     match value {
-        "message" => Ok(MessageKind::Message),
-        "assignment" => Ok(MessageKind::Assignment),
-        "report" => Ok(MessageKind::Report),
+        "message" => Ok(RegistryMessageIntent::Message),
+        "report" => Ok(RegistryMessageIntent::Report),
         other => Err(CliError::Usage(format!("unknown message kind: {other}"))),
     }
 }
 
 // Test-only helper: only referenced by build_turn_input (also #[cfg(test)]).
 #[cfg(test)]
-fn message_kind_label(kind: &MessageKind) -> &'static str {
+fn message_kind_label(kind: &RegistryMessageIntent) -> &'static str {
     match kind {
-        MessageKind::Message => "message",
-        MessageKind::Assignment => "assignment",
-        MessageKind::Report => "report",
+        RegistryMessageIntent::Message => "message",
+        RegistryMessageIntent::Report => "report",
     }
 }
 
@@ -39955,42 +38938,6 @@ fn parse_sender_kind(value: &str) -> CliResult<SenderKind> {
 
 /// Reads the optional `--sender-kind` flag, defaulting to [`SenderKind::Agent`]
 /// when absent so callers that do not specify a sender identity behave as before.
-fn sender_kind_from_args(args: &[String]) -> CliResult<SenderKind> {
-    match value(args, "--sender-kind") {
-        Some(raw) => parse_sender_kind(&raw),
-        None => Ok(SenderKind::default()),
-    }
-}
-
-fn parse_provider_execution_status(value: &str) -> CliResult<ProviderExecutionStatus> {
-    match value {
-        "queued" => Ok(ProviderExecutionStatus::Queued),
-        "running" => Ok(ProviderExecutionStatus::Running),
-        "succeeded" => Ok(ProviderExecutionStatus::Succeeded),
-        "failed" => Ok(ProviderExecutionStatus::Failed),
-        "canceled" => Ok(ProviderExecutionStatus::Canceled),
-        "stale" => Ok(ProviderExecutionStatus::Stale),
-        other => Err(CliError::Usage(format!(
-            "unknown provider session status: {other}"
-        ))),
-    }
-}
-
-fn parse_terminal_source(value: &str) -> CliResult<MessageTerminalSource> {
-    match value {
-        "turn_completed" => Ok(MessageTerminalSource::TurnCompleted),
-        "thread_idle" => Ok(MessageTerminalSource::ThreadIdle),
-        "thread_read" => Ok(MessageTerminalSource::ThreadRead),
-        "hook_stop" => Ok(MessageTerminalSource::HookStop),
-        "dry_run" => Ok(MessageTerminalSource::DryRun),
-        "failed" => Ok(MessageTerminalSource::Failed),
-        "unknown" => Ok(MessageTerminalSource::Unknown),
-        other => Err(CliError::Usage(format!(
-            "unknown message terminal source: {other}"
-        ))),
-    }
-}
-
 fn terminal_source_label(source: &MessageTerminalSource) -> String {
     match source {
         MessageTerminalSource::TurnCompleted => "turn_completed",
@@ -40092,7 +39039,7 @@ team-run start      --id <id> [--max-concurrency <n>] [--idle-timeout-s <n>]
 team-run add-member --id <id> --member <spec> [--initial-work <text>]
 team-run status     --id <id> [--json]
 team-run wait       --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
-team-run send       --id <id> --from <actor> --to <csv> --kind message|handoff|control
+team-run send       --id <id> --from <actor> --to <csv> --kind message|control
                     --body <text> [--response-required|--informational]
                     [--work-id <id>] [--correlation-id <id>] [--json]
 team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]
@@ -40109,19 +39056,14 @@ const CHEATSHEET_WORK: &str = r#"work create --team-run-id <id> --title <text> -
   [--claim-mode team_claim --eligible-member-id <id>]
   [--priority low|normal|high|urgent] [--context <md>]
   [--prerequisite-work-id <id>] [--idempotency-key <key>]
-  [--github-issue owner/repo#N] [--gate <spec>]
-  [--worktree <path> --workspace-base <ref> --workspace-no-cleanup]
-  [--workspace-kind worktree|dir|inherit --workspace-path <path>]
+  [--github-issue owner/repo#N]
 work list --team-run-id <id> [--brief] [--since <cursor>]
   [--status <status>] [--member-run-id <id>]
 work show --work-id <id>
 work assign --work-id <id> --expected-version <n> --member-run-id <id> [--idempotency-key <key>]
-work review --team-run-id <id> --work-id <id> --expected-version <n>
-  --verdict pass|fail|blocked|needs_changes --summary <text> [--member-run-id <id>]
 work accept --work-id <id> --expected-version <n> [--idempotency-key <key>]
 work request-changes --work-id <id> --expected-version <n> --reason <text> [--idempotency-key <key>]
 work poll-github-ci --team-run-id <id>
-work check-gates --work-id <id>
 "#;
 
 const CHEATSHEET_MISSION: &str = r#"mission create        --title <text> --objective <text> [--id <id>]
@@ -40143,7 +39085,7 @@ team-run add-member --id <id> --member <spec>
 team-run status --id <id> [--json]
 team-run wait --id <id> [--after-seq <n>] [--timeout-secs <n>] [--json]
 team-run send --id <id> --from <actor> --to <csv>
-  --kind message|handoff|control --body <text> [--work-id <id>] [--json]
+  --kind message|control --body <text> [--work-id <id>] [--json]
 team-run host-inbox --surface <s> --thread-id <id> [--all] [--json]
 team-run dispatch-host --id <id> [--min-age-s <n>] [--timeout-ms <n>]
 team-run ack --id <id> (--message-id <csv>|--all-delivered) [--json]
@@ -40154,7 +39096,7 @@ team-run recover --id <id> [--json]
 work create --team-run-id <id> --title <text> --completion-criteria <text>
   [--owner-member-run-id <id> --claim-mode host_assign]
   [--claim-mode team_claim --eligible-member-id <id>]
-  [--github-issue owner/repo#N] [--gate <spec>] [--worktree <path>]
+  [--github-issue owner/repo#N]
 work list --team-run-id <id> [--brief] [--since <cursor>]
 work show --work-id <id>
 work assign --work-id <id> --expected-version <n> --member-run-id <id>
@@ -40163,7 +39105,6 @@ work submit --team-run-id <id> --member-run-id <id> --work-id <id>
 work accept --work-id <id> --expected-version <n>
 work request-changes --work-id <id> --expected-version <n> --reason <text>
 work poll-github-ci --team-run-id <id>
-work check-gates --work-id <id>
 
 mission create --title <text> --objective <text> [--id <id>]
   [--context <text>] [--json]
@@ -40228,14 +39169,13 @@ fn print_help() {
   company finance commitment list|show|propose|transition
   company finance payment list|show|record
   company org list|query|create-human|create-agent|create-unit|add-membership|transition-actor|update-permissions
-  company org link-execution --authority <human> --actor <standing-agent> --agent-member <id> --execution-space <id> [--replace]
-  company org unlink-execution --authority <human> --actor <standing-agent> [--expect-agent-member <id>]
+  company org link-execution --authority <human> --actor <agent-membership> --agent-member <id> --execution-space <id> [--replace]
+  company org unlink-execution --authority <human> --actor <agent-membership> [--expect-agent-member <id>]
   company org actor list|show|create-human|create-agent|update-status|link-execution|unlink-execution
   company org unit list|show|create|update-status
   company org membership list|assign|update-status
   company gateway social readiness [--platform xiaohongshu|douyin|wechat_channels] [--adb adb] [--device <serial>]
   company approval list|show|request|decide
-  agent create|list|show|start|health|send|route-inbox|deliver|retry-delivery|reconcile-delivery|gateway|close
   workflow list|run|run-script|get-output|patch|gc-worktrees|reap-workers
   dashboard snapshot
   dashboard doctor --team-run-id <id> --api <base-url> [--expected-git-rev <rev>]
@@ -44320,12 +43260,17 @@ mod tests {
                     u64::MAX / 2,
                 )?,
             };
+            let execution_space_id = run
+                .member_run_ids
+                .iter()
+                .find_map(|member_run_id| self.trust_member_run_scope(member_run_id).ok().flatten())
+                .unwrap_or_else(|| "test-execution-space".to_string());
             self.acquire_team_supervisor_under_node_lease(
                 team_run_id,
                 &run.execution_node_id,
                 &daemon.daemon_id,
                 daemon.generation,
-                "test-execution-space",
+                &execution_space_id,
                 &run.project_binding_id,
                 supervisor_id,
                 owner_process_id,
@@ -44657,8 +43602,12 @@ mod tests {
             Arc::new(AtomicBool::new(true)),
         );
         assert!(matches!(
-            prepare_member_workspace_for_spawn(&ledger, &member, &test_workspace_snapshot(&root),)
-                .expect("successor reconciles pending Close"),
+            prepare_member_workspace_for_spawn(
+                &ledger,
+                &member,
+                &test_provider_environment_observation(&root),
+            )
+            .expect("successor reconciles pending Close"),
             PreSpawnWorkspacePreparation::Superseded
         ));
         let latest = latest_member_runs_in_append_order(&store)
@@ -44677,185 +43626,6 @@ mod tests {
             TeamMemberCloseStatus::Applied
         );
         std::fs::remove_dir_all(root).expect("cleanup");
-    }
-
-    #[test]
-    fn execution_space_migration_downgrades_forged_bound_reviews() {
-        let forged = serde_json::json!({
-            "id": "review-forged",
-            "task_id": "work-1",
-            "goal_id": null,
-            "reviewer_agent_id": "critic-1",
-            "review_kind": "code",
-            "verdict": "pass",
-            "summary": "forged source-ledger pass",
-            "blockers": [],
-            "residual_risk": null,
-            "missing_validation": [],
-            "evidence_ids": [],
-            "created_at": "unix-ms:1",
-            "command_idempotency_key": "review-key-1",
-            "reviewed_work_id": "work-1",
-            "reviewed_work_version": 7,
-            "review_strategy": "peer"
-        });
-        let historical = serde_json::json!({
-            "id": "review-historical",
-            "task_id": null,
-            "goal_id": null,
-            "reviewer_agent_id": "critic-1",
-            "review_kind": "code",
-            "verdict": "pass",
-            "summary": "historical evidence",
-            "blockers": [],
-            "residual_risk": null,
-            "missing_validation": [],
-            "evidence_ids": [],
-            "created_at": "unix-ms:1"
-        });
-        let source = format!("{forged}\n{historical}\n");
-
-        let (migrated, downgraded) =
-            prepare_execution_ledger_for_migration("reviews.jsonl", source.as_bytes())
-                .expect("migration must safely rewrite review ledger");
-        assert_eq!(downgraded, 1);
-        let rows: Vec<harness_core::Review> = std::str::from_utf8(&migrated)
-            .expect("UTF-8")
-            .lines()
-            .map(|line| serde_json::from_str(line).expect("valid migrated Review"))
-            .collect();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].reviewed_work_id, None);
-        assert_eq!(rows[0].reviewed_work_version, None);
-        assert_eq!(rows[0].review_strategy, None);
-        assert_eq!(rows[0].command_idempotency_key, None);
-        assert_eq!(rows[1].id, "review-historical");
-        assert!(rows.iter().all(|review| review.validate().is_ok()));
-
-        let duplicate_error = prepare_execution_ledger_for_migration(
-            "reviews.jsonl",
-            format!("{historical}\n{historical}\n").as_bytes(),
-        )
-        .expect_err("duplicate Review ids must fail migration");
-        assert!(duplicate_error.to_string().contains("duplicate Review id"));
-        assert!(duplicate_error.to_string().contains("review-historical"));
-
-        let mut missing_id = forged.clone();
-        missing_id.as_object_mut().expect("object").remove("id");
-        let mut unknown = forged.clone();
-        unknown["unexpected"] = serde_json::json!(true);
-        let mut null_binding = forged.clone();
-        null_binding["reviewed_work_id"] = serde_json::Value::Null;
-        let mut partial_binding = forged;
-        partial_binding
-            .as_object_mut()
-            .expect("object")
-            .remove("review_strategy");
-
-        for invalid in [missing_id, unknown, null_binding, partial_binding] {
-            let error = prepare_execution_ledger_for_migration(
-                "reviews.jsonl",
-                format!("{invalid}\n").as_bytes(),
-            )
-            .expect_err("invalid source Review must fail migration before target writes");
-            assert!(
-                error.to_string().contains("Review"),
-                "actionable migration error: {error}"
-            );
-        }
-    }
-
-    #[test]
-    fn execution_space_migration_preflights_reviews_before_writing_target() {
-        let root = std::env::temp_dir().join(format!(
-            "firm-space-review-migration-{}",
-            generated_id("test")
-        ));
-        let firm_home = root.join("home");
-        let project_root = root.join("project");
-        fs::create_dir_all(&project_root).expect("project root");
-        let project_context =
-            project::register_and_activate(&firm_home, &project_root, "unix-ms:1")
-                .expect("register project");
-        let source_store = HarnessStore::new(project_context.store_root.clone());
-        source_store.init().expect("source store");
-        let forged = Review {
-            id: "review-forged".into(),
-            task_id: Some("work-1".into()),
-            goal_id: None,
-            reviewer_agent_id: "critic-1".into(),
-            review_kind: "code".into(),
-            verdict: ReviewVerdict::Pass,
-            summary: "forged project-ledger pass".into(),
-            blockers: vec![],
-            residual_risk: None,
-            missing_validation: vec![],
-            evidence_ids: vec![],
-            created_at: "unix-ms:1".into(),
-            performed_by_actor: None,
-            authority_actor: None,
-            command_idempotency_key: None,
-            reviewed_work_id: Some("work-1".into()),
-            reviewed_work_version: Some(7),
-            review_strategy: Some(harness_core::CodeReviewStrategy::Peer),
-        };
-        fs::write(
-            project_context.store_root.join("reviews.jsonl"),
-            format!("{}\n", serde_json::to_string(&forged).expect("serialize")),
-        )
-        .expect("seed source Review");
-
-        execution_space_migrate_from_project(
-            &firm_home,
-            &[
-                "--from-project".into(),
-                project_context.id.clone(),
-                "--id".into(),
-                "safe-space".into(),
-            ],
-        )
-        .expect("valid bound Review is safely downgraded");
-        let safe_target = execution_space::space_store_root(&firm_home, "safe-space");
-        let migrated = HarnessStore::new(safe_target.clone())
-            .reviews()
-            .expect("target Review ledger remains readable");
-        assert_eq!(migrated.len(), 1);
-        assert_eq!(migrated[0].reviewed_work_id, None);
-        let manifest: serde_json::Value = serde_json::from_slice(
-            &fs::read(safe_target.join("execution_space_migration.json"))
-                .expect("migration manifest"),
-        )
-        .expect("valid manifest");
-        assert_eq!(manifest["downgraded_bound_reviews"], 1);
-
-        fs::write(
-            project_context.store_root.join("missions.jsonl"),
-            b"{\"id\":\"would-have-been-copied\"}\n",
-        )
-        .expect("seed earlier ledger");
-        fs::write(
-            project_context.store_root.join("reviews.jsonl"),
-            b"{\"reviewed_work_id\":\"work-1\",\"unexpected\":true}\n",
-        )
-        .expect("seed invalid Review");
-        let unsafe_target = execution_space::space_store_root(&firm_home, "unsafe-space");
-        let error = execution_space_migrate_from_project(
-            &firm_home,
-            &[
-                "--from-project".into(),
-                project_context.id,
-                "--id".into(),
-                "unsafe-space".into(),
-            ],
-        )
-        .expect_err("invalid Review must abort before target creation");
-        assert!(error.to_string().contains("not a valid Review"));
-        assert!(
-            !unsafe_target.exists(),
-            "review preflight must prevent partial target ledgers"
-        );
-
-        fs::remove_dir_all(root).expect("cleanup");
     }
 
     fn migration_test_project(tag: &str) -> (PathBuf, PathBuf, ProjectContext) {
@@ -44975,47 +43745,6 @@ mod tests {
             active_before
         );
         assert!(hidden_migration_paths(&firm_home, "registered-space").is_empty());
-        fs::remove_dir_all(root).expect("cleanup");
-    }
-
-    #[test]
-    fn execution_space_migration_rejects_duplicate_review_ids_before_staging() {
-        let (root, firm_home, project_context) = migration_test_project("duplicate-reviews");
-        let review = Review {
-            id: "duplicate-review".into(),
-            task_id: None,
-            goal_id: None,
-            reviewer_agent_id: "critic-1".into(),
-            review_kind: "code".into(),
-            verdict: ReviewVerdict::Pass,
-            summary: "historical review".into(),
-            blockers: vec![],
-            residual_risk: None,
-            missing_validation: vec![],
-            evidence_ids: vec![],
-            created_at: "unix-ms:1".into(),
-            performed_by_actor: None,
-            authority_actor: None,
-            command_idempotency_key: None,
-            reviewed_work_id: None,
-            reviewed_work_version: None,
-            review_strategy: None,
-        };
-        let row = serde_json::to_string(&review).expect("serialize Review");
-        fs::write(
-            project_context.store_root.join("reviews.jsonl"),
-            format!("{row}\n{row}\n"),
-        )
-        .expect("duplicate source reviews");
-
-        let error = execution_space_migrate_from_project(
-            &firm_home,
-            &migration_args(&project_context.id, "duplicate-review-space", false),
-        )
-        .expect_err("duplicate Review ids must fail before target writes");
-        assert!(error.to_string().contains("duplicate Review id"));
-        assert!(!execution_space::space_store_root(&firm_home, "duplicate-review-space").exists());
-        assert!(hidden_migration_paths(&firm_home, "duplicate-review-space").is_empty());
         fs::remove_dir_all(root).expect("cleanup");
     }
 
@@ -45611,12 +44340,16 @@ mod tests {
         );
     }
 
-    fn native_open_test_member(provider: &str, mode: &str, session_id: &str) -> MemberRun {
-        MemberRun {
+    fn native_open_test_member(
+        provider: &str,
+        mode: &str,
+        session_id: &str,
+    ) -> ProviderRuntimeProjection {
+        ProviderRuntimeProjection {
             id: "member-native-open".into(),
             team_run_id: "team-native-open".into(),
             slot_id: None,
-            agent_member_id: None,
+            agent_member_id: "agent-native-open".into(),
             name: "DesktopObserver".into(),
             role: "reviewer".into(),
             provider: provider.into(),
@@ -45640,8 +44373,8 @@ mod tests {
                 last_verified_at: None,
                 parent_native_session_id: None,
             }),
-            worktree_ref: None,
-            workspace_snapshot: None,
+            provider_cwd_hint: None,
+            provider_environment_observation: None,
             owned_paths: Vec::new(),
             started_at: "unix-ms:1".into(),
             last_event_at: None,
@@ -45656,7 +44389,7 @@ mod tests {
         provider: &str,
         mode: &str,
         session_id: &str,
-    ) -> (TeamRunLedger, MemberRun) {
+    ) -> (TeamRunLedger, ProviderRuntimeProjection) {
         let created = create_team_run(
             store,
             None,
@@ -45671,7 +44404,7 @@ mod tests {
             None,
             None,
             &[TeamMemberSpec {
-                agent_member_id: None,
+                agent_member_id: "agent-provider-callback".into(),
                 name: "ProviderCallback".into(),
                 role: "reviewer".into(),
                 provider: provider.into(),
@@ -45679,7 +44412,7 @@ mod tests {
                 model: None,
                 effort: None,
                 service_tier: None,
-                worktree_ref: None,
+                provider_cwd_hint: None,
                 owned_paths: Vec::new(),
                 resume_native_session_id: None,
                 initial_work: None,
@@ -45905,7 +44638,7 @@ mod tests {
         assert_eq!(
             receipts.len(),
             1,
-            "receipts must converge to one per MemberRun: {receipts:?}"
+            "receipts must converge to one per ProviderRuntimeProjection: {receipts:?}"
         );
         let receipt = &receipts[0];
         assert_eq!(
@@ -45933,7 +44666,7 @@ mod tests {
         let (ledger, member) =
             persisted_native_test_member(&store, "kimi", "kimi_acp", "session-receipt-identity");
 
-        // An unrelated provider_control row for the same MemberRun must not
+        // An unrelated provider_control row for the same ProviderRuntimeProjection must not
         // suppress the bounded Kimi receipt: the convergence key is the
         // stable (member_run_id, action_type, title) identity, not the bare
         // action type.
@@ -46289,19 +45022,16 @@ package:com.tencent.mm
     }
 
     #[test]
-    fn public_team_message_writes_use_three_durable_shapes() {
+    fn public_team_message_writes_use_only_canonical_authored_shapes() {
         assert!(parse_team_message_kind("assignment").is_err());
         assert!(matches!(
             parse_team_message_kind("message"),
-            Ok(TeamMessageKind::Message)
+            Ok(ProviderDispatchIntent::Message)
         ));
-        assert!(matches!(
-            parse_team_message_kind("handoff"),
-            Ok(TeamMessageKind::Handoff)
-        ));
+        assert!(parse_team_message_kind("handoff").is_err());
         assert!(matches!(
             parse_team_message_kind("control"),
-            Ok(TeamMessageKind::Control)
+            Ok(ProviderDispatchIntent::Control)
         ));
 
         for historical in [
@@ -46317,12 +45047,8 @@ package:com.tencent.mm
             "plan_approval",
             "broadcast",
         ] {
-            let error = parse_team_message_kind(historical)
-                .expect_err("historical message kinds must be read-only");
-            assert!(
-                matches!(error, CliError::Usage(ref message) if message.contains("historical and read-only")),
-                "unexpected error for {historical}: {error:?}"
-            );
+            parse_team_message_kind(historical)
+                .expect_err("historical message kinds must not be authored");
         }
     }
 
@@ -46600,7 +45326,7 @@ package:com.tencent.mm
     }
 
     fn compatibility_block_action(
-        member: &MemberRun,
+        member: &ProviderRuntimeProjection,
         profile: &ProviderIntegrationProfile,
         seq: u64,
     ) -> MemberAction {
@@ -46640,7 +45366,7 @@ package:com.tencent.mm
     }
 
     fn compatibility_test_cause(
-        member: &MemberRun,
+        member: &ProviderRuntimeProjection,
         profile: &ProviderIntegrationProfile,
     ) -> ProviderCompatibilityBlockCause {
         ProviderCompatibilityBlockCause {
@@ -46737,7 +45463,8 @@ package:com.tencent.mm
                 "unix-ms:1",
             )
             .expect("seed compatibility-owned Blocked member");
-        blocked.workspace_snapshot = Some(test_workspace_snapshot(&root));
+        blocked.provider_environment_observation =
+            Some(test_provider_environment_observation(&root));
         let before_workspace = store.member_runs().unwrap().last().unwrap().clone();
         store
             .compare_and_append_member_run(&before_workspace, &blocked)
@@ -46959,8 +45686,8 @@ package:com.tencent.mm
         );
     }
 
-    fn make_member(id: &str) -> AgentMember {
-        AgentMember {
+    fn make_member(id: &str) -> ProviderLaunchProfile {
+        ProviderLaunchProfile {
             id: id.into(),
             name: "Member".into(),
             description: "Test member".into(),
@@ -46968,16 +45695,16 @@ package:com.tencent.mm
             provider: "codex".into(),
             model: None,
             profile: None,
-            provider_config: AgentProviderConfig::default(),
+            provider_config: ProviderLaunchConfig::default(),
             capabilities: Vec::new(),
             team_ids: Vec::new(),
             prompt_ref: None,
             skill_refs: Vec::new(),
             workspace_policy: None,
-            worktree_ref: None,
+            provider_cwd_hint: None,
             permission_profile: None,
             runtime_workspace_roots: Vec::new(),
-            status: AgentMemberStatus::Idle,
+            status: ProviderLaunchStatus::Idle,
             current_task_id: None,
             current_proposal_id: None,
             provider_runtime_id: None,
@@ -47001,18 +45728,18 @@ package:com.tencent.mm
         turn_id: Option<&str>,
     ) {
         store
-            .append_message(&Message {
+            .append_message(&RegistryMessage {
                 id: generated_id("message"),
                 task_id: task_id.map(str::to_string),
                 from_agent_id: "lead-1".into(),
                 to_agent_id: Some(agent_id.into()),
                 channel: Some("assignment".into()),
-                kind: MessageKind::Assignment,
-                delivery_status: MessageDeliveryStatus::Acknowledged,
+                kind: RegistryMessageIntent::Message,
+                delivery_status: RegistryDeliveryStatus::Acknowledged,
                 content: "test delivery".into(),
                 evidence_ids: Vec::new(),
                 created_at: "unix-ms:1".into(),
-                delivery: Some(MessageDelivery {
+                delivery: Some(RegistryDeliveryAttempt {
                     delivery_id: Some("delivery-1".into()),
                     execution_status: Some(status),
                     native_session: None,
@@ -47134,15 +45861,15 @@ package:com.tencent.mm
     fn running_delivery_is_acknowledged_not_delivered() {
         assert_eq!(
             message_status_for_delivery(&ProviderExecutionStatus::Running),
-            MessageDeliveryStatus::Acknowledged
+            RegistryDeliveryStatus::Acknowledged
         );
         assert_eq!(
             message_status_for_delivery(&ProviderExecutionStatus::Succeeded),
-            MessageDeliveryStatus::Delivered
+            RegistryDeliveryStatus::Delivered
         );
         assert_eq!(
             message_status_for_delivery(&ProviderExecutionStatus::Failed),
-            MessageDeliveryStatus::Failed
+            RegistryDeliveryStatus::Failed
         );
     }
 
@@ -47190,11 +45917,11 @@ package:com.tencent.mm
         let store = HarnessStore::new(&root);
         let mut member = make_member("claude-agent");
         member.provider = "claude".into();
-        let runtime = AgentRuntime {
+        let runtime = ProviderProcess {
             id: "runtime-claude".into(),
             agent_member_id: member.id.clone(),
             provider: "claude".into(),
-            status: AgentRuntimeStatus::Running,
+            status: ProviderProcessStatus::Running,
             pid: None,
             control_endpoint: Some(format!("claude-runtime://{}", root.display())),
             command: "claude".into(),
@@ -47202,7 +45929,7 @@ package:com.tencent.mm
             started_at: "unix-ms:1".into(),
             ended_at: None,
             last_event_at: Some("unix-ms:1".into()),
-            health: AgentRuntimeHealth {
+            health: ProviderProcessHealth {
                 process_alive: false,
                 socket_exists: false,
                 protocol_probe: None,
@@ -47210,14 +45937,14 @@ package:com.tencent.mm
                 checked_at: None,
             },
         };
-        let message = Message {
+        let message = RegistryMessage {
             id: "message-claude".into(),
             task_id: None,
             from_agent_id: "lead-1".into(),
             to_agent_id: Some(member.id.clone()),
             channel: Some("agent-direct".into()),
-            kind: MessageKind::Message,
-            delivery_status: MessageDeliveryStatus::Queued,
+            kind: RegistryMessageIntent::Message,
+            delivery_status: RegistryDeliveryStatus::Queued,
             content: "Hello".into(),
             evidence_ids: Vec::new(),
             created_at: "unix-ms:1".into(),
@@ -47301,22 +46028,22 @@ package:com.tencent.mm
             std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("direct")));
         let store = HarnessStore::new(&root);
         let mut member = make_member("agent-1");
-        member.status = AgentMemberStatus::Running;
+        member.status = ProviderLaunchStatus::Running;
         member.current_task_id = None;
         store.append_member(&member).expect("append member");
         store
-            .append_message(&Message {
+            .append_message(&RegistryMessage {
                 id: "message-1".into(),
                 task_id: None,
                 from_agent_id: "lead-1".into(),
                 to_agent_id: Some("agent-1".into()),
                 channel: Some("direct".into()),
-                kind: MessageKind::Message,
-                delivery_status: MessageDeliveryStatus::Acknowledged,
+                kind: RegistryMessageIntent::Message,
+                delivery_status: RegistryDeliveryStatus::Acknowledged,
                 content: "Direct message".into(),
                 evidence_ids: Vec::new(),
                 created_at: "unix-ms:1".into(),
-                delivery: Some(MessageDelivery {
+                delivery: Some(RegistryDeliveryAttempt {
                     delivery_id: Some("delivery-1".into()),
                     execution_status: Some(ProviderExecutionStatus::Running),
                     native_session: None,
@@ -47342,19 +46069,19 @@ package:com.tencent.mm
         .expect("reconcile taskless delivery");
 
         let latest_member = latest_member(&store, "agent-1").expect("latest member");
-        assert_eq!(latest_member.status, AgentMemberStatus::Idle);
+        assert_eq!(latest_member.status, ProviderLaunchStatus::Idle);
         assert_eq!(latest_member.current_task_id, None);
         let latest_message = latest_message(&store, "message-1").expect("latest message");
         assert_eq!(
             latest_message.delivery_status,
-            MessageDeliveryStatus::Delivered
+            RegistryDeliveryStatus::Delivered
         );
         let report = store
             .messages()
             .expect("messages")
             .into_iter()
             .find(|message| {
-                message.kind == MessageKind::Report
+                message.kind == RegistryMessageIntent::Report
                     && message.channel.as_deref() == Some("provider-report")
                     && message.delivery.as_ref().is_some_and(|delivery| {
                         delivery.delivery_id.as_deref() == Some("delivery-1")
@@ -47395,7 +46122,7 @@ package:com.tencent.mm
             .into_iter()
             .find(|message| message.to_agent_id.as_deref() == Some("agent-1"))
             .expect("latest delivery message");
-        assert_eq!(latest.delivery_status, MessageDeliveryStatus::Failed);
+        assert_eq!(latest.delivery_status, RegistryDeliveryStatus::Failed);
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -47424,22 +46151,22 @@ package:com.tencent.mm
             std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("stale-failed")));
         let store = HarnessStore::new(&root);
         let mut member = make_member("agent-1");
-        member.status = AgentMemberStatus::Stale;
+        member.status = ProviderLaunchStatus::Stale;
         member.current_task_id = Some("task-1".into());
         store.append_member(&member).expect("append member");
         store
-            .append_message(&Message {
+            .append_message(&RegistryMessage {
                 id: "message-1".into(),
                 task_id: Some("task-1".into()),
                 from_agent_id: "lead-1".into(),
                 to_agent_id: Some("agent-1".into()),
                 channel: Some("assignment".into()),
-                kind: MessageKind::Assignment,
-                delivery_status: MessageDeliveryStatus::Acknowledged,
+                kind: RegistryMessageIntent::Message,
+                delivery_status: RegistryDeliveryStatus::Acknowledged,
                 content: "Do the task".into(),
                 evidence_ids: Vec::new(),
                 created_at: "unix-ms:1".into(),
-                delivery: Some(MessageDelivery {
+                delivery: Some(RegistryDeliveryAttempt {
                     delivery_id: Some("delivery-1".into()),
                     execution_status: Some(ProviderExecutionStatus::Stale),
                     native_session: None,
@@ -47466,39 +46193,11 @@ package:com.tencent.mm
         let latest_message = latest_message(&store, "message-1").expect("latest message");
         assert_eq!(
             latest_message.delivery_status,
-            MessageDeliveryStatus::Failed
+            RegistryDeliveryStatus::Failed
         );
         let latest_member = latest_member(&store, "agent-1").expect("latest member");
-        assert_eq!(latest_member.status, AgentMemberStatus::Idle);
+        assert_eq!(latest_member.status, ProviderLaunchStatus::Idle);
         assert_eq!(latest_member.current_task_id, None);
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn start_runtime_delivery_checks_running_session_before_spawning_runtime() {
-        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("guard")));
-        let store = HarnessStore::new(&root);
-        store
-            .append_member(&make_member("agent-1"))
-            .expect("append member");
-        append_test_delivery_attempt(
-            &store,
-            "agent-1",
-            Some("task-1"),
-            ProviderExecutionStatus::Running,
-            Some("thread-1"),
-            Some("turn-1"),
-        );
-
-        let result = deliver_agent_messages(
-            &store,
-            None,
-            &["--agent".into(), "agent-1".into(), "--start-runtime".into()],
-        );
-
-        assert!(result.is_err());
-        assert!(store.runtimes().expect("runtimes").is_empty());
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -47531,7 +46230,7 @@ package:com.tencent.mm
             .into_iter()
             .find(|message| message.to_agent_id.as_deref() == Some("agent-1"))
             .expect("latest delivery message");
-        assert_eq!(latest.delivery_status, MessageDeliveryStatus::Delivered);
+        assert_eq!(latest.delivery_status, RegistryDeliveryStatus::Delivered);
         assert_eq!(
             latest
                 .delivery
@@ -47600,7 +46299,7 @@ package:com.tencent.mm
             .into_iter()
             .find(|message| message.to_agent_id.as_deref() == Some("agent-1"))
             .expect("latest delivery message");
-        assert_eq!(latest.delivery_status, MessageDeliveryStatus::Delivered);
+        assert_eq!(latest.delivery_status, RegistryDeliveryStatus::Delivered);
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -47610,14 +46309,14 @@ package:com.tencent.mm
         let root =
             std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("messages")));
         let store = HarnessStore::new(&root);
-        let mut message = Message {
+        let mut message = RegistryMessage {
             id: "message-1".into(),
             task_id: Some("task-1".into()),
             from_agent_id: "leader".into(),
             to_agent_id: Some("agent-1".into()),
             channel: Some("assignment".into()),
-            kind: MessageKind::Assignment,
-            delivery_status: MessageDeliveryStatus::Queued,
+            kind: RegistryMessageIntent::Message,
+            delivery_status: RegistryDeliveryStatus::Queued,
             content: "Assign task".into(),
             evidence_ids: Vec::new(),
             created_at: "unix-ms:1".into(),
@@ -47627,7 +46326,7 @@ package:com.tencent.mm
         store
             .append_message(&message)
             .expect("append queued message");
-        message.delivery_status = MessageDeliveryStatus::Acknowledged;
+        message.delivery_status = RegistryDeliveryStatus::Acknowledged;
         store
             .append_message(&message)
             .expect("append acknowledged message");
@@ -47649,124 +46348,19 @@ package:com.tencent.mm
     }
 
     #[test]
-    fn delivery_queue_uses_latest_message_status_per_id() {
-        let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("queue")));
-        let store = HarnessStore::new(&root);
-        store
-            .append_member(&make_member("agent-1"))
-            .expect("append member");
-        let mut message = Message {
-            id: "message-1".into(),
-            task_id: Some("task-1".into()),
-            from_agent_id: "leader".into(),
-            to_agent_id: Some("agent-1".into()),
-            channel: Some("assignment".into()),
-            kind: MessageKind::Assignment,
-            delivery_status: MessageDeliveryStatus::Queued,
-            content: "Assign task".into(),
-            evidence_ids: Vec::new(),
-            created_at: "unix-ms:1".into(),
-            delivery: None,
-            sender_kind: SenderKind::Agent,
-        };
-        store.append_message(&message).expect("append queued");
-        message.delivery_status = MessageDeliveryStatus::Acknowledged;
-        store.append_message(&message).expect("append acknowledged");
-
-        deliver_agent_messages(
-            &store,
-            None,
-            &["--agent".into(), "agent-1".into(), "--dry-run".into()],
-        )
-        .expect("deliver should not redeliver stale queued row");
-
-        let latest = latest_message(&store, "message-1").expect("latest message");
-        assert_eq!(latest.delivery_status, MessageDeliveryStatus::Acknowledged);
-        assert!(store
-            .messages()
-            .expect("messages")
-            .iter()
-            .all(|message| message.kind != MessageKind::Report));
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn dry_run_delivery_claims_and_finishes_delivery_attempt() {
-        let root =
-            std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("dry-claim")));
-        let store = HarnessStore::new(&root);
-        store
-            .append_member(&make_member("agent-1"))
-            .expect("append member");
-        store
-            .append_message(&Message {
-                id: "message-1".into(),
-                task_id: Some("task-1".into()),
-                from_agent_id: "leader".into(),
-                to_agent_id: Some("agent-1".into()),
-                channel: Some("assignment".into()),
-                kind: MessageKind::Assignment,
-                delivery_status: MessageDeliveryStatus::Queued,
-                content: "Assign task".into(),
-                evidence_ids: Vec::new(),
-                created_at: "unix-ms:1".into(),
-                delivery: None,
-                sender_kind: SenderKind::Agent,
-            })
-            .expect("append queued");
-
-        deliver_agent_messages(
-            &store,
-            None,
-            &["--agent".into(), "agent-1".into(), "--dry-run".into()],
-        )
-        .expect("dry-run delivery");
-
-        let latest = latest_message(&store, "message-1").expect("latest message");
-        assert_eq!(latest.delivery_status, MessageDeliveryStatus::Delivered);
-        let delivery = latest.delivery.expect("delivery");
-        assert!(delivery.delivery_id.is_some());
-        assert_eq!(
-            delivery.execution_status,
-            Some(ProviderExecutionStatus::Succeeded)
-        );
-        assert_eq!(
-            delivery.terminal_source,
-            Some(MessageTerminalSource::DryRun)
-        );
-
-        assert!(
-            !store.root().join("provider_sessions.jsonl").exists(),
-            "delivery coordination must not create a Harness provider-session mirror"
-        );
-
-        let reports: Vec<_> = store
-            .messages()
-            .expect("messages")
-            .into_iter()
-            .filter(|message| message.kind == MessageKind::Report)
-            .collect();
-        assert_eq!(reports.len(), 1);
-        assert!(!reports[0].evidence_ids.is_empty());
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn retry_delivery_requeues_safe_claim_without_provider_request() {
         let root = std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("retry")));
         let store = HarnessStore::new(&root);
         let member = make_member("agent-1");
         store.append_member(&member).expect("append member");
-        let message = Message {
+        let message = RegistryMessage {
             id: "message-1".into(),
             task_id: Some("task-1".into()),
             from_agent_id: "leader".into(),
             to_agent_id: Some("agent-1".into()),
             channel: Some("assignment".into()),
-            kind: MessageKind::Assignment,
-            delivery_status: MessageDeliveryStatus::Queued,
+            kind: RegistryMessageIntent::Message,
+            delivery_status: RegistryDeliveryStatus::Queued,
             content: "Assign task".into(),
             evidence_ids: Vec::new(),
             created_at: "unix-ms:1".into(),
@@ -47791,7 +46385,7 @@ package:com.tencent.mm
         let latest_message = latest_message(&store, "message-1").expect("latest message");
         assert_eq!(
             latest_message.delivery_status,
-            MessageDeliveryStatus::Queued
+            RegistryDeliveryStatus::Queued
         );
         assert!(latest_message.delivery.is_none());
         assert!(
@@ -47809,14 +46403,14 @@ package:com.tencent.mm
         let store = HarnessStore::new(&root);
         let member = make_member("agent-1");
         store.append_member(&member).expect("append member");
-        let message = Message {
+        let message = RegistryMessage {
             id: "message-1".into(),
             task_id: Some("task-1".into()),
             from_agent_id: "leader".into(),
             to_agent_id: Some("agent-1".into()),
             channel: Some("assignment".into()),
-            kind: MessageKind::Assignment,
-            delivery_status: MessageDeliveryStatus::Queued,
+            kind: RegistryMessageIntent::Message,
+            delivery_status: RegistryDeliveryStatus::Queued,
             content: "Assign task".into(),
             evidence_ids: Vec::new(),
             created_at: "unix-ms:1".into(),
@@ -47851,7 +46445,7 @@ package:com.tencent.mm
         let latest_message = latest_message(&store, "message-1").expect("latest message");
         assert_eq!(
             latest_message.delivery_status,
-            MessageDeliveryStatus::Failed
+            RegistryDeliveryStatus::Failed
         );
         assert!(!store.root().join("provider_sessions.jsonl").exists());
 
@@ -47871,14 +46465,14 @@ package:com.tencent.mm
             .expect("append member 2");
         for agent_id in ["agent-1", "agent-2"] {
             store
-                .append_message(&Message {
+                .append_message(&RegistryMessage {
                     id: format!("message-{agent_id}"),
                     task_id: Some(format!("task-{agent_id}")),
                     from_agent_id: "leader".into(),
                     to_agent_id: Some(agent_id.into()),
                     channel: Some("assignment".into()),
-                    kind: MessageKind::Assignment,
-                    delivery_status: MessageDeliveryStatus::Queued,
+                    kind: RegistryMessageIntent::Message,
+                    delivery_status: RegistryDeliveryStatus::Queued,
                     content: "Assign task".into(),
                     evidence_ids: Vec::new(),
                     created_at: "unix-ms:1".into(),
@@ -47904,7 +46498,7 @@ package:com.tencent.mm
         for agent_id in ["agent-1", "agent-2"] {
             let latest =
                 latest_message(&store, &format!("message-{agent_id}")).expect("latest message");
-            assert_eq!(latest.delivery_status, MessageDeliveryStatus::Delivered);
+            assert_eq!(latest.delivery_status, RegistryDeliveryStatus::Delivered);
             assert!(latest
                 .delivery
                 .and_then(|delivery| delivery.delivery_id)
@@ -47915,55 +46509,15 @@ package:com.tencent.mm
     }
 
     #[test]
-    fn closed_member_rejects_delivery_without_claiming_message() {
-        let root =
-            std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("closed")));
-        let store = HarnessStore::new(&root);
-        let mut member = make_member("agent-1");
-        member.status = AgentMemberStatus::Closed;
-        store.append_member(&member).expect("append member");
-        store
-            .append_message(&Message {
-                id: "message-1".into(),
-                task_id: Some("task-1".into()),
-                from_agent_id: "leader".into(),
-                to_agent_id: Some("agent-1".into()),
-                channel: Some("assignment".into()),
-                kind: MessageKind::Assignment,
-                delivery_status: MessageDeliveryStatus::Queued,
-                content: "Assign task".into(),
-                evidence_ids: Vec::new(),
-                created_at: "unix-ms:1".into(),
-                delivery: None,
-                sender_kind: SenderKind::Agent,
-            })
-            .expect("append queued");
-
-        let result = deliver_agent_messages(
-            &store,
-            None,
-            &["--agent".into(), "agent-1".into(), "--dry-run".into()],
-        );
-
-        assert!(result.is_err());
-        let latest = latest_message(&store, "message-1").expect("latest message");
-        assert_eq!(latest.delivery_status, MessageDeliveryStatus::Queued);
-        assert!(latest.delivery.is_none());
-        assert!(!store.root().join("provider_sessions.jsonl").exists());
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn turn_input_uses_stable_harness_envelope() {
-        let message = Message {
+        let message = RegistryMessage {
             id: "message-1".into(),
             task_id: Some("task-1".into()),
             from_agent_id: "leader".into(),
             to_agent_id: Some("agent-1".into()),
             channel: Some("assignment".into()),
-            kind: MessageKind::Assignment,
-            delivery_status: MessageDeliveryStatus::Acknowledged,
+            kind: RegistryMessageIntent::Message,
+            delivery_status: RegistryDeliveryStatus::Acknowledged,
             content: "Do the task".into(),
             evidence_ids: Vec::new(),
             created_at: "unix-ms:1".into(),
@@ -47975,7 +46529,7 @@ package:com.tencent.mm
         let text = input[0]["text"].as_str().expect("turn text");
 
         assert!(text.contains("message_id: message-1"));
-        assert!(text.contains("kind: assignment"));
+        assert!(text.contains("kind: message"));
         assert!(text.contains("task_id: task-1"));
         assert!(text.contains("from_agent_id: leader"));
         assert!(text.contains("to_agent_id: agent-1"));
@@ -47990,253 +46544,236 @@ package:com.tencent.mm
         (HarnessStore::new(&root), root)
     }
 
-    fn seed_missing_gate_evidence_review(store: &HarnessStore) -> (CreatedTeamRun, Work) {
-        let created = create_two_member_team_run(store);
-        let member = &created.member_runs[0];
-        let host_context = |event_id: &str, idempotency_key: &str| WorkCommandContext {
-            event_id: event_id.into(),
-            performed_by_actor: TeamActorRef {
-                kind: TeamActorKind::Operator,
-                id: "operator:test".into(),
-                display_name: None,
-                authn_source: Some("test".into()),
-            },
-            authority_actor: Some(TeamActorRef {
-                kind: TeamActorKind::Host,
-                id: "host".into(),
-                display_name: None,
-                authn_source: Some("test".into()),
-            }),
-            causation_ref: None,
-            idempotency_key: idempotency_key.into(),
-            created_at: "unix-ms:2".into(),
-            duplicate_ok: false,
+    #[test]
+    fn team_run_materializes_canonical_member_runs_in_its_execution_space() {
+        let (store, root) = temp_store("canonical-member-run-materialization");
+        let created = create_two_member_team_run(&store);
+        let canonical = store
+            .trust_member_runs("unit-test-space")
+            .expect("canonical MemberRuns");
+        assert_eq!(canonical.len(), created.member_runs.len());
+        for runtime in &created.member_runs {
+            let projection = canonical
+                .iter()
+                .find(|candidate| candidate.id == runtime.id)
+                .expect("runtime has canonical ProviderRuntimeProjection projection");
+            assert_eq!(projection.agent_member_id, runtime.agent_member_id);
+            assert_eq!(projection.team_run_id, created.team_run.id);
+            assert_eq!(projection.runtime_generation, runtime.runtime_generation);
+        }
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn supervisor_claims_and_acknowledges_canonical_message_delivery_in_one_ledger() {
+        let (store, root) = temp_store("canonical-supervisor-message-delivery");
+        let created = create_two_member_team_run(&store);
+        let member = created.member_runs[0].clone();
+        let lease = store
+            .acquire_test_supervisor_lease(
+                &created.team_run.id,
+                "canonical-supervisor",
+                std::process::id(),
+                "test://canonical-supervisor",
+                current_unix_ms_u64(),
+                60_000,
+            )
+            .expect("acquire supervisor lease");
+        let ledger = TeamRunLedger::new(
+            &store,
+            &created.team_run.id,
+            &lease.supervisor_id,
+            lease.generation,
+            Arc::new(AtomicBool::new(true)),
+        );
+        let sender = harness_core::agentfirm_api::ActorRef {
+            kind: harness_core::agentfirm_api::ActorKind::Service,
+            id: "test-host".into(),
         };
-        let member_context = |event_id: &str, idempotency_key: &str| WorkCommandContext {
-            event_id: event_id.into(),
-            performed_by_actor: TeamActorRef {
-                kind: TeamActorKind::MemberRun,
-                id: member.id.clone(),
-                display_name: None,
-                authn_source: Some("bound-runtime:test".into()),
-            },
-            authority_actor: None,
-            causation_ref: None,
-            idempotency_key: idempotency_key.into(),
-            created_at: "unix-ms:3".into(),
-            duplicate_ok: false,
-        };
+        store
+            .create_trust_team_message_with_deliveries(
+                &harness_core::agentfirm_api::MutationContext {
+                    execution_space_id: "unit-test-space".into(),
+                    authenticated_actor: sender.clone(),
+                    authority_actor: None,
+                    command_name: "test.team_message.create".into(),
+                    idempotency_key: "canonical-supervisor-message".into(),
+                    expected_version: 0,
+                },
+                harness_core::agentfirm_api::TeamMessage {
+                    id: "canonical-supervisor-message".into(),
+                    team_run_id: created.team_run.id.clone(),
+                    work_id: None,
+                    sender,
+                    recipients: vec![harness_core::agentfirm_api::ActorRef {
+                        kind: harness_core::agentfirm_api::ActorKind::AgentMember,
+                        id: member.agent_member_id.clone(),
+                    }],
+                    kind: harness_core::agentfirm_api::TeamMessageKind::Message,
+                    body: "deliver through the NodeDaemon supervisor".into(),
+                    correlation_id: "canonical-supervisor-correlation".into(),
+                    causation_id: None,
+                    response_intent: harness_core::agentfirm_api::ResponseIntent::ResponseRequired,
+                    evidence_refs: Vec::new(),
+                    created_at: "unix-ms:3".into(),
+                },
+                "unix-ms:3",
+            )
+            .expect("create canonical ProviderDispatchEnvelope and delivery");
+
+        let claimed = claim_canonical_messages_for_member(&ledger, &member)
+            .expect("supervisor claim")
+            .pop()
+            .expect("one claimed message");
+        let after_claim = store
+            .trust_message_deliveries("unit-test-space")
+            .expect("delivery after claim")
+            .into_iter()
+            .find(|delivery| delivery.message_id == claimed.id)
+            .expect("claimed delivery");
+        assert_eq!(
+            after_claim.status,
+            harness_core::agentfirm_api::MessageDeliveryStatus::Claimed
+        );
+        assert_eq!(
+            after_claim.claimed_supervisor_generation,
+            Some(lease.generation)
+        );
+
+        mark_message_delivered(
+            &ledger,
+            &claimed,
+            &member.id,
+            &member.name,
+            "provider-receipt-canonical",
+        )
+        .expect("provider receipt and acknowledgement");
+        let acknowledged = store
+            .trust_message_deliveries("unit-test-space")
+            .expect("delivery after acknowledgement")
+            .into_iter()
+            .find(|delivery| delivery.message_id == claimed.id)
+            .expect("acknowledged delivery");
+        assert_eq!(
+            acknowledged.status,
+            harness_core::agentfirm_api::MessageDeliveryStatus::Acknowledged
+        );
+        assert_eq!(
+            acknowledged.provider_receipt_id.as_deref(),
+            Some("provider-receipt-canonical")
+        );
+        assert!(store
+            .team_messages()
+            .expect("legacy TeamMessages")
+            .iter()
+            .all(|message| message.id != claimed.id));
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn supervisor_claims_and_records_provider_receipt_for_canonical_work_delivery() {
+        let (store, root) = temp_store("canonical-supervisor-work-delivery");
+        let created = create_two_member_team_run(&store);
+        let member = created.member_runs[0].clone();
         let work = store
             .insert_work(
                 Work {
-                    id: "work-gate-entrypoint-contract".into(),
+                    id: "canonical-supervisor-work".into(),
                     team_run_id: created.team_run.id.clone(),
-                    team_id: None,
+                    team_id: Some(created.team_run.agent_team_id.clone()),
                     created_by_member_id: None,
                     parent_work_id: None,
-                    title: "Enforce gates at every acceptance entrypoint".into(),
-                    context_markdown: String::new(),
-                    completion_criteria_markdown: "Declared artifact evidence exists".into(),
+                    title: "Deliver canonical Work".into(),
+                    context_markdown: "Exercise NodeDaemon ProviderWorkDispatch wiring".into(),
+                    completion_criteria_markdown: "Provider receipt is canonical".into(),
                     phase: WorkPhase::Open,
                     condition: WorkCondition::Normal,
                     resolution: None,
-                    owner_member_id: None,
-                    active_member_run_id: None,
-                    claim_mode: WorkClaimMode::TeamClaim,
-                    eligible_member_ids: Vec::new(),
+                    owner_member_id: Some(member.agent_member_id.clone()),
+                    active_member_run_id: Some(member.id.clone()),
+                    claim_mode: WorkClaimMode::HostAssign,
+                    eligible_member_ids: vec![member.agent_member_id.clone()],
                     prerequisite_work_ids: Vec::new(),
                     priority: WorkPriority::Normal,
-                    created_by_actor: host_context("ignored", "ignored").performed_by_actor,
+                    created_by_actor: compatibility_team_actor("host", "test"),
                     result_summary: None,
                     blocker_reason: None,
                     artifact_refs: Vec::new(),
                     check_refs: Vec::new(),
                     github_links: Vec::new(),
-                    gates: vec![GateSpec {
-                        plugin: "artifact-exists".into(),
-                        config: serde_json::json!({}),
-                    }],
-                    workspace: None,
                     version: 0,
                     created_at: String::new(),
                     updated_at: String::new(),
                 },
-                host_context("work-gate-create", "work-gate-create-command"),
+                WorkCommandContext {
+                    event_id: "canonical-supervisor-work-created".into(),
+                    performed_by_actor: compatibility_team_actor("host", "test"),
+                    authority_actor: None,
+                    causation_ref: None,
+                    idempotency_key: "canonical-supervisor-work-create".into(),
+                    created_at: "unix-ms:3".into(),
+                    duplicate_ok: false,
+                },
             )
-            .expect("create gated Work");
-        let claimed = store
-            .claim_work(
+            .expect("create assigned Work");
+        store
+            .create_trust_work_deliveries(
+                &harness_core::agentfirm_api::MutationContext {
+                    execution_space_id: "unit-test-space".into(),
+                    authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                        kind: harness_core::agentfirm_api::ActorKind::Service,
+                        id: "test-host".into(),
+                    },
+                    authority_actor: None,
+                    command_name: "test.work_delivery.create".into(),
+                    idempotency_key: "canonical-supervisor-work-delivery".into(),
+                    expected_version: 0,
+                },
+                "canonical-supervisor-work-event",
                 &work.id,
                 work.version,
-                &member.id,
-                member_context("work-gate-claim", "work-gate-claim-command"),
+                std::slice::from_ref(&member.id),
+                "unix-ms:4",
             )
-            .expect("claim gated Work");
-        let submitted = store
-            .submit_work(
-                &claimed.id,
-                claimed.version,
-                &member.id,
-                "submitted without declared artifact evidence",
-                Vec::new(),
-                Vec::new(),
-                member_context("work-gate-submit", "work-gate-submit-command"),
+            .expect("create canonical ProviderWorkDispatch");
+        let lease = store
+            .acquire_test_supervisor_lease(
+                &created.team_run.id,
+                "canonical-work-supervisor",
+                std::process::id(),
+                "test://canonical-work-supervisor",
+                current_unix_ms_u64(),
+                60_000,
             )
-            .expect("submit gated Work");
-        (created, submitted)
-    }
-
-    fn seed_host_review_candidate(store: &HarnessStore) -> (CreatedTeamRun, Work) {
-        let created = create_two_member_team_run(store);
-        let member = &created.member_runs[0];
-        let work_value = create_team_work_value(
-            store,
-            &created.team_run.id,
-            &serde_json::json!({
-                "id": "work-host-review-entrypoint",
-                "title": "Exercise trusted host review entrypoints",
-                "completion_criteria_markdown": "Review is bound to this candidate",
-                "gates": [{"plugin": "code-review", "config": {"strategy": "host"}}]
-            }),
-        )
-        .expect("HTTP create preserves host gate");
-        let work: Work = serde_json::from_value(work_value).expect("decode Work");
-        let member_context = |event_id: &str, idempotency_key: &str| WorkCommandContext {
-            event_id: event_id.into(),
-            performed_by_actor: TeamActorRef {
-                kind: TeamActorKind::MemberRun,
-                id: member.id.clone(),
-                display_name: None,
-                authn_source: Some("bound-runtime:test".into()),
-            },
-            authority_actor: None,
-            causation_ref: None,
-            idempotency_key: idempotency_key.into(),
-            created_at: "unix-ms:3".into(),
-            duplicate_ok: false,
-        };
-        let claimed = store
-            .claim_work(
-                &work.id,
-                work.version,
-                &member.id,
-                member_context("review-claim", "review-claim-command"),
-            )
-            .expect("claim host-reviewed Work");
-        let submitted = store
-            .submit_work(
-                &claimed.id,
-                claimed.version,
-                &member.id,
-                "candidate for trusted host review",
-                Vec::new(),
-                Vec::new(),
-                member_context("review-submit", "review-submit-command"),
-            )
-            .expect("submit host-reviewed Work");
-        (created, submitted)
-    }
-
-    #[test]
-    fn gate_parser_supports_json_arrays_and_rejects_duplicates_and_bad_types() {
-        let parsed = parse_gate_specs(&[
-            "--gate".into(),
-            r#"artifact-exists:{"paths":["docs/a.md","docs/b.md"]}"#.into(),
-        ])
-        .expect("JSON arrays are expressible");
-        assert_eq!(parsed[0].config["paths"][1], "docs/b.md");
-
-        let compatible = parse_gate_specs(&[
-            "--gate".into(),
-            "github-pr".into(),
-            "--gate".into(),
-            r#"owned-path-check:{"paths":["crates/firm-core"]}"#.into(),
-        ])
-        .expect("old-wire empty config and custom declarations remain persistable");
-        assert_eq!(compatible[0].config, serde_json::json!({}));
-        assert_eq!(compatible[1].plugin, "owned-path-check");
-
-        for raw in [
-            r#"github-pr:{"require_merged":true,"require_merged":false}"#,
-            "github-pr:require_merged=true,require_merged=false",
-            r#"github-pr:{"require_merged":"true"}"#,
-            r#"artifact-exists:{"paths":[]}"#,
-            r#"code-review:{"strategy":"peer"}"#,
-        ] {
-            let error = parse_gate_specs(&["--gate".into(), raw.into()])
-                .expect_err("invalid or duplicate config must fail closed");
-            assert!(error.to_string().contains("gate"));
-        }
-
-        for declarations in [
-            vec![
-                "--gate".into(),
-                "github-pr".into(),
-                "--gate".into(),
-                "github-pr".into(),
-            ],
-            vec![
-                "--gate".into(),
-                r#"code-review:{"strategy":"host"}"#.into(),
-                "--gate".into(),
-                r#"code-review:{"strategy":"self"}"#.into(),
-            ],
-        ] {
-            parse_gate_specs(&declarations)
-                .expect_err("duplicate and multiple code-review declarations must fail closed");
-        }
-    }
-
-    #[test]
-    fn http_work_create_preserves_validated_gates() {
-        let (store, root) = temp_store("http-work-gates");
-        let created = create_two_member_team_run(&store);
-        let value = create_team_work_value(
+            .expect("acquire supervisor lease");
+        let ledger = TeamRunLedger::new(
             &store,
             &created.team_run.id,
-            &serde_json::json!({
-                "title": "Preserve HTTP gate declarations",
-                "completion_criteria_markdown": "Stored gate equals request",
-                "gates": [{
-                    "plugin": "check-pass",
-                    "config": {"checks": ["cargo test"]}
-                }]
-            }),
-        )
-        .expect("create HTTP Work");
-        let work: Work = serde_json::from_value(value).expect("decode Work");
-        assert_eq!(work.gates.len(), 1);
-        assert_eq!(work.gates[0].config["checks"][0], "cargo test");
-
-        let custom = create_team_work_value(
-            &store,
-            &created.team_run.id,
-            &serde_json::json!({
-                "title": "Persist a custom gate declaration",
-                "completion_criteria_markdown": "Custom verifier must be explicitly registered",
-                "gates": [{"plugin": "goal-design"}]
-            }),
-        )
-        .expect("HTTP preserves old-wire custom Gate with omitted config");
-        let custom: Work = serde_json::from_value(custom).expect("decode custom Work");
-        assert_eq!(custom.gates[0].plugin, "goal-design");
-        assert_eq!(custom.gates[0].config, serde_json::json!({}));
-
-        let duplicate_error = create_team_work_value(
-            &store,
-            &created.team_run.id,
-            &serde_json::json!({
-                "title": "Reject duplicate gates",
-                "completion_criteria_markdown": "No ambiguous duplicate declarations",
-                "gates": [
-                    {"plugin": "github-pr"},
-                    {"plugin": "github-pr"}
-                ]
-            }),
-        )
-        .expect_err("HTTP rejects exact duplicate Gate declarations");
-        assert!(duplicate_error.to_string().contains("exact duplicate"));
-        std::fs::remove_dir_all(root).expect("remove temp store");
+            &lease.supervisor_id,
+            lease.generation,
+            Arc::new(AtomicBool::new(true)),
+        );
+        let claimed = claim_canonical_work_for_member(&ledger, &member)
+            .expect("claim canonical Work")
+            .expect("one canonical Work claim");
+        ledger
+            .complete_work_delivery(&claimed, "provider-work-receipt")
+            .expect("record canonical provider receipt");
+        let delivery = store
+            .trust_work_deliveries("unit-test-space")
+            .expect("canonical ProviderWorkDispatch ledger")
+            .into_iter()
+            .find(|delivery| delivery.work_id == work.id)
+            .expect("canonical delivery");
+        assert_eq!(
+            delivery.status,
+            harness_core::agentfirm_api::WorkDeliveryStatus::ProviderReceived
+        );
+        assert_eq!(
+            delivery.provider_receipt_id.as_deref(),
+            Some("provider-work-receipt")
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]
@@ -48275,6 +46812,27 @@ package:com.tencent.mm
                 updated_at: "unix-ms:1".into(),
             })
             .expect("insert target AgentTeam");
+        let target_member = TeamMemberSpec {
+            agent_member_id: "agent-target-builder".into(),
+            name: "TargetBuilder".into(),
+            role: "builder".into(),
+            provider: "codex".into(),
+            execution_mode: Some("codex_app_server".into()),
+            model: None,
+            effort: None,
+            service_tier: None,
+            provider_cwd_hint: None,
+            owned_paths: vec!["crates/target".into()],
+            resume_native_session_id: None,
+            initial_work: None,
+        };
+        ensure_unit_test_canonical_members(
+            &store,
+            "unit-test-space",
+            "surface-target-team",
+            std::slice::from_ref(&target_member),
+        )
+        .expect("register target canonical AgentMember");
         let target_run = create_team_run(
             &store,
             Some(&project_context),
@@ -48288,20 +46846,7 @@ package:com.tencent.mm
             Some("surface-target-team".into()),
             None,
             None,
-            &[TeamMemberSpec {
-                agent_member_id: None,
-                name: "TargetBuilder".into(),
-                role: "builder".into(),
-                provider: "codex".into(),
-                execution_mode: Some("codex_app_server".into()),
-                model: None,
-                effort: None,
-                service_tier: None,
-                worktree_ref: None,
-                owned_paths: vec!["crates/target".into()],
-                resume_native_session_id: None,
-                initial_work: None,
-            }],
+            &[target_member],
         )
         .expect("create target TeamRun");
         let source_value = create_team_work_value(
@@ -48324,7 +46869,7 @@ package:com.tencent.mm
                 WorkCommandContext {
                     event_id: "surface-source-claim".into(),
                     performed_by_actor: TeamActorRef {
-                        kind: TeamActorKind::MemberRun,
+                        kind: TeamActorKind::ProviderRuntimeProjection,
                         id: source_member_id.clone(),
                         display_name: None,
                         authn_source: Some("bound-runtime:test".into()),
@@ -48362,7 +46907,7 @@ package:com.tencent.mm
         let member_context = |event_id: &str, idempotency_key: &str| WorkCommandContext {
             event_id: event_id.into(),
             performed_by_actor: TeamActorRef {
-                kind: TeamActorKind::MemberRun,
+                kind: TeamActorKind::ProviderRuntimeProjection,
                 id: target_member_id.clone(),
                 display_name: None,
                 authn_source: Some("bound-runtime:test".into()),
@@ -48458,238 +47003,6 @@ package:com.tencent.mm
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
-    #[test]
-    fn cli_host_review_uses_trusted_store_context_and_http_is_retired() {
-        let (store, root) = temp_store("work-review-entrypoints");
-        let (created, submitted) = seed_host_review_candidate(&store);
-        let unbound_member = team_run_work_command(
-            &store,
-            &[
-                "review".into(),
-                "--team-run-id".into(),
-                created.team_run.id.clone(),
-                "--work-id".into(),
-                submitted.id.clone(),
-                "--expected-version".into(),
-                submitted.version.to_string(),
-                "--member-run-id".into(),
-                created.member_runs[1].id.clone(),
-                "--verdict".into(),
-                "pass".into(),
-                "--summary".into(),
-                "caller-reported member identity".into(),
-            ],
-        )
-        .expect_err("CLI cannot accept an unbound caller-reported MemberRun identity");
-        assert!(unbound_member
-            .to_string()
-            .contains("require the bound FIRM_MEMBER_RUN_ID"));
-        team_run_work_command(
-            &store,
-            &[
-                "review".into(),
-                "--team-run-id".into(),
-                created.team_run.id.clone(),
-                "--work-id".into(),
-                submitted.id.clone(),
-                "--expected-version".into(),
-                submitted.version.to_string(),
-                "--review-id".into(),
-                "review-cli-host".into(),
-                "--verdict".into(),
-                "pass".into(),
-                "--summary".into(),
-                "host reviewed through CLI".into(),
-                "--actor".into(),
-                "operator:cli-alice".into(),
-            ],
-        )
-        .expect("CLI Host records trusted Review");
-        let review = store
-            .reviews()
-            .expect("reviews")
-            .into_iter()
-            .find(|review| review.id == "review-cli-host")
-            .expect("CLI Review persisted");
-        assert_eq!(review.reviewed_work_version, Some(submitted.version));
-        assert_eq!(review.reviewer_agent_id, "host");
-        assert_eq!(
-            review
-                .performed_by_actor
-                .as_ref()
-                .map(|actor| actor.id.as_str()),
-            Some("operator:cli-alice")
-        );
-        assert_eq!(
-            review
-                .authority_actor
-                .as_ref()
-                .map(|actor| actor.id.as_str()),
-            Some("host")
-        );
-
-        let retired = mutate_team_work_value(
-            &store,
-            &created.team_run.id,
-            &submitted.id,
-            "review",
-            &serde_json::json!({
-                "expected_version": submitted.version,
-                "id": "review-http-retired",
-                "verdict": "pass",
-                "summary": "HTTP must not write reviews"
-            }),
-        )
-        .expect_err("HTTP Work review is retired");
-        assert!(retired.to_string().contains("HTTP Work review is retired"));
-        std::fs::remove_dir_all(root).expect("remove temp store");
-    }
-
-    #[test]
-    fn live_serve_socket_rejects_http_work_review_without_mutation() {
-        use std::io::{Read, Write};
-        use std::net::{TcpListener, TcpStream};
-        use std::time::Duration;
-
-        let (store, root) = temp_store("http-review-retired-socket");
-        let (created, submitted) = seed_host_review_candidate(&store);
-        let before_reviews = store.reviews().expect("reviews before HTTP request");
-        let before_work = store
-            .latest_works()
-            .expect("works before HTTP request")
-            .into_iter()
-            .find(|work| work.id == submitted.id)
-            .expect("submitted Work before HTTP request");
-
-        let probe = TcpListener::bind("127.0.0.1:0").expect("reserve ephemeral port");
-        let addr = probe.local_addr().expect("ephemeral address");
-        drop(probe);
-        let serve_store = store.clone();
-        let resolved = ResolvedStore {
-            root: root.clone(),
-            source: StoreSource::StoreFlag,
-            project_selection_explicit: false,
-            context: None,
-            company_context: None,
-            execution_space_context: None,
-        };
-        let server = std::thread::spawn(move || {
-            serve_command(
-                &serve_store,
-                &resolved,
-                &["--addr".to_string(), addr.to_string(), "--once".to_string()],
-            )
-            .expect("single-request serve");
-        });
-
-        let mut connection = (0..100)
-            .find_map(|_| match TcpStream::connect(addr) {
-                Ok(stream) => Some(stream),
-                Err(_) => {
-                    std::thread::sleep(Duration::from_millis(5));
-                    None
-                }
-            })
-            .expect("connect to live serve");
-        connection
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .expect("set response timeout");
-        let body = serde_json::json!({
-            "expected_version": submitted.version,
-            "verdict": "pass",
-            "summary": "forbidden HTTP review"
-        })
-        .to_string();
-        let request = format!(
-            "POST /v1/team-runs/{}/works/{}/review HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            created.team_run.id,
-            submitted.id,
-            body.len(),
-            body
-        );
-        connection
-            .write_all(request.as_bytes())
-            .expect("send HTTP Work review request");
-        let mut response = String::new();
-        connection
-            .read_to_string(&mut response)
-            .expect("read HTTP Work review response");
-        server.join().expect("join single-request serve");
-
-        assert!(
-            response.starts_with("HTTP/1.1 400 Bad Request"),
-            "retired HTTP review must be non-2xx: {response}"
-        );
-        assert!(
-            response.contains("HTTP Work review is retired"),
-            "{response}"
-        );
-        assert_eq!(
-            store.reviews().expect("reviews after HTTP request"),
-            before_reviews,
-            "retired HTTP review must not append Review rows"
-        );
-        let after_work = store
-            .latest_works()
-            .expect("works after HTTP request")
-            .into_iter()
-            .find(|work| work.id == submitted.id)
-            .expect("submitted Work after HTTP request");
-        assert_eq!(after_work, before_work, "retired HTTP review mutated Work");
-        std::fs::remove_dir_all(root).expect("remove temp store");
-    }
-
-    #[test]
-    fn cli_and_operator_work_accept_share_the_store_gate_invariant() {
-        let (store, root) = temp_store("work-gate-entrypoints");
-        let (created, submitted) = seed_missing_gate_evidence_review(&store);
-        let cli_error = team_run_work_command(
-            &store,
-            &[
-                "accept".into(),
-                "--work-id".into(),
-                submitted.id.clone(),
-                "--expected-version".into(),
-                submitted.version.to_string(),
-                "--idempotency-key".into(),
-                "cli-gate-reject".into(),
-            ],
-        )
-        .expect_err("ordinary CLI acceptance must not bypass Store gates");
-        assert!(cli_error.to_string().contains("WORK_GATES_NOT_PASSING"));
-
-        let skip_error = team_run_work_command(
-            &store,
-            &[
-                "accept".into(),
-                "--work-id".into(),
-                submitted.id.clone(),
-                "--expected-version".into(),
-                submitted.version.to_string(),
-                "--skip-gates".into(),
-            ],
-        )
-        .expect_err("the untyped boolean gate bypass is retired");
-        assert!(skip_error.to_string().contains("--skip-gates is retired"));
-
-        let operator_error = mutate_team_work_value(
-            &store,
-            &created.team_run.id,
-            &submitted.id,
-            "accept",
-            &serde_json::json!({
-                "expected_version": submitted.version,
-                "event_id": "operator-gate-reject",
-                "idempotency_key": "operator-gate-reject-command"
-            }),
-        )
-        .expect_err("HTTP/operator acceptance must not bypass Store gates");
-        assert!(operator_error
-            .to_string()
-            .contains("WORK_GATES_NOT_PASSING"));
-        std::fs::remove_dir_all(root).expect("remove temp store");
-    }
-
     fn create_two_member_team_run(store: &HarnessStore) -> CreatedTeamRun {
         create_team_run(
             store,
@@ -48706,7 +47019,7 @@ package:com.tencent.mm
             None,
             &[
                 TeamMemberSpec {
-                    agent_member_id: None,
+                    agent_member_id: "agent-builder-a".into(),
                     name: "BuilderA".into(),
                     role: "module_a".into(),
                     provider: "codex".into(),
@@ -48714,13 +47027,13 @@ package:com.tencent.mm
                     model: None,
                     effort: None,
                     service_tier: None,
-                    worktree_ref: None,
+                    provider_cwd_hint: None,
                     owned_paths: vec!["crates/a".into()],
                     resume_native_session_id: None,
                     initial_work: None,
                 },
                 TeamMemberSpec {
-                    agent_member_id: None,
+                    agent_member_id: "agent-builder-b".into(),
                     name: "BuilderB".into(),
                     role: "module_b".into(),
                     provider: "codex".into(),
@@ -48728,7 +47041,7 @@ package:com.tencent.mm
                     model: None,
                     effort: None,
                     service_tier: None,
-                    worktree_ref: None,
+                    provider_cwd_hint: None,
                     owned_paths: vec!["crates/b".into()],
                     resume_native_session_id: None,
                     initial_work: None,
@@ -48915,7 +47228,7 @@ package:com.tencent.mm
         );
 
         // A reopened generation is different execution authority. The old
-        // callback cannot resume it even when the stable MemberRun id is reused.
+        // callback cannot resume it even when the stable ProviderRuntimeProjection id is reused.
         let mut reopened = closed.clone();
         reopened.coordination_status = MemberCoordinationStatus::Active;
         reopened.runtime_generation += 1;
@@ -49046,7 +47359,9 @@ package:com.tencent.mm
                 intent: Some("answer".into()),
             }],
         )
-        .expect_err("a new MemberRun generation cannot consume the old reverse request");
+        .expect_err(
+            "a new ProviderRuntimeProjection generation cannot consume the old reverse request",
+        );
         assert!(stale_replay
             .to_string()
             .contains("replayed with different semantics"));
@@ -49176,7 +47491,7 @@ package:com.tencent.mm
         let response_message = messages
             .iter()
             .find(|message| {
-                message.kind == TeamMessageKind::ProviderInteractionResponse
+                message.kind == ProviderDispatchIntent::ProviderInteractionResponse
                     && message.causation_id.as_deref() == Some(request.id.as_str())
             })
             .expect("response message");
@@ -49190,7 +47505,9 @@ package:com.tencent.mm
         assert_eq!(
             messages
                 .iter()
-                .filter(|message| { message.kind == TeamMessageKind::ProviderInteractionRequest })
+                .filter(|message| {
+                    message.kind == ProviderDispatchIntent::ProviderInteractionRequest
+                })
                 .count(),
             1,
             "provider replay must reuse the request message"
@@ -49198,7 +47515,7 @@ package:com.tencent.mm
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
-    fn test_workspace_snapshot(root: &Path) -> MemberWorkspaceSnapshot {
+    fn test_provider_environment_observation(root: &Path) -> MemberWorkspaceSnapshot {
         snapshot_member_workspace(root, None, None, "explicit_unbound")
     }
 
@@ -49291,7 +47608,10 @@ package:com.tencent.mm
         let _ = std::fs::remove_dir_all(root);
     }
 
-    fn seed_capacity_blocked_member(store: &HarnessStore, initial: &MemberRun) -> MemberRun {
+    fn seed_capacity_blocked_member(
+        store: &HarnessStore,
+        initial: &ProviderRuntimeProjection,
+    ) -> ProviderRuntimeProjection {
         let mut blocked = initial.clone();
         blocked.status = MemberRunStatus::Blocked;
         blocked.provider_capacity = Some(capacity_test_snapshot(ProviderCapacityState::Exhausted));
@@ -49342,7 +47662,7 @@ package:com.tencent.mm
                         &created.team_run.id,
                         &blocked.id,
                         "host",
-                        "close lands without mutating MemberRun",
+                        "close lands without mutating ProviderRuntimeProjection",
                     )?;
                 }
                 Ok(())
@@ -49576,7 +47896,7 @@ package:com.tencent.mm
                         &created.team_run.id,
                         &initial.id,
                         "host",
-                        "close lands without mutating MemberRun",
+                        "close lands without mutating ProviderRuntimeProjection",
                     )?;
                 }
                 Ok(())
@@ -49676,7 +47996,7 @@ package:com.tencent.mm
                 60_000,
             )
             .expect("acquire Supervisor lease");
-        let snapshot = test_workspace_snapshot(&root);
+        let snapshot = test_provider_environment_observation(&root);
         let barrier = Arc::new(std::sync::Barrier::new(2));
         let worker_barrier = Arc::clone(&barrier);
         let store_root = store.root().to_path_buf();
@@ -49767,7 +48087,7 @@ package:com.tencent.mm
             Arc::new(AtomicBool::new(true)),
         );
         let first = created.member_runs[0].clone();
-        let snapshot = test_workspace_snapshot(&root);
+        let snapshot = test_provider_environment_observation(&root);
         let published = match prepare_member_workspace_for_spawn_with_hook(
             &ledger,
             &first,
@@ -49789,7 +48109,10 @@ package:com.tencent.mm
             _ => panic!("member remains spawnable"),
         };
         assert_eq!(published.name, "BenignRename");
-        assert_eq!(published.workspace_snapshot.as_ref(), Some(&snapshot));
+        assert_eq!(
+            published.provider_environment_observation.as_ref(),
+            Some(&snapshot)
+        );
 
         let second = created.member_runs[1].clone();
         let mut new_generation = second.clone();
@@ -49820,7 +48143,7 @@ package:com.tencent.mm
             .expect("member exists");
         assert_eq!(latest.runtime_generation, new_generation.runtime_generation);
         assert_eq!(latest.native_session, new_generation.native_session);
-        assert!(latest.workspace_snapshot.is_none());
+        assert!(latest.provider_environment_observation.is_none());
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
@@ -49846,7 +48169,7 @@ package:com.tencent.mm
             Arc::new(AtomicBool::new(true)),
         );
         let member = created.member_runs[0].clone();
-        let snapshot = test_workspace_snapshot(&root);
+        let snapshot = test_provider_environment_observation(&root);
         let mut conflicts = 0usize;
         let result = prepare_member_workspace_for_spawn_with_hook(
             &ledger,
@@ -49868,7 +48191,7 @@ package:com.tencent.mm
             .expect("latest member")
             .expect("member exists");
         assert_eq!(latest.name, "conflict-3");
-        assert!(latest.workspace_snapshot.is_none());
+        assert!(latest.provider_environment_observation.is_none());
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
@@ -49920,7 +48243,7 @@ package:com.tencent.mm
             successor_lease.generation,
             Arc::new(AtomicBool::new(true)),
         );
-        let snapshot = test_workspace_snapshot(&root);
+        let snapshot = test_provider_environment_observation(&root);
 
         let published = match prepare_member_workspace_for_spawn(&ledger, &stale_running, &snapshot)
             .expect("successor publishes workspace before attaching stale runtime")
@@ -50227,18 +48550,18 @@ package:com.tencent.mm
         store: &HarnessStore,
         created: &CreatedTeamRun,
         member_index: usize,
-    ) -> TeamMessage {
+    ) -> ProviderDispatchEnvelope {
         send_team_message(
             store,
             &created.team_run.id,
             "host",
             vec![created.member_runs[member_index].id.clone()],
-            TeamMessageKind::Message,
+            ProviderDispatchIntent::Message,
             "Coordination context",
             None,
             None,
             None,
-            Some(TeamMessageResponseIntent::ResponseRequired),
+            Some(ProviderResponseIntent::ResponseRequired),
         )
         .expect("seed conversation")
     }
@@ -50246,7 +48569,7 @@ package:com.tencent.mm
     #[test]
     fn member_run_snapshots_requested_provider_controls_before_start() {
         let member = TeamMemberSpec {
-            agent_member_id: None,
+            agent_member_id: "agent-controlled-builder".into(),
             name: "ControlledBuilder".into(),
             role: "builder".into(),
             provider: "codex".into(),
@@ -50254,14 +48577,14 @@ package:com.tencent.mm
             model: Some("gpt-5.6-sol".into()),
             effort: Some("max".into()),
             service_tier: Some("priority".into()),
-            worktree_ref: None,
+            provider_cwd_hint: None,
             owned_paths: Vec::new(),
             resume_native_session_id: None,
             initial_work: None,
         };
 
-        let run =
-            build_member_run_for_team(None, "team-run-controls", &member).expect("build MemberRun");
+        let run = build_member_run_for_team(None, "team-run-controls", &member)
+            .expect("build ProviderRuntimeProjection");
 
         assert_eq!(run.model.as_deref(), Some("gpt-5.6-sol"));
         assert_eq!(
@@ -50292,7 +48615,7 @@ package:com.tencent.mm
 
     #[test]
     fn close_without_live_supervisor_reaps_stale_running_row_and_allows_reopen() {
-        // Wedge regression: a crashed Supervisor leaves a Running MemberRun
+        // Wedge regression: a crashed Supervisor leaves a Running ProviderRuntimeProjection
         // behind and its lease expires. Close must reap the stale row
         // immediately (no live Supervisor can ever apply a latch), and Reopen
         // must stay possible afterwards.
@@ -50329,10 +48652,10 @@ package:com.tencent.mm
             Some("stale_runtime_reaped")
         );
         let stopped = latest_member_runs_in_append_order(&store)
-            .expect("read MemberRun")
+            .expect("read ProviderRuntimeProjection")
             .into_iter()
             .find(|row| row.id == member.id)
-            .expect("MemberRun");
+            .expect("ProviderRuntimeProjection");
         assert_eq!(stopped.status, MemberRunStatus::Stopped);
         assert!(stopped.coordination_is_closed());
         assert_eq!(
@@ -50409,7 +48732,7 @@ package:com.tencent.mm
             .claim_next_work_for(&member.id)
             .expect("claim scan")
             .expect("queued delivery for the member");
-        assert_eq!(claimed.delivery.status, WorkDeliveryStatus::Claimed);
+        assert_eq!(claimed.delivery.status, ProviderWorkDispatchStatus::Claimed);
         assert!(claimed.delivery.provider_receipt_id.is_none());
 
         let close = latch_member_close(&store, &run.id, &member.id, "host", "lane accepted")
@@ -50424,7 +48747,7 @@ package:com.tencent.mm
             .into_iter()
             .find(|delivery| delivery.id == claimed.delivery.id)
             .expect("delivery row");
-        assert_eq!(delivery.status, WorkDeliveryStatus::Failed);
+        assert_eq!(delivery.status, ProviderWorkDispatchStatus::Failed);
         assert!(delivery.provider_receipt_id.is_none());
         assert!(
             delivery
@@ -50477,519 +48800,6 @@ package:com.tencent.mm
     }
 
     #[test]
-    fn team_member_identity_link_requires_registered_agent_member() {
-        let (store, root) = temp_store("member-identity-link");
-        let linked = TeamMemberSpec {
-            agent_member_id: Some("agent-standing-builder".into()),
-            name: "StandingBuilder".into(),
-            role: "builder".into(),
-            provider: "codex".into(),
-            execution_mode: Some("codex_app_server".into()),
-            model: None,
-            effort: None,
-            service_tier: None,
-            worktree_ref: None,
-            owned_paths: Vec::new(),
-            resume_native_session_id: None,
-            initial_work: None,
-        };
-        let missing = match create_team_run(
-            &store,
-            None,
-            None,
-            None,
-            "Verify explicit identity",
-            None,
-            "test",
-            None,
-            None,
-            None,
-            None,
-            None,
-            std::slice::from_ref(&linked),
-        ) {
-            Ok(_) => panic!("an explicit identity link must resolve to AgentMember"),
-            Err(error) => error,
-        };
-        assert!(missing
-            .to_string()
-            .contains("references missing AgentMember agent-standing-builder"));
-
-        let member = build_member_from_args(
-            &[
-                "create".into(),
-                "--id".into(),
-                "agent-standing-builder".into(),
-                "--name".into(),
-                "StandingBuilder".into(),
-                "--role".into(),
-                "builder".into(),
-                "--provider".into(),
-                "codex".into(),
-            ],
-            AgentMemberStatus::Idle,
-        )
-        .expect("registered member");
-        store.append_member(&member).expect("append member");
-        let created = create_team_run(
-            &store,
-            None,
-            None,
-            None,
-            "Verify explicit identity",
-            None,
-            "test",
-            None,
-            None,
-            None,
-            None,
-            None,
-            &[linked],
-        )
-        .expect("registered identity link succeeds");
-        assert_eq!(
-            created.member_runs[0].agent_member_id.as_deref(),
-            Some("agent-standing-builder")
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn stable_agent_inbox_routes_once_to_its_unique_member_run() {
-        let (store, root) = temp_store("agent-inbox-route");
-        let agent = make_member("agent-standing-builder");
-        store.append_member(&agent).expect("append Agent identity");
-        let created = create_team_run(
-            &store,
-            None,
-            None,
-            None,
-            "Route stable Agent mail",
-            None,
-            "test",
-            None,
-            None,
-            None,
-            None,
-            None,
-            &[TeamMemberSpec {
-                agent_member_id: Some(agent.id.clone()),
-                name: "StandingBuilder".into(),
-                role: "builder".into(),
-                provider: "codex".into(),
-                execution_mode: Some("codex_app_server".into()),
-                model: None,
-                effort: None,
-                service_tier: None,
-                worktree_ref: None,
-                owned_paths: Vec::new(),
-                resume_native_session_id: None,
-                initial_work: None,
-            }],
-        )
-        .expect("create linked runtime");
-        store
-            .append_message(&Message {
-                id: "agent-mail-1".into(),
-                task_id: None,
-                from_agent_id: "human-owner".into(),
-                to_agent_id: Some(agent.id.clone()),
-                channel: Some("agent-direct".into()),
-                kind: MessageKind::Message,
-                delivery_status: MessageDeliveryStatus::Queued,
-                content: "Please review the current architecture.".into(),
-                evidence_ids: Vec::new(),
-                created_at: "unix-ms:1".into(),
-                delivery: None,
-                sender_kind: SenderKind::Operator,
-            })
-            .expect("append stable inbox mail");
-
-        let routes = route_agent_inbox_messages(&store, &agent.id, None, None)
-            .expect("route unique runtime");
-        assert_eq!(routes.len(), 1);
-        assert_eq!(routes[0].member_run_id, created.member_runs[0].id);
-        let source = latest_message(&store, "agent-mail-1").expect("source latest");
-        assert_eq!(source.delivery_status, MessageDeliveryStatus::Acknowledged);
-        let routed = latest_team_messages_in_append_order(&store)
-            .expect("team messages")
-            .into_iter()
-            .find(|message| message.id == routes[0].team_message_id)
-            .expect("routed TeamMessage");
-        assert_eq!(
-            routed.sender.as_ref().map(|sender| sender.kind),
-            Some(TeamActorKind::Operator)
-        );
-        assert_eq!(
-            routed.to_member_ids,
-            vec![created.member_runs[0].id.clone()]
-        );
-        assert_eq!(
-            routed.deliveries[0].status,
-            TeamDeliveryStatus::Queued,
-            "routing into a mailbox is not provider acceptance"
-        );
-
-        let second = route_agent_inbox_messages(&store, &agent.id, None, None)
-            .expect("idempotent second routing scan");
-        assert!(second.is_empty());
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn stable_agent_inbox_requires_explicit_target_when_several_runtimes_are_active() {
-        let (store, root) = temp_store("agent-inbox-ambiguous");
-        let agent = make_member("agent-standing-builder");
-        store.append_member(&agent).expect("append Agent identity");
-        let spec = || TeamMemberSpec {
-            agent_member_id: Some(agent.id.clone()),
-            name: "StandingBuilder".into(),
-            role: "builder".into(),
-            provider: "codex".into(),
-            execution_mode: Some("codex_app_server".into()),
-            model: None,
-            effort: None,
-            service_tier: None,
-            worktree_ref: None,
-            owned_paths: Vec::new(),
-            resume_native_session_id: None,
-            initial_work: None,
-        };
-        let first = create_team_run(
-            &store,
-            None,
-            None,
-            None,
-            "First runtime",
-            None,
-            "test",
-            None,
-            None,
-            None,
-            None,
-            None,
-            &[spec()],
-        )
-        .expect("first run");
-        create_team_run(
-            &store,
-            None,
-            None,
-            None,
-            "Second runtime",
-            None,
-            "test",
-            None,
-            None,
-            None,
-            None,
-            None,
-            &[spec()],
-        )
-        .expect("second run");
-        store
-            .append_message(&Message {
-                id: "agent-mail-ambiguous".into(),
-                task_id: None,
-                from_agent_id: "human-owner".into(),
-                to_agent_id: Some(agent.id.clone()),
-                channel: Some("agent-direct".into()),
-                kind: MessageKind::Message,
-                delivery_status: MessageDeliveryStatus::Queued,
-                content: "Do not guess which runtime owns this.".into(),
-                evidence_ids: Vec::new(),
-                created_at: "unix-ms:1".into(),
-                delivery: None,
-                sender_kind: SenderKind::Operator,
-            })
-            .expect("append inbox mail");
-
-        let error = route_agent_inbox_messages(&store, &agent.id, None, None)
-            .expect_err("ambiguous route must fail");
-        assert!(error.to_string().contains("eligible MemberRuns"));
-        assert_eq!(
-            latest_message(&store, "agent-mail-ambiguous")
-                .expect("source remains")
-                .delivery_status,
-            MessageDeliveryStatus::Queued
-        );
-        let explicit =
-            route_agent_inbox_messages(&store, &agent.id, Some(&first.member_runs[0].id), None)
-                .expect("explicit target routes");
-        assert_eq!(explicit.len(), 1);
-        assert_eq!(explicit[0].member_run_id, first.member_runs[0].id);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[cfg(any())]
-    #[test]
-    fn member_run_detail_joins_assignment_mailbox_runtime_and_handoff() {
-        let (store, root) = temp_store("member-run-detail");
-        let created = create_two_member_team_run(&store);
-        let first = &created.member_runs[0];
-        let second = &created.member_runs[1];
-        let assignment = &created.assignment_messages[0];
-        let mut delivered_assignment = assignment.clone();
-        let first_delivery = delivered_assignment
-            .deliveries
-            .iter_mut()
-            .find(|delivery| delivery.member_id == first.id)
-            .expect("first member assignment delivery");
-        first_delivery.status = TeamDeliveryStatus::Delivered;
-        first_delivery.attempt = 1;
-        first_delivery.updated_at = now_string();
-        store
-            .append_team_message(&delivered_assignment)
-            .expect("deliver first member assignment");
-
-        let mut peer_message = send_team_message(
-            &store,
-            &created.team_run.id,
-            &second.id,
-            vec![first.id.clone()],
-            TeamMessageKind::Progress,
-            "Peer API is ready",
-            Some(assignment.correlation_id.clone()),
-            None,
-            None,
-            None,
-        )
-        .expect("peer message");
-        let peer_delivery = peer_message
-            .deliveries
-            .iter_mut()
-            .find(|delivery| delivery.member_id == first.id)
-            .expect("peer delivery");
-        peer_delivery.status = TeamDeliveryStatus::Delivered;
-        peer_delivery.attempt = 1;
-        peer_delivery.provider_receipt_id = Some("native-peer-receipt".into());
-        peer_delivery.updated_at = now_string();
-        store
-            .append_team_message(&peer_message)
-            .expect("deliver peer message");
-        send_team_message(
-            &store,
-            &created.team_run.id,
-            &first.id,
-            vec!["host".into()],
-            TeamMessageKind::Handoff,
-            "Module A complete",
-            Some(assignment.correlation_id.clone()),
-            Some(assignment.id.clone()),
-            None,
-            None,
-        )
-        .expect("handoff");
-
-        let detail = member_run_detail_json(&store, &first.id).expect("member detail");
-        assert_eq!(detail["member_run"]["id"], first.id);
-        assert_eq!(detail["team_run"]["id"], created.team_run.id);
-        assert_eq!(detail["assignment"]["id"], assignment.id);
-        assert_eq!(
-            detail["assignment_correlation_id"],
-            assignment.correlation_id
-        );
-        assert_eq!(
-            detail["mailbox"]["inbox"].as_array().map(Vec::len),
-            Some(2),
-            "assignment plus peer progress"
-        );
-        assert_eq!(
-            detail["mailbox"]["outbox"].as_array().map(Vec::len),
-            Some(1)
-        );
-        assert_eq!(detail["latest_handoff"]["body"], "Module A complete");
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[cfg(any())]
-    #[test]
-    fn completed_round_keeps_assignment_correlation_and_uses_exact_trigger_as_cause() {
-        let (store, root) = temp_store("member-round-lineage");
-        let created = create_two_member_team_run(&store);
-        let member = &created.member_runs[0];
-        let assignment = &created.assignment_messages[0];
-        let follow_up = send_team_message(
-            &store,
-            &created.team_run.id,
-            "host",
-            vec![member.id.clone()],
-            TeamMessageKind::Message,
-            "Continue with the reviewed adjustment",
-            Some(assignment.correlation_id.clone()),
-            Some(assignment.id.clone()),
-            None,
-            None,
-        )
-        .expect("follow-up");
-
-        let (origin_wave_id, correlation_id, causation_id) =
-            member_round_lineage(Some(assignment), Some(&follow_up));
-        assert_eq!(origin_wave_id, assignment.origin_wave_id);
-        assert_eq!(correlation_id, assignment.correlation_id);
-        assert_eq!(causation_id.as_deref(), Some(follow_up.id.as_str()));
-
-        let replacement = send_team_message(
-            &store,
-            &created.team_run.id,
-            "host",
-            vec![member.id.clone()],
-            TeamMessageKind::Assignment,
-            "Own the next independent lane",
-            None,
-            None,
-            None,
-            None,
-        )
-        .expect("replacement assignment");
-        let active =
-            active_assignment_for_round(Some(assignment), std::slice::from_ref(&replacement))
-                .expect("active assignment");
-        let (_, replacement_correlation, replacement_causation) =
-            member_round_lineage(Some(&active), Some(&replacement));
-        assert_eq!(active.id, replacement.id);
-        assert_eq!(replacement_correlation, replacement.correlation_id);
-        assert_eq!(
-            replacement_causation.as_deref(),
-            Some(replacement.id.as_str())
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[cfg(any())]
-    #[test]
-    fn active_turn_handoff_ignores_another_assignment_and_an_older_same_correlation_cause() {
-        let (store, root) = temp_store("member-turn-lineage-negative");
-        let created = create_two_member_team_run(&store);
-        let member = &created.member_runs[0];
-        let mut assignment = created.assignment_messages[0].clone();
-        let deliver = |store: &HarnessStore, message: &mut TeamMessage| {
-            let delivery = message
-                .deliveries
-                .iter_mut()
-                .find(|delivery| delivery.member_id == member.id)
-                .expect("member delivery");
-            delivery.status = TeamDeliveryStatus::Delivered;
-            delivery.attempt = 1;
-            delivery.provider_receipt_id = Some(format!("native-receipt:{}", message.id));
-            delivery.updated_at = now_string();
-            store
-                .append_team_message(message)
-                .expect("persist provider receipt");
-        };
-        deliver(&store, &mut assignment);
-
-        let mut older = send_team_message(
-            &store,
-            &created.team_run.id,
-            "host",
-            vec![member.id.clone()],
-            TeamMessageKind::Message,
-            "Older same-correlation context",
-            Some(assignment.correlation_id.clone()),
-            Some(assignment.id.clone()),
-            None,
-            None,
-        )
-        .expect("older message");
-        deliver(&store, &mut older);
-        let mut trigger = send_team_message(
-            &store,
-            &created.team_run.id,
-            "host",
-            vec![member.id.clone()],
-            TeamMessageKind::Message,
-            "Exact message consumed for this turn",
-            Some(assignment.correlation_id.clone()),
-            Some(older.id.clone()),
-            None,
-            None,
-        )
-        .expect("turn trigger");
-        deliver(&store, &mut trigger);
-        let mut other_assignment = send_team_message(
-            &store,
-            &created.team_run.id,
-            "host",
-            vec![member.id.clone()],
-            TeamMessageKind::Assignment,
-            "Another delivered Assignment must not own the active turn",
-            None,
-            None,
-            None,
-            None,
-        )
-        .expect("other Assignment");
-        deliver(&store, &mut other_assignment);
-
-        let ledger = TeamRunLedger::without_supervisor(&store, &created.team_run.id);
-        let handoffs_before_round =
-            member_handoff_ids(&ledger, &member.id).expect("Handoff baseline");
-        let wrong_assignment_handoff = send_team_message(
-            &store,
-            &created.team_run.id,
-            &member.id,
-            vec!["host".into()],
-            TeamMessageKind::Handoff,
-            "Wrong Assignment result",
-            Some(other_assignment.correlation_id.clone()),
-            Some(other_assignment.id.clone()),
-            None,
-            None,
-        )
-        .expect("other Assignment Handoff");
-        let older_cause_handoff = send_team_message(
-            &store,
-            &created.team_run.id,
-            &member.id,
-            vec!["host".into()],
-            TeamMessageKind::Handoff,
-            "Stale same-correlation result",
-            Some(assignment.correlation_id.clone()),
-            Some(older.id.clone()),
-            None,
-            None,
-        )
-        .expect("older-cause Handoff");
-        let lineage = MemberTurnLineage {
-            assignment_correlation_id: Some(&assignment.correlation_id),
-            consumed_trigger_id: Some(&trigger.id),
-            handoffs_before_round: &handoffs_before_round,
-        };
-        assert!(
-            latest_member_handoff_for_turn(&ledger, &member.id, &lineage)
-                .expect("select Handoff")
-                .is_none(),
-            "Steer must not inherit another Assignment or an older same-correlation cause"
-        );
-
-        let recorded = record_round_handoff(
-            &ledger,
-            member,
-            &MemberRoundRecord {
-                assignment: Some(&assignment),
-                trigger: Some(&trigger),
-                final_text: "## RESULT\ndone\n## SUMMARY\nfallback for exact trigger",
-                evidence_refs: &[],
-                round: 2,
-                handoffs_before_round: &handoffs_before_round,
-                provider_error: None,
-                provider_terminal: None,
-            },
-        )
-        .expect("record fallback");
-        let RoundHandoffRecord::Recorded(fallback) = recorded else {
-            panic!("exact-trigger fallback must not be deferred");
-        };
-        assert_ne!(fallback.id, wrong_assignment_handoff.id);
-        assert_ne!(fallback.id, older_cause_handoff.id);
-        assert_eq!(fallback.correlation_id, assignment.correlation_id);
-        assert_eq!(fallback.causation_id.as_deref(), Some(trigger.id.as_str()));
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn member_to_host_is_delivered_manual_ack_but_member_mail_stays_queued() {
         let (store, root) = temp_store("team-delivery-routing");
         let created = create_two_member_team_run(&store);
@@ -51003,7 +48813,7 @@ package:com.tencent.mm
             &created.team_run.id,
             &first.id,
             vec!["host".into()],
-            TeamMessageKind::Question,
+            ProviderDispatchIntent::Message,
             "Need a product decision",
             Some(correlation.clone()),
             Some(seed.id.clone()),
@@ -51026,7 +48836,7 @@ package:com.tencent.mm
             &created.team_run.id,
             &first.id,
             vec![second.id.clone()],
-            TeamMessageKind::Progress,
+            ProviderDispatchIntent::Message,
             "Shared interface is ready",
             Some(correlation.clone()),
             None,
@@ -51043,7 +48853,7 @@ package:com.tencent.mm
             &created.team_run.id,
             "host",
             vec![first.id.clone()],
-            TeamMessageKind::Answer,
+            ProviderDispatchIntent::Message,
             "Use the stable interface",
             Some(correlation),
             Some(host_mail.id),
@@ -51074,7 +48884,7 @@ package:com.tencent.mm
             &created.team_run.id,
             "host",
             vec![member.id.clone()],
-            TeamMessageKind::Message,
+            ProviderDispatchIntent::Message,
             "Return a Markdown plan before implementation. Do not execute yet.",
             Some(assignment.correlation_id.clone()),
             Some(assignment.id.clone()),
@@ -51087,7 +48897,7 @@ package:com.tencent.mm
             &created.team_run.id,
             &member.id,
             vec!["host".into()],
-            TeamMessageKind::Message,
+            ProviderDispatchIntent::Message,
             "1. Inspect\n2. Implement\n3. Verify",
             Some(assignment.correlation_id.clone()),
             Some(request.id.clone()),
@@ -51100,7 +48910,7 @@ package:com.tencent.mm
             &created.team_run.id,
             "host",
             vec![member.id.clone()],
-            TeamMessageKind::Message,
+            ProviderDispatchIntent::Message,
             "Add rollback and integration checks",
             Some(assignment.correlation_id.clone()),
             Some(proposal_one.id.clone()),
@@ -51114,7 +48924,7 @@ package:com.tencent.mm
             &created.team_run.id,
             &member.id,
             vec!["host".into()],
-            TeamMessageKind::Message,
+            ProviderDispatchIntent::Message,
             "1. Inspect\n2. Implement\n3. Integrate\n4. Roll back if checks fail",
             Some(assignment.correlation_id.clone()),
             Some(feedback.id),
@@ -51127,7 +48937,7 @@ package:com.tencent.mm
             &created.team_run.id,
             "host",
             vec![member.id.clone()],
-            TeamMessageKind::Message,
+            ProviderDispatchIntent::Message,
             "Plan reviewed. Execute revision 2.",
             Some(assignment.correlation_id.clone()),
             Some(proposal_two.id),
@@ -51158,7 +48968,7 @@ package:com.tencent.mm
             &bound.id,
             &member.id,
             vec!["host".into()],
-            TeamMessageKind::Message,
+            ProviderDispatchIntent::Message,
             "QUESTION: choose interface A or B",
             Some(assignment.correlation_id.clone()),
             Some(assignment.id.clone()),
@@ -51206,7 +49016,7 @@ package:com.tencent.mm
             &bound.id,
             &member.id,
             vec!["host".into()],
-            TeamMessageKind::Message,
+            ProviderDispatchIntent::Message,
             "QUESTION: test surface normalization",
             Some(assignment.correlation_id.clone()),
             Some(assignment.id.clone()),
@@ -51250,7 +49060,7 @@ package:com.tencent.mm
             &bound.id,
             &member.id,
             vec!["host".into()],
-            TeamMessageKind::Message,
+            ProviderDispatchIntent::Message,
             "QUESTION: reverse normalization check",
             Some(assignment.correlation_id.clone()),
             Some(assignment.id.clone()),
@@ -51343,8 +49153,6 @@ package:com.tencent.mm
                     artifact_refs: Vec::new(),
                     check_refs: Vec::new(),
                     github_links: Vec::new(),
-                    gates: Vec::new(),
-                    workspace: None,
                     version: 0,
                     created_at: String::new(),
                     updated_at: String::new(),
@@ -51357,7 +49165,7 @@ package:com.tencent.mm
         let start_ctx = WorkCommandContext {
             event_id: generated_id("work-event-start"),
             performed_by_actor: TeamActorRef {
-                kind: TeamActorKind::MemberRun,
+                kind: TeamActorKind::ProviderRuntimeProjection,
                 id: member.id.clone(),
                 display_name: None,
                 authn_source: Some("bound-runtime:test".into()),
@@ -51376,7 +49184,7 @@ package:com.tencent.mm
         let submit_ctx = WorkCommandContext {
             event_id: generated_id("work-event-submit"),
             performed_by_actor: TeamActorRef {
-                kind: TeamActorKind::MemberRun,
+                kind: TeamActorKind::ProviderRuntimeProjection,
                 id: member.id.clone(),
                 display_name: None,
                 authn_source: Some("bound-runtime:test".into()),
@@ -51463,7 +49271,7 @@ package:com.tencent.mm
             None,
             None,
             &[TeamMemberSpec {
-                agent_member_id: None,
+                agent_member_id: "agent-only-member-a".into(),
                 name: "OnlyMember".into(),
                 role: "sole".into(),
                 provider: "codex".into(),
@@ -51471,7 +49279,7 @@ package:com.tencent.mm
                 model: None,
                 effort: None,
                 service_tier: None,
-                worktree_ref: None,
+                provider_cwd_hint: None,
                 owned_paths: vec![],
                 resume_native_session_id: None,
                 initial_work: None,
@@ -51507,7 +49315,7 @@ package:com.tencent.mm
             None,
             None,
             &[TeamMemberSpec {
-                agent_member_id: None,
+                agent_member_id: "agent-only-member-b".into(),
                 name: "OnlyMember".into(),
                 role: "sole".into(),
                 provider: "codex".into(),
@@ -51515,7 +49323,7 @@ package:com.tencent.mm
                 model: None,
                 effort: None,
                 service_tier: None,
-                worktree_ref: None,
+                provider_cwd_hint: None,
                 owned_paths: vec![],
                 resume_native_session_id: None,
                 initial_work: None,
@@ -51555,7 +49363,7 @@ package:com.tencent.mm
             None,
             None,
             &[TeamMemberSpec {
-                agent_member_id: None,
+                agent_member_id: "agent-only-member-c".into(),
                 name: "OnlyMember".into(),
                 role: "sole".into(),
                 provider: "codex".into(),
@@ -51563,7 +49371,7 @@ package:com.tencent.mm
                 model: None,
                 effort: None,
                 service_tier: None,
-                worktree_ref: None,
+                provider_cwd_hint: None,
                 owned_paths: vec![],
                 resume_native_session_id: None,
                 initial_work: None,
@@ -52461,7 +50269,7 @@ package:com.tencent.mm
             None,
             None,
             &[TeamMemberSpec {
-                agent_member_id: None,
+                agent_member_id: "agent-batch-member".into(),
                 name: "BatchMember".into(),
                 role: "worker".into(),
                 provider: "codex".into(),
@@ -52469,7 +50277,7 @@ package:com.tencent.mm
                 model: None,
                 effort: None,
                 service_tier: None,
-                worktree_ref: None,
+                provider_cwd_hint: None,
                 owned_paths: Vec::new(),
                 resume_native_session_id: None,
                 initial_work: None,
@@ -52490,7 +50298,7 @@ package:com.tencent.mm
             None,
             &created.team_run.id,
             &TeamMemberSpec {
-                agent_member_id: None,
+                agent_member_id: "agent-late-batch-member".into(),
                 name: "LateBatchMember".into(),
                 role: "worker".into(),
                 provider: "codex".into(),
@@ -52498,7 +50306,7 @@ package:com.tencent.mm
                 model: None,
                 effort: None,
                 service_tier: None,
-                worktree_ref: None,
+                provider_cwd_hint: None,
                 owned_paths: Vec::new(),
                 resume_native_session_id: None,
                 initial_work: None,
@@ -52630,73 +50438,6 @@ package:com.tencent.mm
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[cfg(any())]
-    #[test]
-    fn collaboration_envelope_contains_ids_roster_and_safe_environment() {
-        let (store, root) = temp_store("team-envelope");
-        let created = create_two_member_team_run(&store);
-        let ledger = TeamRunLedger::without_supervisor(&store, &created.team_run.id);
-        let member = &created.member_runs[0];
-        let assignment = &created.assignment_messages[0];
-        let envelope = member_collaboration_envelope(
-            &ledger,
-            Some("space-example"),
-            Some("example-project"),
-            Some("/workspace/example-project"),
-            member,
-            Some(assignment),
-        )
-        .expect("envelope");
-        let prompt = contract_prompt(
-            &created.team_run.objective,
-            member,
-            &assignment.body,
-            &envelope,
-        );
-        assert!(prompt.contains(&created.team_run.id));
-        assert!(prompt.contains(&member.id));
-        assert!(prompt.contains(&assignment.id));
-        assert!(prompt.contains(&assignment.correlation_id));
-        assert!(prompt.contains("BuilderB"));
-        assert!(prompt.contains("provider-native subagents"));
-        assert!(prompt.contains("\"$HARNESS_BIN\" team-run inbox"));
-        assert!(prompt.contains("\"$HARNESS_BIN\" team-run send"));
-        let env = envelope
-            .environment()
-            .into_iter()
-            .collect::<HashMap<_, _>>();
-        assert_eq!(
-            env.get("HARNESS_SPACE").map(String::as_str),
-            Some("space-example")
-        );
-        assert_eq!(
-            env.get("HARNESS_PROJECT").map(String::as_str),
-            Some("/workspace/example-project")
-        );
-        assert_eq!(
-            env.get("HARNESS_PROJECT_ID").map(String::as_str),
-            Some("example-project")
-        );
-        assert!(
-            env.get("HARNESS_BIN").is_some_and(|path| !path.is_empty()),
-            "the member must call the exact Host binary, not a stale PATH install"
-        );
-        assert_eq!(
-            env.get("HARNESS_TEAM_RUN_ID").map(String::as_str),
-            Some(created.team_run.id.as_str())
-        );
-        assert_eq!(
-            env.get("HARNESS_ASSIGNMENT_CORRELATION_ID")
-                .map(String::as_str),
-            Some(assignment.correlation_id.as_str())
-        );
-        assert!(
-            env.keys().all(|key| key.starts_with("HARNESS_")),
-            "only non-secret collaboration locators are injected"
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
     #[test]
     fn workspace_snapshot_stops_at_project_or_worktree_boundary() {
         let root = std::env::temp_dir().join(format!(
@@ -52734,263 +50475,11 @@ package:com.tencent.mm
     }
 
     #[test]
-    fn create_team_value_persists_team_and_appears_in_snapshot() {
-        let (store, root) = temp_store("wp-ii-team");
-        store
-            .append_mission(&Mission {
-                id: "mission-platform".into(),
-                title: "Platform mission".into(),
-                objective: "Own the dashboard".into(),
-                context: String::new(),
-                desired_outcome: None,
-                status: MissionStatus::Planned,
-                wave_ids: Vec::new(),
-                outcome_summary: None,
-                completed_by: None,
-                created_at: "unix-ms:1".into(),
-                updated_at: "unix-ms:1".into(),
-                completed_at: None,
-            })
-            .expect("mission");
-        store
-            .insert_execution_node(&ExecutionNode {
-                id: "00000000-0000-4000-8000-000000000010".into(),
-                display_name: "Platform node".into(),
-                status: ExecutionNodeStatus::Active,
-                created_at: "unix-ms:1".into(),
-                updated_at: "unix-ms:1".into(),
-            })
-            .expect("node");
-        for (id, name, role) in [
-            ("lead-1", "Platform Lead", "host"),
-            ("worker-1", "Worker One", "worker"),
-            ("worker-2", "Worker Two", "worker"),
-        ] {
-            create_agent_value(
-                &store,
-                &serde_json::json!({
-                    "id": id,
-                    "name": name,
-                    "role": role,
-                    "provider": "codex"
-                }),
-            )
-            .expect("member create succeeds");
-        }
-        let body = serde_json::json!({
-            "name": "Platform Squad",
-            "description": "Owns the dashboard",
-            "mission_id": "mission-platform",
-            "host_agent_id": "lead-1",
-            "node_id": "00000000-0000-4000-8000-000000000010",
-            "member": ["worker-1", "worker-2"]
-        });
-
-        let created = create_team_value(&store, &body).expect("team create succeeds");
-        let team_id = created["id"]
-            .as_str()
-            .expect("created team has id")
-            .to_string();
-        assert_eq!(created["name"], "Platform Squad");
-        assert_eq!(created["host_agent_id"], "lead-1");
-
-        // Persisted as a domain entity.
-        let teams = latest_teams(&store).expect("teams readable");
-        let persisted = teams.get(&team_id).expect("team persisted in store");
-        assert_eq!(persisted.name, "Platform Squad");
-        assert_eq!(persisted.host_agent_id, "lead-1");
-        assert_eq!(persisted.mission_id, "mission-platform");
-        assert_eq!(persisted.node_id, "00000000-0000-4000-8000-000000000010");
-        assert_eq!(persisted.member_ids, vec!["worker-1", "worker-2"]);
-        assert_eq!(persisted.status, AgentTeamStatus::Active);
-
-        // Visible in the dashboard snapshot the HTTP layer returns.
-        let snapshot = dashboard_snapshot(&store).expect("snapshot builds");
-        let snapshot_teams = snapshot["teams"]
-            .as_array()
-            .expect("teams array in snapshot");
-        assert!(
-            snapshot_teams
-                .iter()
-                .any(|team| team["id"].as_str() == Some(team_id.as_str())),
-            "new team must appear in snapshot teams"
-        );
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn create_team_value_missing_required_field_is_usage_error() {
         let (store, root) = temp_store("wp-ii-team-bad");
         // No owner / name -> CliError::Usage (mapped to HTTP 400 by serve loop).
         let body = serde_json::json!({"description": "no name or owner"});
         let error = create_team_value(&store, &body).expect_err("missing fields must error");
-        assert!(
-            matches!(error, CliError::Usage(_)),
-            "malformed body must be a Usage error, got: {error:?}"
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn create_team_rejects_missing_and_duplicate_member_ids() {
-        let (store, root) = temp_store("team-member-integrity");
-        store
-            .append_mission(&Mission {
-                id: "mission-integrity".into(),
-                title: "Integrity mission".into(),
-                objective: "Validate roster".into(),
-                context: String::new(),
-                desired_outcome: None,
-                status: MissionStatus::Planned,
-                wave_ids: Vec::new(),
-                outcome_summary: None,
-                completed_by: None,
-                created_at: "unix-ms:1".into(),
-                updated_at: "unix-ms:1".into(),
-                completed_at: None,
-            })
-            .expect("mission");
-        store
-            .insert_execution_node(&ExecutionNode {
-                id: "00000000-0000-4000-8000-000000000011".into(),
-                display_name: "Integrity node".into(),
-                status: ExecutionNodeStatus::Active,
-                created_at: "unix-ms:1".into(),
-                updated_at: "unix-ms:1".into(),
-            })
-            .expect("node");
-        let missing = serde_json::json!({
-            "id": "team-missing",
-            "name": "Invalid",
-            "description": "References a missing member",
-            "mission_id": "mission-integrity",
-            "host_agent_id": "host",
-            "node_id": "00000000-0000-4000-8000-000000000011",
-            "member": ["missing"]
-        });
-        let error = create_team_value(&store, &missing).expect_err("missing member must fail");
-        assert!(error.to_string().contains("missing AgentMember"));
-
-        let member = build_member_from_args(
-            &[
-                "--id".into(),
-                "member-1".into(),
-                "--name".into(),
-                "Member".into(),
-                "--role".into(),
-                "builder".into(),
-            ],
-            AgentMemberStatus::Idle,
-        )
-        .expect("member");
-        finalize_member_creation(&store, &member).expect("member create");
-        let duplicate = serde_json::json!({
-            "id": "team-duplicate",
-            "name": "Invalid",
-            "description": "Duplicates a member",
-            "mission_id": "mission-integrity",
-            "host_agent_id": "host",
-            "node_id": "00000000-0000-4000-8000-000000000011",
-            "member": ["member-1", "member-1"]
-        });
-        let error = create_team_value(&store, &duplicate).expect_err("duplicate must fail");
-        assert!(error.to_string().contains("duplicate member id"));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn create_agent_rejects_duplicate_identity() {
-        let (store, root) = temp_store("duplicate-agent-member");
-        let body = serde_json::json!({
-            "id": "member-1",
-            "name": "Worker",
-            "role": "builder",
-            "provider": "codex"
-        });
-        create_agent_value(&store, &body).expect("first create");
-        let error = create_agent_value(&store, &body).expect_err("duplicate must fail");
-        assert!(error.to_string().contains("AgentMember already exists"));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn create_agent_value_persists_member_and_appears_in_snapshot() {
-        let (store, root) = temp_store("wp-ii-agent");
-        let body = serde_json::json!({
-            "name": "Worker One",
-            "role": "worker",
-            "provider": "codex",
-            "effort": "high",
-            "skill": ["frontend-design"]
-        });
-
-        let created = create_agent_value(&store, &body).expect("agent create succeeds");
-        let member_id = created["id"]
-            .as_str()
-            .expect("created member has id")
-            .to_string();
-        assert_eq!(created["name"], "Worker One");
-        assert_eq!(created["role"], "worker");
-        // Idle, not started: runtime start stays a separate action.
-        assert_eq!(created["status"], "idle");
-        assert!(
-            created["provider_runtime_id"].is_null(),
-            "create must NOT auto-start a runtime"
-        );
-
-        // Persisted member with a prompt_ref written to the store.
-        let members = latest_members(&store).expect("members readable");
-        let persisted = members.get(&member_id).expect("member persisted in store");
-        assert_eq!(persisted.name, "Worker One");
-        assert_eq!(persisted.status, AgentMemberStatus::Idle);
-        assert_eq!(persisted.provider_config.effort.as_deref(), Some("high"));
-        assert_eq!(persisted.skill_refs, vec!["frontend-design"]);
-        assert!(
-            persisted.prompt_ref.is_some(),
-            "create must persist a bootstrap prompt_ref"
-        );
-        assert!(
-            persisted.provider_runtime_id.is_none(),
-            "no runtime started"
-        );
-
-        // No runtime persisted.
-        assert!(
-            store.runtimes().expect("runtimes readable").is_empty(),
-            "create must not append any runtime"
-        );
-
-        // Member appears in the snapshot roster.
-        let snapshot = dashboard_snapshot(&store).expect("snapshot builds");
-        let snapshot_members = snapshot["members"]
-            .as_array()
-            .expect("members array in snapshot");
-        assert!(
-            snapshot_members
-                .iter()
-                .any(|member| member["id"].as_str() == Some(member_id.as_str())),
-            "new member must appear in snapshot roster"
-        );
-
-        // The agent_created event was emitted.
-        let events = store.events().expect("events readable");
-        assert!(
-            events
-                .iter()
-                .any(|event| event.agent_member_id == member_id
-                    && event.event_type == "agent_created"),
-            "create must emit an agent_created event"
-        );
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn create_agent_value_missing_role_is_usage_error() {
-        let (store, root) = temp_store("wp-ii-agent-bad");
-        let body = serde_json::json!({"name": "No Role"});
-        let error = create_agent_value(&store, &body).expect_err("missing role must error");
         assert!(
             matches!(error, CliError::Usage(_)),
             "malformed body must be a Usage error, got: {error:?}"
@@ -53433,37 +50922,6 @@ mod team_member_assignment_tests {
         assert_eq!(plain.initial_work, None);
         assert_eq!(plain.owned_paths, vec!["src/x.rs"]);
     }
-
-    /// The run objective is a run-level intent, not a per-member brief. When a
-    /// member carries its own assignment the objective must not appear in its
-    /// mail, and owned_paths must be rendered rather than restated in prose.
-    #[cfg(any())]
-    #[test]
-    fn member_assignment_body_prefers_the_member_brief_and_renders_owned_paths() {
-        let spec = parse_team_member_spec("Alice:reviewer:codex@crates/a.rs#audit the store lane")
-            .expect("spec parses");
-        let member_run = build_member_run_for_team(None, "team-run-x", &spec).expect("member run");
-
-        let body = member_assignment_body(&spec, &member_run, "OBJECTIVE-FOR-EVERY-LANE");
-        assert!(
-            body.contains("audit the store lane"),
-            "the member brief must be delivered: {body}"
-        );
-        assert!(
-            !body.contains("OBJECTIVE-FOR-EVERY-LANE"),
-            "a briefed member must not receive the run-level objective: {body}"
-        );
-        assert!(
-            body.contains("crates/a.rs"),
-            "owned paths must be rendered, not left to prose: {body}"
-        );
-
-        // Without a brief the historical objective seeding is preserved.
-        let bare = parse_team_member_spec("Bob:builder:claude").expect("spec parses");
-        let bare_run = build_member_run_for_team(None, "team-run-x", &bare).expect("member run");
-        let bare_body = member_assignment_body(&bare, &bare_run, "OBJECTIVE-FOR-EVERY-LANE");
-        assert!(bare_body.contains("OBJECTIVE-FOR-EVERY-LANE"));
-    }
 }
 
 #[cfg(test)]
@@ -53475,7 +50933,7 @@ mod sse_tests {
         let manager = sse::SseManager::new();
         let rx = manager.subscribe("_test");
 
-        let event = sse::SseEventFrame::AgentEvent(AgentEvent {
+        let event = sse::SseEventFrame::ProviderDispatchEvent(ProviderDispatchEvent {
             id: "evt-test".into(),
             agent_member_id: "mem-test".into(),
             provider_runtime_id: None,
@@ -53495,10 +50953,10 @@ mod sse_tests {
         // Verify the event is received
         match rx.recv_timeout(std::time::Duration::from_secs(1)) {
             Ok(received) => {
-                if let sse::SseEventFrame::AgentEvent(evt) = received {
+                if let sse::SseEventFrame::ProviderDispatchEvent(evt) = received {
                     assert_eq!(evt.id, "evt-test");
                 } else {
-                    panic!("Expected AgentEvent");
+                    panic!("Expected ProviderDispatchEvent");
                 }
             }
             Err(_) => panic!("Did not receive event in time"),
@@ -53518,11 +50976,11 @@ mod sse_tests {
             kind: ProjectKind::Repo,
             is_git_repo: true,
         };
-        let mut member = MemberRun {
+        let mut member = ProviderRuntimeProjection {
             id: "member-cwd".into(),
             team_run_id: "team-cwd".into(),
             slot_id: None,
-            agent_member_id: None,
+            agent_member_id: "agent-runtime-fixer".into(),
             name: "RuntimeFixer".into(),
             role: "implementer".into(),
             provider: "codex".into(),
@@ -53535,8 +50993,8 @@ mod sse_tests {
             runtime_generation: 1,
             status: MemberRunStatus::Idle,
             native_session: None,
-            worktree_ref: None,
-            workspace_snapshot: None,
+            provider_cwd_hint: None,
+            provider_environment_observation: None,
             owned_paths: Vec::new(),
             started_at: now_string(),
             last_event_at: None,
@@ -53569,7 +51027,7 @@ mod sse_tests {
             execution_root
         );
         assert_ne!(member_spawn_cwd(Some(&context), &run, &member), store_root);
-        member.worktree_ref = Some(worktree_root.display().to_string());
+        member.provider_cwd_hint = Some(worktree_root.display().to_string());
         assert_eq!(
             member_spawn_cwd(Some(&context), &run, &member),
             worktree_root
@@ -53667,7 +51125,7 @@ mod sse_tests {
         let rx1 = manager.subscribe("_test");
         let rx2 = manager.subscribe("_test");
 
-        let event = sse::SseEventFrame::AgentEvent(AgentEvent {
+        let event = sse::SseEventFrame::ProviderDispatchEvent(ProviderDispatchEvent {
             id: "evt-multi".into(),
             agent_member_id: "mem-test".into(),
             provider_runtime_id: None,
@@ -53832,10 +51290,10 @@ mod tests_team_run_recover {
 
     fn make_delivery(
         id: &str,
-        status: WorkDeliveryStatus,
+        status: ProviderWorkDispatchStatus,
         generation: Option<u64>,
-    ) -> WorkDelivery {
-        WorkDelivery {
+    ) -> ProviderWorkDispatch {
+        ProviderWorkDispatch {
             id: id.into(),
             work_event_id: format!("event-{id}"),
             team_run_id: "tr-test".into(),
@@ -53860,17 +51318,17 @@ mod tests_team_run_recover {
         session_supports_resume: bool,
         session_availability: NativeSessionAvailability,
         is_external: bool,
-    ) -> MemberRun {
+    ) -> ProviderRuntimeProjection {
         let execution_mode = if is_external {
             EXECUTION_MODE_EXTERNAL_INTERACTIVE.to_string()
         } else {
             "codex_app_server".to_string()
         };
-        MemberRun {
+        ProviderRuntimeProjection {
             id: "mr-test".into(),
             team_run_id: "tr-test".into(),
             slot_id: Some("slot-test".into()),
-            agent_member_id: Some("agent-test".into()),
+            agent_member_id: "agent-test".into(),
             name: "test-member".into(),
             role: "builder".into(),
             provider: "codex".into(),
@@ -53927,8 +51385,8 @@ mod tests_team_run_recover {
             } else {
                 None
             },
-            worktree_ref: None,
-            workspace_snapshot: None,
+            provider_cwd_hint: None,
+            provider_environment_observation: None,
             owned_paths: Vec::new(),
             started_at: "unix-ms:1".into(),
             last_event_at: None,
@@ -54111,9 +51569,9 @@ mod tests_team_run_recover {
         );
         lease.generation = 3;
         let deliveries = vec![
-            make_delivery("stale", WorkDeliveryStatus::Claimed, Some(2)),
-            make_delivery("current", WorkDeliveryStatus::Claimed, Some(3)),
-            make_delivery("queued", WorkDeliveryStatus::Queued, None),
+            make_delivery("stale", ProviderWorkDispatchStatus::Claimed, Some(2)),
+            make_delivery("current", ProviderWorkDispatchStatus::Claimed, Some(3)),
+            make_delivery("queued", ProviderWorkDispatchStatus::Queued, None),
         ];
         let mut calls = Vec::new();
         let reconciled = reconcile_stale_delivery_claims(
@@ -54141,9 +51599,9 @@ mod tests_team_run_recover {
         );
         lease.generation = 4;
         let deliveries = vec![
-            make_delivery("persisted", WorkDeliveryStatus::Claimed, Some(1)),
-            make_delivery("failed", WorkDeliveryStatus::Claimed, Some(2)),
-            make_delivery("must-not-run", WorkDeliveryStatus::Claimed, Some(3)),
+            make_delivery("persisted", ProviderWorkDispatchStatus::Claimed, Some(1)),
+            make_delivery("failed", ProviderWorkDispatchStatus::Claimed, Some(2)),
+            make_delivery("must-not-run", ProviderWorkDispatchStatus::Claimed, Some(3)),
         ];
         let mut calls = Vec::new();
         let failure = reconcile_stale_delivery_claims(
@@ -54182,8 +51640,8 @@ mod tests_team_run_recover {
         );
         lease.generation = 3;
         let deliveries = vec![
-            make_delivery("persisted", WorkDeliveryStatus::Queued, None),
-            make_delivery("retry", WorkDeliveryStatus::Claimed, Some(2)),
+            make_delivery("persisted", ProviderWorkDispatchStatus::Queued, None),
+            make_delivery("retry", ProviderWorkDispatchStatus::Claimed, Some(2)),
         ];
         let mut calls = Vec::new();
         let reconciled = reconcile_stale_delivery_claims(

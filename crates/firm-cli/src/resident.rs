@@ -27,7 +27,7 @@
 //!
 //! Everything here is synchronous `std::process` — no tokio — matching the rest
 //! of the CLI. The module is self-contained: it takes primitive launch inputs
-//! (a [`ResidentConfig`]) rather than the bin-private `LaunchSpec`/`AgentMember`
+//! (a [`ResidentConfig`]) rather than the bin-private `LaunchSpec`/`ProviderLaunchProfile`
 //! types so it stays unit-testable against a fake `claude` script.
 
 #[cfg(test)]
@@ -97,7 +97,7 @@ pub struct ResidentTurn {
 
 /// Launch inputs for a resident, expressed in primitive terms so the module is
 /// testable without the bin-private `LaunchSpec`. The caller in `main.rs`
-/// translates `LaunchSpec` + `AgentMember` into this.
+/// translates `LaunchSpec` + `ProviderLaunchProfile` into this.
 ///
 /// The fields after `binary` form the **config fingerprint** ([`Self::fingerprint`]):
 /// two turns may only share a resident if their fingerprints match, because a
@@ -461,7 +461,7 @@ impl ResidentClaude {
 impl Drop for ResidentClaude {
     fn drop(&mut self) {
         // Never leak a resident child: closing stdin + reaping on drop is the
-        // backstop for the pool, since AgentRuntime.pid is not persisted today.
+        // backstop for the pool, since ProviderProcess.pid is not persisted today.
         self.shutdown_in_place();
     }
 }

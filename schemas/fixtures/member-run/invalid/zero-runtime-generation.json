@@ -1,11 +1,11 @@
 {
-  "id": "mrun-zero-generation",
-  "team_run_id": "trun-1",
-  "name": "worker-1",
-  "role": "worker",
-  "provider": "codex",
-  "coordination_status": "closed",
+  "id": "member-run-1",
+  "agent_member_id": "agent-worker-1",
+  "team_run_id": "team-run-1",
+  "role_snapshot": "worker",
+  "coordination_status": "active",
+  "runtime_status": "idle",
   "runtime_generation": 0,
-  "status": "stopped",
-  "started_at": "2026-07-18T00:00:00Z"
+  "version": 1,
+  "started_at": "unix-ms:1"
 }

@@ -169,8 +169,8 @@ separate historical Wave snapshots from live Works. Test:
 ## Explicit Boundaries
 
 - Wave stores Host plan and judgment, not task/runtime ownership.
-- `origin_wave_id` is navigation metadata, not a lifecycle edge.
+- `source_plan_ref` is navigation metadata, not a lifecycle edge.
 - TeamRun completion does not advance a Wave; Wave advance does not complete a
   TeamRun.
-- Agent Team and Standing Agent pages may share UI primitives but not identity
+- Agent Team and Agent Membership pages may share UI primitives but not identity
   or lifecycle semantics.

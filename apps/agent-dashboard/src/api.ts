@@ -1,5 +1,5 @@
 import type {
-  AgentEvent,
+  ProviderDispatchEvent,
   Company,
   DashboardSnapshot,
   DocRegistryEntry,
@@ -14,10 +14,9 @@ import type {
   NativeActivityProjection,
   PendingInteraction,
   Project,
-  TeamMessage,
+  ProviderDispatchEnvelope,
   TeamMemberCloseRequest,
   TeamSupervisorLease,
-  AgentMessageRoute,
   TeamRun,
   TeamRunEvent,
   Wave,
@@ -461,7 +460,7 @@ export async function fetchWorkflowDefs(baseUrl: string): Promise<WorkflowDef[]>
 export type SseFrame =
   | { kind: "snapshot"; generatedAt?: string }
   | { kind: "projection_invalidated"; invalidation: ProjectionInvalidation | null }
-  | { kind: "agent_event"; event: AgentEvent }
+  | { kind: "agent_event"; event: ProviderDispatchEvent }
   | { kind: "message"; message: Message }
   | { kind: "workflow_run"; run: WorkflowRun }
   | { kind: "workflow_step"; step: WorkflowStep }
@@ -472,10 +471,9 @@ export type SseFrame =
   | { kind: "wave"; wave: Wave }
   | { kind: "agent_team_run"; run: TeamRun }
   | { kind: "member_run"; member: MemberRun }
-  | { kind: "team_message"; message: TeamMessage }
+  | { kind: "team_message"; message: ProviderDispatchEnvelope }
   | { kind: "team_supervisor_lease"; lease: TeamSupervisorLease }
   | { kind: "team_member_close_request"; request: TeamMemberCloseRequest }
-  | { kind: "agent_message_route"; route: AgentMessageRoute }
   | { kind: "member_action"; action: MemberAction }
   | { kind: "pending_interaction"; interaction: PendingInteraction }
   | { kind: "member_activity"; activity: LiveMemberActivity };
@@ -565,7 +563,7 @@ export function openEventStream(
     });
   });
   source.addEventListener("agent_event", (event) => {
-    const data = parse<AgentEvent>(event as MessageEvent);
+    const data = parse<ProviderDispatchEvent>(event as MessageEvent);
     if (data) handlers.onFrame({ kind: "agent_event", event: data });
   });
   source.addEventListener("message", (event) => {
@@ -601,7 +599,7 @@ export function openEventStream(
     if (data) handlers.onFrame({ kind: "member_run", member: data });
   });
   source.addEventListener("team_message", (event) => {
-    const data = parse<TeamMessage>(event as MessageEvent);
+    const data = parse<ProviderDispatchEnvelope>(event as MessageEvent);
     if (data) handlers.onFrame({ kind: "team_message", message: data });
   });
   source.addEventListener("team_supervisor_lease", (event) => {
@@ -611,10 +609,6 @@ export function openEventStream(
   source.addEventListener("team_member_close_request", (event) => {
     const data = parse<TeamMemberCloseRequest>(event as MessageEvent);
     if (data) handlers.onFrame({ kind: "team_member_close_request", request: data });
-  });
-  source.addEventListener("agent_message_route", (event) => {
-    const data = parse<AgentMessageRoute>(event as MessageEvent);
-    if (data) handlers.onFrame({ kind: "agent_message_route", route: data });
   });
   source.addEventListener("member_action", (event) => {
     const data = parse<MemberAction>(event as MessageEvent);
@@ -729,12 +723,6 @@ export function applyFrame(snapshot: DashboardSnapshot, frame: SseFrame): Dashbo
           frame.request,
           "member_run_id",
         ),
-        generated_at: new Date().toISOString(),
-      };
-    case "agent_message_route":
-      return {
-        ...snapshot,
-        agent_message_routes: upsertById(snapshot.agent_message_routes, frame.route),
         generated_at: new Date().toISOString(),
       };
     case "member_action":

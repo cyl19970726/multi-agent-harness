@@ -1,0 +1,14 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://agent-harness.local/schemas/message-delivery.schema.json","title":"MessageDelivery",
+  "type":"object","additionalProperties":false,
+  "required":["id","message_id","recipient_member_run_id","status","attempt","version","updated_at"],
+  "properties":{
+    "id":{"type":"string","minLength":1},"message_id":{"type":"string","minLength":1},"recipient_member_run_id":{"type":"string","minLength":1},
+    "status":{"enum":["queued","claimed","provider_received","acknowledged","failed","expired","invalidated"]},"attempt":{"type":"integer","minimum":0},
+    "claim_id":{"type":["string","null"],"minLength":1},"claimed_supervisor_generation":{"type":["integer","null"],"minimum":1},
+    "claimed_member_generation":{"type":["integer","null"],"minimum":1},"claim_expires_at":{"type":["string","null"],"minLength":1},
+    "freeze_generation":{"type":["integer","null"],"minimum":1},"provider_receipt_id":{"type":["string","null"],"minLength":1},
+    "failure_code":{"type":["string","null"],"minLength":1},"failure_detail":{"type":["string","null"],"minLength":1},
+    "version":{"type":"integer","minimum":1},"updated_at":{"type":"string","minLength":1}
+  }
+}

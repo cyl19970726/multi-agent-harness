@@ -158,6 +158,7 @@ runHarness(["company", "switch", "company-a"], env, projectRoot);
 const apiPort = await freePort();
 const apiBase = `http://127.0.0.1:${apiPort}`;
 let runtime = null;
+const runtimePids = [];
 const runtimeLogs = [];
 function startRuntime() {
   runtime = spawn(harness, ["serve", "--addr", `127.0.0.1:${apiPort}`, "--no-truncate"], {
@@ -165,9 +166,19 @@ function startRuntime() {
     env,
     stdio: ["ignore", "pipe", "pipe"],
   });
+  runtimePids.push(runtime.pid);
   runtime.stdout.on("data", (chunk) => runtimeLogs.push(chunk.toString()));
   runtime.stderr.on("data", (chunk) => runtimeLogs.push(chunk.toString()));
 }
+
+// A test runner may terminate this Node process before the async finally block
+// executes. Always forward process termination to the exact child we own so a
+// Wave check cannot leave `firm serve` orphaned under launchd.
+process.once("exit", () => {
+  if (runtime && runtime.exitCode === null && runtime.signalCode === null) {
+    runtime.kill("SIGTERM");
+  }
+});
 async function stopRuntime() {
   if (!runtime || runtime.exitCode !== null || runtime.signalCode !== null) return;
   const child = runtime;
@@ -193,6 +204,35 @@ await waitFor(async () => (await fetch(`${apiBase}/health`).catch(() => null))?.
 const { current: projectId } = await requestJson(apiBase, "/v1/projects");
 const { current: spaceId } = await requestJson(apiBase, "/v1/spaces");
 
+function createCanonicalMember(id, name, role) {
+  runHarness([
+    "member-trust", "mutate",
+    "--actor-kind", "human",
+    "--actor-id", "dashboard-runtime-owner",
+    "--idempotency-key", `dashboard-runtime-create-${id}`,
+    "--expected-version", "0",
+    "--json", JSON.stringify({
+      command: "create_agent_member",
+      member: {
+        id, name,
+        description: `Canonical ${role} identity for live Dashboard Runtime acceptance.`,
+        role,
+        capabilities: [],
+        skill_refs: [],
+        provider_profile_ref: "codex-default",
+        model_preference: null,
+        workspace_policy: "managed-worktree",
+        permission_ceiling: "workspace_write",
+        organization_status: "active",
+        version: 1,
+        created_by: { kind: "human", id: "dashboard-runtime-owner" },
+        created_at: now,
+        updated_at: now,
+      },
+    }),
+  ], env, projectRoot);
+}
+
 // Build the complete Wave 3 admission chain. A TeamRun is never a free-standing
 // runtime: its flat AgentTeam owns one Mission, is placed on one Node, and the
 // Node must be registered for this exact Execution Space + Project Binding.
@@ -211,13 +251,8 @@ const liveMission = JSON.parse(runHarness([
   "--objective", "Exercise Runtime convergence against native TeamWork",
   "--json",
 ], env, projectRoot));
-runHarness([
-  "org", "member", "create",
-  "--id", "host",
-  "--name", "Dashboard Runtime Host",
-  "--description", "Durable Host identity for live Dashboard Runtime acceptance.",
-  "--role", "host",
-], env, projectRoot);
+createCanonicalMember("host", "Dashboard Runtime Host", "host");
+createCanonicalMember("worker", "Dashboard Runtime Worker", "worker");
 const liveTeam = JSON.parse(runHarness([
   "team", "create",
   "--name", "Dashboard Runtime Live Team",
@@ -225,6 +260,7 @@ const liveTeam = JSON.parse(runHarness([
   "--mission-id", liveMission.id,
   "--host-agent-id", "host",
   "--node-id", liveNode.id,
+  "--member", "worker",
 ], env, projectRoot));
 
 async function postCompany(company, endpoint, record, administrative = true) {
@@ -459,6 +495,14 @@ try {
   await browser.close();
   await vite.close();
   await stopRuntime();
+  for (const pid of runtimePids) {
+    try {
+      process.kill(pid, 0);
+      throw new Error(`owned Runtime process ${pid} survived test cleanup`);
+    } catch (error) {
+      if (error?.code !== "ESRCH") throw error;
+    }
+  }
   if (failed > 0) console.error(runtimeLogs.slice(-20).join(""));
   await rm(temporaryRoot, { recursive: true, force: true });
 }

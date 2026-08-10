@@ -220,7 +220,7 @@ The default progression is:
 4. live Kimi single-member lifecycle;
 5. mixed three-member Host and peer messaging;
 6. busy, idle, crashed/resumed and multi-client delivery;
-7. Organization identity reuse and Standing Agent execution projection;
+7. Organization identity reuse and Agent Membership execution projection;
 8. repeated run from the published Plugin and latest accepted Harness binary.
 
 Do not upgrade all Providers in the same run. A version change gets its own
@@ -255,7 +255,7 @@ Organization dogfood reuses the execution foundation without collapsing
 identity into runtime:
 
 ```text
-Standing Agent / AgentMember identity
+Agent Membership / AgentMember identity
   -> joins an AgentTeam definition
   -> MemberRun for one execution
   -> provider-native session
@@ -263,7 +263,7 @@ Standing Agent / AgentMember identity
 
 Verify that the Organization page shows durable role, reporting, permissions
 and responsibility, while the Member page shows current Work, runtime,
-mailbox, controls and native evidence. A Standing Agent may execute repeatedly
+mailbox, controls and native evidence. A Agent Membership may execute repeatedly
 through new MemberRuns; closing one runtime must not delete the Organization
 identity.
 

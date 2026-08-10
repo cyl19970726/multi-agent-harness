@@ -5,7 +5,9 @@
 //! printing a pass/fail table and exiting non-zero on any mismatch.
 
 mod firm_env;
-use firm_env::{current_project_id, run_firm, ServeHandle, TempHome};
+use firm_env::{
+    create_canonical_agent_member, current_project_id, run_firm, ServeHandle, TempHome,
+};
 
 /// Initialize the project plus the flat AgentTeam required by TeamRun creation.
 fn init_project(home: &TempHome, name: &str) -> (String, String) {
@@ -52,23 +54,18 @@ fn init_project(home: &TempHome, name: &str) -> (String, String) {
         "mission create failed: {mission:?}"
     );
     let mission_id = String::from_utf8_lossy(&mission.stdout).trim().to_string();
-    let host = run_firm(
+    let host = create_canonical_agent_member(
         home,
         &root,
-        &[
-            "agent",
-            "create",
-            "--name",
-            "doctor-host",
-            "--role",
-            "host",
-            "--provider",
-            "codex",
-        ],
+        &project_id,
+        "agent-doctor-host",
+        "doctor-host",
+        "host",
+        "codex",
+        &[],
     );
     assert!(host.status.success(), "host create failed: {host:?}");
-    let host: serde_json::Value = serde_json::from_slice(&host.stdout).expect("host JSON");
-    let host_id = host["id"].as_str().expect("host id");
+    let host_id = "agent-doctor-host";
     let team = run_firm(
         home,
         &root,
@@ -124,8 +121,8 @@ fn seed_team_run(serve: &ServeHandle, team_id: &str) -> (String, String) {
     let (status, sent) = serve.post_json(
         &format!("/v1/team-runs/{team_run_id}/messages"),
         &serde_json::json!({
-            "from_member_id": "host",
-            "to_member_ids": [member_id],
+            "sender_runtime_id": "host",
+            "recipient_runtime_ids": [member_id],
             "kind": "message",
             "body": "checking in",
         }),

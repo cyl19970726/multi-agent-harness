@@ -16,7 +16,7 @@ conflict; do not restate its contract here.
 
 Star Harness is an AI Company OS with two primary systems: a Notion-like Docs
 system for company memory and operating structure, and a mixed Organization of
-humans, Standing Agents, external collaborators, and services. Documents create
+humans, Agent Memberships, external collaborators, and services. Documents create
 TeamWorks and Approvals; accountable actors execute them; results, evidence,
 metrics, and financial effects return to the originating records
 ([prd.md](prd.md), [company-os/README.md](../company-os/README.md)).
@@ -40,7 +40,7 @@ persisting it; a transient live display channel is still pending.
 The shared substrate includes provider sessions/runtimes, capability snapshots,
 permission and budget ceilings, messages, artifacts, events, plugins/MCP, and
 Dashboard projections. It does not collapse WorkflowRun, AgentTeamRun,
-Host-native subagents, or future Standing Agents into one universal object.
+Host-native subagents, or future Agent Memberships into one universal object.
 Interactive chat/steer/interrupt controls must be backed by the selected mode's
 real protocol and terminal acknowledgements.
 
@@ -264,7 +264,7 @@ the registered Git repository/directory where providers execute and discover
 instructions, Skills, plugins, and MCP configuration. Selecting `--project`
 never switches the coordination store.
 
-Agent Team provider cwd resolves as member `worktree_ref` > TeamRun
+Agent Team provider cwd resolves as member `provider_cwd_hint` > TeamRun
 `execution_root` > Project Binding `project_root`, never an Execution Space,
 Company Store, or compatibility store root. Overrides must be the binding root
 or a Git worktree sharing its Git common directory; external Codex worktrees

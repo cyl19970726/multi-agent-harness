@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Avatar } from "@/components/workbench/Avatar";
 import type { StatusTone } from "@/components/workbench/atoms";
 
-import type { MemberRun, TeamMessage } from "../../../types";
+import type { MemberRun, ProviderDispatchEnvelope } from "../../../types";
 import { effectiveTeamMessageResponseIntent } from "../../../types";
 import {
   formatTime,
@@ -23,7 +23,7 @@ import {
 /**
  * Coordination-pressure band for the Team War Room.
  *
- * Mailboxes are read-model projections over TeamMessage recipients and
+ * Mailboxes are read-model projections over ProviderDispatchEnvelope recipients and
  * delivery rows, never a separate stored object, and the Host mailbox exists
  * without fabricating a Host MemberRun.
  */
@@ -35,7 +35,7 @@ export function TeamCoordinationPressure({
   className,
 }: {
   members: MemberRun[];
-  messages: TeamMessage[];
+  messages: ProviderDispatchEnvelope[];
   pendingInteractions: number;
   onOpenActivity: () => void;
   className?: string;
@@ -72,7 +72,7 @@ export function TeamMailboxStrip({
   onOpenMember,
 }: {
   members: MemberRun[];
-  messages: TeamMessage[];
+  messages: ProviderDispatchEnvelope[];
   selectedId: string;
   selectedMemberId?: string;
   showAllMembers: boolean;
@@ -103,7 +103,7 @@ export function TeamMailboxStrip({
       </header>
       <div className="flex snap-x gap-2 overflow-x-auto pb-1 xl:grid xl:grid-cols-5 xl:overflow-visible" data-testid="team-mailbox-strip">
         {participants.map((participant, index) => {
-          const inbox = messages.filter((message) => (message.to_member_ids ?? []).includes(participant.id));
+          const inbox = messages.filter((message) => (message.recipient_runtime_ids ?? []).includes(participant.id));
           const outbox = messages.filter(
             (message) => messageSenderParticipantId(message) === participant.id,
           );
@@ -192,11 +192,11 @@ export function LeadInbox({
   onAnswer,
   onAcknowledge,
 }: {
-  messages: TeamMessage[];
+  messages: ProviderDispatchEnvelope[];
   members: Map<string, MemberRun>;
   actionsEnabled: boolean;
-  onAnswer: (message: TeamMessage) => void;
-  onAcknowledge: (message: TeamMessage) => void;
+  onAnswer: (message: ProviderDispatchEnvelope) => void;
+  onAcknowledge: (message: ProviderDispatchEnvelope) => void;
 }) {
   return (
     <section aria-label="Lead Inbox" className="py-2">
@@ -207,7 +207,7 @@ export function LeadInbox({
         <div className="divide-y divide-border/60 overflow-hidden rounded-lg border border-border/70 bg-card">
           {messages.slice(0, 8).map((message) => {
             const delivery = hostDelivery(message);
-            const canAnswer = Boolean(message.correlation_id && message.from_member_id && message.from_member_id !== "host");
+            const canAnswer = Boolean(message.correlation_id && message.sender_runtime_id && message.sender_runtime_id !== "host");
             return (
               <article key={message.id} className="grid gap-2 px-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
                 <div className="min-w-0">

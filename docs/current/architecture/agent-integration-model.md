@@ -92,7 +92,7 @@ hands a single turn to whatever platform sits behind the member:
 | Pillar | Question | Where it lives today |
 | --- | --- | --- |
 | 1 Base configuration | What does this agent *know and is allowed to be*? | `prompt_ref`, `skill_refs`, `capabilities`, `model`, `profile` on `AgentMember` |
-| 2 Environment | What can it *touch*? | `worktree_ref`, `runtime_workspace_roots`, `workspace_policy`; MCP via `AgentProviderConfig.mcp` |
+| 2 Environment | What can it *touch*? | canonical workspace binding and permission ceiling; MCP via the provider launch profile |
 | 3 Platform adaptation | How does the harness *drive* the platform, select one continuation owner, resolve its native session, read it, and resume it? | `AgentProvider` / provider adapter, continuation controller, native-session resolver, ephemeral reducer, `ProviderCapabilities` |
 
 The pillars are deliberately separable: changing the platform (Pillar 3) must
@@ -183,8 +183,8 @@ for Claude). `profile` selects a named provider configuration profile where the
 platform supports one. Both are part of base configuration because they affect
 behavior and cost but not *what the agent is allowed to touch*.
 
-`AgentProviderConfig.effort` is the neutral reasoning-intensity request.
-`AgentProviderConfig.service_tier` is the neutral latency/service-class request.
+The provider launch profile's `effort` is the neutral reasoning-intensity request.
+Its `service_tier` is the neutral latency/service-class request.
 They are not assumed to use the same provider vocabulary. The selected adapter
 maps them only when its reviewed execution mode exposes an equivalent control:
 
@@ -204,7 +204,7 @@ copies a requested value into the effective field merely because launch did
 not fail.
 
 These fields are execution configuration, not Organization authority. A
-Standing Agent may reuse a different model or provider without changing its
+Agent Membership may reuse a different model or provider without changing its
 company identity, Work ownership, or native-session provenance.
 
 ---
@@ -232,7 +232,7 @@ The fields that bind a member to a workspace:
 
 | Field | Meaning |
 | --- | --- |
-| `worktree_ref` | The git worktree / branch this member operates in. |
+| `provider_cwd_hint` | The git worktree / branch this member operates in. |
 | `runtime_workspace_roots` | Roots the runtime is allowed to read/write. |
 | `owned_paths` (per task) | Paths a specific task may modify; basis for diff gating. |
 | `workspace_policy` | `read-only` vs writable; the abstract permission posture. |
@@ -245,7 +245,7 @@ the platform (`cwd` for Codex exec, `--add-dir` / process cwd for Claude).
 The harness now implements MCP server attachment via a neutral contract. Both
 target platforms consume MCP servers uniformly.
 
-A neutral `mcp` block on the launch spec, sourced from `AgentProviderConfig.mcp`:
+A neutral `mcp` block on the launch spec, sourced from the provider launch profile:
 
 ```text
 mcp:
@@ -266,7 +266,7 @@ How each platform consumes the same neutral block:
 | `command` / `url` | server launch entry in Codex config | server entry in the `--mcp-config` JSON |
 | `allowed_tools` | tool allowlist on the member permission profile | `--allowedTools mcp__<server>__<tool>` |
 
-**Implementation:** A member declares MCP servers via `AgentProviderConfig.mcp`
+**Implementation:** A member references MCP servers through its provider launch profile
 (additive field, defaults to None). The `build_launch_spec` function carries it
 to the neutral launch spec. Providers map the spec onto their own MCP config
 format (Codex `--config`, Claude `--mcp-config`). See
@@ -453,7 +453,7 @@ platforms.
 
 ### The Codex-vocabulary leak this spec abstracts
 
-Today `AgentProviderConfig`
+Today the provider launch configuration
 ([crates/firm-core/src/lib.rs](../../../crates/firm-core/src/lib.rs)) and
 [schemas/agent-member.schema.json](../../../schemas/agent-member.schema.json) carry
 fields that are **Codex `app-server` parameter names mapped 1:1** into the
@@ -485,7 +485,7 @@ is the concrete "define X, Y, Z" deliverable.
    artifact and how it slots into the prompt stack; list the `skill_refs`
    (honoring the proposed skill contract); set member `capabilities`; choose
    `model` / `profile`.
-2. **Define Pillar 2 (environment).** Specify `worktree_ref`,
+2. **Define Pillar 2 (environment).** Specify `provider_cwd_hint`,
    `runtime_workspace_roots`, `owned_paths` per task, and `workspace_policy`. If
    the platform uses MCP, write the neutral `mcp` block and how the platform
    consumes it.
@@ -532,13 +532,13 @@ is the concrete "define X, Y, Z" deliverable.
 | Gap | Status | Where addressed |
 | --- | --- | --- |
 | Skill contract (resolve / discover / inject) | WP-6: Implemented | Pillar 1, `skill_resolver` module |
-| MCP neutral config shape | WP-6: Implemented | Pillar 2, `LaunchMcp` / `LaunchMcpServer` on `AgentProviderConfig` |
+| MCP neutral config shape | WP-6: Implemented | Pillar 2, `LaunchMcp` / `LaunchMcpServer` on the provider launch profile |
 | Provider capability declaration | WP-6: Implemented | Pillar 3, `ProviderCapabilities` struct |
 | Operation-level continuation capability | design contract in ADR 0041; provider-driven promotion remains version-gated | Member Continuation Model |
 | Durable Team Supervisor and typed mail | implemented under ADR 0044 | Agent Runtime, provider integrations |
-| `AgentProviderConfig` leaks Codex vocabulary | documented; abstraction is additive future work | Launch Spec |
+| Provider launch configuration leaks Codex vocabulary | documented; abstraction is additive future work | Launch Spec |
 
-The first three gaps are now closed. The `AgentProviderConfig` vocabulary
+The first three gaps are now closed. The provider launch vocabulary
 abstraction remains additive future work under ADR 0017.
 
 ## Non-Goals

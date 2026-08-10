@@ -17,7 +17,6 @@ outputs, adapters, and the Agent Dashboard.
 | `TeamMessage` | Typed sender/recipients, optional `work_id`, correlation/causation, optional origin Wave, response intent, claim/provider-receipt/ACK delivery state; conversation only |
 | `ExecutionNode` / `NodeProjectRegistration` / `NodeDaemonLease` | Machine identity, available Project Bindings, and the one daemon generation that owns all local TeamRuns |
 | `TeamSupervisorLease` | Latest-wins TeamRun control owner parent-fenced by NodeDaemon generation |
-| `AgentMessageRoute` | Idempotent bridge from stable Agent Inbox mail to a MemberRun/TeamMessage |
 | `MemberAction` | Transitional action schema; target scope is Harness-owned coordination/control facts, never mirrored provider activity |
 | `DelegationRun` | Honest attribution for observed or harness-controlled delegation |
 | `TeamRunEvent` | Ordered sanitized event projection for one TeamRun |
@@ -39,14 +38,13 @@ must not depend on Goal, Task Graph, Plan Gate, or generic `Message`.
 | `AgentTeamRun` family | Rust + JSON schemas + store + CLI/API/MCP/read model | yes |
 | `Work` / `WorkEvent` / `WorkDelivery` | Rust + JSON schemas + WorkOperation JSONL store + CLI/API/MCP/read model | yes |
 | `TeamSupervisorLease` | Rust + JSON schema + JSONL latest-wins store + cross-process routing | yes |
-| `AgentMessageRoute` | Rust + JSON schema + JSONL idempotent routing store | yes |
 | `Goal` | historical compatibility schema; retired for new coordination | no for new work |
 | `AgentTeam` | Rust + JSON schema | yes |
 | `AgentMember` | Rust + JSON schema | yes |
 | `Task` | historical compatibility schema; retired for new coordination | no for new work |
-| `Message` | Standing Agent/runtime compatibility message; Agent Team uses `TeamMessage` | no for Agent Team |
-| `AgentRuntime` | Rust + JSON schema | yes |
-| `AgentEvent` | Rust + JSON schema | yes |
+| `Message` | Agent Membership/runtime compatibility message; Agent Team uses `TeamMessage` | no for Agent Team |
+| `MemberRun` | Rust + JSON schema | yes |
+| `MemberRunEvent` | Rust + JSON schema | yes |
 | `ProviderChildThread` | Rust + JSON schema | yes |
 | `Proposal` | Rust + JSON schema | yes |
 | `Evidence` | Rust + JSON schema | yes |
@@ -75,19 +73,16 @@ schema contracts are checked with valid and invalid fixtures.
 | Work delivery | [work-delivery.schema.json](../../../schemas/work-delivery.schema.json) |
 | Provider-native session locator | [native-session-ref.schema.json](../../../schemas/native-session-ref.schema.json) |
 | Team message | [team-message.schema.json](../../../schemas/team-message.schema.json) |
+| Member execution trust error | [trust-error.schema.json](../../../schemas/trust-error.schema.json) |
 | Team Supervisor lease | [team-supervisor-lease.schema.json](../../../schemas/team-supervisor-lease.schema.json) |
-| Durable Member Close | [team-member-close-request.schema.json](../../../schemas/team-member-close-request.schema.json) |
-| Stable Agent message route | [agent-message-route.schema.json](../../../schemas/agent-message-route.schema.json) |
 | Member action | [member-action.schema.json](../../../schemas/member-action.schema.json) |
 | Pending provider interaction | [pending-interaction.schema.json](../../../schemas/pending-interaction.schema.json) |
 | Delegation run | [delegation-run.schema.json](../../../schemas/delegation-run.schema.json) |
 | Team run event | [team-run-event.schema.json](../../../schemas/team-run-event.schema.json) |
 | Agent team | [agent-team.schema.json](../../../schemas/agent-team.schema.json) |
 | Agent member | [agent-member.schema.json](../../../schemas/agent-member.schema.json) |
-| Durable Organization Agent member | [durable-agent-member.schema.json](../../../schemas/durable-agent-member.schema.json) |
-| Message | [message.schema.json](../../../schemas/message.schema.json) |
-| Agent runtime | [agent-runtime.schema.json](../../../schemas/agent-runtime.schema.json) |
-| Agent event | [agent-event.schema.json](../../../schemas/agent-event.schema.json) |
+| AgentMember canonical mutation event | [canonical-mutation-event.schema.json](../../../schemas/canonical-mutation-event.schema.json) |
+| MemberRun mutation event | [member-run-event.schema.json](../../../schemas/member-run-event.schema.json) |
 | Provider child thread | [provider-child-thread.schema.json](../../../schemas/provider-child-thread.schema.json) |
 | Proposal | [proposal.schema.json](../../../schemas/proposal.schema.json) |
 | Evidence | [evidence.schema.json](../../../schemas/evidence.schema.json) |

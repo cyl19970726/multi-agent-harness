@@ -37,7 +37,7 @@ live state and is never replayed or evidence.
 | Who owns live control? | latest active `TeamSupervisorLease` generation and owner heartbeat |
 | Who sent the input? | typed TeamMessage actor; bound Member context for Member authorship |
 | Is a delivery attempt active? | latest queued/claim/provider-receipt/failure projection |
-| Is the runtime executable? | `AgentRuntimeHealth` process, endpoint, protocol, and delivery probes |
+| Is the runtime executable? | provider-process health, endpoint, protocol, and delivery probes |
 | What is the agent doing? | on-demand provider-native activity projection |
 | Is input or approval required? | Harness `PendingInteraction` |
 | Can execution resume? | `NativeSessionRef.supports_resume` plus availability/version checks |
@@ -53,9 +53,9 @@ Durable Harness data:
 - runtime identity and health;
 - current Team Supervisor generation, owner locator/heartbeat, reconnect state,
   typed Team actors, delivery claims/provider receipts/failures, and
-  `AgentMessageRoute`;
-- TeamRun `execution_root`, optional member `worktree_ref`, and the launch-time
-  `workspace_snapshot` containing actual cwd, Git HEAD/branch, and only the
+  canonical `MessageDelivery`;
+- TeamRun `execution_root`, optional member `provider_cwd_hint`, and the launch-time
+  `provider_environment_observation` containing actual cwd, Git HEAD/branch, and only the
   instruction/skill directory paths Harness discovered relative to that cwd;
 - Work, append-only state transition, WorkDelivery, terminal source, and
   native-session reference;

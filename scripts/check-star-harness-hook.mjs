@@ -29,7 +29,7 @@ writeFileSync(
   `#!/usr/bin/env bash
 set -euo pipefail
 if [[ "\${1:-} \${2:-}" == "team-run host-inbox" ]]; then
-  printf '%s\\n' '[{"team_run_id":"run-1","team_run_status":"running","mission_id":"mission-1","messages":[{"id":"msg-1","from_member_id":"member-1","kind":"handoff","correlation_id":"corr-1","body":"RESULT: done\\nChecks passed"}]}]'
+  printf '%s\\n' '[{"team_run_id":"run-1","team_run_status":"running","mission_id":"mission-1","messages":[{"id":"msg-1","sender_runtime_id":"member-1","kind":"message","correlation_id":"corr-1","body":"RESULT: done\\nChecks passed"}]}]'
 elif [[ "\${1:-} \${2:-}" == "member-run show" ]]; then
   member_id=""
   while [[ \$# -gt 0 ]]; do
@@ -47,7 +47,7 @@ elif [[ "\${1:-} \${2:-}" == "member-run show" ]]; then
     printf '{"member_run":{"id":"%s","team_run_id":"run-1","status":"idle","provider_profile":{"execution_mode":"external_interactive","execution_driver":"user_driven"}}}\\n' "\$member_id"
   fi
 elif [[ "\${1:-} \${2:-}" == "team-run inbox" ]]; then
-  printf '%s\\n' '[{"id":"mmsg-1","from_member_id":"member-run-greeter","kind":"message","correlation_id":"corr-9","body":"hello external member","deliveries":[{"member_id":"member-run-ext","status":"queued"}]}]'
+  printf '%s\\n' '[{"id":"mmsg-1","sender_runtime_id":"member-run-greeter","kind":"message","correlation_id":"corr-9","body":"hello external member","deliveries":[{"member_id":"member-run-ext","status":"queued"}]}]'
 elif [[ "\${1:-} \${2:-}" == "hook record" ]]; then
   printf '%s\\n' "$*" >> "\${HOOK_LOG:?}"
   exit 0
@@ -103,7 +103,7 @@ try {
   }
   if (
     !started.includes("Needs you: TeamRun=run-1 pending_host_messages=1") ||
-    !started.includes("from=member-1 kind=handoff message=msg-1")
+    !started.includes("from=member-1 kind=message message=msg-1")
   ) {
     throw new Error("SessionStart must include a bounded Host Inbox summary");
   }

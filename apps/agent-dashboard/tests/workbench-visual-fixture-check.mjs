@@ -149,18 +149,18 @@ async function main() {
     "Member Focus target is running and linked to provider-native runtime context",
   );
   check(
-    currentMember?.worktree_ref === currentMember?.workspace_snapshot?.cwd
-      && !currentMember.worktree_ref.startsWith(currentRun.execution_root)
-      && currentMember.workspace_snapshot.git_head
-      && currentMember.workspace_snapshot.git_branch
-      && currentMember.workspace_snapshot.instruction_roots.length > 0
-      && currentMember.workspace_snapshot.skill_roots.length > 0,
+    currentMember?.provider_cwd_hint === currentMember?.provider_environment_observation?.cwd
+      && !currentMember.provider_cwd_hint.startsWith(currentRun.execution_root)
+      && currentMember.provider_environment_observation.git_head
+      && currentMember.provider_environment_observation.git_branch
+      && currentMember.provider_environment_observation.instruction_roots.length > 0
+      && currentMember.provider_environment_observation.skill_roots.length > 0,
     "Member fixture distinguishes an out-of-project worktree override from TeamRun execution root and snapshots actual cwd plus Git/path-root context",
   );
   check(
-    members.every((item) => item.workspace_snapshot
-      && Array.isArray(item.workspace_snapshot.instruction_roots)
-      && Array.isArray(item.workspace_snapshot.skill_roots)),
+    members.every((item) => item.provider_environment_observation
+      && Array.isArray(item.provider_environment_observation.instruction_roots)
+      && Array.isArray(item.provider_environment_observation.skill_roots)),
     "Every current MemberRun fixture snapshots non-secret discovered instruction and skill root paths",
   );
   check(members.some((item) => item.status === "blocked") && members.some((item) => item.status === "reviewing"), "Member states include blocked and reviewing pressure");
@@ -197,16 +197,22 @@ async function main() {
       && latestDeliveries(workOperations).every((delivery) => delivery.team_run_id === manifest.team_run_id),
     "Work history rebuilds concrete same-TeamRun delivery projections",
   );
-  check(messages.some((item) => item.kind === "blocker") && messages.some((item) => item.kind === "review_request"), "Durable activity contains blocker and review request signals");
+  check(
+    messages.some((item) => item.id === "msg-qa-blocker")
+      && messages.some((item) => item.id === "msg-review-request")
+      && messages.filter((item) => ["msg-qa-blocker", "msg-review-request"].includes(item.id))
+        .every((item) => item.kind === "message" && item.work_id),
+    "Durable activity carries blocker and review requests as Work-linked canonical messages",
+  );
   check(
     messages.filter((item) => item.id !== "msg-kickoff").every((item) => workIds.includes(item.work_id)),
     "Work-related conversation uses explicit work_id relations instead of assignment-message ownership",
   );
   check(
-    ["plan_request", "plan_proposal", "plan_feedback", "plan_approval"].every(
-      (kind) => messages.some((item) => item.kind === kind),
+    ["msg-plan-request-research", "msg-plan-proposal-research-r1", "msg-plan-feedback-research", "msg-plan-approval-research"].every(
+      (id) => messages.some((item) => item.id === id && item.kind === "message" && item.correlation_id === "corr-wave2-research"),
     ),
-    "Fixture preserves the historical Member plan debate as readable messages",
+    "Fixture preserves the historical Member plan debate as canonical correlated messages",
   );
   check(messages.some((item) => item.deliveries?.some((delivery) => ["queued", "delivered"].includes(delivery.status))), "Fixture includes a concrete unacknowledged delivery");
   check(actions.some((item) => item.evidence_refs?.length) && events.length > 0, "Activity contains evidence-backed actions and folded events");
@@ -224,7 +230,7 @@ async function main() {
   check(!actionsSource.includes(duplicateWaveField) && !typesSource.includes(duplicateWaveField), "AgentTeamRun API and type contracts do not carry a duplicate Wave index");
   check(
     typesSource.includes("execution_root?: string | null")
-      && typesSource.includes("workspace_snapshot?: MemberWorkspaceSnapshot | null")
+      && typesSource.includes("provider_environment_observation?: MemberWorkspaceSnapshot | null")
       && typesSource.includes("instruction_roots: string[]")
       && typesSource.includes("skill_roots: string[]"),
     "Dashboard types mirror the backward-compatible TeamRun and MemberRun workspace wire contract",
@@ -373,11 +379,11 @@ async function main() {
     "MemberRun Focus joins visible provider-native activity with Harness coordination and labels provenance",
   );
   check(
-    memberRunSource.includes("standing_assignment_conflicts")
-      && memberRunSource.includes("organizationLinkConflict")
-      && memberRunSource.includes("Ambiguous Standing Agent link")
-      && memberRunSource.includes("withholds the Organization identity instead of guessing"),
-    "MemberRun Focus refuses to guess a Standing Agent when the explicit execution link conflicts",
+    memberRunSource.includes('agent_member_ref?.kind === "agent_member"')
+      && memberRunSource.includes("actor.record.agent_member_ref.id === context.member.agent_member_id")
+      && !memberRunSource.includes("standing_assignment_conflicts")
+      && !memberRunSource.includes("organizationLinkConflict"),
+    "MemberRun Focus resolves Company membership only through the canonical AgentMember ActorRef",
   );
   check(
     warRoomSource.includes('label="Execution root"')

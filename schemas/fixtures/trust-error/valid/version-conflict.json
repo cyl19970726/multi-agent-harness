@@ -1,0 +1,8 @@
+{
+  "code": "VERSION_CONFLICT",
+  "message": "expected version 3 but found 4",
+  "retryable": true,
+  "resource_kind": "member_run",
+  "resource_id": "member-run-1",
+  "current_version": 4
+}

@@ -41,7 +41,7 @@ are implemented. Finance baseline CLI commands are parked at the contract layer
 (see issue #323); Commitment/Payment code remains dormant.
 `firm company org ...` surface and nested `actor/unit/membership` groups for
 inspection and **bootstrap-only** Human administrative authoring of Humans,
-Standing Agents, OrgUnits, Memberships, declared actor status, and
+Agent Memberships, OrgUnits, Memberships, declared actor status, and
 permission/capability refs. That boundary is not target delegated authority and
 cannot substitute for a governed Approval, scoped grant, or broker dispatch. It
 does not yet implement the flat AgentTeam organization

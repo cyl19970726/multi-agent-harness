@@ -8,7 +8,7 @@
   "properties": {
     "id": { "type": "string", "minLength": 1 },
     "team_run_id": { "type": "string", "minLength": 1 },
-    "team_id": { "type": ["string", "null"], "minLength": 1, "description": "Durable AgentTeam scope. Null is readable compatibility state only; cutover validation rejects it." },
+    "team_id": { "type": ["string", "null"], "minLength": 1 },
     "parent_work_id": { "type": ["string", "null"], "minLength": 1 },
     "title": { "type": "string", "minLength": 1 },
     "context_markdown": { "type": "string" },
@@ -23,61 +23,21 @@
     "prerequisite_work_ids": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
     "priority": { "type": "string", "enum": ["low", "normal", "high", "urgent"] },
     "created_by_actor": { "$ref": "#/$defs/actor" },
-    "created_by_member_id": { "type": ["string", "null"], "minLength": 1, "description": "Stable AgentMember creator identity when created_by_actor is a MemberRun." },
+    "created_by_member_id": { "type": ["string", "null"], "minLength": 1 },
     "result_summary": { "type": ["string", "null"] },
     "blocker_reason": { "type": ["string", "null"], "minLength": 1 },
     "artifact_refs": { "type": "array", "items": { "type": "string", "minLength": 1 } },
     "check_refs": { "type": "array", "items": { "type": "string", "minLength": 1 } },
-    "github_links": {
-      "type": "array",
-      "items": { "$ref": "#/$defs/github_link" }
-    },
-    "gates": {
-      "type": "array",
-      "description": "Declared verification gates this Work must pass before acceptance. Empty vec preserves manual-accept semantics.",
-      "items": { "$ref": "#/$defs/gate_spec" },
-      "uniqueItems": true,
-      "allOf": [
-        {
-          "contains": {
-            "type": "object",
-            "required": ["plugin"],
-            "properties": { "plugin": { "const": "code-review" } }
-          },
-          "minContains": 0,
-          "maxContains": 1
-        }
-      ]
-    },
-    "workspace": {
-      "type": ["object", "null"],
-      "description": "Where this Work executes. Null → Member inherits project root.",
-      "additionalProperties": false,
-      "required": ["kind", "path"],
-      "properties": {
-        "kind": { "type": "string", "enum": ["worktree", "dir", "inherit"] },
-        "path": { "type": "string", "minLength": 1 },
-        "base_ref": { "type": ["string", "null"] },
-        "auto_cleanup": { "type": "boolean" }
-      }
-    },
+    "github_links": { "type": "array", "items": { "$ref": "#/$defs/github_link" } },
     "version": { "type": "integer", "minimum": 1 },
     "created_at": { "type": "string", "minLength": 1 },
     "updated_at": { "type": "string", "minLength": 1 }
   },
   "allOf": [
     {
-      "if": {
-        "properties": { "phase": { "const": "closed" } },
-        "required": ["phase"]
-      },
-      "then": {
-        "required": ["resolution"],
-        "properties": { "condition": { "const": "normal" } }
-      },
-      "else": {
-        "properties": { "resolution": { "type": "null" } }
-      }
+      "if": { "properties": { "phase": { "const": "closed" } }, "required": ["phase"] },
+      "then": { "required": ["resolution"], "properties": { "condition": { "const": "normal" } } },
+      "else": { "properties": { "resolution": { "type": "null" } } }
     }
   ],
   "$defs": {
@@ -105,116 +65,6 @@
         "status": { "type": ["string", "null"] },
         "ci_status": { "type": ["string", "null"] },
         "ci_url": { "type": ["string", "null"] }
-      }
-    },
-    "gate_spec": {
-      "oneOf": [
-        { "$ref": "#/$defs/github_pr_gate" },
-        { "$ref": "#/$defs/code_review_gate" },
-        { "$ref": "#/$defs/artifact_exists_gate" },
-        { "$ref": "#/$defs/check_pass_gate" },
-        { "$ref": "#/$defs/custom_gate" }
-      ]
-    },
-    "github_pr_gate": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["plugin"],
-      "properties": {
-        "plugin": { "const": "github-pr" },
-        "config": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "require_merged": { "type": "boolean", "default": true },
-            "require_ci_pass": { "type": "boolean", "default": false }
-          }
-        }
-      }
-    },
-    "code_review_gate": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["plugin", "config"],
-      "properties": {
-        "plugin": { "const": "code-review" },
-        "config": {
-          "oneOf": [
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["strategy", "reviewer"],
-              "properties": {
-                "strategy": { "const": "peer" },
-                "reviewer": { "type": "string", "minLength": 1, "pattern": "\\S" }
-              }
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["strategy"],
-              "properties": {
-                "strategy": { "type": "string", "enum": ["self", "host"] }
-              }
-            }
-          ]
-        }
-      }
-    },
-    "artifact_exists_gate": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["plugin"],
-      "properties": {
-        "plugin": { "const": "artifact-exists" },
-        "config": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "paths": {
-              "type": "array",
-              "minItems": 1,
-              "uniqueItems": true,
-              "items": { "type": "string", "minLength": 1, "pattern": "\\S" }
-            }
-          }
-        }
-      }
-    },
-    "check_pass_gate": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["plugin"],
-      "properties": {
-        "plugin": { "const": "check-pass" },
-        "config": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "checks": {
-              "type": "array",
-              "minItems": 1,
-              "uniqueItems": true,
-              "items": { "type": "string", "minLength": 1, "pattern": "\\S" }
-            }
-          }
-        }
-      }
-    },
-    "custom_gate": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["plugin"],
-      "properties": {
-        "plugin": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S",
-          "not": {
-            "enum": ["github-pr", "code-review", "artifact-exists", "check-pass"]
-          }
-        },
-        "config": { "type": "object" }
       }
     }
   }

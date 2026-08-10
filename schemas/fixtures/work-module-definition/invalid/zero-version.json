@@ -1,0 +1,1 @@
+{"module_id":"integration-plan","module_version":0,"schema_version":1,"display_name":"Integration Plan","config_schema":{},"allowed_actions":[],"relation_types":[],"default_gate_templates":[],"implementation_ref":"builtin:integration-plan@1"}

@@ -56,10 +56,10 @@ import type {
   NativeActivityProjection,
   ProviderControlValue,
   TeamMemberCloseRequest,
-  TeamMessage,
+  ProviderDispatchEnvelope,
   Wave,
   Work,
-  TeamMessageResponseIntent,
+  ProviderResponseIntent,
 } from "@/types";
 import type { SelectionState } from "@/app/selection";
 
@@ -118,7 +118,7 @@ export function MemberRunFocus({
   const [now, setNow] = useState(() => Date.now());
   const [draft, setDraft] = useState("");
   const [composerMode, setComposerMode] = useState<"message" | "steer">("message");
-  const [responseIntent, setResponseIntent] = useState<TeamMessageResponseIntent>("response_required");
+  const [responseIntent, setResponseIntent] = useState<ProviderResponseIntent>("response_required");
   // Member Focus is an audit/work surface. Open on the complete native-backed
   // chronology; Key activity is an optional focus lens, never the default
   // substitute for the member's history.
@@ -136,19 +136,13 @@ export function MemberRunFocus({
     actors?: Array<{
       id?: string;
       display_name?: string;
-      record?: { execution_agent_member_ref?: string | null };
+      record?: { agent_member_ref?: { kind?: string; id?: string } | null };
     }>;
-    standing_assignment_conflicts?: Array<{ agent_member_id?: string }>;
   } | undefined;
-  const organizationLinkConflict = Boolean(
-    context?.member.agent_member_id
-    && companyProjection?.standing_assignment_conflicts?.some(
-      (conflict) => conflict.agent_member_id === context.member.agent_member_id,
-    ),
-  );
-  const organizationActor = context?.member.agent_member_id && !organizationLinkConflict
+  const organizationActor = context?.member.agent_member_id
     ? companyProjection?.actors?.find((actor) =>
-      actor.record?.execution_agent_member_ref === context.member.agent_member_id)
+      actor.record?.agent_member_ref?.kind === "agent_member"
+      && actor.record.agent_member_ref.id === context.member.agent_member_id)
     : undefined;
   const closeRequest = model.snapshot.team_member_close_requests?.find(
     (request) => request.member_run_id === memberRunId,
@@ -294,7 +288,6 @@ export function MemberRunFocus({
           evidence={evidence}
           sessionStatus={context.member.native_session?.availability}
           organizationActor={organizationActor}
-          organizationLinkConflict={organizationLinkConflict}
           onSelectionChange={onSelectionChange}
         />
       }
@@ -318,7 +311,7 @@ export function MemberRunFocus({
             : `${responseIntent === "response_required" ? "Requests a reply in" : "Adds context to"} the member's next provider round${currentWork ? ` and links Work ${currentWork.id}` : ""}.`}
           onChange={setDraft}
           onModeChange={(mode) => setComposerMode(mode as "message" | "steer")}
-          onResponseIntentChange={(intent) => setResponseIntent(intent as TeamMessageResponseIntent)}
+          onResponseIntentChange={(intent) => setResponseIntent(intent as ProviderResponseIntent)}
           onSend={dispatchMessage}
         />
       }
@@ -741,7 +734,6 @@ function MemberContextRail({
   evidence,
   sessionStatus,
   organizationActor,
-  organizationLinkConflict,
   onSelectionChange,
 }: {
   context: MemberRunContext;
@@ -751,7 +743,6 @@ function MemberContextRail({
   evidence: EvidenceItem[];
   sessionStatus?: string;
   organizationActor?: { id?: string; display_name?: string };
-  organizationLinkConflict: boolean;
   onSelectionChange: MemberRunFocusProps["onSelectionChange"];
 }) {
   const work = context.currentWork;
@@ -759,11 +750,11 @@ function MemberContextRail({
   const gateTone = waveGateTone(navigationWave?.gate_status);
   const peerMembers = context.members.filter((member) => member.id !== context.member.id);
   const hostThread = context.messagesForMember.filter((message) =>
-    message.from_member_id === "host" || (message.to_member_ids ?? []).includes("host"),
+    message.sender_runtime_id === "host" || (message.recipient_runtime_ids ?? []).includes("host"),
   );
   const peerThread = context.messagesForMember.filter((message) =>
-    message.from_member_id !== "host"
-    && !(message.to_member_ids ?? []).includes("host")
+    message.sender_runtime_id !== "host"
+    && !(message.recipient_runtime_ids ?? []).includes("host")
   );
   const latestSteer = latestSteerSummary(context);
 
@@ -830,36 +821,27 @@ function MemberContextRail({
 
       <ContextModule
         title="Organization identity"
-        icon={organizationLinkConflict
-          ? <ShieldAlert className="size-3.5" />
-          : <Users className="size-3.5" />}
-        tone={organizationLinkConflict ? "bad" : organizationActor ? "info" : undefined}
+        icon={<Users className="size-3.5" />}
+        tone={organizationActor ? "info" : undefined}
         className="order-1 rounded-xl bg-card shadow-[0_14px_34px_-32px_rgba(15,23,42,.65)]"
         action={organizationActor?.id ? (
           <RailOpenButton
             label="Open profile"
             onClick={() => onSelectionChange({
               surface: "organization",
-              standingAgentId: organizationActor.id,
+              agentMembershipId: organizationActor.id,
             })}
           />
         ) : undefined}
       >
-        {organizationLinkConflict ? (
-          <div role="alert" className="space-y-2 text-[12px]">
-            <p className="font-medium text-status-bad">Ambiguous Standing Agent link</p>
-            <p className="text-[11px] leading-5 text-muted-foreground">
-              More than one Standing Agent claims this AgentMember. Harness withholds the Organization identity instead of guessing a profile.
-            </p>
-          </div>
-        ) : organizationActor ? (
+        {organizationActor ? (
           <div className="space-y-2 text-[12px]">
-            <RailKeyValue label="Standing Agent" value={organizationActor.display_name ?? organizationActor.id ?? "Linked actor"} />
+            <RailKeyValue label="Agent Membership" value={organizationActor.display_name ?? organizationActor.id ?? "Linked actor"} />
             <RailKeyValue label="AgentMember" value={context.member.agent_member_id ?? "Not linked"} mono />
             <p className="text-[11px] text-muted-foreground">Explicit Company-owned execution identity link.</p>
           </div>
         ) : (
-          <RailEmpty>Ad-hoc execution. No Standing Agent explicitly links this AgentMember.</RailEmpty>
+          <RailEmpty>Ad-hoc execution. No Agent Membership explicitly links this AgentMember.</RailEmpty>
         )}
       </ContextModule>
 
@@ -970,8 +952,8 @@ function MemberContextRail({
           <RailKeyValue label="Service control" value={providerControlSummary(context.member.provider_controls?.service_tier)} />
           <RailKeyValue label="Native session" value={context.member.native_session?.native_session_id ?? "Unavailable"} mono />
           <RailKeyValue label="Resume" value={context.member.native_session?.supports_resume ? "Supported" : "Not verified"} />
-          <RailKeyValue label="Actual cwd" value={context.member.workspace_snapshot?.cwd ?? "Not captured (legacy run)"} mono title="Runs started before workspace capture was introduced did not record their cwd. Reopen the member to capture it." />
-          <RailKeyValue label="Git branch" value={context.member.workspace_snapshot?.git_branch ?? "Detached or not captured"} mono />
+          <RailKeyValue label="Actual cwd" value={context.member.provider_environment_observation?.cwd ?? "Not captured (legacy run)"} mono title="Runs started before workspace capture was introduced did not record their cwd. Reopen the member to capture it." />
+          <RailKeyValue label="Git branch" value={context.member.provider_environment_observation?.git_branch ?? "Detached or not captured"} mono />
           <RailKeyValue label="Last activity" value={formatRelative(context.member.last_event_at)} />
           {claudeDesktopSessionUri(context.member) && (
             <p className="rounded-md border border-status-warn/25 bg-status-warn/5 px-2.5 py-2 text-[10px] leading-4 text-muted-foreground">
@@ -988,10 +970,10 @@ function MemberContextRail({
               {context.member.provider_controls?.service_tier.note && <RailKeyValue label="Service receipt" value={context.member.provider_controls.service_tier.note} />}
               <RailKeyValue label="Session status" value={sessionStatus ?? "Not reported"} />
               <RailKeyValue label="Execution root" value={context.run.execution_root ?? "Not recorded"} mono />
-              <RailKeyValue label="Worktree" value={context.member.worktree_ref ?? "None"} mono />
-              <RailKeyValue label="Git HEAD" value={context.member.workspace_snapshot?.git_head ?? "Not captured"} mono />
-              <RailKeyValue label="Instruction roots" value={formatWorkspaceRoots(context.member.workspace_snapshot?.instruction_roots)} mono />
-              <RailKeyValue label="Skill roots" value={formatWorkspaceRoots(context.member.workspace_snapshot?.skill_roots)} mono />
+              <RailKeyValue label="Worktree" value={context.member.provider_cwd_hint ?? "None"} mono />
+              <RailKeyValue label="Git HEAD" value={context.member.provider_environment_observation?.git_head ?? "Not captured"} mono />
+              <RailKeyValue label="Instruction roots" value={formatWorkspaceRoots(context.member.provider_environment_observation?.instruction_roots)} mono />
+              <RailKeyValue label="Skill roots" value={formatWorkspaceRoots(context.member.provider_environment_observation?.skill_roots)} mono />
             </div>
           </details>
         </div>
@@ -1021,7 +1003,7 @@ function MessageThreadGroup({
   className,
 }: {
   label: string;
-  messages: TeamMessage[];
+  messages: ProviderDispatchEnvelope[];
   context: MemberRunContext;
   className?: string;
 }) {
@@ -1034,10 +1016,10 @@ function MessageThreadGroup({
       {recent.length ? (
         <div className="space-y-1.5">
           {recent.map((message) => {
-            const outgoing = message.from_member_id === context.member.id;
+            const outgoing = message.sender_runtime_id === context.member.id;
             const counterpart = outgoing
-              ? (message.to_member_ids ?? []).map((id) => memberName(context, id)).join(", ")
-              : memberName(context, message.from_member_id);
+              ? (message.recipient_runtime_ids ?? []).map((id) => memberName(context, id)).join(", ")
+              : memberName(context, message.sender_runtime_id);
             return (
               <div key={message.id} className="rounded-md border border-border/60 bg-background/70 px-2 py-1.5">
                 <div className="flex min-w-0 items-center gap-1.5 text-[9px] text-muted-foreground">
@@ -1062,8 +1044,8 @@ function memberName(context: MemberRunContext, id?: string): string {
   return context.memberById.get(id)?.name ?? id;
 }
 
-function messageDeliverySummary(message: TeamMessage, memberId: string): string {
-  const relevant = message.from_member_id === memberId
+function messageDeliverySummary(message: ProviderDispatchEnvelope, memberId: string): string {
+  const relevant = message.sender_runtime_id === memberId
     ? message.deliveries ?? []
     : (message.deliveries ?? []).filter((delivery) => delivery.member_id === memberId);
   const statuses = [...new Set(relevant.map((delivery) => delivery.status).filter(Boolean))];
@@ -1075,7 +1057,7 @@ function latestSteerSummary(context: MemberRunContext): string | undefined {
     .reverse()
     .find((message) =>
       message.kind === "control"
-      && (message.to_member_ids ?? []).includes(context.member.id)
+      && (message.recipient_runtime_ids ?? []).includes(context.member.id)
       && /steer/i.test(message.body ?? ""),
     );
   if (control?.body) return control.body;
@@ -1109,7 +1091,7 @@ function MemberComposer({
 }: {
   value: string;
   mode: "message" | "steer";
-  responseIntent: TeamMessageResponseIntent;
+  responseIntent: ProviderResponseIntent;
   disabled: boolean;
   disabledReason: string;
   deliveryHint: string;
@@ -1309,7 +1291,7 @@ function findLastItem(
 function toActivityItem(item: StableTeamActivity, context: MemberRunContext): WorkbenchActivityItem {
   if (item.kind === "message") {
     const message = item.message;
-    const label = message.from_member_id === "host" ? "Host" : context.memberById.get(message.from_member_id ?? "")?.name ?? message.from_member_id ?? "Unknown sender";
+    const label = message.sender_runtime_id === "host" ? "Host" : context.memberById.get(message.sender_runtime_id ?? "")?.name ?? message.sender_runtime_id ?? "Unknown sender";
     const needsAttention = message.response_intent === "response_required";
     return {
       id: item.id,

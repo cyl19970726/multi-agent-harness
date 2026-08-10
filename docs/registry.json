@@ -2314,13 +2314,13 @@
       ]
     },
     {
-      "path": "docs/current/dashboard/pages/standing-agent-focus.md",
+      "path": "docs/current/dashboard/pages/agent-member-focus.md",
       "ownerRole": "product-design",
       "status": "planned",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Standing Agent detail page",
-        "durable AgentMember availability, assignments, and activity UI contract"
+        "AgentMember detail page",
+        "canonical AgentMember identity, organization projection, and execution trust UI contract"
       ],
       "dependsOn": [
         "docs/current/company-os/organization-and-actors.md",
@@ -2335,7 +2335,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "Standing Agent identity, availability, assignment, organization, execution-link, or responsive page contract changes.",
+      "reorgTrigger": "AgentMember identity, organization projection, execution trust, or responsive page contract changes.",
       "authorityClass": "design_intent",
       "implementationState": "design_only",
       "truthRefs": []
@@ -3295,8 +3295,8 @@
       "status": "stable",
       "lifecycle": "stable",
       "canonicalFor": [
-        "Company-owned optional one-to-one StandingAgent.execution_agent_member_ref relation",
-        "explicit StandingAgent to AgentMember to MemberRun projection join",
+        "Company-owned canonical AgentMember ActorRef membership projection",
+        "direct AgentMember to MemberRun identity projection",
         "no inferred identity and no execution lifecycle writeback"
       ],
       "dependsOn": [
@@ -3317,7 +3317,7 @@
         "cargo test -p firm-store --test company_os",
         "npx pnpm@9.15.4 check:docs-governance"
       ],
-      "reorgTrigger": "StandingAgent, AgentMember, MemberRun, Organization projection, or lifecycle ownership semantics change.",
+      "reorgTrigger": "AgentMember, MemberRun, Organization projection, or lifecycle ownership semantics change.",
       "authorityClass": "canonical_contract",
       "implementationState": "implemented",
       "truthRefs": [
@@ -3990,7 +3990,7 @@
       "lifecycle": "stable",
       "canonicalFor": [
         "Work gate declarations and verification",
-        "GateSpec, GateVerdict, GateRegistry, GateEngine data model"
+        "GateRequirement, GateEvaluation, GateWaiver, WorkModuleBinding and accept_work data model"
       ],
       "dependsOn": [
         "docs/mental/agent-firm-mental-model.md",

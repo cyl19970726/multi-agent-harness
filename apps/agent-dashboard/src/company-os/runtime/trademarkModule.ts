@@ -37,7 +37,7 @@ export interface TrademarkFinancialRecord {
 export interface TrademarkParticipantSummary {
   id: string;
   name: string;
-  kind: "human" | "standing_agent" | "external" | "service";
+  kind: "human" | "agent_membership" | "external" | "service";
   responsibility: string;
 }
 

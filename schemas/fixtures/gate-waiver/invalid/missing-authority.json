@@ -1,0 +1,1 @@
+{"id":"waiver-1","requirement_id":"requirement-1","work_id":"work-1","work_revision":2,"candidate_fingerprint":"sha256:candidate","performed_by_actor":{"kind":"human","id":"operator-1"},"reason":"No authority.","state":"active","version":1,"created_at":"unix-ms:3"}

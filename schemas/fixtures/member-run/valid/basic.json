@@ -1,38 +1,33 @@
 {
-  "id": "mrun-1",
-  "team_run_id": "trun-1",
+  "id": "member-run-1",
   "agent_member_id": "agent-worker-1",
-  "slot_id": "slot-worker-1",
-  "name": "worker-1",
-  "role": "worker",
-  "provider": "kimi",
-  "model": "kimi-k2",
+  "team_run_id": "team-run-1",
+  "role_snapshot": "worker",
+  "provider_profile_snapshot": "provider-profile-codex",
+  "requested_controls": {
+    "model": "gpt-5"
+  },
+  "effective_controls": {
+    "model": "gpt-5"
+  },
   "coordination_status": "active",
+  "runtime_status": "running",
   "runtime_generation": 1,
-  "status": "running",
+  "workspace_binding_id": "workspace-binding-1",
   "native_session": {
-    "provider": "kimi",
-    "execution_mode": "kimi_acp",
-    "native_session_id": "acp-session-1",
-    "native_locator_kind": "kimi_code_session",
+    "provider": "codex",
+    "execution_mode": "codex_app_server",
+    "native_session_id": "019f8584-f91d-7b61-9945-26b6780bfa95",
+    "native_locator_kind": "codex_rollout",
+    "provider_version": "0.1.0",
     "adapter_contract_version": "1",
     "availability": "available",
-    "supports_resume": true
+    "supports_resume": true,
+    "last_verified_at": "unix-ms:2",
+    "parent_native_session_id": null
   },
-  "worktree_ref": "/projects/harness/worktrees/mrun-1",
-  "workspace_snapshot": {
-    "cwd": "/projects/harness/worktrees/mrun-1",
-    "git_head": "0123456789abcdef0123456789abcdef01234567",
-    "git_branch": "wave-2/worker-1",
-    "instruction_roots": [
-      "/projects/harness"
-    ],
-    "skill_roots": [
-      "/projects/harness/.agents/skills"
-    ]
-  },
-  "owned_paths": ["crates/harness-core/"],
-  "started_at": "2026-07-18T00:00:00Z",
-  "last_event_at": "2026-07-18T00:01:00Z",
+  "version": 1,
+  "started_at": "unix-ms:1",
+  "last_event_at": "unix-ms:2",
   "finished_at": null
 }

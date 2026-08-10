@@ -1,6 +1,6 @@
 ---
 name: dogfood-company-os
-description: Run Company OS as its own operating system through repeated, evidence-backed Docs, Work, Organization, external-delivery, and execution cycles. Use when a Company Lead runs a self-hosting cycle or when Human intent has been faithfully routed to the Company Lead to discover gaps, create or prioritize Work records, route them to Standing Agents or humans, execute through an appropriate runtime, return results to company memory, inspect the UI, and repeat until the chosen acceptance boundary is healthy. Do not use for initial business bootstrap, one isolated Docs/Work/Org mutation, or Mission/Wave execution alone.
+description: Run Company OS as its own operating system through repeated, evidence-backed Docs, Work, Organization, external-delivery, and execution cycles. Use when a Company Lead runs a self-hosting cycle or when Human intent has been faithfully routed to the Company Lead to discover gaps, create or prioritize Work records, route them to Agent Memberships or humans, execute through an appropriate runtime, return results to company memory, inspect the UI, and repeat until the chosen acceptance boundary is healthy. Do not use for initial business bootstrap, one isolated Docs/Work/Org mutation, or Mission/Wave execution alone.
 ---
 
 # Dogfood Company OS
@@ -39,7 +39,7 @@ Use the smallest focused capability:
 | Bootstrap a new commercial operating area | `$company-business-project-bootstrap` |
 | Operate Documents, Blocks, records, relations, or views | `$company-docs-operator` |
 | Create, assign, transition, or close company commitments | `$company-work-operator` |
-| Operate Standing Agents, humans, units, roles, or permissions | `$company-org-operator` |
+| Operate Agent Memberships, humans, units, roles, or permissions | `$company-org-operator` |
 | Link GitHub source and delivery facts | `$connect-github-company-os` |
 | Design a new recurring business domain | `$company-module-designer` |
 | Build a core custom page after its contract is approved | `$company-page-builder` |
@@ -70,7 +70,7 @@ Before mutation, inspect:
   subject/version/digest when one has actually been activated;
 - open, blocked, in-review, and stale Work records;
 - Company Lead and Domain Lead ownership, capacity, and escalation policy;
-- Standing Agents, memberships, permissions, and execution bindings;
+- Agent Memberships, memberships, permissions, and execution bindings;
 - external source/delivery freshness;
 - active execution and provider/runtime health; and
 - the actual Store-live UI for navigation, visibility, error, and empty states.
@@ -126,8 +126,8 @@ evidence.
 ## Current Versus Target Authority Truth
 
 Current implemented truth includes native Docs/Org records and Actions,
-authoritative TeamWork plus its Company-wide read projection, explicit
-StandingAgent ↔ AgentMember execution links, and provider/runtime evidence. A reviewed local or unmerged broker/grant
+authoritative TeamWork plus its Company-wide read projection, canonical
+AgentMember membership projections, and provider/runtime evidence. A reviewed local or unmerged broker/grant
 candidate is exact-commit evidence only and must remain labelled `candidate`,
 never `implemented`. `Implemented` requires the exact generation to be present
 in the selected merged repository and verified through the active installed
@@ -159,7 +159,7 @@ Examples:
 
 - a Document tree exposes archived or duplicate context;
 - a Work has no result, evidence, or execution relation;
-- a Standing Agent cannot see or accept its assigned work;
+- a Agent Membership cannot see or accept its assigned work;
 - an Agent/runtime upgrade left a mailbox or native Session unreconciled;
 - GitHub Issue/PR/check state is not linked to the Company commitment; or
 - UI cannot reconstruct the relation that CLI can.
@@ -183,7 +183,7 @@ A finding is not a commitment until Work owns it.
 
 ### 3. Route Through Organization
 
-Assign only to a real Human, Standing Agent, external collaborator, or service.
+Assign only to a real Human, Agent Membership, external collaborator, or service.
 Confirm the actor exists, is active, has the relevant responsibility and
 permission ceiling, and has capacity plus an execution binding when an AI
 runtime is needed.
@@ -196,12 +196,12 @@ TeamWork state; ordinary TeamMessage conversation and provider-native execution
 history remain separate planes.
 
 If no actor can own the work, create a capability-gap Work. Do not silently
-create a Standing Agent, expand permissions, or infer authority from a
+create a Agent Membership, expand permissions, or infer authority from a
 MemberRun, provider session, avatar, Skill, or logged-in external account.
 
 ### 4. Execute
 
-Choose the smallest truthful executor. A durable Standing Agent may participate
+Choose the smallest truthful executor. A durable Agent Membership may participate
 through its linked Agent Team identity, but Organization identity and execution
 membership remain distinct.
 

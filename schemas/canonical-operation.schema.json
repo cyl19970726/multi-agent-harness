@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/canonical-operation.schema.json",
+  "title": "CanonicalOperation",
+  "description": "One crash-atomic row containing the canonical mutation event, resulting projection, immutable side records, and initial outbox records.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event",
+    "resulting_projection"
+  ],
+  "properties": {
+    "event": { "$ref": "#/$defs/canonicalMutationEvent" },
+    "resulting_projection": {},
+    "immutable_side_records": {
+      "type": "array",
+      "items": {}
+    },
+    "initial_outbox_records": {
+      "type": "array",
+      "items": {}
+    }
+  },
+  "$defs": {
+    "actorRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["human", "agent_member", "external", "service"]
+        },
+        "id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "canonicalMutationEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "aggregate_kind",
+        "aggregate_id",
+        "sequence",
+        "store_sequence",
+        "transition",
+        "expected_version",
+        "resulting_version",
+        "performed_by_actor",
+        "idempotency_key",
+        "canonical_request_fingerprint",
+        "payload",
+        "created_at"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "aggregate_kind": { "type": "string", "minLength": 1 },
+        "aggregate_id": { "type": "string", "minLength": 1 },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "store_sequence": { "type": "integer", "minimum": 1 },
+        "transition": { "type": "string", "minLength": 1 },
+        "expected_version": { "type": "integer", "minimum": 0 },
+        "resulting_version": { "type": "integer", "minimum": 1 },
+        "performed_by_actor": { "$ref": "#/$defs/actorRef" },
+        "authority_actor": {
+          "anyOf": [
+            { "$ref": "#/$defs/actorRef" },
+            { "type": "null" }
+          ]
+        },
+        "causation_ref": { "type": ["string", "null"], "minLength": 1 },
+        "idempotency_key": { "type": "string", "minLength": 1 },
+        "canonical_request_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "payload": {},
+        "created_at": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

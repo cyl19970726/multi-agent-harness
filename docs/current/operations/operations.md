@@ -204,9 +204,8 @@ cargo run -p firm-cli -- serve --addr 127.0.0.1:8787
 
 Omit ad-hoc `--member` overrides when starting from a Mission-owned AgentTeam.
 That path preserves each registered AgentMember's stable identifier
-as `MemberRun.agent_member_id`; an intentionally matching Company OS
-StandingAgent can then project the participation without inferring identity or
-authority.
+as `MemberRun.agent_member_id`; Company Organization projects that same
+canonical AgentMember ActorRef without copying runtime state.
 
 Select the Execution Space and Project Binding explicitly:
 

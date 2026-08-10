@@ -71,29 +71,11 @@
         "minLength": 1
       }
     },
-    "reviewed_work_id": {
-      "type": "string",
-      "minLength": 1,
-      "pattern": "\\S"
-    },
-    "reviewed_work_version": {
-      "type": "integer",
-      "minimum": 1
-    },
-    "review_strategy": {
-      "type": "string",
-      "enum": ["peer", "self", "host"]
-    },
     "performed_by_actor": {
       "$ref": "#/$defs/actor"
     },
     "authority_actor": {
       "$ref": "#/$defs/actor"
-    },
-    "command_idempotency_key": {
-      "type": "string",
-      "minLength": 1,
-      "pattern": "\\S"
     },
     "created_at": {
       "type": "string",
@@ -101,21 +83,6 @@
       "pattern": "\\S"
     }
   },
-  "oneOf": [
-    {
-      "not": {
-        "anyOf": [
-          { "required": ["reviewed_work_id"] },
-          { "required": ["reviewed_work_version"] },
-          { "required": ["review_strategy"] },
-          { "required": ["command_idempotency_key"] }
-        ]
-      }
-    },
-    {
-      "required": ["reviewed_work_id", "reviewed_work_version", "review_strategy"]
-    }
-  ],
   "$defs": {
     "actor": {
       "type": "object",

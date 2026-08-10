@@ -359,7 +359,7 @@ export function createTeamRun(params: {
         spec.execution_mode = member.executionMode;
       }
       if (member.worktreeRef) {
-        spec.worktree_ref = member.worktreeRef;
+        spec.provider_cwd_hint = member.worktreeRef;
       }
       if (member.ownedPaths && member.ownedPaths.length) {
         spec.owned_paths = member.ownedPaths;
@@ -471,10 +471,10 @@ export function sendTeamMessage(
   },
 ): ActionDescriptor {
   const body: Record<string, unknown> = {
-    from_member_id: params.fromMemberId,
+    sender_runtime_id: params.fromMemberId,
     sender_kind: params.senderKind ?? (params.fromMemberId === "host" ? "host" : "member_run"),
     sender_id: params.senderId ?? params.fromMemberId,
-    to_member_ids: params.toMemberIds,
+    recipient_runtime_ids: params.toMemberIds,
     kind: params.kind,
     body: params.body,
   };
@@ -494,7 +494,7 @@ export function sendTeamMessage(
     body.causation_id = params.causationId;
   }
   if (params.originWaveId) {
-    body.origin_wave_id = params.originWaveId;
+    body.source_plan_ref = params.originWaveId;
   }
   return {
     method: "POST",
@@ -561,7 +561,7 @@ export function reviewTeamWork(
   };
 }
 
-/** Acknowledge one delivered TeamMessage recipient row. */
+/** Acknowledge one delivered ProviderDispatchEnvelope recipient row. */
 export function acknowledgeTeamMessage(
   teamRunId: string,
   messageId: string,

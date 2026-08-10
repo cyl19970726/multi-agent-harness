@@ -141,7 +141,7 @@ Each delivered turn includes the smallest stable coordination envelope:
 
 ```text
 project_id
-mission_id (derived from AgentTeam) / origin_wave_id? (navigation only)
+mission_id (derived from AgentTeam) / source_plan_ref? (navigation only)
 agent_team_id / execution_node_id
 team_run_id
 member_run_id

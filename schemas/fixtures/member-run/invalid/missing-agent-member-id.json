@@ -1,0 +1,10 @@
+{
+  "id": "member-run-1",
+  "team_run_id": "team-run-1",
+  "role_snapshot": "worker",
+  "coordination_status": "active",
+  "runtime_status": "idle",
+  "runtime_generation": 1,
+  "version": 1,
+  "started_at": "unix-ms:1"
+}

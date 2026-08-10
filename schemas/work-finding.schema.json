@@ -1,0 +1,15 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://agent-harness.local/schemas/work-finding.schema.json","title":"WorkFinding",
+  "type":"object","additionalProperties":false,
+  "required":["id","work_id","work_revision","kind","summary","detail_markdown","confidence","reported_by","created_at"],
+  "properties":{
+    "id":{"type":"string","minLength":1},"work_id":{"type":"string","minLength":1},"work_revision":{"type":"integer","minimum":1},
+    "kind":{"enum":["discovery","difficulty","decision","risk","reusable_pattern"]},"summary":{"type":"string","minLength":1},"detail_markdown":{"type":"string","minLength":1},
+    "affected_work_refs":{"$ref":"#/$defs/refs"},"reusable_asset_refs":{"$ref":"#/$defs/refs"},"invalidated_assumptions":{"$ref":"#/$defs/refs"},"evidence_refs":{"$ref":"#/$defs/refs"},
+    "confidence":{"enum":["low","medium","high"]},"reported_by":{"$ref":"#/$defs/actor"},"created_at":{"type":"string","minLength":1}
+  },
+  "$defs":{
+    "actor":{"type":"object","additionalProperties":false,"required":["kind","id"],"properties":{"kind":{"enum":["human","agent_member","external","service"]},"id":{"type":"string","minLength":1}}},
+    "refs":{"type":"array","items":{"type":"string","minLength":1},"uniqueItems":true}
+  }
+}

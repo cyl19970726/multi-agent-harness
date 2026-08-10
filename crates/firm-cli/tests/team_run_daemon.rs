@@ -15,7 +15,9 @@ use harness_store::HarnessStore;
 mod fake_provider;
 mod firm_env;
 
-use firm_env::{current_project_id, run_firm, run_firm_with_env, TempHome};
+use firm_env::{
+    create_canonical_agent_member, current_project_id, run_firm, run_firm_with_env, TempHome,
+};
 
 struct RuntimeFixture {
     project_root: PathBuf,
@@ -97,19 +99,18 @@ fn bootstrap_runtime(home: &TempHome, name: &str) -> RuntimeFixture {
     success(&mission, "mission create");
     let mission_id = String::from_utf8_lossy(&mission.stdout).trim().to_string();
 
-    let host = selected(&[
-        "agent",
-        "create",
-        "--name",
+    let host_id = format!("agent-daemon-host-{name}");
+    let host = create_canonical_agent_member(
+        home,
+        &project_root,
+        &project_id,
+        &host_id,
         &format!("host-{name}"),
-        "--role",
         "host",
-        "--provider",
         "codex",
-    ]);
-    success(&host, "host agent create");
-    let host: serde_json::Value = serde_json::from_slice(&host.stdout).expect("host JSON");
-    let host_id = host["id"].as_str().expect("host id");
+        &[("FIRM_SPACE", execution_space_id.as_str())],
+    );
+    success(&host, "canonical host create");
 
     let team = selected(&[
         "team",
@@ -121,11 +122,11 @@ fn bootstrap_runtime(home: &TempHome, name: &str) -> RuntimeFixture {
         "--mission-id",
         &mission_id,
         "--host-agent-id",
-        host_id,
+        &host_id,
         "--node-id",
         &node_id,
         "--member",
-        host_id,
+        &host_id,
     ]);
     success(&team, "team create");
     let team: serde_json::Value = serde_json::from_slice(&team.stdout).expect("team JSON");
@@ -241,6 +242,37 @@ fn create_run(
     name: &str,
     extra_env: &[(&str, &str)],
 ) -> String {
+    let mut identity_env = vec![("FIRM_SPACE", fixture.execution_space_id.as_str())];
+    identity_env.extend(extra_env.iter().copied());
+    let identity = create_canonical_agent_member(
+        home,
+        &fixture.project_root,
+        &fixture.project_id,
+        name,
+        name,
+        "implementer",
+        "kimi",
+        &identity_env,
+    );
+    success(&identity, "canonical runtime member create");
+    let add_member = run_firm_with_env(
+        home,
+        &fixture.project_root,
+        &[
+            "--space",
+            &fixture.execution_space_id,
+            "--project",
+            &fixture.project_id,
+            "team",
+            "add-member",
+            "--id",
+            &fixture.team_id,
+            "--member",
+            name,
+        ],
+        extra_env,
+    );
+    success(&add_member, "canonical runtime member team placement");
     let output = run_firm_with_env(
         home,
         &fixture.project_root,

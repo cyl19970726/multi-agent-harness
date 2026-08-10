@@ -69,9 +69,9 @@ function fixture() {
       { id: "member-2", team_run_id: "run-2", agent_member_id: "agent-b", name: "Critic", coordination_status: "active", status: "blocked" },
     ],
     team_messages: [
-      { id: "message-progress", team_run_id: "run-1", from_member_id: "member-1", kind: "progress", correlation_id: "corr-1", created_at: "2026-07-19T00:00:03Z" },
-      { id: "message-briefing", team_run_id: "run-1", from_member_id: "host", to_member_ids: ["member-1"], kind: "message", correlation_id: "corr-1", created_at: "2026-07-19T00:00:01Z", deliveries: [{ member_id: "member-1", status: "delivered" }] },
-      { id: "message-review", team_run_id: "run-1", from_member_id: "member-1", kind: "review_request", created_at: "2026-07-19T00:00:04Z" },
+      { id: "message-progress", team_run_id: "run-1", sender_runtime_id: "member-1", kind: "progress", correlation_id: "corr-1", created_at: "2026-07-19T00:00:03Z" },
+      { id: "message-briefing", team_run_id: "run-1", sender_runtime_id: "host", recipient_runtime_ids: ["member-1"], kind: "message", correlation_id: "corr-1", created_at: "2026-07-19T00:00:01Z", deliveries: [{ member_id: "member-1", status: "delivered" }] },
+      { id: "message-review", team_run_id: "run-1", sender_runtime_id: "member-1", kind: "review_request", created_at: "2026-07-19T00:00:04Z" },
     ],
     works: [
       { id: "work-prerequisite", team_run_id: "run-1", title: "Baseline", context_markdown: "", completion_criteria_markdown: "Done", phase: "closed", condition: "normal", resolution: "accepted", owner_member_id: "agent-a", active_member_run_id: "member-old-generation", claim_mode: "host_assign", eligible_member_ids: [], prerequisite_work_ids: [], priority: "normal", artifact_refs: [], check_refs: [], version: 2, created_at: "2026-07-19T00:00:00Z", updated_at: "2026-07-19T00:00:01Z" },
@@ -242,21 +242,22 @@ async function main() {
 
   const types = await loadTypes();
   const intent = types.effectiveTeamMessageResponseIntent;
-  const peer = { kind: "message", sender: { kind: "member_run", id: "member-run-2" }, from_member_id: "member-run-2" };
+  const peer = { kind: "message", sender: { kind: "member_run", id: "member-run-2" }, sender_runtime_id: "member-run-2" };
   const informationalAck = intent(peer) === "informational"
     && intent({ ...peer, response_intent: "informational" }) === "informational"
-    && intent({ kind: "message", from_member_id: "member-run-2" }) === "informational";
-  const requiredByKind = intent({ kind: "handoff" }) === "response_required"
+    && intent({ kind: "message", sender_runtime_id: "member-run-2" }) === "informational";
+  const requiredByKind = intent({ kind: "provider_interaction_request" }) === "response_required"
     && intent({ kind: "control" }) === "response_required"
-    && intent({ ...peer, kind: "handoff" }) === "response_required";
+    && intent({ ...peer, kind: "provider_interaction_request" }) === "response_required"
+    && intent({ kind: "provider_interaction_response" }) === "informational";
   // Sender-aware default: the coordination plane (Host, Operator via the
   // Dashboard, Service via routed inbox mail) wakes an idle member.
-  const requiredBySender = intent({ kind: "message", from_member_id: "host" }) === "response_required"
-    && intent({ kind: "message", sender: { kind: "host", id: "host" }, from_member_id: "host" }) === "response_required"
-    && intent({ kind: "message", sender: { kind: "operator", id: "op-1" }, from_member_id: "operator:op-1" }) === "response_required"
-    && intent({ kind: "message", sender: { kind: "service", id: "svc-1" }, from_member_id: "service:svc-1" }) === "response_required";
+  const requiredBySender = intent({ kind: "message", sender_runtime_id: "host" }) === "response_required"
+    && intent({ kind: "message", sender: { kind: "host", id: "host" }, sender_runtime_id: "host" }) === "response_required"
+    && intent({ kind: "message", sender: { kind: "operator", id: "op-1" }, sender_runtime_id: "operator:op-1" }) === "response_required"
+    && intent({ kind: "message", sender: { kind: "service", id: "svc-1" }, sender_runtime_id: "service:svc-1" }) === "response_required";
   const explicitWins = intent({ ...peer, response_intent: "response_required" }) === "response_required"
-    && intent({ kind: "message", from_member_id: "host", response_intent: "informational" }) === "informational";
+    && intent({ kind: "message", sender_runtime_id: "host", response_intent: "informational" }) === "informational";
   if (informationalAck && requiredByKind && requiredBySender && explicitWins) {
     ok("Response intent distinguishes informational delivery from response-required (kind + sender default, explicit override both ways)");
   } else {

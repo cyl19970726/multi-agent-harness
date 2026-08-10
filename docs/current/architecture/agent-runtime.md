@@ -6,7 +6,7 @@ status: implementation reference; ADR 0050 Work/WorkDelivery cutover in progress
 
 This implementation reference defines the provider-neutral runtime substrate
 shared by Host execution, Agent Team members, Dynamic Workflow steps and future
-Standing Agent operation. Provider-specific files under `docs/current/integration/`
+Agent Membership operation. Provider-specific files under `docs/current/integration/`
 explain how a concrete provider implements the substrate.
 
 The provider-neutral rule for continuous, multi-cycle Member execution lives
@@ -30,7 +30,7 @@ Final acceptance for this mechanism:
 
 ```text
 select Mission-linked execution, Host-plan context, or direct TeamWork action
-  -> start or resume AgentRuntime
+  -> start or resume MemberRun provider execution
   -> deliver bounded Work or executor-native request
   -> bind provider-native session
   -> project native activity on demand
@@ -43,8 +43,8 @@ select Mission-linked execution, Host-plan context, or direct TeamWork action
 | Question | Runtime answer |
 | --- | --- |
 | What requested execution? | Mission-linked run, Host action, Dynamic Workflow invocation, or linked TeamWork execution reference. |
-| Who or what is acting? | A run-scoped member, Host, optional Standing Agent link, human/service actor or external provider identity. |
-| What is running? | `AgentRuntime` process/session/control endpoint and health. |
+| Who or what is acting? | A run-scoped member, Host, optional Agent Membership link, human/service actor or external provider identity. |
+| What is running? | `MemberRun` plus provider-process/session health. |
 | What did the provider do? | Provider-native session via `NativeSessionRef`; ephemeral adapter projection for UI. |
 | How does a member receive work? | `WorkDelivery` projects the latest assigned Work id/version into a provider turn; the Member also reads My Works and the ready pool. |
 | Who starts the next provider cycle? | The Member's selected `execution_driver`: Harness (`host_driven`), one reviewed native continuation controller (`provider_driven`), or the user's own out-of-band session (`user_driven`, declared `external_interactive` members only). |
@@ -69,7 +69,7 @@ contract does.
 | incompatible or unavailable native session | keep the old binding as historical evidence and start a new native session under an explicit replacement MemberRun; never replay Harness mail as a transcript |
 
 At no point may both generations drive the same writable Workspace. Durable
-Work/TeamWork ownership, Message correlation, Standing Agent identity, and accepted
+Work/TeamWork ownership, Message correlation, Agent Membership identity, and accepted
 evidence survive the transition. Provider upgrades still require explicit
 Human confirmation under ADR 0031; an ordinary Harness build update is not
 permission to upgrade Codex, Claude Code, or Kimi.
@@ -78,18 +78,18 @@ permission to upgrade Codex, Claude Code, or Kimi.
 
 | Object | Owns | Refuses |
 | --- | --- | --- |
-| `AgentMember` | compatibility/runtime configuration for an addressable agent; may be explicitly linked to a Standing Agent or MemberRun | automatic company identity, organization authority, or provider transcript as identity |
-| `AgentRuntime` | lifecycle, pid/socket/control endpoint, protocol and delivery health | Work/TeamWork or acceptance ownership |
+| `AgentMember` | compatibility/runtime configuration for an addressable agent; may be explicitly linked to a Agent Membership or MemberRun | automatic company identity, organization authority, or provider transcript as identity |
+| `MemberRun` | coordination generation plus provider-process/session health | Work/TeamWork or acceptance ownership |
 | `WorkDelivery` | reliable delivery of one WorkEvent and Work id/version to a Member runtime | Work ownership or authored conversation |
 | `MessageDelivery` | delivery request for authored conversation and terminal delivery state | Work ownership or status |
 | `TeamSupervisorLease` | single cross-process owner generation for TeamRun controls and delivery claims | provider transcript or proof that an uncertain claim was consumed |
 | `TeamMemberCloseRequest` | durable pending/applied Host Close latch for one MemberRun | process-local control acknowledgement or provider transcript |
-| `AgentMessageRoute` | idempotent bridge from one stable Agent Inbox message to one active MemberRun/TeamMessage | implicit Organization identity, duplicate delivery, or transcript storage |
+| `MessageDelivery` | canonical queued/claimed/provider-received/acknowledged delivery bound to exact MemberRun generation | implicit Organization identity, duplicate delivery, or transcript storage |
 | `NativeSessionRef` | mode-aware provider session identity, availability, version, and resume capability | transcript or event copy |
 | `ProviderExecutionControls` | requested versus effective model, reasoning effort, and service tier with native receipt status | provider capability inference or Organization authority |
 | `ProviderCapacitySnapshot` | execution-mode-specific runtime availability of one provider ACCOUNT, with observation time, evidence source and confidence | adapter compatibility, a synthesised usage number, or an availability claim from an absent observation |
 | `NativeContinuationProjection` | ephemeral observation of the selected provider's continuation condition, state, cycle and terminal reason | durable Goal identity, Work ownership, or Host acceptance |
-| `AgentEvent` | explicit Harness-owned lifecycle, control, and summary facts | provider transcript, tool stream, or turn history |
+| `MemberRunEvent` | explicit Harness-owned lifecycle, control, and summary facts | provider transcript, tool stream, or turn history |
 | `ProviderChildThread` | provider-native subagent or child thread visibility | durable firm member identity by default |
 | `PermissionProfile` | allowed tools, approval policy, sandbox, live/destructive boundaries | prompt-only safety |
 | `WorkspaceRef` | cwd, worktree, branch, environment, owned paths | implicit global workspace |
@@ -342,7 +342,7 @@ Access-Control-Allow-Origin: *
 The endpoint emits the following event types:
 
 - **`snapshot`**: Initial state sent on connection (contains `generated_at` timestamp). Clients use this to initialize their state during reconnect.
-- **`agent_event`**: A new `AgentEvent` was recorded (provider/runtime/hook event).
+- **`member_run_event`**: A new `MemberRunEvent` was recorded (provider/runtime/hook event).
 - **`message`**: A new `Message` was created or its `delivery_status` changed.
 - **`workflow_run`** / **`workflow_step`**: A `WorkflowRun` / `WorkflowStep` record was appended or updated (dynamic workflow runtime).
 - **`native_activity`**: Ephemeral provider-native projection when the selected

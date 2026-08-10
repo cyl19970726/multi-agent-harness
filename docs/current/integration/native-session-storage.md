@@ -131,7 +131,7 @@ refresh/reconnect rebuilds the projection directly from provider storage.
 ## Execution-root boundary
 
 `store_root` is only the centralized Harness coordination store. A provider's
-cwd is independently resolved as member `worktree_ref`, TeamRun
+cwd is independently resolved as member `provider_cwd_hint`, TeamRun
 `execution_root`, then selected Workspace `project_root`. For new raw-store
 compatibility rows the process cwd is snapshotted as `execution_root` at create
 time. The provider-native session locator records what is needed to find
@@ -146,7 +146,7 @@ the project/worktree. Otherwise a multi-project Host can execute with the wrong
 instructions while writing apparently valid coordination rows to the right
 store.
 
-Immediately before spawn, `MemberRun.workspace_snapshot` records actual cwd,
+Immediately before spawn, `MemberRun.provider_environment_observation` records actual cwd,
 Git HEAD/branch when available, and discovered instruction/skill directory
 paths. It never contains the files' contents, config values, credentials,
 environment dumps, transcript/tool streams, or thinking.

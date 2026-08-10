@@ -67,21 +67,15 @@ Work assignment/claim -> WorkOperation(WorkEvent + resulting Work + deliveries)
   -> explicit outcome and artifact/check references
 ```
 
-Neither object is an OrgUnit, a standing organization member, or a business
-TeamWork. A durable AgentMember can only appear in a standing Agent projection
-when an explicit stable link exists (for example,
-`MemberRun.agent_member_id`). A temporary MemberRun remains temporary even if
-its displayed name, provider, model, role, or timestamps resemble a standing
-Agent.
+Neither object is an OrgUnit or business TeamWork. AgentMember is the single
+durable organization-agent identity; MemberRun is one execution attempt and
+must carry its exact `agent_member_id`.
 
-The implemented Agent Team path preserves this link when a TeamRun is created
-from its Mission-owned AgentTeam: the Team's member identifier is
-copied into `MemberRun.agent_member_id`. The Organization projection includes
-participation only when a Company OS `StandingAgent.execution_agent_member_ref`
-names that AgentMember. Equal ids do not bind. This is an explicit cross-layer
-join, not lifecycle collapse: the StandingAgent owns organization identity and authority, the
-AgentMember definition owns reusable execution configuration, and MemberRun
-owns participation in one TeamRun.
+The implemented Agent Team path preserves this identity when a TeamRun is
+created from its Mission-owned AgentTeam. Company Organization stores only an
+AgentMember ActorRef membership projection; it never copies provider/runtime
+payload or creates a second identity. MemberRun owns participation in one
+TeamRun.
 
 An AgentTeamRun may execute against one Project Binding, while a later TeamRun
 of the same Mission Team uses a different Project Binding registered on the
@@ -106,11 +100,11 @@ atomic claim, a native provider receipt, and recipient ACK separately. Transport
 failure before claim leaves mail queued and reconnects the recorded native
 session first.
 
-Team mail uses typed Host, Member, stable Agent, Operator, and Service actor
+Team mail uses typed Human, AgentMember, External, and Service actor
 references. External Agent-addressed mail reaches a participating Member only
-through an explicit idempotent `AgentMessageRoute`. This lets Organization and
-Agent Team share Inbox UI without inferring that StandingAgent, AgentMember,
-and MemberRun are one lifecycle. Unbound Dashboard/MCP/API clients cannot
+through an explicit idempotent delivery. This lets Organization and Agent Team
+share Inbox UI while keeping AgentMember identity and MemberRun lifecycle
+separate. Unbound Dashboard/MCP/API clients cannot
 impersonate a Member.
 
 Explicit Close is durably latched before process-local teardown. A racing lease
@@ -158,7 +152,7 @@ must not invent lifecycle control over provider children it does not control.
 
 ### Provider foundation
 
-`AgentMember`, `AgentRuntime`, native provider-session bindings, provider child
+`AgentMember`, `MemberRun`, native provider-session bindings, provider child
 threads, capability snapshots, permission/budget ceilings, hooks, and plugins
 remain shared infrastructure. The provider-native store is the sole truth for
 one agent's transcript, tool/command/file events, turn lifecycle, and resume
@@ -238,7 +232,7 @@ Mission, TeamWork, Approval, or organization membership.
    authority, or document provenance held by the TeamWork.
 4. Agent Team responsibility is proved by Work owner/version and WorkEvents;
    TeamMessage correlation explains conversation only.
-5. A TeamRun/MemberRun never becomes a standing Agent or OrgUnit by inference.
+5. A TeamRun/MemberRun never becomes an organization Agent Membership or OrgUnit by inference.
 6. Provider-native subagents stay implementation detail unless explicitly
    materialized through a truthful observation or promotion contract.
 7. Workflow and Host execution preserve their own semantics; shared sessions,

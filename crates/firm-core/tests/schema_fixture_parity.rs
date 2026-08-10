@@ -1,14 +1,14 @@
 //! Rust half of the official schema-fixture acceptance contract.
 //!
-//! `pnpm check:schema-fixtures` first runs the JSON Schema checker (including
-//! its documented canonical GateSpec semantic layer), then this test applies
+//! `pnpm check:schema-fixtures` first runs the JSON Schema checker, then this test applies
 //! Rust serde + `Validate` to the exact same Work and Review fixture corpus.
 //! The directory classification is therefore the shared expected verdict, not
 //! an independent JS-only rule set.
 
+use firm_core::agentfirm_api::TeamMessage;
 use firm_core::{
     AgentTeam, AgentTeamRun, ExecutionNode, Mission, NodeDaemonLease, NodeProjectRegistration,
-    Review, TeamMessage, TeamSupervisorLease, Validate, Work, WorkDelegation, WorkDelegationEvent,
+    Review, TeamSupervisorLease, Validate, Work, WorkDelegation, WorkDelegationEvent,
 };
 use serde::de::DeserializeOwned;
 use std::fs;
@@ -87,21 +87,18 @@ fn wave_three_identity_and_runtime_fixtures_match_rust_contracts() {
 }
 
 #[test]
-fn team_message_fixtures_match_rust_serde_and_provider_body_contract() {
+fn team_message_fixtures_match_canonical_rust_wire_contract() {
     let root = fixture_root().join("team-message");
     for path in json_files(&root.join("valid")) {
-        let bytes = fs::read(&path).expect("read valid TeamMessage fixture");
-        let message: TeamMessage = serde_json::from_slice(&bytes)
-            .unwrap_or_else(|error| panic!("Rust rejected {}: {error}", path.display()));
-        message
-            .validate_provider_interaction_contract()
+        let bytes = fs::read(&path).expect("read valid ProviderDispatchEnvelope fixture");
+        let _: TeamMessage = serde_json::from_slice(&bytes)
             .unwrap_or_else(|error| panic!("Rust rejected {}: {error}", path.display()));
     }
     for path in json_files(&root.join("invalid")) {
         let accepted = fs::read(&path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<TeamMessage>(&bytes).ok())
-            .is_some_and(|message| message.validate_provider_interaction_contract().is_ok());
+            .is_some();
         assert!(
             !accepted,
             "Rust accepted invalid fixture {}",
@@ -113,25 +110,25 @@ fn team_message_fixtures_match_rust_serde_and_provider_body_contract() {
 #[test]
 fn team_message_wire_rejects_unknown_fields_at_every_closed_layer() {
     let fixture = fixture_root().join("team-message/valid/basic.json");
-    let bytes = fs::read(&fixture).expect("basic TeamMessage fixture");
+    let bytes = fs::read(&fixture).expect("basic ProviderDispatchEnvelope fixture");
     let base: serde_json::Value = serde_json::from_slice(&bytes).expect("valid fixture JSON");
 
-    let cases = ["TeamMessage", "TeamRecipientRef", "TeamMessageDelivery"];
+    let cases = [
+        "ProviderDispatchEnvelope",
+        "SenderActorRef",
+        "RecipientActorRef",
+    ];
     for label in cases {
         let mut value = base.clone();
         match label {
-            "TeamMessage" => {
+            "ProviderDispatchEnvelope" => {
                 value["unknown_top_level"] = serde_json::json!(true);
             }
-            "TeamRecipientRef" => {
-                value["recipients"] = serde_json::json!([{
-                    "kind": "member_run",
-                    "id": "mrun-1",
-                    "unknown_recipient_field": true
-                }]);
+            "SenderActorRef" => {
+                value["sender"]["unknown_sender_field"] = serde_json::json!(true);
             }
-            "TeamMessageDelivery" => {
-                value["deliveries"][0]["unknown_delivery_field"] = serde_json::json!(true);
+            "RecipientActorRef" => {
+                value["recipients"][0]["unknown_recipient_field"] = serde_json::json!(true);
             }
             _ => unreachable!(),
         }
@@ -143,15 +140,6 @@ fn team_message_wire_rejects_unknown_fields_at_every_closed_layer() {
             "unexpected {label} rejection: {error}"
         );
     }
-}
-
-#[test]
-fn omitted_and_explicit_empty_gate_configs_are_one_canonical_duplicate() {
-    let fixture = fixture_root().join("work/invalid/duplicate-gate-spec-omitted-config.json");
-    let bytes = fs::read(&fixture).expect("canonical duplicate fixture");
-    let work: Work = serde_json::from_slice(&bytes).expect("both old and canonical wires parse");
-    assert_eq!(work.gates[0], work.gates[1]);
-    assert!(work.validate().is_err());
 }
 
 #[test]

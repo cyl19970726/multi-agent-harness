@@ -67,7 +67,7 @@ const baseline = {
   members: [], messages: [], events: [], provider_child_threads: [],
   workflow_runs: [], workflow_steps: [], workflow_patches: [],
   workflow_artifact_manifests: [], team_supervisor_leases: [],
-  team_member_close_requests: [], agent_message_routes: [],
+  team_member_close_requests: [],
   pending_interactions: [], company_os: {},
 };
 
@@ -219,8 +219,8 @@ async function mockRoutes(page) {
           team_run_id: decodeURIComponent(messages[1]),
           kind: body.kind ?? "message",
           body: body.body ?? "",
-          from_member_id: body.sender_id ?? "host",
-          to_member_ids: body.to_member_ids ?? [],
+          sender_runtime_id: body.sender_id ?? "host",
+          recipient_runtime_ids: body.recipient_runtime_ids ?? [],
           response_intent: body.response_intent ?? null,
           created_at: new Date().toISOString(),
         });

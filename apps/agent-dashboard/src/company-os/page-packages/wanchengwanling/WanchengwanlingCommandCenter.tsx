@@ -408,7 +408,7 @@ export function WanchengwanlingCommandCenter({ source, pageId = "page-wcw-comman
                     <ActorAvatar identity={text(actor.id)} name={text(actor.display_name, text(actor.id))} />
                     <div className="min-w-0">
                       <p className="truncate text-sm font-semibold">{text(actor.display_name, text(actor.id))}</p>
-                      <p className="truncate text-xs text-muted-foreground">{text(actor.role, "Standing Agent")}</p>
+                      <p className="truncate text-xs text-muted-foreground">{text(actor.role, "Agent Membership")}</p>
                     </div>
                   </div>
                 ))}

@@ -83,7 +83,7 @@ async function main() {
   check(
     answer.body.correlation_id === "corr/c"
       && answer.body.causation_id === "message/d"
-      && answer.body.origin_wave_id === "wave/a",
+      && answer.body.source_plan_ref === "wave/a",
     "Lead reply preserves conversation correlation, causation, optional Work link, and Wave navigation context",
   );
   check(
@@ -103,7 +103,7 @@ async function main() {
   });
   check(
     create.body.execution_root === "/workspace/project"
-      && create.body.members[0].worktree_ref === "/workspace/external-worktree",
+      && create.body.members[0].provider_cwd_hint === "/workspace/external-worktree",
     "TeamRun create action preserves run execution root and member worktree override",
   );
   const messageCausedWork = actions.createTeamWork("run/a", {

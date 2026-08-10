@@ -51,7 +51,6 @@ Finance, and governance. Execution does not require a Company.
 │       ├── work_deliveries.jsonl
 │       ├── team_messages.jsonl
 │       ├── team_supervisor_leases.jsonl
-│       ├── agent_message_routes.jsonl
 │       ├── workflow_runs.jsonl
 │       └── workflow_steps.jsonl
 ├── projects/
@@ -122,7 +121,7 @@ switch the active Execution Space or Company Store.
 ### Provider cwd precedence
 
 ```text
-MemberRun.worktree_ref
+MemberRun.provider_cwd_hint
   > AgentTeamRun.execution_root
   > ProjectBinding.project_root
 ```

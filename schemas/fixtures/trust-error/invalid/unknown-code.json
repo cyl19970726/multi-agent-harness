@@ -1,0 +1,7 @@
+{
+  "code": "UNSCOPED_FAILURE",
+  "message": "untyped errors are forbidden",
+  "retryable": false,
+  "resource_kind": "command",
+  "resource_id": "unknown"
+}

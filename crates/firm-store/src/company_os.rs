@@ -7,12 +7,12 @@
 use std::fmt;
 
 use firm_core::{
-    ActionCommand, ActionCommandStatus, ActionPolicyDefinition, ActorRef, ActorType, Approval,
-    ApprovalStatus, AuditEvent, AuditEventKind, Block, BusinessModule, Commitment,
-    CommitmentStatus, CustomPageDefinition, CustomPagePackage, Document, EntityKind, EntityRef,
-    ExternalParticipant, HumanMember, MemberStatus, Milestone, OrgUnit, OrganizationMembership,
-    Payment, PaymentStatus, Relation, ServiceActor, StandingAgent, TypedRecord, ValidateCompanyOs,
-    View,
+    ActionCommand, ActionCommandStatus, ActionPolicyDefinition, ActorRef, ActorType,
+    AgentMembership, Approval, ApprovalStatus, AuditEvent, AuditEventKind, Block, BusinessModule,
+    Commitment, CommitmentStatus, CustomPageDefinition, CustomPagePackage, Document, EntityKind,
+    EntityRef, ExternalParticipant, HumanMember, MemberStatus, Milestone, OrgUnit,
+    OrganizationMembership, Payment, PaymentStatus, Relation, ServiceActor, TypedRecord,
+    ValidateCompanyOs, View,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
@@ -25,7 +25,7 @@ const RELATIONS: &str = "company_os_relations.jsonl";
 const VIEWS: &str = "company_os_views.jsonl";
 const BUSINESS_MODULES: &str = "company_os_business_modules.jsonl";
 const HUMAN_MEMBERS: &str = "company_os_human_members.jsonl";
-const STANDING_AGENTS: &str = "company_os_standing_agents.jsonl";
+const AGENT_MEMBERSHIPS: &str = "company_os_agent_memberships.jsonl";
 const EXTERNAL_PARTICIPANTS: &str = "company_os_external_participants.jsonl";
 const SERVICE_ACTORS: &str = "company_os_service_actors.jsonl";
 const ORG_UNITS: &str = "company_os_org_units.jsonl";
@@ -48,7 +48,7 @@ const ACTION_AUDIT_RESERVATIONS: &str = "company_os_action_audit_reservations.js
 #[serde(tag = "actor_type", content = "actor", rename_all = "snake_case")]
 pub enum CompanyActor {
     Human(HumanMember),
-    Agent(Box<StandingAgent>),
+    Agent(Box<AgentMembership>),
     External(ExternalParticipant),
     Service(ServiceActor),
 }
@@ -151,10 +151,10 @@ impl HarnessStore {
         HUMAN_MEMBERS
     );
     company_read_api!(
-        standing_agents,
-        latest_standing_agents,
-        StandingAgent,
-        STANDING_AGENTS
+        agent_memberships,
+        latest_agent_memberships,
+        AgentMembership,
+        AGENT_MEMBERSHIPS
     );
     company_read_api!(
         external_participants,
@@ -232,7 +232,7 @@ impl HarnessStore {
         let mut actors = Vec::new();
         actors.extend(self.human_members()?.into_iter().map(CompanyActor::Human));
         actors.extend(
-            self.standing_agents()?
+            self.agent_memberships()?
                 .into_iter()
                 .map(Box::new)
                 .map(CompanyActor::Agent),
@@ -253,7 +253,7 @@ impl HarnessStore {
     pub fn append_actor(&self, value: &CompanyActor) -> StoreResult<()> {
         match value {
             CompanyActor::Human(actor) => self.append_human_member(actor),
-            CompanyActor::Agent(actor) => self.append_standing_agent(actor),
+            CompanyActor::Agent(actor) => self.append_agent_membership(actor),
             CompanyActor::External(actor) => self.append_external_participant(actor),
             CompanyActor::Service(actor) => self.append_service_actor(actor),
         }
@@ -283,18 +283,15 @@ impl HarnessStore {
         self.append_company_row(HUMAN_MEMBERS, value, |_| Ok(()))
     }
 
-    pub fn append_standing_agent(&self, value: &StandingAgent) -> StoreResult<()> {
-        self.append_company_row(STANDING_AGENTS, value, |store| {
-            if let Some(member_ref) = value.execution_agent_member_ref.as_deref() {
-                if let Some(existing) = store.latest_standing_agents()?.into_iter().find(|agent| {
-                    agent.id != value.id
-                        && agent.execution_agent_member_ref.as_deref() == Some(member_ref)
-                }) {
-                    return Err(StoreError::Conflict(format!(
-                        "StandingAgent {} already owns execution_agent_member_ref {member_ref}; relation must be one-to-one",
-                        existing.id
-                    )));
-                }
+    pub fn append_agent_membership(&self, value: &AgentMembership) -> StoreResult<()> {
+        self.append_company_row(AGENT_MEMBERSHIPS, value, |store| {
+            if let Some(existing) = store.latest_agent_memberships()?.into_iter().find(|agent| {
+                agent.id != value.id && agent.agent_member_ref == value.agent_member_ref
+            }) {
+                return Err(StoreError::Conflict(format!(
+                    "AgentMembership {} already owns agent_member_ref {}; relation must be one-to-one",
+                    existing.id, value.agent_member_ref.id
+                )));
             }
             Ok(())
         })
@@ -922,7 +919,7 @@ impl HarnessStore {
                 .map(CompanyActor::Human),
         );
         actors.extend(
-            self.latest_standing_agents()?
+            self.latest_agent_memberships()?
                 .into_iter()
                 .map(Box::new)
                 .map(CompanyActor::Agent),
@@ -947,7 +944,7 @@ impl HarnessStore {
                 .find_by_id::<HumanMember>(HUMAN_MEMBERS, &reference.actor_id)?
                 .map(CompanyActor::Human),
             ActorType::Agent => self
-                .find_by_id::<StandingAgent>(STANDING_AGENTS, &reference.actor_id)?
+                .find_by_id::<AgentMembership>(AGENT_MEMBERSHIPS, &reference.actor_id)?
                 .map(Box::new)
                 .map(CompanyActor::Agent),
             ActorType::External => self
@@ -1728,7 +1725,7 @@ impl_has_id!(
     View,
     BusinessModule,
     HumanMember,
-    StandingAgent,
+    AgentMembership,
     ExternalParticipant,
     ServiceActor,
     OrgUnit,
@@ -1752,7 +1749,7 @@ fn missing(kind: &str, id: &str) -> StoreError {
 fn actor_kind(kind: ActorType) -> &'static str {
     match kind {
         ActorType::Human => "HumanMember",
-        ActorType::Agent => "StandingAgent",
+        ActorType::Agent => "AgentMembership",
         ActorType::External => "ExternalParticipant",
         ActorType::Service => "ServiceActor",
     }

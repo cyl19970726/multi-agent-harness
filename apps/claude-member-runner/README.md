@@ -114,8 +114,8 @@ node --test "apps/claude-member-runner/test/*.test.mjs"
 # Dry run of the whole protocol against the fake SDK
 printf '%s\n' \
   '{"command":"start","payload":{"teamRunId":"t","memberRunId":"m","memberName":"Demo","cwd":"/tmp/p"}}' \
-  '{"command":"deliver","payload":{"id":"work-1","kind":"work","from_member_id":"host","body":"Create the requested artifact and submit the Work."}}' \
-  '{"command":"deliver","payload":{"id":"message-1","kind":"message","from_member_id":"host","work_id":"work-1","body":"Please include verification output."}}' \
+  '{"command":"deliver","payload":{"id":"work-1","kind":"work","sender_runtime_id":"host","body":"Create the requested artifact and submit the Work."}}' \
+  '{"command":"deliver","payload":{"id":"message-1","kind":"message","sender_runtime_id":"host","work_id":"work-1","body":"Please include verification output."}}' \
   '{"command":"close","payload":{"reason":"closed_by_host"}}' \
   | node apps/claude-member-runner/bin/claude-member-runner.mjs --fake
 ```

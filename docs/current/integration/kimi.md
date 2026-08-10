@@ -45,10 +45,10 @@ Binary resolution order is implemented by `resolve_kimi_bin()`:
 
 Source: `crates/firm-cli/src/main.rs:14317-14345`.
 
-## Bounded AgentRuntime / Workflow Delivery (Not Agent Team)
+## Bounded Workflow Delivery (Not Agent Team)
 
 This compatibility section describes the one-shot `kimi_exec` path used by
-bounded workflows and the older standalone AgentRuntime API. It is not the
+bounded workflows and the older standalone provider-process API. It is not the
 Agent Team delivery algorithm. New Team Members always use the persistent ACP
 contract below; do not copy `kimi -p` behavior into Team lifecycle code.
 

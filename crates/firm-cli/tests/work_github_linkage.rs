@@ -16,7 +16,9 @@ mod firm_env;
 
 use std::process::Command;
 
-use firm_env::{current_project_id, run_firm, run_firm_with_env, TempHome};
+use firm_env::{
+    create_canonical_agent_member, current_project_id, run_firm, run_firm_with_env, TempHome,
+};
 
 /// Public repo plus stable GitHub objects used by the live assertions.
 const GH_REPO: &str = "cyl19970726/multi-agent-harness";
@@ -82,21 +84,15 @@ fn init_project(home: &TempHome, name: &str) -> String {
         mission.status.success(),
         "mission create failed: {mission:?}"
     );
-    let host = run_firm(
+    let host = create_canonical_agent_member(
         home,
         &root,
-        &[
-            "agent",
-            "create",
-            "--id",
-            "agent-github-host",
-            "--name",
-            "github-host",
-            "--role",
-            "host",
-            "--provider",
-            "codex",
-        ],
+        &project_id,
+        "agent-github-host",
+        "github-host",
+        "host",
+        "codex",
+        &[],
     );
     assert!(host.status.success(), "host create failed: {host:?}");
     let team = run_firm(
@@ -145,7 +141,7 @@ fn host_firm_json(home: &TempHome, project_id: &str, args: &[&str]) -> serde_jso
     })
 }
 
-/// Member-side harness command with the bound MemberRun/TeamRun environment.
+/// Member-side harness command with the bound ProviderRuntimeProjection/TeamRun environment.
 fn member_firm_json(
     home: &TempHome,
     project_id: &str,
@@ -183,6 +179,35 @@ fn member_firm_json(
 fn github_fixture(tag: &str) -> (TempHome, String, String, String) {
     let home = TempHome::new(tag);
     let project_id = init_project(&home, "alpha");
+    let member = create_canonical_agent_member(
+        &home,
+        home.base(),
+        &project_id,
+        "github-member",
+        "github-member",
+        "implementer",
+        "kimi",
+        &[],
+    );
+    assert!(member.status.success(), "member create failed: {member:?}");
+    let placed = run_firm(
+        &home,
+        home.base(),
+        &[
+            "--project",
+            &project_id,
+            "team",
+            "add-member",
+            "--id",
+            "team-github-fixture",
+            "--member",
+            "github-member",
+        ],
+    );
+    assert!(
+        placed.status.success(),
+        "member placement failed: {placed:?}"
+    );
     let out = run_firm(
         &home,
         home.base(),

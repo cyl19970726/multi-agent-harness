@@ -48,13 +48,13 @@ export interface Company {
   project_binding?: "external" | string;
 }
 
-export type MessageKind = "message" | "task" | "report";
+export type RegistryMessageIntent = "message" | "report";
 export type SenderKind = "agent" | "operator" | "system";
 export type ProviderExecutionStatus = "queued" | "running" | "succeeded" | "failed" | "canceled" | "stale";
 
 /**
  * The backend's four-layer runtime health snapshot (serialized
- * `AgentRuntimeHealth`). A `null`/missing probe means "unknown" — it must NOT
+ * `ProviderProcessHealth`). A `null`/missing probe means "unknown" — it must NOT
  * be rendered as healthy/green; treat it as amber.
  */
 export interface RuntimeHealth {
@@ -65,7 +65,7 @@ export interface RuntimeHealth {
   checked_at?: string | null;
 }
 
-export interface AgentMember {
+export interface ProviderLaunchProfile {
   id: string;
   name?: string;
   description?: string;
@@ -88,7 +88,7 @@ export interface AgentMember {
   prompt_ref?: string | null;
   skill_refs?: string[];
   profile?: string | null;
-  provider_config?: AgentProviderConfig | null;
+  provider_config?: ProviderLaunchConfig | null;
   created_at?: string | null;
   last_seen_at?: string | null;
   queued_count?: number;
@@ -100,33 +100,35 @@ export interface AgentMember {
 /**
  * Durable Company/Organization identity (ADR 0052). Runtime/session state is
  * intentionally absent and remains on MemberRun / the compatibility
- * AgentMember projection.
+ * ProviderLaunchProfile projection.
  */
-export interface DurableAgentMember {
+export interface AgentMember {
   id: string;
   name: string;
   description: string;
   role: string;
-  provider_profile?: string | null;
-  model?: string | null;
-  workspace_policy?: string | null;
-  project_binding_id?: string | null;
-  business_access_ceiling_refs?: string[];
-  status: "active" | "paused" | "retired" | string;
-  created_by_member_id?: string | null;
+  capabilities: string[];
+  skill_refs: string[];
+  provider_profile_ref?: string | null;
+  model_preference?: string | null;
+  workspace_policy: string;
+  permission_ceiling: "read_only" | "workspace_write" | "full_access" | string;
+  organization_status: "active" | "paused" | "retired" | string;
+  version: number;
+  created_by: { kind: "human" | "agent_member" | "external" | "service"; id: string };
   created_at: string;
   updated_at: string;
 }
 
 export interface CompanyOsSnapshotProjection {
-  durable_agent_members?: DurableAgentMember[];
+  agent_members?: AgentMember[];
   [key: string]: unknown;
 }
 
-/** Provider launch/runtime config carried on an AgentMember (mirrors the Rust
- * AgentProviderConfig). All optional; the Config tab renders what is set and
+/** Provider launch/runtime config carried on an ProviderLaunchProfile (mirrors the Rust
+ * ProviderLaunchConfig). All optional; the Config tab renders what is set and
  * shows "Not configured" otherwise. */
-export interface AgentProviderConfig {
+export interface ProviderLaunchConfig {
   service_tier?: string | null;
   collaboration_mode?: string | null;
   approval_policy?: string | null;
@@ -165,7 +167,7 @@ export interface Message {
   from_agent_id?: string;
   to_agent_id?: string | null;
   channel?: string | null;
-  kind: MessageKind;
+  kind: RegistryMessageIntent;
   delivery_status: DeliveryStatus;
   content?: string;
   evidence_ids?: string[];
@@ -189,9 +191,9 @@ export interface MessageDelivery {
   last_error?: string | null;
 }
 
-export interface AgentEvent {
+export interface ProviderDispatchEvent {
   id: string;
-  agent_member_id?: string;
+  agent_member_id: string;
   provider_runtime_id?: string | null;
   event_type?: string;
   summary?: string;
@@ -202,7 +204,7 @@ export interface AgentEvent {
 export interface ProviderChildThread {
   id: string;
   provider?: string;
-  agent_member_id?: string;
+  agent_member_id: string;
   provider_runtime_id?: string | null;
   parent_provider_thread_id?: string | null;
   provider_thread_id?: string;
@@ -439,8 +441,8 @@ export interface MemberRun {
   id: string;
   team_run_id?: string;
   slot_id?: string | null;
-  /** Explicit durable AgentMember / StandingAgent identity link; never inferred from display fields. */
-  agent_member_id?: string | null;
+  /** Required canonical AgentMember identity; never inferred from display fields. */
+  agent_member_id: string;
   name?: string | null;
   role?: string | null;
   provider?: "codex" | "claude" | "kimi" | string;
@@ -460,8 +462,8 @@ export interface MemberRun {
   status?: MemberRunStatus | string;
   native_session?: NativeSessionRef | null;
   /** Optional member-specific Git worktree override of the TeamRun execution root. */
-  worktree_ref?: string | null;
-  workspace_snapshot?: MemberWorkspaceSnapshot | null;
+  provider_cwd_hint?: string | null;
+  provider_environment_observation?: MemberWorkspaceSnapshot | null;
   owned_paths?: string[];
   started_at?: string;
   last_event_at?: string | null;
@@ -628,8 +630,8 @@ export interface LiveMemberActivity {
   expires_at: string;
 }
 
-/** Delivery of a {@link TeamMessage} to one recipient. */
-export interface TeamMessageDelivery {
+/** Delivery of a {@link ProviderDispatchEnvelope} to one recipient. */
+export interface ProviderDispatchAttempt {
   member_id?: string;
   policy?: string;
   status?: "queued" | "claimed" | "delivered" | "acknowledged" | "failed" | "expired" | string;
@@ -657,55 +659,46 @@ export interface TeamRecipientRef {
   id: string;
 }
 
-/** Kind of a {@link TeamMessage} (open enum; rendered as a colored pill). */
-export type TeamMessageKind =
+/** Kind of a {@link ProviderDispatchEnvelope} (open enum; rendered as a colored pill). */
+export type ProviderDispatchIntent =
   | "message"
-  | "plan_request"
-  | "plan_proposal"
-  | "plan_feedback"
-  | "plan_approval"
-  | "question"
-  | "answer"
-  | "progress"
-  | "blocker"
-  | "handoff"
-  | "review_request"
-  | "review_result"
   | "control"
-  | "broadcast";
+  | "provider_interaction_request"
+  | "provider_interaction_response";
 
 /**
- * Explicit response intent on a {@link TeamMessage} (ADR 0046 §4).
+ * Explicit response intent on a {@link ProviderDispatchEnvelope} (ADR 0046 §4).
  * `informational` mail is durable and correlated but never starts a provider
  * round on its own; `response_required` asks the recipient for a semantic
  * reply and wakes an idle provider member.
  */
-export type TeamMessageResponseIntent = "informational" | "response_required";
+export type ProviderResponseIntent = "informational" | "response_required";
 
 /**
  * Effective response intent: the explicit field wins; otherwise kind AND
- * sender decide — handoff/control always require a response round,
+ * sender decide — control always requires a response round,
  * and ordinary message mail requires one unless a peer member sent it
- * (mirrors the Rust `TeamMessage::effective_response_intent` contract).
+ * (mirrors the Rust `ProviderDispatchEnvelope::effective_response_intent` contract).
  */
 export function effectiveTeamMessageResponseIntent(
-  message: Pick<TeamMessage, "kind" | "response_intent" | "sender" | "from_member_id">,
-): TeamMessageResponseIntent {
+  message: Pick<ProviderDispatchEnvelope, "kind" | "response_intent" | "sender" | "sender_runtime_id">,
+): ProviderResponseIntent {
   if (message.response_intent === "informational" || message.response_intent === "response_required") {
     return message.response_intent;
   }
-  if (message.kind === "handoff" || message.kind === "control") {
+  if (message.kind === "control" || message.kind === "provider_interaction_request") {
     return "response_required";
   }
+  if (message.kind === "provider_interaction_response") return "informational";
   return sentByPeerMember(message) ? "informational" : "response_required";
 }
 
 /**
  * True when a team message was authored by another member rather than by the
  * coordination plane (Host, Operator, Service). Historical rows carry no typed
- * `sender`, so they fall back to the reserved `"host"` `from_member_id`.
+ * `sender`, so they fall back to the reserved `"host"` `sender_runtime_id`.
  */
-function sentByPeerMember(message: Pick<TeamMessage, "sender" | "from_member_id">): boolean {
+function sentByPeerMember(message: Pick<ProviderDispatchEnvelope, "sender" | "sender_runtime_id">): boolean {
   const senderKind = message.sender?.kind;
   if (senderKind === "member_run" || senderKind === "agent_member") {
     return true;
@@ -713,31 +706,31 @@ function sentByPeerMember(message: Pick<TeamMessage, "sender" | "from_member_id"
   if (senderKind === "host" || senderKind === "operator" || senderKind === "service") {
     return false;
   }
-  return message.from_member_id !== "host";
+  return message.sender_runtime_id !== "host";
 }
 
 /**
- * One message on a team run's handoff chain. `from_member_id` is `"host"` or a
+ * One message on a team run's handoff chain. `sender_runtime_id` is `"host"` or a
  * member run id; `deliveries` tracks per-recipient ack state (an unacknowledged
  * delivery is a needs-you signal for the operator).
  */
-export interface TeamMessage {
+export interface ProviderDispatchEnvelope {
   id: string;
   team_run_id?: string;
   /** Optional conversational link. Work remains the responsibility source. */
   work_id?: string | null;
-  origin_wave_id?: string | null;
+  source_plan_ref?: string | null;
   sender?: TeamActorRef | null;
-  from_member_id?: string;
+  sender_runtime_id?: string;
   recipients?: TeamRecipientRef[];
-  to_member_ids?: string[];
-  kind?: TeamMessageKind | string;
+  recipient_runtime_ids?: string[];
+  kind?: ProviderDispatchIntent | string;
   body?: string;
   correlation_id?: string | null;
   causation_id?: string | null;
-  response_intent?: TeamMessageResponseIntent | string | null;
+  response_intent?: ProviderResponseIntent | string | null;
   evidence_refs?: string[];
-  deliveries?: TeamMessageDelivery[];
+  deliveries?: ProviderDispatchAttempt[];
   created_at?: string;
 }
 
@@ -900,16 +893,6 @@ export interface TeamMemberCloseRequest {
   applied_at?: string | null;
 }
 
-export interface AgentMessageRoute {
-  id: string;
-  agent_message_id: string;
-  agent_member_id: string;
-  team_run_id: string;
-  member_run_id: string;
-  team_message_id: string;
-  routed_at: string;
-}
-
 /** One recorded action of a member run (tool call, progress note, …). */
 export interface MemberAction {
   id: string;
@@ -1015,11 +998,11 @@ export interface DashboardSnapshot {
   company_os?: CompanyOsSnapshotProjection;
   teams?: AgentTeam[];
   /** Optional direct projection for forward compatibility; current server
-   * authority is `company_os.durable_agent_members`. */
-  durable_agent_members?: DurableAgentMember[];
-  members?: AgentMember[];
+   * authority is `company_os.agent_members`. */
+  agent_members?: AgentMember[];
+  members?: ProviderLaunchProfile[];
   messages?: Message[];
-  events?: AgentEvent[];
+  events?: ProviderDispatchEvent[];
   evidence?: Evidence[];
   provider_child_threads?: ProviderChildThread[];
   /**
@@ -1041,7 +1024,7 @@ export interface DashboardSnapshot {
   /** Agent Team runs (team-console): host-orchestrated member groups. */
   team_runs?: TeamRun[];
   member_runs?: MemberRun[];
-  team_messages?: TeamMessage[];
+  team_messages?: ProviderDispatchEnvelope[];
   works?: Work[];
   work_events?: WorkEvent[];
   work_deliveries?: WorkDelivery[];
@@ -1051,7 +1034,6 @@ export interface DashboardSnapshot {
   node_daemon_leases?: NodeDaemonLease[];
   team_supervisor_leases?: TeamSupervisorLease[];
   team_member_close_requests?: TeamMemberCloseRequest[];
-  agent_message_routes?: AgentMessageRoute[];
   member_actions?: MemberAction[];
   pending_interactions?: PendingInteraction[];
   delegation_runs?: DelegationRun[];

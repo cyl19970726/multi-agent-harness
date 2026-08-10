@@ -1,0 +1,18 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://agent-harness.local/schemas/member-workspace-binding.schema.json","title":"MemberWorkspaceBinding",
+  "type":"object","additionalProperties":false,
+  "required":["id","project_binding_id","team_run_id","member_run_id","mode","ownership","canonical_root","lifecycle","version","created_by","created_at","updated_at"],
+  "properties":{
+    "id":{"type":"string","minLength":1},"project_binding_id":{"type":"string","minLength":1},"team_run_id":{"type":"string","minLength":1},"member_run_id":{"type":"string","minLength":1},"work_id":{"type":["string","null"],"minLength":1},
+    "mode":{"enum":["worktree","isolated_snapshot","shared_live","inherit"]},"ownership":{"enum":["managed","attached_external","shared_project"]},"canonical_root":{"type":"string","minLength":1},
+    "git_common_dir":{"type":["string","null"],"minLength":1},"base_ref":{"type":["string","null"],"minLength":1},"git_head":{"type":["string","null"],"minLength":1},"git_branch":{"type":["string","null"],"minLength":1},
+    "dirty_fingerprint":{"type":["string","null"],"minLength":1},"instruction_roots":{"$ref":"#/$defs/refs"},"skill_roots":{"$ref":"#/$defs/refs"},
+    "lifecycle":{"enum":["requested","preparing","ready","attached","dirty","conflicted","missing","archived","cleanup_blocked","removed"]},
+    "blocked_reason":{"type":["string","null"],"minLength":1},"attached_member_generation":{"type":["integer","null"],"minimum":1},"version":{"type":"integer","minimum":1},
+    "created_by":{"$ref":"#/$defs/actor"},"created_at":{"type":"string","minLength":1},"updated_at":{"type":"string","minLength":1}
+  },
+  "$defs":{
+    "actor":{"type":"object","additionalProperties":false,"required":["kind","id"],"properties":{"kind":{"enum":["human","agent_member","external","service"]},"id":{"type":"string","minLength":1}}},
+    "refs":{"type":"array","items":{"type":"string","minLength":1},"uniqueItems":true}
+  }
+}

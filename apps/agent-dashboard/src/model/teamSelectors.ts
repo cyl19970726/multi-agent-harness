@@ -6,8 +6,8 @@ import type {
   MemberRun,
   Mission,
   PendingInteraction,
-  TeamMessage,
-  TeamMessageDelivery,
+  ProviderDispatchEnvelope,
+  ProviderDispatchAttempt,
   TeamRun,
   TeamRunEvent,
   Wave,
@@ -43,7 +43,7 @@ export type ActivityOrder = "asc" | "desc";
 
 export interface TeamRunNeedsYou {
   /** @deprecated Conversation messages are not responsibility or review truth. */
-  approvals: TeamMessage[];
+  approvals: ProviderDispatchEnvelope[];
   waitingMembers: MemberRun[];
   blockedMembers: MemberRun[];
   /**
@@ -58,8 +58,8 @@ export interface TeamRunNeedsYou {
   workDeliveryPressure: WorkDelivery[];
   /** @deprecated Ordinary message delivery is conversation state, not operator work. */
   unacknowledgedDeliveries: Array<{
-    message: TeamMessage;
-    delivery: TeamMessageDelivery;
+    message: ProviderDispatchEnvelope;
+    delivery: ProviderDispatchAttempt;
   }>;
   total: number;
 }
@@ -72,7 +72,7 @@ export type StableTeamActivity =
       atMs: number;
       seq?: number;
       sourceMemberRunId?: string;
-      message: TeamMessage;
+      message: ProviderDispatchEnvelope;
     }
   | {
       id: string;
@@ -119,7 +119,7 @@ export interface TeamRunContext {
   attempts: TeamRun[];
   members: MemberRun[];
   memberById: Map<string, MemberRun>;
-  messages: TeamMessage[];
+  messages: ProviderDispatchEnvelope[];
   actions: MemberAction[];
   interactions: PendingInteraction[];
   delegations: DelegationRun[];
@@ -147,7 +147,7 @@ export interface MemberRunContext extends TeamRunContext {
   /** Compatibility alias for `eligibleReadyWorks`. */
   eligibleWorks: Work[];
   /** Messages which involve this member, oldest first. */
-  messagesForMember: TeamMessage[];
+  messagesForMember: ProviderDispatchEnvelope[];
   actionsForMember: MemberAction[];
   delegationsForMember: DelegationRun[];
   eventsForMember: TeamRunEvent[];
@@ -333,7 +333,7 @@ export function selectMemberRunContext(
 
   const messagesForMember = team.messages.filter(
     (message) =>
-      message.from_member_id === member.id || (message.to_member_ids ?? []).includes(member.id),
+      message.sender_runtime_id === member.id || (message.recipient_runtime_ids ?? []).includes(member.id),
   );
   const actionsForMember = team.actions.filter((action) => action.member_run_id === member.id);
   const delegationsForMember = team.delegations.filter(
@@ -383,7 +383,7 @@ export function selectMemberRunContext(
 /** First-class operator signals for a single attempt. */
 export function selectTeamRunNeedsYou(
   members: MemberRun[],
-  messages: TeamMessage[],
+  messages: ProviderDispatchEnvelope[],
   interactions: PendingInteraction[] = [],
   runStatus?: string | null,
   works: Work[] = [],
@@ -394,7 +394,7 @@ export function selectTeamRunNeedsYou(
   // responsibility from `kind=blocker|review_request`.
   void messages;
   const terminalRun = runStatus === "completed" || runStatus === "cancelled";
-  const approvals: TeamMessage[] = [];
+  const approvals: ProviderDispatchEnvelope[] = [];
   const waitingMembers: MemberRun[] = [];
   const unfinishedWorks = terminalRun
     ? sortWorks(works.filter((work) => !workIsTerminal(work)))
@@ -451,7 +451,7 @@ export function selectStableTeamActivity({
   workDeliveries = [],
   order = "asc",
 }: {
-  messages?: TeamMessage[];
+  messages?: ProviderDispatchEnvelope[];
   actions?: MemberAction[];
   events?: TeamRunEvent[];
   workEvents?: WorkEvent[];
@@ -477,7 +477,7 @@ export function selectStableTeamActivity({
       kind: "message" as const,
       at: message.created_at,
       atMs: parseTeamTimestamp(message.created_at),
-      sourceMemberRunId: message.from_member_id === "host" ? undefined : message.from_member_id,
+      sourceMemberRunId: message.sender_runtime_id === "host" ? undefined : message.sender_runtime_id,
       message,
     })),
     ...actions.map((action) => ({
@@ -542,7 +542,7 @@ function compareActivity(left: StableTeamActivity, right: StableTeamActivity): n
   return stableIdCompare(left.id, right.id);
 }
 
-function sortMessages(messages: TeamMessage[]): TeamMessage[] {
+function sortMessages(messages: ProviderDispatchEnvelope[]): ProviderDispatchEnvelope[] {
   return [...messages].sort(
     (left, right) =>
       parseTeamTimestamp(left.created_at) - parseTeamTimestamp(right.created_at) ||

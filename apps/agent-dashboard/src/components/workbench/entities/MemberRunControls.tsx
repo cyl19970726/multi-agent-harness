@@ -6,11 +6,11 @@ import { providerStackLine, memberModelLabel } from "@/lib/provider";
 import { Badge } from "@/components/ui/badge";
 import { Avatar } from "@/components/workbench/Avatar";
 import { StatusDot, type StatusTone } from "@/components/workbench/atoms";
-import type { AgentMember, MemberRun } from "@/types";
+import type { MemberRun } from "@/types";
 
 /**
  * A MemberRun is a one-attempt participation record within a TeamRun. It is
- * intentionally not rendered by StandingAgent controls: the cards below show
+ * intentionally not rendered by AgentMembership controls: the cards below show
  * run-scoped assignment, current action, and ephemeral live state only.
  */
 export function MemberRunMicro({ member, className }: { member: MemberRun; className?: string }) {
@@ -101,8 +101,8 @@ export function MemberRunPanel({
         {currentAction && <MemberFact label="Current action" value={currentAction} live />}
         {thinkingPreview && <MemberFact label="Thinking preview" value={thinkingPreview} live transient />}
         <MemberFact label="Native session" value={member.native_session?.native_session_id ?? "No session recorded"} mono />
-        <MemberFact label="Worktree override" value={member.worktree_ref ?? "None"} mono />
-        <MemberFact label="Actual cwd" value={member.workspace_snapshot?.cwd ?? "Not captured (legacy run)"} mono title="Runs started before workspace capture was introduced did not record their cwd. Reopen the member to capture it." />
+        <MemberFact label="Worktree override" value={member.provider_cwd_hint ?? "None"} mono />
+        <MemberFact label="Actual cwd" value={member.provider_environment_observation?.cwd ?? "Not captured (legacy run)"} mono title="Runs started before workspace capture was introduced did not record their cwd. Reopen the member to capture it." />
       </dl>
       <div className="mt-3 flex flex-wrap gap-1.5">
         {outputCount !== undefined && <Badge tone="muted">{outputCount} outputs</Badge>}
@@ -112,45 +112,6 @@ export function MemberRunPanel({
       {onOpen && <button type="button" onClick={onOpen} className="mt-3 inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline">Open member <ChevronRight className="size-3.5" /></button>}
     </section>
   );
-}
-
-/**
- * StandingAgent is a durable capability/runtime identity. Its controls share
- * visual vocabulary with MemberRun, but intentionally omit Wave assignment,
- * worktree ownership, and one-attempt output claims.
- */
-export function StandingAgentMicro({ agent, className }: { agent: AgentMember; className?: string }) {
-  const tone = standingAgentTone(agent.status ?? agent.runtime_status);
-  return <span className={cn("inline-flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground", className)}><StatusDot tone={tone} pulse={tone === "running"} /><span className="min-w-0 truncate text-foreground">{agent.name ?? agent.id}</span></span>;
-}
-
-export function StandingAgentCompact({
-  agent,
-  activeAssignmentCount,
-  onOpen,
-  className,
-}: {
-  agent: AgentMember;
-  activeAssignmentCount?: number;
-  onOpen?: () => void;
-  className?: string;
-}) {
-  const tone = standingAgentTone(agent.status ?? agent.runtime_status);
-  const content = (
-    <>
-      <div className="flex min-w-0 items-start gap-2.5">
-        <Avatar name={agent.name ?? agent.id} tone={tone} />
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-1.5"><span className="truncate text-[13px] font-semibold text-foreground">{agent.name ?? agent.id}</span><Badge tone={tone}>{agent.runtime_status ?? agent.status ?? "unknown"}</Badge></div>
-          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{agent.role ?? "agent"} · {providerStackLine(agent.provider, agent.native_session?.execution_mode, agent.model)}</p>
-        </div>
-        {onOpen && <ChevronRight className="mt-1 size-4 shrink-0 text-muted-foreground" />}
-      </div>
-      <div className="mt-2.5 flex flex-wrap gap-1.5 border-t border-border/60 pt-2"><Badge tone="muted">standing agent</Badge>{activeAssignmentCount !== undefined && <Badge tone="muted">{activeAssignmentCount} active assignments</Badge>}</div>
-    </>
-  );
-  const baseClass = cn("block w-full rounded-md border border-border bg-card px-3 py-2.5 text-left transition-colors", onOpen && "hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", className);
-  return onOpen ? <button type="button" onClick={onOpen} className={baseClass}>{content}</button> : <div className={baseClass}>{content}</div>;
 }
 
 function MemberLine({ icon, label, value, live = false, transient = false }: { icon: ReactNode; label: string; value: string; live?: boolean; transient?: boolean }) {
@@ -168,12 +129,4 @@ function memberRunTone(status?: string | null): StatusTone {
   if (status === "running") return "running";
   if (status === "queued" || status === "starting") return "info";
   return "idle";
-}
-
-function standingAgentTone(status?: string | null): StatusTone {
-  if (status === "running" || status === "active") return "running";
-  if (status === "failed" || status === "stale" || status === "blocked") return "bad";
-  if (status === "ready" || status === "available") return "good";
-  if (status === "idle") return "idle";
-  return "info";
 }

@@ -47,7 +47,7 @@ test("member survives an empty mailbox and consumes a later message", async () =
   const { runner, of } = harness();
   const done = runner.start();
 
-  runner.deliver({ id: "w1", kind: "work", from_member_id: "host", body: "build it" });
+  runner.deliver({ id: "w1", kind: "work", sender_runtime_id: "host", body: "build it" });
   await settled();
 
   // The queue is now empty. Under the current batch design the member would
@@ -57,7 +57,7 @@ test("member survives an empty mailbox and consumes a later message", async () =
   assert.equal(of("member_closed").length, 0);
 
   // A message arriving after the lull still has a recipient.
-  runner.deliver({ id: "m2", kind: "message", from_member_id: "host", body: "also do this" });
+  runner.deliver({ id: "m2", kind: "message", sender_runtime_id: "host", body: "also do this" });
   await settled();
 
   assert.equal(of("turn_complete").length, 2, "both messages produced a turn");
@@ -85,7 +85,7 @@ test("a provider API failure is not reported as an ordinary successful turn", as
   });
   const done = runner.start();
 
-  runner.deliver({ id: "w1", kind: "work", from_member_id: "host", body: "build it" });
+  runner.deliver({ id: "w1", kind: "work", sender_runtime_id: "host", body: "build it" });
   await settled();
 
   const turns = events.filter((e) => e.event === "turn_complete");
@@ -113,7 +113,7 @@ test("a provider API failure is not reported as an ordinary successful turn", as
 test("only the Host ends the member, and the reason is recorded", async () => {
   const { runner, of } = harness();
   const done = runner.start();
-  runner.deliver({ id: "w1", kind: "work", from_member_id: "host", body: "x" });
+  runner.deliver({ id: "w1", kind: "work", sender_runtime_id: "host", body: "x" });
   await settled();
 
   runner.close("run_torn_down");
@@ -128,9 +128,9 @@ test("only the Host ends the member, and the reason is recorded", async () => {
 test("native session is bound once and registered under the TeamRun tag", async () => {
   const { runner, sdk, of } = harness();
   const done = runner.start();
-  runner.deliver({ id: "w1", kind: "work", from_member_id: "host", body: "x" });
+  runner.deliver({ id: "w1", kind: "work", sender_runtime_id: "host", body: "x" });
   await settled();
-  runner.deliver({ id: "m2", kind: "message", from_member_id: "host", body: "y" });
+  runner.deliver({ id: "m2", kind: "message", sender_runtime_id: "host", body: "y" });
   await settled();
   runner.close("done");
   await done;
@@ -156,7 +156,7 @@ test("undelivered messages are reported rather than silently dropped", async () 
   await settled();
 
   // Two arrive while the member is mid-turn on nothing; close before drain.
-  runner.mailbox.push({ id: "m9", kind: "message", from_member_id: "peer", body: "late" });
+  runner.mailbox.push({ id: "m9", kind: "message", sender_runtime_id: "peer", body: "late" });
   runner.close("closed_by_host");
   await done;
 
@@ -276,7 +276,7 @@ test("planning messages remain ordinary mailbox conversation", async () => {
   runner.deliver({
     id: "p1",
     kind: "message",
-    from_member_id: "host",
+    sender_runtime_id: "host",
     correlation_id: "corr-1",
     body: "Return a Markdown plan first. Do not execute yet.",
   });
@@ -284,7 +284,7 @@ test("planning messages remain ordinary mailbox conversation", async () => {
   runner.deliver({
     id: "p2",
     kind: "message",
-    from_member_id: "host",
+    sender_runtime_id: "host",
     correlation_id: "corr-1",
     body: "Plan reviewed. Revise item 2, then execute.",
   });
@@ -304,7 +304,7 @@ test("the member survives an interrupt and consumes the next message", async () 
   const { runner, of } = harness();
   const done = runner.start();
 
-  runner.deliver({ id: "w1", kind: "work", from_member_id: "host", body: "long task" });
+  runner.deliver({ id: "w1", kind: "work", sender_runtime_id: "host", body: "long task" });
   await settled();
 
   await runner.interrupt();
@@ -316,7 +316,7 @@ test("the member survives an interrupt and consumes the next message", async () 
 
   // The load-bearing assertion: the member is still reachable afterwards.
   const before = of("turn_complete").length;
-  runner.deliver({ id: "m2", kind: "message", from_member_id: "host", body: "still there?" });
+  runner.deliver({ id: "m2", kind: "message", sender_runtime_id: "host", body: "still there?" });
   await settled();
   assert.ok(of("turn_complete").length > before, "post-interrupt delivery must land");
 
@@ -328,7 +328,7 @@ test("the member survives an interrupt and consumes the next message", async () 
 test("the resumed query continues the same native session", async () => {
   const { runner, sdk, of } = harness();
   const done = runner.start();
-  runner.deliver({ id: "w1", kind: "work", from_member_id: "host", body: "x" });
+  runner.deliver({ id: "w1", kind: "work", sender_runtime_id: "host", body: "x" });
   await settled();
   const bound = of("session_bound")[0].data.sessionId;
 

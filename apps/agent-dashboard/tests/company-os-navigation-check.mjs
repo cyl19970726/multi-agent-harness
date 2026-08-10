@@ -73,7 +73,7 @@ async function main() {
     const cases = [
       ["?surface=docs&document=document-1", "docs", "documentId", "document-1"],
       ["?surface=work&teamWork=work-native-1", "work", "teamWorkId", "work-native-1"],
-      ["?surface=organization&agent=standing-1", "organization", "standingAgentId", "standing-1"],
+      ["?surface=organization&agent=membership-1", "organization", "agentMembershipId", "membership-1"],
       ["?surface=approvals&approval=approval-1", "approvals", "approvalId", "approval-1"],
       ["?surface=docs&module=module-1", "docs", "moduleId", "module-1"],
     ];

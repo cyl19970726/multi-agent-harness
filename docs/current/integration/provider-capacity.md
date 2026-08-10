@@ -197,7 +197,7 @@ Work submission or `completed` action no Member authored.
 
 Both a classified provider error and an empty final report record a failed
 `provider_error` MemberAction and no Work submission. The MemberRun stays
-reconstructable: MemberRun id, Standing Agent link, Work owner/version, Workspace
+reconstructable: MemberRun id, Agent Membership link, Work owner/version, Workspace
 snapshot, and the resumable `NativeSessionRef` are all preserved, so the Host
 can re-deliver rather than re-create.
 

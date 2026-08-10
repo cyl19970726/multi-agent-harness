@@ -49,7 +49,7 @@ function createFixtureSource(runtime) {
     ["view:trademark-finance", [{ id: "commitment-1", kind: "Commitment", amount: 3000, currency: "CNY", status: "pending" }]],
     ["view:trademark-participants", [
       { id: "human:brand-owner", name: "Brand Owner", kind: "human", responsibility: "accountable" },
-      { id: "agent:trademark", name: "Trademark Agent", kind: "standing_agent", responsibility: "assigned" },
+      { id: "agent:trademark", name: "Trademark Agent", kind: "agent_membership", responsibility: "assigned" },
       { id: "external:lawyer", name: "External Lawyer", kind: "external", responsibility: "legal review" },
     ]],
   ]);
@@ -133,7 +133,7 @@ async function main() {
     });
     const result = await dispatcher.dispatch({
       command: "store.record.write",
-      actor: { id: "agent:trademark", kind: "standing_agent" },
+      actor: { id: "agent:trademark", kind: "agent_membership" },
     });
     assert.deepEqual([result.status, result.code], ["denied", "UNDECLARED_ACTION"]);
     assert.equal(deps.calls.length, 0);
@@ -177,7 +177,7 @@ async function main() {
       policy: deps.policy,
       audit,
     });
-    const actor = { id: "agent:finance", kind: "standing_agent" };
+    const actor = { id: "agent:finance", kind: "agent_membership" };
     const missing = await dispatcher.dispatch({ command: "finance.commitment.authorize", actor });
     assert.deepEqual([missing.status, missing.code], ["denied", "HUMAN_APPROVAL_REQUIRED"]);
     const agentApproval = await dispatcher.dispatch({
@@ -186,7 +186,7 @@ async function main() {
       approval: {
         id: "approval-agent",
         status: "approved",
-        decidedBy: { id: "agent:finance", kind: "standing_agent" },
+        decidedBy: { id: "agent:finance", kind: "agent_membership" },
       },
     });
     assert.deepEqual([agentApproval.status, agentApproval.code], ["denied", "HUMAN_APPROVAL_REQUIRED"]);
@@ -283,7 +283,7 @@ async function main() {
     });
     const result = await dispatcher.dispatch({
       command: "finance.commitment.request",
-      actor: { id: "agent:finance", kind: "standing_agent" },
+      actor: { id: "agent:finance", kind: "agent_membership" },
     });
     assert.deepEqual([result.status, result.code], ["denied", "INVALID_COMMAND_EFFECT"]);
     pass("a Commitment command cannot report an undeclared Payment effect as accepted");

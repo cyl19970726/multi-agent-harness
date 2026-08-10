@@ -5,7 +5,7 @@ They intentionally do not import, project, or convert legacy Goal/Task records.
 
 | File | Canonical records |
 | --- | --- |
-| `actors.schema.json` | ActorRef, HumanMember, StandingAgent, ExternalParticipant, ServiceActor, OrgUnit, OrganizationMembership |
+| `actors.schema.json` | ActorRef, HumanMember, AgentMembership, ExternalParticipant, ServiceActor, OrgUnit, OrganizationMembership |
 | `knowledge.schema.json` | Document, Block, TypedRecord, Relation, View, BusinessModule |
 | `work.schema.json` | Milestone and Approval references to authoritative TeamWork |
 | `finance.schema.json` | Commitment, Payment |

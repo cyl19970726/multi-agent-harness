@@ -71,7 +71,7 @@ const snapshot = {
   members: [], messages: [], events: [], provider_child_threads: [],
   workflow_runs: [], workflow_steps: [], workflow_patches: [],
   workflow_artifact_manifests: [], team_supervisor_leases: [],
-  team_member_close_requests: [], agent_message_routes: [],
+  team_member_close_requests: [],
   pending_interactions: [], company_os: {},
 };
 const teamRunId = snapshot.team_runs.find((run) => run.member_run_ids?.length)?.id;
@@ -346,7 +346,11 @@ try {
         `${viewport.label}: Activity conversation begins inside the first viewport`,
       );
     } else {
-      const requiredRows = viewport.mobile ? 1 : 3;
+      // Canonical messages carry explicit response-intent badges rather than
+      // compact legacy kind labels. On the 1000px desktop capture two complete
+      // durable rows are the honest first-viewport density; the taller tablet
+      // capture must still expose three.
+      const requiredRows = viewport.mobile ? 1 : viewport.height >= 1100 ? 3 : 2;
       check(
         activity.rowsAboveFold >= requiredRows,
         `${viewport.label}: Activity shows >= ${requiredRows} conversation rows above the fold (${activity.rowsAboveFold} of ${activity.conversationRows})`,

@@ -161,18 +161,15 @@ adds no new commands, only a discipline for the ones already listed.
   │ Worktree convention (OUTSIDE repo)  │
   │ Other members' lanes (don't collide) │
   ├─ Delivery Requirements ─────────────┤
-  │ 1. Work in the workspace assigned    │
-  │    (see Work.workspace — already     │
-  │     created by `work workspace       │
-  │     ensure`)                          │
-  │ 2. Follow the declared delivery     │
-  │    criteria and gates               │
+  │ 1. Use the exact WorkspaceBinding    │
+  │    assigned to this MemberRun        │
+  │ 2. Follow delivery criteria and the  │
+  │    candidate-scoped requirements     │
   │ 3. Submit exact durable refs        │
   │ 4. Wait for Host review             │
-  ├─ Gates ────────────────────────────┤
-  │ Verification gates that must pass   │
-  │ before Host acceptance (see below)  │
-  │ github-pr / code-review / etc.      │
+  ├─ Verification ─────────────────────┤
+  │ Exact GateRequirements, evaluator   │
+  │ identity and evidence expectations  │
   ├─ Evidence ──────────────────────────┤
   │ What counts as done                 │
   │ Required artifact_refs / check_refs  │
@@ -192,59 +189,33 @@ adds no new commands, only a discipline for the ones already listed.
 
 ## Workspace Management
 
-Declare where a Work executes. The harness creates the workspace before
-the first member starts and cleans it up on completion (when
-`auto_cleanup` is true, the default).
+Workspace placement belongs to `MemberWorkspaceBinding`, not Work. Provision an
+absolute workspace outside the repository through the canonical member-trust
+service and bind it to the exact AgentMember, MemberRun, TeamRun, Work and
+Execution Space.
 
-```bash
-# Code work: isolated worktree (most common)
-harness team-run work create --title "implement login" \
-  --team-run-id <team-run-id> \
-  --context "Implement login only under the member's declared owned paths." \
-  --completion-criteria "Login tests pass and the merged PR contains only the declared paths." \
-  --owner-member-run-id <implementer-member-run-id> \
-  --claim-mode host_assign \
-  --worktree ../repo-feat-login \
-  --gate github-pr:require_merged=true \
-  --gate code-review:strategy=peer,reviewer=<critic-member-run-id>
+The lifecycle is `requested → provisioning → ready → attached → archived →
+removed`. Every transition uses CAS and a safety proof. Git workspaces must
+prove the expected repository identity, base revision and clean/dirty policy;
+directory workspaces must reject relative paths, parent traversal, symlink
+escape and cross-project placement. Cleanup is explicit and cannot traverse
+links or remove a dirty/unverified workspace.
 
-# Exploration work: plain directory, keep after done
-harness team-run work create --title "research async runtime" \
-  --team-run-id <team-run-id> \
-  --context "Compare the supported async runtimes and record source links." \
-  --completion-criteria "The comparison names tradeoffs, a recommendation, and its sources." \
-  --claim-mode team_claim \
-  --eligible-member-id <researcher-member-run-id> \
-  --workspace-kind dir --workspace-path ../research-runtime \
-  --workspace-no-cleanup
-
-# Explicit lifecycle management
-firm team-run work workspace ensure --work-id <id>
-firm team-run work workspace cleanup --work-id <id>
-```
-
-Workspace is declared at Work creation time and available on
-`Work.workspace`. When a member claims the Work, the harness populates
-`MemberRun.worktree_ref` and injects the path as cwd via
-`LaunchSpec.workspace`.
-
-`--owner-member-run-id` is the Work assignee for `host_assign`. Owned paths are
-a MemberRun boundary, configured when forming the TeamRun (for example with
-`team-run create --member name:role:provider@path` or
-`--member-owned-path name:path`); `team-run work create` has no
-`--owned-path` flag. For code work, keep the Work workspace inside that member
-boundary and name the reviewer in the `code-review` gate.
-
+The supervisor may start provider execution only after the binding is Ready or
+Attached and its identity/generation still matches the canonical MemberRun.
+Never infer placement from process cwd or from prose in Work context.
 ## Create And Allocate Works
 
-List and inspect the board before allocating new work:
+List and inspect the board before allocating new Work:
 
 ```bash
 harness team-run work list --team-run-id <team-run-id>
 harness team-run work show --work-id <work-id>
 ```
 
-Create a Work with host-assigned ownership:
+Create one bounded responsibility with explicit context, completion criteria,
+owner or claim pool, prerequisite Work ids and a stable idempotency key. Do not
+put verification plugins or filesystem placement inside the Work row.
 
 ```bash
 harness team-run work create \
@@ -257,84 +228,18 @@ harness team-run work create \
   --idempotency-key <stable-command-key>
 ```
 
-Declare verification gates with `--gate` (repeatable). Declared gates are an
-invariant of the Store-managed `accept_work` operation: that typed operation
-evaluates them and exposes no waiver flag. Gates are automatically injected
-into the Work context so the Member sees what must pass before acceptance.
-
-Gate declarations are an open persistence contract with a closed default trust
-set. Every plugin name must be non-empty and every config must be a JSON object;
-old wire rows that omit config normalize to `{}`. Exact duplicate GateSpecs and
-more than one `code-review` gate are rejected. The four built-ins have typed
-configs, and `code-review` always requires `strategy=peer|self|host`. A custom
-GateSpec may be persisted, but the default registry and default Store acceptance
-fail it as unknown. Only an embedder that explicitly supplies a custom registry
-can evaluate its custom plugin; do not mistake persistence for trusted
-registration.
-
-```bash
-# Code work requiring PR merge + CI pass
-harness team-run work create \
-  --team-run-id <team-run-id> \
-  --title "implement login" \
-  --context "..." --completion-criteria "..." \
-  --owner-member-run-id <implementer-member-run-id> \
-  --claim-mode host_assign \
-  --worktree ../repo-feat-login \
-  --gate github-pr:require_merged=true,require_ci_pass=true \
-  --gate code-review:strategy=peer,reviewer=<critic-member-run-id> \
-  --gate check-pass \
-  --gate artifact-exists:paths=src/auth/mod.rs
-
-# Exploration work -- no review gate needed
-harness team-run work create \
-  --team-run-id <team-run-id> \
-  --title "research async runtime options" \
-  --context "..." --completion-criteria "..." \
-  --gate artifact-exists:paths=docs/research/runtime-comparison.md
-```
-
-Empty `gates` (or omitting `--gate`) preserves the manual-accept
-behavior — the Host reviews and accepts without automated checks.
-
-Create a claimable shared-pool Work:
-
-```bash
-harness team-run work create \
-  --team-run-id <team-run-id> \
-  --title "<ready responsibility>" \
-  --context "<Markdown context>" \
-  --completion-criteria "<observable acceptance criteria>" \
-  --claim-mode team_claim \
-  --eligible-member-id <member-run-id-a> \
-  --eligible-member-id <member-run-id-b> \
-  --idempotency-key <stable-command-key>
-```
+Use `MemberWorkspaceBinding` for execution placement. Use
+`WorkModuleBinding` for reusable process bundles, and derive explicit
+candidate-scoped `GateRequirement` rows from the bound Module or add direct
+requirements. Evaluations and waivers are separate durable records; Work itself
+remains the simple responsibility atom.
 
 Empty `eligible_member_ids` means every active Member may claim. Use
-`--prerequisite-work-id` only for minimal readiness; do not encode conditional paths,
-loops, conditions, retries, or a general Task Graph.
-
-An idle eligible Member may be woken from the shared board without creating a
-WorkDelivery or TeamMessage. The wake is only a discovery hint; responsibility
-begins at the winning atomic `claimed` WorkEvent. Active-work continuation is
-restricted to `in_progress`: never repeatedly wake `review`, `blocked`, or
-terminal Work.
-
-Assign an existing open Work with optimistic concurrency:
-
-```bash
-harness team-run work assign \
-  --work-id <work-id> \
-  --member-run-id <member-run-id> \
-  --expected-version <latest-version> \
-  --idempotency-key <stable-command-key>
-```
-
-Assignment changes owner and emits WorkDelivery; it is not a Message. An idle
-runtime may be woken at its reviewed delivery boundary. A busy runtime receives
-the Work at the next safe boundary. Never silently interrupt active work.
-
+`prerequisite_work_ids` only for minimal readiness, not as a general Task
+Graph. Assignment changes owner and creates a canonical WorkDelivery; it is not
+a Message. The runtime claims the exact delivery under supervisor and MemberRun
+generation fences, then records a provider receipt before considering it
+received.
 ## Use Messages Only For Conversation
 
 Start a Work-linked conversation:
@@ -375,111 +280,33 @@ otherwise send a queued Message for the next safe boundary.
 
 ## Review Work Explicitly
 
-**Review discipline.** Before issuing `request-changes`, verify the claimed
-gap against the current target code — not against memory or review expectation
-alone. A Member's rebuttal backed by current-code evidence is legitimate and
-must be checked; do not dismiss it without re-verifying.
+Provider completion and conversational updates never submit or accept Work. The
+Member submits one canonical Result `WorkReport` for the exact Work revision and
+Candidate fingerprint. That report carries the result, evidence refs, findings,
+difficulties, residual risks, and failure analysis when applicable; creating it
+atomically moves an active Work into Review.
 
-Provider completion and conversational updates never submit or accept Work.
-When a Member moves Work to `review`, inspect the required result summary plus
-the exact durable artifact/check refs carried by that current candidate,
-changed files, tests, and native session that its completion criteria and risk
-require. `artifact-exists` and `check-pass` only compare configured names with
-the candidate's `artifact_refs` and `check_refs`; they do not inspect files,
-verify truth, or rerun commands. Empty arrays are valid only when no declared
-gate or completion criterion requires such a reference.
+Verification is candidate-scoped. The Host creates explicit
+`GateRequirement` rows, evaluators append exact `GateEvaluation` rows, and a
+waiver is valid only when its authority, scope, expiry and justification match
+the current requirement set. Integration-plan `WorkModuleBinding` rows freeze
+the module version and config that produced the requirements. A stale report,
+Candidate fingerprint, requirement-set fingerprint, evaluation, waiver or Work
+revision must fail closed with zero acceptance side effects.
 
-A legacy unbound `Review` may remain visible for history, but it cannot satisfy
-a `code-review` gate. Gate matching requires a trusted code Review bound to the
-exact Work id, current Work version, declared strategy, and required reviewer
-identity. The only strategies are `peer`, `self`, and `host`; when no code
-review is required, omit the `code-review` gate rather than declaring `none`.
+Before accepting, independently inspect the current Candidate, rerun the checks
+required by its risk, and verify the canonical Result evidence. Then choose
+exactly one:
 
-Trusted Work Review writes preserve audit identity separately from authority:
-`performed_by_actor` records the actor attribution supplied through the trusted
-caller context, and `authority_actor` records the authority exercised when
-distinct. These Store contexts are trusted caller inputs, not an authentication
-mechanism. Peer/self reviews are written by
-the bound MemberRun. Host reviews always use the fixed `Host/host` authority and
-persist `reviewer_agent_id=host`; CLI `--actor` and HTTP `actor_id` change only
-performer attribution and cannot impersonate Host authority or reviewer
-identity.
+- request changes on the current Work revision with a specific reason; or
+- call canonical `AcceptWork` through `member-trust mutate`, naming the exact
+  Team, Work, Result report and Candidate fingerprint.
 
-Every bound Review names a positive Work version (`reviewed_work_version > 0`).
-The Review ledger is append-only and every `Review.id` is globally unique across
-its complete history; generic and Work-bound writers both reject id reuse.
-
-Treat project-derived Review ledgers as untrusted during Execution Space
-migration. Before creating the target,
-`space migrate-from-project` preflights the complete source: every source row
-must deserialize as `Review` and pass validation, then every row with binding
-fields is stripped and must deserialize and validate again. A missing or
-unknown field, invalid null, partial binding, or any other invalid row fails the
-whole migration closed without partial target writes. Only after that preflight
-does migration preserve stripped rows as readable historical unbound evidence;
-they cannot pass the gate. The migration manifest records their count as
-`downgraded_bound_reviews`. Inspect that count rather than trusting
-source-ledger binding claims.
-
-Migration is new-target only. Any existing target path is rejected, regardless
-of type, and the operator must choose a new `--id`; migration never replaces an
-existing target. `--force` is retired and fails before source, target, or
-registry mutation.
-
-The migration holds the source `HarnessStore` exclusive migration guard, which
-uses the same `.store.lock` as ordinary Store writers, from the first source
-preflight read through staging, verification, and publish. Ordinary cooperating
-Store writers therefore block until the consistent snapshot has been published.
-Do not call a source Store writer while the guard is held because that would
-attempt to re-enter the same lock.
-
-It builds and verifies a staging directory beside the absent target, rechecks
-that absence under the execution-space publish lock, and publishes with one
-same-parent rename. The manifest is published with
-`registration.status=pending` and a
-`registration.recovery_command` of `harness space switch <id>`. Successful
-registration and activation best-effort change the status to `complete`. If
-that later step fails, the fully verified target remains in place with `pending` status; follow
-the public switch command to recover registration and activation. Do not expect
-activation rollback, and do not describe target publication plus registry/
-`ACTIVE_SPACE` updates as one crash-atomic transaction.
-
-A successful initial registration or recovery switch best-effort reconciles the
-matching manifest from `pending` to `complete`. A manifest read, parse, or
-write-back failure emits a warning but does not undo or report failure for a
-registry/`ACTIVE_SPACE` update that already succeeded.
-
-This contract assumes a trusted local filesystem and cooperating writers that
-honor Store/registry locks. Path, type, and symlink checks are best effort; they
-do not claim protection against malicious out-of-band root or path replacement.
-
-**Gate-aware review.** If the Work has declared gates, run `work check-gates`
-to see which gates pass and which are blocked:
-
-```bash
-harness team-run work check-gates --work-id <work-id>
-```
-
-After `work poll-github-ci` refreshes CI snapshots, the summary includes
-`gate_ready` — a list of Work ids whose all declared gates now pass. These are
-ready for acceptance.
-
-Then choose exactly one:
-
-```bash
-harness team-run work request-changes \
-  --work-id <work-id> --expected-version <latest-version> \
-  --reason "<specific required change>" \
-  --idempotency-key <stable-command-key>
-
-# The Store evaluates every declared gate before acceptance.
-harness team-run work accept \
-  --work-id <work-id> --expected-version <latest-version> \
-  --idempotency-key <stable-command-key>
-```
-
-Host acceptance moves Work to `done`. A reviewer Member may recommend but cannot impersonate the Host's acceptance authority. Submission moves Work to `review`, not `done`; only explicit Host acceptance moves Work to `done` — see shared hard invariants §5.
-
+Canonical acceptance rereads all of those records under one Store writer lock
+and commits the accepted Work revision through the canonical operation ledger.
+A reviewer may recommend a decision but cannot impersonate Host authority.
+Submission moves Work to Review; only exact Host acceptance closes it as
+accepted.
 ## Handle Lifecycle And Failure
 
 ### Wake-Latency Expectations
@@ -632,7 +459,7 @@ invariants §7.
   relations connect Document, Milestone, Module, Approval, Finance, Mission, or
   external delivery.
 
-The current separate StandingAgent record is a compatibility implementation; new target architecture must not add another durable agent identity. The current deploy/Host loop in this skill works with both the compatibility and target models.
+Company organization membership projects the same canonical AgentMember ActorRef; no second durable agent identity or execution join exists.
 
 ## Collaboration Envelope
 

@@ -176,7 +176,7 @@ Recommended mapping:
 | XML teammate wrapper | harness message envelope in provider turn input |
 | busy queue | member queue policy |
 | idle notification | runtime/member status event |
-| SubagentStart/Stop hooks | lifecycle `AgentEvent` inputs |
+| SubagentStart/Stop hooks | lifecycle event inputs |
 
 ## Design Warnings
 

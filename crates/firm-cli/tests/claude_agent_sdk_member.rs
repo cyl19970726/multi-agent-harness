@@ -1,11 +1,11 @@
 //! Deterministic coverage for the `claude_agent_sdk` execution mode.
 //!
 //! The point under test is ADR 0037 §Acceptance item 6 — "the Host revises or
-//! advances while another member continues on the same `MemberRun` and native
+//! advances while another member continues on the same `ProviderRuntimeProjection` and native
 //! session" — which has no coverage anywhere else in the repo.
 //!
 //! `claude_cli` cannot satisfy it by construction: its loop ends the member the
-//! instant `queued_messages_for` returns empty, so a TeamMessage that arrives a
+//! instant `queued_messages_for` returns empty, so a ProviderDispatchEnvelope that arrives a
 //! moment later has no recipient. Reproducing "arrives *after* the queue was
 //! already empty" as a wall-clock race would be flaky, so the fake runner does
 //! it itself: it emits `turn_complete`, and only then shells out to
@@ -84,7 +84,7 @@ enum FakeTurnShape {
 /// Write a fake runner speaking the NDJSON protocol in
 /// `apps/claude-member-runner/src/protocol.mjs`.
 ///
-/// `follow_up_after_first_turn` makes it send one TeamMessage back into the
+/// `follow_up_after_first_turn` makes it send one ProviderDispatchEnvelope back into the
 /// ledger *after* reporting turn 1, which is the case the mode exists for.
 /// `shape` selects the turn outcome: a normal report, the classified SDK error
 /// result (issue #293 — subtype stays "success" while `isError` carries the
@@ -370,7 +370,7 @@ fn current_company_does_not_capture_claude_member_session_or_desktop_target() {
             .join(project_id)
             .join("member_runs.jsonl")
             .is_file(),
-        "MemberRun and its native-session binding remain in the Execution Space"
+        "ProviderRuntimeProjection and its native-session binding remain in the Execution Space"
     );
 }
 
@@ -660,7 +660,7 @@ fn a_silent_provider_turn_is_a_provider_error_and_stays_reconstructable() {
         serde_json::json!(true)
     );
     assert!(
-        member_run["workspace_snapshot"]["cwd"].is_string(),
+        member_run["provider_environment_observation"]["cwd"].is_string(),
         "the Workspace must remain reconstructable: {member_run}"
     );
     // The durable Work is still joinable from the member and remains open for
@@ -713,7 +713,7 @@ fn agent_sdk_member_binds_one_native_session_and_turn_completion_is_idle() {
     );
     assert!(
         body.contains("\"status\": \"idle\""),
-        "provider turn completion must not terminalize the MemberRun.\n{body}"
+        "provider turn completion must not terminalize the ProviderRuntimeProjection.\n{body}"
     );
 }
 

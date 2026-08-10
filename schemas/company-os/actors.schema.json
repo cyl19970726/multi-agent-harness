@@ -4,7 +4,6 @@
   "title": "Company OS actors",
   "oneOf": [
     { "$ref": "#/$defs/humanMember" },
-    { "$ref": "#/$defs/standingAgent" },
     { "$ref": "#/$defs/externalParticipant" },
     { "$ref": "#/$defs/serviceActor" },
     { "$ref": "#/$defs/orgUnit" },
@@ -58,40 +57,6 @@
         "responsibility_summary": { "$ref": "#/$defs/nonEmptyString" },
         "permission_policy_refs": { "$ref": "#/$defs/stringRefs" },
         "authority_policy_refs": { "$ref": "#/$defs/stringRefs" },
-        "created_at": { "$ref": "#/$defs/nonEmptyString" },
-        "updated_at": { "$ref": "#/$defs/nonEmptyString" }
-      }
-    },
-    "standingAgent": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "id", "display_name", "role", "status", "availability",
-        "assignment_capacity", "exclusive_assignment_ref", "membership_refs",
-        "responsibility_summary", "capability_refs", "permission_policy_refs",
-        "runtime_refs", "native_session_refs", "created_at", "updated_at"
-      ],
-      "properties": {
-        "id": { "$ref": "#/$defs/nonEmptyString" },
-        "display_name": { "$ref": "#/$defs/nonEmptyString" },
-        "role": { "$ref": "#/$defs/nonEmptyString" },
-        "execution_agent_member_ref": { "type": ["string", "null"], "minLength": 1 },
-        "status": { "$ref": "#/$defs/memberStatus" },
-        "availability": { "$ref": "#/$defs/availability" },
-        "assignment_capacity": { "type": ["integer", "null"], "minimum": 1 },
-        "exclusive_assignment_ref": { "type": ["string", "null"], "minLength": 1 },
-        "membership_refs": { "$ref": "#/$defs/stringRefs" },
-        "responsibility_summary": { "$ref": "#/$defs/nonEmptyString" },
-        "capability_refs": { "$ref": "#/$defs/stringRefs" },
-        "system_prompt_ref": { "type": ["string", "null"], "minLength": 1 },
-        "tool_refs": { "$ref": "#/$defs/stringRefs" },
-        "skill_refs": { "$ref": "#/$defs/stringRefs" },
-        "maintained_document_refs": { "$ref": "#/$defs/stringRefs" },
-        "accepted_work_type_refs": { "$ref": "#/$defs/stringRefs" },
-        "escalation_policy_ref": { "type": ["string", "null"], "minLength": 1 },
-        "permission_policy_refs": { "$ref": "#/$defs/stringRefs" },
-        "runtime_refs": { "$ref": "#/$defs/stringRefs" },
-        "native_session_refs": { "$ref": "#/$defs/stringRefs" },
         "created_at": { "$ref": "#/$defs/nonEmptyString" },
         "updated_at": { "$ref": "#/$defs/nonEmptyString" }
       }

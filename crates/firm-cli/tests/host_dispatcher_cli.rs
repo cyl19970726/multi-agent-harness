@@ -78,8 +78,6 @@ fn dispatch_host_resumes_exact_kimi_session_and_releases_lease() {
                 artifact_refs: Vec::new(),
                 check_refs: Vec::new(),
                 github_links: Vec::new(),
-                gates: Vec::new(),
-                workspace: None,
                 version: 0,
                 created_at: String::new(),
                 updated_at: String::new(),

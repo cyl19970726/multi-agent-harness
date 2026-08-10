@@ -120,7 +120,7 @@ submission, and acceptance as separate facts.
 | Member state | lifecycle, provider/model, latest explicit action, heartbeat, queue pressure |
 | Supervisor | current lease generation, owner/heartbeat, routed-control health, reconnect/close latch |
 | Delivery | typed sender/recipients, claim, provider receipt, per-recipient ACK, retry/reconciliation |
-| Stable Agent mail | explicit AgentMessageRoute to active MemberRun/TeamMessage |
+| AgentMember mail | canonical TeamMessage plus MessageDelivery to the exact MemberRun generation |
 | Workflow | WorkflowRun/Step, artifacts, result/verdict, patch state |
 | Host path | observable artifact/outcome without fake controlled children |
 | Wave decision | Host outcome, actor/time, note, artifacts, and next-plan context |

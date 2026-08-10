@@ -2,156 +2,78 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agent-harness.local/schemas/member-run.schema.json",
   "title": "MemberRun",
+  "description": "One versioned execution binding for exactly one durable AgentMember in one TeamRun.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "team_run_id", "name", "role", "provider", "status", "started_at"],
+  "required": [
+    "id",
+    "agent_member_id",
+    "team_run_id",
+    "role_snapshot",
+    "coordination_status",
+    "runtime_status",
+    "runtime_generation",
+    "version",
+    "started_at"
+  ],
   "properties": {
     "id": { "type": "string", "minLength": 1 },
-    "team_run_id": { "type": "string", "minLength": 1 },
-    "slot_id": { "type": ["string", "null"], "minLength": 1 },
     "agent_member_id": {
-      "type": ["string", "null"],
+      "type": "string",
       "minLength": 1,
-      "description": "Explicit stable link to a durable AgentMember execution identity. Company OS may join a StandingAgent only through StandingAgent.execution_agent_member_ref; never infer from matching ids, name, role, provider, model, or time."
+      "description": "Required exact durable AgentMember id; never inferred from a slot, name, role, provider session, or MemberRun id."
     },
-    "name": { "type": "string", "minLength": 1 },
-    "role": { "type": "string", "minLength": 1 },
-    "provider": { "type": "string", "minLength": 1 },
-    "model": { "type": ["string", "null"], "minLength": 1 },
-    "provider_controls": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["model", "reasoning_effort", "service_tier"],
-      "properties": {
-        "model": { "$ref": "#/$defs/providerControlValue" },
-        "reasoning_effort": { "$ref": "#/$defs/providerControlValue" },
-        "service_tier": { "$ref": "#/$defs/providerControlValue" }
-      }
-    },
-    "provider_profile": {
-      "type": ["object", "null"],
-      "additionalProperties": false,
-      "required": ["provider", "execution_mode", "interaction_mode", "tool_event_fidelity", "artifact_event_fidelity", "supports_cancel", "supports_resume", "observes_native_subagents", "observes_background_tasks", "thinking_transient_only"],
-      "properties": {
-        "provider": { "type": "string", "minLength": 1 },
-        "execution_mode": { "type": "string", "minLength": 1 },
-        "execution_driver": { "type": "string", "enum": ["host_driven", "provider_driven", "user_driven"] },
-        "provider_version": { "type": ["string", "null"], "minLength": 1 },
-        "adapter_contract_version": { "type": ["string", "null"], "minLength": 1 },
-        "reviewed_provider_versions": { "type": "array", "items": { "type": "string", "minLength": 1 } },
-        "compatibility_status": { "type": "string", "enum": ["current", "review_required", "incompatible", "unavailable", "unknown"] },
-        "adapter_reviewed_at": { "type": ["string", "null"], "minLength": 1 },
-        "compatibility_note": { "type": ["string", "null"], "minLength": 1 },
-        "interaction_mode": { "type": "string", "enum": ["pause_and_resume", "end_round_and_follow_up", "unsupported"] },
-        "ordinary_message_boundary": { "type": "string", "enum": ["in_turn", "next_round", "next_round_batched", "unknown"] },
-        "plan_mode": { "type": "string", "enum": ["native", "emulated", "unsupported", "unknown"] },
-        "goal_mode": { "type": "string", "enum": ["native", "emulated", "unsupported", "unknown"] },
-        "tool_event_fidelity": { "type": "string", "enum": ["none", "summary", "structured"] },
-        "artifact_event_fidelity": { "type": "string", "enum": ["none", "summary", "structured"] },
-        "supports_cancel": { "type": "boolean" },
-        "supports_resume": { "type": "boolean" },
-        "observes_native_subagents": { "type": "boolean" },
-        "observes_background_tasks": { "type": "boolean" },
-        "thinking_transient_only": { "type": "boolean" }
-      }
-    },
-    "provider_capacity": {
-      "type": ["object", "null"],
-      "additionalProperties": false,
-      "description": "Last observed runtime availability of this member's provider account. Absent or null means nothing was observed; it never means available, and it is independent of provider_profile.compatibility_status.",
-      "required": ["provider", "execution_mode", "account", "state", "observed_at", "observed_unix_ms", "evidence_source", "confidence"],
-      "properties": {
-        "provider": { "type": "string", "minLength": 1 },
-        "execution_mode": { "type": "string", "minLength": 1 },
-        "account": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["source"],
-          "properties": {
-            "source": { "type": "string", "minLength": 1 },
-            "identifier": { "type": ["string", "null"], "minLength": 1 },
-            "plan": { "type": ["string", "null"], "minLength": 1 }
-          }
-        },
-        "state": { "type": "string", "enum": ["available", "limited", "exhausted", "unauthorized", "unknown"] },
-        "observed_at": { "type": "string", "minLength": 1 },
-        "observed_unix_ms": { "type": "integer", "minimum": 0 },
-        "reset_at": { "type": ["string", "null"], "minLength": 1 },
-        "evidence_source": {
-          "type": "string",
-          "enum": ["provider_quota_api", "auth_metadata", "execution_canary", "provider_error", "not_exposed", "probe_failed", "none"]
-        },
-        "confidence": { "type": "string", "enum": ["observed", "inferred", "unknown"] },
-        "windows": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["label"],
-            "properties": {
-              "label": { "type": "string", "minLength": 1 },
-              "limit_id": { "type": ["string", "null"], "minLength": 1 },
-              "used_percent": { "type": ["integer", "null"] },
-              "window_duration_mins": { "type": ["integer", "null"] },
-              "resets_at": { "type": ["string", "null"], "minLength": 1 }
-            }
-          }
-        },
-        "diagnosis": { "type": ["string", "null"] },
-        "runtime_context": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["key", "present"],
-            "properties": {
-              "key": { "type": "string", "minLength": 1 },
-              "present": { "type": "boolean" },
-              "note": { "type": ["string", "null"] }
-            }
-          }
-        },
-        "detail": { "type": ["string", "null"] }
-      }
-    },
-    "provider_compatibility_block_cause": {
-      "type": ["object", "null"],
-      "additionalProperties": false,
-      "description": "Typed Store-owned authority for a provider-compatibility Blocked state. MemberAction prose is audit-only and cannot authorize recovery.",
-      "required": ["schema_version", "id", "member_run_id", "provider", "execution_mode", "provider_version", "adapter_contract_version", "boundary", "compatibility_status", "source", "caused_at"],
-      "properties": {
-        "schema_version": { "const": 1 },
-        "id": { "type": "string", "minLength": 1 },
-        "member_run_id": { "type": "string", "minLength": 1 },
-        "provider": { "type": "string", "minLength": 1 },
-        "execution_mode": { "type": "string", "minLength": 1 },
-        "provider_version": { "type": "string", "minLength": 1 },
-        "adapter_contract_version": { "type": "string", "minLength": 1 },
-        "boundary": { "type": "string", "enum": ["start_persistent_execution", "resume_persistent_execution"] },
-        "compatibility_status": { "type": "string", "enum": ["review_required", "incompatible", "unavailable", "unknown"] },
-        "source": { "type": "string", "enum": ["adapter_compatibility", "probe_failure"] },
-        "probe_error": { "type": ["string", "null"], "minLength": 1 },
-        "caused_at": { "type": "string", "minLength": 1 }
-      }
-    },
+    "team_run_id": { "type": "string", "minLength": 1 },
+    "role_snapshot": { "type": "string", "minLength": 1 },
+    "provider_profile_snapshot": { "type": ["string", "null"], "minLength": 1 },
+    "requested_controls": {},
+    "effective_controls": {},
     "coordination_status": {
       "type": "string",
-      "enum": ["active", "closed", "retired"],
-      "default": "active"
+      "enum": ["active", "closed", "retired"]
     },
-    "runtime_generation": {
-      "type": "integer",
-      "minimum": 1,
-      "default": 1
-    },
-    "status": {
+    "runtime_status": {
       "type": "string",
-      "enum": ["starting", "idle", "queued", "running", "waiting", "disconnected", "reviewing", "blocked", "completed", "failed", "stopped"]
+      "enum": [
+        "starting",
+        "idle",
+        "queued",
+        "running",
+        "waiting",
+        "disconnected",
+        "reviewing",
+        "blocked",
+        "completed",
+        "failed",
+        "stopped"
+      ]
     },
+    "runtime_generation": { "type": "integer", "minimum": 1 },
+    "workspace_binding_id": { "type": ["string", "null"], "minLength": 1 },
     "native_session": {
-      "type": ["object", "null"],
+      "anyOf": [
+        { "$ref": "#/$defs/nativeSessionRef" },
+        { "type": "null" }
+      ]
+    },
+    "version": { "type": "integer", "minimum": 1 },
+    "started_at": { "type": "string", "minLength": 1 },
+    "last_event_at": { "type": ["string", "null"], "minLength": 1 },
+    "finished_at": { "type": ["string", "null"], "minLength": 1 }
+  },
+  "$defs": {
+    "nativeSessionRef": {
+      "type": "object",
       "additionalProperties": false,
-      "required": ["provider", "execution_mode", "native_session_id", "native_locator_kind", "adapter_contract_version", "availability", "supports_resume"],
+      "required": [
+        "provider",
+        "execution_mode",
+        "native_session_id",
+        "native_locator_kind",
+        "adapter_contract_version",
+        "availability",
+        "supports_resume"
+      ],
       "properties": {
         "provider": { "type": "string", "minLength": 1 },
         "execution_mode": { "type": "string", "minLength": 1 },
@@ -159,65 +81,13 @@
         "native_locator_kind": { "type": "string", "minLength": 1 },
         "provider_version": { "type": ["string", "null"], "minLength": 1 },
         "adapter_contract_version": { "type": "string", "minLength": 1 },
-        "availability": { "type": "string", "enum": ["available", "stale", "missing", "incompatible", "unknown"] },
+        "availability": {
+          "type": "string",
+          "enum": ["available", "stale", "missing", "incompatible", "unknown"]
+        },
         "supports_resume": { "type": "boolean" },
         "last_verified_at": { "type": ["string", "null"], "minLength": 1 },
         "parent_native_session_id": { "type": ["string", "null"], "minLength": 1 }
-      }
-    },
-    "worktree_ref": { "type": ["string", "null"], "minLength": 1 },
-    "workspace_snapshot": {
-      "type": ["object", "null"],
-      "additionalProperties": false,
-      "required": ["cwd"],
-      "properties": {
-        "cwd": { "type": "string", "minLength": 1 },
-        "project_binding_id": { "type": ["string", "null"], "minLength": 1 },
-        "resolution_source": {
-          "type": ["string", "null"],
-          "enum": ["member_worktree", "team_execution_root", "project_binding_root", "explicit_unbound", null]
-        },
-        "git_head": { "type": ["string", "null"], "minLength": 1 },
-        "git_branch": { "type": ["string", "null"], "minLength": 1 },
-        "instruction_roots": {
-          "type": "array",
-          "items": { "type": "string", "minLength": 1 }
-        },
-        "skill_roots": {
-          "type": "array",
-          "items": { "type": "string", "minLength": 1 }
-        }
-      }
-    },
-    "owned_paths": {
-      "type": "array",
-      "items": { "type": "string", "minLength": 1 }
-    },
-    "started_at": { "type": "string", "minLength": 1 },
-    "last_event_at": { "type": ["string", "null"], "minLength": 1 },
-    "finished_at": { "type": ["string", "null"], "minLength": 1 },
-    "zero_output_streak": { "type": "integer", "minimum": 0 },
-    "last_consumed_work_version": { "type": ["integer", "null"], "minimum": 1 }
-  },
-  "$defs": {
-    "providerControlValue": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["requested", "effective", "status", "note"],
-      "properties": {
-        "requested": { "type": ["string", "null"] },
-        "effective": { "type": ["string", "null"] },
-        "status": {
-          "type": "string",
-          "enum": [
-            "not_requested",
-            "requested",
-            "effective",
-            "unsupported",
-            "review_required"
-          ]
-        },
-        "note": { "type": ["string", "null"] }
       }
     }
   }

@@ -371,7 +371,7 @@ The Organization contains multiple flat AgentTeams. Each Team belongs to one
 Mission and one Node; Members never create nested Teams. Cross-Team execution
 is an explicit Host-coordinated WorkDelegation, not hierarchy.
 
-The current separate StandingAgent record is a compatibility implementation. New target architecture must not add another durable agent identity. Your current operating procedures and Workspace isolation work with both models.
+Company organization membership projects your canonical AgentMember ActorRef; there is no second durable agent identity or execution join.
 
 ## Collaboration Envelope
 

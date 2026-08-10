@@ -1,7 +1,7 @@
 import type {
   AgentTeam,
   DashboardSnapshot,
-  DurableAgentMember,
+  AgentMember,
   MemberRun,
   TeamRun,
   Work,
@@ -64,32 +64,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-export function durableAgentMembers(snapshot: DashboardSnapshot): DurableAgentMember[] {
-  if (snapshot.durable_agent_members) return snapshot.durable_agent_members;
+export function agentMembers(snapshot: DashboardSnapshot): AgentMember[] {
+  if (snapshot.agent_members) return snapshot.agent_members;
   if (!isRecord(snapshot.company_os)) return [];
-  const rows = snapshot.company_os.durable_agent_members;
-  return Array.isArray(rows) ? rows as DurableAgentMember[] : [];
+  const rows = snapshot.company_os.agent_members;
+  return Array.isArray(rows) ? rows as AgentMember[] : [];
 }
 
 export function organizationMembersById(snapshot: DashboardSnapshot): Map<string, OrgMemberIdentity> {
   const merged = new Map<string, OrgMemberIdentity>();
-  for (const member of snapshot.members ?? []) {
+  for (const member of agentMembers(snapshot)) {
     merged.set(member.id, {
       id: member.id,
       name: member.name,
       description: member.description,
       role: member.role,
-      status: member.status,
-      identitySource: "compatibility",
-    });
-  }
-  for (const member of durableAgentMembers(snapshot)) {
-    merged.set(member.id, {
-      id: member.id,
-      name: member.name,
-      description: member.description,
-      role: member.role,
-      status: member.status,
+      status: member.organization_status,
       identitySource: "durable",
     });
   }

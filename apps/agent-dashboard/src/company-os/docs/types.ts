@@ -22,7 +22,7 @@ export interface CompanyOsLink {
   href?: string;
   kind?: "document" | "record" | "work" | "approval" | "finance" | "module" | "actor";
   meta?: string;
-  actorType?: "Human" | "Standing Agent" | "External" | "Service";
+  actorType?: "Human" | "Agent Membership" | "External" | "Service";
   financialRecordType?: "commitment" | "invoice" | "payment" | "budget";
 }
 
@@ -229,7 +229,7 @@ export interface CompanyOsWorkspaceData {
   templates?: CompanyOsTemplateOption[];
   templateRecordPolicy?: CompanyOsTemplateRecordPolicy;
   databases?: CompanyOsLink[];
-  /** Explicit Standing Agent maintainers supplied by organization/document relations. */
+  /** Explicit Agent Membership maintainers supplied by organization/document relations. */
   maintainers?: CompanyOsLink[];
   structureNotes?: Array<{ label: string; value: string; tone?: "neutral" | "warning" }>;
   structureLinks?: CompanyOsLink[];

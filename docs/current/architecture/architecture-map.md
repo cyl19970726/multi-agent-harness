@@ -15,7 +15,7 @@ flowchart TB
   Custom["Registered Custom Pages\nHTML / React package"]
   Actions["Scoped Queries + Action Commands"]
   Policy["Policy · Approval · Audit"]
-  Org["Organization\nhumans · standing agents · external · services"]
+  Org["Organization\nhumans · agent memberships · external · services"]
   Collab["Collaboration spine\nconversation · activity · artifacts"]
   TeamWork["Agent Team Works\nownership · readiness · Kanban · review"]
   Work["Company Work\nTeamWorks · Milestones · business relations"]
@@ -27,7 +27,7 @@ flowchart TB
   Team["Independent AgentTeam / AgentTeamRun / MemberRun"]
   Supervisor["Durable Team Supervisor\nlease · typed mail · claims · controls"]
   Workflow["Dynamic Workflow"]
-  Direct["Human / Standing Agent direct work"]
+  Direct["Human / Agent Membership direct work"]
   Runtime["Providers · sessions · plugins · MCP"]
   Result["Results · evidence · artifacts · observations"]
 

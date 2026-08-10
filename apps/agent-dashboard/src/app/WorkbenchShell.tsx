@@ -696,7 +696,7 @@ function AppRail({
     onSelectionChange({
       surface: id,
       documentId: undefined,
-      standingAgentId: undefined,
+      agentMembershipId: undefined,
       personId: undefined,
       proposalId: undefined,
       approvalId: undefined,
@@ -1084,9 +1084,9 @@ function nativeContextLabel(model: WorkbenchModel, selection: SelectionState): s
       return "Company attention";
     case "organization":
       if (selection.personId === "actor-human-brand-owner") return "Brand Owner";
-      if (selection.standingAgentId === "actor-agent-document-architecture") return "Document Architecture Agent";
+      if (selection.agentMembershipId === "actor-agent-document-architecture") return "Document Architecture Agent";
       if (selection.proposalId === "governance-proposal-trademark-management") return "Create Trademark Management module";
-      return selection.personId ?? selection.standingAgentId ?? selection.proposalId ?? "Mixed organization";
+      return selection.personId ?? selection.agentMembershipId ?? selection.proposalId ?? "Mixed organization";
     case "work":
       return selection.teamWorkId ?? "Company work";
     case "approvals":

@@ -213,7 +213,7 @@ try {
           member_runs: [], team_messages: [], member_actions: [], delegation_runs: [], team_run_events: [],
           evidence: [], members: [], messages: [], events: [], provider_child_threads: [],
           workflow_runs: [], workflow_steps: [], workflow_patches: [], workflow_artifact_manifests: [],
-          team_supervisor_leases: [], team_member_close_requests: [], agent_message_routes: [],
+          team_supervisor_leases: [], team_member_close_requests: [],
           pending_interactions: [],
         },
       }));

@@ -24,8 +24,8 @@ export interface SelectionState {
   surface: SurfaceId;
   /** Company OS document focus. Distinct from the legacy repository-doc path. */
   documentId?: string;
-  /** Durable Standing Agent organization identity, never a MemberRun. */
-  standingAgentId?: string;
+  /** Durable Agent Membership organization identity, never a MemberRun. */
+  agentMembershipId?: string;
   /** First-class Human organization member identity. */
   personId?: string;
   /** Governance proposal focus. */
@@ -53,7 +53,7 @@ export interface SelectionState {
    * The selected Agent Team participation record, addressed as
    * `?memberRun=<id>`. This deliberately remains distinct from `memberId`:
    * a MemberRun is a one-attempt participation, while `memberId` identifies a
-   * standing AgentMember.
+   * durable AgentMember.
    */
   memberRunId?: string;
   /** Which tab is open on the agent detail page; defaults to "conversation". */
@@ -158,11 +158,11 @@ function selectionFromSearch(search: string, pathname = "/"): SelectionState {
   if (surface && (surfaceIds as string[]).includes(surface)) {
     next.surface = surface as SurfaceId;
   }
-  // `?agent=` is contextual: Organization resolves a durable Standing Agent;
+  // `?agent=` is contextual: Organization resolves a durable Agent Membership;
   // the retained execution compatibility route resolves an AgentMember.
   const agent = params.get("agent") ?? params.get("member");
   if (agent) {
-    if (next.surface === "organization") next.standingAgentId = agent;
+    if (next.surface === "organization") next.agentMembershipId = agent;
     else {
       next.memberId = agent;
       if (!surface) next.surface = "agents";
@@ -203,7 +203,7 @@ function selectionFromSearch(search: string, pathname = "/"): SelectionState {
     next.docsHealth = docsHealth;
     if (!surface) next.surface = "docs";
   }
-  // A MemberRun belongs to an AgentTeamRun attempt, not to the standing Agent
+  // A MemberRun belongs to an AgentTeamRun attempt, not to the durable AgentMember
   // directory. Do not translate it into `memberId` even if a future provider
   // happens to expose a related standing identity.
   const memberRun = params.get("memberRun");
@@ -318,11 +318,11 @@ export function syncSelectionToLocation(selection: SelectionState): void {
       : undefined,
   );
   setOrDelete("document", selection.documentId);
-  // `agent` is contextual: a durable Standing Agent on Organization, otherwise
+  // `agent` is contextual: a durable Agent Membership on Organization, otherwise
   // the selected AgentMember (never on the organization surface).
   setOrDelete(
     "agent",
-    selection.standingAgentId
+    selection.agentMembershipId
       ?? (selection.memberId && selection.surface !== "organization" ? selection.memberId : undefined),
   );
   params.delete("member"); // legacy alias, never written
@@ -383,7 +383,7 @@ export function syncSelectionToLocation(selection: SelectionState): void {
 const selectionCompareKeys = [
   "surface",
   "documentId",
-  "standingAgentId",
+  "agentMembershipId",
   "personId",
   "proposalId",
   "approvalId",

@@ -98,10 +98,10 @@ product copy should say **Execution Space** and **Project**.
 
 The selected Execution Space store contains Harness JSONL coordination ledgers.
 Provider processes do not run there. Their cwd is selected in this order:
-member `worktree_ref`,
+member `provider_cwd_hint`,
 TeamRun `execution_root`, then selected Workspace `project_root`; the Host cwd
 is only the creation default for an unrouted legacy raw-store invocation.
-`team_run_create` exposes `execution_root` and `members[].worktree_ref` through
+`team_run_create` exposes `execution_root` and `members[].provider_cwd_hint` through
 CLI (`--execution-root`, `--member-worktree name:path`,
 `--member-owned-path name:path`), HTTP, and MCP. An
 override must be the selected project root or a Git worktree sharing its Git
@@ -215,9 +215,9 @@ Codex and Claude do not own separate mailbox Skills. Both use the canonical
 differences remain Adapter capabilities, not different team semantics.
 
 Stable external Agent mail uses `agent route-inbox` and an
-`AgentMessageRoute` to join one Agent Inbox record to one active MemberRun and
+canonical `MessageDelivery` to bind one TeamMessage recipient to one active MemberRun and
 TeamMessage. This is an explicit transport relation, not evidence that the
-AgentMember, StandingAgent, and MemberRun are one object.
+AgentMember is the durable identity; MemberRun is one execution attempt, and Company membership is only an AgentMember ActorRef projection.
 
 An ACK means “the recipient consumed this envelope,” not “the recipient agrees”
 and not “the Host accepts the work.” A reviewer must inspect the submitted Work,
