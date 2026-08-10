@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agent-harness.local/schemas/agent-member.schema.json",
   "title": "AgentMember",
-  "description": "Compatibility execution registry row. New ADR 0052 Organization identity uses durable-agent-member.schema.json; runtime and native-session state remain here only until explicit convergence.",
+  "description": "The sole durable Agent identity. Execution, workspace, Team, Node, Work, process, and provider-session state are derived from other canonical records.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -10,221 +10,57 @@
     "name",
     "description",
     "role",
-    "provider",
-    "model",
-    "profile",
-    "provider_config",
-    "capabilities",
-    "team_ids",
-    "prompt_ref",
-    "skill_refs",
     "workspace_policy",
-    "worktree_ref",
-    "permission_profile",
-    "runtime_workspace_roots",
-    "status",
-    "current_task_id",
-    "current_proposal_id",
-    "provider_runtime_id",
-    "native_session",
-    "provider_thread_id",
-    "provider_agent_path",
-    "provider_agent_nickname",
-    "provider_agent_role",
-    "control_endpoint",
+    "permission_ceiling",
+    "organization_status",
+    "version",
+    "created_by",
     "created_at",
-    "last_seen_at"
+    "updated_at"
   ],
   "properties": {
-    "id": {
-      "type": "string",
-      "minLength": 1
-    },
-    "name": {
-      "type": "string",
-      "minLength": 1
-    },
-    "description": {
-      "type": "string",
-      "minLength": 1
-    },
-    "role": {
-      "type": "string",
-      "minLength": 1
-    },
-    "provider": {
-      "type": "string",
-      "minLength": 1
-    },
-    "model": {
-      "type": ["string", "null"]
-    },
-    "profile": {
-      "type": ["string", "null"]
-    },
-    "provider_config": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "service_tier",
-        "collaboration_mode",
-        "approval_policy",
-        "approvals_reviewer",
-        "sandbox_policy",
-        "permission_profile",
-        "runtime_workspace_roots",
-        "environment_id"
-      ],
-      "properties": {
-        "service_tier": { "type": ["string", "null"] },
-        "collaboration_mode": { "type": ["string", "null"] },
-        "effort": { "type": ["string", "null"] },
-        "output_schema": {},
-        "approval_policy": { "type": ["string", "null"] },
-        "approvals_reviewer": { "type": ["string", "null"] },
-        "sandbox_policy": { "type": ["string", "null"] },
-        "permission_profile": { "type": ["string", "null"] },
-        "runtime_workspace_roots": {
-          "type": "array",
-          "items": { "type": "string", "minLength": 1 }
-        },
-        "environment_id": { "type": ["string", "null"] },
-        "mcp": {
-          "type": ["object", "null"],
-          "additionalProperties": false,
-          "required": ["servers"],
-          "properties": {
-            "servers": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["id", "transport", "command", "url", "allowed_tools"],
-                "properties": {
-                  "id": { "type": "string", "minLength": 1 },
-                  "transport": { "type": ["string", "null"] },
-                  "command": {
-                    "type": "array",
-                    "items": { "type": "string" }
-                  },
-                  "url": { "type": ["string", "null"] },
-                  "allowed_tools": {
-                    "type": "array",
-                    "items": { "type": "string", "minLength": 1 }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
+    "id": { "type": "string", "minLength": 1 },
+    "name": { "type": "string", "minLength": 1 },
+    "description": { "type": "string", "minLength": 1 },
+    "role": { "type": "string", "minLength": 1 },
     "capabilities": {
       "type": "array",
-      "items": {
-        "type": "string",
-        "minLength": 1
-      }
-    },
-    "team_ids": {
-      "type": "array",
-      "items": {
-        "type": "string",
-        "minLength": 1
-      }
-    },
-    "prompt_ref": {
-      "type": ["string", "null"]
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
     },
     "skill_refs": {
       "type": "array",
-      "items": {
-        "type": "string",
-        "minLength": 1
-      }
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
     },
-    "workspace_policy": {
-      "type": ["string", "null"]
-    },
-    "worktree_ref": {
-      "type": ["string", "null"]
-    },
-    "permission_profile": {
-      "type": ["string", "null"]
-    },
-    "runtime_workspace_roots": {
-      "type": "array",
-      "items": {
-        "type": "string",
-        "minLength": 1
-      }
-    },
-    "status": {
+    "provider_profile_ref": { "type": ["string", "null"], "minLength": 1 },
+    "model_preference": { "type": ["string", "null"], "minLength": 1 },
+    "workspace_policy": { "type": "string", "minLength": 1 },
+    "permission_ceiling": {
       "type": "string",
-      "enum": [
-        "creating",
-        "idle",
-        "assigned",
-        "running",
-        "waiting_for_input",
-        "waiting_for_approval",
-        "reviewing",
-        "blocked",
-        "closing",
-        "closed",
-        "error",
-        "paused",
-        "stale",
-        "retired"
-      ]
+      "enum": ["read_only", "workspace_write", "full_access"]
     },
-    "current_task_id": {
-      "type": ["string", "null"]
+    "organization_status": {
+      "type": "string",
+      "enum": ["active", "paused", "retired"]
     },
-    "current_proposal_id": {
-      "type": ["string", "null"]
-    },
-    "provider_runtime_id": {
-      "type": ["string", "null"]
-    },
-    "native_session": {
-      "type": ["object", "null"],
+    "version": { "type": "integer", "minimum": 1 },
+    "created_by": { "$ref": "#/$defs/actorRef" },
+    "created_at": { "type": "string", "minLength": 1 },
+    "updated_at": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "actorRef": {
+      "type": "object",
       "additionalProperties": false,
-      "required": ["provider", "execution_mode", "native_session_id", "native_locator_kind", "adapter_contract_version", "availability", "supports_resume"],
+      "required": ["kind", "id"],
       "properties": {
-        "provider": { "type": "string", "minLength": 1 },
-        "execution_mode": { "type": "string", "minLength": 1 },
-        "native_session_id": { "type": "string", "minLength": 1 },
-        "native_locator_kind": { "type": "string", "minLength": 1 },
-        "provider_version": { "type": ["string", "null"], "minLength": 1 },
-        "adapter_contract_version": { "type": "string", "minLength": 1 },
-        "availability": { "type": "string", "enum": ["available", "stale", "missing", "incompatible", "unknown"] },
-        "supports_resume": { "type": "boolean" },
-        "last_verified_at": { "type": ["string", "null"], "minLength": 1 },
-        "parent_native_session_id": { "type": ["string", "null"], "minLength": 1 }
+        "kind": {
+          "type": "string",
+          "enum": ["human", "agent_member", "external", "service"]
+        },
+        "id": { "type": "string", "minLength": 1 }
       }
-    },
-    "provider_thread_id": {
-      "type": ["string", "null"]
-    },
-    "provider_agent_path": {
-      "type": ["string", "null"]
-    },
-    "provider_agent_nickname": {
-      "type": ["string", "null"]
-    },
-    "provider_agent_role": {
-      "type": ["string", "null"]
-    },
-    "control_endpoint": {
-      "type": ["string", "null"]
-    },
-    "created_at": {
-      "type": "string",
-      "minLength": 1
-    },
-    "last_seen_at": {
-      "type": ["string", "null"]
     }
   }
 }

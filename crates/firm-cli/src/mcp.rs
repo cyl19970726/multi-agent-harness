@@ -26,9 +26,9 @@ use harness_store::{HarnessStore, WorkReviewPayload};
 use serde_json::{json, Value};
 
 use crate::{
-    acknowledge_team_message, add_team_run_member, append_work_event, cancel_work_delegation_value,
-    close_mission, close_team_member_value, create_mission, create_team_run,
-    create_work_delegation_value, current_unix_ms_u64, deactivate_team_run_member,
+    acknowledge_team_message, add_team_run_member, agentfirm_api, append_work_event,
+    cancel_work_delegation_value, close_mission, close_team_member_value, create_mission,
+    create_team_run, create_work_delegation_value, current_unix_ms_u64, deactivate_team_run_member,
     delegate_team_run_to_node_daemon, format_work_brief_line, generated_id,
     has_actionable_delivered_manual_ack, host_inbox_for_native_thread, interrupt_team_member_value,
     latest_member_runs_in_append_order, latest_pending_interactions_in_append_order,
@@ -170,6 +170,9 @@ pub(crate) fn call_tool(
         .cloned()
         .unwrap_or_else(|| json!({}));
     let outcome = match name {
+        "agentfirm_member_trust_mutate" => {
+            tool_agentfirm_member_trust_mutate(store, resolved, &arguments)
+        }
         "mission_create" => tool_mission_create(store, &arguments),
         "mission_update_context" => tool_mission_update_context(store, &arguments),
         "mission_close" => tool_mission_close(store, &arguments),
@@ -233,6 +236,67 @@ pub(crate) fn call_tool(
         "content": [{"type": "text", "text": text}],
         "isError": is_error,
     }))
+}
+
+fn tool_agentfirm_member_trust_mutate(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    arguments: &Value,
+) -> Result<Value, String> {
+    reject_unknown_arguments(
+        arguments,
+        "agentfirm_member_trust_mutate",
+        &["command", "idempotency_key", "expected_version"],
+    )?;
+    let execution_space_id = resolved
+        .execution_space_context
+        .as_ref()
+        .map(|space| space.id.clone())
+        .ok_or_else(|| {
+            "member trust MCP mutations require an explicit Execution Space".to_string()
+        })?;
+    let actor_kind_raw = std::env::var("AGENTFIRM_MCP_ACTOR_KIND")
+        .map_err(|_| "MCP transport is missing AGENTFIRM_MCP_ACTOR_KIND".to_string())?;
+    let actor_id = std::env::var("AGENTFIRM_MCP_ACTOR_ID")
+        .map_err(|_| "MCP transport is missing AGENTFIRM_MCP_ACTOR_ID".to_string())?;
+    let actor_kind = agentfirm_api::parse_actor_kind(&actor_kind_raw)
+        .ok_or_else(|| "AGENTFIRM_MCP_ACTOR_KIND is invalid".to_string())?;
+    let authority_actor = match (
+        std::env::var("AGENTFIRM_MCP_AUTHORITY_KIND").ok(),
+        std::env::var("AGENTFIRM_MCP_AUTHORITY_ID").ok(),
+    ) {
+        (None, None) => None,
+        (Some(kind), Some(id)) => Some(harness_core::agentfirm_api::ActorRef {
+            kind: agentfirm_api::parse_actor_kind(&kind)
+                .ok_or_else(|| "AGENTFIRM_MCP_AUTHORITY_KIND is invalid".to_string())?,
+            id,
+        }),
+        _ => return Err("MCP authority kind and id must be configured together".to_string()),
+    };
+    let command = serde_json::from_value::<agentfirm_api::TrustCommand>(
+        arguments
+            .get("command")
+            .cloned()
+            .ok_or_else(|| "argument `command` is required".to_string())?,
+    )
+    .map_err(|error| format!("invalid TrustCommand: {error}"))?;
+    let expected_version = arguments
+        .get("expected_version")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "argument `expected_version` must be an unsigned integer".to_string())?;
+    let auth = agentfirm_api::AuthenticatedMutation {
+        execution_space_id,
+        actor: harness_core::agentfirm_api::ActorRef {
+            kind: actor_kind,
+            id: actor_id,
+        },
+        authority_actor,
+        idempotency_key: required_non_empty_str(arguments, "idempotency_key")?.to_string(),
+        expected_version,
+    };
+    agentfirm_api::execute(store, auth, command)
+        .map(|result| json!(result))
+        .map_err(|error| error.to_string())
 }
 
 /// `team_run_work_list` -- mirrors `harness team-run work list`, including
@@ -1554,6 +1618,20 @@ fn tool_team_run_events(store: &HarnessStore, arguments: &Value) -> Result<Value
 /// contract — the host model reads them to decide how to call each tool.
 fn tool_definitions() -> Value {
     json!([
+        {
+            "name": "agentfirm_member_trust_mutate",
+            "description": "Execute one canonical Member Execution Trust command through the same application service used by CLI and HTTP. Actor identity comes only from the MCP process transport environment.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "command": {"type": "object", "description": "One tagged TrustCommand payload."},
+                    "idempotency_key": {"type": "string", "minLength": 1},
+                    "expected_version": {"type": "integer", "minimum": 0}
+                },
+                "required": ["command", "idempotency_key", "expected_version"]
+            }
+        },
         {
             "name": "mission_create",
             "description": "Create durable Mission intent and optional Markdown context. CLI owns the same operation; this MCP tool is a thin adapter.",

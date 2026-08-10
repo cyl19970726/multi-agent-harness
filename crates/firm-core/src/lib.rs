@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use thiserror::Error;
 
+pub mod agentfirm_api;
 pub mod company_os;
 pub mod docs_v2;
 pub use company_os::*;

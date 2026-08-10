@@ -32,6 +32,9 @@ use firm_core::{
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
 
+mod trust_kernel;
+pub use trust_kernel::*;
+
 mod company_os;
 pub mod docs_v2;
 pub use company_os::{

@@ -1,12 +1,8 @@
 {
   "id": "agent-worker-1",
   "name": "Implementation Worker",
-  "description": "Durable identity for implementation work.",
+  "description": "Durable identity must not own mutable execution state.",
   "role": "worker",
-  "capabilities": ["code", "test"],
-  "skill_refs": ["generic-agent-harness"],
-  "provider_profile_ref": "provider-profile-codex",
-  "model_preference": "gpt-5",
   "workspace_policy": "managed_worktree",
   "permission_ceiling": "workspace_write",
   "organization_status": "active",
@@ -16,5 +12,6 @@
     "id": "operator-1"
   },
   "created_at": "unix-ms:1",
-  "updated_at": "unix-ms:1"
+  "updated_at": "unix-ms:1",
+  "current_work_id": "work-1"
 }

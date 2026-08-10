@@ -5,11 +5,12 @@
 | Mission | [mission.schema.json](mission.schema.json) |
 | Wave | [wave.schema.json](wave.schema.json) |
 | Agent team | [agent-team.schema.json](agent-team.schema.json) |
-| Agent member | [agent-member.schema.json](agent-member.schema.json) |
-| Durable Organization Agent member | [durable-agent-member.schema.json](durable-agent-member.schema.json) |
+| Durable Agent member identity | [agent-member.schema.json](agent-member.schema.json) |
 | Agent team run | [agent-team-run.schema.json](agent-team-run.schema.json) |
 | Member run | [member-run.schema.json](member-run.schema.json) |
 | Provider-native session locator | [native-session-ref.schema.json](native-session-ref.schema.json) |
+| Canonical mutation event | [canonical-mutation-event.schema.json](canonical-mutation-event.schema.json) |
+| Crash-atomic canonical operation | [canonical-operation.schema.json](canonical-operation.schema.json) |
 | Team message | [team-message.schema.json](team-message.schema.json) |
 | Agent Team Work | [work.schema.json](work.schema.json) |
 | Agent Team Work event | [work-event.schema.json](work-event.schema.json) |
@@ -27,8 +28,6 @@
 | Delegation run | [delegation-run.schema.json](delegation-run.schema.json) |
 | Team run event | [team-run-event.schema.json](team-run-event.schema.json) |
 | Message | [message.schema.json](message.schema.json) |
-| Agent runtime | [agent-runtime.schema.json](agent-runtime.schema.json) |
-| Agent event | [agent-event.schema.json](agent-event.schema.json) |
 | Provider child thread | [provider-child-thread.schema.json](provider-child-thread.schema.json) |
 | Proposal | [proposal.schema.json](proposal.schema.json) |
 | Evidence | [evidence.schema.json](evidence.schema.json) |

@@ -53,6 +53,7 @@ use harness_store::{
 };
 use thiserror::Error;
 
+mod agentfirm_api;
 mod codex_app_server;
 mod company_os_api;
 mod company_store;
@@ -1990,6 +1991,7 @@ fn run() -> CliResult<()> {
         "team-run" => team_run_command(&store, &resolved, &args[1..])?,
         "member-run" => member_run_command(&store, &args[1..])?,
         "member" => member_command(&store, &args[1..])?,
+        "member-trust" => member_trust_command(&store, &resolved, &args[1..])?,
         "provider" => provider_command(&store, &resolved, &args[1..])?,
         "company" => company_command(&store, &args[1..])?,
         "dashboard" => dashboard_command(&store, &resolved, &args[1..])?,
@@ -2003,6 +2005,68 @@ fn run() -> CliResult<()> {
         command => return Err(CliError::Usage(format!("unknown command: {command}"))),
     }
     Ok(())
+}
+
+fn member_trust_command(
+    store: &HarnessStore,
+    resolved: &ResolvedStore,
+    args: &[String],
+) -> CliResult<()> {
+    require_subcommand(args, "member-trust mutate --actor-kind <kind> --actor-id <id> --idempotency-key <key> --expected-version <n> --json <TrustCommand JSON>")?;
+    if args[0] != "mutate" {
+        return Err(CliError::Usage(format!(
+            "unknown member-trust command: {}",
+            args[0]
+        )));
+    }
+    let execution_space_id = resolved
+        .execution_space_context
+        .as_ref()
+        .map(|space| space.id.clone())
+        .ok_or_else(|| {
+            CliError::Usage("member-trust mutations require an explicit Execution Space".into())
+        })?;
+    let actor_kind_raw = required(args, "--actor-kind")?;
+    let actor_kind = agentfirm_api::parse_actor_kind(&actor_kind_raw).ok_or_else(|| {
+        CliError::Usage("--actor-kind must be human|agent_member|external|service".into())
+    })?;
+    let actor_id = required(args, "--actor-id")?;
+    let idempotency_key = required(args, "--idempotency-key")?;
+    let expected_version = required(args, "--expected-version")?
+        .parse::<u64>()
+        .map_err(|_| CliError::Usage("--expected-version must be an unsigned integer".into()))?;
+    let command = serde_json::from_str::<agentfirm_api::TrustCommand>(&required(args, "--json")?)?;
+    let authority_actor = match (
+        value(args, "--authority-kind"),
+        value(args, "--authority-id"),
+    ) {
+        (None, None) => None,
+        (Some(kind), Some(id)) => Some(harness_core::agentfirm_api::ActorRef {
+            kind: agentfirm_api::parse_actor_kind(&kind)
+                .ok_or_else(|| CliError::Usage("--authority-kind is invalid".into()))?,
+            id,
+        }),
+        _ => {
+            return Err(CliError::Usage(
+                "--authority-kind and --authority-id must be provided together".into(),
+            ))
+        }
+    };
+    let auth = agentfirm_api::AuthenticatedMutation {
+        execution_space_id,
+        actor: harness_core::agentfirm_api::ActorRef {
+            kind: actor_kind,
+            id: actor_id,
+        },
+        authority_actor,
+        idempotency_key,
+        expected_version,
+    };
+    match agentfirm_api::execute(store, auth, command) {
+        Ok(result) => print_json(&result),
+        Err(StoreError::Conflict(encoded)) => Err(CliError::Usage(encoded)),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn retired_command(command: &str) -> bool {
@@ -27684,6 +27748,12 @@ fn handle_http_connection(
         .unwrap_or(&store_owned);
     let mut content_length = 0usize;
     let mut company_os_token = None;
+    let mut trust_actor_kind = None;
+    let mut trust_actor_id = None;
+    let mut trust_authority_kind = None;
+    let mut trust_authority_id = None;
+    let mut trust_idempotency_key = None;
+    let mut trust_expected_version = None;
     loop {
         let mut line = String::new();
         reader.read_line(&mut line)?;
@@ -27697,6 +27767,24 @@ fn handle_http_connection(
             }
             if name.eq_ignore_ascii_case("x-harness-company-os-token") {
                 company_os_token = Some(value.trim().to_string());
+            }
+            if name.eq_ignore_ascii_case("x-agentfirm-actor-kind") {
+                trust_actor_kind = Some(value.trim().to_string());
+            }
+            if name.eq_ignore_ascii_case("x-agentfirm-actor-id") {
+                trust_actor_id = Some(value.trim().to_string());
+            }
+            if name.eq_ignore_ascii_case("x-agentfirm-authority-kind") {
+                trust_authority_kind = Some(value.trim().to_string());
+            }
+            if name.eq_ignore_ascii_case("x-agentfirm-authority-id") {
+                trust_authority_id = Some(value.trim().to_string());
+            }
+            if name.eq_ignore_ascii_case("idempotency-key") {
+                trust_idempotency_key = Some(value.trim().to_string());
+            }
+            if name.eq_ignore_ascii_case("if-match") {
+                trust_expected_version = value.trim().trim_matches('"').parse::<u64>().ok();
             }
         }
     }
@@ -27715,6 +27803,139 @@ fn handle_http_connection(
             "405 Method Not Allowed",
             &serde_json::json!({"error": "method_not_allowed"}),
         )?;
+        return Ok(());
+    }
+    if method == "POST" && agentfirm_api::is_http_mutation_path(&path_only) {
+        let actor_kind = match trust_actor_kind.as_deref() {
+            Some("human") => harness_core::agentfirm_api::ActorKind::Human,
+            Some("agent_member") => harness_core::agentfirm_api::ActorKind::AgentMember,
+            Some("external") => harness_core::agentfirm_api::ActorKind::External,
+            Some("service") => harness_core::agentfirm_api::ActorKind::Service,
+            _ => {
+                write_http_json(
+                    &mut stream,
+                    "401 Unauthorized",
+                    &serde_json::json!({
+                        "ok": false,
+                        "error": {"code": "UNAUTHORIZED_ACTOR", "message": "missing or invalid X-AgentFirm-Actor-Kind"}
+                    }),
+                )?;
+                return Ok(());
+            }
+        };
+        let Some(actor_id) = trust_actor_id.filter(|id| !id.trim().is_empty()) else {
+            write_http_json(
+                &mut stream,
+                "401 Unauthorized",
+                &serde_json::json!({
+                    "ok": false,
+                    "error": {"code": "UNAUTHORIZED_ACTOR", "message": "missing X-AgentFirm-Actor-Id"}
+                }),
+            )?;
+            return Ok(());
+        };
+        let Some(idempotency_key) = trust_idempotency_key.filter(|key| !key.trim().is_empty())
+        else {
+            write_http_json(
+                &mut stream,
+                "400 Bad Request",
+                &serde_json::json!({
+                    "ok": false,
+                    "error": {"code": "IDEMPOTENCY_KEY_REUSED", "message": "Idempotency-Key is required"}
+                }),
+            )?;
+            return Ok(());
+        };
+        let Some(expected_version) = trust_expected_version else {
+            write_http_json(
+                &mut stream,
+                "400 Bad Request",
+                &serde_json::json!({
+                    "ok": false,
+                    "error": {"code": "VERSION_CONFLICT", "message": "If-Match exact expected version is required"}
+                }),
+            )?;
+            return Ok(());
+        };
+        let authority_actor = match (trust_authority_kind.as_deref(), trust_authority_id) {
+            (None, None) => None,
+            (Some(kind), Some(id)) if !id.trim().is_empty() => {
+                let kind = match kind {
+                    "human" => harness_core::agentfirm_api::ActorKind::Human,
+                    "agent_member" => harness_core::agentfirm_api::ActorKind::AgentMember,
+                    "external" => harness_core::agentfirm_api::ActorKind::External,
+                    "service" => harness_core::agentfirm_api::ActorKind::Service,
+                    _ => {
+                        write_http_json(
+                            &mut stream,
+                            "401 Unauthorized",
+                            &serde_json::json!({
+                                "ok": false, "error": {"code": "UNAUTHORIZED_ACTOR", "message": "invalid authority actor kind"}
+                            }),
+                        )?;
+                        return Ok(());
+                    }
+                };
+                Some(harness_core::agentfirm_api::ActorRef { kind, id })
+            }
+            _ => {
+                write_http_json(
+                    &mut stream,
+                    "401 Unauthorized",
+                    &serde_json::json!({
+                        "ok": false, "error": {"code": "UNAUTHORIZED_ACTOR", "message": "authority kind and id must be provided together"}
+                    }),
+                )?;
+                return Ok(());
+            }
+        };
+        let command = match serde_json::from_slice::<agentfirm_api::TrustCommand>(&body) {
+            Ok(command) if command.matches_http_route(&path_only) => command,
+            Ok(_) => {
+                write_http_json(
+                    &mut stream,
+                    "400 Bad Request",
+                    &serde_json::json!({
+                        "ok": false, "error": {"code": "INVALID_STATE_TRANSITION", "message": "command payload does not match the exact endpoint"}
+                    }),
+                )?;
+                return Ok(());
+            }
+            Err(error) => {
+                write_http_json(
+                    &mut stream,
+                    "400 Bad Request",
+                    &serde_json::json!({
+                        "ok": false, "error": {"code": "INVALID_STATE_TRANSITION", "message": error.to_string()}
+                    }),
+                )?;
+                return Ok(());
+            }
+        };
+        let auth = agentfirm_api::AuthenticatedMutation {
+            execution_space_id: project_id.clone(),
+            actor: harness_core::agentfirm_api::ActorRef {
+                kind: actor_kind,
+                id: actor_id,
+            },
+            authority_actor,
+            idempotency_key,
+            expected_version,
+        };
+        match agentfirm_api::execute(&store_owned, auth, command) {
+            Ok(result) => write_http_json(&mut stream, "200 OK", &result)?,
+            Err(StoreError::Conflict(encoded)) => {
+                let error = serde_json::from_str::<serde_json::Value>(&encoded).unwrap_or_else(
+                    |_| serde_json::json!({"code": "INVALID_STATE_TRANSITION", "message": encoded}),
+                );
+                write_http_json(
+                    &mut stream,
+                    "409 Conflict",
+                    &serde_json::json!({"ok": false, "error": error}),
+                )?;
+            }
+            Err(error) => return Err(error.into()),
+        }
         return Ok(());
     }
     if retired_http_path(&path_only) {
@@ -31070,7 +31291,7 @@ fn write_http_response(
 ) -> CliResult<()> {
     write!(
         stream,
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, X-Harness-Company-OS-Token\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, X-Harness-Company-OS-Token, X-AgentFirm-Actor-Kind, X-AgentFirm-Actor-Id, X-AgentFirm-Authority-Kind, X-AgentFirm-Authority-Id, Idempotency-Key, If-Match\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
     stream.write_all(body)?;
