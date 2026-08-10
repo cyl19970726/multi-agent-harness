@@ -344,7 +344,7 @@ const LINK_RULES: &[LinkRule] = &[
         target: TargetKind::Phase,
     },
     LinkRule {
-        ledger: "agent_events.jsonl",
+        ledger: "provider_dispatch_events.jsonl",
         path: "task_id",
         target: TargetKind::Task,
     },
@@ -384,7 +384,7 @@ const LINK_RULES: &[LinkRule] = &[
         target: TargetKind::Task,
     },
     LinkRule {
-        ledger: "members.jsonl",
+        ledger: "provider_launch_profiles.jsonl",
         path: "current_task_id",
         target: TargetKind::Task,
     },

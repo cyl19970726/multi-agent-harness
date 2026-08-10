@@ -19,7 +19,7 @@ import {
   GovernanceProposalFocus,
   HumanMemberFocus,
   OrganizationPage,
-  StandingAgentFocus,
+  AgentMembershipFocus,
   adaptTrademarkOperationsProjection,
 } from "./operations";
 import { WorkOperatingPage } from "./work/WorkOperatingPage";
@@ -37,7 +37,7 @@ type CompanyOsPage =
   | "finance"
   | "agents-organization"
   | "agent-team-organization"
-  | "standing-agent-focus"
+  | "agent-membership-focus"
   | "governance-proposal"
   | "approval-focus"
   | "business-module-focus"
@@ -65,7 +65,7 @@ function selectedPage(selection: SelectionState): CompanyOsPage | undefined {
       return "finance";
     case "organization":
       if (selection.proposalId) return "governance-proposal";
-      if (selection.standingAgentId) return "standing-agent-focus";
+      if (selection.agentMembershipId) return "agent-membership-focus";
       if (selection.personId) return "human-member-focus";
       if (selection.orgView === "agent-teams") return "agent-team-organization";
       return "agents-organization";
@@ -204,7 +204,7 @@ function KernelViewTabs({ surface, selection, onSelectionChange }: { surface: "o
       {options.map((option) => {
         const Icon = option.icon;
         return <button key={option.id} type="button" aria-current={active === option.id ? "page" : undefined} onClick={() => onSelectionChange?.(organization
-          ? { surface: "organization", orgView: option.id === "agent-teams" ? "agent-teams" : undefined, orgTeamId: undefined, orgExpanded: undefined, standingAgentId: undefined, personId: undefined, proposalId: undefined }
+          ? { surface: "organization", orgView: option.id === "agent-teams" ? "agent-teams" : undefined, orgTeamId: undefined, orgExpanded: undefined, agentMembershipId: undefined, personId: undefined, proposalId: undefined }
           : { surface: "work", workView: option.id === "team-works" ? "team-works" : undefined, teamWorkId: undefined, workTeamId: undefined, workHostId: undefined, workMemberId: undefined, workStatus: undefined, workSource: undefined, workDemand: undefined })} className={`inline-flex min-h-9 shrink-0 items-center gap-2 rounded-lg px-3 text-xs font-medium ${active === option.id ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-accent hover:text-foreground"}`}><Icon className="size-3.5" />{option.label}</button>;
       })}
     </nav>
@@ -274,7 +274,7 @@ export function CompanyOsRouter({ model, selection, actionsEnabled = false, live
     case "workboard": content = <WorkOperatingPage source={resolved.value} />; break;
     case "finance": content = <FinancePage data={operations} />; break;
     case "agents-organization": content = <OrganizationPage data={operations} onSelectionChange={onSelectionChange} />; break;
-    case "standing-agent-focus": content = <StandingAgentFocus data={operations} actorId={selection.standingAgentId} onSelectionChange={onSelectionChange} />; break;
+    case "agent-membership-focus": content = <AgentMembershipFocus data={operations} actorId={selection.agentMembershipId} onSelectionChange={onSelectionChange} />; break;
     case "governance-proposal": content = <GovernanceProposalFocus data={operations} />; break;
     case "approval-focus": content = <ApprovalFocus data={operations} actionEnabled={actionsEnabled && resolved.mode === "store-live"} onDecision={onAction ? (command, capabilityToken) => onAction("/v1/company-os/actions/dispatch", command, { headers: { "X-Harness-Company-OS-Token": capabilityToken } }) : undefined} />; break;
     case "business-module-focus": content = <StructuredDocumentView view={docs.moduleView} actionEnabled={actionsEnabled && resolved.mode === "store-live"} onDocsAction={onAction ? (command, capabilityToken) => onAction("/v1/company-os/actions/dispatch", command, { headers: { "X-Harness-Company-OS-Token": capabilityToken } }) : undefined} />; break;

@@ -1,4 +1,4 @@
-export type ActorKind = "human" | "standing_agent" | "external" | "service";
+export type ActorKind = "human" | "agent_membership" | "external" | "service";
 
 export interface ActorIdentity {
   id: string;

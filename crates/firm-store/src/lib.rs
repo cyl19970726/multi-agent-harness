@@ -6,10 +6,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use firm_core::{
-    content_hash_hex16, provider_interaction_response_id, AgentEvent, AgentMember,
-    AgentMemberStatus, AgentMessageRoute, AgentRuntime, AgentTeam, AgentTeamRun, BuiltinGateConfig,
-    CodeReviewStrategy, Decision, DelegationRun, DurableAgentMember, Evidence, ExecutionNode,
-    ExecutionNodeStatus, Gap, GateEngine, GateVerdict, GitHubLink, HostAttention,
+    content_hash_hex16, provider_interaction_response_id, AgentMessageRoute, AgentTeam,
+    AgentTeamRun, Decision, DelegationRun, Evidence, ExecutionNode, ExecutionNodeStatus, Gap,
+    GitHubLink, HostAttention,
     HostAttentionInbox, HostAttentionKind, HostAttentionStatus, HostBindingLease,
     HostBindingLeaseOwnerKind, HostBindingLeaseStatus, MemberAction, MemberRun, Message,
     MessageDelivery, MessageDeliveryStatus, MessageTerminalSource, Mission, MissionLogEntry,
@@ -17,15 +16,16 @@ use firm_core::{
     NodeProjectRegistrationStatus, PendingInteraction, Proposal, ProviderChildThread,
     ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
     ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
-    ProviderCompatibilityStatus, ProviderExecutionStatus, ProviderIntegrationProfile,
-    ProviderInteractionRequestBody, ProviderInteractionResponseBody, Review, ReviewVerdict,
+    ProviderCompatibilityStatus, ProviderDispatchEvent, ProviderExecutionStatus,
+    ProviderIntegrationProfile, ProviderInteractionRequestBody, ProviderInteractionResponseBody,
+    ProviderLaunchProfile, ProviderProcess, Review,
     TeamActorKind, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
     TeamMemberCloseStatus, TeamMessage, TeamMessageKind, TeamRunEvent, TeamRunStatus,
     TeamSupervisorLease, TeamSupervisorLeaseStatus, Validate, Vision, Wave, WaveGateStatus,
     WaveStatus, Work, WorkClaimMode, WorkCommandContext, WorkCondition, WorkConditionRecord,
     WorkDelegation, WorkDelegationEvent, WorkDelegationRevision, WorkDelegationState,
     WorkDelegationTransition, WorkDelivery, WorkDeliveryStatus, WorkDeliveryUpdate, WorkEvent,
-    WorkEventKind, WorkEvidence, WorkGateEvaluation, WorkOperation, WorkOperationalDecision,
+    WorkEventKind, WorkEvidence, WorkOperation, WorkOperationalDecision,
     WorkPhase, WorkRef, WorkReport, WorkResolution, WorkflowArtifactManifest, WorkflowPatch,
     WorkflowRun, WorkflowStep,
 };
@@ -227,17 +227,6 @@ pub enum StoreError {
 
 pub type StoreResult<T> = Result<T, StoreError>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkReviewPayload {
-    pub id: String,
-    pub verdict: ReviewVerdict,
-    pub summary: String,
-    pub blockers: Vec<String>,
-    pub residual_risk: Option<String>,
-    pub missing_validation: Vec<String>,
-    pub evidence_ids: Vec<String>,
-}
-
 /// Crash-atomic composite row for cross-Team delegation. The target Work
 /// creation event and Delegation creation event are committed in one JSONL
 /// record; ordinary Work readers fold the embedded operation as native Work.
@@ -247,26 +236,6 @@ struct WorkDelegationOperation {
     delegation: WorkDelegation,
     event: WorkDelegationEvent,
     target_work_operation: WorkOperation,
-}
-
-fn same_work_review_command(
-    existing: &Review,
-    work_id: &str,
-    expected_version: u64,
-    payload: &WorkReviewPayload,
-    context: &WorkCommandContext,
-) -> bool {
-    existing.id == payload.id
-        && existing.reviewed_work_id.as_deref() == Some(work_id)
-        && existing.reviewed_work_version == Some(expected_version)
-        && existing.verdict == payload.verdict
-        && existing.summary == payload.summary
-        && existing.blockers == payload.blockers
-        && existing.residual_risk == payload.residual_risk
-        && existing.missing_validation == payload.missing_validation
-        && existing.evidence_ids == payload.evidence_ids
-        && existing.performed_by_actor.as_ref() == Some(&context.performed_by_actor)
-        && existing.authority_actor == context.authority_actor
 }
 
 /// Canonical semantic request identity for WorkDelegation creation. Entity ids
@@ -318,8 +287,6 @@ fn work_delegation_request_fingerprint(
             "artifact_refs": target_work.artifact_refs,
             "check_refs": target_work.check_refs,
             "github_links": target_work.github_links,
-            "gates": target_work.gates,
-            "workspace": target_work.workspace,
             "version": target_work.version,
         },
         "performed_by_actor": context.performed_by_actor,
@@ -783,8 +750,8 @@ impl HarnessStore {
         self.append_jsonl_unlocked("missions.jsonl", next)
     }
 
-    pub fn append_member(&self, value: &AgentMember) -> StoreResult<()> {
-        self.append_jsonl("members.jsonl", value)
+    pub fn append_member(&self, value: &ProviderLaunchProfile) -> StoreResult<()> {
+        self.append_jsonl("provider_launch_profiles.jsonl", value)
     }
 
     /// Compare-and-append a Team revision while preserving its Mission, Host,
@@ -874,28 +841,6 @@ impl HarnessStore {
             )));
         }
         self.append_jsonl_unlocked("teams.jsonl", value)
-    }
-
-    /// Insert one slim, durable Organization identity under the store lock.
-    /// Provider/runtime/session state belongs to MemberRun and native sessions,
-    /// never to this ledger (ADR 0052).
-    pub fn insert_durable_member(&self, value: &DurableAgentMember) -> StoreResult<()> {
-        value
-            .validate()
-            .map_err(|error| StoreError::Conflict(error.to_string()))?;
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        let members = latest_by_id(
-            self.read_jsonl::<DurableAgentMember>("durable_agent_members.jsonl")?,
-            |member| member.id.clone(),
-        );
-        if members.contains_key(&value.id) {
-            return Err(StoreError::Conflict(format!(
-                "durable AgentMember already exists: {}",
-                value.id
-            )));
-        }
-        self.append_jsonl_unlocked("durable_agent_members.jsonl", value)
     }
 
     /// Append a new active operational admission for one exact provider tuple.
@@ -1115,121 +1060,12 @@ impl HarnessStore {
         self.append_jsonl_unlocked(PROVIDER_COMPATIBILITY_ADMISSIONS_LEDGER, value)
     }
 
-    /// Explicitly converge one row from the legacy runtime-heavy AgentMember
-    /// registry into the durable identity ledger. Existing identical results
-    /// are idempotent; divergent re-projections are refused.
-    pub fn converge_registry_member(
-        &self,
-        value: &DurableAgentMember,
-    ) -> StoreResult<DurableAgentMember> {
-        value
-            .validate()
-            .map_err(|error| StoreError::Conflict(error.to_string()))?;
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        let registry = latest_by_id(self.read_jsonl::<AgentMember>("members.jsonl")?, |member| {
-            member.id.clone()
-        });
-        let source = registry.get(&value.id).ok_or_else(|| {
-            StoreError::Conflict(format!("compatibility AgentMember not found: {}", value.id))
-        })?;
-        let expected_status = match source.status {
-            AgentMemberStatus::Retired => firm_core::DurableAgentMemberStatus::Retired,
-            AgentMemberStatus::Paused
-            | AgentMemberStatus::Stale
-            | AgentMemberStatus::Closed
-            | AgentMemberStatus::Closing => firm_core::DurableAgentMemberStatus::Paused,
-            _ => firm_core::DurableAgentMemberStatus::Active,
-        };
-        let expected_profile = source
-            .profile
-            .clone()
-            .or_else(|| Some(source.provider.clone()));
-        if value.name != source.name
-            || value.description != source.description
-            || value.role != source.role
-            || value.provider_profile != expected_profile
-            || value.model != source.model
-            || value.workspace_policy != source.workspace_policy
-            || value.status != expected_status
-            || value.created_at != source.created_at
-            || value.updated_at != source.created_at
-        {
-            return Err(StoreError::Conflict(format!(
-                "durable AgentMember {} does not match its deterministic compatibility projection",
-                value.id
-            )));
-        }
-        let durable = latest_by_id(
-            self.read_jsonl::<DurableAgentMember>("durable_agent_members.jsonl")?,
-            |member| member.id.clone(),
-        );
-        if let Some(existing) = durable.get(&value.id) {
-            if existing == value {
-                return Ok(existing.clone());
-            }
-            return Err(StoreError::Conflict(format!(
-                "durable AgentMember {} already exists with different identity fields",
-                value.id
-            )));
-        }
-        self.append_jsonl_unlocked("durable_agent_members.jsonl", value)?;
-        Ok(value.clone())
+    pub fn append_runtime(&self, value: &ProviderProcess) -> StoreResult<()> {
+        self.append_jsonl("provider_processes.jsonl", value)
     }
 
-    /// Register the already-declared durable Host identity of one Team. Host
-    /// authority lives only in `AgentTeam.host_agent_id`; this command never
-    /// rewrites Team placement or membership.
-    pub fn bootstrap_root_lead_member(
-        &self,
-        root_team_id: &str,
-        member: &DurableAgentMember,
-    ) -> StoreResult<AgentTeam> {
-        member
-            .validate()
-            .map_err(|error| StoreError::Conflict(error.to_string()))?;
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        let teams = latest_by_id(self.read_jsonl::<AgentTeam>("teams.jsonl")?, |team| {
-            team.id.clone()
-        });
-        let team = teams
-            .get(root_team_id)
-            .ok_or_else(|| StoreError::Conflict(format!("AgentTeam not found: {root_team_id}")))?;
-        if team.host_agent_id != member.id {
-            return Err(StoreError::Conflict(format!(
-                "AgentTeam {root_team_id} Host is {}, not {}",
-                team.host_agent_id, member.id
-            )));
-        }
-
-        let durable = latest_by_id(
-            self.read_jsonl::<DurableAgentMember>("durable_agent_members.jsonl")?,
-            |row| row.id.clone(),
-        );
-        let should_append_member = match durable.get(&member.id) {
-            Some(existing) if existing == member => false,
-            Some(_) => {
-                return Err(StoreError::Conflict(format!(
-                    "durable AgentMember {} already exists with different identity fields",
-                    member.id
-                )))
-            }
-            None => true,
-        };
-
-        if should_append_member {
-            self.append_jsonl_unlocked("durable_agent_members.jsonl", member)?;
-        }
-        Ok(team.clone())
-    }
-
-    pub fn append_runtime(&self, value: &AgentRuntime) -> StoreResult<()> {
-        self.append_jsonl("agent_runtimes.jsonl", value)
-    }
-
-    pub fn append_event(&self, value: &AgentEvent) -> StoreResult<()> {
-        self.append_jsonl("agent_events.jsonl", value)
+    pub fn append_event(&self, value: &ProviderDispatchEvent) -> StoreResult<()> {
+        self.append_jsonl("provider_dispatch_events.jsonl", value)
     }
 
     pub fn append_proposal(&self, value: &Proposal) -> StoreResult<()> {
@@ -1291,7 +1127,7 @@ impl HarnessStore {
             StoreError::Conflict(format!("MemberRun not found: {}", route.member_run_id))
         })?;
         if member.team_run_id != route.team_run_id
-            || member.agent_member_id.as_deref() != Some(route.agent_member_id.as_str())
+            || member.agent_member_id != route.agent_member_id
         {
             return Err(StoreError::Conflict(format!(
                 "MemberRun {} is not the Agent {} runtime in TeamRun {}",
@@ -1338,14 +1174,6 @@ impl HarnessStore {
         value
             .validate()
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
-        if value.reviewed_work_id.is_some()
-            || value.reviewed_work_version.is_some()
-            || value.review_strategy.is_some()
-        {
-            return Err(StoreError::Conflict(
-                "BOUND_REVIEW_REQUIRES_WORK_CONTEXT: use record_work_review".to_string(),
-            ));
-        }
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         if self
@@ -1364,145 +1192,6 @@ impl HarnessStore {
     /// Record a Review bound to the exact current Work candidate. Identity and
     /// binding fields are derived from trusted Store context rather than caller
     /// supplied payload.
-    pub fn record_work_review(
-        &self,
-        work_id: &str,
-        expected_version: u64,
-        payload: WorkReviewPayload,
-        context: WorkCommandContext,
-    ) -> StoreResult<Review> {
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
-        require_non_empty_store(&payload.id, "review id")?;
-        require_non_empty_store(&payload.summary, "review summary")?;
-        require_non_empty_store(&context.idempotency_key, "review idempotency key")?;
-        if matches!(payload.verdict, ReviewVerdict::Other(_)) {
-            return Err(StoreError::Conflict(
-                "WORK_REVIEW_VERDICT_INVALID: expected pass, fail, blocked, or needs_changes"
-                    .to_string(),
-            ));
-        }
-        let reviews = self.read_jsonl::<Review>("reviews.jsonl")?;
-        if let Some(existing) = reviews.iter().find(|review| {
-            review.command_idempotency_key.as_deref() == Some(&context.idempotency_key)
-        }) {
-            if same_work_review_command(existing, work_id, expected_version, &payload, &context) {
-                return Ok(existing.clone());
-            }
-            return Err(StoreError::Conflict(format!(
-                "IDEMPOTENCY_CONFLICT: review key {} already belongs to a different Work Review command",
-                context.idempotency_key
-            )));
-        }
-        if reviews.iter().any(|review| review.id == payload.id) {
-            return Err(StoreError::Conflict(format!(
-                "review already exists: {}",
-                payload.id
-            )));
-        }
-
-        let work = self.current_work_unlocked(work_id, expected_version)?;
-        if work.phase != WorkPhase::Review || work.condition != WorkCondition::Normal {
-            return Err(StoreError::Conflict(format!(
-                "work {work_id} is not awaiting review"
-            )));
-        }
-        let configs = work
-            .gates
-            .iter()
-            .filter(|gate| gate.plugin == "code-review")
-            .map(|gate| gate.parse_builtin_config())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|reason| StoreError::Conflict(format!("INVALID_WORK_GATE: {reason}")))?;
-        if configs.len() != 1 {
-            return Err(StoreError::Conflict(format!(
-                "WORK_CODE_REVIEW_GATE_REQUIRED: expected exactly one code-review gate, found {}",
-                configs.len()
-            )));
-        }
-        let BuiltinGateConfig::CodeReview(config) = &configs[0] else {
-            unreachable!("code-review plugin parsed as another built-in")
-        };
-
-        let reviewer_agent_id = match config.strategy {
-            CodeReviewStrategy::Peer => {
-                let member_run_id = &context.performed_by_actor.id;
-                require_member_actor(&context.performed_by_actor, member_run_id)?;
-                let (team_run, member) =
-                    self.require_team_member_run_unlocked(member_run_id, &work.team_run_id)?;
-                if !member_is_active_reviewer_runtime(&member) {
-                    return Err(StoreError::Conflict(
-                        "only an active MemberRun may record a peer Work review".to_string(),
-                    ));
-                }
-                let reviewer =
-                    self.require_unambiguous_stable_member_identity_unlocked(&team_run, &member)?;
-                if config.reviewer.as_deref() != Some(reviewer.as_str()) {
-                    return Err(StoreError::Conflict(format!(
-                        "WORK_REVIEWER_MISMATCH: expected peer reviewer {}, got {reviewer}",
-                        config.reviewer.as_deref().unwrap_or_default()
-                    )));
-                }
-                if work.owner_member_id.as_deref() == Some(reviewer.as_str()) {
-                    return Err(StoreError::Conflict(
-                        "WORK_PEER_REVIEW_REQUIRES_DISTINCT_REVIEWER".to_string(),
-                    ));
-                }
-                reviewer
-            }
-            CodeReviewStrategy::SelfReview => {
-                let member_run_id = &context.performed_by_actor.id;
-                require_member_actor(&context.performed_by_actor, member_run_id)?;
-                let (team_run, member) =
-                    self.require_team_member_run_unlocked(member_run_id, &work.team_run_id)?;
-                if !member_is_active_reviewer_runtime(&member) {
-                    return Err(StoreError::Conflict(
-                        "only an active MemberRun may record a self Work review".to_string(),
-                    ));
-                }
-                let reviewer =
-                    self.require_unambiguous_stable_member_identity_unlocked(&team_run, &member)?;
-                if work.owner_member_id.as_deref() != Some(reviewer.as_str()) {
-                    return Err(StoreError::Conflict(
-                        "WORK_SELF_REVIEW_REQUIRES_OWNER".to_string(),
-                    ));
-                }
-                reviewer
-            }
-            CodeReviewStrategy::Host => {
-                require_host_actor(&context.performed_by_actor)?;
-                trusted_host_review_authority(&context)?.id.clone()
-            }
-        };
-
-        let review = Review {
-            id: payload.id,
-            task_id: Some(work.id.clone()),
-            goal_id: None,
-            reviewer_agent_id,
-            review_kind: "code".to_string(),
-            verdict: payload.verdict,
-            summary: payload.summary,
-            blockers: payload.blockers,
-            residual_risk: payload.residual_risk,
-            missing_validation: payload.missing_validation,
-            evidence_ids: payload.evidence_ids,
-            created_at: context.created_at,
-            reviewed_work_id: Some(work.id),
-            reviewed_work_version: Some(work.version),
-            review_strategy: Some(config.strategy),
-            performed_by_actor: Some(context.performed_by_actor),
-            authority_actor: context.authority_actor,
-            command_idempotency_key: Some(context.idempotency_key),
-        };
-        review
-            .validate()
-            .map_err(|error| StoreError::Conflict(error.to_string()))?;
-        self.append_jsonl_unlocked("reviews.jsonl", &review)?;
-        Ok(review)
-    }
-
     pub fn append_gap(&self, value: &Gap) -> StoreResult<()> {
         self.append_jsonl("gaps.jsonl", value)
     }
@@ -2689,8 +2378,6 @@ impl HarnessStore {
         )? {
             return Ok(existing.work);
         }
-        work.validate_gates()
-            .map_err(|reason| StoreError::Conflict(format!("INVALID_WORK_GATES: {reason}")))?;
         self.ensure_work_event_id_available_unlocked(&context.event_id)?;
         let team_run = self.require_team_run_unlocked(&work.team_run_id)?;
         if matches!(
@@ -2754,7 +2441,7 @@ impl HarnessStore {
         if let Some(member_run_id) = work.active_member_run_id.as_deref() {
             let member = self.require_member_run_unlocked(member_run_id, &work.team_run_id)?;
             self.ensure_member_can_receive_work_unlocked(&member)?;
-            let stable_identity = stable_member_identity(&member);
+            let stable_identity = member_identity(&member);
             if work
                 .owner_member_id
                 .as_deref()
@@ -2778,7 +2465,7 @@ impl HarnessStore {
                         "only an active MemberRun may create Work".to_string(),
                     ));
                 }
-                let own_identity = stable_member_identity(&member);
+                let own_identity = member_identity(&member);
                 if work
                     .created_by_member_id
                     .as_deref()
@@ -2837,7 +2524,6 @@ impl HarnessStore {
             condition_records: Vec::new(),
             reports: Vec::new(),
             evidence_records: Vec::new(),
-            gate_evaluations: Vec::new(),
             decisions: Vec::new(),
             deliveries,
             delivery_updates: Vec::new(),
@@ -2912,7 +2598,7 @@ impl HarnessStore {
                     &context.performed_by_actor.id,
                     &source.team_run_id,
                 )?;
-                if stable_member_identity(&member) != source_owner {
+                if member_identity(&member) != source_owner {
                     return Err(StoreError::Conflict(
                         "DELEGATION_NOT_AUTHORIZED: only source owner or Host may delegate"
                             .to_string(),
@@ -3035,9 +2721,6 @@ impl HarnessStore {
         target_work.updated_at = context.created_at.clone();
         target_work.created_by_actor = context.performed_by_actor.clone();
         target_work
-            .validate_gates()
-            .map_err(|reason| StoreError::Conflict(format!("INVALID_WORK_GATES: {reason}")))?;
-        target_work
             .validate()
             .map_err(|error| StoreError::Conflict(format!("INVALID_WORK_PROJECTION: {error}")))?;
         self.validate_work_relations_unlocked(&target_work)?;
@@ -3091,7 +2774,6 @@ impl HarnessStore {
             condition_records: Vec::new(),
             reports: Vec::new(),
             evidence_records: Vec::new(),
-            gate_evaluations: Vec::new(),
             decisions: Vec::new(),
             deliveries: self.initial_work_deliveries_unlocked(
                 &target_work,
@@ -3160,7 +2842,7 @@ impl HarnessStore {
         self.ensure_deliveries_reassignable_unlocked(&current)?;
         let member = self.require_member_run_unlocked(owner_member_run_id, &current.team_run_id)?;
         self.ensure_member_can_receive_work_unlocked(&member)?;
-        let owner_id = stable_member_identity(&member);
+        let owner_id = member_identity(&member);
         let mut next = current.clone();
         next.owner_member_id = Some(owner_id);
         next.active_member_run_id = Some(member.id.clone());
@@ -3270,7 +2952,7 @@ impl HarnessStore {
             ));
         }
         self.ensure_member_can_receive_work_unlocked(&replacement)?;
-        let replacement_identity = stable_member_identity(&replacement);
+        let replacement_identity = member_identity(&replacement);
         if replacement_identity != owner_member_id {
             return Err(StoreError::Conflict(format!(
                 "OWNER_MISMATCH: replacement MemberRun {new_member_run_id} belongs to {replacement_identity}, expected {owner_member_id}"
@@ -3473,7 +3155,7 @@ impl HarnessStore {
                 let member =
                     self.require_member_run_unlocked(member_run_id, successor_team_run_id)?;
                 self.ensure_member_can_receive_work_unlocked(&member)?;
-                let successor_identity = stable_member_identity(&member);
+                let successor_identity = member_identity(&member);
                 if successor_identity != owner_id {
                     return Err(StoreError::Conflict(format!(
                         "OWNER_MISMATCH: successor MemberRun {member_run_id} belongs to {successor_identity}, expected {owner_id}"
@@ -3543,7 +3225,7 @@ impl HarnessStore {
                 "MEMBER_BUSY: MemberRun {member_run_id} is not available and active"
             )));
         }
-        let owner_id = stable_member_identity(&member);
+        let owner_id = member_identity(&member);
         if !current.eligible_member_ids.is_empty()
             && !current.eligible_member_ids.iter().any(|id| id == &owner_id)
         {
@@ -4050,7 +3732,6 @@ impl HarnessStore {
             Vec::new(),
             reports,
             Vec::new(),
-            Vec::new(),
         )
     }
 
@@ -4131,178 +3812,28 @@ impl HarnessStore {
 
     pub fn accept_work(
         &self,
-        work_id: &str,
-        expected_version: u64,
-        context: WorkCommandContext,
+        _work_id: &str,
+        _expected_version: u64,
+        _context: WorkCommandContext,
     ) -> StoreResult<Work> {
-        self.accept_work_with_summary(work_id, expected_version, None, context)
+        Err(StoreError::Conflict(
+            "LEGACY_WORK_ACCEPT_RETIRED: use the authenticated team-scoped member-trust Work acceptance command"
+                .to_string(),
+        ))
     }
 
     pub fn accept_work_with_summary(
         &self,
-        work_id: &str,
-        expected_version: u64,
-        summary: Option<&str>,
-        context: WorkCommandContext,
+        _work_id: &str,
+        _expected_version: u64,
+        _summary: Option<&str>,
+        _context: WorkCommandContext,
     ) -> StoreResult<Work> {
-        if summary.is_some_and(|value| value.trim().is_empty()) {
-            return Err(StoreError::Conflict(
-                "acceptance summary must not be empty when provided".to_string(),
-            ));
-        }
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        self.ensure_work_store_compatible_unlocked()?;
-        if let Some(existing) = self.idempotent_work_operation_unlocked(
-            &context.idempotency_key,
-            work_id,
-            WorkEventKind::Accepted,
-        )? {
-            return Ok(existing.work);
-        }
-        require_host_actor(&context.performed_by_actor)?;
-        let current = self.current_work_unlocked(work_id, expected_version)?;
-        if current.owner_member_id.as_deref() == Some(context.performed_by_actor.id.as_str())
-            || current.active_member_run_id.as_deref()
-                == Some(context.performed_by_actor.id.as_str())
-        {
-            return Err(StoreError::Conflict(
-                "ACCOUNTABLE_MEMBER_CANNOT_ACCEPT: Work owner cannot accept its own candidate"
-                    .to_string(),
-            ));
-        }
-        if current.phase != WorkPhase::Review || current.condition != WorkCondition::Normal {
-            return Err(StoreError::Conflict(format!(
-                "work {work_id} must await Host acceptance"
-            )));
-        }
-        self.require_work_gates_pass_unlocked(&current)?;
-        let operations = self.work_operations_unlocked()?;
-        let report = operations
-            .iter()
-            .flat_map(|operation| operation.reports.iter())
-            .filter(|report| {
-                report.work_id == current.id && report.work_version == current.version
-            })
-            .max_by_key(|report| report.report_revision)
-            .ok_or_else(|| {
-                StoreError::Conflict(format!(
-                    "CURRENT_WORK_REPORT_REQUIRED: Work {work_id} version {} has no immutable submission",
-                    current.version
-                ))
-            })?;
-        let evidence = operations
-            .iter()
-            .flat_map(|operation| operation.evidence_records.iter())
-            .filter(|evidence| {
-                evidence.work_id == current.id
-                    && evidence.work_report_id == report.id
-                    && evidence.work_version == current.version
-                    && evidence.candidate_revision == report.candidate_revision
-                    && evidence.source_ref == report.candidate_revision
-                    && report.evidence_refs.contains(&evidence.id)
-            })
-            .collect::<Vec<_>>();
-        if evidence.is_empty() || evidence.len() != report.evidence_refs.len() {
-            return Err(StoreError::Conflict(format!(
-                "WORK_REPORT_EVIDENCE_REQUIRED: report {} is not fully bound to candidate {}",
-                report.id, report.candidate_revision
-            )));
-        }
-        let reviews = self.read_jsonl::<Review>("reviews.jsonl")?;
-        let gate_results = GateEngine::evaluate_work_gates_with_reviews(&current, &reviews);
-        let gate_evaluations = gate_results
-            .into_iter()
-            .enumerate()
-            .map(|(index, result)| WorkGateEvaluation {
-                id: format!("work-gate-evaluation-{}-{index}", context.event_id),
-                work_id: current.id.clone(),
-                work_report_id: report.id.clone(),
-                gate_requirement_ref: result.gate.plugin.clone(),
-                evaluator_actor: context.performed_by_actor.clone(),
-                verdict: firm_core::WorkGateVerdict::Passed,
-                summary: format!(
-                    "{} gate evaluated {:?} for immutable WorkReport",
-                    result.gate.plugin, result.verdict
-                ),
-                evidence_refs: report
-                    .evidence_refs
-                    .iter()
-                    .chain(current.artifact_refs.iter())
-                    .chain(current.check_refs.iter())
-                    .cloned()
-                    .collect(),
-                created_at: context.created_at.clone(),
-            })
-            .collect::<Vec<_>>();
-        let decision = WorkOperationalDecision {
-            id: format!("work-decision-{}", context.event_id),
-            work_id: current.id.clone(),
-            expected_work_version: current.version,
-            kind: firm_core::WorkDecisionKind::Accept,
-            decided_by_actor: context.performed_by_actor.clone(),
-            rationale: summary
-                .unwrap_or("all declared Work gates passed")
+        Err(StoreError::Conflict(
+            "LEGACY_WORK_ACCEPT_RETIRED: use the authenticated team-scoped member-trust Work acceptance command"
                 .to_string(),
-            work_report_id: Some(report.id.clone()),
-            gate_requirement_ref: None,
-            failure_analysis_ref: None,
-            evidence_refs: gate_evaluations
-                .iter()
-                .map(|evaluation| evaluation.id.clone())
-                .collect(),
-            created_at: context.created_at.clone(),
-        };
-        let mut next = current.clone();
-        next.phase = WorkPhase::Closed;
-        next.condition = WorkCondition::Normal;
-        next.resolution = Some(WorkResolution::Accepted);
-        next.version += 1;
-        next.updated_at = context.created_at.clone();
-        let payload = summary
-            .map(|summary| serde_json::json!({ "summary": summary }))
-            .unwrap_or(serde_json::Value::Null);
-        self.append_work_transition_with_records_unlocked(
-            current,
-            next,
-            WorkEventKind::Accepted,
-            context,
-            payload,
-            Vec::new(),
-            Vec::new(),
-            gate_evaluations,
-            vec![decision],
-        )
+        ))
     }
-
-    fn require_work_gates_pass_unlocked(&self, work: &Work) -> StoreResult<()> {
-        if work.gates.is_empty() {
-            return Ok(());
-        }
-        let reviews = self.read_jsonl::<Review>("reviews.jsonl")?;
-        let failed = GateEngine::evaluate_work_gates_with_reviews(work, &reviews)
-            .into_iter()
-            .filter(|result| !result.verdict.is_pass())
-            .map(|result| {
-                let reason = match result.verdict {
-                    GateVerdict::Fail { reason } => format!("FAIL: {reason}"),
-                    GateVerdict::Blocked { reason } => format!("BLOCKED: {reason}"),
-                    GateVerdict::Pass => unreachable!("passing gates were filtered out"),
-                };
-                format!("[{}] {reason}", result.gate.plugin)
-            })
-            .collect::<Vec<_>>();
-        if failed.is_empty() {
-            return Ok(());
-        }
-        Err(StoreError::Conflict(format!(
-            "WORK_GATES_NOT_PASSING: cannot accept work {}: {} gate(s) not passing: {}",
-            work.id,
-            failed.len(),
-            failed.join("; ")
-        )))
-    }
-
     pub fn request_work_changes(
         &self,
         work_id: &str,
@@ -4447,7 +3978,6 @@ impl HarnessStore {
             condition_records,
             reports,
             Vec::new(),
-            Vec::new(),
         )
     }
 
@@ -4500,7 +4030,6 @@ impl HarnessStore {
             payload,
             condition_records,
             reports,
-            Vec::new(),
             Vec::new(),
         )
     }
@@ -4586,7 +4115,6 @@ impl HarnessStore {
             Vec::new(),
             Vec::new(),
             Vec::new(),
-            Vec::new(),
         )
     }
 
@@ -4600,7 +4128,6 @@ impl HarnessStore {
         payload: serde_json::Value,
         condition_records: Vec<WorkConditionRecord>,
         reports: Vec<WorkReport>,
-        gate_evaluations: Vec<WorkGateEvaluation>,
         decisions: Vec<WorkOperationalDecision>,
     ) -> StoreResult<Work> {
         self.ensure_work_event_id_available_unlocked(&context.event_id)?;
@@ -4700,7 +4227,6 @@ impl HarnessStore {
             condition_records,
             reports,
             evidence_records,
-            gate_evaluations,
             decisions,
             deliveries,
             delivery_updates,
@@ -5291,7 +4817,7 @@ impl HarnessStore {
         team_run: &AgentTeamRun,
         proposed: &MemberRun,
     ) -> StoreResult<()> {
-        let identity = stable_member_identity(proposed);
+        let identity = member_identity(proposed);
         let members = latest_by_id(self.read_jsonl::<MemberRun>("member_runs.jsonl")?, |row| {
             row.id.clone()
         });
@@ -5299,7 +4825,7 @@ impl HarnessStore {
             .member_run_ids
             .iter()
             .filter_map(|id| members.get(id))
-            .find(|member| stable_member_identity(member) == identity)
+            .find(|member| member_identity(member) == identity)
         {
             return Err(StoreError::Conflict(format!(
                 "MEMBER_IDENTITY_CONFLICT: stable identity {identity} is already admitted as MemberRun {}",
@@ -5314,7 +4840,7 @@ impl HarnessStore {
         team_run: &AgentTeamRun,
         proposed: &MemberRun,
     ) -> StoreResult<()> {
-        let identity = stable_member_identity(proposed);
+        let identity = member_identity(proposed);
         let members = latest_by_id(self.read_jsonl::<MemberRun>("member_runs.jsonl")?, |row| {
             row.id.clone()
         });
@@ -5322,7 +4848,7 @@ impl HarnessStore {
             .member_run_ids
             .iter()
             .filter_map(|id| members.get(id))
-            .filter(|member| stable_member_identity(member) == identity)
+            .filter(|member| member_identity(member) == identity)
             .collect::<Vec<_>>();
         if candidates.is_empty() {
             return Ok(());
@@ -5353,12 +4879,12 @@ impl HarnessStore {
     /// exact runtime in the latest TeamRun membership. Reject duplicate stable
     /// identities instead of choosing whichever MemberRun happened to be
     /// loaded first.
-    fn require_unambiguous_stable_member_identity_unlocked(
+    fn require_unambiguous_member_identity_unlocked(
         &self,
         team_run: &AgentTeamRun,
         member: &MemberRun,
     ) -> StoreResult<String> {
-        let identity = stable_member_identity(member);
+        let identity = member_identity(member);
         let members = latest_by_id(self.read_jsonl::<MemberRun>("member_runs.jsonl")?, |row| {
             row.id.clone()
         });
@@ -5367,7 +4893,7 @@ impl HarnessStore {
             .iter()
             .filter_map(|member_run_id| members.get(member_run_id))
             .filter(|candidate| member_is_active_reviewer_runtime(candidate))
-            .filter(|candidate| stable_member_identity(candidate) == identity)
+            .filter(|candidate| member_identity(candidate) == identity)
             .map(|candidate| candidate.id.as_str())
             .collect::<Vec<_>>();
         if candidates.len() != 1 || candidates[0] != member.id {
@@ -5406,7 +4932,7 @@ impl HarnessStore {
         if let Some(member_run_id) = work.active_member_run_id.as_deref() {
             let member = self.require_member_run_unlocked(member_run_id, &work.team_run_id)?;
             self.ensure_member_can_receive_work_unlocked(&member)?;
-            if work.owner_member_id.as_deref() != Some(stable_member_identity(&member).as_str()) {
+            if work.owner_member_id.as_deref() != Some(member_identity(&member).as_str()) {
                 return Err(StoreError::Conflict(
                     "owner_member_id does not match active MemberRun stable identity".to_string(),
                 ));
@@ -5456,7 +4982,7 @@ impl HarnessStore {
         // Resumed, Rebound) genuinely need delivery even to the owner.
         if work.is_terminal() {
             if let Some(ref owner_id) = work.owner_member_id {
-                if owner_id == &stable_member_identity(&member) {
+                if owner_id == &member_identity(&member) {
                     return Ok(Vec::new());
                 }
             }
@@ -5922,7 +5448,6 @@ impl HarnessStore {
                     .map(|record| record.id.as_str())
                     .chain(row.reports.iter().map(|record| record.id.as_str()))
                     .chain(row.evidence_records.iter().map(|record| record.id.as_str()))
-                    .chain(row.gate_evaluations.iter().map(|record| record.id.as_str()))
                     .chain(row.decisions.iter().map(|record| record.id.as_str()))
             })
             .collect::<std::collections::BTreeSet<_>>();
@@ -5945,13 +5470,6 @@ impl HarnessStore {
                 )
             }))
             .chain(operation.evidence_records.iter().map(|record| {
-                (
-                    record.id.as_str(),
-                    record.work_id.as_str(),
-                    record.validate(),
-                )
-            }))
-            .chain(operation.gate_evaluations.iter().map(|record| {
                 (
                     record.id.as_str(),
                     record.work_id.as_str(),
@@ -6054,13 +5572,22 @@ impl HarnessStore {
     }
 
     fn latest_works_unlocked(&self) -> StoreResult<std::collections::BTreeMap<String, Work>> {
-        Ok(latest_by_id(
+        let mut latest = latest_by_id(
             self.work_operations_with_recovered_provenance_unlocked()?,
             |operation| operation.work.id.clone(),
         )
         .into_iter()
         .map(|(id, operation)| (id, operation.work))
-        .collect())
+        .collect::<std::collections::BTreeMap<_, _>>();
+        for work in self.trust_work_projections_unlocked()? {
+            match latest.get(&work.id) {
+                Some(current) if current.version >= work.version => {}
+                _ => {
+                    latest.insert(work.id.clone(), work);
+                }
+            }
+        }
+        Ok(latest)
     }
 
     fn latest_work_deliveries_unlocked(
@@ -7867,12 +7394,8 @@ impl HarnessStore {
         Ok(entries[start..].to_vec())
     }
 
-    pub fn members(&self) -> StoreResult<Vec<AgentMember>> {
-        self.read_jsonl("members.jsonl")
-    }
-
-    pub fn durable_members(&self) -> StoreResult<Vec<DurableAgentMember>> {
-        self.read_jsonl("durable_agent_members.jsonl")
+    pub fn members(&self) -> StoreResult<Vec<ProviderLaunchProfile>> {
+        self.read_jsonl("provider_launch_profiles.jsonl")
     }
 
     /// Raw append-only compatibility admission rows in causal order.
@@ -7939,15 +7462,6 @@ impl HarnessStore {
             .filter(ProviderCompatibilityAdmission::is_active))
     }
 
-    /// Latest-row-wins durable AgentMember projection, ordered by id.
-    pub fn latest_durable_members(
-        &self,
-    ) -> StoreResult<std::collections::BTreeMap<String, DurableAgentMember>> {
-        Ok(latest_by_id(self.durable_members()?, |member| {
-            member.id.clone()
-        }))
-    }
-
     pub fn teams(&self) -> StoreResult<Vec<AgentTeam>> {
         self.read_jsonl("teams.jsonl")
     }
@@ -7958,12 +7472,12 @@ impl HarnessStore {
         Ok(latest_by_id(self.teams()?, |team| team.id.clone()))
     }
 
-    pub fn runtimes(&self) -> StoreResult<Vec<AgentRuntime>> {
-        self.read_jsonl("agent_runtimes.jsonl")
+    pub fn runtimes(&self) -> StoreResult<Vec<ProviderProcess>> {
+        self.read_jsonl("provider_processes.jsonl")
     }
 
-    pub fn events(&self) -> StoreResult<Vec<AgentEvent>> {
-        self.read_jsonl("agent_events.jsonl")
+    pub fn events(&self) -> StoreResult<Vec<ProviderDispatchEvent>> {
+        self.read_jsonl("provider_dispatch_events.jsonl")
     }
 
     pub fn proposals(&self) -> StoreResult<Vec<Proposal>> {
@@ -8179,7 +7693,7 @@ impl HarnessStore {
                     &context.performed_by_actor.id,
                     &current.source_work_ref.team_run_id,
                 )?;
-                if stable_member_identity(&member) != current.source_owner_member_id {
+                if member_identity(&member) != current.source_owner_member_id {
                     return Err(StoreError::Conflict(
                         "DELEGATION_NOT_AUTHORIZED: only source owner or Host may cancel"
                             .to_string(),
@@ -8235,14 +7749,6 @@ impl HarnessStore {
             .work_operations_unlocked()?
             .into_iter()
             .flat_map(|operation| operation.evidence_records)
-            .collect())
-    }
-
-    pub fn work_gate_evaluations(&self) -> StoreResult<Vec<WorkGateEvaluation>> {
-        Ok(self
-            .work_operations_unlocked()?
-            .into_iter()
-            .flat_map(|operation| operation.gate_evaluations)
             .collect())
     }
 
@@ -9075,12 +8581,8 @@ fn normalize_work_title(title: &str) -> String {
     words.join(" ")
 }
 
-fn stable_member_identity(member: &MemberRun) -> String {
-    member
-        .agent_member_id
-        .clone()
-        .or_else(|| member.slot_id.clone())
-        .unwrap_or_else(|| member.id.clone())
+fn member_identity(member: &MemberRun) -> String {
+    member.agent_member_id.clone()
 }
 
 fn member_is_active_reviewer_runtime(member: &MemberRun) -> bool {
@@ -11343,7 +10845,7 @@ mod tests {
             id: format!("member-{run_id}"),
             team_run_id: run_id.into(),
             slot_id: None,
-            agent_member_id: None,
+            agent_member_id: format!("agent-{run_id}"),
             name: "builder".into(),
             role: "builder".into(),
             provider: "kimi".into(),
@@ -12286,7 +11788,7 @@ mod tests {
             id: "mr-1".into(),
             team_run_id: "tr-1".into(),
             slot_id: Some("slot-1".into()),
-            agent_member_id: Some("agent-worker-1".into()),
+            agent_member_id: "agent-worker-1".into(),
             name: "worker-1".into(),
             role: "worker".into(),
             provider: "kimi".into(),
@@ -12348,22 +11850,10 @@ mod tests {
             r#"{"id":"mr-sparse","team_run_id":"tr-1","name":"w","role":"worker","provider":"codex","status":"idle","started_at":"unix-ms:3"}"#,
         );
 
-        let runs = store.member_runs().expect("read member runs");
-        assert_eq!(runs.len(), 2);
-        assert_eq!(runs[0], member_run);
-        let sparse = &runs[1];
-        assert_eq!(sparse.id, "mr-sparse");
-        assert_eq!(sparse.status, MemberRunStatus::Idle);
-        assert!(sparse.coordination_is_active());
-        assert_eq!(sparse.runtime_generation, 1);
-        assert!(sparse.slot_id.is_none());
-        assert!(sparse.agent_member_id.is_none());
-        assert!(sparse.model.is_none());
-        assert!(sparse.worktree_ref.is_none());
-        assert!(sparse.workspace_snapshot.is_none());
-        assert!(sparse.owned_paths.is_empty());
-        assert!(sparse.last_event_at.is_none());
-        assert!(sparse.finished_at.is_none());
+        let error = store
+            .member_runs()
+            .expect_err("MemberRun without agent_member_id must not compatibility-read");
+        assert!(matches!(error, StoreError::Json(_)));
 
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
@@ -12462,7 +11952,7 @@ mod tests {
                 id: member_id.clone(),
                 team_run_id: run_id.to_string(),
                 slot_id: None,
-                agent_member_id: None,
+                agent_member_id: format!("agent-{member_id}"),
                 name: "provider member".into(),
                 role: "worker".into(),
                 provider: "codex".into(),
@@ -13873,7 +13363,7 @@ mod tests {
             id: "mr-close".into(),
             team_run_id: run.id.clone(),
             slot_id: None,
-            agent_member_id: None,
+            agent_member_id: "agent-mr-close".into(),
             name: "Builder".into(),
             role: "builder".into(),
             provider: "codex".into(),
@@ -14130,7 +13620,7 @@ mod tests {
             id: format!("mr-{name}-{suffix}"),
             team_run_id: run.id.clone(),
             slot_id: Some(format!("slot-{suffix}")),
-            agent_member_id: Some(format!("agent-{suffix}")),
+            agent_member_id: format!("agent-{suffix}"),
             name: format!("Member {suffix}"),
             role: "builder".into(),
             provider: "codex".into(),
@@ -14328,7 +13818,7 @@ mod tests {
             id: format!("member-{name}-{suffix}"),
             team_run_id: team_run_id.to_string(),
             slot_id: Some(format!("slot-{suffix}")),
-            agent_member_id: Some(format!("agent-{suffix}")),
+            agent_member_id: format!("agent-{suffix}"),
             name: format!("Member {suffix}"),
             role: "builder".into(),
             provider: "codex".into(),
@@ -14419,7 +13909,7 @@ mod tests {
     fn assigned_delegation_work(run: &AgentTeamRun, member: &MemberRun, id: &str) -> Work {
         let mut work = unassigned_test_work(&run.id, id);
         work.claim_mode = WorkClaimMode::HostAssign;
-        work.owner_member_id = member.agent_member_id.clone();
+        work.owner_member_id = Some(member.agent_member_id.clone());
         work.active_member_run_id = Some(member.id.clone());
         work
     }
@@ -15363,7 +14853,7 @@ mod tests {
             .expect("submit candidate");
         let mut forged = peer.clone();
         forged.id = "mr-forged-review-member".into();
-        forged.agent_member_id = Some("agent-forged".into());
+        forged.agent_member_id = "agent-forged".into();
         let member_error = store
             .append_member_run(&forged)
             .expect_err("raw MemberRun append cannot create an undeclared reviewer");
@@ -15497,7 +14987,7 @@ mod tests {
             let mut member = peer.clone();
             member.id = format!("mr-member-admission-race-{suffix}");
             member.slot_id = Some(format!("slot-{suffix}"));
-            member.agent_member_id = Some(format!("agent-{suffix}"));
+            member.agent_member_id = format!("agent-{suffix}");
             member.name = format!("Member {suffix}");
             let mut next = run.clone();
             next.member_run_ids.push(member.id.clone());
@@ -17156,7 +16646,7 @@ mod tests {
         let (root, store, run, member, _) = work_test_fixture("same-id-generation-rebind");
         let mut assigned = unassigned_test_work(&run.id, "work-same-id-rebind");
         assigned.claim_mode = WorkClaimMode::HostAssign;
-        assigned.owner_member_id = member.agent_member_id.clone();
+        assigned.owner_member_id = Some(member.agent_member_id.clone());
         assigned.active_member_run_id = Some(member.id.clone());
         let created = store
             .insert_work(
@@ -17242,7 +16732,7 @@ mod tests {
 
         let mut assigned = unassigned_test_work(&run.id, "work-sparse-rebound");
         assigned.claim_mode = WorkClaimMode::HostAssign;
-        assigned.owner_member_id = member.agent_member_id.clone();
+        assigned.owner_member_id = Some(member.agent_member_id.clone());
         assigned.active_member_run_id = Some(member.id.clone());
         let created = store
             .insert_work(
@@ -17256,7 +16746,10 @@ mod tests {
             )
             .expect("Member creates Team-scoped Work");
         assert_eq!(created.team_id.as_deref(), Some(run.agent_team_id.as_str()));
-        assert_eq!(created.created_by_member_id, member.agent_member_id);
+        assert_eq!(
+            created.created_by_member_id,
+            Some(member.agent_member_id.clone())
+        );
 
         let mut replacement = member.clone();
         replacement.id = "member-sparse-rebound-generation-2".into();
@@ -17834,7 +17327,7 @@ mod tests {
         let mut work = work_with_title(&run.id, "work-audit-1", "Audit Company Docs");
         work.claim_mode = WorkClaimMode::HostAssign;
         work.active_member_run_id = Some(member_a.id.clone());
-        work.owner_member_id = member_a.agent_member_id.clone();
+        work.owner_member_id = Some(member_a.agent_member_id.clone());
         let first = store.insert_work(work, ctx1).expect("create first Work");
 
         // Start → Submit → Accept to make the work Done.
@@ -17928,24 +17421,6 @@ mod tests {
         }
     }
 
-    fn test_durable_member(id: &str) -> DurableAgentMember {
-        DurableAgentMember {
-            id: id.into(),
-            name: id.into(),
-            description: format!("Durable identity for {id}"),
-            role: "lead".into(),
-            provider_profile: Some("kimi/qwen3.8-max".into()),
-            model: Some("qwen/qwen3.8-max".into()),
-            workspace_policy: Some("project_binding".into()),
-            project_binding_id: Some("project-harness".into()),
-            business_access_ceiling_refs: vec!["company_os.read".into()],
-            status: firm_core::DurableAgentMemberStatus::Active,
-            created_by_member_id: None,
-            created_at: "unix-ms:1".into(),
-            updated_at: "unix-ms:2".into(),
-        }
-    }
-
     fn temp_store(label: &str) -> (PathBuf, HarnessStore) {
         let root = std::env::temp_dir().join(format!(
             "firm-store-{label}-{}",
@@ -17971,31 +17446,6 @@ mod tests {
             created_at: "unix-ms:1".into(),
             updated_at: "unix-ms:1".into(),
         }
-    }
-
-    #[test]
-    fn durable_member_insert_and_registry_convergence_refuse_ambiguous_identity() {
-        let (root, store) = temp_store("durable-agent-member");
-        let durable = test_durable_member("lead");
-        store
-            .insert_durable_member(&durable)
-            .expect("insert durable member");
-        assert_eq!(
-            store.latest_durable_members().expect("durable projection")["lead"],
-            durable
-        );
-        let duplicate = store
-            .insert_durable_member(&durable)
-            .expect_err("duplicate durable id must be refused");
-        assert!(duplicate.to_string().contains("already exists"));
-
-        let missing_registry = store
-            .converge_registry_member(&test_durable_member("compat-missing"))
-            .expect_err("convergence requires a compatibility source row");
-        assert!(missing_registry
-            .to_string()
-            .contains("compatibility AgentMember not found"));
-        std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
     // ── Lane B: upstream event push — Work lifecycle → Host attention ──
@@ -18526,7 +17976,7 @@ mod tests {
             id: "mr-work-unbound-ha".into(),
             team_run_id: run.id.clone(),
             slot_id: Some("slot-unbound".into()),
-            agent_member_id: Some("agent-unbound".into()),
+            agent_member_id: "agent-unbound".into(),
             name: "Member Unbound".into(),
             role: "builder".into(),
             provider: "codex".into(),
@@ -18646,46 +18096,6 @@ mod tests {
             wdf.is_some(),
             "must emit WorkDeliveryFailed for failed delivery claim"
         );
-        std::fs::remove_dir_all(root).expect("remove temp store");
-    }
-
-    #[test]
-    fn root_lead_bootstrap_writes_one_identity_and_one_host_authority() {
-        let (root, store) = temp_store("root-lead-bootstrap");
-        store
-            .insert_mission(&mission_log_test_mission("mission-root"))
-            .expect("insert Mission");
-        store
-            .insert_execution_node(&ExecutionNode {
-                id: "00000000-0000-4000-8000-000000000001".into(),
-                display_name: "test-node".into(),
-                status: ExecutionNodeStatus::Active,
-                created_at: "unix-ms:1".into(),
-                updated_at: "unix-ms:1".into(),
-            })
-            .expect("insert Node");
-        store
-            .insert_agent_team_with_unique_mission(&test_agent_team("root", &["worker"]))
-            .expect("insert root Team");
-        let lead = test_durable_member("lead");
-        let team = store
-            .bootstrap_root_lead_member("root", &lead)
-            .expect("bootstrap root Lead");
-        assert_eq!(team.host_agent_id, "lead");
-        assert!(!team.member_ids.iter().any(|id| id == "lead"));
-        assert_eq!(store.latest_durable_members().unwrap().len(), 1);
-
-        // Same exact bootstrap is idempotent; a different identity is refused.
-        let same = store
-            .bootstrap_root_lead_member("root", &lead)
-            .expect("repeat bootstrap");
-        assert_eq!(same, team);
-        assert_eq!(store.latest_durable_members().unwrap().len(), 1);
-        assert_eq!(store.teams().unwrap().len(), 1);
-        let conflict = store
-            .bootstrap_root_lead_member("root", &test_durable_member("other-lead"))
-            .expect_err("second root Host must be refused");
-        assert!(conflict.to_string().contains("Host is lead"));
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 

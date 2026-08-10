@@ -8,8 +8,9 @@
 
 use firm_core::{
     AgentTeam, AgentTeamRun, ExecutionNode, Mission, NodeDaemonLease, NodeProjectRegistration,
-    Review, TeamMessage, TeamSupervisorLease, Validate, Work, WorkDelegation, WorkDelegationEvent,
+    Review, TeamSupervisorLease, Validate, Work, WorkDelegation, WorkDelegationEvent,
 };
+use firm_core::agentfirm_api::TeamMessage;
 use serde::de::DeserializeOwned;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -87,21 +88,18 @@ fn wave_three_identity_and_runtime_fixtures_match_rust_contracts() {
 }
 
 #[test]
-fn team_message_fixtures_match_rust_serde_and_provider_body_contract() {
+fn team_message_fixtures_match_canonical_rust_wire_contract() {
     let root = fixture_root().join("team-message");
     for path in json_files(&root.join("valid")) {
         let bytes = fs::read(&path).expect("read valid TeamMessage fixture");
-        let message: TeamMessage = serde_json::from_slice(&bytes)
-            .unwrap_or_else(|error| panic!("Rust rejected {}: {error}", path.display()));
-        message
-            .validate_provider_interaction_contract()
+        let _: TeamMessage = serde_json::from_slice(&bytes)
             .unwrap_or_else(|error| panic!("Rust rejected {}: {error}", path.display()));
     }
     for path in json_files(&root.join("invalid")) {
         let accepted = fs::read(&path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<TeamMessage>(&bytes).ok())
-            .is_some_and(|message| message.validate_provider_interaction_contract().is_ok());
+            .is_some();
         assert!(
             !accepted,
             "Rust accepted invalid fixture {}",
@@ -116,22 +114,18 @@ fn team_message_wire_rejects_unknown_fields_at_every_closed_layer() {
     let bytes = fs::read(&fixture).expect("basic TeamMessage fixture");
     let base: serde_json::Value = serde_json::from_slice(&bytes).expect("valid fixture JSON");
 
-    let cases = ["TeamMessage", "TeamRecipientRef", "TeamMessageDelivery"];
+    let cases = ["TeamMessage", "SenderActorRef", "RecipientActorRef"];
     for label in cases {
         let mut value = base.clone();
         match label {
             "TeamMessage" => {
                 value["unknown_top_level"] = serde_json::json!(true);
             }
-            "TeamRecipientRef" => {
-                value["recipients"] = serde_json::json!([{
-                    "kind": "member_run",
-                    "id": "mrun-1",
-                    "unknown_recipient_field": true
-                }]);
+            "SenderActorRef" => {
+                value["sender"]["unknown_sender_field"] = serde_json::json!(true);
             }
-            "TeamMessageDelivery" => {
-                value["deliveries"][0]["unknown_delivery_field"] = serde_json::json!(true);
+            "RecipientActorRef" => {
+                value["recipients"][0]["unknown_recipient_field"] = serde_json::json!(true);
             }
             _ => unreachable!(),
         }

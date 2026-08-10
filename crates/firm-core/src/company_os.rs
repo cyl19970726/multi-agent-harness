@@ -47,13 +47,6 @@ fn required_strings(
     Ok(())
 }
 
-fn optional_required(
-    value: Option<&str>,
-    field: &'static str,
-) -> Result<(), CompanyOsValidationError> {
-    value.map_or(Ok(()), |value| required(value, field))
-}
-
 fn required_object(value: &Value, field: &'static str) -> Result<(), CompanyOsValidationError> {
     if value.is_object() {
         Ok(())
@@ -144,91 +137,44 @@ impl ValidateCompanyOs for HumanMember {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StandingAgent {
+#[serde(deny_unknown_fields)]
+pub struct AgentMembership {
     pub id: String,
-    pub display_name: String,
-    pub role: String,
-    /// Optional Company-owned link to the reusable execution identity.
-    /// This is never inferred from `StandingAgent.id`.
-    #[serde(default)]
-    pub execution_agent_member_ref: Option<String>,
+    /// Required reference to the canonical execution identity. Company owns
+    /// only this membership projection and never copies AgentMember payload.
+    pub agent_member_ref: crate::agentfirm_api::ActorRef,
     pub status: MemberStatus,
-    /// A business declaration. It must not be inferred from runtime health.
-    pub availability: DeclaredAvailability,
-    pub assignment_capacity: Option<u32>,
-    pub exclusive_assignment_ref: Option<String>,
     pub membership_refs: Vec<String>,
     pub responsibility_summary: String,
-    pub capability_refs: Vec<String>,
-    /// Durable behavior configuration is addressable content, normally owned
-    /// by Docs. Organization retains only the reference used by this identity.
-    pub system_prompt_ref: Option<String>,
-    #[serde(default)]
-    pub tool_refs: Vec<String>,
-    #[serde(default)]
-    pub skill_refs: Vec<String>,
-    #[serde(default)]
-    pub maintained_document_refs: Vec<String>,
-    #[serde(default)]
-    pub accepted_work_type_refs: Vec<String>,
-    pub escalation_policy_ref: Option<String>,
     pub permission_policy_refs: Vec<String>,
-    pub runtime_refs: Vec<String>,
-    pub native_session_refs: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
 }
 
-impl ValidateCompanyOs for StandingAgent {
+impl ValidateCompanyOs for AgentMembership {
     fn validate(&self) -> Result<(), CompanyOsValidationError> {
-        required(&self.id, "StandingAgent.id")?;
-        required(&self.display_name, "StandingAgent.display_name")?;
-        required(&self.role, "StandingAgent.role")?;
-        optional_required(
-            self.execution_agent_member_ref.as_deref(),
-            "StandingAgent.execution_agent_member_ref",
-        )?;
+        required(&self.id, "AgentMembership.id")?;
         required(
-            &self.responsibility_summary,
-            "StandingAgent.responsibility_summary",
+            &self.agent_member_ref.id,
+            "AgentMembership.agent_member_ref.id",
         )?;
-        required_strings(&self.membership_refs, "StandingAgent.membership_refs")?;
-        required_strings(&self.capability_refs, "StandingAgent.capability_refs")?;
-        optional_required(
-            self.system_prompt_ref.as_deref(),
-            "StandingAgent.system_prompt_ref",
-        )?;
-        required_strings(&self.tool_refs, "StandingAgent.tool_refs")?;
-        required_strings(&self.skill_refs, "StandingAgent.skill_refs")?;
-        required_strings(
-            &self.maintained_document_refs,
-            "StandingAgent.maintained_document_refs",
-        )?;
-        required_strings(
-            &self.accepted_work_type_refs,
-            "StandingAgent.accepted_work_type_refs",
-        )?;
-        optional_required(
-            self.escalation_policy_ref.as_deref(),
-            "StandingAgent.escalation_policy_ref",
-        )?;
-        required_strings(
-            &self.permission_policy_refs,
-            "StandingAgent.permission_policy_refs",
-        )?;
-        required_strings(&self.runtime_refs, "StandingAgent.runtime_refs")?;
-        required_strings(
-            &self.native_session_refs,
-            "StandingAgent.native_session_refs",
-        )?;
-        if matches!(self.assignment_capacity, Some(0)) {
+        if self.agent_member_ref.kind != crate::agentfirm_api::ActorKind::AgentMember {
             return Err(CompanyOsValidationError::Invalid {
-                field: "StandingAgent.assignment_capacity",
-                reason: "must be positive when declared".into(),
+                field: "AgentMembership.agent_member_ref",
+                reason: "must reference ActorKind::AgentMember".into(),
             });
         }
-        required(&self.created_at, "StandingAgent.created_at")?;
-        required(&self.updated_at, "StandingAgent.updated_at")
+        required(
+            &self.responsibility_summary,
+            "AgentMembership.responsibility_summary",
+        )?;
+        required_strings(&self.membership_refs, "AgentMembership.membership_refs")?;
+        required_strings(
+            &self.permission_policy_refs,
+            "AgentMembership.permission_policy_refs",
+        )?;
+        required(&self.created_at, "AgentMembership.created_at")?;
+        required(&self.updated_at, "AgentMembership.updated_at")
     }
 }
 
@@ -830,7 +776,7 @@ pub enum ExecutionMode {
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionKind {
     DirectHumanWork,
-    StandingAgentWork,
+    AgentMemberWork,
     ExternalEngagement,
     Mission,
     Wave,

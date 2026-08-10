@@ -98,7 +98,7 @@ function distinct<T>(values: T[]): T[] {
 function kindForActor(actor: JsonRecord): CompanyOsLink["actorType"] {
   const kind = text(actor.actor_type).toLowerCase();
   if (kind === "human") return "Human";
-  if (kind === "standing agent" || kind === "agent") return "Standing Agent";
+  if (kind === "standing agent" || kind === "agent") return "Agent Membership";
   if (kind === "external") return "External";
   return "Service";
 }
@@ -115,7 +115,7 @@ function actorRef(actor: JsonRecord | undefined): CompanyOsActorRef | undefined 
   if (!id || !actor) return undefined;
   const kind = kindForActor(actor);
   return {
-    actor_type: kind === "Human" ? "human" : kind === "Standing Agent" ? "agent" : kind === "External" ? "external" : "service",
+    actor_type: kind === "Human" ? "human" : kind === "Agent Membership" ? "agent" : kind === "External" ? "external" : "service",
     actor_id: id,
   };
 }
@@ -807,7 +807,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
     ? documentDefinition.policy_refs.map((value) => text(value)).find((value) => value.endsWith(":relation.append"))
     : undefined;
   const actorPermissions = (actor: JsonRecord) => strings(actor.permission_policy_refs).concat(strings((actor.actor as JsonRecord | undefined)?.permission_policy_refs));
-  const isWritableAgent = (actor: JsonRecord) => kindForActor(actor) === "Standing Agent" && actorPermissions(actor).includes("company.records.write");
+  const isWritableAgent = (actor: JsonRecord) => kindForActor(actor) === "Agent Membership" && actorPermissions(actor).includes("company.records.write");
   const isDocsGovernanceAgent = (actor: JsonRecord) => /docs|document/i.test([text(actor.id), text(actor.display_name), text((actor.actor as JsonRecord | undefined)?.display_name)].filter(Boolean).join(" "));
   const documentAuthoringAgent = actors.find((actor) => isWritableAgent(actor) && isDocsGovernanceAgent(actor))
     ?? actors.find(isWritableAgent);
@@ -1017,7 +1017,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
       databases: typedRecords.map((entry) => ({ id: text(entry.id), label: text(entry.record_type, "Typed record"), kind: "record" as const })),
       maintainers: linkEntries([
         actorLink(actors, proposal?.proposed_by_ref ?? proposal?.proposed_by),
-        ...moduleActors.filter((actor) => actor.actorType === "Standing Agent"),
+        ...moduleActors.filter((actor) => actor.actorType === "Agent Membership"),
       ]).filter((actor, index, values) => values.findIndex((candidate) => candidate.id === actor.id) === index),
       structureNotes: [
         ...(module ? [{ label: "Module state", value: humanize(module.status) || "Reported", tone: /proposed|pending/i.test(text(module.status)) ? "warning" as const : "neutral" as const }] : []),
@@ -1068,7 +1068,7 @@ export function adaptCompanyOsDocsProjection(input: unknown, selected: { documen
       subtitle: "Company context supplied by the current projection.",
       decisionRequired: approvalLink,
       decisionSummary,
-      decisionActor: decisionActor ? { id: decisionActor.id, name: decisionActor.label, kind: decisionActor.actorType === "Human" ? "human" : decisionActor.actorType === "Standing Agent" ? "agent" : decisionActor.actorType === "External" ? "external" : "service" } : undefined,
+      decisionActor: decisionActor ? { id: decisionActor.id, name: decisionActor.label, kind: decisionActor.actorType === "Human" ? "human" : decisionActor.actorType === "Agent Membership" ? "agent" : decisionActor.actorType === "External" ? "external" : "service" } : undefined,
       decisionRequester,
       decisionCollaborators,
       changes: linkEntries([sourceLink, applicationLink, selectedWorkLink, financeLink]),

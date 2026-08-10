@@ -1,0 +1,13 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://agent-harness.local/schemas/member-run-event.schema.json","title":"MemberRunEvent",
+  "description":"Typed schema view of CanonicalMutationEvent for the member_run aggregate; it is not a second persistence authority.",
+  "type":"object","additionalProperties":false,
+  "required":["id","aggregate_kind","aggregate_id","sequence","store_sequence","transition","expected_version","resulting_version","performed_by_actor","idempotency_key","canonical_request_fingerprint","payload","created_at"],
+  "properties":{
+    "id":{"type":"string","minLength":1},"aggregate_kind":{"const":"member_run"},"aggregate_id":{"type":"string","minLength":1},"sequence":{"type":"integer","minimum":1},"store_sequence":{"type":"integer","minimum":1},
+    "transition":{"type":"string","minLength":1},"expected_version":{"type":"integer","minimum":0},"resulting_version":{"type":"integer","minimum":1},"performed_by_actor":{"$ref":"#/$defs/actor"},
+    "authority_actor":{"anyOf":[{"$ref":"#/$defs/actor"},{"type":"null"}]},"causation_ref":{"type":["string","null"],"minLength":1},"idempotency_key":{"type":"string","minLength":1},
+    "canonical_request_fingerprint":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},"payload":{},"created_at":{"type":"string","minLength":1}
+  },
+  "$defs":{"actor":{"type":"object","additionalProperties":false,"required":["kind","id"],"properties":{"kind":{"enum":["human","agent_member","external","service"]},"id":{"type":"string","minLength":1}}}}
+}

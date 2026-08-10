@@ -6,7 +6,7 @@ use firm_core::{
     EntityKind, EntityRef, ExternalParticipant, HumanMember, LifecycleStatus, MemberStatus,
     Milestone, MilestoneStatus, Money, OrgUnit, OrgUnitStatus, OrganizationMembership,
     OrganizationMembershipRole, OrganizationMembershipStatus, Payment, PaymentStatus, Relation,
-    RelationRule, RiskTier, ServiceActor, StandingAgent, TypedRecord, ValidateCompanyOs, View,
+    AgentMembership, RelationRule, RiskTier, ServiceActor, TypedRecord, ValidateCompanyOs, View,
     ViewMode,
 };
 use serde_json::json;
@@ -29,7 +29,7 @@ fn agent() -> ActorRef {
 }
 
 #[test]
-fn historical_standing_agent_rows_default_new_configuration_references() {
+fn historical_agent_identity_payload_is_rejected_at_clean_cutover() {
     let legacy = json!({
         "id": "agent-legacy",
         "display_name": "Legacy Agent",
@@ -48,14 +48,7 @@ fn historical_standing_agent_rows_default_new_configuration_references() {
         "updated_at": NOW
     });
 
-    let agent: StandingAgent = serde_json::from_value(legacy).unwrap();
-    agent.validate().unwrap();
-    assert_eq!(agent.system_prompt_ref, None);
-    assert!(agent.tool_refs.is_empty());
-    assert!(agent.skill_refs.is_empty());
-    assert!(agent.maintained_document_refs.is_empty());
-    assert!(agent.accepted_work_type_refs.is_empty());
-    assert_eq!(agent.escalation_policy_ref, None);
+    assert!(serde_json::from_value::<AgentMembership>(legacy).is_err());
 }
 
 #[test]
@@ -73,27 +66,16 @@ fn actor_types_remain_distinct_on_the_wire() {
         created_at: NOW.into(),
         updated_at: NOW.into(),
     };
-    let standing_agent = StandingAgent {
+    let agent_membership = AgentMembership {
         id: "agent-trademark".into(),
-        display_name: "Trademark Agent".into(),
-        role: "trademark_operations".into(),
-        execution_agent_member_ref: Some("execution-agent-trademark".into()),
+        agent_member_ref: firm_core::agentfirm_api::ActorRef {
+            kind: firm_core::agentfirm_api::ActorKind::AgentMember,
+            id: "execution-agent-trademark".into(),
+        },
         status: MemberStatus::Active,
-        availability: firm_core::DeclaredAvailability::Available,
-        assignment_capacity: Some(3),
-        exclusive_assignment_ref: None,
         membership_refs: vec!["membership-brand-ip-agent".into()],
         responsibility_summary: "Prepares governed trademark work.".into(),
-        capability_refs: vec!["capability-trademark-search".into()],
-        system_prompt_ref: Some("document-agent-prompt-trademark".into()),
-        tool_refs: vec!["tool-trademark-search".into()],
-        skill_refs: vec!["skill-trademark-filing".into()],
-        maintained_document_refs: vec!["document-trademark-register".into()],
-        accepted_work_type_refs: vec!["work-type-legal-filing".into()],
-        escalation_policy_ref: Some("policy-trademark-escalation".into()),
         permission_policy_refs: vec!["policy-agent-preparation".into()],
-        runtime_refs: vec![],
-        native_session_refs: vec![],
         created_at: NOW.into(),
         updated_at: NOW.into(),
     };
@@ -124,7 +106,7 @@ fn actor_types_remain_distinct_on_the_wire() {
     };
 
     human_member.validate().unwrap();
-    standing_agent.validate().unwrap();
+    agent_membership.validate().unwrap();
     external.validate().unwrap();
     service.validate().unwrap();
 

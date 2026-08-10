@@ -1,14 +1,1 @@
-{
-  "id": "report-1",
-  "work_id": "work-1",
-  "work_version": 3,
-  "report_revision": 1,
-  "submitted_by_actor": { "kind": "member_run", "id": "member-run-1" },
-  "candidate_revision": "candidate-sha",
-  "result_summary": "implemented",
-  "artifact_refs": ["artifact://patch"],
-  "check_refs": ["check://unit"],
-  "evidence_refs": ["work-evidence-1"],
-  "known_risks": [],
-  "created_at": "unix-ms:3"
-}
+{"id":"report-1","work_id":"work-1","work_revision":2,"report_revision":1,"kind":"result","authored_by":{"kind":"agent_member","id":"agent-worker"},"summary":"Implemented and verified.","base_revision":"base-1","candidate":{"kind":"git_commit","value":"0123456789abcdef"},"candidate_fingerprint":"sha256:bd756f3ceb0c536e81b2af9b849ae7dbef0fa30e4be6b553163212b5f2e79979","finding_refs":[],"failure_analysis_ref":null,"artifact_refs":["artifact://diff"],"check_refs":["check://unit"],"evidence_refs":["evidence-1"],"known_risks":[],"confidence":"high","recommended_next_action":"Review the candidate.","created_at":"unix-ms:2"}

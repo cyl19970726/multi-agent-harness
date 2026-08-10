@@ -17,6 +17,19 @@ const requiredSchemas = [
   "schemas/native-session-ref.schema.json",
   "schemas/canonical-mutation-event.schema.json",
   "schemas/canonical-operation.schema.json",
+  "schemas/team-message.schema.json",
+  "schemas/message-delivery.schema.json",
+  "schemas/work-delivery.schema.json",
+  "schemas/member-workspace-binding.schema.json",
+  "schemas/member-run-event.schema.json",
+  "schemas/work-report.schema.json",
+  "schemas/work-finding.schema.json",
+  "schemas/failure-analysis.schema.json",
+  "schemas/work-module-definition.schema.json",
+  "schemas/work-module-binding.schema.json",
+  "schemas/gate-requirement.schema.json",
+  "schemas/gate-evaluation.schema.json",
+  "schemas/gate-waiver.schema.json",
 ];
 for (const path of requiredSchemas) {
   assert(existsSync(path), `${path}: canonical schema is required`);
@@ -179,6 +192,15 @@ assert(
   JSON.stringify(canonicalOperation.$defs?.canonicalMutationEvent?.required ?? []) ===
     JSON.stringify(mutationEvent.required ?? []),
   "canonical-operation.schema.json: embedded event required fields must match CanonicalMutationEvent",
+);
+const memberRunEvent = readJson("schemas/member-run-event.schema.json");
+assert(
+  memberRunEvent.properties?.aggregate_kind?.const === "member_run",
+  "member-run-event.schema.json: aggregate_kind must be fixed to member_run",
+);
+assert(
+  existsSync("schemas/work-event.schema.json"),
+  "schemas/work-event.schema.json: canonical WorkEvent contract must be preserved",
 );
 
 const sourceRoots = ["crates", "apps", "scripts", "skills", "schemas"];

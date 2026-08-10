@@ -529,6 +529,33 @@ pub struct WorkModuleDefinition {
     pub implementation_ref: String,
 }
 
+pub fn integration_plan_module_v1() -> WorkModuleDefinition {
+    WorkModuleDefinition {
+        module_id: "integration-plan".into(),
+        module_version: 1,
+        schema_version: 1,
+        display_name: "Integration Plan".into(),
+        config_schema: serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "base_revision", "target_revision", "work_boundaries",
+                "candidate_boundaries", "interfaces", "convergence_points",
+                "merge_order", "conflict_owner", "per_merge_checks",
+                "combined_verification", "rollback_plan"
+            ]
+        }),
+        allowed_actions: vec!["attach".into(), "detach".into(), "resolve_gates".into()],
+        relation_types: vec!["prerequisite".into(), "converges_into".into()],
+        default_gate_templates: vec![serde_json::json!({
+            "gate_type": "integration-plan-completeness",
+            "gate_contract_version": "1",
+            "required": true
+        })],
+        implementation_ref: "builtin:integration-plan@1".into(),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkModuleBinding {

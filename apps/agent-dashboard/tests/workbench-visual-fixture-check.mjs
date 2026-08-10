@@ -373,11 +373,11 @@ async function main() {
     "MemberRun Focus joins visible provider-native activity with Harness coordination and labels provenance",
   );
   check(
-    memberRunSource.includes("standing_assignment_conflicts")
-      && memberRunSource.includes("organizationLinkConflict")
-      && memberRunSource.includes("Ambiguous Standing Agent link")
-      && memberRunSource.includes("withholds the Organization identity instead of guessing"),
-    "MemberRun Focus refuses to guess a Standing Agent when the explicit execution link conflicts",
+    memberRunSource.includes('agent_member_ref?.kind === "agent_member"')
+      && memberRunSource.includes("actor.record.agent_member_ref.id === context.member.agent_member_id")
+      && !memberRunSource.includes("standing_assignment_conflicts")
+      && !memberRunSource.includes("organizationLinkConflict"),
+    "MemberRun Focus resolves Company membership only through the canonical AgentMember ActorRef",
   );
   check(
     warRoomSource.includes('label="Execution root"')

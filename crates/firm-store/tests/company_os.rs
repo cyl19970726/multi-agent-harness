@@ -5,10 +5,10 @@ use firm_core::{
     ActionCommand, ActionCommandStatus, ActionEffect, ActionPolicyDefinition, ActorRef, ActorType,
     Approval, ApprovalStatus, AuditEvent, AuditEventKind, Block, BlockKind, BusinessModule,
     Commitment, CommitmentStatus, CustomPageDefinition, CustomPagePackage, CustomPagePackageKind,
-    DataQueryDeclaration, DeclaredAvailability, Document, DocumentKind, EntityKind, EntityRef,
+    AgentMembership, DataQueryDeclaration, Document, DocumentKind, EntityKind, EntityRef,
     ExternalParticipant, HumanMember, LifecycleStatus, MemberStatus, Money, OrgUnit, OrgUnitStatus,
     OrganizationMembership, OrganizationMembershipRole, OrganizationMembershipStatus, Payment,
-    PaymentStatus, Relation, RiskTier, StandingAgent, TypedRecord, View, ViewMode,
+    PaymentStatus, Relation, RiskTier, TypedRecord, View, ViewMode,
 };
 use firm_store::{
     ActionCommandClaimResult, CompanyActor, FinancialRecord, HarnessStore, StoreError,
@@ -65,100 +65,42 @@ fn human(id: &str) -> HumanMember {
     }
 }
 
-fn standing_agent(id: &str) -> StandingAgent {
-    StandingAgent {
+fn agent_membership(id: &str, member_id: &str) -> AgentMembership {
+    AgentMembership {
         id: id.into(),
-        display_name: "Trademark Agent".into(),
-        role: "trademark_agent".into(),
-        execution_agent_member_ref: None,
+        agent_member_ref: firm_core::agentfirm_api::ActorRef {
+            kind: firm_core::agentfirm_api::ActorKind::AgentMember,
+            id: member_id.into(),
+        },
         status: MemberStatus::Active,
-        availability: DeclaredAvailability::Available,
-        assignment_capacity: Some(2),
-        exclusive_assignment_ref: None,
         membership_refs: vec![],
         responsibility_summary: "Prepare trademark filings".into(),
-        capability_refs: vec![],
-        system_prompt_ref: None,
-        tool_refs: vec![],
-        skill_refs: vec![],
-        maintained_document_refs: vec![],
-        accepted_work_type_refs: vec![],
-        escalation_policy_ref: None,
         permission_policy_refs: vec![],
-        runtime_refs: vec![],
-        native_session_refs: vec![],
         created_at: NOW.into(),
         updated_at: NOW.into(),
     }
 }
 
 #[test]
-fn standing_agent_execution_identity_is_one_to_one() {
-    let store = TestStore::new("standing-agent-execution-identity");
-    let mut first = standing_agent("agent-one");
-    first.execution_agent_member_ref = Some("execution-member".into());
-    store.store.append_standing_agent(&first).unwrap();
-
-    let mut duplicate = standing_agent("agent-two");
-    duplicate.execution_agent_member_ref = Some("execution-member".into());
-    let error = store
-        .store
-        .append_standing_agent(&duplicate)
+fn agent_membership_identity_is_one_to_one() {
+    let store = TestStore::new("agent-membership-identity");
+    let first = agent_membership("membership-one", "execution-member");
+    store.store.append_agent_membership(&first).unwrap();
+    let duplicate = agent_membership("membership-two", "execution-member");
+    let error = store.store.append_agent_membership(&duplicate)
         .expect_err("duplicate execution identity must fail");
     assert!(error.to_string().contains("relation must be one-to-one"));
 }
 
 #[test]
-fn relinking_a_standing_agent_reuses_the_latest_row_and_frees_the_released_member() {
-    let store = TestStore::new("standing-agent-execution-relink");
-    let mut owner = standing_agent("agent-one");
-    owner.execution_agent_member_ref = Some("execution-member".into());
-    store.store.append_standing_agent(&owner).unwrap();
-
-    // Re-appending the SAME agent with the same reference must not collide with
-    // itself: the one-to-one guard is scoped to other Standing Agents.
+fn refreshing_an_agent_membership_preserves_canonical_identity() {
+    let store = TestStore::new("agent-membership-refresh");
+    let owner = agent_membership("membership-one", "execution-member");
+    store.store.append_agent_membership(&owner).unwrap();
     let mut refreshed = owner.clone();
     refreshed.responsibility_summary = "Prepare trademark filings and renewals".into();
-    store.store.append_standing_agent(&refreshed).unwrap();
-
-    // While the reference is held, a second agent still cannot steal it.
-    let mut rival = standing_agent("agent-two");
-    rival.execution_agent_member_ref = Some("execution-member".into());
-    store
-        .store
-        .append_standing_agent(&rival)
-        .expect_err("a held execution member must not be stealable");
-
-    // Unlinking releases it, and only then may another agent claim it.
-    let mut released = refreshed.clone();
-    released.execution_agent_member_ref = None;
-    store.store.append_standing_agent(&released).unwrap();
-    store.store.append_standing_agent(&rival).unwrap();
-
-    let latest = store.store.latest_standing_agents().unwrap();
-    let projected = latest
-        .iter()
-        .map(|agent| {
-            (
-                agent.id.as_str(),
-                agent.execution_agent_member_ref.as_deref(),
-            )
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        projected,
-        vec![("agent-one", None), ("agent-two", Some("execution-member"))],
-        "latest-row-wins must reflect the unlink and the subsequent claim"
-    );
-    assert_eq!(
-        latest
-            .iter()
-            .find(|agent| agent.id == "agent-one")
-            .unwrap()
-            .responsibility_summary,
-        "Prepare trademark filings and renewals",
-        "unrelated fields must survive the unlink re-append"
-    );
+    store.store.append_agent_membership(&refreshed).unwrap();
+    assert_eq!(store.store.latest_agent_memberships().unwrap(), vec![refreshed]);
 }
 
 fn document(id: &str, owner: &ActorRef) -> Document {
@@ -205,7 +147,7 @@ fn seed_people_and_document(store: &HarnessStore) -> (ActorRef, ActorRef, String
         .append_human_member(&human("human-brand-owner"))
         .unwrap();
     store
-        .append_standing_agent(&standing_agent("agent-trademark"))
+        .append_agent_membership(&agent_membership("agent-trademark", "execution-agent-trademark"))
         .unwrap();
     let human_ref = actor(ActorType::Human, "human-brand-owner");
     let agent_ref = actor(ActorType::Agent, "agent-trademark");

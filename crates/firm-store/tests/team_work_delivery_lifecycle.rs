@@ -83,7 +83,7 @@ fn team_fixture(label: &str) -> (TestStore, AgentTeamRun, MemberRun, MemberRun) 
         id: format!("mr-{label}-{suffix}"),
         team_run_id: run.id.clone(),
         slot_id: Some(format!("slot-{suffix}")),
-        agent_member_id: Some(format!("agent-{suffix}")),
+        agent_member_id: format!("agent-{suffix}"),
         name: format!("Member {suffix}"),
         role: "builder".into(),
         provider: "codex".into(),
@@ -192,7 +192,7 @@ fn base_work(run_id: &str, id: &str) -> Work {
 fn owned_work(run_id: &str, id: &str, member: &MemberRun) -> Work {
     let mut work = base_work(run_id, id);
     work.claim_mode = WorkClaimMode::HostAssign;
-    work.owner_member_id = member.agent_member_id.clone();
+    work.owner_member_id = Some(member.agent_member_id.clone());
     work.active_member_run_id = Some(member.id.clone());
     work
 }

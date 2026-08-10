@@ -20,7 +20,9 @@ use firm_core::agentfirm_api::{
 };
 use firm_core::{
     AgentTeam, AgentTeamRun, AgentTeamStatus, ExecutionNode, ExecutionNodeStatus, Mission,
-    MissionStatus, TeamRunStatus,
+    MemberRun as RuntimeMemberRun, MemberRunStatus, MissionStatus, TeamActorKind, TeamActorRef,
+    TeamRunStatus, Work, WorkClaimMode, WorkCommandContext, WorkCondition, WorkPhase,
+    WorkPriority,
 };
 use firm_store::{canonical_json_fingerprint, HarnessStore, StoreError};
 
@@ -206,7 +208,10 @@ fn seed_team(store: &HarnessStore, label: &str, member_ids: &[&str]) -> AgentTea
         objective: "trust test".into(),
         execution_root: None,
         status: TeamRunStatus::Running,
-        member_run_ids: Vec::new(),
+        member_run_ids: member_ids
+            .iter()
+            .map(|member_id| format!("runtime-{member_id}"))
+            .collect(),
         budget_limit_usd: None,
         created_at: "t1".into(),
         updated_at: "t1".into(),
@@ -214,6 +219,188 @@ fn seed_team(store: &HarnessStore, label: &str, member_ids: &[&str]) -> AgentTea
     };
     store.append_team_run(&run).expect("append team run");
     run
+}
+
+fn seed_team_work(store: &HarnessStore, label: &str, work_id: &str) -> String {
+    let run = seed_team(store, label, &["host"]);
+    let actor = TeamActorRef {
+        kind: TeamActorKind::Host,
+        id: "host".into(),
+        display_name: None,
+        authn_source: Some("test".into()),
+    };
+    let created = store
+        .insert_work(
+            Work {
+                id: work_id.into(),
+                team_run_id: run.id.clone(),
+                team_id: None,
+                created_by_member_id: None,
+                parent_work_id: None,
+                title: format!("Trust fixture {work_id}"),
+                context_markdown: "trust test".into(),
+                completion_criteria_markdown: "done".into(),
+                phase: WorkPhase::Open,
+                condition: WorkCondition::Normal,
+                resolution: None,
+                owner_member_id: None,
+                active_member_run_id: None,
+                claim_mode: WorkClaimMode::HostAssign,
+                eligible_member_ids: Vec::new(),
+                prerequisite_work_ids: Vec::new(),
+                priority: WorkPriority::Normal,
+                created_by_actor: actor.clone(),
+                result_summary: None,
+                blocker_reason: None,
+                artifact_refs: Vec::new(),
+                check_refs: Vec::new(),
+                github_links: Vec::new(),
+                version: 0,
+                created_at: String::new(),
+                updated_at: String::new(),
+            },
+            WorkCommandContext {
+                event_id: format!("event-{work_id}"),
+                performed_by_actor: actor,
+                authority_actor: None,
+                causation_ref: None,
+                idempotency_key: format!("create-{work_id}"),
+                created_at: "t1".into(),
+                duplicate_ok: false,
+            },
+        )
+        .expect("seed Team-scoped Work");
+    assert_eq!(created.version, 1);
+    run.agent_team_id
+}
+
+fn seed_active_team_work(store: &HarnessStore, label: &str, work_id: &str) -> String {
+    let run = seed_team(store, label, &["worker"]);
+    let runtime_id = "runtime-worker";
+    store
+        .append_member_run(&RuntimeMemberRun {
+            id: runtime_id.into(),
+            team_run_id: run.id.clone(),
+            slot_id: None,
+            agent_member_id: "worker".into(),
+            name: "Worker".into(),
+            role: "worker".into(),
+            provider: "codex".into(),
+            model: None,
+            provider_controls: Default::default(),
+            provider_profile: None,
+            provider_capacity: None,
+            provider_compatibility_block_cause: None,
+            coordination_status: Default::default(),
+            runtime_generation: 1,
+            status: MemberRunStatus::Idle,
+            native_session: None,
+            worktree_ref: None,
+            workspace_snapshot: None,
+            owned_paths: Vec::new(),
+            zero_output_streak: 0,
+            last_consumed_work_version: None,
+            started_at: "t1".into(),
+            last_event_at: None,
+            finished_at: None,
+        })
+        .expect("seed runtime MemberRun");
+    let team_id = seed_team_work_from_run(store, &run, work_id);
+    let host = TeamActorRef {
+        kind: TeamActorKind::Host,
+        id: "host".into(),
+        display_name: None,
+        authn_source: Some("test".into()),
+    };
+    store
+        .assign_work(
+            work_id,
+            1,
+            runtime_id,
+            WorkCommandContext {
+                event_id: format!("assign-{work_id}"),
+                performed_by_actor: host,
+                authority_actor: None,
+                causation_ref: None,
+                idempotency_key: format!("assign-{work_id}"),
+                created_at: "t2".into(),
+                duplicate_ok: false,
+            },
+        )
+        .expect("assign Work");
+    store
+        .start_work(
+            work_id,
+            2,
+            runtime_id,
+            WorkCommandContext {
+                event_id: format!("start-{work_id}"),
+                performed_by_actor: TeamActorRef {
+                    kind: TeamActorKind::MemberRun,
+                    id: runtime_id.into(),
+                    display_name: None,
+                    authn_source: Some("test".into()),
+                },
+                authority_actor: None,
+                causation_ref: None,
+                idempotency_key: format!("start-{work_id}"),
+                created_at: "t3".into(),
+                duplicate_ok: false,
+            },
+        )
+        .expect("start Work");
+    team_id
+}
+
+fn seed_team_work_from_run(store: &HarnessStore, run: &AgentTeamRun, work_id: &str) -> String {
+    let actor = TeamActorRef {
+        kind: TeamActorKind::Host,
+        id: "host".into(),
+        display_name: None,
+        authn_source: Some("test".into()),
+    };
+    store
+        .insert_work(
+            Work {
+                id: work_id.into(),
+                team_run_id: run.id.clone(),
+                team_id: None,
+                created_by_member_id: None,
+                parent_work_id: None,
+                title: format!("Trust fixture {work_id}"),
+                context_markdown: "trust test".into(),
+                completion_criteria_markdown: "done".into(),
+                phase: WorkPhase::Open,
+                condition: WorkCondition::Normal,
+                resolution: None,
+                owner_member_id: None,
+                active_member_run_id: None,
+                claim_mode: WorkClaimMode::HostAssign,
+                eligible_member_ids: Vec::new(),
+                prerequisite_work_ids: Vec::new(),
+                priority: WorkPriority::Normal,
+                created_by_actor: actor.clone(),
+                result_summary: None,
+                blocker_reason: None,
+                artifact_refs: Vec::new(),
+                check_refs: Vec::new(),
+                github_links: Vec::new(),
+                version: 0,
+                created_at: String::new(),
+                updated_at: String::new(),
+            },
+            WorkCommandContext {
+                event_id: format!("event-{work_id}"),
+                performed_by_actor: actor,
+                authority_actor: None,
+                causation_ref: None,
+                idempotency_key: format!("create-{work_id}"),
+                created_at: "t1".into(),
+                duplicate_ok: false,
+            },
+        )
+        .expect("seed active Team-scoped Work");
+    run.agent_team_id.clone()
 }
 
 fn create_member_and_run(
@@ -733,7 +920,7 @@ fn report(id: &str, kind: WorkReportKind, author: &ActorRef) -> WorkReport {
     WorkReport {
         id: id.into(),
         work_id: "work-1".into(),
-        work_revision: 4,
+        work_revision: 3,
         report_revision: 1,
         kind,
         authored_by: author.clone(),
@@ -756,6 +943,7 @@ fn report(id: &str, kind: WorkReportKind, author: &ActorRef) -> WorkReport {
 #[test]
 fn result_and_failure_reports_require_their_risk_evidence() {
     let harness = TestStore::new("reports");
+    let team_id = seed_active_team_work(&harness.store, "reports", "work-1");
     let worker = member_actor("worker");
     let before = harness.store.canonical_operations().unwrap().len();
     assert_eq!(
@@ -764,7 +952,12 @@ fn result_and_failure_reports_require_their_risk_evidence() {
                 .store
                 .create_trust_work_report(
                     &context(worker.clone(), "report.create", "result-missing", 0),
-                    report("result-missing", WorkReportKind::Result, &worker),
+                    &team_id,
+                    {
+                        let mut report = report("result-missing", WorkReportKind::Result, &worker);
+                        report.work_revision = 4;
+                        report
+                    },
                 )
                 .expect_err("result without candidate evidence must fail")
         ),
@@ -772,30 +965,13 @@ fn result_and_failure_reports_require_their_risk_evidence() {
     );
     assert_eq!(harness.store.canonical_operations().unwrap().len(), before);
 
-    let mut result = report("result-ok", WorkReportKind::Result, &worker);
-    let candidate = CandidateRef {
-        kind: CandidateKind::GitCommit,
-        value: "0123456789abcdef".into(),
-    };
-    result.candidate_fingerprint = Some(canonical_json_fingerprint(
-        &serde_json::to_value(&candidate).expect("serialize candidate"),
-    ));
-    result.candidate = Some(candidate);
-    result.evidence_refs = vec!["evidence://checks".into()];
-    harness
-        .store
-        .create_trust_work_report(
-            &context(worker.clone(), "report.create", "result-ok", 0),
-            result,
-        )
-        .expect("evidence-backed result");
-
     assert_eq!(
         trust_code(
             harness
                 .store
                 .create_trust_work_report(
                     &context(worker.clone(), "report.create", "failure-missing", 0),
+                    &team_id,
                     report("failure-missing", WorkReportKind::Failure, &worker),
                 )
                 .expect_err("failure without analysis must fail")
@@ -810,6 +986,7 @@ fn result_and_failure_reports_require_their_risk_evidence() {
                 .store
                 .create_trust_work_report(
                     &context(worker.clone(), "report.create", "failure-missing-ref", 0,),
+                    &team_id,
                     missing_reference,
                 )
                 .expect_err("failure analysis reference must resolve")
@@ -820,10 +997,11 @@ fn result_and_failure_reports_require_their_risk_evidence() {
         .store
         .create_trust_failure_analysis(
             &context(worker.clone(), "failure_analysis.create", "analysis", 0),
+            &team_id,
             FailureAnalysis {
                 id: "analysis-1".into(),
                 work_id: "work-1".into(),
-                work_revision: 4,
+                work_revision: 3,
                 member_run_id: Some("run-worker".into()),
                 candidate: None,
                 observed_failure: "provider exited".into(),
@@ -848,15 +1026,125 @@ fn result_and_failure_reports_require_their_risk_evidence() {
     failure.failure_analysis_ref = Some("analysis-1".into());
     harness
         .store
-        .create_trust_work_report(&context(worker, "report.create", "failure-ok", 0), failure)
+        .create_trust_work_report(
+            &context(worker.clone(), "report.create", "failure-ok", 0),
+            &team_id,
+            failure,
+        )
         .expect("failure report with analysis reference");
+
+    let mut result = report("result-ok", WorkReportKind::Result, &worker);
+    result.work_revision = 4;
+    let candidate = CandidateRef {
+        kind: CandidateKind::GitCommit,
+        value: "0123456789abcdef".into(),
+    };
+    result.candidate_fingerprint = Some(canonical_json_fingerprint(
+        &serde_json::to_value(&candidate).expect("serialize candidate"),
+    ));
+    result.candidate = Some(candidate);
+    result.evidence_refs = vec!["evidence://checks".into()];
+    harness
+        .store
+        .create_trust_work_report(
+            &context(worker, "report.create", "result-ok", 0),
+            &team_id,
+            result,
+        )
+        .expect("evidence-backed result atomically submits Work");
+    let submitted = harness
+        .store
+        .latest_works()
+        .expect("read Work")
+        .into_iter()
+        .find(|work| work.id == "work-1")
+        .expect("submitted Work");
+    assert_eq!(submitted.version, 4);
+    assert_eq!(submitted.phase, WorkPhase::Review);
+}
+
+#[test]
+fn exact_result_report_submits_and_accepts_work_in_canonical_operations() {
+    let harness = TestStore::new("accept-work");
+    let team_id = seed_active_team_work(&harness.store, "accept-work", "work-1");
+    let worker = member_actor("worker");
+    let host = human("host");
+    let candidate = CandidateRef {
+        kind: CandidateKind::GitCommit,
+        value: "abcdef0123456789".into(),
+    };
+    let candidate_fingerprint = canonical_json_fingerprint(
+        &serde_json::to_value(&candidate).expect("serialize candidate"),
+    );
+    let mut result = report("report-accept", WorkReportKind::Result, &worker);
+    result.work_revision = 4;
+    result.candidate = Some(candidate);
+    result.candidate_fingerprint = Some(candidate_fingerprint.clone());
+    result.evidence_refs = vec!["evidence://exact-candidate".into()];
+    harness
+        .store
+        .create_trust_work_report(
+            &context(worker, "report.create", "report-accept", 0),
+            &team_id,
+            result,
+        )
+        .expect("result submission");
+    let before_rejected = harness.store.canonical_operations().unwrap().len();
+    assert_eq!(
+        trust_code(
+            harness
+                .store
+                .accept_trust_work(
+                    &context(host.clone(), "work.accept", "accept-stale", 4),
+                    &team_id,
+                    "work-1",
+                    "report-accept",
+                    "sha256:stale",
+                    "t5",
+                )
+                .expect_err("stale Candidate must not accept Work")
+        ),
+        TrustErrorCode::ReportEvidenceMissing
+    );
+    assert_eq!(
+        harness.store.canonical_operations().unwrap().len(),
+        before_rejected,
+        "rejected acceptance has zero side effects"
+    );
+    let command = context(host, "work.accept", "accept-exact", 4);
+    let accepted = harness
+        .store
+        .accept_trust_work(
+            &command,
+            &team_id,
+            "work-1",
+            "report-accept",
+            &candidate_fingerprint,
+            "t5",
+        )
+        .expect("exact Candidate acceptance");
+    assert_eq!(accepted.projection.phase, WorkPhase::Closed);
+    assert_eq!(accepted.projection.version, 5);
+    let replay = harness
+        .store
+        .accept_trust_work(
+            &command,
+            &team_id,
+            "work-1",
+            "report-accept",
+            &candidate_fingerprint,
+            "t5",
+        )
+        .expect("accept replay");
+    assert!(replay.replayed);
+    assert_eq!(replay.event.id, accepted.event.id);
 }
 
 fn requirement(id: &str) -> GateRequirement {
     GateRequirement {
         id: id.into(),
         work_id: "work-gate".into(),
-        work_revision: 7,
+        work_revision: 1,
         work_report_id: "report-gate".into(),
         candidate_fingerprint: "sha256:candidate".into(),
         source: GateRequirementSource::Direct,
@@ -869,7 +1157,7 @@ fn requirement(id: &str) -> GateRequirement {
         config_fingerprint: "sha256:config".into(),
         required: true,
         dependency_requirement_ids: Vec::new(),
-        requirement_set_fingerprint: "sha256:set".into(),
+        requirement_set_fingerprint: canonical_json_fingerprint(&serde_json::json!([id])),
         created_at: "t1".into(),
         version: 1,
     }
@@ -880,12 +1168,12 @@ fn evaluation(id: &str, requirement_id: &str, evaluator: &ActorRef) -> GateEvalu
         id: id.into(),
         requirement_id: requirement_id.into(),
         work_id: "work-gate".into(),
-        work_revision: 7,
+        work_revision: 1,
         work_report_id: "report-gate".into(),
         candidate_fingerprint: "sha256:candidate".into(),
         config_fingerprint: "sha256:config".into(),
         evaluator_version: "v1".into(),
-        dependency_fingerprint: "sha256:deps".into(),
+        dependency_fingerprint: canonical_json_fingerprint(&serde_json::json!([])),
         verdict: GateVerdict::Passed,
         summary: "passed".into(),
         evidence_refs: vec!["evidence://gate".into()],
@@ -898,6 +1186,7 @@ fn evaluation(id: &str, requirement_id: &str, evaluator: &ActorRef) -> GateEvalu
 #[test]
 fn gates_require_exact_evaluation_or_authorized_waiver_and_reject_self_cycles() {
     let harness = TestStore::new("gates");
+    let team_id = seed_team_work(&harness.store, "gates", "work-gate");
     let host = human("host");
     let critic = member_actor("critic");
     let mut cyclic = requirement("gate-cycle");
@@ -908,6 +1197,7 @@ fn gates_require_exact_evaluation_or_authorized_waiver_and_reject_self_cycles() 
                 .store
                 .create_trust_gate_requirement(
                     &context(host.clone(), "gate.require", "cycle", 0),
+                    &team_id,
                     cyclic,
                 )
                 .expect_err("self-cycle must fail")
@@ -921,6 +1211,7 @@ fn gates_require_exact_evaluation_or_authorized_waiver_and_reject_self_cycles() 
         .store
         .create_trust_gate_requirement(
             &context(host.clone(), "gate.require", "cycle-a", 0),
+            &team_id,
             cycle_a,
         )
         .expect("forward dependency may be declared");
@@ -933,6 +1224,7 @@ fn gates_require_exact_evaluation_or_authorized_waiver_and_reject_self_cycles() 
                 .store
                 .create_trust_gate_requirement(
                     &context(host.clone(), "gate.require", "cycle-b", 0),
+                    &team_id,
                     cycle_b,
                 )
                 .expect_err("transitive cycle must fail")
@@ -944,6 +1236,7 @@ fn gates_require_exact_evaluation_or_authorized_waiver_and_reject_self_cycles() 
         .store
         .create_trust_gate_requirement(
             &context(host.clone(), "gate.require", "gate-a", 0),
+            &team_id,
             requirement("gate-a"),
         )
         .expect("create exact requirement");
@@ -951,7 +1244,7 @@ fn gates_require_exact_evaluation_or_authorized_waiver_and_reject_self_cycles() 
         trust_code(
             harness
                 .store
-                .trust_gate_satisfied(SPACE, "work-gate", 7, "report-gate", "sha256:candidate",)
+                .trust_gate_satisfied(SPACE, "work-gate", 1, "report-gate", "sha256:candidate",)
                 .expect_err("required gate needs evaluation")
         ),
         TrustErrorCode::GateEvaluationRequired
@@ -982,6 +1275,7 @@ fn gates_require_exact_evaluation_or_authorized_waiver_and_reject_self_cycles() 
         .store
         .create_trust_gate_requirement(
             &context(host.clone(), "gate.require", "gate-b", 0),
+            &team_id,
             requirement("gate-b"),
         )
         .expect("create waiver requirement");
@@ -990,7 +1284,7 @@ fn gates_require_exact_evaluation_or_authorized_waiver_and_reject_self_cycles() 
         id: "waiver-b".into(),
         requirement_id: "gate-b".into(),
         work_id: "work-gate".into(),
-        work_revision: 7,
+        work_revision: 1,
         candidate_fingerprint: "sha256:candidate".into(),
         authority_actor: authority.clone(),
         performed_by_actor: host.clone(),
@@ -1035,7 +1329,7 @@ fn gates_require_exact_evaluation_or_authorized_waiver_and_reject_self_cycles() 
         .expect("authorized waiver");
     harness
         .store
-        .trust_gate_satisfied(SPACE, "work-gate", 7, "report-gate", "sha256:candidate")
+        .trust_gate_satisfied(SPACE, "work-gate", 1, "report-gate", "sha256:candidate")
         .expect("exact evaluation plus exact waiver satisfy all required gates");
 }
 

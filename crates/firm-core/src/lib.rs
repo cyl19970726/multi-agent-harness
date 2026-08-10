@@ -9,7 +9,7 @@ pub use company_os::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AgentMemberStatus {
+pub enum ProviderLaunchStatus {
     Creating,
     Idle,
     Assigned,
@@ -27,7 +27,7 @@ pub enum AgentMemberStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct AgentProviderConfig {
+pub struct ProviderLaunchConfig {
     #[serde(default)]
     pub service_tier: Option<String>,
     #[serde(default)]
@@ -55,13 +55,11 @@ pub struct AgentProviderConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-/// Compatibility execution registry row.
+/// Provider launch configuration used only at the adapter boundary.
 ///
-/// This pre-ADR-0051 shape mixes organization identity with mutable provider,
-/// runtime, session, and task state. New Organization writes use
-/// [`DurableAgentMember`]; this row remains readable for explicit convergence
-/// and for the existing runtime surfaces until their cutover is complete.
-pub struct AgentMember {
+/// This row is not an identity object. Canonical identity is always the
+/// `agentfirm_api::AgentMember` referenced by a `MemberRun`.
+pub struct ProviderLaunchProfile {
     pub id: String,
     pub name: String,
     pub description: String,
@@ -70,7 +68,7 @@ pub struct AgentMember {
     pub model: Option<String>,
     pub profile: Option<String>,
     #[serde(default)]
-    pub provider_config: AgentProviderConfig,
+    pub provider_config: ProviderLaunchConfig,
     pub capabilities: Vec<String>,
     pub team_ids: Vec<String>,
     pub prompt_ref: Option<String>,
@@ -82,7 +80,7 @@ pub struct AgentMember {
     pub permission_profile: Option<String>,
     #[serde(default)]
     pub runtime_workspace_roots: Vec<String>,
-    pub status: AgentMemberStatus,
+    pub status: ProviderLaunchStatus,
     pub current_task_id: Option<String>,
     pub current_proposal_id: Option<String>,
     pub provider_runtime_id: Option<String>,
@@ -181,7 +179,7 @@ pub struct LaunchMcp {
 /// Per ADR 0011 this neutral object carries **no** Codex wire vocabulary:
 /// `permission` is the neutral [`LaunchPermission`] enum and `writable_roots`
 /// replaces Codex's `workspaceWrite.writableRoots`. The Codex-leaking
-/// `AgentProviderConfig` fields (`sandbox_policy`, `approval_policy`,
+/// `ProviderLaunchConfig` fields (`sandbox_policy`, `approval_policy`,
 /// `service_tier`, `collaboration_mode`, …) are abstracted here, not reused.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LaunchSpec {
@@ -311,12 +309,12 @@ fn message_kind_wire(kind: &MessageKind) -> &'static str {
 /// claimed [`Message`].
 ///
 /// This is the additive composition seam (ADR 0018 WP-1). It reads the existing
-/// `AgentMember` / `AgentProviderConfig` fields — including the Codex-flavored
+/// `ProviderLaunchProfile` / `ProviderLaunchConfig` fields — including the Codex-flavored
 /// `sandbox_policy` — and produces a neutral spec: the permission posture and
 /// `writable_roots` are abstracted out of the Codex `workspaceWrite` vocabulary,
 /// and no Codex wire names appear on the result (ADR 0011). It does not perform
 /// any delivery side effect and does not require a live provider binary.
-pub fn build_launch_spec(member: &AgentMember, message: &Message) -> LaunchSpec {
+pub fn build_launch_spec(member: &ProviderLaunchProfile, message: &Message) -> LaunchSpec {
     let permission =
         permission_from_sandbox_policy(member.provider_config.sandbox_policy.as_deref());
 
@@ -372,7 +370,7 @@ pub fn build_launch_spec(member: &AgentMember, message: &Message) -> LaunchSpec 
 
 /// Dispatch discriminant for the provider seam.
 ///
-/// This is **not** a schema field: `AgentMember.provider` (and the other
+/// This is **not** a schema field: `ProviderLaunchProfile.provider` (and the other
 /// `provider` fields across the model) remain free `String`s, serialized
 /// verbatim and validated only as non-empty. `ProviderKind` exists purely so
 /// the CLI provider layer can `match` on a member's provider when routing to
@@ -471,42 +469,6 @@ pub struct AgentTeam {
     pub member_ids: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
-}
-
-/// Durable Company/Organization identity of one Agent (ADR 0052).
-///
-/// Mutable execution state deliberately does not live here. A durable member
-/// binds to zero or more replaceable [`MemberRun`] generations, and each run
-/// may bind to a provider-native session owned by that provider.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DurableAgentMember {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub role: String,
-    #[serde(default)]
-    pub provider_profile: Option<String>,
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub workspace_policy: Option<String>,
-    #[serde(default)]
-    pub project_binding_id: Option<String>,
-    #[serde(default)]
-    pub business_access_ceiling_refs: Vec<String>,
-    pub status: DurableAgentMemberStatus,
-    #[serde(default)]
-    pub created_by_member_id: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DurableAgentMemberStatus {
-    Active,
-    Paused,
-    Retired,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -743,7 +705,7 @@ pub fn project_store_root(firm_home: &std::path::Path, id: &str) -> std::path::P
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AgentRuntimeStatus {
+pub enum ProviderProcessStatus {
     Starting,
     Running,
     Stopping,
@@ -752,7 +714,7 @@ pub enum AgentRuntimeStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct AgentRuntimeHealth {
+pub struct ProviderProcessHealth {
     #[serde(default)]
     pub process_alive: bool,
     #[serde(default)]
@@ -766,11 +728,11 @@ pub struct AgentRuntimeHealth {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentRuntime {
+pub struct ProviderProcess {
     pub id: String,
     pub agent_member_id: String,
     pub provider: String,
-    pub status: AgentRuntimeStatus,
+    pub status: ProviderProcessStatus,
     pub pid: Option<u32>,
     pub control_endpoint: Option<String>,
     pub command: String,
@@ -779,11 +741,11 @@ pub struct AgentRuntime {
     pub ended_at: Option<String>,
     pub last_event_at: Option<String>,
     #[serde(default)]
-    pub health: AgentRuntimeHealth,
+    pub health: ProviderProcessHealth,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentEvent {
+pub struct ProviderDispatchEvent {
     pub id: String,
     pub agent_member_id: String,
     pub provider_runtime_id: Option<String>,
@@ -974,7 +936,8 @@ impl From<ReviewVerdict> for String {
 ///
 /// Concept-model invariant: a Review is *evidence for* a Decision, not the global
 /// decision itself — a Lead/gate still issues the Decision.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Review {
     pub id: String,
     pub task_id: Option<String>,
@@ -988,104 +951,6 @@ pub struct Review {
     pub missing_validation: Vec<String>,
     pub evidence_ids: Vec<String>,
     pub created_at: String,
-    /// Authenticated actor that physically submitted this Review record.
-    /// Historical Review rows predate this audit field and deserialize as
-    /// `None`; gate authority remains defined by the bound review fields.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub performed_by_actor: Option<TeamActorRef>,
-    /// Actor whose authority was exercised when it differs from the transport
-    /// actor (for example, an operator acting as Host).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub authority_actor: Option<TeamActorRef>,
-    /// Durable command key for an exact, trusted Work Review retry. Generic
-    /// and historical Reviews omit it; Store-owned bound Review writes set it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub command_idempotency_key: Option<String>,
-    /// Exact Work candidate reviewed. These three fields are optional only for
-    /// compatibility with historical, unbound Review rows and must be present
-    /// together for a Review to satisfy a Work gate.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reviewed_work_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reviewed_work_version: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub review_strategy: Option<CodeReviewStrategy>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ReviewWire {
-    id: String,
-    task_id: Option<String>,
-    goal_id: Option<String>,
-    reviewer_agent_id: String,
-    review_kind: String,
-    verdict: ReviewVerdict,
-    summary: String,
-    blockers: Vec<String>,
-    residual_risk: Option<String>,
-    missing_validation: Vec<String>,
-    evidence_ids: Vec<String>,
-    created_at: String,
-    #[serde(default)]
-    performed_by_actor: Option<TeamActorRef>,
-    #[serde(default)]
-    authority_actor: Option<TeamActorRef>,
-    #[serde(default)]
-    command_idempotency_key: Option<String>,
-    #[serde(default)]
-    reviewed_work_id: Option<String>,
-    #[serde(default)]
-    reviewed_work_version: Option<u64>,
-    #[serde(default)]
-    review_strategy: Option<CodeReviewStrategy>,
-}
-
-impl<'de> Deserialize<'de> for Review {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        let object = value
-            .as_object()
-            .ok_or_else(|| serde::de::Error::custom("Review must be a JSON object"))?;
-        for field in [
-            "reviewed_work_id",
-            "reviewed_work_version",
-            "review_strategy",
-            "performed_by_actor",
-            "authority_actor",
-            "command_idempotency_key",
-        ] {
-            if object.get(field).is_some_and(serde_json::Value::is_null) {
-                return Err(serde::de::Error::custom(format!(
-                    "Review.{field} must not be null when present"
-                )));
-            }
-        }
-        let wire: ReviewWire = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
-        Ok(Self {
-            id: wire.id,
-            task_id: wire.task_id,
-            goal_id: wire.goal_id,
-            reviewer_agent_id: wire.reviewer_agent_id,
-            review_kind: wire.review_kind,
-            verdict: wire.verdict,
-            summary: wire.summary,
-            blockers: wire.blockers,
-            residual_risk: wire.residual_risk,
-            missing_validation: wire.missing_validation,
-            evidence_ids: wire.evidence_ids,
-            created_at: wire.created_at,
-            performed_by_actor: wire.performed_by_actor,
-            authority_actor: wire.authority_actor,
-            command_idempotency_key: wire.command_idempotency_key,
-            reviewed_work_id: wire.reviewed_work_id,
-            reviewed_work_version: wire.reviewed_work_version,
-            review_strategy: wire.review_strategy,
-        })
-    }
 }
 
 /// Severity of a [`Gap`]. Truly-closed, harness-owned set (matches the GAP
@@ -1333,25 +1198,14 @@ fn require_uuid(value: &str, field: &'static str) -> Result<(), ValidationError>
     }
 }
 
-impl Validate for AgentMember {
+impl Validate for ProviderLaunchProfile {
     fn validate(&self) -> Result<(), ValidationError> {
-        require_non_empty(&self.id, "AgentMember.id")?;
-        require_non_empty(&self.name, "AgentMember.name")?;
-        require_non_empty(&self.description, "AgentMember.description")?;
-        require_non_empty(&self.role, "AgentMember.role")?;
-        require_non_empty(&self.provider, "AgentMember.provider")?;
-        require_non_empty(&self.created_at, "AgentMember.created_at")
-    }
-}
-
-impl Validate for DurableAgentMember {
-    fn validate(&self) -> Result<(), ValidationError> {
-        require_non_empty(&self.id, "DurableAgentMember.id")?;
-        require_non_empty(&self.name, "DurableAgentMember.name")?;
-        require_non_empty(&self.description, "DurableAgentMember.description")?;
-        require_non_empty(&self.role, "DurableAgentMember.role")?;
-        require_non_empty(&self.created_at, "DurableAgentMember.created_at")?;
-        require_non_empty(&self.updated_at, "DurableAgentMember.updated_at")
+        require_non_empty(&self.id, "ProviderLaunchProfile.id")?;
+        require_non_empty(&self.name, "ProviderLaunchProfile.name")?;
+        require_non_empty(&self.description, "ProviderLaunchProfile.description")?;
+        require_non_empty(&self.role, "ProviderLaunchProfile.role")?;
+        require_non_empty(&self.provider, "ProviderLaunchProfile.provider")?;
+        require_non_empty(&self.created_at, "ProviderLaunchProfile.created_at")
     }
 }
 
@@ -1390,24 +1244,27 @@ impl Validate for AgentMessageRoute {
     }
 }
 
-impl Validate for AgentRuntime {
+impl Validate for ProviderProcess {
     fn validate(&self) -> Result<(), ValidationError> {
-        require_non_empty(&self.id, "AgentRuntime.id")?;
-        require_non_empty(&self.agent_member_id, "AgentRuntime.agent_member_id")?;
-        require_non_empty(&self.provider, "AgentRuntime.provider")?;
-        require_non_empty(&self.command, "AgentRuntime.command")?;
-        require_non_empty(&self.started_at, "AgentRuntime.started_at")
+        require_non_empty(&self.id, "ProviderProcess.id")?;
+        require_non_empty(&self.agent_member_id, "ProviderProcess.agent_member_id")?;
+        require_non_empty(&self.provider, "ProviderProcess.provider")?;
+        require_non_empty(&self.command, "ProviderProcess.command")?;
+        require_non_empty(&self.started_at, "ProviderProcess.started_at")
     }
 }
 
-impl Validate for AgentEvent {
+impl Validate for ProviderDispatchEvent {
     fn validate(&self) -> Result<(), ValidationError> {
-        require_non_empty(&self.id, "AgentEvent.id")?;
-        require_non_empty(&self.agent_member_id, "AgentEvent.agent_member_id")?;
-        require_non_empty(&self.provider, "AgentEvent.provider")?;
-        require_non_empty(&self.event_type, "AgentEvent.event_type")?;
-        require_non_empty(&self.summary, "AgentEvent.summary")?;
-        require_non_empty(&self.created_at, "AgentEvent.created_at")
+        require_non_empty(&self.id, "ProviderDispatchEvent.id")?;
+        require_non_empty(
+            &self.agent_member_id,
+            "ProviderDispatchEvent.agent_member_id",
+        )?;
+        require_non_empty(&self.provider, "ProviderDispatchEvent.provider")?;
+        require_non_empty(&self.event_type, "ProviderDispatchEvent.event_type")?;
+        require_non_empty(&self.summary, "ProviderDispatchEvent.summary")?;
+        require_non_empty(&self.created_at, "ProviderDispatchEvent.created_at")
     }
 }
 
@@ -1472,46 +1329,7 @@ impl Validate for Review {
                 });
             }
         }
-        if let Some(actor) = &self.performed_by_actor {
-            require_non_empty(&actor.id, "Review.performed_by_actor.id")?;
-            validate_actor_metadata(actor, "Review.performed_by_actor")?;
-        }
-        if let Some(actor) = &self.authority_actor {
-            require_non_empty(&actor.id, "Review.authority_actor.id")?;
-            validate_actor_metadata(actor, "Review.authority_actor")?;
-        }
-        if let Some(key) = &self.command_idempotency_key {
-            require_non_empty(key, "Review.command_idempotency_key")?;
-        }
-        match (
-            self.reviewed_work_id.as_deref(),
-            self.reviewed_work_version,
-            self.review_strategy,
-        ) {
-            (None, None, None) => {
-                if self.command_idempotency_key.is_some() {
-                    return Err(ValidationError::Invalid {
-                        field: "Review.command_idempotency_key",
-                        reason: "is reserved for a bound trusted Work Review",
-                    });
-                }
-                Ok(())
-            }
-            (Some(work_id), Some(version), Some(_)) => {
-                require_non_empty(work_id, "Review.reviewed_work_id")?;
-                if version == 0 {
-                    return Err(ValidationError::Invalid {
-                        field: "Review.reviewed_work_version",
-                        reason: "must be greater than zero",
-                    });
-                }
-                Ok(())
-            }
-            _ => Err(ValidationError::Invalid {
-                field: "Review.work_binding",
-                reason: "reviewed_work_id, reviewed_work_version, and review_strategy must be present together",
-            }),
-        }
+        Ok(())
     }
 }
 
@@ -2800,12 +2618,8 @@ pub struct MemberRun {
     pub team_run_id: String,
     #[serde(default)]
     pub slot_id: Option<String>,
-    /// Optional stable link to [`DurableAgentMember`]. Absence means this
-    /// remains a temporary execution participant; callers must never infer the
-    /// link from display fields, provider sessions, or the compatibility
-    /// [`AgentMember`] registry.
-    #[serde(default)]
-    pub agent_member_id: Option<String>,
+    /// Required stable link to the one canonical durable AgentMember.
+    pub agent_member_id: String,
     pub name: String,
     pub role: String,
     pub provider: String,
@@ -3118,9 +2932,7 @@ impl Validate for MemberRun {
     fn validate(&self) -> Result<(), ValidationError> {
         require_non_empty(&self.id, "MemberRun.id")?;
         require_non_empty(&self.team_run_id, "MemberRun.team_run_id")?;
-        if let Some(agent_member_id) = &self.agent_member_id {
-            require_non_empty(agent_member_id, "MemberRun.agent_member_id")?;
-        }
+        require_non_empty(&self.agent_member_id, "MemberRun.agent_member_id")?;
         require_non_empty(&self.name, "MemberRun.name")?;
         require_non_empty(&self.role, "MemberRun.role")?;
         require_non_empty(&self.provider, "MemberRun.provider")?;
@@ -4171,30 +3983,6 @@ pub struct WorkEvidence {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkGateVerdict {
-    Passed,
-    Failed,
-    Blocked,
-}
-
-/// Immutable evaluation of one declared gate against one exact WorkReport.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WorkGateEvaluation {
-    pub id: String,
-    pub work_id: String,
-    pub work_report_id: String,
-    pub gate_requirement_ref: String,
-    pub evaluator_actor: TeamActorRef,
-    pub verdict: WorkGateVerdict,
-    pub summary: String,
-    #[serde(default)]
-    pub evidence_refs: Vec<String>,
-    pub created_at: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum WorkDecisionKind {
     Accept,
     Revise,
@@ -4323,29 +4111,6 @@ impl Validate for WorkEvidence {
             });
         }
         Ok(())
-    }
-}
-
-impl Validate for WorkGateEvaluation {
-    fn validate(&self) -> Result<(), ValidationError> {
-        require_non_empty(&self.id, "WorkGateEvaluation.id")?;
-        require_non_empty(&self.work_id, "WorkGateEvaluation.work_id")?;
-        require_non_empty(&self.work_report_id, "WorkGateEvaluation.work_report_id")?;
-        require_non_empty(
-            &self.gate_requirement_ref,
-            "WorkGateEvaluation.gate_requirement_ref",
-        )?;
-        require_non_empty(
-            &self.evaluator_actor.id,
-            "WorkGateEvaluation.evaluator_actor.id",
-        )?;
-        require_non_empty(&self.summary, "WorkGateEvaluation.summary")?;
-        require_non_empty(&self.created_at, "WorkGateEvaluation.created_at")?;
-        validate_non_empty_unique_strings(
-            &self.evidence_refs,
-            "WorkGateEvaluation.evidence_refs",
-            true,
-        )
     }
 }
 
@@ -4498,589 +4263,6 @@ pub struct GitHubLink {
     pub ci_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CodeReviewStrategy {
-    Peer,
-    #[serde(rename = "self")]
-    SelfReview,
-    Host,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GithubPrGateConfig {
-    #[serde(default = "default_true")]
-    pub require_merged: bool,
-    #[serde(default)]
-    pub require_ci_pass: bool,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CodeReviewGateConfig {
-    pub strategy: CodeReviewStrategy,
-    #[serde(default)]
-    pub reviewer: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ArtifactExistsGateConfig {
-    #[serde(default)]
-    pub paths: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CheckPassGateConfig {
-    #[serde(default)]
-    pub checks: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BuiltinGateConfig {
-    GithubPr(GithubPrGateConfig),
-    CodeReview(CodeReviewGateConfig),
-    ArtifactExists(ArtifactExistsGateConfig),
-    CheckPass(CheckPassGateConfig),
-}
-
-/// A declared verification gate for a [`Work`]. Each gate is an independent
-/// check that must pass before the Work can be accepted. Gates are composable:
-/// a Work with zero gates preserves today's manual-accept behaviour; a Work
-/// with several gates must satisfy all of them.
-///
-/// The `plugin` field names a registered gate implementation. The `config`
-/// payload is plugin-specific (e.g. `{"require_merged": true}` for github-pr).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct GateSpec {
-    /// Built-in gate identifier: "github-pr" | "code-review" |
-    /// "check-pass" | "artifact-exists".
-    pub plugin: String,
-    /// Plugin-specific configuration. An omitted configuration is normalized
-    /// to `{}` while deserializing so old wire records have one canonical
-    /// in-memory and re-serialized representation.
-    pub config: serde_json::Value,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct GateSpecWire {
-    plugin: String,
-    #[serde(default = "empty_gate_config")]
-    config: serde_json::Value,
-}
-
-fn empty_gate_config() -> serde_json::Value {
-    serde_json::Value::Object(serde_json::Map::new())
-}
-
-impl<'de> Deserialize<'de> for GateSpec {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let wire = GateSpecWire::deserialize(deserializer)?;
-        Ok(Self {
-            plugin: wire.plugin,
-            config: wire.config,
-        })
-    }
-}
-
-impl GateSpec {
-    /// Validate the common wire contract and, for built-ins, their typed
-    /// configuration. Unknown non-empty plugin names are valid declarations:
-    /// the default registry still evaluates them fail-closed, while embedders
-    /// may supply an explicit custom registry.
-    pub fn validate(&self) -> Result<(), String> {
-        if self.plugin.trim().is_empty() {
-            return Err("gate plugin must be non-empty".to_string());
-        }
-        if !self.config.is_object() {
-            return Err(format!(
-                "gate '{}' config must be a JSON object",
-                self.plugin
-            ));
-        }
-        match self.plugin.as_str() {
-            "github-pr" | "code-review" | "artifact-exists" | "check-pass" => {
-                self.validate_builtin()
-            }
-            _ => Ok(()),
-        }
-    }
-
-    pub fn parse_builtin_config(&self) -> Result<BuiltinGateConfig, String> {
-        if !self.config.is_object() {
-            return Err(format!(
-                "gate '{}' config must be a JSON object",
-                self.plugin
-            ));
-        }
-
-        let config_object = self.config.as_object().expect("config checked as object");
-
-        let parsed = match self.plugin.as_str() {
-            "github-pr" => BuiltinGateConfig::GithubPr(
-                serde_json::from_value(self.config.clone())
-                    .map_err(|error| format!("invalid github-pr gate config: {error}"))?,
-            ),
-            "code-review" => {
-                reject_explicit_null(config_object, "reviewer", "code-review reviewer")?;
-                let config: CodeReviewGateConfig = serde_json::from_value(self.config.clone())
-                    .map_err(|error| format!("invalid code-review gate config: {error}"))?;
-                match config.strategy {
-                    CodeReviewStrategy::Peer => match config.reviewer.as_deref() {
-                        Some(reviewer) if !reviewer.trim().is_empty() => {}
-                        _ => {
-                            return Err(
-                                "code-review peer strategy requires a non-empty reviewer".into()
-                            )
-                        }
-                    },
-                    CodeReviewStrategy::SelfReview | CodeReviewStrategy::Host => {
-                        if config.reviewer.is_some() {
-                            return Err(format!(
-                                "code-review {:?} strategy forbids reviewer",
-                                config.strategy
-                            ));
-                        }
-                    }
-                }
-                BuiltinGateConfig::CodeReview(config)
-            }
-            "artifact-exists" => {
-                reject_explicit_null(config_object, "paths", "artifact-exists paths")?;
-                let config: ArtifactExistsGateConfig = serde_json::from_value(self.config.clone())
-                    .map_err(|error| format!("invalid artifact-exists gate config: {error}"))?;
-                validate_optional_names(config.paths.as_deref(), "artifact-exists paths")?;
-                BuiltinGateConfig::ArtifactExists(config)
-            }
-            "check-pass" => {
-                reject_explicit_null(config_object, "checks", "check-pass checks")?;
-                let config: CheckPassGateConfig = serde_json::from_value(self.config.clone())
-                    .map_err(|error| format!("invalid check-pass gate config: {error}"))?;
-                validate_optional_names(config.checks.as_deref(), "check-pass checks")?;
-                BuiltinGateConfig::CheckPass(config)
-            }
-            _ => return Err(format!("unknown built-in gate plugin: {}", self.plugin)),
-        };
-        Ok(parsed)
-    }
-
-    pub fn validate_builtin(&self) -> Result<(), String> {
-        self.parse_builtin_config().map(|_| ())
-    }
-}
-
-fn reject_explicit_null(
-    object: &serde_json::Map<String, serde_json::Value>,
-    key: &str,
-    field: &str,
-) -> Result<(), String> {
-    if object.get(key).is_some_and(serde_json::Value::is_null) {
-        return Err(format!("{field} must not be null when provided"));
-    }
-    Ok(())
-}
-
-fn validate_optional_names(values: Option<&[String]>, field: &str) -> Result<(), String> {
-    let Some(values) = values else {
-        return Ok(());
-    };
-    if values.is_empty() {
-        return Err(format!("{field} must not be empty when provided"));
-    }
-    let mut seen = BTreeSet::new();
-    for value in values {
-        if value.trim().is_empty() {
-            return Err(format!("{field} must not contain empty values"));
-        }
-        if !seen.insert(value) {
-            return Err(format!("{field} must not contain duplicate values"));
-        }
-    }
-    Ok(())
-}
-
-/// Validate a complete gate declaration list before it is attached to Work.
-/// This is the construction-time companion to [`Work::validate_gates`].
-pub fn validate_gate_specs(gates: &[GateSpec]) -> Result<(), String> {
-    let mut code_review_count = 0usize;
-    for (index, gate) in gates.iter().enumerate() {
-        gate.validate()?;
-        if gate.plugin == "code-review" {
-            code_review_count += 1;
-            if code_review_count > 1 {
-                return Err("Work must not declare more than one code-review gate".to_string());
-            }
-        }
-        if gates[..index].contains(gate) {
-            return Err(format!(
-                "Work must not declare an exact duplicate gate: {}",
-                gate.plugin
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Result of evaluating a single [`GateSpec`] against a Work and its
-/// delivery/evidence context.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GateVerdict {
-    /// The gate is satisfied.
-    Pass,
-    /// The gate is not satisfied (the Work must be revised).
-    Fail { reason: String },
-    /// A prerequisite is not yet met (e.g. PR not opened); the Work is stuck,
-    /// not failed.
-    Blocked { reason: String },
-}
-
-impl GateVerdict {
-    pub fn is_pass(&self) -> bool {
-        matches!(self, GateVerdict::Pass)
-    }
-}
-
-/// The result of evaluating one [`GateSpec`] against a Work.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GateResult {
-    pub gate: GateSpec,
-    pub verdict: GateVerdict,
-}
-
-/// A pluggable registry of gate evaluation functions. Built-in gates are
-/// pre-registered via [`GateRegistry::default`]; external code can register
-/// custom gates with [`GateRegistry::register`].
-///
-/// Each registered function receives the full context available to the
-/// engine: the gate spec, the work, and any reviews.
-type GateEvaluator = dyn Fn(&GateSpec, &Work, &[Review]) -> GateVerdict;
-
-pub struct GateRegistry {
-    gates: std::collections::HashMap<String, Box<GateEvaluator>>,
-}
-
-impl GateRegistry {
-    /// Create an empty registry (useful for testing or embedders that want
-    /// full control over registration). Prefer [`GateRegistry::default`] for
-    /// the standard built-in set.
-    pub fn new() -> Self {
-        Self {
-            gates: std::collections::HashMap::new(),
-        }
-    }
-
-    /// Register a custom gate plugin. If a gate with the same name already
-    /// exists it is replaced.
-    pub fn register<F>(&mut self, plugin: &str, gate: F)
-    where
-        F: Fn(&GateSpec, &Work, &[Review]) -> GateVerdict + 'static,
-    {
-        self.gates.insert(plugin.to_string(), Box::new(gate));
-    }
-
-    /// Evaluate a single gate spec, dispatching to the registered function.
-    /// Returns `Fail` with a descriptive message when the plugin is unknown.
-    pub fn evaluate(&self, gate: &GateSpec, work: &Work, reviews: &[Review]) -> GateVerdict {
-        match self.gates.get(gate.plugin.as_str()) {
-            Some(f) => f(gate, work, reviews),
-            None => GateVerdict::Fail {
-                reason: format!("unknown gate plugin: {}", gate.plugin),
-            },
-        }
-    }
-}
-
-impl Default for GateRegistry {
-    fn default() -> Self {
-        let mut registry = Self::new();
-        registry.register("github-pr", |gate, work, _reviews| {
-            GateEngine::evaluate_github_pr(gate, work)
-        });
-        registry.register("code-review", |gate, work, reviews| {
-            GateEngine::evaluate_code_review(gate, work, reviews)
-        });
-        registry.register("artifact-exists", |gate, work, _reviews| {
-            GateEngine::evaluate_artifact_exists(gate, work)
-        });
-        registry.register("check-pass", |gate, work, _reviews| {
-            GateEngine::evaluate_check_pass(gate, work)
-        });
-        registry
-    }
-}
-
-/// Stateless engine that evaluates a Work's declared [`GateSpec`]s. Uses
-/// a [`GateRegistry`] for dispatch; the default registry includes all
-/// built-in gates. Embedders that register custom gates should create a
-/// custom registry and pass it to the engine methods that accept one.
-///
-/// The engine remains stateless — all gate evaluation functions are pure
-/// (they only read the Work, GateSpec, and optionally Review records).
-pub struct GateEngine;
-
-impl GateEngine {
-    /// Evaluate every gate declared on `work` using the default built-in
-    /// gate set.
-    pub fn evaluate_work_gates(work: &Work) -> Vec<GateResult> {
-        Self::evaluate_work_gates_with_reviews(work, &[])
-    }
-
-    /// Evaluate every gate with access to [`Review`] records.
-    pub fn evaluate_work_gates_with_reviews(work: &Work, reviews: &[Review]) -> Vec<GateResult> {
-        Self::evaluate_work_gates_with_registry(work, reviews, &GateRegistry::default())
-    }
-
-    /// Evaluate every gate using a custom registry. External code that
-    /// registered additional gates should use this entry point.
-    pub fn evaluate_work_gates_with_registry(
-        work: &Work,
-        reviews: &[Review],
-        registry: &GateRegistry,
-    ) -> Vec<GateResult> {
-        if let Err(reason) = work.validate_gates() {
-            return work
-                .gates
-                .iter()
-                .cloned()
-                .map(|gate| GateResult {
-                    gate,
-                    verdict: GateVerdict::Fail {
-                        reason: reason.clone(),
-                    },
-                })
-                .collect();
-        }
-        work.gates
-            .iter()
-            .map(|gate| GateResult {
-                verdict: registry.evaluate(gate, work, reviews),
-                gate: gate.clone(),
-            })
-            .collect()
-    }
-
-    // ── Built-in gate implementations (pub so registry can reference) ─
-
-    fn evaluate_github_pr(gate: &GateSpec, work: &Work) -> GateVerdict {
-        let config = match gate.parse_builtin_config() {
-            Ok(BuiltinGateConfig::GithubPr(config)) => config,
-            Ok(_) => unreachable!("github-pr parser returned the wrong built-in config"),
-            Err(reason) => return GateVerdict::Fail { reason },
-        };
-
-        let pr_links: Vec<&GitHubLink> = work
-            .github_links
-            .iter()
-            .filter(|link| link.kind == GitHubLinkKind::PullRequest)
-            .collect();
-
-        let Some(pr_link) = pr_links.first().copied() else {
-            return GateVerdict::Blocked {
-                reason: "no GitHub pull request linked to this work".to_string(),
-            };
-        };
-        if pr_links.len() != 1 {
-            return GateVerdict::Fail {
-                reason: "multiple GitHub pull requests are linked; current candidate is ambiguous"
-                    .to_string(),
-            };
-        }
-
-        if config.require_merged {
-            match pr_link.status.as_deref() {
-                Some("MERGED") => {} // ok
-                None => {
-                    return GateVerdict::Blocked {
-                        reason: format!(
-                            "PR {}/{}#{} has unknown merge status (run `work poll-github-ci` to refresh)",
-                            pr_link.owner, pr_link.repo, pr_link.number
-                        ),
-                    };
-                }
-                Some(other) => {
-                    return GateVerdict::Blocked {
-                        reason: format!(
-                            "PR {}/{}#{} is not merged (status: {other})",
-                            pr_link.owner, pr_link.repo, pr_link.number
-                        ),
-                    };
-                }
-            }
-        }
-
-        if config.require_ci_pass {
-            match pr_link.ci_status.as_deref() {
-                Some("success") => {} // ok
-                Some("failure") => {
-                    return GateVerdict::Fail {
-                        reason: format!(
-                            "PR {}/{}#{} CI checks failed",
-                            pr_link.owner, pr_link.repo, pr_link.number
-                        ),
-                    };
-                }
-                Some("pending") | None => {
-                    return GateVerdict::Blocked {
-                        reason: format!(
-                            "PR {}/{}#{} CI checks not yet complete (run `work poll-github-ci` to refresh)",
-                            pr_link.owner, pr_link.repo, pr_link.number
-                        ),
-                    };
-                }
-                _ => {
-                    return GateVerdict::Blocked {
-                        reason: format!(
-                            "PR {}/{}#{} CI status unknown: {:?}",
-                            pr_link.owner, pr_link.repo, pr_link.number, pr_link.ci_status
-                        ),
-                    };
-                }
-            }
-        }
-
-        GateVerdict::Pass
-    }
-
-    // ── code-review gate ────────────────────────────────────────────
-
-    fn evaluate_code_review(gate: &GateSpec, work: &Work, reviews: &[Review]) -> GateVerdict {
-        let config = match gate.parse_builtin_config() {
-            Ok(BuiltinGateConfig::CodeReview(config)) => config,
-            Ok(_) => unreachable!("code-review parser returned the wrong built-in config"),
-            Err(reason) => return GateVerdict::Fail { reason },
-        };
-
-        // Reviews are append-only. The last exact match in ledger order is
-        // authoritative; timestamps are display data and are not trusted for
-        // ordering.
-        let review = reviews.iter().rev().find(|review| {
-            review.review_kind == "code"
-                && review.reviewed_work_id.as_deref() == Some(work.id.as_str())
-                && review.reviewed_work_version == Some(work.version)
-                && review.review_strategy == Some(config.strategy)
-                && match config.strategy {
-                    CodeReviewStrategy::Peer => {
-                        review.reviewer_agent_id == config.reviewer.as_deref().unwrap_or_default()
-                    }
-                    CodeReviewStrategy::SelfReview => work
-                        .owner_member_id
-                        .as_deref()
-                        .is_some_and(|owner| review.reviewer_agent_id == owner),
-                    CodeReviewStrategy::Host => true,
-                }
-        });
-
-        let Some(review) = review else {
-            return GateVerdict::Blocked {
-                reason: "code review not yet completed for the current Work candidate".to_string(),
-            };
-        };
-
-        match &review.verdict {
-            ReviewVerdict::Pass => GateVerdict::Pass,
-            ReviewVerdict::Fail => GateVerdict::Fail {
-                reason: format!(
-                    "code review failed by {}: {}",
-                    review.reviewer_agent_id, review.summary
-                ),
-            },
-            ReviewVerdict::NeedsChanges => GateVerdict::Fail {
-                reason: format!(
-                    "code review requested changes (reviewer: {}): {}",
-                    review.reviewer_agent_id, review.summary
-                ),
-            },
-            ReviewVerdict::Blocked => GateVerdict::Blocked {
-                reason: format!(
-                    "code review blocked by {}: {}",
-                    review.reviewer_agent_id, review.summary
-                ),
-            },
-            ReviewVerdict::Other(label) => GateVerdict::Fail {
-                reason: format!(
-                    "code review returned verdict '{label}' by {}: {}",
-                    review.reviewer_agent_id, review.summary
-                ),
-            },
-        }
-    }
-
-    // ── artifact-exists gate ────────────────────────────────────────
-
-    fn evaluate_artifact_exists(gate: &GateSpec, work: &Work) -> GateVerdict {
-        let config = match gate.parse_builtin_config() {
-            Ok(BuiltinGateConfig::ArtifactExists(config)) => config,
-            Ok(_) => unreachable!("artifact-exists parser returned the wrong built-in config"),
-            Err(reason) => return GateVerdict::Fail { reason },
-        };
-        if let Some(paths) = config.paths {
-            let mut missing: Vec<String> = Vec::new();
-            for path in paths {
-                if !work.artifact_refs.contains(&path) {
-                    missing.push(path);
-                }
-            }
-            if !missing.is_empty() {
-                return GateVerdict::Fail {
-                    reason: format!("required artifacts not found: {}", missing.join(", ")),
-                };
-            }
-            return GateVerdict::Pass;
-        }
-
-        // No specific paths — check that artifact_refs is non-empty.
-        if work.artifact_refs.is_empty() {
-            return GateVerdict::Blocked {
-                reason: "no artifacts declared (work.artifact_refs is empty)".to_string(),
-            };
-        }
-        GateVerdict::Pass
-    }
-
-    // ── check-pass gate ─────────────────────────────────────────────
-
-    fn evaluate_check_pass(gate: &GateSpec, work: &Work) -> GateVerdict {
-        let config = match gate.parse_builtin_config() {
-            Ok(BuiltinGateConfig::CheckPass(config)) => config,
-            Ok(_) => unreachable!("check-pass parser returned the wrong built-in config"),
-            Err(reason) => return GateVerdict::Fail { reason },
-        };
-        if let Some(names) = config.checks {
-            let mut missing: Vec<String> = Vec::new();
-            for name in names {
-                if !work.check_refs.contains(&name) {
-                    missing.push(name);
-                }
-            }
-            if !missing.is_empty() {
-                return GateVerdict::Fail {
-                    reason: format!("required checks not found: {}", missing.join(", ")),
-                };
-            }
-            return GateVerdict::Pass;
-        }
-
-        // No specific checks — just require check_refs to be non-empty.
-        if work.check_refs.is_empty() {
-            return GateVerdict::Blocked {
-                reason: "no checks declared (work.check_refs is empty)".to_string(),
-            };
-        }
-        GateVerdict::Pass
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Work {
@@ -5104,7 +4286,7 @@ pub struct Work {
     pub condition: WorkCondition,
     #[serde(default)]
     pub resolution: Option<WorkResolution>,
-    /// Stable AgentMember/slot identity. Runtime generations bind through
+    /// Stable ProviderLaunchProfile/slot identity. Runtime generations bind through
     /// `active_member_run_id`.
     #[serde(default)]
     pub owner_member_id: Option<String>,
@@ -5117,7 +4299,7 @@ pub struct Work {
     pub prerequisite_work_ids: Vec<String>,
     pub priority: WorkPriority,
     pub created_by_actor: TeamActorRef,
-    /// Durable AgentMember identity of the creator (ADR 0052 provenance).
+    /// Durable ProviderLaunchProfile identity of the creator (ADR 0052 provenance).
     /// `None` for Host, Supervising Operator, or external intake; populated
     /// from the bound MemberRun's stable identity when a Member creates Work.
     #[serde(default)]
@@ -5134,32 +4316,12 @@ pub struct Work {
     /// keeps pre-linkage works.jsonl records readable.
     #[serde(default)]
     pub github_links: Vec<GitHubLink>,
-    /// Declared verification gates this Work must pass before acceptance.
-    /// Empty vec → manual-accept semantics preserved (back-compat).
-    #[serde(default)]
-    pub gates: Vec<GateSpec>,
-    /// Where this Work executes. `None` → Member inherits the project root
-    /// (back-compat with today's implicit behaviour). The harness creates
-    /// the workspace before first member start and cleans it up on Work
-    /// completion when `auto_cleanup` is true.
-    #[serde(default)]
-    pub workspace: Option<WorkWorkspace>,
     pub version: u64,
     pub created_at: String,
     pub updated_at: String,
 }
 
 impl Work {
-    /// Validate declared gates as one Work-level contract.
-    ///
-    /// Gate order is meaningful for reporting, but exact duplicate specs are
-    /// never meaningful and make acceptance evidence ambiguous. Code review
-    /// is a single authoritative decision stream, so at most one declaration
-    /// is allowed even when two declarations use different strategies.
-    pub fn validate_gates(&self) -> Result<(), String> {
-        validate_gate_specs(&self.gates)
-    }
-
     pub fn is_terminal(&self) -> bool {
         self.phase == WorkPhase::Closed
     }
@@ -5293,14 +4455,6 @@ impl Validate for Work {
                 });
             }
         }
-        if let Some(workspace) = &self.workspace {
-            if workspace.path.is_empty() {
-                return Err(ValidationError::Required {
-                    field: "Work.workspace.path",
-                });
-            }
-        }
-
         if self.version == 0 {
             return Err(ValidationError::Invalid {
                 field: "Work.version",
@@ -5323,10 +4477,7 @@ impl Validate for Work {
             }
             _ => {}
         }
-        self.validate_gates().map_err(|_| ValidationError::Invalid {
-            field: "Work.gates",
-            reason: "gate declarations are invalid",
-        })
+        Ok(())
     }
 }
 
@@ -5439,8 +4590,6 @@ pub struct WorkOperation {
     pub reports: Vec<WorkReport>,
     #[serde(default)]
     pub evidence_records: Vec<WorkEvidence>,
-    #[serde(default)]
-    pub gate_evaluations: Vec<WorkGateEvaluation>,
     #[serde(default)]
     pub decisions: Vec<WorkOperationalDecision>,
     #[serde(default)]
@@ -6704,7 +5853,7 @@ mod tests {
 
     #[test]
     fn validation_rejects_missing_required_id() {
-        let member = AgentMember {
+        let member = ProviderLaunchProfile {
             id: "".to_string(),
             name: "Leader".to_string(),
             description: "Lead agent".to_string(),
@@ -6712,7 +5861,7 @@ mod tests {
             provider: "codex".to_string(),
             model: None,
             profile: None,
-            provider_config: AgentProviderConfig::default(),
+            provider_config: ProviderLaunchConfig::default(),
             capabilities: vec![],
             team_ids: vec![],
             prompt_ref: None,
@@ -6721,7 +5870,7 @@ mod tests {
             worktree_ref: None,
             permission_profile: None,
             runtime_workspace_roots: Vec::new(),
-            status: AgentMemberStatus::Idle,
+            status: ProviderLaunchStatus::Idle,
             current_task_id: None,
             current_proposal_id: None,
             provider_runtime_id: None,
@@ -6738,7 +5887,7 @@ mod tests {
         assert_eq!(
             member.validate(),
             Err(ValidationError::Required {
-                field: "AgentMember.id"
+                field: "ProviderLaunchProfile.id"
             })
         );
     }
@@ -6792,8 +5941,8 @@ mod tests {
         assert!(parsed.validate().is_ok());
     }
 
-    fn sample_member() -> AgentMember {
-        AgentMember {
+    fn sample_member() -> ProviderLaunchProfile {
+        ProviderLaunchProfile {
             id: "agent-1".to_string(),
             name: "Worker".to_string(),
             description: "A worker member".to_string(),
@@ -6801,7 +5950,7 @@ mod tests {
             provider: "codex".to_string(),
             model: Some("o3".to_string()),
             profile: None,
-            provider_config: AgentProviderConfig::default(),
+            provider_config: ProviderLaunchConfig::default(),
             capabilities: vec!["code".to_string()],
             team_ids: vec![],
             prompt_ref: Some(".firm/prompts/worker.md".to_string()),
@@ -6810,7 +5959,7 @@ mod tests {
             worktree_ref: Some("../worktrees/task-1".to_string()),
             permission_profile: None,
             runtime_workspace_roots: Vec::new(),
-            status: AgentMemberStatus::Idle,
+            status: ProviderLaunchStatus::Idle,
             current_task_id: None,
             current_proposal_id: None,
             provider_runtime_id: None,
@@ -6975,7 +6124,7 @@ mod tests {
 
     #[test]
     fn effort_defaults_to_none_for_legacy_json() {
-        let provider_config: AgentProviderConfig = serde_json::from_value(serde_json::json!({
+        let provider_config: ProviderLaunchConfig = serde_json::from_value(serde_json::json!({
             "service_tier": "default"
         }))
         .expect("legacy provider config without effort should deserialize");
@@ -8751,7 +7900,7 @@ pub mod skill_resolver {
 
 /// Provider capabilities declaration: what a platform can technically support.
 ///
-/// This is distinct from member-level `AgentMember.capabilities` (intent: what
+/// This is distinct from member-level `ProviderLaunchProfile.capabilities` (intent: what
 /// the member is *meant* to do). This declares what the *platform* can do
 /// (streaming, resume, mid-turn approval, subagents, MCP, hooks).
 ///

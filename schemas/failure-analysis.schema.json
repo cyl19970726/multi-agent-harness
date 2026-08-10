@@ -1,0 +1,18 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://agent-harness.local/schemas/failure-analysis.schema.json","title":"FailureAnalysis",
+  "type":"object","additionalProperties":false,
+  "required":["id","work_id","work_revision","observed_failure","impact","primary_cause_status","retry_safety","recommended_host_decision","confidence","reported_by","created_at"],
+  "properties":{
+    "id":{"type":"string","minLength":1},"work_id":{"type":"string","minLength":1},"work_revision":{"type":"integer","minimum":1},"member_run_id":{"type":["string","null"],"minLength":1},
+    "candidate":{"anyOf":[{"$ref":"#/$defs/candidate"},{"type":"null"}]},"observed_failure":{"type":"string","minLength":1},"impact":{"type":"string","minLength":1},
+    "primary_cause_status":{"enum":["unknown","suspected","confirmed"]},"primary_cause":{"type":["string","null"],"minLength":1},"contributing_causes":{"$ref":"#/$defs/refs"},
+    "attempts_already_made":{"$ref":"#/$defs/refs"},"last_safe_checkpoint":{"type":["string","null"],"minLength":1},"retry_safety":{"enum":["safe","unsafe","unknown"]},
+    "side_effect_summary":{"type":["string","null"],"minLength":1},"recovery_options":{"$ref":"#/$defs/refs"},"recommended_host_decision":{"type":"string","minLength":1},
+    "evidence_refs":{"$ref":"#/$defs/refs"},"confidence":{"enum":["low","medium","high"]},"reported_by":{"$ref":"#/$defs/actor"},"created_at":{"type":"string","minLength":1}
+  },
+  "$defs":{
+    "actor":{"type":"object","additionalProperties":false,"required":["kind","id"],"properties":{"kind":{"enum":["human","agent_member","external","service"]},"id":{"type":"string","minLength":1}}},
+    "candidate":{"type":"object","additionalProperties":false,"required":["kind","value"],"properties":{"kind":{"enum":["git_commit","artifact_digest","content_digest"]},"value":{"type":"string","minLength":1}}},
+    "refs":{"type":"array","items":{"type":"string","minLength":1},"uniqueItems":true}
+  }
+}

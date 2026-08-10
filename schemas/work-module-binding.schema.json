@@ -1,0 +1,10 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://agent-harness.local/schemas/work-module-binding.schema.json","title":"WorkModuleBinding",
+  "type":"object","additionalProperties":false,
+  "required":["id","work_id","work_revision","module_id","module_version","resolved_config","config_fingerprint","attached_by","attached_at","version"],
+  "properties":{
+    "id":{"type":"string","minLength":1},"work_id":{"type":"string","minLength":1},"work_revision":{"type":"integer","minimum":1},"module_id":{"type":"string","minLength":1},"module_version":{"type":"integer","minimum":1},
+    "resolved_config":{},"config_fingerprint":{"type":"string","minLength":1},"attached_by":{"$ref":"#/$defs/actor"},"attached_at":{"type":"string","minLength":1},"version":{"type":"integer","minimum":1}
+  },
+  "$defs":{"actor":{"type":"object","additionalProperties":false,"required":["kind","id"],"properties":{"kind":{"enum":["human","agent_member","external","service"]},"id":{"type":"string","minLength":1}}}}
+}

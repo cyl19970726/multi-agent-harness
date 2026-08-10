@@ -136,19 +136,13 @@ export function MemberRunFocus({
     actors?: Array<{
       id?: string;
       display_name?: string;
-      record?: { execution_agent_member_ref?: string | null };
+      record?: { agent_member_ref?: { kind?: string; id?: string } | null };
     }>;
-    standing_assignment_conflicts?: Array<{ agent_member_id?: string }>;
   } | undefined;
-  const organizationLinkConflict = Boolean(
-    context?.member.agent_member_id
-    && companyProjection?.standing_assignment_conflicts?.some(
-      (conflict) => conflict.agent_member_id === context.member.agent_member_id,
-    ),
-  );
-  const organizationActor = context?.member.agent_member_id && !organizationLinkConflict
+  const organizationActor = context?.member.agent_member_id
     ? companyProjection?.actors?.find((actor) =>
-      actor.record?.execution_agent_member_ref === context.member.agent_member_id)
+      actor.record?.agent_member_ref?.kind === "agent_member"
+      && actor.record.agent_member_ref.id === context.member.agent_member_id)
     : undefined;
   const closeRequest = model.snapshot.team_member_close_requests?.find(
     (request) => request.member_run_id === memberRunId,
@@ -294,7 +288,6 @@ export function MemberRunFocus({
           evidence={evidence}
           sessionStatus={context.member.native_session?.availability}
           organizationActor={organizationActor}
-          organizationLinkConflict={organizationLinkConflict}
           onSelectionChange={onSelectionChange}
         />
       }
@@ -741,7 +734,6 @@ function MemberContextRail({
   evidence,
   sessionStatus,
   organizationActor,
-  organizationLinkConflict,
   onSelectionChange,
 }: {
   context: MemberRunContext;
@@ -751,7 +743,6 @@ function MemberContextRail({
   evidence: EvidenceItem[];
   sessionStatus?: string;
   organizationActor?: { id?: string; display_name?: string };
-  organizationLinkConflict: boolean;
   onSelectionChange: MemberRunFocusProps["onSelectionChange"];
 }) {
   const work = context.currentWork;
@@ -830,36 +821,27 @@ function MemberContextRail({
 
       <ContextModule
         title="Organization identity"
-        icon={organizationLinkConflict
-          ? <ShieldAlert className="size-3.5" />
-          : <Users className="size-3.5" />}
-        tone={organizationLinkConflict ? "bad" : organizationActor ? "info" : undefined}
+        icon={<Users className="size-3.5" />}
+        tone={organizationActor ? "info" : undefined}
         className="order-1 rounded-xl bg-card shadow-[0_14px_34px_-32px_rgba(15,23,42,.65)]"
         action={organizationActor?.id ? (
           <RailOpenButton
             label="Open profile"
             onClick={() => onSelectionChange({
               surface: "organization",
-              standingAgentId: organizationActor.id,
+              agentMembershipId: organizationActor.id,
             })}
           />
         ) : undefined}
       >
-        {organizationLinkConflict ? (
-          <div role="alert" className="space-y-2 text-[12px]">
-            <p className="font-medium text-status-bad">Ambiguous Standing Agent link</p>
-            <p className="text-[11px] leading-5 text-muted-foreground">
-              More than one Standing Agent claims this AgentMember. Harness withholds the Organization identity instead of guessing a profile.
-            </p>
-          </div>
-        ) : organizationActor ? (
+        {organizationActor ? (
           <div className="space-y-2 text-[12px]">
-            <RailKeyValue label="Standing Agent" value={organizationActor.display_name ?? organizationActor.id ?? "Linked actor"} />
+            <RailKeyValue label="Agent Membership" value={organizationActor.display_name ?? organizationActor.id ?? "Linked actor"} />
             <RailKeyValue label="AgentMember" value={context.member.agent_member_id ?? "Not linked"} mono />
             <p className="text-[11px] text-muted-foreground">Explicit Company-owned execution identity link.</p>
           </div>
         ) : (
-          <RailEmpty>Ad-hoc execution. No Standing Agent explicitly links this AgentMember.</RailEmpty>
+          <RailEmpty>Ad-hoc execution. No Agent Membership explicitly links this AgentMember.</RailEmpty>
         )}
       </ContextModule>
 

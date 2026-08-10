@@ -14,31 +14,32 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use harness_core::{
-    build_launch_spec, content_hash_hex16, provider_interaction_response_id, validate_gate_specs,
-    AgentEvent, AgentMember, AgentMemberStatus, AgentMessageRoute, AgentProviderConfig,
-    AgentRuntime, AgentRuntimeHealth, AgentRuntimeStatus, AgentTeam, AgentTeamRun, AgentTeamStatus,
-    DelegationRun, DurableAgentMember, DurableAgentMemberStatus, Evidence, ExecutionNode,
-    ExecutionNodeStatus, ExecutionSpace, GateEngine, GateSpec, GitHubLink, GitHubLinkKind,
-    HostAttention, HostAttentionStatus, HostBindingLease, HostBindingLeaseOwnerKind,
-    HostControlMode, HostDispatchConfig, LaunchMcp, LaunchPermission, LaunchSpec, MemberAction,
-    MemberActionStatus, MemberCoordinationStatus, MemberExecutionDriver, MemberRun,
-    MemberRunStatus, MemberWorkspaceSnapshot, Message, MessageDelivery, MessageDeliveryStatus,
-    MessageKind, MessageTerminalSource, Mission, MissionLogEntry, MissionLogEntryKind,
-    MissionStatus, NativeSessionAvailability, NativeSessionRef, NodeDaemonLeaseStatus,
-    NodeProjectRegistration, NodeProjectRegistrationStatus, OrdinaryMessageBoundary,
-    PendingInteraction, PendingInteractionKind, PendingInteractionRoute, PendingInteractionStatus,
-    ProjectContext, ProjectKind, ProviderAccountRef, ProviderCapabilities,
-    ProviderCapacityConfidence, ProviderCapacityEvidence, ProviderCapacitySnapshot,
-    ProviderCapacityState, ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
-    ProviderCompatibilityAdmissionPolicy, ProviderCompatibilityBlockBoundary,
-    ProviderCompatibilityBlockCause, ProviderCompatibilityBlockSource, ProviderCompatibilityStatus,
-    ProviderControlValue, ProviderEventFidelity, ProviderExecutionControls,
+    build_launch_spec, content_hash_hex16, provider_interaction_response_id,
+    AgentMessageRoute, AgentTeam, AgentTeamRun, AgentTeamStatus, DelegationRun, Evidence,
+    ExecutionNode, ExecutionNodeStatus, ExecutionSpace, GitHubLink,
+    GitHubLinkKind, HostAttention, HostAttentionStatus, HostBindingLease,
+    HostBindingLeaseOwnerKind, HostControlMode, HostDispatchConfig, LaunchMcp, LaunchPermission,
+    LaunchSpec, MemberAction, MemberActionStatus, MemberCoordinationStatus, MemberExecutionDriver,
+    MemberRun, MemberRunStatus, MemberWorkspaceSnapshot, Message, MessageDelivery,
+    MessageDeliveryStatus, MessageKind, MessageTerminalSource, Mission, MissionLogEntry,
+    MissionLogEntryKind, MissionStatus, NativeSessionAvailability, NativeSessionRef,
+    NodeDaemonLeaseStatus, NodeProjectRegistration, NodeProjectRegistrationStatus,
+    OrdinaryMessageBoundary, PendingInteraction, PendingInteractionKind, PendingInteractionRoute,
+    PendingInteractionStatus, ProjectContext, ProjectKind, ProviderAccountRef,
+    ProviderCapabilities, ProviderCapacityConfidence, ProviderCapacityEvidence,
+    ProviderCapacitySnapshot, ProviderCapacityState, ProviderCompatibilityAdmission,
+    ProviderCompatibilityAdmissionLifecycle, ProviderCompatibilityAdmissionPolicy,
+    ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
+    ProviderCompatibilityBlockSource, ProviderCompatibilityStatus, ProviderControlValue,
+    ProviderDispatchEvent, ProviderEventFidelity, ProviderExecutionControls,
     ProviderExecutionStatus, ProviderFeatureMode, ProviderIntegrationProfile,
     ProviderInteractionMessageOption, ProviderInteractionMode, ProviderInteractionRequestBody,
-    ProviderInteractionResponseBody, ProviderInteractionType, ProviderRuntimeContextFact, Review,
-    ReviewVerdict, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus,
-    TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery,
-    TeamMessageKind, TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
+    ProviderInteractionResponseBody, ProviderInteractionType, ProviderLaunchConfig,
+    ProviderLaunchProfile, ProviderLaunchStatus, ProviderProcess, ProviderProcessHealth,
+    ProviderProcessStatus, ProviderRuntimeContextFact, Review, ReviewVerdict, SenderKind,
+    TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
+    TeamMemberCloseStatus, TeamMessage, TeamMessageDelivery, TeamMessageKind,
+    TeamMessageResponseIntent, TeamRecipientKind, TeamRecipientRef, TeamRunEvent,
     TeamRunEventSourceKind, TeamRunStatus, TeamSupervisorLease, Validate, Wave, Work,
     WorkCausationRef, WorkClaimMode, WorkCommandContext, WorkCondition, WorkDelegation,
     WorkDelegationState, WorkDelivery, WorkDeliveryStatus, WorkPhase, WorkPriority, WorkRef,
@@ -49,7 +50,7 @@ use harness_core::{
 };
 use harness_store::{
     canonical_surface, HarnessStore, HostAttentionClaimResult, MessageDeliveryClaimResult,
-    StoreError, TeamMessageDeliveryClaimResult, WorkDeliveryClaimResult, WorkReviewPayload,
+    StoreError, TeamMessageDeliveryClaimResult, WorkDeliveryClaimResult,
 };
 use thiserror::Error;
 
@@ -929,11 +930,11 @@ fn execution_space_command(args: &[String]) -> CliResult<()> {
 const EXECUTION_LEDGER_NAMES: &[&str] = &[
     "missions.jsonl",
     "waves.jsonl",
-    "members.jsonl",
-    "durable_agent_members.jsonl",
+    "provider_launch_profiles.jsonl",
+    "durable_agent_provider_launch_profiles.jsonl",
     "teams.jsonl",
-    "agent_runtimes.jsonl",
-    "agent_events.jsonl",
+    "provider_processes.jsonl",
+    "provider_dispatch_events.jsonl",
     "proposals.jsonl",
     "messages.jsonl",
     "agent_message_routes.jsonl",
@@ -1982,7 +1983,7 @@ fn run() -> CliResult<()> {
         }
         "project" => project_command(&args[1..])?,
         "space" => execution_space_command(&args[1..])?,
-        "agent" => agent_command(&store, resolved.context.as_ref(), &args[1..])?,
+        "agent" => return Err(retired_surface_error("agent")),
         "org" => org_command(&store, &args[1..])?,
         "node" => node_command(&store, &resolved, &args[1..])?,
         "team" => team_command(&store, &args[1..])?,
@@ -2555,8 +2556,8 @@ const ACTIVE_COMPANY_OS_LEDGER_FILES: &[&str] = &[
     "company_os_relations.jsonl",
     "company_os_views.jsonl",
     "company_os_business_modules.jsonl",
-    "company_os_human_members.jsonl",
-    "company_os_standing_agents.jsonl",
+    "company_os_human_provider_launch_profiles.jsonl",
+    "company_os_agent_memberships.jsonl",
     "company_os_external_participants.jsonl",
     "company_os_service_actors.jsonl",
     "company_os_org_units.jsonl",
@@ -2759,8 +2760,9 @@ fn company_org_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         "add-membership" => company_org_add_membership_command(store, &args[1..]),
         "transition-actor" => company_org_transition_actor_command(store, &args[1..]),
         "update-permissions" => company_org_update_permissions_command(store, &args[1..]),
-        "link-execution" => company_org_link_execution_command(store, &args[1..]),
-        "unlink-execution" => company_org_unlink_execution_command(store, &args[1..]),
+        "link-execution" | "unlink-execution" => Err(CliError::Usage(
+            "AgentMembership requires its canonical AgentMember ActorRef at creation; relink/unlink compatibility commands are retired".into(),
+        )),
         other => Err(CliError::Usage(format!(
             "unknown company org command: {other}; usage: harness company org actor|unit|membership | list|query|create-human|create-agent|create-unit|add-membership|transition-actor|update-permissions|link-execution|unlink-execution"
         ))),
@@ -2926,52 +2928,53 @@ fn company_org_create_human_command(store: &HarnessStore, args: &[String]) -> Cl
     )
 }
 
-fn company_org_create_agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let authority = required(args, "--authority")?;
+fn company_agent_membership_actor_value(args: &[String]) -> CliResult<serde_json::Value> {
+    let agent_member_id = required(args, "--agent-member")?;
+    let execution_space_id = required(args, "--execution-space")?;
+    let (space, execution_store) = company_execution_space_store(&execution_space_id)?;
+    let member = execution_store
+        .trust_agent_members(&space.id)?
+        .into_iter()
+        .find(|member| member.id == agent_member_id)
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "canonical AgentMember not found in Execution Space {}: {agent_member_id}",
+                space.id
+            ))
+        })?;
+    if member.organization_status
+        != harness_core::agentfirm_api::AgentMemberOrganizationStatus::Active
+    {
+        return Err(CliError::Usage(format!(
+            "canonical AgentMember {agent_member_id} is not active"
+        )));
+    }
     let now = now_string();
-    let id = value(args, "--id").unwrap_or_else(|| generated_id("standing-agent-cli"));
-    let capacity = value(args, "--capacity")
-        .map(|raw| {
-            raw.parse::<u32>()
-                .map_err(|_| CliError::Usage("--capacity must be an integer".into()))
-        })
-        .transpose()?;
-    let actor = serde_json::json!({
+    Ok(serde_json::json!({
         "actor_type": "agent",
         "actor": {
-            "id": id,
-            "display_name": required(args, "--display-name")?,
-            "role": required(args, "--role")?,
-            "execution_agent_member_ref": value(args, "--execution-agent-member-ref"),
+            "id": value(args, "--id").unwrap_or_else(|| generated_id("agent-membership-cli")),
+            "agent_member_ref": { "kind": "agent_member", "id": agent_member_id },
             "status": value(args, "--status").unwrap_or_else(|| "active".to_string()),
-            "availability": value(args, "--availability").unwrap_or_else(|| "available".to_string()),
-            "assignment_capacity": capacity,
-            "exclusive_assignment_ref": value(args, "--exclusive-assignment"),
             "membership_refs": many(args, "--membership"),
             "responsibility_summary": required(args, "--responsibility")?,
-            "capability_refs": many(args, "--capability"),
-            "system_prompt_ref": value(args, "--system-prompt"),
-            "tool_refs": many(args, "--tool"),
-            "skill_refs": many(args, "--skill"),
-            "maintained_document_refs": many(args, "--maintained-document"),
-            "accepted_work_type_refs": many(args, "--accepted-work-type"),
-            "escalation_policy_ref": value(args, "--escalation-policy"),
             "permission_policy_refs": many(args, "--permission"),
-            "runtime_refs": many(args, "--runtime"),
-            "native_session_refs": many(args, "--native-session"),
             "created_at": now,
             "updated_at": now
         }
-    });
+    }))
+}
+
+fn company_org_create_agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
+    let authority = required(args, "--authority")?;
     company_org_admin_append(
         store,
         "/v1/company-os/actors",
         &authority,
-        actor,
-        "administrative_standing_agent_append",
+        company_agent_membership_actor_value(args)?,
+        "administrative_agent_membership_append",
     )
 }
-
 fn company_org_create_unit_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     let authority = required(args, "--authority")?;
     let now = now_string();
@@ -3035,8 +3038,15 @@ fn company_org_transition_actor_command(store: &HarnessStore, args: &[String]) -
     let actor_kind = value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string());
     let mut actor = latest_company_actor_value(store, &actor_kind, &actor_id)?;
     actor["actor"]["status"] = serde_json::json!(required(args, "--status")?);
-    if let Some(availability) = value(args, "--availability") {
-        actor["actor"]["availability"] = serde_json::json!(availability);
+    if actor_kind != "agent" {
+        if let Some(availability) = value(args, "--availability") {
+            actor["actor"]["availability"] = serde_json::json!(availability);
+        }
+    } else if value(args, "--availability").is_some() {
+        return Err(CliError::Usage(
+            "Agent Membership has no independent availability; inspect the canonical AgentMember/MemberRun projection"
+                .to_string(),
+        ));
     }
     actor["actor"]["updated_at"] = serde_json::json!(now_string());
     company_org_admin_append(
@@ -3053,21 +3063,32 @@ fn company_org_update_permissions_command(store: &HarnessStore, args: &[String])
     let actor_id = required(args, "--actor")?;
     let actor_kind = value(args, "--actor-kind").unwrap_or_else(|| "agent".to_string());
     let mut actor = latest_company_actor_value(store, &actor_kind, &actor_id)?;
+    if actor_kind == "agent"
+        && (!many(args, "--authority-policy").is_empty()
+            || !many(args, "--capability").is_empty())
+    {
+        return Err(CliError::Usage(
+            "Agent Membership stores only permission_policy_refs; capabilities and authority live on the canonical AgentMember or Human authority"
+                .to_string(),
+        ));
+    }
     append_string_values(
         &mut actor["actor"],
         "permission_policy_refs",
         many(args, "--permission"),
     );
-    append_string_values(
-        &mut actor["actor"],
-        "authority_policy_refs",
-        many(args, "--authority-policy"),
-    );
-    append_string_values(
-        &mut actor["actor"],
-        "capability_refs",
-        many(args, "--capability"),
-    );
+    if actor_kind != "agent" {
+        append_string_values(
+            &mut actor["actor"],
+            "authority_policy_refs",
+            many(args, "--authority-policy"),
+        );
+        append_string_values(
+            &mut actor["actor"],
+            "capability_refs",
+            many(args, "--capability"),
+        );
+    }
     actor["actor"]["updated_at"] = serde_json::json!(now_string());
     company_org_admin_append(
         store,
@@ -3078,24 +3099,12 @@ fn company_org_update_permissions_command(store: &HarnessStore, args: &[String])
     )
 }
 
-/// Require an active Human `company_os.admin` authority without writing a row.
-///
-/// The relation commands are idempotent, so some invocations append nothing.
-/// Those still have to prove authority up front: otherwise an unknown or
-/// non-admin `--authority` would appear to succeed whenever the relation
-/// already had the requested shape.
-fn company_org_require_admin_authority(store: &HarnessStore, authority: &str) -> CliResult<()> {
-    let authority_ref = company_actor_ref_json("human", authority)?;
-    company_os_api::authorize_administrative_actor_write(store, &authority_ref)
-        .map_err(CliError::Usage)
-}
-
-/// Open the Execution Space that owns AgentMember truth for a Company OS link.
+/// Open the Execution Space that owns ProviderLaunchProfile truth for a Company OS link.
 ///
 /// `harness company ...` resolves its store from the Company Store registry and
 /// returns from [`resolve_store`] *before* the global `--space` selector is
 /// consumed, so a Company CLI command never holds an execution store. Per ADR
-/// 0042 the Company Store does not own AgentMember truth and a Project Binding
+/// 0042 the Company Store does not own ProviderLaunchProfile truth and a Project Binding
 /// only describes cwd, so the relation command names its Execution Space
 /// explicitly and this function is the single read-only bridge across the
 /// boundary. It deliberately has no fallback to the active space or to a
@@ -3113,144 +3122,6 @@ fn company_execution_space_store(
         })?;
     let store = HarnessStore::new(space.store_root.clone());
     Ok((space, store))
-}
-
-/// Link an EXISTING StandingAgent to an EXISTING AgentMember.
-///
-/// Both ids are explicit and neither is ever inferred from the other: equal ids
-/// must be typed twice. The StandingAgent is read latest-row-wins and re-appended
-/// with only `execution_agent_member_ref` and `updated_at` changed, so every other
-/// actor field round-trips. The write goes through the administrative governance
-/// envelope, never through a raw JSONL edit.
-fn company_org_link_execution_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let authority = required(args, "--authority")?;
-    let actor_id = required(args, "--actor")?;
-    let agent_member_id = required(args, "--agent-member")?;
-    let space_id = required(args, "--execution-space")?;
-    let replace = has_flag(args, "--replace");
-    // Authorize every invocation, including the ones that turn out to change
-    // nothing: an idempotent no-op must not become an authorization bypass.
-    company_org_require_admin_authority(store, &authority)?;
-
-    let (space, execution_store) = company_execution_space_store(&space_id)?;
-    let members = latest_members(&execution_store)?;
-    let member = members.get(&agent_member_id).ok_or_else(|| {
-        CliError::Usage(format!(
-            "AgentMember not found in execution space {}: {agent_member_id} (store {})",
-            space.id,
-            space.store_root.display()
-        ))
-    })?;
-
-    let mut actor = latest_company_actor_value(store, "agent", &actor_id)?;
-    let previous = actor["actor"]["execution_agent_member_ref"]
-        .as_str()
-        .map(str::to_string);
-    let validated_against = serde_json::json!({
-        "execution_space_id": space.id,
-        "execution_store_root": space.store_root.to_string_lossy(),
-        "agent_member_id": member.id,
-        "agent_member_name": member.name,
-        "agent_member_provider": member.provider,
-    });
-    if previous.as_deref() == Some(agent_member_id.as_str()) {
-        // Idempotent: a re-run of the same explicit pair appends no row.
-        return print_json(&serde_json::json!({
-            "ok": true,
-            "command": "harness company org actor link-execution",
-            "result": {
-                "relation": "standing_agent_execution_member",
-                "changed": false,
-                "reason": "already_linked",
-                "standing_agent_id": actor_id,
-                "agent_member_id": agent_member_id,
-                "validated_against": validated_against,
-                "boundaries": company_org_boundaries()
-            }
-        }));
-    }
-    if let Some(previous_ref) = previous.as_deref() {
-        if !replace {
-            return Err(CliError::Usage(format!(
-                "StandingAgent {actor_id} already links execution AgentMember {previous_ref}; pass --replace to repoint it to {agent_member_id}"
-            )));
-        }
-    }
-    actor["actor"]["execution_agent_member_ref"] = serde_json::json!(agent_member_id);
-    actor["actor"]["updated_at"] = serde_json::json!(now_string());
-    company_org_admin_append_detail(
-        store,
-        "/v1/company-os/actors",
-        &authority,
-        actor,
-        "administrative_standing_agent_execution_link_append",
-        serde_json::json!({
-            "relation": "standing_agent_execution_member",
-            "changed": true,
-            "standing_agent_id": actor_id,
-            "agent_member_id": agent_member_id,
-            "previous_agent_member_ref": previous,
-            "validated_against": validated_against,
-            "inference": "none_explicit_ids_only",
-            "execution_space_persistence": "write_time_assertion_not_persisted_on_standing_agent",
-        }),
-    )
-}
-
-/// Unlink an EXISTING StandingAgent from its execution AgentMember.
-///
-/// No Execution Space is required because clearing a reference validates
-/// nothing in the execution store. `--expect-agent-member` is an optional
-/// optimistic guard for scripted relink flows.
-fn company_org_unlink_execution_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    let authority = required(args, "--authority")?;
-    let actor_id = required(args, "--actor")?;
-    let expected = value(args, "--expect-agent-member");
-    // Authorize every invocation, including the ones that turn out to change
-    // nothing: an idempotent no-op must not become an authorization bypass.
-    company_org_require_admin_authority(store, &authority)?;
-
-    let mut actor = latest_company_actor_value(store, "agent", &actor_id)?;
-    let previous = actor["actor"]["execution_agent_member_ref"]
-        .as_str()
-        .map(str::to_string);
-    let Some(previous_ref) = previous else {
-        // Idempotent: unlinking an unlinked Standing Agent appends no row.
-        return print_json(&serde_json::json!({
-            "ok": true,
-            "command": "harness company org actor unlink-execution",
-            "result": {
-                "relation": "standing_agent_execution_member",
-                "changed": false,
-                "reason": "already_unlinked",
-                "standing_agent_id": actor_id,
-                "boundaries": company_org_boundaries()
-            }
-        }));
-    };
-    if let Some(expected) = expected.as_deref() {
-        if expected != previous_ref {
-            return Err(CliError::Usage(format!(
-                "StandingAgent {actor_id} links execution AgentMember {previous_ref}, not {expected}; refusing to unlink"
-            )));
-        }
-    }
-    actor["actor"]["execution_agent_member_ref"] = serde_json::Value::Null;
-    actor["actor"]["updated_at"] = serde_json::json!(now_string());
-    company_org_admin_append_detail(
-        store,
-        "/v1/company-os/actors",
-        &authority,
-        actor,
-        "administrative_standing_agent_execution_unlink_append",
-        serde_json::json!({
-            "relation": "standing_agent_execution_member",
-            "changed": true,
-            "standing_agent_id": actor_id,
-            "agent_member_id": serde_json::Value::Null,
-            "previous_agent_member_ref": previous_ref,
-        }),
-    )
 }
 
 fn company_org_admin_append(
@@ -3307,7 +3178,7 @@ fn company_org_boundaries() -> serde_json::Value {
         "write_model": "human_administrative_append_v1",
         "organization_side_effects": true,
         "execution_side_effects": false,
-        "standing_agent_is_not_agent_team_member_run": true,
+        "agent_membership_is_not_agent_team_member_run": true,
         "runtime_health_does_not_grant_authority": true
     })
 }
@@ -3934,8 +3805,9 @@ fn company_org_actor_command(store: &HarnessStore, args: &[String]) -> CliResult
             }
             company_org_transition_actor_command(store, &forwarded)
         }
-        "link-execution" => company_org_link_execution_command(store, &args[1..]),
-        "unlink-execution" => company_org_unlink_execution_command(store, &args[1..]),
+        "link-execution" | "unlink-execution" => Err(CliError::Usage(
+            "AgentMembership references a canonical AgentMember at creation; relink/unlink compatibility commands are retired".into(),
+        )),
         other => Err(CliError::Usage(format!(
             "unknown company org actor command: {other}; usage: harness company org actor list|show|create-human|create-agent|update-status|link-execution|unlink-execution"
         ))),
@@ -4032,46 +3904,18 @@ fn company_org_actor_create_human_command(store: &HarnessStore, args: &[String])
 
 fn company_org_actor_create_agent_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     let authority = required(args, "--authority")?;
-    let id = value(args, "--id").unwrap_or_else(|| generated_id("standing-agent-cli"));
-    let now = now_string();
-    let record = serde_json::json!({
-        "actor_type": "agent",
-        "actor": {
-            "id": id,
-            "display_name": required(args, "--display-name")?,
-            "role": required(args, "--role")?,
-            "execution_agent_member_ref": value(args, "--execution-agent-member-ref"),
-            "status": value(args, "--status").unwrap_or_else(|| "active".to_string()),
-            "availability": value(args, "--availability").unwrap_or_else(|| "available".to_string()),
-            "assignment_capacity": value(args, "--assignment-capacity").map(|v| v.parse::<u32>()).transpose().map_err(|_| CliError::Usage("--assignment-capacity must be a positive integer".into()))?,
-            "exclusive_assignment_ref": value(args, "--exclusive-assignment"),
-            "membership_refs": many(args, "--membership"),
-            "responsibility_summary": required(args, "--responsibility")?,
-            "capability_refs": many(args, "--capability"),
-            "system_prompt_ref": value(args, "--system-prompt"),
-            "tool_refs": many(args, "--tool"),
-            "skill_refs": many(args, "--skill"),
-            "maintained_document_refs": many(args, "--maintained-document"),
-            "accepted_work_type_refs": many(args, "--accepted-work-type"),
-            "escalation_policy_ref": value(args, "--escalation-policy"),
-            "permission_policy_refs": many(args, "--permission"),
-            "runtime_refs": many(args, "--runtime"),
-            "native_session_refs": many(args, "--native-session"),
-            "created_at": now,
-            "updated_at": now
-        }
-    });
     let result = dispatch_company_admin_append_value(
         store,
         "/v1/company-os/actors",
         Some(company_actor_ref_json("human", &authority)?),
-        record,
+        company_agent_membership_actor_value(args)?,
     )?;
-    print_json(
-        &serde_json::json!({"ok": true, "result": result, "command": "harness company org actor create-agent"}),
-    )
+    print_json(&serde_json::json!({
+        "ok": true,
+        "result": result,
+        "command": "harness company org actor create-agent"
+    }))
 }
-
 fn company_org_unit_create_nested_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     let authority = required(args, "--authority")?;
     let now = now_string();
@@ -7989,17 +7833,17 @@ where
 }
 
 fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
-    require_subcommand(args, "member register|list|providers|preflight")?;
+    require_subcommand(args, "member providers|preflight")?;
     match args[0].as_str() {
         // Runtime availability of each provider ACCOUNT, reported separately
         // from adapter compatibility. See `member providers` for the latter.
         "preflight" => member_preflight_command(store, &args[1..])?,
-        "register" => {
-            let member = build_member_from_args(args, AgentMemberStatus::Idle)?;
-            store.append_member(&member)?;
-            print_json(&member)?;
+        "register" | "list" => {
+            return Err(CliError::Usage(
+                "member identity registration moved to `member-trust mutate`; legacy registry routes are retired"
+                    .into(),
+            ));
         }
-        "list" => print_json(&store.members()?)?,
         // The provider-neutral capability matrix (goal-provider-neutral acceptance
         // #4): every REGISTERED provider with the capabilities its adapter
         // declares (streaming / resume / schema / cost / …). Derived from the
@@ -8060,10 +7904,10 @@ fn agent_command(
                         .to_string(),
                 ));
             }
-            let mut member = build_member_from_args(args, AgentMemberStatus::Creating)?;
+            let mut member = build_member_from_args(args, ProviderLaunchStatus::Creating)?;
             if latest_members(store)?.contains_key(&member.id) {
                 return Err(CliError::Usage(format!(
-                    "AgentMember already exists: {}",
+                    "ProviderLaunchProfile already exists: {}",
                     member.id
                 )));
             }
@@ -8073,7 +7917,7 @@ fn agent_command(
                 store.append_member(&member)?;
                 let runtime = start_provider_runtime(store, &member)?;
                 let now = now_string();
-                member.status = AgentMemberStatus::Idle;
+                member.status = ProviderLaunchStatus::Idle;
                 member.provider_runtime_id = Some(runtime.id.clone());
                 member.control_endpoint = runtime.control_endpoint.clone();
                 member.last_seen_at = Some(now);
@@ -8100,7 +7944,7 @@ fn agent_command(
             } else {
                 // No runtime requested: persist the member and emit the
                 // creation event via the shared path used by POST /v1/agents.
-                member.status = AgentMemberStatus::Idle;
+                member.status = ProviderLaunchStatus::Idle;
                 finalize_member_creation(store, &member)?;
             }
             print_json(&member)?;
@@ -8242,126 +8086,12 @@ fn agent_command(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Organization durable AgentMember identity (ADR 0052).
-//
-// This surface is intentionally CLI/store-only in this slice. HTTP/MCP wiring
-// belongs to the application-service follow-up and must not create a second
-// implementation of Host-authority resolution.
-// ---------------------------------------------------------------------------
-
-fn durable_member_status(value: Option<String>) -> CliResult<DurableAgentMemberStatus> {
-    match value.as_deref().unwrap_or("active") {
-        "active" => Ok(DurableAgentMemberStatus::Active),
-        "paused" => Ok(DurableAgentMemberStatus::Paused),
-        "retired" => Ok(DurableAgentMemberStatus::Retired),
-        other => Err(CliError::Usage(format!(
-            "unknown durable AgentMember status: {other}; expected active|paused|retired"
-        ))),
-    }
-}
-
-fn build_durable_member_from_args(args: &[String]) -> CliResult<DurableAgentMember> {
-    let now = now_string();
-    Ok(DurableAgentMember {
-        id: value(args, "--id").unwrap_or_else(|| generated_id("agent-member")),
-        name: required(args, "--name")?,
-        description: required(args, "--description")?,
-        role: required(args, "--role")?,
-        provider_profile: value(args, "--provider-profile"),
-        model: value(args, "--model"),
-        workspace_policy: value(args, "--workspace-policy"),
-        project_binding_id: value(args, "--project-binding"),
-        business_access_ceiling_refs: many(args, "--business-access-ceiling"),
-        status: durable_member_status(value(args, "--status"))?,
-        created_by_member_id: value(args, "--created-by-member"),
-        created_at: now.clone(),
-        updated_at: now,
-    })
-}
-
-fn converge_durable_member(
-    store: &HarnessStore,
-    id: &str,
-    args: &[String],
-) -> CliResult<DurableAgentMember> {
-    let source = latest_members(store)?
-        .remove(id)
-        .ok_or_else(|| CliError::Usage(format!("compatibility AgentMember not found: {id}")))?;
-    let status = match source.status {
-        AgentMemberStatus::Retired => DurableAgentMemberStatus::Retired,
-        AgentMemberStatus::Paused
-        | AgentMemberStatus::Stale
-        | AgentMemberStatus::Closed
-        | AgentMemberStatus::Closing => DurableAgentMemberStatus::Paused,
-        _ => DurableAgentMemberStatus::Active,
-    };
-    let member = DurableAgentMember {
-        id: source.id,
-        name: source.name,
-        description: source.description,
-        role: source.role,
-        provider_profile: source.profile.or(Some(source.provider)),
-        model: source.model,
-        workspace_policy: source.workspace_policy,
-        project_binding_id: value(args, "--project-binding"),
-        business_access_ceiling_refs: many(args, "--business-access-ceiling"),
-        status,
-        created_by_member_id: value(args, "--created-by-member"),
-        // Deterministic projection: re-running convergence produces the same
-        // identity row rather than introducing a wall-clock difference.
-        created_at: source.created_at.clone(),
-        updated_at: source.created_at,
-    };
-    Ok(store.converge_registry_member(&member)?)
-}
-
 fn org_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(args, "org member|bootstrap-lead|host|cutover-audit")?;
     match args[0].as_str() {
-        "member" => {
-            let member_args = args.get(1..).unwrap_or(&[]);
-            require_subcommand(member_args, "org member create|converge|list|show")?;
-            match member_args[0].as_str() {
-                "create" => {
-                    let member = build_durable_member_from_args(&member_args[1..])?;
-                    store.insert_durable_member(&member)?;
-                    print_json(&member)?;
-                }
-                "converge" => {
-                    let rest = &member_args[1..];
-                    let member = converge_durable_member(store, &required(rest, "--id")?, rest)?;
-                    print_json(&member)?;
-                }
-                "list" => print_json(
-                    &store
-                        .latest_durable_members()?
-                        .into_values()
-                        .collect::<Vec<_>>(),
-                )?,
-                "show" => {
-                    let id = required(&member_args[1..], "--id")?;
-                    let member = store.latest_durable_members()?.remove(&id).ok_or_else(|| {
-                        CliError::Usage(format!("durable AgentMember not found: {id}"))
-                    })?;
-                    print_json(&member)?;
-                }
-                other => {
-                    return Err(CliError::Usage(format!(
-                        "unknown org member command: {other}"
-                    )))
-                }
-            }
-        }
-        "bootstrap-lead" => {
-            let rest = &args[1..];
-            let team_id = value(rest, "--team")
-                .or_else(|| value(rest, "--team-id"))
-                .ok_or_else(|| CliError::Usage("missing required option --team".to_string()))?;
-            let member = build_durable_member_from_args(rest)?;
-            let team = store.bootstrap_root_lead_member(&team_id, &member)?;
-            print_json(&serde_json::json!({"member": member, "team": team}))?;
-        }
+        "member" | "bootstrap-lead" => return Err(CliError::Usage(
+            "organization member identity uses canonical member-trust mutate; legacy convergence/bootstrap ledgers were removed".into(),
+        )),
         "host" => {
             let rest = &args[1..];
             let team_id = value(rest, "--team")
@@ -8379,7 +8109,11 @@ fn org_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
         }
         "cutover-audit" => {
             let teams = store.latest_teams()?;
-            let members = store.latest_durable_members()?;
+            let members = store
+                .all_trust_agent_members()?
+                .into_iter()
+                .map(|member| (member.id.clone(), member))
+                .collect::<BTreeMap<_, _>>();
             let missions = store.latest_missions()?;
             let nodes = store.latest_execution_nodes()?;
             let mut mission_ids = BTreeSet::new();
@@ -8414,7 +8148,7 @@ fn org_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
             print_json(&serde_json::json!({
                 "ready": true,
                 "team_count": teams.len(),
-                "durable_member_count": members.len(),
+                "agent_member_count": members.len(),
                 "authority": "host_agent_id",
                 "flat_team_model": true
             }))?;
@@ -9193,7 +8927,7 @@ fn append_work_event(
 /// `external_interactive` declares the user's own already-open interactive
 /// session that Harness never spawns or drives (it polls its own inbox).
 struct TeamMemberSpec {
-    agent_member_id: Option<String>,
+    agent_member_id: String,
     name: String,
     role: String,
     provider: String,
@@ -9221,7 +8955,11 @@ fn team_member_specs_from_definition(
     let team = latest_teams(store)?
         .remove(team_id)
         .ok_or_else(|| CliError::Usage(format!("team not found: {team_id}")))?;
-    let members = latest_members(store)?;
+    let members = store
+        .all_trust_agent_members()?
+        .into_iter()
+        .map(|member| (member.id.clone(), member))
+        .collect::<BTreeMap<_, _>>();
     team.member_ids
         .iter()
         .map(|member_id| {
@@ -9231,20 +8969,22 @@ fn team_member_specs_from_definition(
                 ))
             })?;
             Ok(TeamMemberSpec {
-                agent_member_id: Some(member.id.clone()),
+                agent_member_id: member.id.clone(),
                 name: member.name.clone(),
                 role: member.role.clone(),
-                provider: member.provider.clone(),
+                provider: member
+                    .provider_profile_ref
+                    .as_deref()
+                    .and_then(|profile| profile.split('/').next())
+                    .unwrap_or("codex")
+                    .to_string(),
                 execution_mode: None,
-                model: member.model.clone(),
-                effort: member.provider_config.effort.clone(),
-                service_tier: member.provider_config.service_tier.clone(),
-                worktree_ref: member.worktree_ref.clone(),
+                model: member.model_preference.clone(),
+                effort: None,
+                service_tier: None,
+                worktree_ref: None,
                 owned_paths: Vec::new(),
-                resume_native_session_id: member
-                    .native_session
-                    .as_ref()
-                    .map(|session| session.native_session_id.clone()),
+                resume_native_session_id: None,
                 initial_work: None,
             })
         })
@@ -9302,17 +9042,19 @@ fn validate_team_member_execution_mode(member: &TeamMemberSpec) -> CliResult<()>
 }
 
 fn validate_team_member_identity(store: &HarnessStore, member: &TeamMemberSpec) -> CliResult<()> {
-    let Some(agent_member_id) = member.agent_member_id.as_deref() else {
-        return Ok(());
-    };
+    let agent_member_id = member.agent_member_id.as_str();
     if agent_member_id.trim().is_empty() {
         return Err(CliError::Usage(
             "team member agent_member_id must not be empty".to_string(),
         ));
     }
-    if !latest_members(store)?.contains_key(agent_member_id) {
+    if !store.all_trust_agent_members()?.iter().any(|candidate| {
+        candidate.id == agent_member_id
+            && candidate.organization_status
+                == harness_core::agentfirm_api::AgentMemberOrganizationStatus::Active
+    }) {
         return Err(CliError::Usage(format!(
-            "team member {} references missing AgentMember {agent_member_id}",
+            "team member {} references missing ProviderLaunchProfile {agent_member_id}",
             member.name
         )));
     }
@@ -9864,8 +9606,7 @@ fn compatibility_recovery_status(
     let has_assigned_work = store.latest_works()?.into_iter().any(|work| {
         !work.is_terminal()
             && (work.active_member_run_id.as_deref() == Some(member.id.as_str())
-                || member.agent_member_id.is_some()
-                    && work.owner_member_id.as_deref() == member.agent_member_id.as_deref())
+                || work.owner_member_id.as_deref() == Some(member.agent_member_id.as_str()))
     });
     Ok(
         if member.workspace_snapshot.is_some() || has_assigned_work {
@@ -11554,7 +11295,7 @@ fn parse_team_member_spec(raw: &str) -> CliResult<TeamMemberSpec> {
         _ => (parts[2].to_string(), None),
     };
     Ok(TeamMemberSpec {
-        agent_member_id: None,
+        agent_member_id: parts[0].to_string(),
         name: parts[0].to_string(),
         role: parts[1].to_string(),
         provider,
@@ -12093,8 +11834,6 @@ fn create_team_run(
                     artifact_refs: Vec::new(),
                     check_refs: Vec::new(),
                     github_links: Vec::new(),
-                    gates: Vec::new(),
-                    workspace: None,
                     version: 0,
                     created_at: String::new(),
                     updated_at: String::new(),
@@ -12216,8 +11955,6 @@ fn add_team_run_member(
                         artifact_refs: Vec::new(),
                         check_refs: Vec::new(),
                         github_links: Vec::new(),
-                        gates: Vec::new(),
-                        workspace: None,
                         version: 0,
                         created_at: String::new(),
                         updated_at: String::new(),
@@ -12601,7 +12338,7 @@ fn prepare_team_message_as(
         TeamActorKind::AgentMember => {
             let linked = member_runs
                 .iter()
-                .filter(|member| member.agent_member_id.as_deref() == Some(sender.id.as_str()))
+                .filter(|member| member.agent_member_id == sender.id)
                 .collect::<Vec<_>>();
             match linked.as_slice() {
                 [member] => {
@@ -12782,7 +12519,7 @@ fn active_member_runs_for_agent(
 ) -> CliResult<Vec<MemberRun>> {
     Ok(latest_member_runs_in_append_order(store)?
         .into_iter()
-        .filter(|member| member.agent_member_id.as_deref() == Some(agent_member_id))
+        .filter(|member| member.agent_member_id == agent_member_id)
         .filter(|member| member.coordination_is_active())
         .filter(|member| {
             !matches!(
@@ -13516,7 +13253,7 @@ fn team_run_recover(
                 .iter()
                 .filter(|w| {
                     w.active_member_run_id.as_deref() == Some(&member.id)
-                        || w.owner_member_id.as_deref() == member.agent_member_id.as_deref()
+                        || w.owner_member_id.as_deref() == Some(member.agent_member_id.as_str())
                 })
                 .collect();
             let path = classify_member_recovery_path(member, supervisor_current);
@@ -13952,130 +13689,6 @@ fn work_priority_rank(priority: WorkPriority) -> u8 {
     }
 }
 
-struct UniqueJsonObject(serde_json::Map<String, serde_json::Value>);
-
-impl<'de> serde::Deserialize<'de> for UniqueJsonObject {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct Visitor;
-
-        impl<'de> serde::de::Visitor<'de> for Visitor {
-            type Value = UniqueJsonObject;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("a JSON object with unique keys")
-            }
-
-            fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
-            where
-                A: serde::de::MapAccess<'de>,
-            {
-                let mut values = serde_json::Map::new();
-                while let Some((key, value)) = access.next_entry::<String, serde_json::Value>()? {
-                    if values.contains_key(&key) {
-                        return Err(serde::de::Error::custom(format!(
-                            "duplicate JSON object key `{key}`"
-                        )));
-                    }
-                    values.insert(key, value);
-                }
-                Ok(UniqueJsonObject(values))
-            }
-        }
-
-        deserializer.deserialize_map(Visitor)
-    }
-}
-
-fn parse_unique_json_object(raw: &str) -> CliResult<serde_json::Value> {
-    let mut deserializer = serde_json::Deserializer::from_str(raw);
-    let object = <UniqueJsonObject as serde::Deserialize>::deserialize(&mut deserializer)
-        .map_err(|error| CliError::Usage(format!("invalid --gate JSON config: {error}")))?;
-    deserializer
-        .end()
-        .map_err(|error| CliError::Usage(format!("invalid --gate JSON config: {error}")))?;
-    Ok(serde_json::Value::Object(object.0))
-}
-
-/// Parse `--gate plugin[:key=val[,key=val...]]` flags into [`GateSpec`]s.
-///
-/// Format (repeatable):
-///   --gate github-pr
-///   --gate github-pr:require_merged=true,require_ci_pass=true
-///   --gate artifact-exists:{"paths":["docs/report.md"]}
-fn parse_gate_specs(args: &[String]) -> CliResult<Vec<GateSpec>> {
-    let mut specs = Vec::new();
-    let mut i = 0;
-    while i < args.len() {
-        if args[i] == "--gate" {
-            if i + 1 >= args.len() {
-                return Err(CliError::Usage(
-                    "--gate requires a value (e.g. --gate github-pr or --gate github-pr:key=val,...)"
-                        .to_string(),
-                ));
-            }
-            let raw = &args[i + 1];
-            let (plugin, config_str) = match raw.split_once(':') {
-                Some((p, c)) => (p.to_string(), c),
-                None => (raw.clone(), ""),
-            };
-            if plugin.is_empty() {
-                return Err(CliError::Usage(
-                    "--gate plugin name must not be empty".to_string(),
-                ));
-            }
-            let config = if config_str.is_empty() {
-                serde_json::Value::Object(serde_json::Map::new())
-            } else if config_str.starts_with('{') {
-                parse_unique_json_object(config_str)?
-            } else {
-                let mut map = serde_json::Map::new();
-                for pair in config_str.split(',') {
-                    let (k, v) = pair.split_once('=').ok_or_else(|| {
-                        CliError::Usage(format!(
-                            "invalid --gate config pair `{pair}`; expected key=value"
-                        ))
-                    })?;
-                    if k.is_empty() {
-                        return Err(CliError::Usage(
-                            "--gate config key must not be empty".to_string(),
-                        ));
-                    }
-                    if map.contains_key(k) {
-                        return Err(CliError::Usage(format!(
-                            "duplicate --gate config key `{k}`"
-                        )));
-                    }
-                    // Try to parse as bool, then integer, fall back to string.
-                    let val = if v == "true" {
-                        serde_json::Value::Bool(true)
-                    } else if v == "false" {
-                        serde_json::Value::Bool(false)
-                    } else if let Ok(n) = v.parse::<i64>() {
-                        serde_json::Value::Number(n.into())
-                    } else {
-                        serde_json::Value::String(v.to_string())
-                    };
-                    map.insert(k.to_string(), val);
-                }
-                serde_json::Value::Object(map)
-            };
-            let spec = GateSpec { plugin, config };
-            spec.validate()
-                .map_err(|reason| CliError::Usage(format!("invalid --gate: {reason}")))?;
-            specs.push(spec);
-            i += 2; // skip value
-        } else {
-            i += 1;
-        }
-    }
-    validate_gate_specs(&specs)
-        .map_err(|reason| CliError::Usage(format!("invalid --gate declarations: {reason}")))?;
-    Ok(specs)
-}
-
 fn parse_work_phase(value: &str) -> CliResult<WorkPhase> {
     serde_json::from_value(serde_json::Value::String(value.to_string())).map_err(|_| {
         CliError::Usage(format!(
@@ -14106,126 +13719,6 @@ fn work_lifecycle_label(work: &Work) -> String {
         (_, WorkCondition::OnHold, _) => "on_hold".to_string(),
         (WorkPhase::Closed, _, Some(resolution)) => serde_snake_label(&resolution),
         (phase, _, _) => serde_snake_label(&phase),
-    }
-}
-
-fn parse_workspace(args: &[String]) -> CliResult<Option<WorkWorkspace>> {
-    // Shorthand: --worktree <path> implies kind=worktree, base=origin/master
-    if let Some(path) = value(args, "--worktree") {
-        return Ok(Some(WorkWorkspace {
-            kind: WorkWorkspaceKind::Worktree,
-            path,
-            base_ref: value(args, "--workspace-base"),
-            auto_cleanup: !has_flag(args, "--workspace-no-cleanup"),
-        }));
-    }
-    // Explicit: --workspace-kind worktree|dir|inherit --workspace-path <path>
-    if let Some(kind_str) = value(args, "--workspace-kind") {
-        let kind = match kind_str.as_str() {
-            "worktree" => WorkWorkspaceKind::Worktree,
-            "dir" => WorkWorkspaceKind::Dir,
-            "inherit" => WorkWorkspaceKind::Inherit,
-            other => {
-                return Err(CliError::Usage(format!(
-                    "unknown workspace kind `{other}` (worktree|dir|inherit)"
-                )));
-            }
-        };
-        if kind == WorkWorkspaceKind::Inherit {
-            return Ok(Some(WorkWorkspace {
-                kind,
-                path: String::new(),
-                base_ref: None,
-                auto_cleanup: false,
-            }));
-        }
-        let path = required(args, "--workspace-path").map_err(|_| {
-            CliError::Usage(
-                "--workspace-path is required for worktree/dir workspace kinds".to_string(),
-            )
-        })?;
-        return Ok(Some(WorkWorkspace {
-            kind,
-            path,
-            base_ref: value(args, "--workspace-base"),
-            auto_cleanup: !has_flag(args, "--workspace-no-cleanup"),
-        }));
-    }
-    Ok(None)
-}
-
-/// Create the workspace declared by a Work (or ensure it exists if
-/// it's a plain directory). For worktrees, calls `git worktree add`.
-/// Returns the resolved path.
-fn ensure_workspace(
-    workspace: &WorkWorkspace,
-    project_root: &std::path::Path,
-) -> CliResult<std::path::PathBuf> {
-    let path = if workspace.path.starts_with('/') {
-        std::path::PathBuf::from(&workspace.path)
-    } else {
-        project_root.join(&workspace.path)
-    };
-    match workspace.kind {
-        WorkWorkspaceKind::Worktree => {
-            if path.exists() {
-                return Ok(path); // already exists
-            }
-            let base = workspace.base_ref.as_deref().unwrap_or("origin/master");
-            let output = std::process::Command::new("git")
-                .args(["worktree", "add", &workspace.path, base])
-                .current_dir(project_root)
-                .output()
-                .map_err(|e| CliError::Usage(format!("git worktree add failed: {e}")))?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(CliError::Usage(format!(
-                    "git worktree add failed: {stderr}"
-                )));
-            }
-            Ok(path)
-        }
-        WorkWorkspaceKind::Dir => {
-            std::fs::create_dir_all(&path)
-                .map_err(|e| CliError::Usage(format!("mkdir failed: {e}")))?;
-            Ok(path)
-        }
-        WorkWorkspaceKind::Inherit => Ok(project_root.to_path_buf()),
-    }
-}
-
-/// Remove the workspace created for a Work (if auto_cleanup is
-/// enabled). For worktrees, calls `git worktree remove --force`.
-fn cleanup_workspace(workspace: &WorkWorkspace, project_root: &std::path::Path) -> CliResult<()> {
-    if !workspace.auto_cleanup {
-        return Ok(());
-    }
-    let path: std::path::PathBuf = if workspace.path.starts_with('/') {
-        workspace.path.clone().into()
-    } else {
-        project_root.join(&workspace.path)
-    };
-    match workspace.kind {
-        WorkWorkspaceKind::Worktree => {
-            if !path.exists() {
-                return Ok(());
-            }
-            std::process::Command::new("git")
-                .args(["worktree", "remove", "--force"])
-                .arg(&path)
-                .current_dir(project_root)
-                .output()
-                .map_err(|e| CliError::Usage(format!("git worktree remove failed: {e}")))?;
-            Ok(())
-        }
-        WorkWorkspaceKind::Dir => {
-            if path.exists() {
-                std::fs::remove_dir_all(&path)
-                    .map_err(|e| CliError::Usage(format!("rmdir failed: {e}")))?;
-            }
-            Ok(())
-        }
-        WorkWorkspaceKind::Inherit => Ok(()),
     }
 }
 
@@ -14837,20 +14330,6 @@ pub(crate) fn poll_team_run_github_linkages(
                 })?;
         }
     }
-    // After refreshing links, re-evaluate gates on every non-terminal
-    // Work in the run that has declared gates. Flag works where all gates
-    // pass so the Host knows they're ready for accept.
-    let refreshed_works = store.latest_works()?;
-    let reviews = store.reviews().unwrap_or_default();
-    for work in refreshed_works {
-        if work.team_run_id != run_id || work.is_terminal() || work.gates.is_empty() {
-            continue;
-        }
-        let results = GateEngine::evaluate_work_gates_with_reviews(&work, &reviews);
-        if results.iter().all(|r| r.verdict.is_pass()) {
-            summary.gate_ready.push(work.id.clone());
-        }
-    }
     Ok(summary)
 }
 
@@ -14891,7 +14370,7 @@ fn github_poll_host_context(run_id: &str, work_id: &str) -> WorkCommandContext {
 fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(
         args,
-        "team-run work list|show|create|delegate|delegation|assign|claim|start|block|resume|release|submit|review|request-changes|accept|cancel|retarget|reconcile-projection|reconcile-delivery|poll-github-ci|check-gates|workspace",
+        "team-run work list|show|create|delegate|delegation|assign|claim|start|block|resume|release|submit|request-changes|accept|cancel|retarget|reconcile-projection|reconcile-delivery|poll-github-ci",
     )?;
     match args[0].as_str() {
         "list" => {
@@ -15121,8 +14600,6 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 artifact_refs: Vec::new(),
                 check_refs: Vec::new(),
                 github_links: Vec::new(),
-                gates: parse_gate_specs(args)?,
-                workspace: None,
                 version: 0,
                 created_at: String::new(),
                 updated_at: String::new(),
@@ -15258,30 +14735,7 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 }
                 github_links.push(link);
             }
-            // Parse `--gate plugin[:key=val[,key=val...]]` flags.
-            let gates = parse_gate_specs(args)?;
-            // Parse `--workspace-*` / `--worktree` flags.
-            let workspace = parse_workspace(args)?;
-            // Append declared gates to context so the worker sees them.
-            let context_markdown = {
-                let mut ctx = value(args, "--context").unwrap_or_default();
-                if !gates.is_empty() {
-                    if !ctx.is_empty() {
-                        ctx.push_str("\n\n");
-                    }
-                    ctx.push_str("## Verification Gates\n\n");
-                    ctx.push_str("This work must pass the following gates before acceptance:\n\n");
-                    for gate in &gates {
-                        let config_str = if gate.config.as_object().is_none_or(|m| m.is_empty()) {
-                            String::new()
-                        } else {
-                            format!(" ({})", gate.config)
-                        };
-                        ctx.push_str(&format!("- **{}**{}\n", gate.plugin, config_str));
-                    }
-                }
-                ctx
-            };
+            let context_markdown = value(args, "--context").unwrap_or_default();
             let work = Work {
                 id: value(args, "--work-id").unwrap_or_else(|| generated_id("work")),
                 team_run_id,
@@ -15309,8 +14763,6 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 artifact_refs,
                 check_refs,
                 github_links,
-                gates,
-                workspace,
                 version: 0,
                 created_at: String::new(),
                 updated_at: String::new(),
@@ -15538,32 +14990,6 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
             )?;
             print_json(&work)
         }
-        "review" => {
-            let team_run_id = required(args, "--team-run-id")?;
-            let work_id = required(args, "--work-id")?;
-            let expected_version = required_work_version(args)?;
-            let context = if let Some(member_run_id) = value(args, "--member-run-id") {
-                member_work_context(args, &team_run_id, &member_run_id)?
-            } else {
-                host_work_context(args)
-            };
-            let payload = WorkReviewPayload {
-                id: value(args, "--review-id").unwrap_or_else(|| generated_id("review")),
-                verdict: parse_work_review_verdict(&required(args, "--verdict")?)?,
-                summary: required(args, "--summary")?,
-                blockers: many(args, "--blocker"),
-                residual_risk: value(args, "--residual-risk"),
-                missing_validation: many(args, "--missing-validation"),
-                evidence_ids: many(args, "--evidence-id"),
-            };
-            let review = store.record_work_review(
-                &work_id,
-                expected_version,
-                payload,
-                context,
-            )?;
-            print_json(&review)
-        }
         "poll-github-ci" => {
             let team_run_id = required(args, "--team-run-id")?;
             let summary = poll_team_run_github_linkages(store, &team_run_id)?;
@@ -15576,73 +15002,6 @@ fn team_run_work_command(store: &HarnessStore, args: &[String]) -> CliResult<()>
                 "gate_ready": summary.gate_ready,
                 "gh_unavailable": summary.gh_unavailable,
             }))
-        }
-        "check-gates" => {
-            let work_id = required(args, "--work-id")?;
-            let work = store
-                .latest_works()?
-                .into_iter()
-                .find(|w| w.id == work_id)
-                .ok_or_else(|| CliError::Usage(format!("Work not found: {work_id}")))?;
-            let reviews = store.reviews().unwrap_or_default();
-            let results = GateEngine::evaluate_work_gates_with_reviews(&work, &reviews);
-            let all_pass = results.iter().all(|r| r.verdict.is_pass());
-            print_json(&serde_json::json!({
-                "work_id": work_id,
-                "gate_count": results.len(),
-                "all_pass": all_pass,
-                "results": results,
-            }))?;
-            if !all_pass {
-                return Err(CliError::Usage(
-                    "one or more gates did not pass (see results above)".to_string(),
-                ));
-            }
-            Ok(())
-        }
-        "workspace" => {
-            require_subcommand(args, "team-run work workspace ensure|cleanup")?;
-            match args[1].as_str() {
-                "ensure" => {
-                    let work_id = required(args, "--work-id")?;
-                    let work = store
-                        .latest_works()?
-                        .into_iter()
-                        .find(|w| w.id == work_id)
-                        .ok_or_else(|| CliError::Usage(format!("Work not found: {work_id}")))?;
-                    let ws = work.workspace.as_ref().ok_or_else(|| {
-                        CliError::Usage(format!("Work {work_id} has no workspace declaration"))
-                    })?;
-                    let project_root = std::env::current_dir()
-                        .map_err(|e| CliError::Usage(format!("cannot determine cwd: {e}")))?;
-                    let path = ensure_workspace(ws, &project_root)?;
-                    print_json(&serde_json::json!({
-                        "work_id": work_id,
-                        "workspace": ws,
-                        "resolved_path": path,
-                    }))
-                }
-                "cleanup" => {
-                    let work_id = required(args, "--work-id")?;
-                    let work = store
-                        .latest_works()?
-                        .into_iter()
-                        .find(|w| w.id == work_id)
-                        .ok_or_else(|| CliError::Usage(format!("Work not found: {work_id}")))?;
-                    let ws = work.workspace.as_ref().ok_or_else(|| {
-                        CliError::Usage(format!("Work {work_id} has no workspace declaration"))
-                    })?;
-                    let project_root = std::env::current_dir()
-                        .map_err(|e| CliError::Usage(format!("cannot determine cwd: {e}")))?;
-                    cleanup_workspace(ws, &project_root)?;
-                    print_json(&serde_json::json!({
-                        "work_id": work_id,
-                        "workspace": ws,
-                        "status": "cleaned_up",
-                    }))
-                }
-                other => Err(CliError::Usage(format!("unknown workspace command: {other}"))),
-            }
         }
         "request-changes" => {
             let reason = required(args, "--reason")?;
@@ -16012,12 +15371,12 @@ fn synthetic_headless_host_member(
     run: &AgentTeamRun,
     provider: &str,
     thread_id: &str,
-) -> AgentMember {
-    let provider_config = AgentProviderConfig {
+) -> ProviderLaunchProfile {
+    let provider_config = ProviderLaunchConfig {
         sandbox_policy: Some("read-only".to_string()),
-        ..AgentProviderConfig::default()
+        ..ProviderLaunchConfig::default()
     };
-    AgentMember {
+    ProviderLaunchProfile {
         id: format!("headless-host:{}", run.id),
         name: "headless-host-triage".to_string(),
         description: "Read-only dispatcher for the exact bound Host session".to_string(),
@@ -16034,7 +15393,7 @@ fn synthetic_headless_host_member(
         worktree_ref: None,
         permission_profile: Some("read_only".to_string()),
         runtime_workspace_roots: Vec::new(),
-        status: AgentMemberStatus::Idle,
+        status: ProviderLaunchStatus::Idle,
         current_task_id: None,
         current_proposal_id: None,
         provider_runtime_id: None,
@@ -16139,11 +15498,11 @@ fn dispatch_headless_host_once(
     let claim_id = generated_id("host-dispatch-claim");
     let delivery_id = generated_id("host-dispatch-delivery");
     let member = synthetic_headless_host_member(&run, &provider, thread_id);
-    let runtime = AgentRuntime {
+    let runtime = ProviderProcess {
         id: format!("runtime:{delivery_id}"),
         agent_member_id: member.id.clone(),
         provider: provider.clone(),
-        status: AgentRuntimeStatus::Running,
+        status: ProviderProcessStatus::Running,
         pid: None,
         control_endpoint: Some(format!("headless-host://{provider}/{thread_id}")),
         command: provider.clone(),
@@ -16151,7 +15510,7 @@ fn dispatch_headless_host_once(
         started_at: now_string(),
         ended_at: None,
         last_event_at: Some(now_string()),
-        health: AgentRuntimeHealth {
+        health: ProviderProcessHealth {
             process_alive: true,
             socket_exists: false,
             protocol_probe: Some("exact-native-session-resume".to_string()),
@@ -17460,9 +16819,10 @@ fn member_run_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
                     "team_run={}\tinbox={inbox_count}\toutbox={outbox_count}",
                     member.team_run_id
                 );
-                if let Some(agent_member_id) = member.agent_member_id.as_deref() {
-                    println!("agent_member_id={agent_member_id}\tidentity_link=explicit");
-                }
+                println!(
+                    "agent_member_id={}\tidentity_link=explicit",
+                    member.agent_member_id
+                );
                 if let Some(session) = member.native_session.as_ref() {
                     println!(
                         "native_session={}\tlocator_kind={}",
@@ -17602,9 +16962,9 @@ fn member_run_detail_json(
         .filter(|work| work.team_run_id == member.team_run_id)
         .filter(|work| {
             work.active_member_run_id.as_deref() == Some(member_run_id)
-                || work.owner_member_id.as_deref() == member.agent_member_id.as_deref()
+                || work.owner_member_id.as_deref() == Some(member.agent_member_id.as_str())
                 || work.eligible_member_ids.iter().any(|id| {
-                    id == member_run_id || Some(id.as_str()) == member.agent_member_id.as_deref()
+                    id == member_run_id || id == &member.agent_member_id
                 })
         })
         .collect::<Vec<_>>();
@@ -17627,16 +16987,13 @@ fn member_run_detail_json(
         .collect::<Vec<_>>();
     let supervisor = store.latest_team_supervisor_lease(&member.team_run_id)?;
     let close_request = store.latest_team_member_close_request(member_run_id)?;
-    let stable_agent_routes = match member.agent_member_id.as_deref() {
-        Some(agent_member_id) => store
-            .agent_message_routes()?
-            .into_iter()
-            .filter(|route| {
-                route.agent_member_id == agent_member_id && route.member_run_id == member_run_id
-            })
-            .collect::<Vec<_>>(),
-        None => Vec::new(),
-    };
+    let stable_agent_routes = store
+        .agent_message_routes()?
+        .into_iter()
+        .filter(|route| {
+            route.agent_member_id == member.agent_member_id && route.member_run_id == member_run_id
+        })
+        .collect::<Vec<_>>();
     let actionable_inbox = if member.coordination_is_active() {
         inbox
             .iter()
@@ -19071,11 +18428,7 @@ impl TeamRunLedger {
             .rev()
             .find(|member| member.id == member_id)
             .ok_or_else(|| CliError::Usage(format!("member run not found: {member_id}")))?;
-        let stable_member_id = member
-            .agent_member_id
-            .as_deref()
-            .or(member.slot_id.as_deref())
-            .unwrap_or(member.id.as_str());
+        let stable_member_id = member.agent_member_id.as_str();
         let mut claimable = all_works
             .iter()
             .filter(|work| {
@@ -19794,11 +19147,10 @@ fn wait_for_idle_member_wake(
         // the intentionally-uncertain `claimed` state before turn/start even
         // reached the provider.
         ensure_transport_alive()?;
-        if let Some(agent_member_id) = member_row.agent_member_id.as_deref() {
-            let eligible = active_member_runs_for_agent(&ledger.store, agent_member_id)?;
-            if eligible.len() == 1 && eligible[0].id == member_row.id {
-                route_agent_inbox_messages(&ledger.store, agent_member_id, None, None)?;
-            }
+        let agent_member_id = member_row.agent_member_id.as_str();
+        let eligible = active_member_runs_for_agent(&ledger.store, agent_member_id)?;
+        if eligible.len() == 1 && eligible[0].id == member_row.id {
+            route_agent_inbox_messages(&ledger.store, agent_member_id, None, None)?;
         }
 
         // Build pure views from the store for the decision function.
@@ -19991,11 +19343,7 @@ fn build_board_wake_view(
     member_row: &MemberRun,
 ) -> CliResult<supervisor_wake::BoardWakeView> {
     let all_works = ledger.store.latest_works()?;
-    let stable_member_id = member_row
-        .agent_member_id
-        .as_deref()
-        .or(member_row.slot_id.as_deref())
-        .unwrap_or(member_row.id.as_str());
+    let stable_member_id = member_row.agent_member_id.as_str();
     let eligible_claim_work_ids: Vec<String> = all_works
         .iter()
         .filter(|work| {
@@ -27028,7 +26376,7 @@ fn handle_sse_stream(
                     sse::SseEventFrame::Snapshot { .. } => {
                         // Don't re-send snapshots after initial
                     }
-                    sse::SseEventFrame::AgentEvent(event) => {
+                    sse::SseEventFrame::ProviderDispatchEvent(event) => {
                         if let Ok(json) = serde_json::to_value(&event) {
                             if sse::write_sse_frame(&mut stream, "agent_event", &json).is_err() {
                                 break; // Client disconnected
@@ -29082,7 +28430,7 @@ fn handle_http_action(
         .and_then(|rest| rest.strip_suffix("/members"))
     {
         let member = TeamMemberSpec {
-            agent_member_id: optional_json_string(body, "agent_member_id")?,
+            agent_member_id: required_json_string(body, "agent_member_id")?,
             name: required_json_string(body, "name")?,
             role: required_json_string(body, "role")?,
             provider: required_json_string(body, "provider")?,
@@ -29171,9 +28519,6 @@ fn handle_http_action(
     if path == "/v1/teams" {
         return create_team_value(store, body);
     }
-    if path == "/v1/agents" {
-        return create_agent_value(store, body);
-    }
     if path == "/v1/gateway/tick" {
         return provider_gateway_tick_value(
             store,
@@ -29185,78 +28530,6 @@ fn handle_http_action(
                 claim_ttl_ms: json_u64(body, "claim_ttl_ms").unwrap_or(300_000),
             },
         );
-    }
-    if let Some(agent_id) = path
-        .strip_prefix("/v1/agents/")
-        .and_then(|rest| rest.strip_suffix("/route-inbox"))
-    {
-        let routes = route_agent_inbox_messages(
-            store,
-            agent_id,
-            optional_json_string(body, "member_run_id")?.as_deref(),
-            optional_json_string(body, "message_id")?.as_deref(),
-        )?;
-        return Ok(serde_json::json!({"routes": routes}));
-    }
-    if let Some(agent_id) = path
-        .strip_prefix("/v1/agents/")
-        .and_then(|rest| rest.strip_suffix("/deliver"))
-    {
-        return deliver_agent_messages_value(
-            store,
-            project_context,
-            DeliveryOptions {
-                agent_id: agent_id.into(),
-                message_filter: json_string(body, "message_id"),
-                dry_run: json_bool(body, "dry_run").unwrap_or(false),
-                start_runtime: json_bool(body, "start_runtime").unwrap_or(false),
-                timeout_ms: json_u64(body, "timeout_ms").unwrap_or(3_000),
-            },
-        );
-    }
-    if let Some(agent_id) = path
-        .strip_prefix("/v1/agents/")
-        .and_then(|rest| rest.strip_suffix("/retry-delivery"))
-    {
-        return retry_delivery_value(
-            store,
-            agent_id,
-            &required_json_string(body, "message_id")?,
-            json_string(body, "delivery_id").as_deref(),
-            json_string(body, "reason")
-                .as_deref()
-                .unwrap_or("dashboard requested retry"),
-            json_bool(body, "force").unwrap_or(false),
-        );
-    }
-    if let Some(agent_id) = path
-        .strip_prefix("/v1/agents/")
-        .and_then(|rest| rest.strip_suffix("/reconcile-delivery"))
-    {
-        return reconcile_delivery_value(
-            store,
-            agent_id,
-            &required_json_string(body, "delivery_id")?,
-            parse_provider_execution_status(
-                json_string(body, "status").as_deref().unwrap_or("failed"),
-            )?,
-            parse_terminal_source(
-                json_string(body, "terminal_source")
-                    .as_deref()
-                    .unwrap_or("failed"),
-            )?,
-            json_string(body, "reason")
-                .as_deref()
-                .unwrap_or("dashboard reconciliation"),
-        );
-    }
-    if let Some(agent_id) = path
-        .strip_prefix("/v1/agents/")
-        .and_then(|rest| rest.strip_suffix("/close"))
-    {
-        return Ok(serde_json::to_value(close_agent_member_value(
-            store, agent_id,
-        )?)?);
     }
     Err(CliError::Usage(format!("unknown action path: {path}")))
 }
@@ -30507,7 +29780,7 @@ fn persist_new_team(store: &HarnessStore, team: &AgentTeam) -> CliResult<()> {
         }
         if !members.contains(member_id) {
             return Err(CliError::Usage(format!(
-                "AgentTeam references missing AgentMember: {member_id}"
+                "AgentTeam references missing ProviderLaunchProfile: {member_id}"
             )));
         }
     }
@@ -30522,10 +29795,10 @@ fn persist_new_team(store: &HarnessStore, team: &AgentTeam) -> CliResult<()> {
 }
 
 /// Persist a freshly-built Agent Member. Mirrors the `agent create` CLI arm.
-fn finalize_member_creation(store: &HarnessStore, member: &AgentMember) -> CliResult<()> {
+fn finalize_member_creation(store: &HarnessStore, member: &ProviderLaunchProfile) -> CliResult<()> {
     if latest_members(store)?.contains_key(&member.id) {
         return Err(CliError::Usage(format!(
-            "AgentMember already exists: {}",
+            "ProviderLaunchProfile already exists: {}",
             member.id
         )));
     }
@@ -30623,17 +29896,6 @@ fn create_team_work_value(
             WorkClaimMode::TeamClaim
         });
     let context = http_host_work_context(body)?;
-    let gates = match body.get("gates") {
-        None => Vec::new(),
-        Some(value) => {
-            let gates: Vec<GateSpec> = serde_json::from_value(value.clone()).map_err(|error| {
-                CliError::Usage(format!("invalid Work gates JSON array: {error}"))
-            })?;
-            validate_gate_specs(&gates)
-                .map_err(|reason| CliError::Usage(format!("invalid Work gates: {reason}")))?;
-            gates
-        }
-    };
     let work = Work {
         id: json_string(body, "id").unwrap_or_else(|| generated_id("work")),
         team_run_id: team_run_id.to_string(),
@@ -30661,8 +29923,6 @@ fn create_team_work_value(
         artifact_refs: Vec::new(),
         check_refs: Vec::new(),
         github_links: Vec::new(),
-        gates,
-        workspace: None,
         version: 0,
         created_at: String::new(),
         updated_at: String::new(),
@@ -30715,17 +29975,6 @@ pub(crate) fn create_work_delegation_value(
     }
     let target_run = &target_runs[0];
     let context = http_host_work_context(body)?;
-    let gates = match body.get("gates") {
-        None => Vec::new(),
-        Some(value) => {
-            let gates: Vec<GateSpec> = serde_json::from_value(value.clone()).map_err(|error| {
-                CliError::Usage(format!("invalid delegated Work gates JSON array: {error}"))
-            })?;
-            validate_gate_specs(&gates)
-                .map_err(|reason| CliError::Usage(format!("invalid Work gates: {reason}")))?;
-            gates
-        }
-    };
     let request_hash = content_hash_hex16(&context.idempotency_key);
     let target_work_id = json_string(body, "target_work_id")
         .unwrap_or_else(|| format!("delegated-work-{request_hash}"));
@@ -30760,8 +30009,6 @@ pub(crate) fn create_work_delegation_value(
         artifact_refs: Vec::new(),
         check_refs: Vec::new(),
         github_links: Vec::new(),
-        gates,
-        workspace: None,
         version: 0,
         created_at: String::new(),
         updated_at: String::new(),
@@ -30820,7 +30067,7 @@ fn mutate_team_work_value(
 ) -> CliResult<serde_json::Value> {
     if operation == "review" {
         return Err(CliError::Usage(
-            "HTTP Work review is retired: use the typed host-only MCP `team_run_work_review` tool or the local CLI"
+            "legacy Work review is retired; use canonical AgentFirm GateEvaluation and accept_work"
                 .to_string(),
         ));
     }
@@ -30978,7 +30225,7 @@ fn create_team_run_value(
             }
         };
         members.push(TeamMemberSpec {
-            agent_member_id: optional_json_string(member, "agent_member_id")?,
+            agent_member_id: required_json_string(member, "agent_member_id")?,
             name: required_json_string(member, "name")?,
             role: required_json_string(member, "role")?,
             provider: required_json_string(member, "provider")?,
@@ -31099,14 +30346,14 @@ fn create_agent_value(
     let prompt_ref =
         ensure_agent_prompt_with_override(store, &member, json_string(body, "prompt"))?;
     member.prompt_ref = Some(prompt_ref);
-    member.status = AgentMemberStatus::Idle;
+    member.status = ProviderLaunchStatus::Idle;
     finalize_member_creation(store, &member)?;
     Ok(serde_json::to_value(member)?)
 }
 
 /// Build an Agent Member from a POST /v1/agents JSON body (see `create_agent_value`).
-fn build_member_from_json(body: &serde_json::Value) -> CliResult<AgentMember> {
-    Ok(AgentMember {
+fn build_member_from_json(body: &serde_json::Value) -> CliResult<ProviderLaunchProfile> {
+    Ok(ProviderLaunchProfile {
         id: json_string(body, "id").unwrap_or_else(|| generated_id("agent")),
         name: required_json_string(body, "name")?,
         description: json_string(body, "description")
@@ -31115,7 +30362,7 @@ fn build_member_from_json(body: &serde_json::Value) -> CliResult<AgentMember> {
         provider: json_string(body, "provider").unwrap_or_else(|| "codex".into()),
         model: json_string(body, "model"),
         profile: json_string(body, "profile"),
-        provider_config: AgentProviderConfig {
+        provider_config: ProviderLaunchConfig {
             service_tier: json_string(body, "service_tier"),
             collaboration_mode: json_string(body, "collaboration_mode"),
             effort: json_string(body, "effort"),
@@ -31136,7 +30383,7 @@ fn build_member_from_json(body: &serde_json::Value) -> CliResult<AgentMember> {
         worktree_ref: json_string(body, "worktree"),
         permission_profile: json_string(body, "permission_profile"),
         runtime_workspace_roots: json_string_array(body, "runtime_workspace_root"),
-        status: AgentMemberStatus::Creating,
+        status: ProviderLaunchStatus::Creating,
         current_task_id: None,
         current_proposal_id: None,
         provider_runtime_id: None,
@@ -31298,7 +30545,7 @@ fn write_http_response(
     Ok(())
 }
 
-fn start_agent_runtime(store: &HarnessStore, agent_id: &str) -> CliResult<AgentMember> {
+fn start_agent_runtime(store: &HarnessStore, agent_id: &str) -> CliResult<ProviderLaunchProfile> {
     let mut member = latest_member(store, agent_id)?;
     ensure_member_accepts_delivery(&member)?;
     if let Some(runtime_id) = member.provider_runtime_id.as_deref() {
@@ -31308,13 +30555,13 @@ fn start_agent_runtime(store: &HarnessStore, agent_id: &str) -> CliResult<AgentM
             }
         }
     }
-    member.status = AgentMemberStatus::Creating;
+    member.status = ProviderLaunchStatus::Creating;
     member.last_seen_at = Some(now_string());
     store.append_member(&member)?;
     let runtime = match start_provider_runtime(store, &member) {
         Ok(runtime) => runtime,
         Err(error) => {
-            member.status = AgentMemberStatus::Error;
+            member.status = ProviderLaunchStatus::Error;
             member.last_seen_at = Some(now_string());
             store.append_member(&member)?;
             append_agent_event(
@@ -31329,7 +30576,7 @@ fn start_agent_runtime(store: &HarnessStore, agent_id: &str) -> CliResult<AgentM
             return Err(error);
         }
     };
-    member.status = AgentMemberStatus::Idle;
+    member.status = ProviderLaunchStatus::Idle;
     member.provider_runtime_id = Some(runtime.id.clone());
     member.control_endpoint = runtime.control_endpoint.clone();
     member.last_seen_at = Some(now_string());
@@ -31347,19 +30594,22 @@ fn start_agent_runtime(store: &HarnessStore, agent_id: &str) -> CliResult<AgentM
     Ok(member)
 }
 
-fn close_agent_member_value(store: &HarnessStore, agent_id: &str) -> CliResult<AgentMember> {
+fn close_agent_member_value(
+    store: &HarnessStore,
+    agent_id: &str,
+) -> CliResult<ProviderLaunchProfile> {
     let mut member = latest_member(store, agent_id)?;
-    member.status = AgentMemberStatus::Closing;
+    member.status = ProviderLaunchStatus::Closing;
     member.last_seen_at = Some(now_string());
     store.append_member(&member)?;
 
     let runtimes: Vec<_> = latest_runtimes(store)?
         .into_values()
         .filter(|runtime| runtime.agent_member_id == member.id)
-        .filter(|runtime| runtime.status != AgentRuntimeStatus::Stopped)
+        .filter(|runtime| runtime.status != ProviderProcessStatus::Stopped)
         .collect();
     for mut runtime in runtimes {
-        runtime.status = AgentRuntimeStatus::Stopping;
+        runtime.status = ProviderProcessStatus::Stopping;
         runtime.last_event_at = Some(now_string());
         store.append_runtime(&runtime)?;
         if let Some(pid) = runtime.pid {
@@ -31367,7 +30617,7 @@ fn close_agent_member_value(store: &HarnessStore, agent_id: &str) -> CliResult<A
                 stop_pid(pid)?;
             }
         }
-        runtime.status = AgentRuntimeStatus::Stopped;
+        runtime.status = ProviderProcessStatus::Stopped;
         runtime.ended_at = Some(now_string());
         runtime.last_event_at = runtime.ended_at.clone();
         store.append_runtime(&runtime)?;
@@ -31388,7 +30638,7 @@ fn close_agent_member_value(store: &HarnessStore, agent_id: &str) -> CliResult<A
         ProviderExecutionStatus::Canceled,
         Some(MessageTerminalSource::Failed),
     )?;
-    member.status = AgentMemberStatus::Closed;
+    member.status = ProviderLaunchStatus::Closed;
     member.current_task_id = None;
     member.last_seen_at = Some(now_string());
     store.append_member(&member)?;
@@ -31404,7 +30654,7 @@ fn close_agent_member_value(store: &HarnessStore, agent_id: &str) -> CliResult<A
     Ok(member)
 }
 
-fn ensure_member_accepts_delivery(member: &AgentMember) -> CliResult<()> {
+fn ensure_member_accepts_delivery(member: &ProviderLaunchProfile) -> CliResult<()> {
     if member_status_rejects_delivery(&member.status) {
         return Err(CliError::Usage(format!(
             "agent {} is {:?}; closed, closing, or retired members cannot receive delivery or be restarted",
@@ -31414,10 +30664,12 @@ fn ensure_member_accepts_delivery(member: &AgentMember) -> CliResult<()> {
     Ok(())
 }
 
-fn member_status_rejects_delivery(status: &AgentMemberStatus) -> bool {
+fn member_status_rejects_delivery(status: &ProviderLaunchStatus) -> bool {
     matches!(
         status,
-        AgentMemberStatus::Closing | AgentMemberStatus::Closed | AgentMemberStatus::Retired
+        ProviderLaunchStatus::Closing
+            | ProviderLaunchStatus::Closed
+            | ProviderLaunchStatus::Retired
     )
 }
 
@@ -31468,10 +30720,10 @@ fn agent_health(store: &HarnessStore, agent_id: &str) -> CliResult<serde_json::V
     }))
 }
 
-fn runtime_is_alive(runtime: &AgentRuntime) -> bool {
+fn runtime_is_alive(runtime: &ProviderProcess) -> bool {
     // Exec-stream runtimes don't have persistent PIDs or sockets.
     // Runtime is considered alive if its status is Running.
-    runtime.status == AgentRuntimeStatus::Running && runtime.control_endpoint.is_some()
+    runtime.status == ProviderProcessStatus::Running && runtime.control_endpoint.is_some()
 }
 
 fn pid_is_alive(pid: u32) -> bool {
@@ -32098,7 +31350,7 @@ fn workflow_repo_root(project: &ProjectContext) -> PathBuf {
 ///
 /// Returns a display string (the `Command::current_dir` callers already pass a
 /// string) defaulting to `"."` only if even the process cwd is unreadable.
-fn delivery_worker_cwd(member: &AgentMember, project: &ProjectContext) -> String {
+fn delivery_worker_cwd(member: &ProviderLaunchProfile, project: &ProjectContext) -> String {
     if let Some(worktree) = member.worktree_ref.clone() {
         return worktree;
     }
@@ -35740,7 +34992,7 @@ fn deliver_agent_messages_value(
             None => continue,
         };
 
-        member.status = AgentMemberStatus::Running;
+        member.status = ProviderLaunchStatus::Running;
         member.current_task_id = claimed_message.task_id.clone();
         member.last_seen_at = Some(now_string());
         store.append_member(&member)?;
@@ -35944,13 +35196,13 @@ fn deliver_agent_messages_value(
             runtime = Some(runtime_value);
         }
         if delivery.status == ProviderExecutionStatus::Running {
-            member.status = AgentMemberStatus::Running;
+            member.status = ProviderLaunchStatus::Running;
             member.current_task_id = delivered_message.task_id.clone();
         } else if delivery.status == ProviderExecutionStatus::Stale {
-            member.status = AgentMemberStatus::Stale;
+            member.status = ProviderLaunchStatus::Stale;
             member.current_task_id = delivered_message.task_id.clone();
         } else {
-            member.status = AgentMemberStatus::Idle;
+            member.status = ProviderLaunchStatus::Idle;
             member.current_task_id = None;
         }
         member.last_seen_at = Some(now_string());
@@ -36154,8 +35406,8 @@ struct DeliveryOutcome {
 
 fn claim_message_for_delivery(
     store: &HarnessStore,
-    member: &AgentMember,
-    _runtime: Option<&AgentRuntime>,
+    member: &ProviderLaunchProfile,
+    _runtime: Option<&ProviderProcess>,
     message: &Message,
     delivery_id: &str,
 ) -> CliResult<Option<Message>> {
@@ -36304,13 +35556,13 @@ fn reconcile_delivery_value(
     if let Ok(mut member) = latest_member(store, agent_id) {
         if matches!(
             member.status,
-            AgentMemberStatus::Running | AgentMemberStatus::Stale
+            ProviderLaunchStatus::Running | ProviderLaunchStatus::Stale
         ) && member
             .current_task_id
             .as_ref()
             .map_or_else(|| true, |task_id| message.task_id.as_ref() == Some(task_id))
         {
-            member.status = AgentMemberStatus::Idle;
+            member.status = ProviderLaunchStatus::Idle;
             member.current_task_id = None;
             member.last_seen_at = Some(now_string());
             store.append_member(&member)?;
@@ -36424,7 +35676,7 @@ fn delivery_error_message(status: &ProviderExecutionStatus, summary: &str) -> Op
     .then(|| summary.to_string())
 }
 
-fn provider_developer_instructions(member: &AgentMember) -> String {
+fn provider_developer_instructions(member: &ProviderLaunchProfile) -> String {
     let Some(prompt_ref) = member.prompt_ref.as_deref() else {
         return "Use harness messages as source of truth.".into();
     };
@@ -36543,13 +35795,13 @@ fn reconcile_running_delivery_attempts(
             }
             if matches!(
                 member.status,
-                AgentMemberStatus::Running | AgentMemberStatus::Stale
+                ProviderLaunchStatus::Running | ProviderLaunchStatus::Stale
             ) && member
                 .current_task_id
                 .as_ref()
                 .map_or_else(|| true, |task_id| reconciled_task_ids.contains(task_id))
             {
-                member.status = AgentMemberStatus::Idle;
+                member.status = ProviderLaunchStatus::Idle;
                 member.current_task_id = None;
                 member.last_seen_at = Some(now_string());
                 store.append_member(&member)?;
@@ -36659,7 +35911,7 @@ fn mark_running_delivery_attempts_terminal(
         if let Ok(mut member) = latest_member(store, agent_member_id) {
             if matches!(
                 member.status,
-                AgentMemberStatus::Running | AgentMemberStatus::Stale
+                ProviderLaunchStatus::Running | ProviderLaunchStatus::Stale
             ) {
                 if let Some(runtime_id) = member.provider_runtime_id.clone() {
                     mark_runtime_delivery_terminal(
@@ -36669,7 +35921,7 @@ fn mark_running_delivery_attempts_terminal(
                         terminal_source.as_ref(),
                     )?;
                 }
-                member.status = AgentMemberStatus::Idle;
+                member.status = ProviderLaunchStatus::Idle;
                 member.current_task_id = None;
                 member.last_seen_at = Some(now_string());
                 store.append_member(&member)?;
@@ -36923,13 +36175,13 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
                 "prompt_ref": member.prompt_ref,
                 "skill_refs": member.skill_refs,
                 // Config-tab + identity-rail data (Multica layout): these live on
-                // the AgentMember but were not previously projected into the
+                // the ProviderLaunchProfile but were not previously projected into the
                 // snapshot. Additive — no schema change.
                 "model": member.model,
                 "profile": member.profile,
                 "provider_config": member.provider_config,
                 // Reverse membership is derived from the latest Mission-owned
-                // Team definitions. AgentMember.team_ids is compatibility input,
+                // Team definitions. ProviderLaunchProfile.team_ids is compatibility input,
                 // never authoritative read-model state.
                 "team_ids": derived_team_ids,
                 "created_at": member.created_at,
@@ -37168,7 +36420,7 @@ fn retain_json_rows(
     }
 }
 
-fn latest_member(store: &HarnessStore, member_id: &str) -> CliResult<AgentMember> {
+fn latest_member(store: &HarnessStore, member_id: &str) -> CliResult<ProviderLaunchProfile> {
     latest_members(store)?
         .remove(member_id)
         .ok_or_else(|| CliError::Usage(format!("agent member not found: {member_id}")))
@@ -37188,7 +36440,7 @@ fn latest_messages(store: &HarnessStore) -> CliResult<BTreeMap<String, Message>>
     Ok(messages)
 }
 
-fn latest_runtime(store: &HarnessStore, runtime_id: &str) -> CliResult<Option<AgentRuntime>> {
+fn latest_runtime(store: &HarnessStore, runtime_id: &str) -> CliResult<Option<ProviderProcess>> {
     let mut runtimes = BTreeMap::new();
     for runtime in store.runtimes()? {
         runtimes.insert(runtime.id.clone(), runtime);
@@ -37795,7 +37047,7 @@ fn latest_messages_in_append_order(store: &HarnessStore) -> CliResult<Vec<Messag
         .collect())
 }
 
-fn latest_runtimes(store: &HarnessStore) -> CliResult<BTreeMap<String, AgentRuntime>> {
+fn latest_runtimes(store: &HarnessStore) -> CliResult<BTreeMap<String, ProviderProcess>> {
     let mut runtimes = BTreeMap::new();
     for runtime in store.runtimes()? {
         runtimes.insert(runtime.id.clone(), runtime);
@@ -37803,7 +37055,7 @@ fn latest_runtimes(store: &HarnessStore) -> CliResult<BTreeMap<String, AgentRunt
     Ok(runtimes)
 }
 
-fn latest_members(store: &HarnessStore) -> CliResult<BTreeMap<String, AgentMember>> {
+fn latest_members(store: &HarnessStore) -> CliResult<BTreeMap<String, ProviderLaunchProfile>> {
     let mut members = BTreeMap::new();
     for member in store.members()? {
         members.insert(member.id.clone(), member);
@@ -37813,7 +37065,12 @@ fn latest_members(store: &HarnessStore) -> CliResult<BTreeMap<String, AgentMembe
 
 fn known_agent_member_ids(store: &HarnessStore) -> CliResult<BTreeSet<String>> {
     let mut ids = latest_members(store)?.into_keys().collect::<BTreeSet<_>>();
-    ids.extend(store.latest_durable_members()?.into_keys());
+    ids.extend(
+        store
+            .all_trust_agent_members()?
+            .into_iter()
+            .map(|member| member.id),
+    );
     Ok(ids)
 }
 
@@ -37825,9 +37082,12 @@ fn latest_teams(store: &HarnessStore) -> CliResult<BTreeMap<String, AgentTeam>> 
     Ok(teams)
 }
 
-fn build_member_from_args(args: &[String], status: AgentMemberStatus) -> CliResult<AgentMember> {
+fn build_member_from_args(
+    args: &[String],
+    status: ProviderLaunchStatus,
+) -> CliResult<ProviderLaunchProfile> {
     let output_schema = output_schema_from_args(args)?;
-    Ok(AgentMember {
+    Ok(ProviderLaunchProfile {
         id: value(args, "--id").unwrap_or_else(|| generated_id("agent")),
         name: required(args, "--name")?,
         description: value(args, "--description")
@@ -37836,7 +37096,7 @@ fn build_member_from_args(args: &[String], status: AgentMemberStatus) -> CliResu
         provider: value(args, "--provider").unwrap_or_else(|| "codex".into()),
         model: value(args, "--model"),
         profile: value(args, "--profile"),
-        provider_config: AgentProviderConfig {
+        provider_config: ProviderLaunchConfig {
             service_tier: value(args, "--service-tier"),
             collaboration_mode: value(args, "--collaboration-mode"),
             effort: value(args, "--effort"),
@@ -37888,7 +37148,7 @@ fn output_schema_from_args(args: &[String]) -> CliResult<Option<serde_json::Valu
 
 fn ensure_agent_prompt(
     store: &HarnessStore,
-    member: &AgentMember,
+    member: &ProviderLaunchProfile,
     args: &[String],
 ) -> CliResult<String> {
     ensure_agent_prompt_with_override(store, member, value(args, "--prompt"))
@@ -37901,7 +37161,7 @@ fn ensure_agent_prompt(
 /// override text or a generated bootstrap prompt.
 fn ensure_agent_prompt_with_override(
     store: &HarnessStore,
-    member: &AgentMember,
+    member: &ProviderLaunchProfile,
     prompt_override: Option<String>,
 ) -> CliResult<String> {
     if let Some(prompt_ref) = member.prompt_ref.clone() {
@@ -37918,7 +37178,7 @@ fn ensure_agent_prompt_with_override(
     Ok(prompt_path.display().to_string())
 }
 
-fn build_bootstrap_prompt(member: &AgentMember) -> String {
+fn build_bootstrap_prompt(member: &ProviderLaunchProfile) -> String {
     format!(
         "# Agent Bootstrap\n\nid: {}\nname: {}\ndescription: {}\nrole: {}\nprovider: {}\n\nUse harness messages as the source of truth. Report task progress with evidence refs. Respect worktree, branch, PR, and owned-path boundaries.\n",
         member.id, member.name, member.description, member.role, member.provider
@@ -38004,7 +37264,11 @@ trait ProviderAdapter: Sync {
     }
 
     /// Spawn (or attach) the persistent runtime for a member of this provider.
-    fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime>;
+    fn start_runtime(
+        &self,
+        store: &HarnessStore,
+        member: &ProviderLaunchProfile,
+    ) -> CliResult<ProviderProcess>;
 
     /// Run a single message delivery against this provider's persistent runtime.
     ///
@@ -38017,8 +37281,8 @@ trait ProviderAdapter: Sync {
     fn run_delivery(
         &self,
         store: &HarnessStore,
-        member: &AgentMember,
-        runtime: &AgentRuntime,
+        member: &ProviderLaunchProfile,
+        runtime: &ProviderProcess,
         message: &Message,
         delivery_id: &str,
         timeout_ms: u64,
@@ -38054,7 +37318,11 @@ impl ProviderAdapter for CodexAdapter {
         }
     }
 
-    fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
+    fn start_runtime(
+        &self,
+        store: &HarnessStore,
+        member: &ProviderLaunchProfile,
+    ) -> CliResult<ProviderProcess> {
         start_codex_exec_runtime(store, member)
     }
 
@@ -38062,8 +37330,8 @@ impl ProviderAdapter for CodexAdapter {
     fn run_delivery(
         &self,
         store: &HarnessStore,
-        member: &AgentMember,
-        runtime: &AgentRuntime,
+        member: &ProviderLaunchProfile,
+        runtime: &ProviderProcess,
         message: &Message,
         delivery_id: &str,
         timeout_ms: u64,
@@ -38122,7 +37390,11 @@ impl ProviderAdapter for ClaudeAdapter {
         }
     }
 
-    fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
+    fn start_runtime(
+        &self,
+        store: &HarnessStore,
+        member: &ProviderLaunchProfile,
+    ) -> CliResult<ProviderProcess> {
         start_claude_runtime(store, member)
     }
 
@@ -38130,8 +37402,8 @@ impl ProviderAdapter for ClaudeAdapter {
     fn run_delivery(
         &self,
         store: &HarnessStore,
-        member: &AgentMember,
-        runtime: &AgentRuntime,
+        member: &ProviderLaunchProfile,
+        runtime: &ProviderProcess,
         message: &Message,
         delivery_id: &str,
         timeout_ms: u64,
@@ -38406,7 +37678,10 @@ fn spawn_kimi_ephemeral(
 /// Start the (on-demand) Kimi runtime. Like claude/codex, no persistent process
 /// is held; each delivery spawns a fresh `kimi -p` turn. Mirrors
 /// [`start_claude_runtime`] with the `kimi` binary.
-fn start_kimi_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
+fn start_kimi_runtime(
+    store: &HarnessStore,
+    member: &ProviderLaunchProfile,
+) -> CliResult<ProviderProcess> {
     let runtime_id = generated_id("runtime");
     let runtime_dir = store.root().join("runtimes").join(&member.id);
     fs::create_dir_all(&runtime_dir)?;
@@ -38423,11 +37698,11 @@ fn start_kimi_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<A
             .map(|output| output.status.success())
             .unwrap_or(false)
     };
-    Ok(AgentRuntime {
+    Ok(ProviderProcess {
         id: runtime_id,
         agent_member_id: member.id.clone(),
         provider: member.provider.clone(),
-        status: AgentRuntimeStatus::Running,
+        status: ProviderProcessStatus::Running,
         pid: None, // Kimi runs on-demand; no persistent PID
         control_endpoint: Some(endpoint),
         command: "kimi".into(),
@@ -38435,7 +37710,7 @@ fn start_kimi_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<A
         started_at: now_string(),
         ended_at: None,
         last_event_at: Some(now_string()),
-        health: AgentRuntimeHealth {
+        health: ProviderProcessHealth {
             process_alive,
             socket_exists: true,
             protocol_probe: Some("unknown".into()),
@@ -38453,7 +37728,7 @@ fn start_kimi_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<A
 /// `--allowedTools` / `--json-schema` / `--mcp-config` / `--add-dir`) are dropped.
 fn run_kimi_exec_delivery_real(
     session_dir: &Path,
-    member: &AgentMember,
+    member: &ProviderLaunchProfile,
     message: &Message,
     timeout_ms: u64,
     project: &ProjectContext,
@@ -38531,8 +37806,8 @@ fn run_kimi_exec_delivery_real(
 #[allow(clippy::too_many_arguments)]
 fn run_kimi_delivery(
     store: &HarnessStore,
-    member: &AgentMember,
-    _runtime: &AgentRuntime,
+    member: &ProviderLaunchProfile,
+    _runtime: &ProviderProcess,
     message: &Message,
     delivery_id: &str,
     timeout_ms: u64,
@@ -38632,7 +37907,11 @@ impl ProviderAdapter for KimiAdapter {
         }
     }
 
-    fn start_runtime(&self, store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
+    fn start_runtime(
+        &self,
+        store: &HarnessStore,
+        member: &ProviderLaunchProfile,
+    ) -> CliResult<ProviderProcess> {
         start_kimi_runtime(store, member)
     }
 
@@ -38640,8 +37919,8 @@ impl ProviderAdapter for KimiAdapter {
     fn run_delivery(
         &self,
         store: &HarnessStore,
-        member: &AgentMember,
-        runtime: &AgentRuntime,
+        member: &ProviderLaunchProfile,
+        runtime: &ProviderProcess,
         message: &Message,
         delivery_id: &str,
         timeout_ms: u64,
@@ -38711,8 +37990,8 @@ impl ProviderAdapter for PiAdapter {
     fn start_runtime(
         &self,
         _store: &HarnessStore,
-        _member: &AgentMember,
-    ) -> CliResult<AgentRuntime> {
+        _member: &ProviderLaunchProfile,
+    ) -> CliResult<ProviderProcess> {
         Err(CliError::Usage(
             "pi persistent Team Member is orchestrated by run_pi_team_member, not start_provider_runtime"
                 .to_string(),
@@ -38723,8 +38002,8 @@ impl ProviderAdapter for PiAdapter {
     fn run_delivery(
         &self,
         _store: &HarnessStore,
-        _member: &AgentMember,
-        _runtime: &AgentRuntime,
+        _member: &ProviderLaunchProfile,
+        _runtime: &ProviderProcess,
         _message: &Message,
         _delivery_id: &str,
         _timeout_ms: u64,
@@ -38771,7 +38050,10 @@ fn unknown_provider_error(provider: &str, concern: &str) -> CliError {
 }
 
 /// Spawn (or attach) the runtime for a member, routed by `member.provider`.
-fn start_provider_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
+fn start_provider_runtime(
+    store: &HarnessStore,
+    member: &ProviderLaunchProfile,
+) -> CliResult<ProviderProcess> {
     match provider_adapter(&member.provider) {
         Some(adapter) => adapter.start_runtime(store, member),
         None => Err(unknown_provider_error(&member.provider, "runtime start")),
@@ -39193,7 +38475,7 @@ fn write_temp_mcp_config(mcp: Option<&LaunchMcp>) -> CliResult<Option<String>> {
 
 fn run_codex_exec_process(
     session_dir: &Path,
-    member: &AgentMember,
+    member: &ProviderLaunchProfile,
     message: &Message,
     delivery_id: &str,
     timeout_ms: u64,
@@ -39392,8 +38674,8 @@ fn record_exec_delivery_session(
 #[allow(clippy::too_many_arguments)]
 fn run_codex_exec_delivery(
     store: &HarnessStore,
-    member: &AgentMember,
-    _runtime: &AgentRuntime,
+    member: &ProviderLaunchProfile,
+    _runtime: &ProviderProcess,
     message: &Message,
     delivery_id: &str,
     timeout_ms: u64,
@@ -39489,8 +38771,8 @@ fn run_codex_exec_delivery(
 #[allow(clippy::too_many_arguments)]
 fn run_provider_delivery(
     store: &HarnessStore,
-    member: &AgentMember,
-    runtime: &AgentRuntime,
+    member: &ProviderLaunchProfile,
+    runtime: &ProviderProcess,
     message: &Message,
     delivery_id: &str,
     timeout_ms: u64,
@@ -39522,7 +38804,10 @@ type ClaudeDeliveryRun = (
     String,
 );
 
-fn start_codex_exec_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
+fn start_codex_exec_runtime(
+    store: &HarnessStore,
+    member: &ProviderLaunchProfile,
+) -> CliResult<ProviderProcess> {
     let runtime_id = generated_id("runtime");
     let runtime_dir = store.root().join("runtimes").join(&member.id);
     fs::create_dir_all(&runtime_dir)?;
@@ -39544,11 +38829,11 @@ fn start_codex_exec_runtime(store: &HarnessStore, member: &AgentMember) -> CliRe
         .map(|output| output.status.success())
         .unwrap_or(false);
 
-    Ok(AgentRuntime {
+    Ok(ProviderProcess {
         id: runtime_id,
         agent_member_id: member.id.clone(),
         provider: member.provider.clone(),
-        status: AgentRuntimeStatus::Running,
+        status: ProviderProcessStatus::Running,
         pid: None, // Codex exec runs on-demand; no persistent PID
         control_endpoint: Some(endpoint),
         command: "codex".into(),
@@ -39556,7 +38841,7 @@ fn start_codex_exec_runtime(store: &HarnessStore, member: &AgentMember) -> CliRe
         started_at: now_string(),
         ended_at: None,
         last_event_at: Some(now_string()),
-        health: AgentRuntimeHealth {
+        health: ProviderProcessHealth {
             process_alive,
             socket_exists: true,                        // Runtime dir exists
             protocol_probe: Some("exec-stream".into()), // Codex uses exec-stream
@@ -39570,7 +38855,10 @@ fn start_codex_exec_runtime(store: &HarnessStore, member: &AgentMember) -> CliRe
 // The claude CLI shape: spawn the claude binary as a local process, run message
 // delivery exchanges via stdin/stdout, record sessions and evidence.
 
-fn start_claude_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult<AgentRuntime> {
+fn start_claude_runtime(
+    store: &HarnessStore,
+    member: &ProviderLaunchProfile,
+) -> CliResult<ProviderProcess> {
     let runtime_id = generated_id("runtime");
     let runtime_dir = store.root().join("runtimes").join(&member.id);
     fs::create_dir_all(&runtime_dir)?;
@@ -39594,11 +38882,11 @@ fn start_claude_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult
         .map(|output| output.status.success())
         .unwrap_or(false);
 
-    Ok(AgentRuntime {
+    Ok(ProviderProcess {
         id: runtime_id,
         agent_member_id: member.id.clone(),
         provider: member.provider.clone(),
-        status: AgentRuntimeStatus::Running,
+        status: ProviderProcessStatus::Running,
         pid: None, // Claude runs on-demand; no persistent PID
         control_endpoint: Some(endpoint),
         command: "claude".into(),
@@ -39606,7 +38894,7 @@ fn start_claude_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult
         started_at: now_string(),
         ended_at: None,
         last_event_at: Some(now_string()),
-        health: AgentRuntimeHealth {
+        health: ProviderProcessHealth {
             process_alive,
             socket_exists: true,                    // Runtime dir exists
             protocol_probe: Some("unknown".into()), // Will probe on first delivery
@@ -39619,8 +38907,8 @@ fn start_claude_runtime(store: &HarnessStore, member: &AgentMember) -> CliResult
 #[allow(clippy::too_many_arguments)]
 fn run_claude_delivery(
     store: &HarnessStore,
-    member: &AgentMember,
-    _runtime: &AgentRuntime,
+    member: &ProviderLaunchProfile,
+    _runtime: &ProviderProcess,
     message: &Message,
     delivery_id: &str,
     timeout_ms: u64,
@@ -39714,7 +39002,7 @@ fn run_claude_delivery(
 /// WP-3: Real implementation replacing the stub; parses session_id and events.
 fn run_claude_exec_delivery_real(
     session_dir: &Path,
-    member: &AgentMember,
+    member: &ProviderLaunchProfile,
     message: &Message,
     timeout_ms: u64,
     project: &ProjectContext,
@@ -39846,7 +39134,7 @@ fn apply_claude_output_schema_arg(cmd: &mut Command, spec: &LaunchSpec) {
 /// path uses, so the resident invocation surface matches `claude -p` flag for
 /// flag (only `-p <prompt>` becomes `--input-format stream-json`).
 fn build_resident_config(
-    member: &AgentMember,
+    member: &ProviderLaunchProfile,
     message: &Message,
     project: &ProjectContext,
 ) -> resident::ResidentConfig {
@@ -39895,7 +39183,7 @@ fn build_resident_config(
 /// stdin and reaps the child without creating a second lifecycle controller.
 fn run_claude_resident_delivery_real(
     session_dir: &Path,
-    member: &AgentMember,
+    member: &ProviderLaunchProfile,
     message: &Message,
     timeout_ms: u64,
     project: &ProjectContext,
@@ -40038,7 +39326,7 @@ fn record_provider_hook_event(
     let provider_turn_id =
         json_str(&payload, "turn_id").or_else(|| turn_id_from_container(&payload));
     let now = now_string();
-    let event = AgentEvent {
+    let event = ProviderDispatchEvent {
         id: generated_id("event"),
         agent_member_id: agent_id.clone(),
         provider_runtime_id: runtime_id.clone(),
@@ -40057,9 +39345,9 @@ fn record_provider_hook_event(
         member.last_seen_at = Some(now.clone());
         member.status = if hook_event_name.eq_ignore_ascii_case("stop") {
             member.current_task_id = None;
-            AgentMemberStatus::Idle
+            ProviderLaunchStatus::Idle
         } else {
-            AgentMemberStatus::Running
+            ProviderLaunchStatus::Running
         };
         store.append_member(&member)?;
     }
@@ -40091,7 +39379,7 @@ fn append_agent_event(
     summary: &str,
     payload_ref: Option<&str>,
 ) -> CliResult<()> {
-    let event = AgentEvent {
+    let event = ProviderDispatchEvent {
         id: generated_id("event"),
         agent_member_id: agent_member_id.into(),
         provider_runtime_id: runtime_id.map(str::to_string),
@@ -45837,7 +45125,7 @@ mod tests {
             id: "member-native-open".into(),
             team_run_id: "team-native-open".into(),
             slot_id: None,
-            agent_member_id: None,
+            agent_member_id: "agent-native-open".into(),
             name: "DesktopObserver".into(),
             role: "reviewer".into(),
             provider: provider.into(),
@@ -45892,7 +45180,7 @@ mod tests {
             None,
             None,
             &[TeamMemberSpec {
-                agent_member_id: None,
+                agent_member_id: "agent-provider-callback".into(),
                 name: "ProviderCallback".into(),
                 role: "reviewer".into(),
                 provider: provider.into(),
@@ -47180,8 +46468,8 @@ package:com.tencent.mm
         );
     }
 
-    fn make_member(id: &str) -> AgentMember {
-        AgentMember {
+    fn make_member(id: &str) -> ProviderLaunchProfile {
+        ProviderLaunchProfile {
             id: id.into(),
             name: "Member".into(),
             description: "Test member".into(),
@@ -47189,7 +46477,7 @@ package:com.tencent.mm
             provider: "codex".into(),
             model: None,
             profile: None,
-            provider_config: AgentProviderConfig::default(),
+            provider_config: ProviderLaunchConfig::default(),
             capabilities: Vec::new(),
             team_ids: Vec::new(),
             prompt_ref: None,
@@ -47198,7 +46486,7 @@ package:com.tencent.mm
             worktree_ref: None,
             permission_profile: None,
             runtime_workspace_roots: Vec::new(),
-            status: AgentMemberStatus::Idle,
+            status: ProviderLaunchStatus::Idle,
             current_task_id: None,
             current_proposal_id: None,
             provider_runtime_id: None,
@@ -47411,11 +46699,11 @@ package:com.tencent.mm
         let store = HarnessStore::new(&root);
         let mut member = make_member("claude-agent");
         member.provider = "claude".into();
-        let runtime = AgentRuntime {
+        let runtime = ProviderProcess {
             id: "runtime-claude".into(),
             agent_member_id: member.id.clone(),
             provider: "claude".into(),
-            status: AgentRuntimeStatus::Running,
+            status: ProviderProcessStatus::Running,
             pid: None,
             control_endpoint: Some(format!("claude-runtime://{}", root.display())),
             command: "claude".into(),
@@ -47423,7 +46711,7 @@ package:com.tencent.mm
             started_at: "unix-ms:1".into(),
             ended_at: None,
             last_event_at: Some("unix-ms:1".into()),
-            health: AgentRuntimeHealth {
+            health: ProviderProcessHealth {
                 process_alive: false,
                 socket_exists: false,
                 protocol_probe: None,
@@ -47522,7 +46810,7 @@ package:com.tencent.mm
             std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("direct")));
         let store = HarnessStore::new(&root);
         let mut member = make_member("agent-1");
-        member.status = AgentMemberStatus::Running;
+        member.status = ProviderLaunchStatus::Running;
         member.current_task_id = None;
         store.append_member(&member).expect("append member");
         store
@@ -47563,7 +46851,7 @@ package:com.tencent.mm
         .expect("reconcile taskless delivery");
 
         let latest_member = latest_member(&store, "agent-1").expect("latest member");
-        assert_eq!(latest_member.status, AgentMemberStatus::Idle);
+        assert_eq!(latest_member.status, ProviderLaunchStatus::Idle);
         assert_eq!(latest_member.current_task_id, None);
         let latest_message = latest_message(&store, "message-1").expect("latest message");
         assert_eq!(
@@ -47645,7 +46933,7 @@ package:com.tencent.mm
             std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("stale-failed")));
         let store = HarnessStore::new(&root);
         let mut member = make_member("agent-1");
-        member.status = AgentMemberStatus::Stale;
+        member.status = ProviderLaunchStatus::Stale;
         member.current_task_id = Some("task-1".into());
         store.append_member(&member).expect("append member");
         store
@@ -47690,7 +46978,7 @@ package:com.tencent.mm
             MessageDeliveryStatus::Failed
         );
         let latest_member = latest_member(&store, "agent-1").expect("latest member");
-        assert_eq!(latest_member.status, AgentMemberStatus::Idle);
+        assert_eq!(latest_member.status, ProviderLaunchStatus::Idle);
         assert_eq!(latest_member.current_task_id, None);
 
         let _ = std::fs::remove_dir_all(root);
@@ -48141,7 +47429,7 @@ package:com.tencent.mm
             std::env::temp_dir().join(format!("harness-cli-test-{}", generated_id("closed")));
         let store = HarnessStore::new(&root);
         let mut member = make_member("agent-1");
-        member.status = AgentMemberStatus::Closed;
+        member.status = ProviderLaunchStatus::Closed;
         store.append_member(&member).expect("append member");
         store
             .append_message(&Message {
@@ -48510,7 +47798,7 @@ package:com.tencent.mm
             None,
             None,
             &[TeamMemberSpec {
-                agent_member_id: None,
+                agent_member_id: "agent-target-builder".into(),
                 name: "TargetBuilder".into(),
                 role: "builder".into(),
                 provider: "codex".into(),
@@ -48927,7 +48215,7 @@ package:com.tencent.mm
             None,
             &[
                 TeamMemberSpec {
-                    agent_member_id: None,
+                    agent_member_id: "agent-builder-a".into(),
                     name: "BuilderA".into(),
                     role: "module_a".into(),
                     provider: "codex".into(),
@@ -48941,7 +48229,7 @@ package:com.tencent.mm
                     initial_work: None,
                 },
                 TeamMemberSpec {
-                    agent_member_id: None,
+                    agent_member_id: "agent-builder-b".into(),
                     name: "BuilderB".into(),
                     role: "module_b".into(),
                     provider: "codex".into(),
@@ -50467,7 +49755,7 @@ package:com.tencent.mm
     #[test]
     fn member_run_snapshots_requested_provider_controls_before_start() {
         let member = TeamMemberSpec {
-            agent_member_id: None,
+            agent_member_id: "agent-controlled-builder".into(),
             name: "ControlledBuilder".into(),
             role: "builder".into(),
             provider: "codex".into(),
@@ -50701,7 +49989,7 @@ package:com.tencent.mm
     fn team_member_identity_link_requires_registered_agent_member() {
         let (store, root) = temp_store("member-identity-link");
         let linked = TeamMemberSpec {
-            agent_member_id: Some("agent-standing-builder".into()),
+            agent_member_id: "agent-standing-builder".into(),
             name: "StandingBuilder".into(),
             role: "builder".into(),
             provider: "codex".into(),
@@ -50729,12 +50017,12 @@ package:com.tencent.mm
             None,
             std::slice::from_ref(&linked),
         ) {
-            Ok(_) => panic!("an explicit identity link must resolve to AgentMember"),
+            Ok(_) => panic!("an explicit identity link must resolve to ProviderLaunchProfile"),
             Err(error) => error,
         };
         assert!(missing
             .to_string()
-            .contains("references missing AgentMember agent-standing-builder"));
+            .contains("references missing ProviderLaunchProfile agent-standing-builder"));
 
         let member = build_member_from_args(
             &[
@@ -50748,7 +50036,7 @@ package:com.tencent.mm
                 "--provider".into(),
                 "codex".into(),
             ],
-            AgentMemberStatus::Idle,
+            ProviderLaunchStatus::Idle,
         )
         .expect("registered member");
         store.append_member(&member).expect("append member");
@@ -50769,8 +50057,8 @@ package:com.tencent.mm
         )
         .expect("registered identity link succeeds");
         assert_eq!(
-            created.member_runs[0].agent_member_id.as_deref(),
-            Some("agent-standing-builder")
+            created.member_runs[0].agent_member_id,
+            "agent-standing-builder"
         );
         let _ = std::fs::remove_dir_all(root);
     }
@@ -50794,7 +50082,7 @@ package:com.tencent.mm
             None,
             None,
             &[TeamMemberSpec {
-                agent_member_id: Some(agent.id.clone()),
+                agent_member_id: agent.id.clone(),
                 name: "StandingBuilder".into(),
                 role: "builder".into(),
                 provider: "codex".into(),
@@ -50863,7 +50151,7 @@ package:com.tencent.mm
         let agent = make_member("agent-standing-builder");
         store.append_member(&agent).expect("append Agent identity");
         let spec = || TeamMemberSpec {
-            agent_member_id: Some(agent.id.clone()),
+            agent_member_id: agent.id.clone(),
             name: "StandingBuilder".into(),
             role: "builder".into(),
             provider: "codex".into(),
@@ -51684,7 +50972,7 @@ package:com.tencent.mm
             None,
             None,
             &[TeamMemberSpec {
-                agent_member_id: None,
+                agent_member_id: "agent-only-member-a".into(),
                 name: "OnlyMember".into(),
                 role: "sole".into(),
                 provider: "codex".into(),
@@ -51728,7 +51016,7 @@ package:com.tencent.mm
             None,
             None,
             &[TeamMemberSpec {
-                agent_member_id: None,
+                agent_member_id: "agent-only-member-b".into(),
                 name: "OnlyMember".into(),
                 role: "sole".into(),
                 provider: "codex".into(),
@@ -51776,7 +51064,7 @@ package:com.tencent.mm
             None,
             None,
             &[TeamMemberSpec {
-                agent_member_id: None,
+                agent_member_id: "agent-only-member-c".into(),
                 name: "OnlyMember".into(),
                 role: "sole".into(),
                 provider: "codex".into(),
@@ -52682,7 +51970,7 @@ package:com.tencent.mm
             None,
             None,
             &[TeamMemberSpec {
-                agent_member_id: None,
+                agent_member_id: "agent-batch-member".into(),
                 name: "BatchMember".into(),
                 role: "worker".into(),
                 provider: "codex".into(),
@@ -52711,7 +51999,7 @@ package:com.tencent.mm
             None,
             &created.team_run.id,
             &TeamMemberSpec {
-                agent_member_id: None,
+                agent_member_id: "agent-late-batch-member".into(),
                 name: "LateBatchMember".into(),
                 role: "worker".into(),
                 provider: "codex".into(),
@@ -53091,7 +52379,7 @@ package:com.tencent.mm
             "member": ["missing"]
         });
         let error = create_team_value(&store, &missing).expect_err("missing member must fail");
-        assert!(error.to_string().contains("missing AgentMember"));
+        assert!(error.to_string().contains("missing ProviderLaunchProfile"));
 
         let member = build_member_from_args(
             &[
@@ -53102,7 +52390,7 @@ package:com.tencent.mm
                 "--role".into(),
                 "builder".into(),
             ],
-            AgentMemberStatus::Idle,
+            ProviderLaunchStatus::Idle,
         )
         .expect("member");
         finalize_member_creation(&store, &member).expect("member create");
@@ -53131,7 +52419,9 @@ package:com.tencent.mm
         });
         create_agent_value(&store, &body).expect("first create");
         let error = create_agent_value(&store, &body).expect_err("duplicate must fail");
-        assert!(error.to_string().contains("AgentMember already exists"));
+        assert!(error
+            .to_string()
+            .contains("ProviderLaunchProfile already exists"));
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -53164,7 +52454,7 @@ package:com.tencent.mm
         let members = latest_members(&store).expect("members readable");
         let persisted = members.get(&member_id).expect("member persisted in store");
         assert_eq!(persisted.name, "Worker One");
-        assert_eq!(persisted.status, AgentMemberStatus::Idle);
+        assert_eq!(persisted.status, ProviderLaunchStatus::Idle);
         assert_eq!(persisted.provider_config.effort.as_deref(), Some("high"));
         assert_eq!(persisted.skill_refs, vec!["frontend-design"]);
         assert!(
@@ -53696,7 +52986,7 @@ mod sse_tests {
         let manager = sse::SseManager::new();
         let rx = manager.subscribe("_test");
 
-        let event = sse::SseEventFrame::AgentEvent(AgentEvent {
+        let event = sse::SseEventFrame::ProviderDispatchEvent(ProviderDispatchEvent {
             id: "evt-test".into(),
             agent_member_id: "mem-test".into(),
             provider_runtime_id: None,
@@ -53716,10 +53006,10 @@ mod sse_tests {
         // Verify the event is received
         match rx.recv_timeout(std::time::Duration::from_secs(1)) {
             Ok(received) => {
-                if let sse::SseEventFrame::AgentEvent(evt) = received {
+                if let sse::SseEventFrame::ProviderDispatchEvent(evt) = received {
                     assert_eq!(evt.id, "evt-test");
                 } else {
-                    panic!("Expected AgentEvent");
+                    panic!("Expected ProviderDispatchEvent");
                 }
             }
             Err(_) => panic!("Did not receive event in time"),
@@ -53743,7 +53033,7 @@ mod sse_tests {
             id: "member-cwd".into(),
             team_run_id: "team-cwd".into(),
             slot_id: None,
-            agent_member_id: None,
+            agent_member_id: "agent-runtime-fixer".into(),
             name: "RuntimeFixer".into(),
             role: "implementer".into(),
             provider: "codex".into(),
@@ -53888,7 +53178,7 @@ mod sse_tests {
         let rx1 = manager.subscribe("_test");
         let rx2 = manager.subscribe("_test");
 
-        let event = sse::SseEventFrame::AgentEvent(AgentEvent {
+        let event = sse::SseEventFrame::ProviderDispatchEvent(ProviderDispatchEvent {
             id: "evt-multi".into(),
             agent_member_id: "mem-test".into(),
             provider_runtime_id: None,
@@ -54091,7 +53381,7 @@ mod tests_team_run_recover {
             id: "mr-test".into(),
             team_run_id: "tr-test".into(),
             slot_id: Some("slot-test".into()),
-            agent_member_id: Some("agent-test".into()),
+            agent_member_id: "agent-test".into(),
             name: "test-member".into(),
             role: "builder".into(),
             provider: "codex".into(),

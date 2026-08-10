@@ -8,8 +8,7 @@ import type {
   OrganizationMembershipView,
   OrganizationUnitView,
   RelatedLink,
-  StandingExecutionAssignment,
-  StandingLinkConflict,
+  AgentMemberExecutionAssignment,
   TrademarkOperationsProjection,
 } from "./types";
 
@@ -49,7 +48,7 @@ function actorKind(value: unknown): ActorSummary["kind"] {
   switch (text(value).toLowerCase()) {
     case "human": return "human";
     case "agent":
-    case "standing_agent": return "standing_agent";
+    case "agent_membership": return "agent_membership";
     case "external": return "external";
     default: return "service";
   }
@@ -107,7 +106,7 @@ export function adaptTrademarkOperationsProjection(source: unknown): TrademarkOp
       acceptedWorkTypeRefs: strings(raw.accepted_work_type_refs ?? raw.accepted_work_types),
       permissionPolicyRefs: strings(raw.permission_policy_refs),
       escalationPolicyRef: text(raw.escalation_policy_ref) || undefined,
-      executionAgentMemberRef: text(raw.execution_agent_member_ref) || undefined,
+      executionAgentMemberRef: text(raw.agent_member_ref) || undefined,
     };
   }
   const unresolved: ActorSummary = {
@@ -225,10 +224,10 @@ export function adaptTrademarkOperationsProjection(source: unknown): TrademarkOp
     accountableOwner: resolveActor(finance.accountable_owner),
   };
 
-  const standingAssignments: StandingExecutionAssignment[] = records(root.standing_assignments).map((row) => ({
+  const membershipProjections: AgentMemberExecutionAssignment[] = records(root.membership_projections).map((row) => ({
     id: text(row.id),
     agentMemberId: text(row.agent_member_id),
-    sourceKind: (text(row.source_kind) === "agent_team_work" ? "agent_team_work" : "agent_team_participation") as StandingExecutionAssignment["sourceKind"],
+    sourceKind: (text(row.source_kind) === "agent_team_work" ? "agent_team_work" : "agent_team_participation") as AgentMemberExecutionAssignment["sourceKind"],
     sourceRef: text(row.source_ref) || undefined,
     workId: text(row.work_id) || undefined,
     missionId: text(row.mission_id) || undefined,
@@ -242,17 +241,6 @@ export function adaptTrademarkOperationsProjection(source: unknown): TrademarkOp
     lastActivityAt: text(row.last_activity_at) || undefined,
     nativeSession: object(row.native_session),
   })).filter((row) => row.id && row.agentMemberId && row.teamRunId && row.memberRunId);
-  const standingAssignmentConflicts: StandingLinkConflict[] = records(root.standing_assignment_conflicts).map((row) => ({
-    id: text(row.id),
-    kind: text(row.kind),
-    severity: text(row.severity, "error"),
-    agentMemberId: text(row.agent_member_id),
-    standingAgentIds: strings(row.standing_agent_ids),
-    affectedMemberRunIds: strings(row.affected_member_run_ids),
-    detail: text(row.detail),
-    resolutionHint: text(row.resolution_hint) || undefined,
-  }));
-
   return {
     fixtureId: text(root.fixture_id) || undefined,
     actors,
@@ -272,8 +260,7 @@ export function adaptTrademarkOperationsProjection(source: unknown): TrademarkOp
     linkedTypedRecords: [],
     linkedApproval: approval,
     linkedCommitment: commitment,
-    standingAssignments,
-    standingAssignmentConflicts,
+    membershipProjections,
     commitment,
     approval,
     evidence: strings(approvalRow.evidence_refs).map((id) => related(id, id, "Approval evidence")),

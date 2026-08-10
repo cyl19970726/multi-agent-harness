@@ -1,8 +1,8 @@
 import type { SelectionState } from "../app/selection";
 import type {
-  AgentMember,
   DashboardSnapshot,
   Evidence,
+  ProviderLaunchProfile,
   WorkflowDef,
   WorkflowRun,
   WorkflowStep,
@@ -16,7 +16,7 @@ import type {
 export interface WorkbenchModel {
   snapshot: DashboardSnapshot;
   generatedAt?: string;
-  selectedMember?: AgentMember;
+  selectedMember?: ProviderLaunchProfile;
   evidence: Evidence[];
   workflowDefs: WorkflowDef[];
   workflowRuns: WorkflowRun[];

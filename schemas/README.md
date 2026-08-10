@@ -8,15 +8,25 @@
 | Durable Agent member identity | [agent-member.schema.json](agent-member.schema.json) |
 | Agent team run | [agent-team-run.schema.json](agent-team-run.schema.json) |
 | Member run | [member-run.schema.json](member-run.schema.json) |
+| Member run event view | [member-run-event.schema.json](member-run-event.schema.json) |
 | Provider-native session locator | [native-session-ref.schema.json](native-session-ref.schema.json) |
 | Canonical mutation event | [canonical-mutation-event.schema.json](canonical-mutation-event.schema.json) |
 | Crash-atomic canonical operation | [canonical-operation.schema.json](canonical-operation.schema.json) |
 | Team message | [team-message.schema.json](team-message.schema.json) |
+| Message delivery | [message-delivery.schema.json](message-delivery.schema.json) |
+| Member workspace binding | [member-workspace-binding.schema.json](member-workspace-binding.schema.json) |
 | Agent Team Work | [work.schema.json](work.schema.json) |
 | Agent Team Work event | [work-event.schema.json](work-event.schema.json) |
 | Agent Team Work delivery | [work-delivery.schema.json](work-delivery.schema.json) |
 | Agent Team Work condition record | [work-condition-record.schema.json](work-condition-record.schema.json) |
 | Agent Team Work report | [work-report.schema.json](work-report.schema.json) |
+| Work finding | [work-finding.schema.json](work-finding.schema.json) |
+| Failure analysis | [failure-analysis.schema.json](failure-analysis.schema.json) |
+| Work module definition | [work-module-definition.schema.json](work-module-definition.schema.json) |
+| Work module binding | [work-module-binding.schema.json](work-module-binding.schema.json) |
+| Gate requirement | [gate-requirement.schema.json](gate-requirement.schema.json) |
+| Gate evaluation | [gate-evaluation.schema.json](gate-evaluation.schema.json) |
+| Gate waiver | [gate-waiver.schema.json](gate-waiver.schema.json) |
 | Agent Team Work evidence | [work-evidence.schema.json](work-evidence.schema.json) |
 | Agent Team Work gate evaluation | [work-gate-evaluation.schema.json](work-gate-evaluation.schema.json) |
 | Agent Team Work operational decision | [work-operational-decision.schema.json](work-operational-decision.schema.json) |

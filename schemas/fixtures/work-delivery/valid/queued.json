@@ -1,11 +1,1 @@
-{
-  "id": "work-delivery-1",
-  "work_event_id": "work-event-1",
-  "team_run_id": "team-run-1",
-  "work_id": "work-1",
-  "work_version": 1,
-  "recipient_member_run_id": "member-run-1",
-  "status": "queued",
-  "attempt": 0,
-  "updated_at": "unix-ms:1"
-}
+{"id":"work-delivery-1","work_event_id":"work-event-1","work_id":"work-1","work_revision":1,"recipient_member_run_id":"member-run-1","status":"queued","attempt":0,"claim_id":null,"claimed_supervisor_generation":null,"claimed_member_generation":null,"claim_expires_at":null,"freeze_generation":null,"provider_receipt_id":null,"failure_code":null,"failure_detail":null,"version":1,"updated_at":"unix-ms:1"}

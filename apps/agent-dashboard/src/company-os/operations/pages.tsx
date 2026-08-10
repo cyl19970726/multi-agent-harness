@@ -7,7 +7,7 @@ import {
 } from "./components";
 import { prototypeTrademarkOperationsProjection } from "./fixture";
 import { buildApprovalDecisionCommand } from "./approvalAction";
-import type { ActorSummary, ApprovalDecision, ApprovalDecisionCommand, OrganizationMembershipView, OrganizationUnitView, RelatedLink, StandingLinkConflict, TrademarkOperationsProjection } from "./types";
+import type { ActorSummary, ApprovalDecision, ApprovalDecisionCommand, OrganizationMembershipView, OrganizationUnitView, RelatedLink, TrademarkOperationsProjection } from "./types";
 import { ActorAvatar } from "../visuals";
 import { ActivityStream, type WorkbenchActivityItem } from "@/components/workbench/activity/ActivityStream";
 import { ContextModule, ContextRail as WorkbenchContextRail } from "@/components/workbench/context/ContextRail";
@@ -55,13 +55,13 @@ function humanReadable(value: string, fallback: string): string {
 
 function actorDescriptor(actor: ActorSummary | undefined): string {
   if (!actor) return "Unassigned";
-  const kind = actor.kind === "human" ? "Human" : actor.kind === "standing_agent" ? "Standing Agent" : actor.kind === "external" ? "External" : "Service";
+  const kind = actor.kind === "human" ? "Human" : actor.kind === "agent_membership" ? "Agent Membership" : actor.kind === "external" ? "External" : "Service";
   return `${actor.name} · ${kind}`;
 }
 
 function actorSemanticKind(actor: ActorSummary | undefined): string | undefined {
   if (!actor) return undefined;
-  return actor.kind === "human" ? "Human" : actor.kind === "standing_agent" ? "Standing Agent" : actor.kind === "external" ? "External" : "Service";
+  return actor.kind === "human" ? "Human" : actor.kind === "agent_membership" ? "Agent Membership" : actor.kind === "external" ? "External" : "Service";
 }
 
 function displayTimestamp(value: string): string {
@@ -74,46 +74,15 @@ function displayTimestamp(value: string): string {
 
 const commandUnavailable = "No approved action transport is connected to this read-only projection.";
 
-/** Bounds how many conflict entries render inline so a pathological store cannot blow up the page. */
-const STANDING_LINK_CONFLICT_VISIBLE_CAP = 5;
-
-/**
- * Withheld-participation warning: two or more StandingAgents declared the
- * same execution_agent_member_ref, so the Company OS snapshot withholds that
- * agent_member_id from standingAssignments rather than guessing an owner. An
- * empty/absent list renders nothing so the healthy dashboard is unchanged.
- */
-function StandingLinkConflictBanner({ conflicts }: { conflicts: StandingLinkConflict[] }) {
-  if (conflicts.length === 0) return null;
-  const visible = conflicts.slice(0, STANDING_LINK_CONFLICT_VISIBLE_CAP);
-  const hiddenCount = conflicts.length - visible.length;
-  return (
-    <div role="alert" data-standing-link-conflicts data-standing-link-conflict-count={conflicts.length} className="mb-4 space-y-3 rounded-lg border border-status-bad/30 bg-status-bad/[0.05] p-4">
-      <div className="flex items-center gap-2 text-sm font-semibold text-status-bad"><AlertTriangle className="size-4 shrink-0" />Standing Agent link conflicts ({conflicts.length})</div>
-      <p className="text-xs leading-5 text-muted-foreground">These execution_agent_member_ref links are claimed by more than one Standing Agent. Affected participation is withheld from Agent Team participation until a human resolves the conflict.</p>
-      <ul className="space-y-2">
-        {visible.map((conflict) => <li key={conflict.id} data-company-os-ref={conflict.id} className="rounded-md border border-status-bad/20 bg-background/70 p-3 text-xs leading-5">
-          <p><span className="font-medium text-foreground">{conflict.agentMemberId}</span> is claimed by <span className="font-medium text-foreground">{conflict.standingAgentIds.join(", ")}</span></p>
-          {conflict.affectedMemberRunIds.length > 0 && <p className="mt-1 text-muted-foreground">Affected MemberRuns: {conflict.affectedMemberRunIds.join(", ")}</p>}
-          {conflict.resolutionHint && <code className="mt-1 block break-words font-mono text-[10px] text-muted-foreground">{conflict.resolutionHint}</code>}
-        </li>)}
-      </ul>
-      {hiddenCount > 0 && <p className="text-xs font-medium text-status-bad">+{hiddenCount} more</p>}
-    </div>
-  );
-}
-
 export function OrganizationPage({ data, onSelectionChange }: OperationsPageProps & { onSelectionChange?: (selection: Partial<SelectionState>) => void }) {
   const view = projection(data);
-  const standingLinkConflicts = view.standingAssignmentConflicts ?? [];
   const explicitHumanLeads = view.organization.units
     .map((unit) => unit.humanLeadActorId ? view.actors[unit.humanLeadActorId] : undefined)
     .filter((actor, index, all): actor is ActorSummary => Boolean(actor) && all.findIndex((candidate) => candidate?.id === actor?.id) === index);
   const hasGovernanceProposal = Boolean(view.governanceProposal.id)
     && !view.governanceProposal.id.startsWith("unresolved");
 
-  return <PageFrame dense eyebrow="Organization" title="Company OS" description="Exact Store-truth OrgUnit hierarchy, memberships, accountable leads, and durable execution identity bindings." action={<div className="flex flex-wrap gap-2"><button type="button" disabled title="A governed organization action requires an approved proposal." className="inline-flex min-h-10 cursor-not-allowed items-center gap-2 rounded-lg border border-primary/25 bg-primary/[0.07] px-4 py-2 text-sm font-medium text-primary"><Bot className="size-4" />Propose agent</button><button type="button" disabled title="A governed organization action requires an approved proposal." className="inline-flex min-h-10 cursor-not-allowed items-center gap-2 rounded-lg border border-border bg-card/80 px-4 py-2 text-sm font-medium text-muted-foreground"><Plus className="size-4" />Create org unit</button></div>} context={<ContextRail label="Organization truth"><PolicyNote>Hierarchy comes only from OrgUnit.parent_unit_id. Leads come only from explicit Human and Agent lead references; membership, names, runtime state, and display order never promote an actor.</PolicyNote>{explicitHumanLeads.length > 0 && <Panel title="Explicit Human leads"><div className="space-y-2">{explicitHumanLeads.map((actor) => <ActorPill key={actor.id} actor={actor} />)}</div></Panel>}<Panel title="Projection provenance"><p className="text-xs leading-5 text-muted-foreground">{view.organization.units.length} OrgUnits · {view.organization.memberships.length} memberships · {view.organization.rootUnitIds.length} roots</p></Panel><Panel title="Authority boundary"><div className="space-y-3 text-xs leading-5 text-muted-foreground"><p className="flex gap-2"><ShieldCheck className="mt-0.5 size-4 shrink-0 text-status-good" />Standing Agents may own and coordinate TeamWork only within explicit scope.</p><p className="flex gap-2"><Scale className="mt-0.5 size-4 shrink-0 text-primary" />Financial, legal, and organization-wide changes remain Human-governed.</p></div></Panel>{hasGovernanceProposal && <LinkedRecord wrapLabel recordRef={view.governanceProposal.id} label={view.governanceProposal.label} detail={view.governanceProposal.detail} icon={<Scale className="size-4" />} />}</ContextRail>}>
-    <StandingLinkConflictBanner conflicts={standingLinkConflicts} />
+  return <PageFrame dense eyebrow="Organization" title="Company OS" description="Exact Store-truth OrgUnit hierarchy, memberships, accountable leads, and durable execution identity bindings." action={<div className="flex flex-wrap gap-2"><button type="button" disabled title="A governed organization action requires an approved proposal." className="inline-flex min-h-10 cursor-not-allowed items-center gap-2 rounded-lg border border-primary/25 bg-primary/[0.07] px-4 py-2 text-sm font-medium text-primary"><Bot className="size-4" />Propose agent</button><button type="button" disabled title="A governed organization action requires an approved proposal." className="inline-flex min-h-10 cursor-not-allowed items-center gap-2 rounded-lg border border-border bg-card/80 px-4 py-2 text-sm font-medium text-muted-foreground"><Plus className="size-4" />Create org unit</button></div>} context={<ContextRail label="Organization truth"><PolicyNote>Hierarchy comes only from OrgUnit.parent_unit_id. Leads come only from explicit Human and Agent lead references; membership, names, runtime state, and display order never promote an actor.</PolicyNote>{explicitHumanLeads.length > 0 && <Panel title="Explicit Human leads"><div className="space-y-2">{explicitHumanLeads.map((actor) => <ActorPill key={actor.id} actor={actor} />)}</div></Panel>}<Panel title="Projection provenance"><p className="text-xs leading-5 text-muted-foreground">{view.organization.units.length} OrgUnits · {view.organization.memberships.length} memberships · {view.organization.rootUnitIds.length} roots</p></Panel><Panel title="Authority boundary"><div className="space-y-3 text-xs leading-5 text-muted-foreground"><p className="flex gap-2"><ShieldCheck className="mt-0.5 size-4 shrink-0 text-status-good" />Agent Memberships may own and coordinate TeamWork only within explicit scope.</p><p className="flex gap-2"><Scale className="mt-0.5 size-4 shrink-0 text-primary" />Financial, legal, and organization-wide changes remain Human-governed.</p></div></Panel>{hasGovernanceProposal && <LinkedRecord wrapLabel recordRef={view.governanceProposal.id} label={view.governanceProposal.label} detail={view.governanceProposal.detail} icon={<Scale className="size-4" />} />}</ContextRail>}>
     <OrganizationIntegrity findings={view.organization.integrityFindings} />
     <section aria-label="Organization forest" className="relative overflow-hidden rounded-2xl border border-border bg-card/70 p-4 shadow-sm sm:p-6" data-organization-root-count={view.organization.rootUnitIds.length}>
       <div className="pointer-events-none absolute -left-24 -top-24 size-72 rounded-full border border-primary/15" /><div className="pointer-events-none absolute -left-10 -top-10 size-44 rounded-full border border-primary/20" />
@@ -158,7 +127,7 @@ function ExplicitUnitLeads({ view, unit, onSelectionChange }: { view: TrademarkO
 function selectionForActor(actor: ActorSummary, onSelectionChange?: (selection: Partial<SelectionState>) => void): (() => void) | undefined {
   if (!onSelectionChange) return undefined;
   if (actor.kind === "human") return () => onSelectionChange({ surface: "organization", personId: actor.id });
-  if (actor.kind === "standing_agent") return () => onSelectionChange({ surface: "organization", standingAgentId: actor.id });
+  if (actor.kind === "agent_membership") return () => onSelectionChange({ surface: "organization", agentMembershipId: actor.id });
   return undefined;
 }
 
@@ -175,16 +144,16 @@ function OrgActorCard({ view, actor, membership, variant = "member", className, 
   const actorKind = actorSemanticKind(actor);
   const assignments = actor.executionAgentMemberRef
     ? [...new Map(
-        (view.standingAssignments ?? [])
+        (view.membershipProjections ?? [])
           .filter((assignment) => assignment.agentMemberId === actor.executionAgentMemberRef)
           .map((assignment) => [assignment.memberRunId, assignment]),
       ).values()]
     : [];
-  return <article data-company-os-ref={membership?.id ?? actor.id} data-organization-actor-ref={actor.id} data-actor-kind={actorKind} data-actor-type={actorKind} className={`${variant === "lead" ? "border-status-good/45 bg-status-good/[0.045]" : variant === "external" ? "border-sky-500/35 bg-sky-500/[0.035]" : proposed ? "border-primary/45 border-dashed bg-primary/[0.035]" : "border-border bg-card/90"} min-w-0 rounded-xl border p-4 shadow-sm ${className ?? ""}`}>{onOpen ? <button type="button" onClick={onOpen} className="w-full min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><OrgActorCardBody actor={actor} variant={variant} proposed={proposed} /></button> : <OrgActorCardBody actor={actor} variant={variant} proposed={proposed} />}{membership && <div className="mt-3 min-w-0 border-t border-border pt-2 text-[10px] text-muted-foreground"><p className="break-words">{membership.membershipRole ?? "role not supplied"}{membership.titleOrFunction ? ` · ${membership.titleOrFunction}` : ""}{membership.status ? ` · ${membership.status}` : ""}</p><code className="mt-1 block break-all font-mono">{membership.id}</code></div>}{actor.kind === "standing_agent" && <div className="mt-3 min-w-0 rounded-lg border border-border/70 bg-background/55 p-2 text-[10px]"><p className="font-semibold text-foreground">AgentMember / runtime binding</p>{actor.executionAgentMemberRef ? <><code className="mt-1 block break-all font-mono text-muted-foreground">{actor.executionAgentMemberRef}</code>{assignments.length > 0 ? <div className="mt-2 space-y-1">{assignments.map((assignment) => <div key={assignment.id} data-company-os-ref={assignment.memberRunId} className="min-w-0 rounded-md border border-border/50 bg-background/60 p-1.5 text-muted-foreground"><p className="break-words">{assignment.nativeSession?.provider ?? "provider unavailable"} · {assignment.status}</p><code className="mt-0.5 block break-all font-mono">{assignment.memberRunId}</code></div>)}</div> : <p className="mt-1 break-words text-muted-foreground">No MemberRun in this execution snapshot explicitly binds that AgentMember.</p>}</> : <p className="mt-1 break-words text-muted-foreground">No execution_agent_member_ref is recorded.</p>}</div>}</article>;
+  return <article data-company-os-ref={membership?.id ?? actor.id} data-organization-actor-ref={actor.id} data-actor-kind={actorKind} data-actor-type={actorKind} className={`${variant === "lead" ? "border-status-good/45 bg-status-good/[0.045]" : variant === "external" ? "border-sky-500/35 bg-sky-500/[0.035]" : proposed ? "border-primary/45 border-dashed bg-primary/[0.035]" : "border-border bg-card/90"} min-w-0 rounded-xl border p-4 shadow-sm ${className ?? ""}`}>{onOpen ? <button type="button" onClick={onOpen} className="w-full min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><OrgActorCardBody actor={actor} variant={variant} proposed={proposed} /></button> : <OrgActorCardBody actor={actor} variant={variant} proposed={proposed} />}{membership && <div className="mt-3 min-w-0 border-t border-border pt-2 text-[10px] text-muted-foreground"><p className="break-words">{membership.membershipRole ?? "role not supplied"}{membership.titleOrFunction ? ` · ${membership.titleOrFunction}` : ""}{membership.status ? ` · ${membership.status}` : ""}</p><code className="mt-1 block break-all font-mono">{membership.id}</code></div>}{actor.kind === "agent_membership" && <div className="mt-3 min-w-0 rounded-lg border border-border/70 bg-background/55 p-2 text-[10px]"><p className="font-semibold text-foreground">AgentMember / runtime binding</p>{actor.executionAgentMemberRef ? <><code className="mt-1 block break-all font-mono text-muted-foreground">{actor.executionAgentMemberRef}</code>{assignments.length > 0 ? <div className="mt-2 space-y-1">{assignments.map((assignment) => <div key={assignment.id} data-company-os-ref={assignment.memberRunId} className="min-w-0 rounded-md border border-border/50 bg-background/60 p-1.5 text-muted-foreground"><p className="break-words">{assignment.nativeSession?.provider ?? "provider unavailable"} · {assignment.status}</p><code className="mt-0.5 block break-all font-mono">{assignment.memberRunId}</code></div>)}</div> : <p className="mt-1 break-words text-muted-foreground">No MemberRun in this execution snapshot explicitly binds that AgentMember.</p>}</> : <p className="mt-1 break-words text-muted-foreground">No agent_member_ref is recorded.</p>}</div>}</article>;
 }
 
 function OrgActorCardBody({ actor, variant, proposed }: { actor: ActorSummary; variant: "owner" | "lead" | "member" | "external"; proposed: boolean }) {
-  return <><div className="flex min-w-0 items-start gap-3"><ActorAvatar identity={`${actor.id} ${actor.role}`} name={actor.name} size={variant === "lead" || variant === "owner" ? "lg" : "md"} ring={variant === "owner" ? "warm" : variant === "lead" ? "good" : variant === "external" ? "external" : "neutral"} /><div className="min-w-0 flex-1"><div className="flex min-w-0 flex-wrap items-center gap-2"><h3 className={`${variant === "lead" || variant === "owner" ? "company-editorial-title text-xl" : "text-sm font-semibold"} min-w-0 break-words`}>{actor.name}</h3>{actor.availability === "available" && <span className="size-2 shrink-0 rounded-full bg-status-good" title="Explicitly reported available" />}{proposed && <StatusTag status="proposed" />}</div><p className="mt-1 break-words text-xs text-muted-foreground">{actor.kind === "human" ? "Human" : actor.kind === "external" ? "External Collaborator" : "Standing Agent"} · {actor.role}</p></div></div>{variant === "lead" && <div className="mt-4 grid grid-cols-3 divide-x divide-border rounded-lg border border-border bg-background/60 py-3 text-center text-xs"><div><strong className="block break-words text-base">{actor.availability === "available" ? "Available" : "Active"}</strong><span className="text-muted-foreground">Presence</span></div><div><strong className="block break-words text-base">{actor.unit ?? "Company"}</strong><span className="text-muted-foreground">Scope</span></div><div><strong className="block text-base">Lead</strong><span className="text-muted-foreground">Role</span></div></div>}</>;
+  return <><div className="flex min-w-0 items-start gap-3"><ActorAvatar identity={`${actor.id} ${actor.role}`} name={actor.name} size={variant === "lead" || variant === "owner" ? "lg" : "md"} ring={variant === "owner" ? "warm" : variant === "lead" ? "good" : variant === "external" ? "external" : "neutral"} /><div className="min-w-0 flex-1"><div className="flex min-w-0 flex-wrap items-center gap-2"><h3 className={`${variant === "lead" || variant === "owner" ? "company-editorial-title text-xl" : "text-sm font-semibold"} min-w-0 break-words`}>{actor.name}</h3>{actor.availability === "available" && <span className="size-2 shrink-0 rounded-full bg-status-good" title="Explicitly reported available" />}{proposed && <StatusTag status="proposed" />}</div><p className="mt-1 break-words text-xs text-muted-foreground">{actor.kind === "human" ? "Human" : actor.kind === "external" ? "External Collaborator" : "Agent Membership"} · {actor.role}</p></div></div>{variant === "lead" && <div className="mt-4 grid grid-cols-3 divide-x divide-border rounded-lg border border-border bg-background/60 py-3 text-center text-xs"><div><strong className="block break-words text-base">{actor.availability === "available" ? "Available" : "Active"}</strong><span className="text-muted-foreground">Presence</span></div><div><strong className="block break-words text-base">{actor.unit ?? "Company"}</strong><span className="text-muted-foreground">Scope</span></div><div><strong className="block text-base">Lead</strong><span className="text-muted-foreground">Role</span></div></div>}</>;
 }
 
 export function HumanMemberFocus({ data }: OperationsPageProps) {
@@ -195,11 +164,11 @@ export function HumanMemberFocus({ data }: OperationsPageProps) {
   </PageFrame>;
 }
 
-export function StandingAgentFocus({ data, actorId, onSelectionChange }: OperationsPageProps & { actorId?: string; onSelectionChange?: (selection: Partial<SelectionState>) => void }) {
+export function AgentMembershipFocus({ data, actorId, onSelectionChange }: OperationsPageProps & { actorId?: string; onSelectionChange?: (selection: Partial<SelectionState>) => void }) {
   const view = projection(data);
   const actor = actorId ? view.actors[actorId] : undefined;
-  if (!actor || actor.kind !== "standing_agent") {
-    return <PageFrame eyebrow="Organization · Standing Agent" title="Standing Agent not found" description="The selected durable Standing Agent id is absent from Store truth. No name, provider, list order, or MemberRun similarity was used as a fallback."><div className="rounded-xl border border-dashed border-border bg-card/60 p-6"><p className="text-sm text-muted-foreground">Requested actor: <code>{actorId ?? "none"}</code></p></div></PageFrame>;
+  if (!actor || actor.kind !== "agent_membership") {
+    return <PageFrame eyebrow="Organization · Agent Membership" title="Agent Membership not found" description="The selected durable Agent Membership id is absent from Store truth. No name, provider, list order, or MemberRun similarity was used as a fallback."><div className="rounded-xl border border-dashed border-border bg-card/60 p-6"><p className="text-sm text-muted-foreground">Requested actor: <code>{actorId ?? "none"}</code></p></div></PageFrame>;
   }
   const authoredProposal = view.governanceProposal.proposedById === actor.id && !view.governanceProposal.id.startsWith("unresolved")
     ? view.governanceProposal
@@ -218,7 +187,7 @@ export function StandingAgentFocus({ data, actorId, onSelectionChange }: Operati
     .map((unit) => unit.agentLeadActorId ? view.actors[unit.agentLeadActorId] : undefined)
     .find((candidate) => candidate?.id !== actor.id);
   const linkedExecutionAssignments = actor.executionAgentMemberRef
-    ? (view.standingAssignments ?? []).filter((assignment) => assignment.agentMemberId === actor.executionAgentMemberRef)
+    ? (view.membershipProjections ?? []).filter((assignment) => assignment.agentMemberId === actor.executionAgentMemberRef)
     : [];
   const recentExecutionAssignments = linkedExecutionAssignments.slice(-20);
   const activeExecutionAssignments = linkedExecutionAssignments.filter((assignment) =>
@@ -226,7 +195,6 @@ export function StandingAgentFocus({ data, actorId, onSelectionChange }: Operati
     && Boolean(assignment.workId)
     && !["done", "cancelled"].includes(assignment.status));
   const assignedWork = activeExecutionAssignments.length > 0;
-  const actorLinkConflicts = (view.standingAssignmentConflicts ?? []).filter((conflict) => conflict.standingAgentIds.includes(actor.id));
   const maintainedDocuments = actor.maintainedDocuments ?? (actor.maintainedDocumentRefs ?? []).map((recordRef) => {
     if (recordRef === view.sourceDocument.id) return view.sourceDocument;
     if (recordRef === view.contentPlanDocument.id) return view.contentPlanDocument;
@@ -259,7 +227,7 @@ export function StandingAgentFocus({ data, actorId, onSelectionChange }: Operati
       kind: "evidence" as const,
       glyph: "artifact" as const,
       title: document.label,
-      body: "Durable company context maintained by this Standing Agent.",
+      body: "Durable company context maintained by this Agent Membership.",
       actor: actor.name,
       evidenceRefs: [document.id],
     })),
@@ -268,15 +236,15 @@ export function StandingAgentFocus({ data, actorId, onSelectionChange }: Operati
     && !(actor.toolRefs?.length)
     && !(actor.skillRefs?.length)
     && !(actor.permissionPolicyRefs?.length);
-  return <div className="h-full min-h-0 bg-[#fdfcf9]" data-standing-agent-workspace data-company-os-ref={actor.id}>
+  return <div className="h-full min-h-0 bg-[#fdfcf9]" data-agent-membership-workspace data-company-os-ref={actor.id}>
     <FocusShell
       className="h-full min-h-0 bg-[#fdfcf9]"
       headerClassName="bg-[#fdfcf9] px-6 py-4 sm:px-8"
       composerClassName="bg-background px-6 py-3 shadow-[0_-12px_30px_-28px_rgba(15,23,42,0.55)] sm:px-8"
       responsiveContextVariant="sheet"
-      mainLabel="Standing Agent work and activity"
+      mainLabel="Agent Membership work and activity"
       header={<FocusHeader
-        eyebrow="Organization · Standing Agent"
+        eyebrow="Organization · Agent Membership"
         title={<span className="flex items-center gap-3"><ActorAvatar identity={`${actor.id} ${actor.role}`} name={actor.name} size="md" ring={actor.availability === "available" ? "good" : "neutral"} /><span>{actor.name}</span></span>}
         description={actor.responsibilitySummary ?? "A durable organization identity. Runtime attempts and private reasoning do not define membership or authority."}
         meta={<><Badge tone={actor.availability === "available" ? "good" : "muted"}>{actor.availability ?? "availability unknown"}</Badge><Badge tone="muted">{actor.role}</Badge>{membershipUnits.map((unit) => <Badge key={unit.id} tone="muted">{unit.label}</Badge>)}</>}
@@ -309,15 +277,14 @@ export function StandingAgentFocus({ data, actorId, onSelectionChange }: Operati
           <p className="text-xs leading-5 text-muted-foreground">Tools and Skills enable work; they never grant authority. Money requires Finance policy, and sensitive company actions may still require a named Human approval.</p>
         </ContextModule>
       </WorkbenchContextRail>}
-      composer={<div data-testid="standing-agent-chat-guidance" aria-label="Message Standing Agent" className="mx-auto flex w-full max-w-[1080px] items-center gap-3 rounded-xl border border-border bg-muted/40 px-4 py-3"><Bot className="size-4 shrink-0 text-muted-foreground" /><p className="text-xs leading-5 text-muted-foreground">{commandUnavailable} To chat with a live runtime, open one of this agent's Agent Team MemberRuns from the context rail.</p></div>}
+      composer={<div data-testid="agent-membership-chat-guidance" aria-label="Message Agent Membership" className="mx-auto flex w-full max-w-[1080px] items-center gap-3 rounded-xl border border-border bg-muted/40 px-4 py-3"><Bot className="size-4 shrink-0 text-muted-foreground" /><p className="text-xs leading-5 text-muted-foreground">{commandUnavailable} To chat with a live runtime, open one of this agent's Agent Team MemberRuns from the context rail.</p></div>}
     >
       <div className="mx-auto w-full max-w-[1080px] space-y-5 px-5 py-6 sm:px-8">
-        <StandingLinkConflictBanner conflicts={actorLinkConflicts} />
-        <section aria-labelledby="standing-agent-current-work" className="rounded-2xl border border-border bg-card/85 p-5 shadow-sm">
-          <div className="flex items-center gap-3"><span className="grid size-9 place-items-center rounded-xl border border-primary/20 bg-primary/[0.07] text-primary"><BriefcaseBusiness className="size-4" /></span><div><h2 id="standing-agent-current-work" className="text-lg font-semibold tracking-tight">Current work</h2><p className="text-xs text-muted-foreground">Authoritative TeamWork joined through explicit durable identity</p></div></div>
+        <section aria-labelledby="agent-membership-current-work" className="rounded-2xl border border-border bg-card/85 p-5 shadow-sm">
+          <div className="flex items-center gap-3"><span className="grid size-9 place-items-center rounded-xl border border-primary/20 bg-primary/[0.07] text-primary"><BriefcaseBusiness className="size-4" /></span><div><h2 id="agent-membership-current-work" className="text-lg font-semibold tracking-tight">Current work</h2><p className="text-xs text-muted-foreground">Authoritative TeamWork joined through canonical AgentMember identity</p></div></div>
           {assignedWork ? <div className="mt-4 space-y-3">{activeExecutionAssignments.map((assignment) => <button key={assignment.id} type="button" onClick={onSelectionChange ? () => onSelectionChange({ surface: "team", teamId: assignment.teamRunId, memberRunId: assignment.memberRunId, missionId: assignment.missionId, waveId: assignment.waveId }) : undefined} className="block w-full rounded-xl border border-status-good/25 bg-status-good/[0.035] p-4 text-left transition hover:border-status-good/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><span className="text-[10px] font-semibold uppercase tracking-wider text-status-good">TeamWork · {humanReadable(assignment.status, assignment.status)}</span><span className="mt-1 block font-semibold">{assignment.title}</span><span className="mt-1 block text-xs text-muted-foreground">{assignment.role} · Work {assignment.workId!}</span></button>)}</div> : <p className="mt-4 rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">No active TeamWork is linked. Similar names or providers are never used as a fallback.</p>}
         </section>
-        <section aria-labelledby="standing-agent-activity" className="overflow-hidden rounded-2xl border border-border bg-card/85 shadow-sm"><header className="flex items-center justify-between gap-3 border-b border-border px-5 py-4"><div className="flex items-center gap-3"><Sparkles className="size-4 text-primary" /><div><h2 id="standing-agent-activity" className="text-lg font-semibold tracking-tight">Activity & collaboration</h2><p className="text-xs text-muted-foreground">Durable work, messages, decisions, evidence and Docs updates · never private thinking</p></div></div><Badge tone="muted">{activity.length} records</Badge></header><ActivityStream items={activity} variant="timeline" empty={<p className="text-sm text-muted-foreground">No durable activity is linked in this projection.</p>} className="px-5 py-2" /></section>
+        <section aria-labelledby="agent-membership-activity" className="overflow-hidden rounded-2xl border border-border bg-card/85 shadow-sm"><header className="flex items-center justify-between gap-3 border-b border-border px-5 py-4"><div className="flex items-center gap-3"><Sparkles className="size-4 text-primary" /><div><h2 id="agent-membership-activity" className="text-lg font-semibold tracking-tight">Activity & collaboration</h2><p className="text-xs text-muted-foreground">Durable work, messages, decisions, evidence and Docs updates · never private thinking</p></div></div><Badge tone="muted">{activity.length} records</Badge></header><ActivityStream items={activity} variant="timeline" empty={<p className="text-sm text-muted-foreground">No durable activity is linked in this projection.</p>} className="px-5 py-2" /></section>
       </div>
     </FocusShell>
   </div>;
@@ -420,9 +387,9 @@ function FinanceRecordTable({ record, approval }: { record: TrademarkOperationsP
 
 export function GovernanceProposalFocus({ data }: OperationsPageProps) {
   const view = projection(data);
-  const proposer = view.actors["actor-agent-document-architecture"] ?? view.actorList.find((actor) => actor.kind === "standing_agent") ?? view.approval.requestedBy;
+  const proposer = view.actors["actor-agent-document-architecture"] ?? view.actorList.find((actor) => actor.kind === "agent_membership") ?? view.approval.requestedBy;
   const proposalTitle = humanReadable(view.governanceProposal.label, "Governance proposal");
-  const proposedAgent = view.actorList.find((actor) => actor.kind === "standing_agent");
+  const proposedAgent = view.actorList.find((actor) => actor.kind === "agent_membership");
   const proposedHomes = proposedAgent
     ? view.organization.memberships
       .filter((membership) => membership.actorId === proposedAgent.id)

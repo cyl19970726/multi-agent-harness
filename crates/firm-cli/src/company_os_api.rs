@@ -276,9 +276,9 @@ pub fn snapshot(store: &HarnessStore) -> Result<Value, StoreError> {
     snapshot_with_execution(store, store)
 }
 
-/// Build Company OS truth from `store` while joining explicit Standing
-/// Agent→MemberRun participation from the independently selected Execution
-/// Space. No rows are copied or re-owned across the boundary.
+/// Build Company OS truth while projecting canonical AgentMember identity
+/// from the independently selected Execution Space. Company owns no runtime
+/// identity payload and performs no execution-assignment join.
 pub fn snapshot_with_execution(
     store: &HarnessStore,
     execution_store: &HarnessStore,
@@ -292,10 +292,6 @@ pub fn snapshot_with_execution_spaces(
     execution_spaces: &[(String, HarnessStore)],
 ) -> Result<Value, StoreError> {
     let actors = normalized_actors(store.latest_actors()?);
-    let StandingAssignmentProjection {
-        assignments: standing_assignments,
-        conflicts: standing_assignment_conflicts,
-    } = standing_assignment_projection(store, execution_store)?;
     let commitments = store.latest_commitments()?;
     let payments = store.latest_payments()?;
     let financial_records = commitments
@@ -334,10 +330,7 @@ pub fn snapshot_with_execution_spaces(
         // this Company Store is joined to a separately selected Execution
         // Space. Keep it distinct from the compatibility runtime `members`
         // projection in the outer Dashboard snapshot.
-        "durable_agent_members": execution_store
-            .latest_durable_members()?
-            .into_values()
-            .collect::<Vec<_>>(),
+        "agent_members": execution_store.all_trust_agent_members()?,
         "milestones": store.latest_milestones()?,
         "works": company_work_records_from_spaces(execution_store, execution_spaces)?,
         "work": company_work_projection_from_spaces(
@@ -345,8 +338,6 @@ pub fn snapshot_with_execution_spaces(
             execution_spaces,
             &CompanyWorkQuery::default(),
         )?,
-        "standing_assignments": standing_assignments,
-        "standing_assignment_conflicts": standing_assignment_conflicts,
         "approvals": store.latest_approvals()?,
         "financial_records": financial_records,
         "commitments": commitments,
@@ -553,294 +544,6 @@ fn company_work_projection_from_spaces(
     }))
 }
 
-/// Standing Agent participation join plus any locally degraded link conflicts.
-///
-/// A duplicate link is a data defect in one Company OS row pair. It must not
-/// take down the whole Dashboard snapshot, so it is reported as a visible
-/// conflict entry instead of an error.
-pub(crate) struct StandingAssignmentProjection {
-    pub(crate) assignments: Vec<Value>,
-    pub(crate) conflicts: Vec<Value>,
-}
-
-/// Read-only join from durable Organization identity to explicitly linked
-/// Agent Team participation. It is intentionally rebuilt from latest rows and
-/// never infers identity from display names, roles, providers, or timestamps.
-///
-/// The write path (`append_standing_agent`) still rejects a new duplicate
-/// `execution_agent_member_ref`. This read path additionally tolerates a store
-/// that already contains one: the affected `agent_member_id` is withheld from
-/// the join and surfaced in `conflicts`, while every other Standing Agent still
-/// projects normally.
-fn standing_assignment_projection(
-    company_store: &HarnessStore,
-    execution_store: &HarnessStore,
-) -> Result<StandingAssignmentProjection, StoreError> {
-    // Collect every claimant per member id first so a duplicate is scoped to
-    // the ids that actually collide instead of aborting the projection.
-    let mut claims: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for agent in company_store.latest_standing_agents()? {
-        let Some(member_id) = agent.execution_agent_member_ref else {
-            continue;
-        };
-        claims.entry(member_id).or_default().push(agent.id);
-    }
-    let mut standing_agent_links = BTreeMap::new();
-    let mut conflicted_links: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for (member_id, mut standing_agent_ids) in claims {
-        if standing_agent_ids.len() == 1 {
-            standing_agent_links.insert(member_id, standing_agent_ids.remove(0));
-        } else {
-            // Ambiguous ownership: refuse to guess a winner.
-            standing_agent_ids.sort();
-            conflicted_links.insert(member_id, standing_agent_ids);
-        }
-    }
-    let member_runs =
-        execution_store
-            .member_runs()?
-            .into_iter()
-            .fold(BTreeMap::new(), |mut latest, member| {
-                latest.insert(member.id.clone(), member);
-                latest
-            });
-    let team_runs =
-        execution_store
-            .team_runs()?
-            .into_iter()
-            .fold(BTreeMap::new(), |mut latest, run| {
-                latest.insert(run.id.clone(), run);
-                latest
-            });
-    // Execution ledgers are append-only revision streams. Company projections
-    // must join their latest object state, never every physical JSONL row.
-    // Otherwise a message delivery revision duplicates one logical record and
-    // can also resurrect stale pending/close state.
-    let messages = execution_store
-        .team_messages()?
-        .into_iter()
-        .fold(BTreeMap::new(), |mut latest, message| {
-            latest.insert(message.id.clone(), message);
-            latest
-        })
-        .into_values()
-        .collect::<Vec<_>>();
-    let pending_interactions = execution_store
-        .pending_interactions()?
-        .into_iter()
-        .fold(BTreeMap::new(), |mut latest, interaction| {
-            latest.insert(interaction.id.clone(), interaction);
-            latest
-        })
-        .into_values()
-        .collect::<Vec<_>>();
-    let supervisor_leases = execution_store
-        .team_supervisor_leases()?
-        .into_iter()
-        .fold(BTreeMap::new(), |mut latest, lease| {
-            latest.insert(lease.team_run_id.clone(), lease);
-            latest
-        })
-        .into_values()
-        .collect::<Vec<_>>();
-    let close_requests = execution_store
-        .team_member_close_requests()?
-        .into_iter()
-        .fold(BTreeMap::new(), |mut latest, request| {
-            latest.insert(request.member_run_id.clone(), request);
-            latest
-        })
-        .into_values()
-        .collect::<Vec<_>>();
-    let member_actions = execution_store
-        .member_actions()?
-        .into_iter()
-        .fold(BTreeMap::new(), |mut latest, action| {
-            latest.insert(action.id.clone(), action);
-            latest
-        })
-        .into_values()
-        .collect::<Vec<_>>();
-    let works = execution_store.latest_works()?;
-
-    let mut projection = Vec::new();
-    let mut affected_member_runs: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for member in member_runs.values() {
-        let Some(agent_member_id) = member.agent_member_id.as_deref() else {
-            continue;
-        };
-        if conflicted_links.contains_key(agent_member_id) {
-            // Withheld from the join, but never silently dropped: the member run
-            // is named in the conflict entry so the loss stays visible.
-            affected_member_runs
-                .entry(agent_member_id.to_string())
-                .or_default()
-                .push(member.id.clone());
-            continue;
-        }
-        let Some(standing_agent_id) = standing_agent_links.get(agent_member_id) else {
-            continue;
-        };
-        let Some(team_run) = team_runs.get(&member.team_run_id) else {
-            continue;
-        };
-        let member_works = works
-            .iter()
-            .filter(|work| {
-                work.team_run_id == member.team_run_id
-                    && work.active_member_run_id.as_deref() == Some(member.id.as_str())
-                    && work.owner_member_id.as_deref() == Some(agent_member_id)
-            })
-            .collect::<Vec<_>>();
-        let inbox_count = messages
-            .iter()
-            .filter(|message| message.to_member_ids.iter().any(|id| id == &member.id))
-            .count();
-        let pending_count = pending_interactions
-            .iter()
-            .filter(|interaction| {
-                interaction.member_run_id == member.id
-                    && interaction.status == PendingInteractionStatus::Pending
-            })
-            .count();
-        let mut participation_evidence_refs = messages
-            .iter()
-            .filter(|message| {
-                message.to_member_ids.iter().any(|id| id == &member.id)
-                    || message.from_member_id == member.id
-            })
-            .flat_map(|message| message.evidence_refs.iter().cloned())
-            .collect::<BTreeSet<_>>();
-        for work in &member_works {
-            participation_evidence_refs.extend(work.artifact_refs.iter().cloned());
-            participation_evidence_refs.extend(work.check_refs.iter().cloned());
-        }
-        for action in member_actions
-            .iter()
-            .filter(|action| action.member_run_id == member.id)
-        {
-            participation_evidence_refs.extend(action.evidence_refs.iter().cloned());
-        }
-        let participation_evidence_refs =
-            participation_evidence_refs.into_iter().collect::<Vec<_>>();
-        let supervisor = supervisor_leases
-            .iter()
-            .rev()
-            .find(|lease| lease.team_run_id == member.team_run_id);
-        let close = close_requests
-            .iter()
-            .rev()
-            .find(|request| request.member_run_id == member.id);
-        let lifecycle = json!({
-            "mailbox_message_count": inbox_count,
-            "pending_interaction_count": pending_count,
-            "supervisor_lease": supervisor,
-            "close_request": close,
-        });
-        let navigation_target =
-            format!("?surface=team&team={}&memberRun={}", team_run.id, member.id);
-        if member_works.is_empty() {
-            projection.push(json!({
-                "id": format!("standing-participation:{}", member.id),
-                "standing_agent_id": standing_agent_id,
-                "agent_member_id": agent_member_id,
-                "source_kind": "agent_team_participation",
-                "source_ref": null,
-                "mission_id": team_run_mission_id(execution_store, team_run)
-                    .map_err(|error| StoreError::Conflict(error.to_string()))?,
-                "wave_id": null,
-                "team_run_id": team_run.id,
-                "member_run_id": member.id,
-                "title": format!("{} Agent Team participation", member.name),
-                "role": member.role,
-                "status": member.status,
-                "assigned_at": member.started_at,
-                "last_activity_at": member.last_event_at,
-                "correlation_id": null,
-                "native_session": member.native_session,
-                "evidence_refs": participation_evidence_refs,
-                "lifecycle": lifecycle,
-                "navigation_target": navigation_target,
-            }));
-        } else {
-            for work in member_works {
-                let work_evidence_refs = work
-                    .artifact_refs
-                    .iter()
-                    .chain(work.check_refs.iter())
-                    .chain(
-                        messages
-                            .iter()
-                            .filter(|message| message.work_id.as_deref() == Some(work.id.as_str()))
-                            .flat_map(|message| message.evidence_refs.iter()),
-                    )
-                    .cloned()
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .collect::<Vec<_>>();
-                projection.push(json!({
-                    "id": format!("standing-work:{}:{}", member.id, work.id),
-                    "standing_agent_id": standing_agent_id,
-                    "agent_member_id": agent_member_id,
-                    "source_kind": "agent_team_work",
-                    "source_ref": work.id,
-                    "work_id": work.id,
-                    "mission_id": team_run_mission_id(execution_store, team_run)
-                        .map_err(|error| StoreError::Conflict(error.to_string()))?,
-                    "wave_id": null,
-                    "team_run_id": team_run.id,
-                    "member_run_id": member.id,
-                    "title": work.title,
-                    "role": member.role,
-                    "phase": work.phase,
-                    "condition": work.condition,
-                    "resolution": work.resolution,
-                    "assigned_at": work.created_at,
-                    "last_activity_at": member.last_event_at,
-                    "correlation_id": null,
-                    "evidence_refs": work_evidence_refs,
-                    "native_session": member.native_session,
-                    "lifecycle": lifecycle,
-                    "navigation_target": navigation_target,
-                }));
-            }
-        }
-    }
-    projection.sort_by(|left, right| {
-        left["assigned_at"]
-            .as_str()
-            .cmp(&right["assigned_at"].as_str())
-            .then(left["id"].as_str().cmp(&right["id"].as_str()))
-    });
-    let conflicts = conflicted_links
-        .into_iter()
-        .map(|(member_id, standing_agent_ids)| {
-            let joined = standing_agent_ids.join(", ");
-            json!({
-                "id": format!("standing-link-conflict:{member_id}"),
-                "kind": "duplicate_execution_agent_member_ref",
-                "severity": "error",
-                "agent_member_id": member_id,
-                "standing_agent_ids": standing_agent_ids,
-                "affected_member_run_ids": affected_member_runs
-                    .get(&member_id)
-                    .cloned()
-                    .unwrap_or_default(),
-                "detail": format!(
-                    "duplicate StandingAgent execution_agent_member_ref {member_id}: {joined}; relation must be one-to-one"
-                ),
-                "resolution_hint": format!(
-                    "harness company org actor unlink-execution --authority <human-id> --actor <one of: {joined}>"
-                ),
-            })
-        })
-        .collect::<Vec<_>>();
-    Ok(StandingAssignmentProjection {
-        assignments: projection,
-        conflicts,
-    })
-}
-
 fn projection_revision(value: &Value) -> Result<String, StoreError> {
     let bytes = serde_json::to_vec(value)?;
     let hash = bytes.iter().fold(0xcbf29ce484222325_u64, |hash, byte| {
@@ -858,8 +561,8 @@ fn normalized_actors(actors: Vec<CompanyActor>) -> Vec<Value> {
                 "display_name": actor.display_name, "record": actor,
             }),
             CompanyActor::Agent(actor) => json!({
-                "id": actor.id, "actor_type": "Standing Agent",
-                "display_name": actor.display_name, "record": actor,
+                "id": actor.id, "actor_type": "Agent Membership",
+                "display_name": actor.id, "record": actor,
             }),
             CompanyActor::External(actor) => json!({
                 "id": actor.id, "actor_type": "External",
@@ -941,8 +644,7 @@ fn document_ref_resolution(documents: &BTreeMap<String, Document>, document_id: 
 
 /// Read-only Organization provenance: every member resolves with its durable
 /// member status (archived members stay navigable instead of vanishing), and
-/// every Standing Agent maintained-document reference resolves to an active
-/// Document or explicit archived-source history.
+/// every Company actor remains navigable without copying AgentMember payload.
 pub fn organization_source_provenance(store: &HarnessStore) -> Result<Value, StoreError> {
     let documents = document_index(store)?;
     let actors = store.latest_actors()?;
@@ -958,28 +660,28 @@ pub fn organization_source_provenance(store: &HarnessStore) -> Result<Value, Sto
                     "human",
                     member.display_name,
                     member.status,
-                    Vec::new(),
+                    Vec::<String>::new(),
                 ),
                 CompanyActor::Agent(member) => (
-                    member.id,
+                    member.id.clone(),
                     "agent",
-                    member.display_name,
+                    member.id,
                     member.status,
-                    member.maintained_document_refs,
+                    Vec::<String>::new(),
                 ),
                 CompanyActor::External(member) => (
                     member.id,
                     "external",
                     member.display_name_or_organization,
                     member.status,
-                    Vec::new(),
+                    Vec::<String>::new(),
                 ),
                 CompanyActor::Service(member) => (
                     member.id,
                     "service",
                     member.display_name,
                     member.status,
-                    Vec::new(),
+                    Vec::<String>::new(),
                 ),
             };
             archived_members += u64::from(status == MemberStatus::Archived);
@@ -1136,8 +838,12 @@ pub fn docs_health_report(store: &HarnessStore) -> Result<Value, StoreError> {
 mod projection_tests {
     use super::*;
     use harness_core::{
-        AgentTeam, AgentTeamRun, AgentTeamStatus, DurableAgentMember, DurableAgentMemberStatus,
-        ExecutionNode, ExecutionNodeStatus, MemberRun, Mission, MissionStatus, StandingAgent,
+        agentfirm_api::{
+            ActorKind, ActorRef, AgentMember, AgentMemberOrganizationStatus, MutationContext,
+            PermissionCeiling,
+        },
+        AgentMembership, AgentTeam, AgentTeamRun, AgentTeamStatus, ExecutionNode,
+        ExecutionNodeStatus, MemberRun, Mission, MissionStatus,
     };
 
     fn insert_projection_team(store: &HarnessStore, team_id: &str, mission_id: &str) {
@@ -1183,10 +889,10 @@ mod projection_tests {
             .unwrap();
     }
 
-    fn standing(id: &str, execution_ref: Option<&str>) -> StandingAgent {
+    fn standing(id: &str, execution_ref: Option<&str>) -> AgentMembership {
         serde_json::from_value(json!({
             "id": id, "display_name": id, "role": "builder",
-            "execution_agent_member_ref": execution_ref,
+            "agent_member_ref": execution_ref,
             "status": "active", "availability": "available",
             "assignment_capacity": 1, "exclusive_assignment_ref": null,
             "membership_refs": [], "responsibility_summary": "Build",
@@ -1410,7 +1116,7 @@ mod projection_tests {
     }
 
     #[test]
-    fn snapshot_projects_durable_agent_members_from_the_execution_space() {
+    fn snapshot_projects_canonical_agent_members_from_the_execution_space() {
         let nonce = format!(
             "{}-{}",
             std::process::id(),
@@ -1425,32 +1131,45 @@ mod projection_tests {
         let execution_store = HarnessStore::new(&execution_root);
         company_store.init().unwrap();
         execution_store.init().unwrap();
+        let actor = ActorRef {
+            kind: ActorKind::Human,
+            id: "operator".to_string(),
+        };
         execution_store
-            .insert_durable_member(&DurableAgentMember {
-                id: "root-lead".to_string(),
-                name: "Foundation Lead".to_string(),
-                description: "Durable-only root Team Lead".to_string(),
-                role: "lead".to_string(),
-                provider_profile: Some("codex/default".to_string()),
-                model: None,
-                workspace_policy: None,
-                project_binding_id: Some("project-harness".to_string()),
-                business_access_ceiling_refs: vec!["company_os.read".to_string()],
-                status: DurableAgentMemberStatus::Active,
-                created_by_member_id: None,
-                created_at: "unix-ms:1".to_string(),
-                updated_at: "unix-ms:1".to_string(),
-            })
+            .create_trust_agent_member(
+                &MutationContext {
+                    execution_space_id: "space-test".to_string(),
+                    authenticated_actor: actor.clone(),
+                    authority_actor: None,
+                    command_name: "agent_member.create".to_string(),
+                    idempotency_key: "root-lead".to_string(),
+                    expected_version: 0,
+                },
+                AgentMember {
+                    id: "root-lead".to_string(),
+                    name: "Foundation Lead".to_string(),
+                    description: "Durable-only root Team Lead".to_string(),
+                    role: "lead".to_string(),
+                    capabilities: vec!["company_os.read".to_string()],
+                    skill_refs: Vec::new(),
+                    provider_profile_ref: Some("codex/default".to_string()),
+                    model_preference: None,
+                    workspace_policy: "managed-worktree".to_string(),
+                    permission_ceiling: PermissionCeiling::ReadOnly,
+                    organization_status: AgentMemberOrganizationStatus::Active,
+                    version: 1,
+                    created_by: actor,
+                    created_at: "unix-ms:1".to_string(),
+                    updated_at: "unix-ms:1".to_string(),
+                },
+            )
             .unwrap();
 
         let projected = snapshot_with_execution(&company_store, &execution_store).unwrap();
-        assert_eq!(projected["durable_agent_members"][0]["id"], "root-lead");
-        assert_eq!(
-            projected["durable_agent_members"][0]["name"],
-            "Foundation Lead"
-        );
+        assert_eq!(projected["agent_members"][0]["id"], "root-lead");
+        assert_eq!(projected["agent_members"][0]["name"], "Foundation Lead");
         assert!(
-            projected["durable_agent_members"][0]
+            projected["agent_members"][0]
                 .get("runtime_status")
                 .is_none(),
             "durable Organization identity must not absorb runtime state"
@@ -1458,246 +1177,6 @@ mod projection_tests {
 
         let _ = std::fs::remove_dir_all(company_root);
         let _ = std::fs::remove_dir_all(execution_root);
-    }
-    #[test]
-    fn explicit_projection_is_lossless_and_never_same_id_binds() {
-        let root = std::env::temp_dir().join(format!(
-            "company-projection-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let store = HarnessStore::new(&root);
-        store.init().unwrap();
-        store
-            .append_standing_agent(&standing("standing-linked", Some("member-linked")))
-            .unwrap();
-        store
-            .append_standing_agent(&standing("member-collision", None))
-            .unwrap();
-        insert_projection_team(&store, "team-projection", "mission-projection");
-        let run: AgentTeamRun = serde_json::from_value(json!({
-            "id": "run", "agent_team_id": "team-projection",
-            "execution_node_id": "00000000-0000-4000-8000-000000000001",
-            "project_binding_id": "projection-project",
-            "host_surface": "test", "objective": "projection",
-            "status": "running", "member_run_ids": ["run-linked", "run-collision"],
-            "created_at": "1", "updated_at": "1"
-        }))
-        .unwrap();
-        store.append_team_run(&run).unwrap();
-        for (id, agent_member_id) in [
-            ("run-linked", "member-linked"),
-            ("run-collision", "member-collision"),
-        ] {
-            let member: MemberRun = serde_json::from_value(json!({
-                "id": id, "team_run_id": "run", "agent_member_id": agent_member_id,
-                "name": id, "role": "builder", "provider": "codex",
-                "status": "idle", "owned_paths": [], "started_at": "1"
-            }))
-            .unwrap();
-            store.append_member_run(&member).unwrap();
-        }
-        let initial = standing_assignment_projection(&store, &store)
-            .unwrap()
-            .assignments;
-        assert_eq!(initial.len(), 1, "same-id collision must not bind");
-        assert_eq!(initial[0]["source_kind"], "agent_team_participation");
-        assert_eq!(initial[0]["standing_agent_id"], "standing-linked");
-
-        for (id, created_at) in [("work-1", "2"), ("work-2", "3")] {
-            store
-                .insert_work(
-                    harness_core::Work {
-                        id: id.to_string(),
-                        team_run_id: "run".to_string(),
-                        team_id: None,
-                        created_by_member_id: None,
-                        parent_work_id: None,
-                        title: id.to_string(),
-                        context_markdown: "projection".to_string(),
-                        completion_criteria_markdown: "done".to_string(),
-                        phase: harness_core::WorkPhase::Open,
-                        condition: harness_core::WorkCondition::Normal,
-                        resolution: None,
-                        owner_member_id: Some("member-linked".to_string()),
-                        active_member_run_id: Some("run-linked".to_string()),
-                        claim_mode: harness_core::WorkClaimMode::HostAssign,
-                        eligible_member_ids: Vec::new(),
-                        prerequisite_work_ids: Vec::new(),
-                        priority: harness_core::WorkPriority::Normal,
-                        created_by_actor: harness_core::TeamActorRef {
-                            kind: harness_core::TeamActorKind::Host,
-                            id: "host".to_string(),
-                            display_name: None,
-                            authn_source: Some("test".to_string()),
-                        },
-                        result_summary: None,
-                        blocker_reason: None,
-                        artifact_refs: vec![format!("evidence-{id}")],
-                        check_refs: Vec::new(),
-                        github_links: Vec::new(),
-                        gates: Vec::new(),
-                        workspace: None,
-                        version: 0,
-                        created_at: String::new(),
-                        updated_at: String::new(),
-                    },
-                    harness_core::WorkCommandContext {
-                        event_id: format!("event-{id}"),
-                        performed_by_actor: harness_core::TeamActorRef {
-                            kind: harness_core::TeamActorKind::Host,
-                            id: "host".to_string(),
-                            display_name: None,
-                            authn_source: Some("test".to_string()),
-                        },
-                        authority_actor: None,
-                        causation_ref: None,
-                        idempotency_key: format!("command-{id}"),
-                        created_at: created_at.to_string(),
-                        duplicate_ok: false,
-                    },
-                )
-                .unwrap();
-        }
-        let projected = standing_assignment_projection(&store, &store).unwrap();
-        let assigned = projected.assignments;
-        assert_eq!(assigned.len(), 2);
-        assert_eq!(assigned[0]["source_ref"], "work-1");
-        assert_eq!(assigned[1]["source_ref"], "work-2");
-        assert_eq!(assigned[0]["standing_agent_id"], "standing-linked");
-        assert_eq!(
-            assigned[1]["evidence_refs"],
-            json!(["evidence-work-2"]),
-            "each Standing Agent Work card must not absorb evidence from sibling Work"
-        );
-        assert!(
-            projected.conflicts.is_empty(),
-            "a healthy store must report an empty conflict list"
-        );
-        let company_work =
-            company_work_projection_from_spaces(&store, &[], &CompanyWorkQuery::default()).unwrap();
-        assert_eq!(company_work["authority"], "team_work");
-        assert_eq!(company_work["summary"]["total"], 2);
-        assert_eq!(company_work["works"][0]["id"], "work-1");
-        assert_eq!(company_work["works"][1]["id"], "work-2");
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    /// Test-only: append a row the governed write path refuses, so the read
-    /// path can be exercised against a store that already carries the defect
-    /// (legacy import, hand edit, or a racing writer).
-    fn force_duplicate_link_row(store: &HarnessStore, agent: &StandingAgent) {
-        use std::io::Write as _;
-
-        let path = store.root().join("company_os_standing_agents.jsonl");
-        let mut ledger = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .expect("open standing agent ledger");
-        writeln!(ledger, "{}", serde_json::to_string(agent).unwrap())
-            .expect("append duplicate standing agent row");
-    }
-
-    #[test]
-    fn duplicate_execution_link_degrades_locally_instead_of_failing_the_snapshot() {
-        let root = std::env::temp_dir().join(format!(
-            "company-duplicate-link-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let store = HarnessStore::new(&root);
-        store.init().unwrap();
-        // The write path refuses to create this state, so reproduce the defect
-        // the way a real store reaches it: an already-persisted duplicate pair.
-        store
-            .append_standing_agent(&standing("standing-healthy", Some("member-healthy")))
-            .unwrap();
-        store
-            .append_standing_agent(&standing("standing-dup-a", Some("member-shared")))
-            .unwrap();
-        let rejected =
-            store.append_standing_agent(&standing("standing-dup-b", Some("member-shared")));
-        assert!(
-            rejected.is_err(),
-            "write path must still reject a new duplicate link"
-        );
-        force_duplicate_link_row(&store, &standing("standing-dup-b", Some("member-shared")));
-
-        insert_projection_team(&store, "team-degrade", "mission-degrade");
-        let run: AgentTeamRun = serde_json::from_value(json!({
-            "id": "run", "agent_team_id": "team-degrade",
-            "execution_node_id": "00000000-0000-4000-8000-000000000001",
-            "project_binding_id": "projection-project",
-            "host_surface": "test", "objective": "degrade",
-            "status": "running", "member_run_ids": ["run-healthy", "run-shared"],
-            "created_at": "1", "updated_at": "1"
-        }))
-        .unwrap();
-        store.append_team_run(&run).unwrap();
-        for (id, agent_member_id) in [
-            ("run-healthy", "member-healthy"),
-            ("run-shared", "member-shared"),
-        ] {
-            let member: MemberRun = serde_json::from_value(json!({
-                "id": id, "team_run_id": "run", "agent_member_id": agent_member_id,
-                "name": id, "role": "builder", "provider": "codex",
-                "status": "idle", "owned_paths": [], "started_at": "1"
-            }))
-            .unwrap();
-            store.append_member_run(&member).unwrap();
-        }
-
-        let projected = standing_assignment_projection(&store, &store)
-            .expect("duplicate link must not fail the projection");
-        assert_eq!(
-            projected.assignments.len(),
-            1,
-            "the healthy Standing Agent must still project"
-        );
-        assert_eq!(
-            projected.assignments[0]["standing_agent_id"],
-            "standing-healthy"
-        );
-        assert_eq!(projected.conflicts.len(), 1);
-        let conflict = &projected.conflicts[0];
-        assert_eq!(conflict["kind"], "duplicate_execution_agent_member_ref");
-        assert_eq!(conflict["agent_member_id"], "member-shared");
-        assert_eq!(
-            conflict["standing_agent_ids"],
-            json!(["standing-dup-a", "standing-dup-b"]),
-            "both claimants must be named; no winner is guessed"
-        );
-        assert_eq!(
-            conflict["affected_member_run_ids"],
-            json!(["run-shared"]),
-            "withheld participation must stay visible"
-        );
-
-        // The whole Company OS snapshot must still succeed.
-        let snapshot = snapshot_with_execution(&store, &store)
-            .expect("snapshot must survive a duplicate link");
-        assert_eq!(
-            snapshot["standing_assignment_conflicts"],
-            json!(projected.conflicts)
-        );
-        assert_eq!(
-            snapshot["standing_assignments"],
-            json!(projected.assignments)
-        );
-        let response = handle_get(&store, Some(&store), None, "/v1/company-os/snapshot").unwrap();
-        assert_eq!(
-            response.status, "200 OK",
-            "a duplicate link must not 409 the entire snapshot endpoint"
-        );
-        let _ = std::fs::remove_dir_all(root);
     }
 }
 
@@ -1771,36 +1250,6 @@ enum AppendMode {
 }
 
 const COMPANY_OS_ADMIN_PERMISSION: &str = "company_os.admin";
-
-/// Prove that `authority` may perform an administrative Company OS actor write,
-/// without appending anything.
-///
-/// A relation command that finds nothing to change must still authorize:
-/// "no row was written" is a valid success only for an operator who was
-/// entitled to attempt the write. Returns the same failure detail a rejected
-/// append would surface, so callers report one consistent reason.
-pub fn authorize_administrative_actor_write(
-    store: &HarnessStore,
-    authority: &Value,
-) -> Result<(), String> {
-    administrative_actor_write_authority(store, authority).map_err(|error| error.detail)
-}
-
-fn administrative_actor_write_authority(
-    store: &HarnessStore,
-    authority: &Value,
-) -> Result<(), ApiError> {
-    let authority: ActorRef = serde_json::from_value(authority.clone())
-        .map_err(|error| ApiError::bad_request(error.to_string()))?;
-    if authority.actor_type != ActorType::Human {
-        return Err(ApiError::forbidden(
-            "sensitive append authority must be a Human",
-        ));
-    }
-    require_active_actor(store, &authority)?;
-    require_permission(store, &authority, COMPANY_OS_ADMIN_PERMISSION)?;
-    Ok(())
-}
 
 fn authorize_direct_append<'a>(
     store: &HarnessStore,

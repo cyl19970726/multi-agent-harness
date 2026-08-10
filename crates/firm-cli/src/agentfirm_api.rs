@@ -42,6 +42,7 @@ pub fn is_http_mutation_path(path: &str) -> bool {
                 "/failure-analyses",
                 "/modules",
                 "/gate-requirements",
+                "/accept",
             ]
             .iter()
             .any(|suffix| path.ends_with(suffix)))
@@ -80,6 +81,10 @@ pub enum TrustCommand {
         member_run_id: String,
         updated_at: String,
     },
+    ResumeNativeSession {
+        member_run_id: String,
+        updated_at: String,
+    },
     CreateTeamMessage {
         message: TeamMessage,
         updated_at: String,
@@ -114,25 +119,41 @@ pub enum TrustCommand {
         updated_at: String,
     },
     CreateWorkReport {
+        team_id: String,
         report: WorkReport,
     },
     CreateWorkFinding {
+        team_id: String,
         finding: WorkFinding,
     },
     CreateFailureAnalysis {
+        team_id: String,
         analysis: FailureAnalysis,
     },
     BindWorkModule {
+        team_id: String,
         binding: WorkModuleBinding,
     },
     CreateGateRequirement {
+        team_id: String,
         requirement: GateRequirement,
+    },
+    AcceptWork {
+        team_id: String,
+        work_id: String,
+        work_report_id: String,
+        candidate_fingerprint: String,
+        updated_at: String,
     },
     EvaluateGate {
         evaluation: GateEvaluation,
     },
     WaiveGate {
         waiver: GateWaiver,
+    },
+    RevokeGateWaiver {
+        waiver_id: String,
+        revoked_at: String,
     },
 }
 
@@ -147,6 +168,7 @@ impl TrustCommand {
             Self::CloseMemberRun { .. } => "member_run.close",
             Self::ReopenMemberRun { .. } => "member_run.reopen",
             Self::RetireMemberRun { .. } => "member_run.retire",
+            Self::ResumeNativeSession { .. } => "member_run.resume_native_session",
             Self::CreateTeamMessage { .. } => "team_message.create",
             Self::RetryMessageDelivery { .. } => "message_delivery.retry",
             Self::ReconcileMessageDelivery { .. } => "message_delivery.reconcile",
@@ -164,8 +186,10 @@ impl TrustCommand {
             Self::CreateFailureAnalysis { .. } => "failure_analysis.create",
             Self::BindWorkModule { .. } => "work_module.bind",
             Self::CreateGateRequirement { .. } => "gate_requirement.create",
+            Self::AcceptWork { .. } => "work.accept",
             Self::EvaluateGate { .. } => "gate_requirement.evaluate",
             Self::WaiveGate { .. } => "gate_requirement.waive",
+            Self::RevokeGateWaiver { .. } => "gate_waiver.revoke",
         }
     }
 
@@ -186,6 +210,10 @@ impl TrustCommand {
             | (Self::RetireMemberRun { member_run_id, .. }, ["v1", "member-runs", id, "retire"]) => {
                 member_run_id == id
             }
+            (
+                Self::ResumeNativeSession { member_run_id, .. },
+                ["v1", "member-runs", id, "resume-native-session"],
+            ) => member_run_id == id,
             (Self::CreateTeamMessage { message, .. }, ["v1", "team-runs", id, "messages"]) => {
                 &message.team_run_id == id
             }
@@ -223,29 +251,38 @@ impl TrustCommand {
                             | (WorkspaceLifecycle::Removed, "cleanup")
                     )
             }
-            (Self::CreateWorkReport { report }, ["v1", "teams", _, "works", work, "reports"]) => {
-                &report.work_id == work
+            (Self::CreateWorkReport { team_id, report }, ["v1", "teams", team, "works", work, "reports"]) => {
+                team_id == team && &report.work_id == work
             }
             (
-                Self::CreateWorkFinding { finding },
-                ["v1", "teams", _, "works", work, "findings"],
-            ) => &finding.work_id == work,
+                Self::CreateWorkFinding { team_id, finding },
+                ["v1", "teams", team, "works", work, "findings"],
+            ) => team_id == team && &finding.work_id == work,
             (
-                Self::CreateFailureAnalysis { analysis },
-                ["v1", "teams", _, "works", work, "failure-analyses"],
-            ) => &analysis.work_id == work,
-            (Self::BindWorkModule { binding }, ["v1", "teams", _, "works", work, "modules"]) => {
-                &binding.work_id == work
+                Self::CreateFailureAnalysis { team_id, analysis },
+                ["v1", "teams", team, "works", work, "failure-analyses"],
+            ) => team_id == team && &analysis.work_id == work,
+            (Self::BindWorkModule { team_id, binding }, ["v1", "teams", team, "works", work, "modules"]) => {
+                team_id == team && &binding.work_id == work
             }
             (
-                Self::CreateGateRequirement { requirement },
-                ["v1", "teams", _, "works", work, "gate-requirements"],
-            ) => &requirement.work_id == work,
+                Self::CreateGateRequirement { team_id, requirement },
+                ["v1", "teams", team, "works", work, "gate-requirements"],
+            ) => team_id == team && &requirement.work_id == work,
+            (
+                Self::AcceptWork {
+                    team_id, work_id, ..
+                },
+                ["v1", "teams", team, "works", work, "accept"],
+            ) => team_id == team && work_id == work,
             (Self::EvaluateGate { evaluation }, ["v1", "gate-requirements", id, "evaluate"]) => {
                 &evaluation.requirement_id == id
             }
             (Self::WaiveGate { waiver }, ["v1", "gate-requirements", id, "waive"]) => {
                 &waiver.requirement_id == id
+            }
+            (Self::RevokeGateWaiver { waiver_id, .. }, ["v1", "gate-waivers", id, "revoke"]) => {
+                waiver_id == id
             }
             _ => false,
         }
@@ -362,6 +399,10 @@ pub fn execute(
             MemberCoordinationStatus::Retired,
             &updated_at,
         )?),
+        TrustCommand::ResumeNativeSession {
+            member_run_id,
+            updated_at,
+        } => result(store.resume_trust_native_session(&context, &member_run_id, &updated_at)?),
         TrustCommand::CreateTeamMessage {
             mut message,
             updated_at,
@@ -425,25 +466,39 @@ pub fn execute(
             &proof,
             &updated_at,
         )?),
-        TrustCommand::CreateWorkReport { mut report } => {
+        TrustCommand::CreateWorkReport { team_id, mut report } => {
             report.authored_by = auth.actor;
-            result(store.create_trust_work_report(&context, report)?)
+            result(store.create_trust_work_report(&context, &team_id, report)?)
         }
-        TrustCommand::CreateWorkFinding { mut finding } => {
+        TrustCommand::CreateWorkFinding { team_id, mut finding } => {
             finding.reported_by = auth.actor;
-            result(store.create_trust_finding(&context, finding)?)
+            result(store.create_trust_finding(&context, &team_id, finding)?)
         }
-        TrustCommand::CreateFailureAnalysis { mut analysis } => {
+        TrustCommand::CreateFailureAnalysis { team_id, mut analysis } => {
             analysis.reported_by = auth.actor;
-            result(store.create_trust_failure_analysis(&context, analysis)?)
+            result(store.create_trust_failure_analysis(&context, &team_id, analysis)?)
         }
-        TrustCommand::BindWorkModule { mut binding } => {
+        TrustCommand::BindWorkModule { team_id, mut binding } => {
             binding.attached_by = auth.actor;
-            result(store.bind_trust_work_module(&context, binding)?)
+            result(store.bind_trust_work_module(&context, &team_id, binding)?)
         }
-        TrustCommand::CreateGateRequirement { requirement } => {
-            result(store.create_trust_gate_requirement(&context, requirement)?)
+        TrustCommand::CreateGateRequirement { team_id, requirement } => {
+            result(store.create_trust_gate_requirement(&context, &team_id, requirement)?)
         }
+        TrustCommand::AcceptWork {
+            team_id,
+            work_id,
+            work_report_id,
+            candidate_fingerprint,
+            updated_at,
+        } => result(store.accept_trust_work(
+            &context,
+            &team_id,
+            &work_id,
+            &work_report_id,
+            &candidate_fingerprint,
+            &updated_at,
+        )?),
         TrustCommand::EvaluateGate { mut evaluation } => {
             evaluation.performed_by = auth.actor;
             result(store.create_trust_gate_evaluation(&context, evaluation)?)
@@ -452,5 +507,9 @@ pub fn execute(
             waiver.performed_by_actor = auth.actor;
             result(store.create_trust_gate_waiver(&context, waiver)?)
         }
+        TrustCommand::RevokeGateWaiver {
+            waiver_id,
+            revoked_at,
+        } => result(store.revoke_trust_gate_waiver(&context, &waiver_id, &revoked_at)?),
     }
 }

@@ -1,0 +1,13 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://agent-harness.local/schemas/gate-requirement.schema.json","title":"GateRequirement",
+  "type":"object","additionalProperties":false,
+  "required":["id","work_id","work_revision","work_report_id","candidate_fingerprint","source","gate_type","gate_contract_version","evaluator_ref","evaluator_version","resolved_config","config_fingerprint","required","requirement_set_fingerprint","created_at","version"],
+  "properties":{
+    "id":{"type":"string","minLength":1},"work_id":{"type":"string","minLength":1},"work_revision":{"type":"integer","minimum":1},"work_report_id":{"type":"string","minLength":1},
+    "candidate_fingerprint":{"type":"string","minLength":1},"source":{"enum":["direct","module"]},"source_binding_id":{"type":["string","null"],"minLength":1},
+    "gate_type":{"type":"string","minLength":1},"gate_contract_version":{"type":"string","minLength":1},"evaluator_ref":{"type":"string","minLength":1},"evaluator_version":{"type":"string","minLength":1},
+    "resolved_config":{},"config_fingerprint":{"type":"string","minLength":1},"required":{"type":"boolean"},"dependency_requirement_ids":{"$ref":"#/$defs/refs"},
+    "requirement_set_fingerprint":{"type":"string","minLength":1},"created_at":{"type":"string","minLength":1},"version":{"type":"integer","minimum":1}
+  },
+  "$defs":{"refs":{"type":"array","items":{"type":"string","minLength":1},"uniqueItems":true}}
+}

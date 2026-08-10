@@ -1,91 +1,17 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agent-harness.local/schemas/team-message.schema.json",
-  "title": "TeamMessage",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["id", "team_run_id", "from_member_id", "kind", "body", "correlation_id", "created_at"],
-  "properties": {
-    "id": { "type": "string", "minLength": 1 },
-    "team_run_id": { "type": "string", "minLength": 1 },
-    "work_id": { "type": ["string", "null"], "minLength": 1 },
-    "origin_wave_id": { "type": ["string", "null"], "minLength": 1 },
-    "sender": {
-      "type": ["object", "null"],
-      "additionalProperties": false,
-      "required": ["kind", "id"],
-      "properties": {
-        "kind": {
-          "type": "string",
-          "enum": ["host", "member_run", "agent_member", "operator", "service"]
-        },
-        "id": { "type": "string", "minLength": 1 },
-        "display_name": { "type": ["string", "null"], "minLength": 1 },
-        "authn_source": { "type": ["string", "null"], "minLength": 1 }
-      }
-    },
-    "from_member_id": { "type": "string", "minLength": 1 },
-    "recipients": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["kind", "id"],
-        "properties": {
-          "kind": {
-            "type": "string",
-            "enum": ["host", "member_run", "agent_member"]
-          },
-          "id": { "type": "string", "minLength": 1 }
-        }
-      }
-    },
-    "to_member_ids": {
-      "type": "array",
-      "items": { "type": "string", "minLength": 1 }
-    },
-    "kind": {
-      "type": "string",
-      "description": "New public writes use message, handoff, control, provider_interaction_request, or provider_interaction_response. Durable responsibility is a Work, never a message. Provider-interaction request/response bodies are canonical JSON strings validated by the Rust contract.",
-      "enum": ["message", "plan_request", "plan_proposal", "plan_feedback", "plan_approval", "question", "answer", "progress", "blocker", "handoff", "review_request", "review_result", "control", "provider_interaction_request", "provider_interaction_response", "broadcast"]
-    },
-    "body": {
-      "type": "string",
-      "description": "For provider_interaction_request/response this is whitespace-free canonical JSON. The typed Rust parser rejects unknown inner fields and validates type, options/choice-or-text, provider request, native session, member, and generation bindings."
-    },
-    "correlation_id": { "type": "string", "minLength": 1 },
-    "causation_id": { "type": ["string", "null"], "minLength": 1 },
-    "response_intent": {
-      "type": "string",
-      "description": "Explicit response intent (ADR 0046 §4). Handoff/control always require a response round; ordinary message mail requires one when the sender is the coordination plane (host/operator/service) and stays informational when a peer member sent it.",
-      "enum": ["informational", "response_required"]
-    },
-    "evidence_refs": {
-      "type": "array",
-      "items": { "type": "string", "minLength": 1 }
-    },
-    "deliveries": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["member_id", "policy", "status", "attempt", "updated_at"],
-        "properties": {
-          "member_id": { "type": "string", "minLength": 1 },
-          "policy": { "type": "string", "enum": ["queue", "inject", "interrupt", "manual_ack"] },
-          "status": { "type": "string", "enum": ["queued", "claimed", "delivered", "acknowledged", "failed", "expired"] },
-          "attempt": { "type": "integer", "minimum": 0 },
-          "claim_id": { "type": ["string", "null"], "minLength": 1 },
-          "claimed_by_supervisor_id": { "type": ["string", "null"], "minLength": 1 },
-          "claimed_generation": { "type": ["integer", "null"], "minimum": 1 },
-          "claimed_unix_ms": { "type": ["integer", "null"], "minimum": 0 },
-          "claim_expires_unix_ms": { "type": ["integer", "null"], "minimum": 0 },
-          "provider_receipt_id": { "type": ["string", "null"], "minLength": 1 },
-          "failure_reason": { "type": ["string", "null"], "minLength": 1 },
-          "updated_at": { "type": "string", "minLength": 1 }
-        }
-      }
-    },
-    "created_at": { "type": "string", "minLength": 1 }
+  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://agent-harness.local/schemas/team-message.schema.json","title":"TeamMessage",
+  "type":"object","additionalProperties":false,
+  "required":["id","team_run_id","sender","recipients","kind","body","correlation_id","response_intent","created_at"],
+  "properties":{
+    "id":{"type":"string","minLength":1},"team_run_id":{"type":"string","minLength":1},"work_id":{"type":["string","null"],"minLength":1},
+    "sender":{"$ref":"#/$defs/actor"},"recipients":{"type":"array","minItems":1,"uniqueItems":true,"items":{"$ref":"#/$defs/recipient"}},
+    "kind":{"enum":["message","control","provider_interaction_request","provider_interaction_response"]},"body":{"type":"string","minLength":1},
+    "correlation_id":{"type":"string","minLength":1},"causation_id":{"type":["string","null"],"minLength":1},
+    "response_intent":{"enum":["informational","response_required"]},"evidence_refs":{"$ref":"#/$defs/refs"},"created_at":{"type":"string","minLength":1}
+  },
+  "$defs":{
+    "actor":{"type":"object","additionalProperties":false,"required":["kind","id"],"properties":{"kind":{"enum":["human","agent_member","external","service"]},"id":{"type":"string","minLength":1}}},
+    "recipient":{"type":"object","additionalProperties":false,"required":["kind","id"],"properties":{"kind":{"const":"agent_member"},"id":{"type":"string","minLength":1}}},
+    "refs":{"type":"array","items":{"type":"string","minLength":1},"uniqueItems":true}
   }
 }

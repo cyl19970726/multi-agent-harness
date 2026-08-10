@@ -9,7 +9,7 @@ import { StatusDot, type StatusTone } from "@/components/workbench/atoms";
  *
  * It deliberately accepts composition through children rather than a fixed
  * data model: a MemberRun needs Wave + Team + runtime context, while a
- * StandingAgent needs availability + capabilities. Callers decide that
+ * AgentMembership needs availability + capabilities. Callers decide that
  * composition without teaching this primitive either object's semantics.
  */
 export function ContextRail({

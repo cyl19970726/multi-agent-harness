@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
  * Codex-like focus layout: a continuous main work surface, with a composed
  * context rail that supplements rather than fragments the activity stream.
  *
- * The shell has no object-specific assumptions. MemberRun, StandingAgent and
+ * The shell has no object-specific assumptions. MemberRun, AgentMembership and
  * WorkflowRun callers supply their own header, stream, composer, and context.
  */
 export function FocusShell({
@@ -102,7 +102,7 @@ export function FocusShell({
 }
 
 /** Header content shared by focus pages, intentionally separate from the
- * shell so a MemberRun and StandingAgent can use different semantic context. */
+ * shell so a MemberRun and AgentMembership can use different semantic context. */
 export function FocusHeader({
   eyebrow,
   title,

@@ -54,7 +54,7 @@ export type ProviderExecutionStatus = "queued" | "running" | "succeeded" | "fail
 
 /**
  * The backend's four-layer runtime health snapshot (serialized
- * `AgentRuntimeHealth`). A `null`/missing probe means "unknown" — it must NOT
+ * `ProviderProcessHealth`). A `null`/missing probe means "unknown" — it must NOT
  * be rendered as healthy/green; treat it as amber.
  */
 export interface RuntimeHealth {
@@ -65,7 +65,7 @@ export interface RuntimeHealth {
   checked_at?: string | null;
 }
 
-export interface AgentMember {
+export interface ProviderLaunchProfile {
   id: string;
   name?: string;
   description?: string;
@@ -88,7 +88,7 @@ export interface AgentMember {
   prompt_ref?: string | null;
   skill_refs?: string[];
   profile?: string | null;
-  provider_config?: AgentProviderConfig | null;
+  provider_config?: ProviderLaunchConfig | null;
   created_at?: string | null;
   last_seen_at?: string | null;
   queued_count?: number;
@@ -100,33 +100,35 @@ export interface AgentMember {
 /**
  * Durable Company/Organization identity (ADR 0052). Runtime/session state is
  * intentionally absent and remains on MemberRun / the compatibility
- * AgentMember projection.
+ * ProviderLaunchProfile projection.
  */
-export interface DurableAgentMember {
+export interface AgentMember {
   id: string;
   name: string;
   description: string;
   role: string;
-  provider_profile?: string | null;
-  model?: string | null;
-  workspace_policy?: string | null;
-  project_binding_id?: string | null;
-  business_access_ceiling_refs?: string[];
-  status: "active" | "paused" | "retired" | string;
-  created_by_member_id?: string | null;
+  capabilities: string[];
+  skill_refs: string[];
+  provider_profile_ref?: string | null;
+  model_preference?: string | null;
+  workspace_policy: string;
+  permission_ceiling: "read_only" | "workspace_write" | "full_access" | string;
+  organization_status: "active" | "paused" | "retired" | string;
+  version: number;
+  created_by: { kind: "human" | "agent_member" | "external" | "service"; id: string };
   created_at: string;
   updated_at: string;
 }
 
 export interface CompanyOsSnapshotProjection {
-  durable_agent_members?: DurableAgentMember[];
+  agent_members?: AgentMember[];
   [key: string]: unknown;
 }
 
-/** Provider launch/runtime config carried on an AgentMember (mirrors the Rust
- * AgentProviderConfig). All optional; the Config tab renders what is set and
+/** Provider launch/runtime config carried on an ProviderLaunchProfile (mirrors the Rust
+ * ProviderLaunchConfig). All optional; the Config tab renders what is set and
  * shows "Not configured" otherwise. */
-export interface AgentProviderConfig {
+export interface ProviderLaunchConfig {
   service_tier?: string | null;
   collaboration_mode?: string | null;
   approval_policy?: string | null;
@@ -189,9 +191,9 @@ export interface MessageDelivery {
   last_error?: string | null;
 }
 
-export interface AgentEvent {
+export interface ProviderDispatchEvent {
   id: string;
-  agent_member_id?: string;
+  agent_member_id: string;
   provider_runtime_id?: string | null;
   event_type?: string;
   summary?: string;
@@ -202,7 +204,7 @@ export interface AgentEvent {
 export interface ProviderChildThread {
   id: string;
   provider?: string;
-  agent_member_id?: string;
+  agent_member_id: string;
   provider_runtime_id?: string | null;
   parent_provider_thread_id?: string | null;
   provider_thread_id?: string;
@@ -439,8 +441,8 @@ export interface MemberRun {
   id: string;
   team_run_id?: string;
   slot_id?: string | null;
-  /** Explicit durable AgentMember / StandingAgent identity link; never inferred from display fields. */
-  agent_member_id?: string | null;
+  /** Required canonical AgentMember identity; never inferred from display fields. */
+  agent_member_id: string;
   name?: string | null;
   role?: string | null;
   provider?: "codex" | "claude" | "kimi" | string;
@@ -1015,11 +1017,11 @@ export interface DashboardSnapshot {
   company_os?: CompanyOsSnapshotProjection;
   teams?: AgentTeam[];
   /** Optional direct projection for forward compatibility; current server
-   * authority is `company_os.durable_agent_members`. */
-  durable_agent_members?: DurableAgentMember[];
-  members?: AgentMember[];
+   * authority is `company_os.agent_members`. */
+  agent_members?: AgentMember[];
+  members?: ProviderLaunchProfile[];
   messages?: Message[];
-  events?: AgentEvent[];
+  events?: ProviderDispatchEvent[];
   evidence?: Evidence[];
   provider_child_threads?: ProviderChildThread[];
   /**

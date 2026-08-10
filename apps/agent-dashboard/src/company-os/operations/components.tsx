@@ -20,7 +20,7 @@ export function CompanyOsPageRoot({
     | "workboard"
     | "finance"
     | "agents-organization"
-    | "standing-agent-focus"
+    | "agent-membership-focus"
     | "governance-proposal"
     | "approval-focus"
     | "human-member-focus";
@@ -31,14 +31,14 @@ export function CompanyOsPageRoot({
 
 const actorLabels = {
   human: "Human",
-  standing_agent: "Standing Agent",
+  agent_membership: "Agent Membership",
   external: "External",
   service: "Service",
 } as const;
 
 const actorDataKinds = {
   human: "Human",
-  standing_agent: "Standing Agent",
+  agent_membership: "Agent Membership",
   external: "External",
   service: "Service",
 } as const;

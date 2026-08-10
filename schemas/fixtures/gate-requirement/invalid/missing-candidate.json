@@ -1,0 +1,1 @@
+{"id":"requirement-1","work_id":"work-1","work_revision":2,"work_report_id":"report-1","source":"direct","gate_type":"tests","gate_contract_version":"1","evaluator_ref":"builtin:test","evaluator_version":"1","resolved_config":{},"config_fingerprint":"sha256:config","required":true,"requirement_set_fingerprint":"sha256:set","created_at":"unix-ms:2","version":1}

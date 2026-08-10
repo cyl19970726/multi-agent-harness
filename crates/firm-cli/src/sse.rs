@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use crossbeam::channel::{bounded, Receiver, Sender};
 use harness_core::{
-    AgentEvent, AgentMessageRoute, AgentTeamRun, MemberAction, MemberRun, Message, Mission,
-    PendingInteraction, TeamMemberCloseRequest, TeamMessage, TeamRunEvent, TeamSupervisorLease,
+    AgentMessageRoute, AgentTeamRun, MemberAction, MemberRun, Message, Mission, PendingInteraction,
+    ProviderDispatchEvent, TeamMemberCloseRequest, TeamMessage, TeamRunEvent, TeamSupervisorLease,
     Wave, WorkflowRun, WorkflowStep,
 };
 
@@ -23,12 +23,12 @@ use harness_core::{
 pub enum SseEventFrame {
     /// Snapshot of all current events (sent on initial connection)
     Snapshot {
-        agent_events: Vec<AgentEvent>,
+        agent_events: Vec<ProviderDispatchEvent>,
         messages: Vec<Message>,
         generated_at: String,
     },
     /// A new agent event was recorded
-    AgentEvent(AgentEvent),
+    ProviderDispatchEvent(ProviderDispatchEvent),
     /// A message was created or delivery status changed
     Message(Message),
     /// A workflow run status changed (WP2)
@@ -394,7 +394,7 @@ fn seed_offsets_at_eof(
 /// The JSONL files tailed in every Execution Space or compatibility
 /// coordination store.
 const WATCHED_FILES: &[&str] = &[
-    "agent_events.jsonl",
+    "provider_dispatch_events.jsonl",
     "messages.jsonl",
     "workflow_runs.jsonl",
     "workflow_steps.jsonl",
@@ -415,9 +415,9 @@ const WATCHED_FILES: &[&str] = &[
 /// one typed row. Any complete external append invalidates the scoped snapshot.
 const EXECUTION_INVALIDATION_FILES: &[&str] = &[
     "teams.jsonl",
-    "members.jsonl",
-    "durable_agent_members.jsonl",
-    "agent_runtimes.jsonl",
+    "provider_launch_profiles.jsonl",
+    "durable_agent_provider_launch_profiles.jsonl",
+    "provider_processes.jsonl",
     "evidence.jsonl",
     "provider_child_threads.jsonl",
     "workflow_patches.jsonl",
@@ -694,11 +694,11 @@ fn poll_project(
     check_and_broadcast_appends(
         project_id,
         store_root,
-        "agent_events.jsonl",
+        "provider_dispatch_events.jsonl",
         consumed_offsets,
         |line| {
-            if let Ok(event) = serde_json::from_str::<AgentEvent>(line) {
-                vec![SseEventFrame::AgentEvent(event)]
+            if let Ok(event) = serde_json::from_str::<ProviderDispatchEvent>(line) {
+                vec![SseEventFrame::ProviderDispatchEvent(event)]
             } else {
                 Vec::new()
             }
@@ -1760,9 +1760,9 @@ mod tests {
     fn snapshot_only_execution_ledgers_have_an_invalidation_path() {
         for ledger in [
             "teams.jsonl",
-            "members.jsonl",
-            "durable_agent_members.jsonl",
-            "agent_runtimes.jsonl",
+            "provider_launch_profiles.jsonl",
+            "durable_agent_provider_launch_profiles.jsonl",
+            "provider_processes.jsonl",
             "evidence.jsonl",
             "provider_child_threads.jsonl",
             "workflow_patches.jsonl",

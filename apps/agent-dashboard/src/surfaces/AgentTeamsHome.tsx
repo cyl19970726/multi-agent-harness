@@ -24,7 +24,7 @@ import { TEAM_MEMBER_PROVIDER_MODES } from "@/lib/provider";
 import { createTeam, createTeamRun, startTeamRun, type TeamRunMemberSpec } from "../api/actions";
 import type { SelectionState } from "../app/selection";
 import type { WorkbenchModel } from "../model/readModel";
-import type { AgentMember, AgentTeam, MemberRun, Mission, TeamRun, Wave } from "../types";
+import type { AgentTeam, MemberRun, Mission, ProviderLaunchProfile, TeamRun, Wave } from "../types";
 
 interface AgentTeamsHomeProps {
   model: WorkbenchModel;
@@ -322,7 +322,7 @@ function TeamDialog({
   onClose,
 }: {
   open: boolean;
-  durableMembers: AgentMember[];
+  durableMembers: ProviderLaunchProfile[];
   actionsEnabled: boolean;
   onAction?: (path: string, body?: unknown) => Promise<boolean>;
   onClose: () => void;
@@ -470,7 +470,7 @@ function RunDialog({
   const missions = model.snapshot.missions ?? [];
   const resolvedMembers = (team.member_ids ?? [])
     .map((id) => durableMembers.find((member) => member.id === id))
-    .filter((member): member is AgentMember => Boolean(member));
+    .filter((member): member is ProviderLaunchProfile => Boolean(member));
   // Runs that already existed when the dialog opened; anything newer with this
   // team id is the run this dialog created.
   const priorRunIds = useRef(
@@ -498,7 +498,7 @@ function RunDialog({
 
   const providerEntryFor = (provider?: string | null) =>
     TEAM_MEMBER_PROVIDER_MODES.find((entry) => entry.provider === provider);
-  const effectiveProvider = (member: AgentMember): string =>
+  const effectiveProvider = (member: ProviderLaunchProfile): string =>
     providerOverrides[member.id] ?? member.provider ?? "";
   // The roster derives from the team definition unless the operator overrides a
   // provider mode; then the run carries explicit member specs instead.

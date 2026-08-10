@@ -1,5 +1,5 @@
 import type {
-  AgentEvent,
+  ProviderDispatchEvent,
   Company,
   DashboardSnapshot,
   DocRegistryEntry,
@@ -461,7 +461,7 @@ export async function fetchWorkflowDefs(baseUrl: string): Promise<WorkflowDef[]>
 export type SseFrame =
   | { kind: "snapshot"; generatedAt?: string }
   | { kind: "projection_invalidated"; invalidation: ProjectionInvalidation | null }
-  | { kind: "agent_event"; event: AgentEvent }
+  | { kind: "agent_event"; event: ProviderDispatchEvent }
   | { kind: "message"; message: Message }
   | { kind: "workflow_run"; run: WorkflowRun }
   | { kind: "workflow_step"; step: WorkflowStep }
@@ -565,7 +565,7 @@ export function openEventStream(
     });
   });
   source.addEventListener("agent_event", (event) => {
-    const data = parse<AgentEvent>(event as MessageEvent);
+    const data = parse<ProviderDispatchEvent>(event as MessageEvent);
     if (data) handlers.onFrame({ kind: "agent_event", event: data });
   });
   source.addEventListener("message", (event) => {

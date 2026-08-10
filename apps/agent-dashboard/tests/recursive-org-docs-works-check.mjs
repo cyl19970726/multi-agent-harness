@@ -75,9 +75,9 @@ check(docs.includes("data-docs-v2-legacy") && !docs.includes("adaptTrademarkDocs
 const selectors = await loadFlatSelectors();
 const durableOnlyRoot = {
   company_os: {
-    durable_agent_members: [{
+    agent_members: [{
       id: "foundation-lead", name: "Foundation Lead", description: "Root Lead",
-      role: "lead", status: "active", created_at: "1", updated_at: "1",
+      role: "lead", organization_status: "active", created_at: "1", updated_at: "1",
     }],
   },
   members: [],

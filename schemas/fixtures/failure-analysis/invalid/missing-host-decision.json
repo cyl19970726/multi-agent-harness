@@ -1,0 +1,1 @@
+{"id":"failure-1","work_id":"work-1","work_revision":3,"observed_failure":"Failed.","impact":"Blocked.","primary_cause_status":"unknown","retry_safety":"unknown","confidence":"low","reported_by":{"kind":"agent_member","id":"agent-worker"},"created_at":"unix-ms:3"}
