@@ -220,6 +220,7 @@ const sourceRoots = [
   "schemas",
   "docs/current",
   "docs/mental",
+  "docs/registry.json",
   "plugins/star-harness",
 ];
 const sourceExtensions = new Set([".rs", ".ts", ".tsx", ".js", ".mjs", ".json", ".md"]);

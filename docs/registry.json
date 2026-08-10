@@ -2314,13 +2314,13 @@
       ]
     },
     {
-      "path": "docs/current/dashboard/pages/standing-agent-focus.md",
+      "path": "docs/current/dashboard/pages/agent-member-focus.md",
       "ownerRole": "product-design",
       "status": "planned",
       "lifecycle": "volatile",
       "canonicalFor": [
-        "Standing Agent detail page",
-        "durable AgentMember availability, assignments, and activity UI contract"
+        "AgentMember detail page",
+        "canonical AgentMember identity, organization projection, and execution trust UI contract"
       ],
       "dependsOn": [
         "docs/current/company-os/organization-and-actors.md",
@@ -2335,7 +2335,7 @@
       "lastVerifiedWith": [
         "npx pnpm@9.15.4 check"
       ],
-      "reorgTrigger": "Standing Agent identity, availability, assignment, organization, execution-link, or responsive page contract changes.",
+      "reorgTrigger": "AgentMember identity, organization projection, execution trust, or responsive page contract changes.",
       "authorityClass": "design_intent",
       "implementationState": "design_only",
       "truthRefs": []
