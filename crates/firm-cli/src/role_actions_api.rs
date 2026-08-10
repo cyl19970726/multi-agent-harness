@@ -206,7 +206,87 @@ enum OperatorActionIntent {
     AdmitProvider {
         provider: String,
         execution_mode: String,
+        eligibility_fingerprint: String,
     },
+}
+
+pub(crate) const OPERATOR_PROVIDER_ADMISSION_TUPLES: [(&str, &str); 4] = [
+    ("codex", "codex_app_server"),
+    ("claude", "claude_agent_sdk"),
+    ("kimi", "kimi_acp"),
+    ("pi", "pi_rpc"),
+];
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ProviderAdmissionActionBinding {
+    pub provider: String,
+    pub execution_mode: String,
+    pub eligibility: &'static str,
+    pub eligibility_fingerprint: String,
+    #[serde(skip_serializing)]
+    pub disabled_reason: Option<String>,
+}
+
+pub(crate) fn provider_admission_action_binding(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    node_id: &str,
+    node_revision: u64,
+    provider: &str,
+    execution_mode: &str,
+) -> ProviderAdmissionActionBinding {
+    let registered = OPERATOR_PROVIDER_ADMISSION_TUPLES.contains(&(provider, execution_mode));
+    let scope = store.provider_compatibility_scope();
+    let active_registration = store
+        .latest_node_project_registrations()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|registration| {
+            registration.node_id == node_id
+                && registration.execution_space_id == execution_space_id
+                && registration.status == harness_core::NodeProjectRegistrationStatus::Active
+        });
+    let scope_reason = if !registered {
+        Some("provider/execution-mode tuple is not in the server admission registry".to_string())
+    } else if scope.is_none() {
+        Some("canonical provider compatibility scope is unavailable".to_string())
+    } else if active_registration.as_ref().is_none_or(|registration| {
+        scope.is_none_or(|(project_id, _)| registration.project_binding_id != project_id)
+    }) {
+        Some("exact Node/project/Execution Space admission scope is unavailable".to_string())
+    } else {
+        None
+    };
+    let probe = scope_reason.as_ref().map_or_else(
+        || crate::operator_provider_admission_probe(provider, execution_mode),
+        |reason| Err(reason.clone()),
+    );
+    let (eligibility, disabled_reason, provider_version, adapter_contract_version) = match probe {
+        Ok((version, contract)) => ("eligible", None, Some(version), Some(contract)),
+        Err(reason) => ("disabled", Some(reason), None, None),
+    };
+    let (project_id, store_id) = scope.unwrap_or(("", ""));
+    let eligibility_fingerprint = canonical_json_fingerprint(&json!({
+        "protocol":"agentfirm.provider_admission.action.v1",
+        "execution_space_id":execution_space_id,
+        "node_id":node_id,
+        "node_revision":node_revision,
+        "project_id":project_id,
+        "store_id":store_id,
+        "provider":provider,
+        "execution_mode":execution_mode,
+        "eligibility":eligibility,
+        "provider_version":provider_version,
+        "adapter_contract_version":adapter_contract_version,
+        "disabled_reason":disabled_reason,
+    }));
+    ProviderAdmissionActionBinding {
+        provider: provider.to_string(),
+        execution_mode: execution_mode.to_string(),
+        eligibility,
+        eligibility_fingerprint,
+        disabled_reason,
+    }
 }
 
 fn default_true() -> bool {
@@ -2944,8 +3024,35 @@ fn execute_operator_action(
             OperatorActionIntent::AdmitProvider {
                 provider,
                 execution_mode,
+                eligibility_fingerprint,
             },
         ) => {
+            let binding = provider_admission_action_binding(
+                store,
+                &auth.execution_space_id,
+                node_id,
+                node_revision,
+                &provider,
+                &execution_mode,
+            );
+            if binding.eligibility_fingerprint != eligibility_fingerprint {
+                return Err(encoded_error(
+                    "ACTION_BINDING_MISMATCH",
+                    "provider admission tuple or eligibility changed; refetch the Operator RoleView",
+                    "execution_node",
+                    node_id,
+                    Some(node_revision),
+                ));
+            }
+            if let Some(reason) = binding.disabled_reason {
+                return Err(encoded_error(
+                    "ACTION_UNAVAILABLE",
+                    reason,
+                    "execution_node",
+                    node_id,
+                    Some(node_revision),
+                ));
+            }
             let firm_home = firm_home.expect("receipted provider action resolves firm home");
             execute_receipted_operator_action(&firm_home, node_id, &auth, || {
                 let (admission, replayed) = crate::admit_provider_from_operator_action(
@@ -3628,6 +3735,14 @@ mod tests {
         .unwrap();
         assert!(replay.replayed);
         assert_eq!(replay.event_id, "effect-1");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let changed_scope = operator_auth("completed", "fingerprint-changed-tuple-or-scope");
+        let error = execute_receipted_operator_action(&root, "node-test", &changed_scope, || {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(operator_result("must-not-run-for-changed-scope"))
+        })
+        .expect_err("same key with a changed tuple or scope must fail closed");
+        assert!(error.to_string().contains("fingerprint"), "{error}");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
 
         let uncertain = operator_auth("uncertain", "fingerprint-uncertain");

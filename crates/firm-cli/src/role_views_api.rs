@@ -1758,34 +1758,33 @@ fn operator_view(
         (!local_machine_proven)
             .then_some("this serve process cannot prove exact local Node lifecycle ownership"),
     );
-    daemon_action["daemon_generation"] =
+    daemon_action["authority_generation"] =
         json!(lease.as_ref().map(|lease| lease.generation).unwrap_or(0));
     operator_actions.push(daemon_action);
-    let admission_scope_proven = local_machine_proven
-        && store.provider_compatibility_scope().is_some()
-        && store
-            .latest_node_project_registrations()
-            .unwrap_or_default()
-            .iter()
-            .any(|registration| {
-                registration.node_id == node_id
-                    && registration.execution_space_id == space_id
-                    && enum_string(&registration.status) == "active"
-            });
-    let admission_disabled_reason = if !admission_scope_proven {
-        Some("exact Node/project/Execution Space admission scope is unavailable".to_string())
-    } else {
-        crate::operator_provider_admission_probe("codex", "codex_app_server")
-            .err()
-            .map(|error| format!("server cannot prove an eligible provider admission: {error}"))
-    };
-    operator_actions.push(action(
-        "admit_provider",
-        "execution_node",
-        node_id,
-        node_revision,
-        admission_disabled_reason.as_deref(),
-    ));
+    for (provider, execution_mode) in crate::role_actions_api::OPERATOR_PROVIDER_ADMISSION_TUPLES {
+        let binding = crate::role_actions_api::provider_admission_action_binding(
+            store,
+            space_id,
+            node_id,
+            node_revision,
+            provider,
+            execution_mode,
+        );
+        let disabled_reason = (!local_machine_proven)
+            .then_some("this serve process cannot prove exact local Node admission ownership")
+            .map(str::to_string)
+            .or_else(|| binding.disabled_reason.clone());
+        let mut admission_action = action(
+            "admit_provider",
+            "execution_node",
+            node_id,
+            node_revision,
+            disabled_reason.as_deref(),
+        );
+        admission_action["intent_binding"] =
+            serde_json::to_value(binding).expect("provider admission action binding serializes");
+        operator_actions.push(admission_action);
+    }
     Ok(envelope(
         "operator",
         &facts,

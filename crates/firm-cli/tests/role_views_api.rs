@@ -1350,9 +1350,36 @@ fn operator_eligible_daemon_and_server_probed_admission_are_real_and_fail_closed
             .any(|action| action["kind"] == "stop_daemon" && action["disabled_reason"].is_null()),
         "eligible stop action: {operator}"
     );
-    assert!(actions
+    let eligible_admission_action = actions
         .iter()
-        .any(|action| action["kind"] == "admit_provider" && action["disabled_reason"].is_null()));
+        .find(|action| {
+            action["kind"] == "admit_provider"
+                && action["intent_binding"]["provider"] == "codex"
+                && action["intent_binding"]["execution_mode"] == "codex_app_server"
+        })
+        .expect("registered Codex admission action");
+    assert!(eligible_admission_action["disabled_reason"].is_null());
+    assert_eq!(
+        eligible_admission_action["intent_binding"]["eligibility"],
+        "eligible"
+    );
+    let admission_fingerprint = eligible_admission_action["intent_binding"]
+        ["eligibility_fingerprint"]
+        .as_str()
+        .expect("server-built admission fingerprint")
+        .to_string();
+    assert!(
+        actions.iter().any(|action| {
+            action["kind"] == "admit_provider"
+                && action["intent_binding"]["provider"] == "claude"
+                && action["intent_binding"]["execution_mode"] == "claude_agent_sdk"
+                && action["intent_binding"]["eligibility"] == "disabled"
+                && action["disabled_reason"]
+                    .as_str()
+                    .is_some_and(|reason| !reason.is_empty())
+        }),
+        "missing registered provider binary must remain an explicit disabled tuple: {operator}"
+    );
     let node_revision = operator["data"]["node"]["node_revision"]
         .as_u64()
         .expect("node revision")
@@ -1361,7 +1388,8 @@ fn operator_eligible_daemon_and_server_probed_admission_are_real_and_fail_closed
         .as_u64()
         .expect("live daemon generation");
     assert!(actions.iter().any(|action| {
-        action["kind"] == "stop_daemon" && action["daemon_generation"] == initial_daemon_generation
+        action["kind"] == "stop_daemon"
+            && action["authority_generation"] == initial_daemon_generation
     }));
     let initial_stop_headers = [
         ("X-AgentFirm-Token", OPERATOR_TOKEN),
@@ -1387,7 +1415,7 @@ fn operator_eligible_daemon_and_server_probed_admission_are_real_and_fail_closed
         .is_some_and(|actions| {
             actions.iter().any(|action| {
                 action["kind"] == "start_daemon"
-                    && action["daemon_generation"] == stopped_generation
+                    && action["authority_generation"] == stopped_generation
             })
         }));
     assert!(after_stop["allowed_actions"]
@@ -1474,7 +1502,7 @@ fn operator_eligible_daemon_and_server_probed_admission_are_real_and_fail_closed
     );
     let admission_route =
         format!("/v1/agentfirm/nodes/{node_id}/provider-admission?project={project_id}");
-    let intent = serde_json::json!({"action":"admit_provider","provider":"codex","execution_mode":"codex_app_server"});
+    let intent = serde_json::json!({"action":"admit_provider","provider":"codex","execution_mode":"codex_app_server","eligibility_fingerprint":admission_fingerprint});
     let (status, admitted) =
         serve.post_json_with_headers(&admission_route, &intent, &admission_headers);
     assert_eq!(status, 200, "provider admission: {admitted}");
@@ -1488,7 +1516,7 @@ fn operator_eligible_daemon_and_server_probed_admission_are_real_and_fail_closed
         serve.post_json_with_headers(&admission_route, &intent, &admission_headers);
     assert_eq!(status, 200, "provider admission replay: {replay}");
     assert_eq!(replay["replayed"], true);
-    let hostile = serde_json::json!({"action":"admit_provider","provider":"codex","execution_mode":"codex_app_server","provider_version":"browser-spoof","evidence_refs":["browser-proof"]});
+    let hostile = serde_json::json!({"action":"admit_provider","provider":"codex","execution_mode":"codex_app_server","eligibility_fingerprint":admission_fingerprint,"provider_version":"browser-spoof","evidence_refs":["browser-proof"]});
     let hostile_headers = action_headers(
         OPERATOR_TOKEN,
         "operator-provider-hostile",
@@ -1520,9 +1548,11 @@ fn operator_eligible_daemon_and_server_probed_admission_are_real_and_fail_closed
     let current_admission_action = current_provider_view["allowed_actions"]
         .as_array()
         .and_then(|actions| {
-            actions
-                .iter()
-                .find(|action| action["kind"] == "admit_provider")
+            actions.iter().find(|action| {
+                action["kind"] == "admit_provider"
+                    && action["intent_binding"]["provider"] == "codex"
+                    && action["intent_binding"]["execution_mode"] == "codex_app_server"
+            })
         })
         .expect("admission action remains visible with an explicit disabled reason");
     assert!(current_admission_action["disabled_reason"]
@@ -1577,8 +1607,7 @@ fn operator_eligible_daemon_and_server_probed_admission_are_real_and_fail_closed
         "provider replay must precede advanced ExecutionNode revision checks: {replay_after_revision_advance}"
     );
     assert_eq!(replay_after_revision_advance["replayed"], true);
-    let conflicting_intent =
-        serde_json::json!({"action":"admit_provider","provider":"codex","execution_mode":"exec"});
+    let conflicting_intent = serde_json::json!({"action":"admit_provider","provider":"claude","execution_mode":"claude_agent_sdk","eligibility_fingerprint":admission_fingerprint});
     let (status, conflicting_replay) =
         serve.post_json_with_headers(&admission_route, &conflicting_intent, &admission_headers);
     assert_eq!(

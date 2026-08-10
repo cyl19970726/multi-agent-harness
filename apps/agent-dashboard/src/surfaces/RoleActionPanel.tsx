@@ -49,7 +49,6 @@ const FIELD_SPECS: Record<string, Array<{ name: string; label: string; multiline
   request_gate_evaluation: [{name:"gate_type",label:"Gate type"},{name:"gate_contract_version",label:"Gate contract version"},{name:"evaluator_id",label:"Evaluator actor ID"},{name:"evaluator_version",label:"Evaluator version"}],
   evaluate_gate: [{name:"summary",label:"Evaluation summary",multiline:true},{name:"evidence_refs",label:"Evidence refs"}],
   waive_gate: [{name:"reason",label:"Waiver reason",multiline:true},{name:"evidence_refs",label:"Evidence refs"}],
-  admit_provider: [{name:"provider",label:"Installed provider (for example, codex)"},{name:"execution_mode",label:"Execution mode (for example, codex_app_server)"}],
 };
 
 export function RoleActionPanel({
@@ -121,10 +120,12 @@ export function RoleActionPanel({
       const missingVersion = !Number.isSafeInteger(action.required_version);
       const disabled = !actionsCurrent || Boolean(action.disabled_reason) || unsupported || unresolved || missingVersion;
       const reason = !actionsCurrent ? "Awaiting authoritative RoleView refetch" : action.disabled_reason ?? (unsupported ? "Semantic adapter unavailable" : unresolved ? "Route context unavailable" : missingVersion ? "Exact CAS unavailable" : undefined);
-      return <Button key={`${action.kind}:${action.target_ref.kind}:${action.target_ref.id}:${index}`} size="sm" variant={selected === action ? "default" : "secondary"} disabled={disabled} title={reason} onClick={() => choose(action)}>{action.kind.replace(/_/g, " ")}</Button>;
+      const label=action.kind==="admit_provider"&&action.intent_binding?`admit provider · ${action.intent_binding.provider}/${action.intent_binding.execution_mode}`:action.kind.replace(/_/g, " ");
+      return <Button key={`${action.kind}:${action.target_ref.kind}:${action.target_ref.id}:${index}`} size="sm" variant={selected === action ? "default" : "secondary"} disabled={disabled} title={reason} onClick={() => choose(action)}>{label}</Button>;
     })}</div> : <p className="mt-3 text-xs text-muted-foreground">No actions are authorized for this identity and state.</p>}
     {selected && <div className="mt-4 space-y-3 rounded-lg bg-muted/35 p-3">
       <div className="text-xs"><b>{selected.kind}</b> → <code className="break-all">{route ?? "unavailable"}</code></div>
+      {selected.kind==="admit_provider"&&selected.intent_binding&&<div className="text-xs text-muted-foreground">Server-observed tuple: <code>{selected.intent_binding.provider}/{selected.intent_binding.execution_mode}</code> · {selected.intent_binding.eligibility}</div>}
       {(FIELD_SPECS[selected.kind] ?? []).map((field) => <label key={field.name} className="block text-xs font-medium">{field.label}{field.multiline
         ? <textarea className="mt-1 min-h-20 w-full rounded-md border border-border bg-background p-2 text-xs" value={fields[field.name] ?? ""} onChange={(event) => setFields((current) => ({ ...current, [field.name]: event.target.value }))} />
         : <input className="mt-1 w-full rounded-md border border-border bg-background p-2 text-xs" value={fields[field.name] ?? ""} onChange={(event) => setFields((current) => ({ ...current, [field.name]: event.target.value }))} />}</label>)}

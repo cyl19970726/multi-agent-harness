@@ -27,6 +27,27 @@ for(const name of names.slice(2)){
   assert.equal(validate(hostile),false,`${name} must reject nested unknown fields`);
 }
 
+const operatorValidate=ajv.getSchema("agentfirm.role_views.v1/operator.schema.json");
+const operatorFixture=JSON.parse(fs.readFileSync(path.join(fixtureDir,"operator.json"),"utf8"));
+const daemonAction={kind:"start_daemon",target_ref:{kind:"execution_node",id:"node-1"},required_version:1,disabled_reason:null,authority_generation:0};
+operatorFixture.allowed_actions=[daemonAction];
+assert.equal(operatorValidate(operatorFixture),true,`daemon authority action: ${ajv.errorsText(operatorValidate.errors)}`);
+delete daemonAction.authority_generation;
+assert.equal(operatorValidate(operatorFixture),false,"daemon lifecycle actions require an exact authority generation");
+daemonAction.authority_generation="1";
+assert.equal(operatorValidate(operatorFixture),false,"daemon authority generation rejects browser-coerced string types");
+operatorFixture.allowed_actions=[{kind:"diagnose",target_ref:{kind:"execution_node",id:"node-1"},required_version:1,disabled_reason:null,authority_generation:1}];
+assert.equal(operatorValidate(operatorFixture),false,"non-daemon actions must not carry a daemon authority generation");
+operatorFixture.allowed_actions=[{kind:"diagnose",target_ref:{kind:"execution_node",id:"node-1"},required_version:1,disabled_reason:null,__unknown_authority:true}];
+assert.equal(operatorValidate(operatorFixture),false,"unknown action fields remain fail-closed");
+const admissionBinding={provider:"codex",execution_mode:"codex_app_server",eligibility:"eligible",eligibility_fingerprint:"0123456789abcdef"};
+operatorFixture.allowed_actions=[{kind:"admit_provider",target_ref:{kind:"execution_node",id:"node-1"},required_version:1,disabled_reason:null,intent_binding:admissionBinding}];
+assert.equal(operatorValidate(operatorFixture),true,`tuple-bound admission action: ${ajv.errorsText(operatorValidate.errors)}`);
+delete admissionBinding.eligibility_fingerprint;
+assert.equal(operatorValidate(operatorFixture),false,"provider admission requires a complete server tuple fingerprint");
+operatorFixture.allowed_actions=[{kind:"diagnose",target_ref:{kind:"execution_node",id:"node-1"},required_version:1,disabled_reason:null,intent_binding:{provider:"codex",execution_mode:"codex_app_server",eligibility:"eligible",eligibility_fingerprint:"0123456789abcdef"}}];
+assert.equal(operatorValidate(operatorFixture),false,"only provider admission may carry a tuple binding");
+
 const rust=fs.readFileSync(path.join(root,"crates/firm-cli/src/role_views_api.rs"),"utf8");
 for(const endpoint of ["company-work","team-workspace/","host-console/","member-workbench/","operator/"])assert.ok(rust.includes(`/v1/views/${endpoint}`),`missing ${endpoint}`);
 assert.ok(rust.includes("canonical_operations"),"views must use canonical event sequence");
@@ -44,7 +65,11 @@ for(const required of [
   "reconcile_delivery","reconcile_message_delivery","start_daemon","stop_daemon","admit_provider","diagnose",
 ])assert.ok(actions.has(required),`action manifest missing ${required}`);
 for(const item of manifest.actions){for(const field of ["http_endpoint","application_command","actor_policy","expected_version_source","resulting_event","returns"])assert.equal(typeof item[field],"string",`${item.ui_action}.${field}`)}
+for(const kind of ["start_daemon","stop_daemon"])assert.equal(typeof manifest.actions.find(item=>item.ui_action===kind)?.authority_generation_source,"string",`${kind} must declare its server authority-generation source`);
+assert.equal(typeof manifest.actions.find(item=>item.ui_action==="admit_provider")?.intent_binding_source,"string","provider admission must declare its server tuple-binding source");
 for(const item of manifest.actions)assert.match(item.http_endpoint,/^(POST \/v1\/agentfirm\/|GET \/v1\/views\/operator\/)/,`${item.ui_action} must use a frozen authenticated route`);
 const emitted=new Set([...rust.matchAll(/action\("([a-z_]+)"/g)].map(match=>match[1]));
 for(const action of emitted)assert.ok(actions.has(action),`RoleView emits unimplemented action ${action}`);
+assert.ok(rust.includes('daemon_action["authority_generation"]'),"server daemon actions must bind the generic authority generation");
+assert.ok(!rust.includes('daemon_action["daemon_generation"]'),"daemon-specific action schema leakage is retired");
 console.log("role-view contract check: PASS");
