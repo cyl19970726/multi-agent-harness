@@ -24,6 +24,8 @@ const token = `dashboard-runtime-live-${process.pid}`;
 const agentFirmToken = `agentfirm-runtime-live-${process.pid}`;
 const memberAgentFirmToken = `agentfirm-member-live-${process.pid}`;
 const operatorAgentFirmToken = `agentfirm-operator-live-${process.pid}`;
+const secondaryHostAgentFirmToken = `agentfirm-secondary-host-live-${process.pid}`;
+const siblingNodeAgentFirmToken = `agentfirm-sibling-node-live-${process.pid}`;
 const now = "2026-08-05T12:00:00+08:00";
 const actorRef = { actor_type: "human", actor_id: "human-live-owner" };
 
@@ -212,7 +214,7 @@ await waitFor(async () => (await fetch(`${apiBase}/health`).catch(() => null))?.
 const { current: projectId } = await requestJson(apiBase, "/v1/projects");
 const { current: spaceId } = await requestJson(apiBase, "/v1/spaces");
 
-function createCanonicalMember(id, name, role) {
+function createCanonicalMember(id, name, role, commandEnv = env) {
   runHarness([
     "member-trust", "mutate",
     "--actor-kind", "human",
@@ -238,7 +240,7 @@ function createCanonicalMember(id, name, role) {
         updated_at: now,
       },
     }),
-  ], env, projectRoot);
+  ], commandEnv, projectRoot);
 }
 
 // Build the complete Wave 3 admission chain. A TeamRun is never a free-standing
@@ -303,12 +305,66 @@ const liveTeamRunId = liveTeamRunPayload.team_run?.id ?? liveTeamRunPayload.id ?
 if (!liveTeamRunId) throw new Error(`team-run create did not return an id: ${JSON.stringify(liveTeamRunPayload)}`);
 const liveMemberRunId = liveTeamRunPayload.member_runs?.[0]?.id ?? liveTeamRunPayload.result?.member_runs?.[0]?.id;
 if (!liveMemberRunId) throw new Error(`team-run create did not return a MemberRun: ${JSON.stringify(liveTeamRunPayload)}`);
+
+// A second Execution Space and sibling Team prove that Company Work is a
+// vector snapshot rather than a max-sequence illusion. The immutable local
+// Node identity is intentionally reused: one machine has one NodeDaemon/Node.
+const secondarySpaceId = "dashboard-secondary-space";
+runHarness([
+  "space", "init", "--id", secondarySpaceId, "--name", "Dashboard secondary space",
+  "--project-binding", projectId,
+], env, projectRoot);
+runHarness(["space", "switch", spaceId], env, projectRoot);
+const secondaryEnv = {...env, FIRM_SPACE: secondarySpaceId};
+const secondaryNode = JSON.parse(runHarness([
+  "node", "init", "--display-name", "dashboard-live-node",
+], secondaryEnv, projectRoot));
+if (secondaryNode.id !== liveNode.id) {
+  throw new Error(`one-machine invariant violated: ${secondaryNode.id} != ${liveNode.id}`);
+}
+runHarness([
+  "node", "project", "register",
+  "--node-id", secondaryNode.id,
+  "--execution-space-id", secondarySpaceId,
+  "--project-binding-id", projectId,
+], secondaryEnv, projectRoot);
+const secondaryMission = JSON.parse(runHarness([
+  "mission", "create", "--title", "Dashboard Sibling Mission",
+  "--objective", "Prove sibling Team and Execution Space isolation", "--json",
+], secondaryEnv, projectRoot));
+createCanonicalMember("host-secondary", "Dashboard Secondary Host", "host", secondaryEnv);
+createCanonicalMember("worker-secondary", "Dashboard Secondary Worker", "worker", secondaryEnv);
+const secondaryTeam = JSON.parse(runHarness([
+  "team", "create", "--name", "Dashboard Sibling Team",
+  "--description", "Sibling Team for isolation acceptance.",
+  "--mission-id", secondaryMission.id, "--host-agent-id", "host-secondary",
+  "--node-id", secondaryNode.id, "--member", "worker-secondary",
+], secondaryEnv, projectRoot));
+const secondaryRunPayload = JSON.parse(runHarness([
+  "team-run", "create", "--objective", "Sibling Team isolation",
+  "--agent-team-id", secondaryTeam.id,
+  "--member", "worker-secondary:worker:codex/app-server", "--json",
+], secondaryEnv, projectRoot));
+const secondaryTeamRunId = secondaryRunPayload.team_run?.id ?? secondaryRunPayload.id ?? secondaryRunPayload.result?.id;
+if (!secondaryTeamRunId) throw new Error(`secondary TeamRun missing: ${JSON.stringify(secondaryRunPayload)}`);
+runHarness([
+  "team-run", "work", "create", "--team-run-id", secondaryTeamRunId,
+  "--work-id", "work-secondary-live", "--title", "Secondary space Work",
+  "--context", "Prove Company vector aggregation.",
+  "--completion-criteria", "Visible only through authoritative aggregation.",
+  "--priority", "normal", "--claim-mode", "team_claim",
+  "--eligible-member-id", "worker-secondary",
+], secondaryEnv, projectRoot);
 env.AGENTFIRM_HTTP_CREDENTIALS_JSON = JSON.stringify([{
   token: agentFirmToken, actor: {kind:"agent_member",id:"host"}, authority_actors: [],
 },{
   token: memberAgentFirmToken, actor: {kind:"agent_member",id:"worker"}, authority_actors: [],
 },{
   token: operatorAgentFirmToken, actor: {kind:"service",id:liveNode.id}, authority_actors: [],
+},{
+  token: secondaryHostAgentFirmToken, actor: {kind:"agent_member",id:"host-secondary"}, authority_actors: [],
+},{
+  token: siblingNodeAgentFirmToken, actor: {kind:"service",id:"10000000-0000-4000-8000-000000000099"}, authority_actors: [],
 }]);
 await stopRuntime();
 startRuntime();
@@ -327,6 +383,46 @@ function createNativeWork(id, title) {
   ], env, projectRoot);
 }
 createNativeWork("work-role-live", "Real browser RoleAction loop");
+
+async function roleView(path, capabilityToken) {
+  const response = await fetch(new URL(path, apiBase), {
+    headers: {accept:"application/json", "x-agentfirm-token": capabilityToken},
+  });
+  const body = await response.json().catch(() => ({}));
+  return {status:response.status, body};
+}
+const companyBefore = await roleView(`/v1/views/company-work?project=${projectId}`, agentFirmToken);
+if (companyBefore.status !== 200) throw new Error(`Company Work vector: ${JSON.stringify(companyBefore.body)}`);
+const vectorBefore = companyBefore.body.data.page.snapshot_vector;
+check(vectorBefore.some((point)=>point.execution_space_id===spaceId)
+  && vectorBefore.some((point)=>point.execution_space_id===secondarySpaceId),
+"Company Work exposes a per-Execution-Space snapshot vector");
+check(companyBefore.body.data.page.item_count >= 2, "Company Work is populated from both sibling Teams");
+const primaryDeniedBySecondary = await roleView(`/v1/views/host-console/${liveTeam.id}?project=${projectId}&space=${spaceId}`, secondaryHostAgentFirmToken);
+const secondaryDeniedByPrimary = await roleView(`/v1/views/host-console/${secondaryTeam.id}?project=${projectId}&space=${secondarySpaceId}`, agentFirmToken);
+check(primaryDeniedBySecondary.status===403 && secondaryDeniedByPrimary.status===403,
+"sibling Team Host identities are denied bidirectionally");
+const siblingNodeDenied = await roleView(`/v1/views/operator/${liveNode.id}?project=${projectId}&space=${spaceId}`, siblingNodeAgentFirmToken);
+check(siblingNodeDenied.status===403, "non-local sibling Node Service cannot obtain Operator authority");
+runHarness([
+  "team-run", "work", "create", "--team-run-id", secondaryTeamRunId,
+  "--work-id", "work-secondary-vector-advance", "--title", "Advance secondary vector",
+  "--context", "Mutate only the secondary space.",
+  "--completion-criteria", "Only the secondary snapshot point advances.",
+  "--priority", "normal", "--claim-mode", "team_claim",
+  "--eligible-member-id", "worker-secondary",
+], secondaryEnv, projectRoot);
+await waitFor(async()=>{
+  const current = await roleView(`/v1/views/company-work?project=${projectId}`, agentFirmToken);
+  if(current.status!==200)return false;
+  const beforePrimary=vectorBefore.find((point)=>point.execution_space_id===spaceId);
+  const beforeSecondary=vectorBefore.find((point)=>point.execution_space_id===secondarySpaceId);
+  const afterPrimary=current.body.data.page.snapshot_vector.find((point)=>point.execution_space_id===spaceId);
+  const afterSecondary=current.body.data.page.snapshot_vector.find((point)=>point.execution_space_id===secondarySpaceId);
+  return JSON.stringify(beforePrimary)===JSON.stringify(afterPrimary)
+    && afterSecondary.work_operation_count>beforeSecondary.work_operation_count;
+}, "secondary Execution Space vector advances independently");
+check(true, "Company cursor invalidation advances only the mutated Execution Space point");
 
 const vite = await createViteServer({
   configFile: join(dashboardRoot, "vite.config.ts"),
@@ -431,10 +527,17 @@ try {
   await operatorPage.addInitScript(({capabilityToken})=>{window.__AGENTFIRM_BOOTSTRAP__={capabilityToken}}, {capabilityToken:operatorAgentFirmToken});
   await operatorPage.goto(`${appBase}/?${new URLSearchParams({...roleBaseQuery,surface:"operator",node:liveNode.id})}`, {waitUntil:"domcontentloaded"});
   await operatorPage.getByRole("heading", {name:"Operator View"}).waitFor();
-  await operatorPage.getByRole("button", {name:"diagnose"}).click();
-  await operatorPage.getByRole("button", {name:"Execute action"}).click();
-  await waitForText(operatorPage, "Diagnostics are read-only");
-  check(true, "Operator browser executes honest read-only diagnostics through authoritative refetch");
+  await waitForText(operatorPage, "daemon_lease");
+  check(await operatorPage.getByRole("button", {name:"diagnose",exact:true}).count()===1,
+    "real Operator RoleView is populated with server-derived diagnostics/actions");
+  for(let attempt=0;attempt<20;attempt+=1){
+    await operatorPage.getByRole("button", {name:"diagnose"}).click();
+    await operatorPage.getByRole("button", {name:"Execute action"}).click();
+    await waitForText(operatorPage, "Diagnostics are read-only");
+    await operatorPage.getByText("Refreshing authoritative OperatorView…").waitFor({state:"hidden"});
+    await waitForText(operatorPage, "Diagnostics are read-only");
+  }
+  check(true, "Operator diagnostics survives 20/20 authoritative refetch cycles");
   const admitProvider = operatorPage.getByRole("button", {name:"admit provider",exact:true});
   await admitProvider.waitFor();
   if (await admitProvider.isDisabled()) throw new Error("eligible live Node did not expose executable provider admission");

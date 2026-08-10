@@ -7835,6 +7835,29 @@ fn admit_provider_from_operator_action(
     execution_mode: &str,
     idempotency_key: &str,
 ) -> Result<(ProviderCompatibilityAdmission, bool), String> {
+    let admission_id = format!("provider-admission:{idempotency_key}");
+    if let Some(existing) = store
+        .latest_provider_compatibility_admissions()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|existing| existing.id == admission_id)
+    {
+        let (project_id, store_id) = store
+            .provider_compatibility_scope()
+            .ok_or_else(|| "canonical provider compatibility scope is unavailable".to_string())?;
+        if existing.project_id == project_id
+            && existing.store_id == store_id
+            && existing.provider == provider
+            && existing.execution_mode == execution_mode
+            && existing.actor == node_id
+            && existing.evidence_refs.iter().any(|evidence| {
+                evidence == &format!("server-scope:{execution_space_id}:{node_id}:{project_id}")
+            })
+        {
+            return Ok((existing, true));
+        }
+        return Err("idempotency key is already bound to a different provider admission".into());
+    }
     let registration = store
         .latest_node_project_registrations()
         .map_err(|error| error.to_string())?
@@ -7871,7 +7894,7 @@ fn admit_provider_from_operator_action(
         ));
     }
     let admission = ProviderCompatibilityAdmission {
-        id: format!("provider-admission:{idempotency_key}"),
+        id: admission_id,
         project_id: project_id.to_string(),
         store_id: store_id.to_string(),
         provider: provider.to_string(),
@@ -7890,27 +7913,6 @@ fn admit_provider_from_operator_action(
         predecessor_admission_id: None,
         reason: None,
     };
-    if let Some(existing) = store
-        .latest_provider_compatibility_admissions()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .find(|existing| existing.id == admission.id)
-    {
-        let same_request = existing.project_id == admission.project_id
-            && existing.store_id == admission.store_id
-            && existing.provider == admission.provider
-            && existing.execution_mode == admission.execution_mode
-            && existing.provider_version == admission.provider_version
-            && existing.adapter_contract_version == admission.adapter_contract_version
-            && existing.policy == admission.policy
-            && existing.actor == admission.actor
-            && existing.evidence_refs == admission.evidence_refs
-            && existing.lifecycle == admission.lifecycle;
-        if same_request {
-            return Ok((existing, true));
-        }
-        return Err("idempotency key is already bound to a different provider admission".into());
-    }
     let ensured = store
         .ensure_provider_compatibility_admission(&admission)
         .map_err(|error| error.to_string())?;

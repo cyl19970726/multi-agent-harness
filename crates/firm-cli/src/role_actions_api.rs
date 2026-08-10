@@ -617,6 +617,26 @@ fn resolve_member_run(
     Ok(runs.remove(0).id)
 }
 
+fn require_exact_work_member(
+    store: &HarnessStore,
+    auth: &AuthenticatedMutation,
+    work: &Work,
+) -> Result<String, StoreError> {
+    let member_run_id = resolve_member_run(store, auth, &work.team_run_id)?;
+    if work.owner_member_id.as_deref() != Some(auth.actor.id.as_str())
+        || work.active_member_run_id.as_deref() != Some(member_run_id.as_str())
+    {
+        return Err(encoded_error(
+            "UNAUTHORIZED_ACTOR",
+            "member-owned Work mutation requires the exact accountable AgentMember and current active WorkExecutionBinding",
+            "work",
+            &work.id,
+            Some(work.version),
+        ));
+    }
+    Ok(member_run_id)
+}
+
 fn current_work(
     store: &HarnessStore,
     team_run_id: &str,
@@ -1136,6 +1156,12 @@ fn execute_canonical_role_action(
                     ))
                 }
             };
+            if let Some(work_id) = work_id.as_deref() {
+                let work = current_work(store, team_run_id, work_id)?;
+                if !actor_is_host {
+                    require_exact_work_member(store, &auth, &work)?;
+                }
+            }
             if message_body.trim().is_empty() || recipient_ids.is_empty() {
                 return Err(encoded_error(
                     "INVALID_STATE_TRANSITION",
@@ -1655,7 +1681,7 @@ fn execute_work_record_action(
             require_host(&auth, &team.host_agent_id, "work", work_id)?;
         }
         "revise" | "reports" | "findings" | "failure-analyses" => {
-            let _ = resolve_member_run(store, &auth, &current.team_run_id)?;
+            let _ = require_exact_work_member(store, &auth, &current)?;
         }
         _ => {}
     }
@@ -1741,7 +1767,7 @@ fn execute_work_record_action(
                 Some(current.version),
             ));
         };
-        let _member_run = resolve_member_run(store, &auth, &current.team_run_id)?;
+        let _member_run = require_exact_work_member(store, &auth, &current)?;
         return create_result_report(
             store,
             auth,
@@ -1765,7 +1791,7 @@ fn execute_work_record_action(
                 recommended_next_action,
             },
         ) => {
-            let _member_run = resolve_member_run(store, &auth, &current.team_run_id)?;
+            let _member_run = require_exact_work_member(store, &auth, &current)?;
             let report = WorkReport {
                 id: deterministic_id("work-report", &auth),
                 work_id: work_id.into(),
@@ -1808,7 +1834,7 @@ fn execute_work_record_action(
                 confidence,
             },
         ) => {
-            let _member_run = resolve_member_run(store, &auth, &current.team_run_id)?;
+            let _member_run = require_exact_work_member(store, &auth, &current)?;
             let finding = WorkFinding {
                 id: deterministic_id("work-finding", &auth),
                 work_id: work_id.into(),
@@ -1847,7 +1873,7 @@ fn execute_work_record_action(
                 confidence,
             },
         ) => {
-            let member_run = resolve_member_run(store, &auth, &current.team_run_id)?;
+            let member_run = require_exact_work_member(store, &auth, &current)?;
             let analysis = FailureAnalysis {
                 id: deterministic_id("failure-analysis", &auth),
                 work_id: work_id.into(),
@@ -2347,24 +2373,36 @@ fn execute_waiver_revoke(
     )?))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum OperatorActionJournalState {
+    Prepared,
+    InFlight,
+    Completed,
+    RecoveryRequired,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct OperatorActionReceipt {
     request_fingerprint: String,
-    projection: serde_json::Value,
-    event_id: String,
-    resulting_version: u64,
-    store_sequence: u64,
+    state: OperatorActionJournalState,
+    #[serde(default)]
+    projection: Option<serde_json::Value>,
+    #[serde(default)]
+    event_id: Option<String>,
+    #[serde(default)]
+    resulting_version: Option<u64>,
+    #[serde(default)]
+    store_sequence: Option<u64>,
+    #[serde(default)]
+    recovery_detail: Option<String>,
 }
 
-fn execute_receipted_operator_action<F>(
+fn operator_receipt_paths(
     firm_home: &std::path::Path,
     node_id: &str,
     auth: &AuthenticatedMutation,
-    execute: F,
-) -> Result<RoleActionResult, StoreError>
-where
-    F: FnOnce() -> Result<RoleActionResult, StoreError>,
-{
+) -> Result<(std::path::PathBuf, std::path::PathBuf, String), StoreError> {
     let request_fingerprint = auth.request_fingerprint.clone().ok_or_else(|| {
         encoded_error(
             "INVALID_STATE_TRANSITION",
@@ -2378,7 +2416,137 @@ where
         .join("runtime")
         .join("operator-action-receipts")
         .join(node_id);
-    std::fs::create_dir_all(&receipt_root).map_err(|error| {
+    let receipt_id = canonical_json_fingerprint(&json!({
+        "node_id": node_id,
+        "idempotency_key": auth.idempotency_key,
+    }));
+    Ok((
+        receipt_root.join(format!("{receipt_id}.json")),
+        receipt_root.join(format!("{receipt_id}.lock")),
+        request_fingerprint,
+    ))
+}
+
+fn operator_journal_result(
+    receipt: OperatorActionReceipt,
+    node_id: &str,
+) -> Result<Option<RoleActionResult>, StoreError> {
+    match receipt.state {
+        OperatorActionJournalState::Completed => Ok(Some(RoleActionResult {
+            ok: true,
+            action_protocol_version: "agentfirm.role_actions.v1",
+            projection: receipt.projection.ok_or_else(|| {
+                encoded_error(
+                    "RECOVERY_REQUIRED",
+                    "completed Operator journal is missing its projection",
+                    "execution_node",
+                    node_id,
+                    receipt.resulting_version,
+                )
+            })?,
+            event_id: receipt.event_id.ok_or_else(|| {
+                encoded_error(
+                    "RECOVERY_REQUIRED",
+                    "completed Operator journal is missing its event id",
+                    "execution_node",
+                    node_id,
+                    receipt.resulting_version,
+                )
+            })?,
+            resulting_version: receipt.resulting_version.unwrap_or_default(),
+            store_sequence: receipt.store_sequence.unwrap_or_default(),
+            replayed: true,
+        })),
+        OperatorActionJournalState::InFlight | OperatorActionJournalState::RecoveryRequired => {
+            Err(encoded_error(
+                "RECOVERY_REQUIRED",
+                receipt.recovery_detail.unwrap_or_else(|| {
+                    "prior Operator request may have crossed the external-effect boundary; reconcile before retrying".into()
+                }),
+                "execution_node",
+                node_id,
+                receipt.resulting_version,
+            ))
+        }
+        OperatorActionJournalState::Prepared => Ok(None),
+    }
+}
+
+fn read_operator_receipt(
+    receipt_path: &std::path::Path,
+    node_id: &str,
+) -> Result<OperatorActionReceipt, StoreError> {
+    let bytes = std::fs::read(receipt_path).map_err(|error| {
+        encoded_error(
+            "RECOVERY_REQUIRED",
+            format!("Operator journal cannot be read safely: {error}"),
+            "execution_node",
+            node_id,
+            None,
+        )
+    })?;
+    serde_json::from_slice(&bytes).map_err(|error| {
+        encoded_error(
+            "RECOVERY_REQUIRED",
+            format!("Operator journal is torn or invalid: {error}"),
+            "execution_node",
+            node_id,
+            None,
+        )
+    })
+}
+
+fn replay_receipted_operator_action(
+    firm_home: &std::path::Path,
+    node_id: &str,
+    auth: &AuthenticatedMutation,
+) -> Result<Option<RoleActionResult>, StoreError> {
+    let (receipt_path, lock_path, request_fingerprint) =
+        operator_receipt_paths(firm_home, node_id, auth)?;
+    if !receipt_path.exists() {
+        return Ok(None);
+    }
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    lock_file.lock()?;
+    let receipt = read_operator_receipt(&receipt_path, node_id)?;
+    if receipt.request_fingerprint != request_fingerprint {
+        return Err(encoded_error(
+            "IDEMPOTENCY_CONFLICT",
+            "idempotency key was already bound to a different Operator action fingerprint",
+            "execution_node",
+            node_id,
+            receipt.resulting_version,
+        ));
+    }
+    operator_journal_result(receipt, node_id)
+}
+
+fn execute_receipted_operator_action<F>(
+    firm_home: &std::path::Path,
+    node_id: &str,
+    auth: &AuthenticatedMutation,
+    execute: F,
+) -> Result<RoleActionResult, StoreError>
+where
+    F: FnOnce() -> Result<RoleActionResult, StoreError>,
+{
+    let (receipt_path, lock_path, request_fingerprint) =
+        operator_receipt_paths(firm_home, node_id, auth)?;
+    let receipt_root = receipt_path.parent().ok_or_else(|| {
+        encoded_error(
+            "ACTION_UNAVAILABLE",
+            "Operator journal path has no parent",
+            "execution_node",
+            node_id,
+            None,
+        )
+    })?;
+    std::fs::create_dir_all(receipt_root).map_err(|error| {
         encoded_error(
             "ACTION_UNAVAILABLE",
             format!("cannot create Operator receipt directory: {error}"),
@@ -2387,12 +2555,6 @@ where
             None,
         )
     })?;
-    let receipt_id = canonical_json_fingerprint(&json!({
-        "node_id": node_id,
-        "idempotency_key": auth.idempotency_key,
-    }));
-    let receipt_path = receipt_root.join(format!("{receipt_id}.json"));
-    let lock_path = receipt_root.join(format!("{receipt_id}.lock"));
     let lock_file = std::fs::OpenOptions::new()
         .create(true)
         .read(true)
@@ -2418,40 +2580,91 @@ where
         )
     })?;
     if receipt_path.exists() {
-        let receipt =
-            serde_json::from_slice::<OperatorActionReceipt>(&std::fs::read(&receipt_path)?)?;
+        let receipt = read_operator_receipt(&receipt_path, node_id)?;
         if receipt.request_fingerprint != request_fingerprint {
             return Err(encoded_error(
                 "IDEMPOTENCY_CONFLICT",
                 "idempotency key was already committed with a different Operator action fingerprint",
                 "execution_node",
                 node_id,
-                Some(receipt.resulting_version),
+                receipt.resulting_version,
             ));
         }
-        return Ok(RoleActionResult {
-            ok: true,
-            action_protocol_version: "agentfirm.role_actions.v1",
-            projection: receipt.projection,
-            event_id: receipt.event_id,
-            resulting_version: receipt.resulting_version,
-            store_sequence: receipt.store_sequence,
-            replayed: true,
-        });
+        if let Some(result) = operator_journal_result(receipt, node_id)? {
+            return Ok(result);
+        }
     }
-    let result = execute()?;
-    let receipt = OperatorActionReceipt {
-        request_fingerprint,
-        projection: result.projection.clone(),
-        event_id: result.event_id.clone(),
-        resulting_version: result.resulting_version,
-        store_sequence: result.store_sequence,
+    let write = |receipt: &OperatorActionReceipt| -> Result<(), StoreError> {
+        crate::execution_space::atomic_write_bytes(
+            &receipt_path,
+            &serde_json::to_vec_pretty(receipt)?,
+        )
+        .map_err(|error| {
+            encoded_error(
+                "ACTION_UNAVAILABLE",
+                format!("cannot commit Operator action journal: {error}"),
+                "execution_node",
+                node_id,
+                receipt.resulting_version,
+            )
+        })
     };
-    let bytes = serde_json::to_vec_pretty(&receipt)?;
-    crate::execution_space::atomic_write_bytes(&receipt_path, &bytes).map_err(|error| {
+    write(&OperatorActionReceipt {
+        request_fingerprint: request_fingerprint.clone(),
+        state: OperatorActionJournalState::Prepared,
+        projection: None,
+        event_id: None,
+        resulting_version: None,
+        store_sequence: None,
+        recovery_detail: None,
+    })?;
+    write(&OperatorActionReceipt {
+        request_fingerprint: request_fingerprint.clone(),
+        state: OperatorActionJournalState::InFlight,
+        projection: None,
+        event_id: None,
+        resulting_version: None,
+        store_sequence: None,
+        recovery_detail: Some(
+            "external effect was started but no durable completion receipt exists".into(),
+        ),
+    })?;
+    let result = execute().map_err(|error| {
+        let recovery = OperatorActionReceipt {
+            request_fingerprint: request_fingerprint.clone(),
+            state: OperatorActionJournalState::RecoveryRequired,
+            projection: None,
+            event_id: None,
+            resulting_version: None,
+            store_sequence: None,
+            recovery_detail: Some(format!(
+                "Operator external effect returned without a provable completion receipt: {error}"
+            )),
+        };
+        let _ = write(&recovery);
         encoded_error(
-            "ACTION_UNAVAILABLE",
-            format!("cannot commit Operator action receipt: {error}"),
+            "RECOVERY_REQUIRED",
+            recovery.recovery_detail.unwrap_or_default(),
+            "execution_node",
+            node_id,
+            None,
+        )
+    })?;
+    write(&OperatorActionReceipt {
+        request_fingerprint,
+        state: OperatorActionJournalState::Completed,
+        projection: Some(result.projection.clone()),
+        event_id: Some(result.event_id.clone()),
+        resulting_version: Some(result.resulting_version),
+        store_sequence: Some(result.store_sequence),
+        recovery_detail: None,
+    })
+    .map_err(|error| {
+        encoded_error(
+            "RECOVERY_REQUIRED",
+            format!(
+                "external effect completed but its durable completion receipt could not be committed: {error}"
+            ),
             "execution_node",
             node_id,
             Some(result.resulting_version),
@@ -2476,6 +2689,61 @@ fn execute_operator_action(
             node_id,
             None,
         ));
+    }
+    let intent = serde_json::from_slice::<OperatorActionIntent>(body).map_err(|error| {
+        encoded_error(
+            "INVALID_STATE_TRANSITION",
+            format!("invalid Operator intent: {error}"),
+            "execution_node",
+            node_id,
+            None,
+        )
+    })?;
+    let intent_matches = matches!(
+        (operation, &intent),
+        ("diagnostics", OperatorActionIntent::Diagnose)
+            | ("daemon-start", OperatorActionIntent::DaemonStart { .. })
+            | ("daemon-stop", OperatorActionIntent::DaemonStop)
+            | (
+                "provider-admission",
+                OperatorActionIntent::AdmitProvider { .. }
+            )
+    );
+    if !intent_matches {
+        return Err(encoded_error(
+            "INVALID_STATE_TRANSITION",
+            "semantic action does not match Operator route",
+            "execution_node",
+            node_id,
+            None,
+        ));
+    }
+    let daemon_action = matches!(operation, "daemon-start" | "daemon-stop");
+    if daemon_action && confirmed_action != Some(operation) {
+        return Err(encoded_error(
+            "CONFIRMATION_REQUIRED",
+            format!("server confirmation must exactly confirm {operation}"),
+            "execution_node",
+            node_id,
+            None,
+        ));
+    }
+    let firm_home = daemon_action
+        .then(crate::execution_space::firm_home)
+        .transpose()
+        .map_err(|error| {
+            encoded_error(
+                "ACTION_UNAVAILABLE",
+                error.to_string(),
+                "execution_node",
+                node_id,
+                None,
+            )
+        })?;
+    if let Some(firm_home) = firm_home.as_deref() {
+        if let Some(replay) = replay_receipted_operator_action(firm_home, node_id, &auth)? {
+            return Ok(replay);
+        }
     }
     let node_revision = store
         .execution_nodes()?
@@ -2509,15 +2777,6 @@ fn execute_operator_action(
             Some(node_revision),
         ));
     }
-    let intent = serde_json::from_slice::<OperatorActionIntent>(body).map_err(|error| {
-        encoded_error(
-            "INVALID_STATE_TRANSITION",
-            format!("invalid Operator intent: {error}"),
-            "execution_node",
-            node_id,
-            None,
-        )
-    })?;
     match (operation, intent) {
         ("diagnostics", OperatorActionIntent::Diagnose) => {
             let lease = store.latest_node_daemon_lease(node_id)?;
@@ -2543,35 +2802,17 @@ fn execute_operator_action(
                     None,
                 ));
             }
-            if confirmed_action != Some(operation) {
+            let firm_home = firm_home.expect("daemon action resolves firm home before dispatch");
+            if crate::supervisor_daemon::daemon_status_via_socket(&firm_home, node_id).is_some() {
                 return Err(encoded_error(
-                    "CONFIRMATION_REQUIRED",
-                    format!("server confirmation must exactly confirm {operation}"),
-                    "execution_node",
-                    node_id,
-                    None,
-                ));
-            }
-            let firm_home = crate::execution_space::firm_home().map_err(|error| {
-                encoded_error(
                     "ACTION_UNAVAILABLE",
-                    error.to_string(),
+                    "NodeDaemon is already live; refresh the Operator RoleView",
                     "execution_node",
                     node_id,
                     Some(node_revision),
-                )
-            })?;
+                ));
+            }
             execute_receipted_operator_action(&firm_home, node_id, &auth, || {
-                if crate::supervisor_daemon::daemon_status_via_socket(&firm_home, node_id).is_some()
-                {
-                    return Err(encoded_error(
-                        "ACTION_UNAVAILABLE",
-                        "NodeDaemon is already live; refresh the Operator RoleView",
-                        "execution_node",
-                        node_id,
-                        Some(node_revision),
-                    ));
-                }
                 let status = crate::supervisor_daemon::start_daemon_process(
                     &firm_home,
                     node_id,
@@ -2601,24 +2842,7 @@ fn execute_operator_action(
             })
         }
         ("daemon-stop", OperatorActionIntent::DaemonStop) => {
-            if confirmed_action != Some(operation) {
-                return Err(encoded_error(
-                    "CONFIRMATION_REQUIRED",
-                    format!("server confirmation must exactly confirm {operation}"),
-                    "execution_node",
-                    node_id,
-                    None,
-                ));
-            }
-            let firm_home = crate::execution_space::firm_home().map_err(|error| {
-                encoded_error(
-                    "ACTION_UNAVAILABLE",
-                    error.to_string(),
-                    "execution_node",
-                    node_id,
-                    Some(node_revision),
-                )
-            })?;
+            let firm_home = firm_home.expect("daemon action resolves firm home before dispatch");
             execute_receipted_operator_action(&firm_home, node_id, &auth, || {
                 let response =
                     crate::supervisor_daemon::daemon_stop_via_socket(&firm_home, node_id)
@@ -2902,7 +3126,7 @@ pub fn execute(
         },
     ) = (route.operation, route.work_id, &intent)
     {
-        let _member_run_id = resolve_member_run(store, &auth, route.team_run_id)?;
+        let member_run_id = resolve_member_run(store, &auth, route.team_run_id)?;
         if let Some(replay) = canonical_replay(
             store,
             &auth,
@@ -2912,6 +3136,17 @@ pub fn execute(
             return Ok(replay);
         }
         let current = current_work(store, route.team_run_id, work_id)?;
+        if current.owner_member_id.as_deref() != Some(auth.actor.id.as_str())
+            || current.active_member_run_id.as_deref() != Some(member_run_id.as_str())
+        {
+            return Err(encoded_error(
+                "UNAUTHORIZED_ACTOR",
+                "submit requires the exact accountable AgentMember and current active WorkExecutionBinding",
+                "work",
+                work_id,
+                Some(current.version),
+            ));
+        }
         if current.version != auth.expected_version {
             return Err(encoded_error(
                 "VERSION_CONFLICT",
@@ -3266,6 +3501,94 @@ pub fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn operator_auth(key: &str, fingerprint: &str) -> AuthenticatedMutation {
+        AuthenticatedMutation {
+            execution_space_id: "space-test".into(),
+            actor: ActorRef {
+                kind: ActorKind::Service,
+                id: "node-test".into(),
+            },
+            authorized_authority_actors: Vec::new(),
+            idempotency_key: key.into(),
+            expected_version: 1,
+            request_fingerprint: Some(fingerprint.into()),
+        }
+    }
+
+    fn operator_result(event_id: &str) -> RoleActionResult {
+        RoleActionResult {
+            ok: true,
+            action_protocol_version: "agentfirm.role_actions.v1",
+            projection: json!({"effect":"complete"}),
+            event_id: event_id.into(),
+            resulting_version: 1,
+            store_sequence: 1,
+            replayed: false,
+        }
+    }
+
+    #[test]
+    fn operator_journal_replays_completed_effect_and_fences_uncertain_restart() {
+        let root = std::env::temp_dir().join(format!(
+            "firm-operator-journal-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let auth = operator_auth("completed", "fingerprint-completed");
+        let first = execute_receipted_operator_action(&root, "node-test", &auth, || {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(operator_result("effect-1"))
+        })
+        .unwrap();
+        assert!(!first.replayed);
+        let replay = execute_receipted_operator_action(&root, "node-test", &auth, || {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(operator_result("must-not-run"))
+        })
+        .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.event_id, "effect-1");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let uncertain = operator_auth("uncertain", "fingerprint-uncertain");
+        let (path, _, fingerprint) =
+            operator_receipt_paths(&root, "node-test", &uncertain).unwrap();
+        crate::execution_space::atomic_write_bytes(
+            &path,
+            &serde_json::to_vec(&OperatorActionReceipt {
+                request_fingerprint: fingerprint,
+                state: OperatorActionJournalState::InFlight,
+                projection: None,
+                event_id: None,
+                resulting_version: None,
+                store_sequence: None,
+                recovery_detail: Some("fault after effect before receipt".into()),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let error = execute_receipted_operator_action(&root, "node-test", &uncertain, || {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(operator_result("must-not-repeat"))
+        })
+        .expect_err("uncertain restart must require recovery");
+        assert!(error.to_string().contains("RECOVERY_REQUIRED"), "{error}");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let torn = operator_auth("torn", "fingerprint-torn");
+        let (torn_path, _, _) = operator_receipt_paths(&root, "node-test", &torn).unwrap();
+        std::fs::write(&torn_path, b"{\"state\":").unwrap();
+        let error = replay_receipted_operator_action(&root, "node-test", &torn)
+            .expect_err("torn journal must require recovery");
+        assert!(error.to_string().contains("RECOVERY_REQUIRED"), "{error}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn route_inventory_is_closed() {

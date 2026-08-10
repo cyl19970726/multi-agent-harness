@@ -17,8 +17,9 @@ use firm_core::agentfirm_api::{
     MemberCoordinationStatus, MemberRun, MemberRuntimeStatus, MemberWorkspaceBinding,
     MessageDeliveryStatus, MutationContext, NativeSessionAvailability, NativeSessionRef,
     PermissionCeiling, PrimaryCauseStatus, ProviderReceipt, ResponseIntent, RetrySafety,
-    TeamMessage, TeamMessageKind, TrustError, TrustErrorCode, WorkReport, WorkReportKind,
-    WorkspaceLifecycle, WorkspaceMode, WorkspaceOwnership, WorkspaceSafetyProof,
+    TeamMessage, TeamMessageKind, TrustError, TrustErrorCode, WorkFinding, WorkFindingKind,
+    WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode, WorkspaceOwnership,
+    WorkspaceSafetyProof,
 };
 use firm_core::{
     AgentTeam, AgentTeamRun, AgentTeamStatus, ExecutionNode, ExecutionNodeStatus, MemberRunStatus,
@@ -320,6 +321,7 @@ fn seed_team_work(store: &HarnessStore, label: &str, work_id: &str) -> String {
 fn seed_active_team_work(store: &HarnessStore, label: &str, work_id: &str) -> String {
     let run = seed_team(store, label, &["worker"]);
     let runtime_id = "runtime-worker";
+    create_member_and_run(store, &human("host"), &run.id, "worker", runtime_id, false);
     store
         .append_member_run(&RuntimeMemberRun {
             id: runtime_id.into(),
@@ -484,7 +486,7 @@ fn message(id: &str, team_run_id: &str, sender: &ActorRef, recipients: &[&str]) 
     TeamMessage {
         id: id.into(),
         team_run_id: team_run_id.into(),
-        work_id: Some("work-1".into()),
+        work_id: None,
         sender: sender.clone(),
         recipients: recipients.iter().map(|id| member_actor(id)).collect(),
         kind: TeamMessageKind::Message,
@@ -747,6 +749,51 @@ fn fanout_is_atomic_and_creates_exactly_one_delivery_per_recipient() {
             .initial_outbox_records
             .len(),
         2
+    );
+}
+
+#[test]
+fn linked_team_messages_reject_unknown_and_cross_team_work_without_side_effects() {
+    let harness = TestStore::new("linked-message-scope");
+    let host = human("host");
+    let team_run = seed_team(&harness.store, "linked-source", &["member-a", "member-b"]);
+    create_member_and_run(
+        &harness.store,
+        &host,
+        &team_run.id,
+        "member-a",
+        "run-a",
+        false,
+    );
+    create_member_and_run(
+        &harness.store,
+        &host,
+        &team_run.id,
+        "member-b",
+        "run-b",
+        false,
+    );
+    seed_team_work(&harness.store, "linked-other-team", "other-team-work");
+    let before = harness.store.canonical_operations().unwrap().len();
+    for (id, work_id) in [
+        ("unknown-link", "missing-work"),
+        ("cross-team-link", "other-team-work"),
+    ] {
+        let mut linked = message(id, &team_run.id, &member_actor("member-a"), &["member-b"]);
+        linked.work_id = Some(work_id.into());
+        assert!(harness
+            .store
+            .create_trust_team_message_with_deliveries(
+                &context(member_actor("member-a"), "message.create", id, 0),
+                linked,
+                "t4",
+            )
+            .is_err());
+    }
+    assert_eq!(
+        harness.store.canonical_operations().unwrap().len(),
+        before,
+        "unknown/cross-Team Work linkage must have zero canonical side effects"
     );
 }
 
@@ -1326,7 +1373,7 @@ fn result_and_failure_reports_require_their_risk_evidence() {
                 id: "analysis-1".into(),
                 work_id: "work-1".into(),
                 work_revision: 3,
-                member_run_id: Some("run-worker".into()),
+                member_run_id: Some("runtime-worker".into()),
                 candidate: None,
                 observed_failure: "provider exited".into(),
                 impact: "work incomplete".into(),
@@ -1385,6 +1432,121 @@ fn result_and_failure_reports_require_their_risk_evidence() {
         .expect("submitted Work");
     assert_eq!(submitted.version, 4);
     assert_eq!(submitted.phase, WorkPhase::Review);
+}
+
+#[test]
+fn member_owned_work_records_require_the_exact_active_execution_binding() {
+    let harness = TestStore::new("exact-work-binding-records");
+    let team_id = seed_active_team_work(&harness.store, "exact-binding", "work-1");
+    let worker = member_actor("worker");
+    harness
+        .store
+        .transition_trust_member_run(
+            &context(worker.clone(), "member_run.close", "close-old-run", 1),
+            "runtime-worker",
+            MemberCoordinationStatus::Closed,
+            "t4",
+        )
+        .expect("close predecessor MemberRun");
+    let run = harness
+        .store
+        .team_runs()
+        .unwrap()
+        .into_iter()
+        .find(|run| run.agent_team_id == team_id)
+        .expect("TeamRun");
+    harness
+        .store
+        .create_trust_member_run(
+            &context(human("host"), "member_run.create", "create-successor", 0),
+            member_run("runtime-worker-successor", "worker", &run.id, false),
+        )
+        .expect("create successor MemberRun");
+
+    let before = harness.store.canonical_operations().unwrap().len();
+    let mut progress = report("successor-progress", WorkReportKind::Progress, &worker);
+    progress.work_revision = 3;
+    assert_eq!(
+        trust_code(
+            harness
+                .store
+                .create_trust_work_report(
+                    &context(worker.clone(), "report.create", "successor-progress", 0),
+                    &team_id,
+                    progress,
+                )
+                .expect_err("successor must require explicit Work rebind")
+        ),
+        TrustErrorCode::UnauthorizedActor
+    );
+    let finding = WorkFinding {
+        id: "successor-finding".into(),
+        work_id: "work-1".into(),
+        work_revision: 3,
+        kind: WorkFindingKind::Discovery,
+        summary: "successor cannot author before rebind".into(),
+        detail_markdown: "exact active binding is stale".into(),
+        affected_work_refs: Vec::new(),
+        reusable_asset_refs: Vec::new(),
+        invalidated_assumptions: Vec::new(),
+        evidence_refs: Vec::new(),
+        confidence: Confidence::High,
+        reported_by: worker.clone(),
+        created_at: "t5".into(),
+    };
+    assert_eq!(
+        trust_code(
+            harness
+                .store
+                .create_trust_finding(
+                    &context(worker.clone(), "finding.create", "successor-finding", 0),
+                    &team_id,
+                    finding,
+                )
+                .expect_err("successor finding must require explicit Work rebind")
+        ),
+        TrustErrorCode::UnauthorizedActor
+    );
+    let failure = FailureAnalysis {
+        id: "successor-failure".into(),
+        work_id: "work-1".into(),
+        work_revision: 3,
+        member_run_id: Some("runtime-worker-successor".into()),
+        candidate: None,
+        observed_failure: "successor attempted stale binding".into(),
+        impact: "none".into(),
+        primary_cause_status: PrimaryCauseStatus::Confirmed,
+        primary_cause: Some("missing explicit rebind".into()),
+        contributing_causes: Vec::new(),
+        attempts_already_made: Vec::new(),
+        last_safe_checkpoint: None,
+        retry_safety: RetrySafety::Safe,
+        side_effect_summary: Some("none".into()),
+        recovery_options: vec!["rebind".into()],
+        recommended_host_decision: "rebind explicitly".into(),
+        evidence_refs: Vec::new(),
+        confidence: Confidence::High,
+        reported_by: worker.clone(),
+        created_at: "t5".into(),
+    };
+    assert_eq!(
+        trust_code(
+            harness
+                .store
+                .create_trust_failure_analysis(
+                    &context(worker, "failure.create", "successor-failure", 0),
+                    &team_id,
+                    failure,
+                )
+                .expect_err("successor failure must require explicit Work rebind")
+        ),
+        TrustErrorCode::UnauthorizedActor
+    );
+    assert_eq!(
+        harness.store.canonical_operations().unwrap().len(),
+        before,
+        "stale WorkExecutionBinding rejection must have zero canonical side effects"
+    );
 }
 
 #[test]
@@ -1476,6 +1638,14 @@ fn canonical_acceptance_rolls_up_delegation_in_the_same_operation() {
         .expect("source Work");
     let target_run = seed_team(&harness.store, "delegation-target", &["target-worker"]);
     let target_runtime_id = "runtime-target-worker";
+    create_member_and_run(
+        &harness.store,
+        &human("host"),
+        &target_run.id,
+        "target-worker",
+        target_runtime_id,
+        false,
+    );
     harness
         .store
         .append_member_run(&RuntimeMemberRun {

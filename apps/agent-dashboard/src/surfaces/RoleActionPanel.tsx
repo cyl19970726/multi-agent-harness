@@ -74,8 +74,7 @@ export function RoleActionPanel({
 
   useEffect(() => {
     if (!actionsCurrent) {
-      setSelected(null);
-      setStatus("Projection is stale; actions remain disabled until an authoritative refetch completes.");
+      setStatus((current) => current ?? "Projection is stale; actions remain disabled until an authoritative refetch completes.");
     }
   }, [actionsCurrent]);
 

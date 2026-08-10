@@ -2007,11 +2007,6 @@ fn post_team_run_message_and_start_async() {
         .filter_map(|m| m["id"].as_str().map(str::to_string))
         .collect();
     assert_eq!(member_ids.len(), 2);
-    let worker_work_id = body["result"]["works"][1]["id"]
-        .as_str()
-        .expect("worker Work id")
-        .to_string();
-
     // Route a handoff from the worker to the lead.
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),
@@ -2020,7 +2015,6 @@ fn post_team_run_message_and_start_async() {
             "recipient_runtime_ids": [member_ids[0]],
             "kind": "message",
             "body": "take over the review",
-            "work_id": worker_work_id,
         }),
     );
     assert_eq!(status, 200, "body: {body}");
@@ -2081,7 +2075,6 @@ fn post_team_run_message_and_start_async() {
             "recipient_runtime_ids": [member_ids[0].clone()],
             "kind": "message",
             "body": "The Work is ready for Host review",
-            "work_id": worker_work_id,
         }),
     );
     assert_eq!(status, 200, "body: {host_notice}");
@@ -3226,7 +3219,6 @@ fn codex_app_server_post_handoff_steer_is_independent_and_converges_before_follo
             "recipient_runtime_ids": [member_id.clone()],
             "kind": "message",
             "body": "## RESULT\ndone\n## SUMMARY\nexplicit same-turn handoff",
-            "work_id": work_id,
         }),
     );
     assert_eq!(status, 200, "body: {explicit_handoff}");
@@ -6285,7 +6277,6 @@ fn kimi_provider_error_round_records_failure_without_fabricated_handoff_and_reco
             "kind": "message",
             "response_intent": "response_required",
             "body": "Retry the lane after the provider outage",
-            "work_id": work_id,
         }),
     );
     assert_eq!(status, 200, "body: {follow_up}");

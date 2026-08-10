@@ -1123,20 +1123,15 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
         .as_str()
         .expect("member id")
         .to_string();
-    let work_id = body["result"]["works"][0]["id"]
-        .as_str()
-        .expect("Work id")
-        .to_string();
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{attempt_a}/messages"),
         &serde_json::json!({
-            "sender_runtime_id": "host",
+            "sender_runtime_id": "agent-alpha-host",
             "sender_kind": "host",
-            "sender_id": "host",
+            "sender_id": "agent-alpha-host",
             "recipient_runtime_ids": [member_id],
             "kind": "message",
-            "body": "Please execute the linked Work.",
-            "work_id": work_id,
+            "body": "Please execute the assigned Work.",
         }),
     );
     assert_eq!(status, 200, "body: {body}");
@@ -1160,7 +1155,6 @@ fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
             "recipient_runtime_ids": [member_id],
             "kind": "message",
             "body": "implementation handoff",
-            "work_id": work_id,
             "correlation_id": conversation_correlation,
             "causation_id": request_id,
         }),

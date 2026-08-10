@@ -7,11 +7,15 @@ use firm_env::{
     TempHome,
 };
 use harness_core::agentfirm_api::{ActorKind, ActorRef, DeliveryClaim, MutationContext};
-use harness_core::MemberRunStatus;
+use harness_core::{
+    ExecutionNode, ExecutionNodeStatus, MemberRunStatus, NodeProjectRegistration,
+    NodeProjectRegistrationStatus,
+};
 use harness_store::HarnessStore;
 
 const TOKEN: &str = "role-view-local-capability";
 const MEMBER_TOKEN: &str = "role-view-member-capability";
+const SIBLING_MEMBER_TOKEN: &str = "role-view-sibling-member-capability";
 const OPERATOR_TOKEN: &str = "role-view-operator-capability";
 const WRONG_OPERATOR_TOKEN: &str = "role-view-wrong-operator-capability";
 const DELEGATED_OPERATOR_TOKEN: &str = "role-view-delegated-operator-capability";
@@ -127,6 +131,21 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         &[],
     );
     assert!(worker.status.success(), "worker: {worker:?}");
+    let sibling_worker_id = "agent-role-action-sibling";
+    let sibling_worker = create_canonical_agent_member(
+        &home,
+        &root,
+        &project_id,
+        sibling_worker_id,
+        "Role Action Sibling",
+        "builder",
+        "codex",
+        &[],
+    );
+    assert!(
+        sibling_worker.status.success(),
+        "sibling worker: {sibling_worker:?}"
+    );
     run(&[
         "team",
         "create",
@@ -144,8 +163,33 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         host_id,
         "--member",
         worker_id,
+        "--member",
+        sibling_worker_id,
     ]);
     let store = HarnessStore::new(home.spaces_dir().join(&space_id));
+    let sibling_node_id = "10000000-0000-4000-8000-000000000002";
+    store
+        .insert_execution_node(&ExecutionNode {
+            id: sibling_node_id.into(),
+            display_name: "Sibling execution node".into(),
+            status: ExecutionNodeStatus::Active,
+            created_at: "2026-08-10T00:00:00Z".into(),
+            updated_at: "2026-08-10T00:00:00Z".into(),
+        })
+        .expect("insert sibling Node");
+    store
+        .register_node_project(
+            &NodeProjectRegistration {
+                node_id: sibling_node_id.into(),
+                execution_space_id: space_id.clone(),
+                project_binding_id: project_id.clone(),
+                status: NodeProjectRegistrationStatus::Active,
+                created_at: "2026-08-10T00:00:00Z".into(),
+                updated_at: "2026-08-10T00:00:00Z".into(),
+            },
+            &space_id,
+        )
+        .expect("register sibling Node");
     let team = store
         .latest_teams()
         .expect("teams")
@@ -161,12 +205,16 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         "actor": {"kind":"agent_member","id":worker_id},
         "authority_actors": []
     },{
+        "token": SIBLING_MEMBER_TOKEN,
+        "actor": {"kind":"agent_member","id":sibling_worker_id},
+        "authority_actors": []
+    },{
         "token": OPERATOR_TOKEN,
         "actor": {"kind":"service","id":node_id},
         "authority_actors": []
     },{
         "token": WRONG_OPERATOR_TOKEN,
-        "actor": {"kind":"service","id":"wrong-node"},
+        "actor": {"kind":"service","id":sibling_node_id},
         "authority_actors": []
     },{
         "token": DELEGATED_OPERATOR_TOKEN,
@@ -200,7 +248,10 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         &serde_json::json!({
             "agent_team_id": team.id,
             "objective": "Store-live AgentFirm action loop",
-            "members": [{"agent_member_id":worker_id,"name":"worker","role":"builder","provider":"codex"}]
+            "members": [
+                {"agent_member_id":worker_id,"name":"worker","role":"builder","provider":"codex"},
+                {"agent_member_id":sibling_worker_id,"name":"sibling","role":"builder","provider":"codex"}
+            ]
         }),
     );
     assert_eq!(status, 200, "TeamRun: {created_run}");
@@ -302,9 +353,19 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert_eq!(replayed_message["replayed"], true);
     assert_eq!(replayed_message["event_id"], sent_message["event_id"]);
 
-    let member_run_id = created_run["result"]["member_runs"][0]["id"]
-        .as_str()
+    let member_runs = created_run["result"]["member_runs"]
+        .as_array()
+        .expect("member runs");
+    let member_run_id = member_runs
+        .iter()
+        .find(|run| run["agent_member_id"] == worker_id)
+        .and_then(|run| run["id"].as_str())
         .expect("member run id");
+    let sibling_member_run_id = member_runs
+        .iter()
+        .find(|run| run["agent_member_id"] == sibling_worker_id)
+        .and_then(|run| run["id"].as_str())
+        .expect("sibling member run id");
     let member_run_version = store
         .trust_member_runs(&space_id)
         .expect("MemberRuns")
@@ -406,7 +467,6 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         &serde_json::json!({
             "action":"request_decision",
             "body":"Host decision is required",
-            "work_id":"work-store-live-1",
             "evidence_refs":["check:member-request-decision"]
         }),
         &decision_headers,
@@ -423,6 +483,88 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     );
     assert_eq!(status, 200, "member claim: {claimed}");
     assert_eq!(claimed["projection"]["active_member_run_id"], member_run_id);
+    let before_sibling_attempts = ledger_digest(serve.fixture_store_root());
+    let sibling_record_attempts = [
+        (
+            "reports",
+            "sibling-progress-spoof",
+            serde_json::json!({"action":"write_report","summary":"spoofed sibling progress"}),
+        ),
+        (
+            "findings",
+            "sibling-finding-spoof",
+            serde_json::json!({"action":"write_finding","kind":"discovery","summary":"spoofed finding","detail_markdown":"not the owner","confidence":"high"}),
+        ),
+        (
+            "failure-analyses",
+            "sibling-failure-spoof",
+            serde_json::json!({"action":"write_failure","observed_failure":"spoofed failure","impact":"none","primary_cause_status":"unknown","retry_safety":"unknown","recommended_host_decision":"reject","confidence":"high"}),
+        ),
+        (
+            "revise",
+            "sibling-revise-spoof",
+            serde_json::json!({"action":"revise_work","result_summary":"spoofed revision","candidate_revision":"abcdef0123456789","check_refs":["check:spoof"]}),
+        ),
+    ];
+    for (operation, key, intent) in sibling_record_attempts {
+        let route = format!(
+            "/v1/agentfirm/teams/{}/works/work-store-live-1/{operation}?project={project_id}",
+            team.id
+        );
+        let (status, rejected) = serve.post_json_with_headers(
+            &route,
+            &intent,
+            &action_headers(SIBLING_MEMBER_TOKEN, key, "2"),
+        );
+        assert_eq!(status, 409, "sibling {operation} spoof: {rejected}");
+    }
+    let sibling_submit_route = format!(
+        "/v1/agentfirm/team-runs/{run_id}/works/work-store-live-1/submit?project={project_id}"
+    );
+    let (status, sibling_submit) = serve.post_json_with_headers(
+        &sibling_submit_route,
+        &serde_json::json!({"action":"submit_work","result_summary":"spoofed result","candidate_revision":"abcdef0123456789","check_refs":["check:spoof"]}),
+        &action_headers(SIBLING_MEMBER_TOKEN, "sibling-submit-spoof", "2"),
+    );
+    assert_eq!(status, 409, "sibling submit spoof: {sibling_submit}");
+    let linked_message_headers = action_headers(
+        SIBLING_MEMBER_TOKEN,
+        "sibling-linked-message-spoof",
+        &team_revision,
+    );
+    let (status, sibling_linked_message) = serve.post_json_with_headers(
+        &decision_route,
+        &serde_json::json!({
+            "action":"request_decision",
+            "body":"false Work linkage",
+            "work_id":"work-store-live-1"
+        }),
+        &linked_message_headers,
+    );
+    assert_eq!(
+        status, 409,
+        "sibling linked message spoof: {sibling_linked_message}"
+    );
+    let (status, unknown_linked_message) = serve.post_json_with_headers(
+        &decision_route,
+        &serde_json::json!({
+            "action":"request_decision",
+            "body":"unknown Work linkage",
+            "work_id":"missing-work"
+        }),
+        &action_headers(
+            SIBLING_MEMBER_TOKEN,
+            "unknown-linked-message",
+            &team_revision,
+        ),
+    );
+    assert_eq!(status, 409, "unknown linked Work: {unknown_linked_message}");
+    assert_eq!(
+        ledger_digest(serve.fixture_store_root()),
+        before_sibling_attempts,
+        "rejected sibling/unknown Work mutations must have zero durable side effects"
+    );
+    assert_ne!(member_run_id, sibling_member_run_id);
     let (status, claim_replay) = serve.post_json_with_headers(
         &claim_route,
         &serde_json::json!({"action":"claim_work"}),
