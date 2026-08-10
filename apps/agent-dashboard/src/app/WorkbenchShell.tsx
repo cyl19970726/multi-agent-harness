@@ -17,6 +17,7 @@ import {
   RefreshCw,
   Search,
   Settings2,
+  ServerCog,
   ShieldAlert,
   Sparkles,
   Target,
@@ -38,6 +39,7 @@ import { Kbd, MonoId, StatusDot } from "@/components/workbench/atoms";
 import { ProvenanceFooter } from "@/components/workbench/ProvenanceFooter";
 
 import type { WorkbenchModel } from "../model/readModel";
+import type { RoleActionExecutor } from "../model/roleViews";
 import type { Company, ExecutionSpace, Project } from "../types";
 import {
   AgentDetail,
@@ -46,9 +48,11 @@ import {
 } from "../surfaces/Surfaces";
 import { WorkflowRunDetail, WorkflowsList } from "../surfaces/Workflows";
 import { AgentTeamsHome } from "../surfaces/AgentTeamsHome";
-import { TeamWarRoom } from "../surfaces/TeamWarRoom";
-import { MemberRunFocus } from "../surfaces/MemberRuns";
 import { MissionsSurface } from "../surfaces/Missions";
+import { CompanyWorkIndex } from "../surfaces/CompanyWorkIndex";
+import { TeamWorkspace } from "../surfaces/TeamWorkspace";
+import { MemberWorkbench } from "../surfaces/MemberWorkbench";
+import { OperatorView } from "../surfaces/OperatorView";
 import { isCompanyOsSurface, resolveCompanyOsRouteData } from "../company-os/routeMeta";
 import { DocsV2Surface } from "../company-os/docs/DocsV2Surface";
 
@@ -93,6 +97,7 @@ interface WorkbenchShellProps {
   actionsEnabled: boolean;
   /** POST a harness action then refresh the snapshot. */
   onAction: (path: string, body?: unknown, options?: { headers?: Readonly<Record<string, string>> }) => Promise<boolean>;
+  onRoleAction: RoleActionExecutor;
   /** Whether opt-in interval polling of /v1/snapshot is currently on. */
   pollEnabled: boolean;
   /** Whether polling is meaningful right now (only against a live source). */
@@ -122,6 +127,7 @@ const navigationGroups: Array<{ label: "PRIMARY" | "OPERATIONS" | "EXECUTION" | 
     { id: "missions", label: "Missions", icon: Target },
     { id: "workflows", label: "Workflows", icon: Workflow },
     { id: "team", label: "Agent Teams", icon: Users },
+    { id: "operator", label: "Operator", icon: ServerCog },
   ] },
   { label: "PLATFORM", items: [
     { id: "providers", label: "Providers", icon: Globe },
@@ -162,6 +168,7 @@ export function WorkbenchShell({
   domainFreshness,
   actionsEnabled,
   onAction,
+  onRoleAction,
   pollEnabled,
   canPoll,
   onTogglePoll,
@@ -169,6 +176,7 @@ export function WorkbenchShell({
   const memberFocusMode = selection.surface === "team" && Boolean(selection.memberRunId);
   const focusedTeamMode = selection.surface === "team" && Boolean(selection.teamId);
   const compactExecutionMode = memberFocusMode || focusedTeamMode;
+  const roleActionsCurrent = actionsEnabled && domainFreshness.works === "live" && domainFreshness.runtime === "live";
   function updateSelection(next: Partial<SelectionState>) {
     onSelectionChange({ ...selection, ...next });
   }
@@ -226,6 +234,8 @@ export function WorkbenchShell({
                 sourceLabel={sourceLabel}
                 actionsEnabled={actionsEnabled}
                 onAction={onAction}
+                onRoleAction={onRoleAction}
+                roleActionsCurrent={roleActionsCurrent}
                 apiUrl={apiUrl}
                 projectBindingId={selectedProjectId}
                 executionSpaceId={selectedSpaceId}
@@ -311,7 +321,7 @@ function TopBar({
   prototypeMode,
 }: Omit<
   WorkbenchShellProps,
-  "selection" | "onSelectionChange" | "actionsEnabled" | "onAction"
+  "selection" | "onSelectionChange" | "actionsEnabled" | "onAction" | "onRoleAction"
 > & {
   currentSurface: string;
   contextLabel: string;
@@ -948,6 +958,8 @@ function SurfaceSwitch({
   sourceLabel,
   actionsEnabled,
   onAction,
+  onRoleAction,
+  roleActionsCurrent,
   apiUrl,
   projectBindingId,
   executionSpaceId,
@@ -960,6 +972,8 @@ function SurfaceSwitch({
   sourceLabel: string;
   actionsEnabled: boolean;
   onAction: (path: string, body?: unknown, options?: { headers?: Readonly<Record<string, string>> }) => Promise<boolean>;
+  onRoleAction: RoleActionExecutor;
+  roleActionsCurrent: boolean;
   apiUrl: string;
   projectBindingId: string;
   executionSpaceId: string;
@@ -991,6 +1005,9 @@ function SurfaceSwitch({
       />
     );
   }
+  if (selection.surface === "work") {
+    return <CompanyWorkIndex apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} refreshKey={model.snapshot.generated_at} selection={selection} onSelectionChange={onSelectionChange} />;
+  }
   if (isCompanyOsSurface(selection.surface)) {
     const livePending = isLoading || (actionsEnabled && !model.snapshot.company_os);
     return (
@@ -1017,24 +1034,18 @@ function SurfaceSwitch({
       );
     case "team":
       return selection.memberRunId ? (
-        <MemberRunFocus
-          {...shared}
-          memberRunId={selection.memberRunId}
-          missionId={selection.missionId}
-          waveId={selection.waveId}
-          isLoading={isLoading}
-        />
+        <MemberWorkbench key={model.snapshot.generated_at} apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} memberRunId={selection.memberRunId} teamRunId={(model.snapshot.member_runs ?? []).find((run) => run.id === selection.memberRunId)?.team_run_id} teamId={(model.snapshot.team_runs ?? []).find((run) => run.id === (model.snapshot.member_runs ?? []).find((memberRun) => memberRun.id === selection.memberRunId)?.team_run_id)?.agent_team_id} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} />
       ) : selection.teamId ? (
-        <TeamWarRoom
-          {...shared}
-          teamRunId={selection.teamId}
-          workId={selection.teamWorkId}
-          missionId={selection.missionId}
-          waveId={selection.waveId}
-        />
+        <TeamWorkspace key={model.snapshot.generated_at} apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} teamId={(model.snapshot.team_runs ?? []).find((run) => run.id === selection.teamId)?.agent_team_id ?? selection.teamId} teamRunId={(model.snapshot.team_runs ?? []).find((run) => run.id === selection.teamId)?.id ?? (model.snapshot.team_runs ?? []).find((run) => run.agent_team_id === selection.teamId)?.id} refreshKey={model.snapshot.generated_at} selection={selection} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} onSelectionChange={onSelectionChange} />
       ) : (
         <AgentTeamsHome {...shared} />
       );
+    case "operator": {
+      const nodeId = selection.nodeId ?? model.snapshot.execution_nodes?.[0]?.id;
+      return nodeId
+        ? <OperatorView key={model.snapshot.generated_at} apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} nodeId={nodeId} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} />
+        : <div className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">No Execution Node is registered.</div>;
+    }
     case "debug":
       return <DebugSurface model={model} sourceLabel={sourceLabel} />;
     case "agents":

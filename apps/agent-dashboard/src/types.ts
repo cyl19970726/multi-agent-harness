@@ -991,6 +991,13 @@ export interface HarnessMeta {
   latest_op_seq: number;
   /** harness-cli's own crate version. */
   server_version: string;
+  build_sha: string;
+  node_id: string | null;
+  daemon_generation: number | null;
+  protocol_version: "agentfirm-member-trust/1";
+  schema_version: "agentfirm.role_views.v1";
+  action_manifest_version: "agentfirm.role_actions.v1";
+  capability_auth: "x-agentfirm-token";
 }
 
 export interface DashboardSnapshot {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  applyFrame,
+  AgentFirmApiError,
   fetchCompanies,
   fetchProjects,
   fetchSpaces,
@@ -36,8 +36,16 @@ import {
   type DomainFreshness,
   type FreshnessDomain,
 } from "./freshness";
+import type { RoleActionExecutionResult } from "../model/roleViews";
 
-const apiDefault = "http://127.0.0.1:8787";
+declare global {
+  interface Window {
+    __AGENTFIRM_BOOTSTRAP__?: { apiBase?: string; capabilityToken?: string };
+  }
+}
+const apiDefault = typeof window !== "undefined" && /^https?:$/.test(window.location.protocol)
+  ? window.location.origin
+  : "http://127.0.0.1:8787";
 /**
  * Allow the harness API to be deep-linked via `?api=<url>` so a single link can
  * point the dashboard at a specific store (e.g. a second `harness serve`) without
@@ -46,7 +54,9 @@ const apiDefault = "http://127.0.0.1:8787";
 function apiFromLocation(): string {
   try {
     const fromUrl = new URLSearchParams(window.location.search).get("api");
-    return fromUrl && fromUrl.trim() ? fromUrl.trim() : apiDefault;
+    return fromUrl && fromUrl.trim()
+      ? fromUrl.trim()
+      : window.__AGENTFIRM_BOOTSTRAP__?.apiBase?.trim() || apiDefault;
   } catch {
     return apiDefault;
   }
@@ -891,9 +901,8 @@ export function App() {
     return !scopeMismatch;
   }, [requestAuthoritativeResync, selectedCompanyId, selectedProjectId, selectedSpaceId]);
 
-  // SSE delta: merge the frame into the in-memory snapshot (append/replace by
-  // id, latest-wins) so the read model and Member action stream update WITHOUT
-  // a full re-fetch.
+  // SSE is a freshness channel only. Raw ledger rows never become browser
+  // truth; every frame invalidates and converges through an authoritative GET.
   const handleSseFrame = useCallback((streamKey: string, frame: SseFrame) => {
     if (selectedStreamRef.current !== streamKey || !streamScopeTrustedRef.current) return;
     if (frame.kind === "projection_invalidated") {
@@ -907,12 +916,7 @@ export function App() {
       return;
     }
     staleConnectionAttemptRef.current = null;
-    snapshotFrames.current.recordFrame(frame);
-    setSnapshot((current) => applyFrame(current, frame));
-    if (!resyncDirtyRef.current && !resyncInFlightRef.current) {
-      setFreshnessState("live");
-      setDomainFreshness((current) => updateFreshness(current, ["runtime"], "live"));
-    }
+    requestAuthoritativeResync(freshnessDomains);
   }, [requestAuthoritativeResync]);
 
   // Open the EventSource while live; it cleans up on unmount, on leaving live,
@@ -932,7 +936,19 @@ export function App() {
   useEffect(() => {
     if (eventStream.mode === "sse") {
       streamConnectedRef.current = streamScopeTrustedRef.current;
-      if (!streamScopeTrustedRef.current) setFreshnessState("stale");
+      if (!streamScopeTrustedRef.current) {
+        setFreshnessState("stale");
+      } else {
+        // The marker-driven authoritative read can finish before React commits
+        // the EventSource mode update. In that ordering the snapshot correctly
+        // made every durable domain Live while runtime stayed Reconnecting.
+        // Promote runtime only when the authoritative Works snapshot is already
+        // live; this closes the handshake race without treating the socket as
+        // browser truth or enabling actions against stale Work.
+        setDomainFreshness((current) => current.works === "live"
+          ? { ...current, runtime: "live" }
+          : current);
+      }
       return;
     }
     streamConnectedRef.current = false;
@@ -1064,18 +1080,22 @@ export function App() {
   // Returns whether the action succeeded so callers that chain actions (e.g. the
   // composer's queue-then-deliver) can stop on failure instead of clobbering the
   // first error with the next call's `setSourceError(null)`.
-  async function runAction(path: string, body?: unknown, options?: { headers?: Readonly<Record<string, string>> }): Promise<boolean> {
-    if (!isLive) return false;
+  async function runActionDetailed(path: string, body?: unknown, options?: { headers?: Readonly<Record<string, string>> }): Promise<RoleActionExecutionResult> {
+    if (!isLive) return { ok: false, error: { code: "OFFLINE", message: "Live AgentFirm connection is required." } };
     if (mutationInFlightRef.current) {
       setSourceError("Another Console action is still in progress");
-      return false;
+      return { ok: false, error: { code: "MUTATION_IN_FLIGHT", message: "Another Console action is still in progress." } };
     }
     mutationInFlightRef.current = true;
     setSourceError(null);
     const request = beginMutationSnapshotRequest();
     let needsRefresh = false;
     try {
-      const response = await postAction(apiUrl, path, body, selectedProjectId, selectedCompanyId, options, selectedSpaceId);
+      const capabilityToken = window.__AGENTFIRM_BOOTSTRAP__?.capabilityToken;
+      const authenticatedOptions = capabilityToken
+        ? { ...options, headers: { "X-AgentFirm-Token": capabilityToken, ...options?.headers } }
+        : options;
+      const response = await postAction(apiUrl, path, body, selectedProjectId, selectedCompanyId, authenticatedOptions, selectedSpaceId);
       if (response.snapshot) {
         adoptSnapshotResponse(request, response.snapshot);
       } else {
@@ -1083,14 +1103,21 @@ export function App() {
       }
     } catch (error) {
       setSourceError(error instanceof Error ? error.message : String(error));
-      return false;
+      if (error instanceof AgentFirmApiError) {
+        return { ok: false, error: { status: error.status, code: error.code, message: error.message, ...error.details } };
+      }
+      return { ok: false, error: { code: "REQUEST_FAILED", message: error instanceof Error ? error.message : String(error) } };
     } finally {
       finishMutationSnapshotRequest(request);
       mutationInFlightRef.current = false;
       if (resyncDirtyRef.current) resyncRunnerRef.current?.();
     }
     if (needsRefresh) await refreshLive();
-    return true;
+    return { ok: true };
+  }
+
+  async function runAction(path: string, body?: unknown, options?: { headers?: Readonly<Record<string, string>> }): Promise<boolean> {
+    return (await runActionDetailed(path, body, options)).ok;
   }
 
   // Product freshness, not merely socket state. A connected EventSource is not
@@ -1127,6 +1154,7 @@ export function App() {
         domainFreshness={domainFreshness}
         actionsEnabled={isLive}
         onAction={(path, body, options) => runAction(path, body, options)}
+        onRoleAction={(path, body, options) => runActionDetailed(path, body, options)}
         pollEnabled={pollEnabled}
         canPoll={isLive}
         onTogglePoll={() => setPollEnabled((on) => !on)}

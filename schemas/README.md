@@ -41,6 +41,8 @@
 | Decision | [decision.schema.json](decision.schema.json) |
 | Tool descriptor | [agent-harness-tool-descriptor.schema.json](agent-harness-tool-descriptor.schema.json) |
 | Doc descriptor | [doc-descriptor.schema.json](doc-descriptor.schema.json) |
+| Local AgentFirm RoleViews | [role-views/agentfirm.role_views.v1](role-views/agentfirm.role_views.v1) |
+| Role action manifest | [role-views/role-action-manifest.v1.json](role-views/role-action-manifest.v1.json) |
 
 Schemas in this directory are generic. Project-specific artifacts should live
 in an adapter package or example directory.

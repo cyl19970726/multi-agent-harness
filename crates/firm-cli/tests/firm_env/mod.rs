@@ -269,6 +269,10 @@ pub struct ServeHandle {
 }
 
 impl ServeHandle {
+    pub fn fixture_store_root(&self) -> &std::path::Path {
+        &self.fixture_store_root
+    }
+
     /// Spawn `harness serve` from `cwd` against `home`, on a free ephemeral port.
     /// Extra env can pin `--project`/`FIRM_PROJECT` via the args/env.
     pub fn spawn(home: &TempHome, cwd: &Path, extra_args: &[&str]) -> Self {
@@ -434,6 +438,29 @@ impl ServeHandle {
         let (status, body) = self.try_get(path).expect("GET request");
         let json = serde_json::from_str(&body)
             .unwrap_or_else(|e| panic!("GET {path} body not JSON ({e}): {body}"));
+        (status, json)
+    }
+
+    /// GET JSON with explicit request headers (for authenticated read models).
+    pub fn get_json_with_headers(
+        &self,
+        path: &str,
+        headers: &[(&str, &str)],
+    ) -> (u16, serde_json::Value) {
+        let mut stream = TcpStream::connect(self.addr()).expect("connect get");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
+        write!(stream, "GET {path} HTTP/1.1\r\nHost: localhost\r\n").expect("write get");
+        for (name, value) in headers {
+            write!(stream, "{name}: {value}\r\n").expect("write header");
+        }
+        write!(stream, "Connection: close\r\n\r\n").expect("finish get");
+        let mut raw = String::new();
+        read_http_to_string(&mut stream, &mut raw).expect("read get");
+        let (status, body) = split_status_body(&raw);
+        let json = serde_json::from_str(&body)
+            .unwrap_or_else(|error| panic!("GET {path} body not JSON ({error}): {body}"));
         (status, json)
     }
 
@@ -679,6 +706,7 @@ impl ServeHandle {
                         command_name: "integration_test.agent_member.create".into(),
                         idempotency_key: format!("integration-test-create-{id}"),
                         expected_version: 0,
+                        request_fingerprint: None,
                     },
                     AgentMember {
                         id: id.clone(),

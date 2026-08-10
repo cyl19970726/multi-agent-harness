@@ -6,13 +6,41 @@
 
 mod firm_env;
 
-use firm_env::{run_firm, TempHome};
+use firm_env::{current_project_id, current_space_id, run_firm, TempHome};
 
 fn init_node(home: &TempHome) -> String {
     let output = run_firm(home, home.base(), &["node", "init"]);
     assert!(output.status.success(), "node init failed: {output:?}");
     let node: serde_json::Value = serde_json::from_slice(&output.stdout).expect("node JSON");
     node["id"].as_str().expect("node id").to_string()
+}
+
+fn init_registered_node(home: &TempHome) -> String {
+    let initialized = run_firm(home, home.base(), &["init"]);
+    assert!(initialized.status.success(), "init failed: {initialized:?}");
+    let node_id = init_node(home);
+    let project_id = current_project_id(home);
+    let space_id = current_space_id(home);
+    let registered = run_firm(
+        home,
+        home.base(),
+        &[
+            "node",
+            "project",
+            "register",
+            "--node-id",
+            &node_id,
+            "--execution-space-id",
+            &space_id,
+            "--project-binding-id",
+            &project_id,
+        ],
+    );
+    assert!(
+        registered.status.success(),
+        "node registration failed: {registered:?}"
+    );
+    node_id
 }
 
 #[test]
@@ -33,7 +61,7 @@ fn daemon_status_reports_absent_for_initialized_node() {
 #[test]
 fn daemon_start_is_machine_singleton_and_stop_removes_it() {
     let home = TempHome::new("node-daemon-lifecycle");
-    let node_id = init_node(&home);
+    let node_id = init_registered_node(&home);
 
     let start = run_firm(
         &home,

@@ -67,6 +67,8 @@ mod native_session;
 mod pi_rpc;
 mod project;
 mod resident;
+mod role_actions_api;
+mod role_views_api;
 mod sse;
 #[cfg(unix)]
 mod supervisor_daemon;
@@ -2051,6 +2053,7 @@ fn member_trust_command(
         authorized_authority_actors: authority_actor.into_iter().collect(),
         idempotency_key,
         expected_version,
+        request_fingerprint: None,
     };
     match agentfirm_api::execute(store, auth, command) {
         Ok(result) => print_json(&result),
@@ -7821,6 +7824,114 @@ where
     }
 }
 
+/// Server-owned provider admission seam for the closed Operator action.
+/// The browser selects only a registered provider/mode; installed version,
+/// adapter contract, scope and evidence are all observed and bound here.
+fn admit_provider_from_operator_action(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    node_id: &str,
+    provider: &str,
+    execution_mode: &str,
+    idempotency_key: &str,
+) -> Result<(ProviderCompatibilityAdmission, bool), String> {
+    let admission_id = format!("provider-admission:{idempotency_key}");
+    if let Some(existing) = store
+        .latest_provider_compatibility_admissions()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|existing| existing.id == admission_id)
+    {
+        let (project_id, store_id) = store
+            .provider_compatibility_scope()
+            .ok_or_else(|| "canonical provider compatibility scope is unavailable".to_string())?;
+        if existing.project_id == project_id
+            && existing.store_id == store_id
+            && existing.provider == provider
+            && existing.execution_mode == execution_mode
+            && existing.actor == node_id
+            && existing.evidence_refs.iter().any(|evidence| {
+                evidence == &format!("server-scope:{execution_space_id}:{node_id}:{project_id}")
+            })
+        {
+            return Ok((existing, true));
+        }
+        return Err("idempotency key is already bound to a different provider admission".into());
+    }
+    let registration = store
+        .latest_node_project_registrations()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|registration| {
+            registration.node_id == node_id
+                && registration.execution_space_id == execution_space_id
+                && registration.status == harness_core::NodeProjectRegistrationStatus::Active
+        })
+        .ok_or_else(|| {
+            "exact Node/project/Execution Space registration is not active".to_string()
+        })?;
+    let (project_id, store_id) = store
+        .provider_compatibility_scope()
+        .ok_or_else(|| "canonical provider compatibility scope is unavailable".to_string())?;
+    if registration.project_binding_id != project_id {
+        return Err("Node registration does not match the canonical project scope".into());
+    }
+    let (detected, adapter_contract_version) =
+        operator_provider_admission_probe(provider, execution_mode)?;
+    let admission = ProviderCompatibilityAdmission {
+        id: admission_id,
+        project_id: project_id.to_string(),
+        store_id: store_id.to_string(),
+        provider: provider.to_string(),
+        execution_mode: execution_mode.to_string(),
+        provider_version: detected.clone(),
+        adapter_contract_version: adapter_contract_version.clone(),
+        policy: ProviderCompatibilityAdmissionPolicy::Strict,
+        actor: node_id.to_string(),
+        evidence_refs: vec![
+            format!("server-probe:provider-version:{provider}:{detected}"),
+            format!("server-registry:adapter-contract:{adapter_contract_version}"),
+            format!("server-scope:{execution_space_id}:{node_id}:{project_id}"),
+        ],
+        admitted_at: now_string(),
+        lifecycle: ProviderCompatibilityAdmissionLifecycle::Active,
+        predecessor_admission_id: None,
+        reason: None,
+    };
+    let ensured = store
+        .ensure_provider_compatibility_admission(&admission)
+        .map_err(|error| error.to_string())?;
+    Ok((ensured.admission, !ensured.created))
+}
+
+/// Observe whether an installed provider tuple is presently eligible for an
+/// operational admission. RoleView projection and action execution share this
+/// exact probe so the UI cannot advertise an action that the server already
+/// knows it must reject.
+pub(crate) fn operator_provider_admission_probe(
+    provider: &str,
+    execution_mode: &str,
+) -> Result<(String, String), String> {
+    let mut profile = team_member_provider_profile_for_mode(provider, Some(execution_mode));
+    if profile.execution_mode != execution_mode {
+        return Err(format!(
+            "execution mode {execution_mode} is not registered for {provider}"
+        ));
+    }
+    let adapter_contract_version = profile.adapter_contract_version.clone().ok_or_else(|| {
+        format!("provider {provider}/{execution_mode} has no registered adapter contract")
+    })?;
+    let detected = team_member_provider_version_output(provider)?;
+    apply_provider_version(&mut profile, Some(detected.clone()));
+    if profile.compatibility_status != ProviderCompatibilityStatus::ReviewRequired {
+        return Err(format!(
+            "observed provider tuple is {}; admission is available only for review_required tuples",
+            serde_snake_label(&profile.compatibility_status)
+        ));
+    }
+    Ok((detected, adapter_contract_version))
+}
+
 fn member_command(store: &HarnessStore, args: &[String]) -> CliResult<()> {
     require_subcommand(args, "member providers|preflight")?;
     match args[0].as_str() {
@@ -11364,6 +11475,7 @@ fn materialize_canonical_member_run(
         command_name: "team_run.materialize_member_run".into(),
         idempotency_key: format!("team-run-member-run:{}", runtime.id),
         expected_version: 0,
+        request_fingerprint: None,
     };
     store_conflict_as_usage(store.create_trust_member_run(&context, run))?;
     Ok(())
@@ -11514,6 +11626,7 @@ fn ensure_unit_test_canonical_members(
                 command_name: "unit_test.agent_member.create".into(),
                 idempotency_key: format!("unit-test-member:{}", member.agent_member_id),
                 expected_version: 0,
+                request_fingerprint: None,
             },
             harness_core::agentfirm_api::AgentMember {
                 id: member.agent_member_id.clone(),
@@ -17159,6 +17272,7 @@ fn canonical_delivery_context(
         command_name: command_name.to_string(),
         idempotency_key,
         expected_version,
+        request_fingerprint: None,
     }
 }
 
@@ -17764,22 +17878,70 @@ fn mark_member_coordination_closed(
     team_run_id: &str,
     member_run_id: &str,
 ) -> CliResult<ProviderRuntimeProjection> {
-    let mut member = latest_member_runs_in_append_order(store)?
-        .into_iter()
-        .find(|member| member.id == member_run_id && member.team_run_id == team_run_id)
-        .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
-    if member.coordination_is_retired() {
-        return Err(CliError::Usage(format!(
-            "member run {member_run_id} is retired and cannot be closed or reopened"
-        )));
-    }
-    if !member.coordination_is_closed() {
+    mark_member_coordination_closed_with_hook(store, team_run_id, member_run_id, |_, _| Ok(()))
+}
+
+fn mark_member_coordination_closed_with_hook(
+    store: &HarnessStore,
+    team_run_id: &str,
+    member_run_id: &str,
+    mut before_cas: impl FnMut(usize, &ProviderRuntimeProjection) -> CliResult<()>,
+) -> CliResult<ProviderRuntimeProjection> {
+    let mut conflicted_expected = None;
+    for attempt in 0..PROVIDER_MEMBER_CAS_RETRIES {
+        let mut member = latest_member_runs_in_append_order(store)?
+            .into_iter()
+            .find(|member| member.id == member_run_id && member.team_run_id == team_run_id)
+            .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+        if member.coordination_is_retired() {
+            return Err(CliError::Usage(format!(
+                "member run {member_run_id} is retired and cannot be closed or reopened"
+            )));
+        }
+        if member.coordination_is_closed() {
+            return Ok(member);
+        }
+        if let Some(expected) = conflicted_expected.take() {
+            if !is_provider_callback_resume_drift(&expected, &member) {
+                return Err(CliError::Usage(format!(
+                    "ProviderRuntimeProjection {member_run_id} changed outside the admitted provider callback waiting-to-running transition"
+                )));
+            }
+        }
         let expected = member.clone();
         member.coordination_status = MemberCoordinationStatus::Closed;
         member.last_event_at = Some(now_string());
-        store_conflict_as_usage(store.compare_and_append_member_run(&expected, &member))?;
+        before_cas(attempt, &expected)?;
+        match store.compare_and_append_member_run(&expected, &member) {
+            Ok(()) => return Ok(member),
+            Err(StoreError::Conflict(message))
+                if message.starts_with("ProviderRuntimeProjection ")
+                    && message.ends_with(" changed concurrently; retry the operation")
+                    && attempt + 1 < PROVIDER_MEMBER_CAS_RETRIES =>
+            {
+                conflicted_expected = Some(expected);
+            }
+            Err(error) => return store_conflict_as_usage(Err(error)),
+        }
     }
-    Ok(member)
+    unreachable!("bounded coordination-close CAS loop returns on every path")
+}
+
+fn is_provider_callback_resume_drift(
+    expected: &ProviderRuntimeProjection,
+    latest: &ProviderRuntimeProjection,
+) -> bool {
+    if expected.status != MemberRunStatus::Waiting
+        || latest.status != MemberRunStatus::Running
+        || !expected.coordination_is_active()
+        || !latest.coordination_is_active()
+    {
+        return false;
+    }
+    let mut normalized = latest.clone();
+    normalized.status = expected.status;
+    normalized.last_event_at = expected.last_event_at.clone();
+    normalized == *expected
 }
 
 fn dispatch_local_live_member_control(
@@ -26497,6 +26659,60 @@ impl ServeProjects {
         }
     }
 
+    /// Resolve a Project Binding as an authority-bearing registry object.
+    /// Unlike `context_for`, this never fabricates an `_unbound`/path-derived
+    /// compatibility context for a remotely supplied selector.
+    fn exact_project_context_for(
+        &self,
+        project_binding_id: Option<&str>,
+        execution_space_id: &str,
+    ) -> CliResult<ProjectContext> {
+        let selected = project_binding_id
+            .filter(|id| !id.is_empty())
+            .map(ToString::to_string)
+            .or_else(|| {
+                self.space_context_for(execution_space_id)
+                    .and_then(|space| space.default_project_binding_id)
+            })
+            .or_else(|| self.default_context.as_ref().map(|context| context.id.clone()))
+            .ok_or_else(|| {
+                CliError::Usage(
+                    "an exact registered Project Binding is required for AgentFirm RoleViews and actions"
+                        .to_string(),
+                )
+            })?;
+        if let Some(default) = &self.default_context {
+            if default.id == selected {
+                return Ok(default.clone());
+            }
+        }
+        if let Some(home) = &self.firm_home {
+            return project::context_for_id(home, &selected)
+                .map_err(project_err)?
+                .ok_or_else(|| CliError::Usage(format!("unknown project binding: {selected}")));
+        }
+        Err(CliError::Usage(format!(
+            "unknown project binding: {selected}"
+        )))
+    }
+
+    fn scoped_store_for_project(
+        &self,
+        store: &HarnessStore,
+        execution_space_id: &str,
+        project_binding_id: Option<&str>,
+    ) -> CliResult<HarnessStore> {
+        let project = self.exact_project_context_for(project_binding_id, execution_space_id)?;
+        let store_scope = if self.default_space.is_some() {
+            format!("execution-space:{execution_space_id}")
+        } else {
+            format!("project-store:{}", project.id)
+        };
+        Ok(store
+            .clone()
+            .with_provider_compatibility_scope(project.id, store_scope))
+    }
+
     fn current_space_id(&self) -> String {
         if let Some(home) = &self.firm_home {
             if let Ok(Some(id)) = execution_space::active_space_id(home) {
@@ -26848,10 +27064,32 @@ fn daemon_command(args: &[String]) -> CliResult<()> {
             None => println!("absent (no NodeDaemon for Node {node_id})"),
         },
         "stop" => {
-            let response = supervisor_daemon::daemon_stop_via_socket(&firm_home, &node_id)
+            let (space_id, generation) = execution_space::list_spaces(&firm_home)
+                .map_err(execution_space_err)?
+                .into_iter()
+                .find_map(|space| {
+                    let store = HarnessStore::new(space.store_root);
+                    store
+                        .latest_node_daemon_lease(&node_id)
+                        .ok()
+                        .flatten()
+                        .filter(|lease| {
+                            lease.status == NodeDaemonLeaseStatus::Active
+                                && lease.expires_unix_ms > current_unix_ms_u64()
+                        })
+                        .map(|lease| (space.id, lease.generation))
+                })
                 .ok_or_else(|| {
-                    CliError::Usage(format!("no NodeDaemon is running for Node {node_id}"))
+                    CliError::Usage(format!(
+                        "no current NodeDaemon lease is available for Node {node_id}"
+                    ))
                 })?;
+            let response = supervisor_daemon::daemon_stop_via_socket(
+                &firm_home, &node_id, &space_id, generation,
+            )
+            .ok_or_else(|| {
+                CliError::Usage(format!("no NodeDaemon is running for Node {node_id}"))
+            })?;
             println!("{response}");
         }
         other => return Err(CliError::Usage(format!("unknown daemon command: {other}"))),
@@ -26977,6 +27215,7 @@ fn handle_http_connection(
     let mut trust_transport_token = None;
     let mut trust_idempotency_key = None;
     let mut trust_expected_version = None;
+    let mut trust_confirmed_action = None;
     let mut trust_identity_override_header = false;
     loop {
         let mut line = String::new();
@@ -27000,6 +27239,9 @@ fn handle_http_connection(
             }
             if name.eq_ignore_ascii_case("if-match") {
                 trust_expected_version = value.trim().trim_matches('"').parse::<u64>().ok();
+            }
+            if name.eq_ignore_ascii_case("x-agentfirm-confirm") {
+                trust_confirmed_action = Some(value.trim().to_string());
             }
             if matches!(
                 name.to_ascii_lowercase().as_str(),
@@ -27026,6 +27268,20 @@ fn handle_http_connection(
             &mut stream,
             "405 Method Not Allowed",
             &serde_json::json!({"error": "method_not_allowed"}),
+        )?;
+        return Ok(());
+    }
+    if method == "POST" && role_actions_api::is_retired_legacy_write_path(&path_only) {
+        write_http_json(
+            &mut stream,
+            "410 Gone",
+            &serde_json::json!({
+                "ok": false,
+                "error": {
+                    "code": "RETIRED_WRITE_AUTHORITY",
+                    "message": "legacy Work and WorkDelegation HTTP writers are retired; use the authenticated AgentFirm role-action or canonical acceptance service"
+                }
+            }),
         )?;
         return Ok(());
     }
@@ -27081,6 +27337,56 @@ fn handle_http_connection(
             )?;
             return Ok(());
         };
+        let auth = agentfirm_api::AuthenticatedMutation {
+            execution_space_id: project_id.clone(),
+            actor: credential.actor,
+            authorized_authority_actors: credential.authority_actors,
+            idempotency_key,
+            expected_version,
+            request_fingerprint: None,
+        };
+        if role_actions_api::is_http_mutation_path(&path_only) {
+            let role_store = match projects.scoped_store_for_project(
+                &store_owned,
+                &project_id,
+                project_param.as_deref(),
+            ) {
+                Ok(store) => store,
+                Err(error) => {
+                    let detail = error.to_string();
+                    write_http_json(
+                        &mut stream,
+                        "404 Not Found",
+                        &serde_json::json!({
+                            "ok": false,
+                            "error": {"code": "PROJECT_BINDING_NOT_FOUND", "message": detail}
+                        }),
+                    )?;
+                    return Ok(());
+                }
+            };
+            match role_actions_api::execute(
+                &role_store,
+                auth,
+                &path_only,
+                &body,
+                trust_confirmed_action.as_deref(),
+            ) {
+                Ok(result) => write_http_json(&mut stream, "200 OK", &result)?,
+                Err(StoreError::Conflict(encoded)) => {
+                    let error = serde_json::from_str::<serde_json::Value>(&encoded).unwrap_or_else(
+                        |_| serde_json::json!({"code": "INVALID_STATE_TRANSITION", "message": encoded}),
+                    );
+                    write_http_json(
+                        &mut stream,
+                        "409 Conflict",
+                        &serde_json::json!({"ok": false, "error": error}),
+                    )?;
+                }
+                Err(error) => return Err(error.into()),
+            }
+            return Ok(());
+        }
         let command = match serde_json::from_slice::<agentfirm_api::TrustCommand>(&body) {
             Ok(command) if command.matches_http_route(&path_only) => command,
             Ok(_) => {
@@ -27103,13 +27409,6 @@ fn handle_http_connection(
                 )?;
                 return Ok(());
             }
-        };
-        let auth = agentfirm_api::AuthenticatedMutation {
-            execution_space_id: project_id.clone(),
-            actor: credential.actor,
-            authorized_authority_actors: credential.authority_actors,
-            idempotency_key,
-            expected_version,
         };
         match agentfirm_api::execute(&store_owned, auth, command) {
             Ok(result) => write_http_json(&mut stream, "200 OK", &result)?,
@@ -27160,11 +27459,61 @@ fn handle_http_connection(
     }
 
     if method == "GET" {
+        let role_view_identity = if path_only.starts_with("/v1/views/") {
+            match resolve_agentfirm_http_credential(trust_transport_token.as_deref()) {
+                Ok(credential) => Some(role_views_api::ReadIdentity {
+                    actor: credential.actor,
+                    authority_actors: credential.authority_actors,
+                }),
+                Err(message) => {
+                    write_http_json(
+                        &mut stream,
+                        "401 Unauthorized",
+                        &serde_json::json!({"ok":false,"error":{"code":"NOT_AUTHORIZED","message":message}}),
+                    )?;
+                    return Ok(());
+                }
+            }
+        } else {
+            None
+        };
         let execution_space_stores = projects
             .list_spaces()
             .into_iter()
             .map(|space| (space.id, HarnessStore::new(space.store_root)))
             .collect::<Vec<_>>();
+        let role_view_store = if path_only.starts_with("/v1/views/") {
+            match projects.scoped_store_for_project(
+                &store_owned,
+                &project_id,
+                project_param.as_deref(),
+            ) {
+                Ok(store) => store,
+                Err(error) => {
+                    let detail = error.to_string();
+                    write_http_json(
+                        &mut stream,
+                        "404 Not Found",
+                        &serde_json::json!({"ok":false,"error":{"code":"PROJECT_BINDING_NOT_FOUND","message":detail}}),
+                    )?;
+                    return Ok(());
+                }
+            }
+        } else {
+            store_owned.clone()
+        };
+        if let Some(response) = role_views_api::handle_get(
+            &role_view_store,
+            &execution_space_stores,
+            &project_id,
+            &path_only,
+            &path,
+            build_git_rev(),
+            role_view_identity.as_ref(),
+        ) {
+            write_http_json(&mut stream, response.status, &response.body)?;
+            return Ok(());
+        }
         if let Some(response) = company_os_api::handle_get(
             store,
             Some(&store_owned),
@@ -30299,7 +30648,7 @@ fn write_http_response(
 ) -> CliResult<()> {
     write!(
         stream,
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, X-Harness-Company-OS-Token, X-AgentFirm-Token, Idempotency-Key, If-Match\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
     stream.write_all(body)?;
@@ -35877,12 +36226,24 @@ fn dashboard_meta(store: &HarnessStore) -> CliResult<serde_json::Value> {
         .display()
         .to_string();
     let latest_op_seq = store.work_operations()?.len() as u64;
+    let daemon_lease = store
+        .latest_node_daemon_leases()?
+        .into_iter()
+        .filter(|lease| lease.status == NodeDaemonLeaseStatus::Active)
+        .max_by_key(|lease| (lease.renewed_unix_ms, lease.generation));
     Ok(serde_json::json!({
         "git_rev": build_git_rev(),
         "built_at": build_built_at(),
         "store_root": store_root,
         "latest_op_seq": latest_op_seq,
         "server_version": env!("CARGO_PKG_VERSION"),
+        "build_sha": build_git_rev(),
+        "node_id": daemon_lease.as_ref().map(|lease| lease.node_id.as_str()),
+        "daemon_generation": daemon_lease.as_ref().map(|lease| lease.generation),
+        "protocol_version": agentfirm_api::MEMBER_TRUST_PROTOCOL_VERSION,
+        "schema_version": "agentfirm.role_views.v1",
+        "action_manifest_version": "agentfirm.role_actions.v1",
+        "capability_auth": "x-agentfirm-token",
     }))
 }
 
@@ -46599,6 +46960,7 @@ package:com.tencent.mm
                     command_name: "test.team_message.create".into(),
                     idempotency_key: "canonical-supervisor-message".into(),
                     expected_version: 0,
+                    request_fingerprint: None,
                 },
                 harness_core::agentfirm_api::TeamMessage {
                     id: "canonical-supervisor-message".into(),
@@ -46728,6 +47090,7 @@ package:com.tencent.mm
                     command_name: "test.work_delivery.create".into(),
                     idempotency_key: "canonical-supervisor-work-delivery".into(),
                     expected_version: 0,
+                    request_fingerprint: None,
                 },
                 "canonical-supervisor-work-event",
                 &work.id,
@@ -47620,6 +47983,94 @@ package:com.tencent.mm
             .compare_and_append_member_run(initial, &blocked)
             .expect("seed capacity-origin Blocked member");
         blocked
+    }
+
+    #[test]
+    fn coordination_close_retries_provider_callback_status_race() {
+        use std::cell::Cell;
+
+        let (store, root) = temp_store("coordination-close-provider-status-race");
+        let created = create_two_member_team_run(&store);
+        let initial = created.member_runs[0].clone();
+        let mut waiting = initial.clone();
+        waiting.status = MemberRunStatus::Waiting;
+        waiting.last_event_at = Some("unix-ms:100".into());
+        store
+            .compare_and_append_member_run(&initial, &waiting)
+            .expect("seed provider interaction wait");
+
+        let attempts = Cell::new(0_usize);
+        let closed = mark_member_coordination_closed_with_hook(
+            &store,
+            &created.team_run.id,
+            &waiting.id,
+            |attempt, expected| {
+                attempts.set(attempts.get() + 1);
+                if attempt == 0 {
+                    let mut callback_resumed = expected.clone();
+                    callback_resumed.status = MemberRunStatus::Running;
+                    callback_resumed.last_event_at = Some("unix-ms:101".into());
+                    store.compare_and_append_member_run(expected, &callback_resumed)?;
+                }
+                Ok(())
+            },
+        )
+        .expect("coordination close retries the provider callback CAS");
+
+        assert!(closed.coordination_is_closed());
+        assert_eq!(closed.status, MemberRunStatus::Running);
+        assert_eq!(attempts.get(), 2, "the retry must be bounded and exact");
+        assert_eq!(
+            latest_member_runs_in_append_order(&store)
+                .expect("read members")
+                .into_iter()
+                .find(|member| member.id == waiting.id)
+                .expect("closed member")
+                .coordination_status,
+            MemberCoordinationStatus::Closed
+        );
+
+        let other_initial = created.member_runs[1].clone();
+        let mut other_waiting = other_initial.clone();
+        other_waiting.status = MemberRunStatus::Waiting;
+        other_waiting.last_event_at = Some("unix-ms:200".into());
+        store
+            .compare_and_append_member_run(&other_initial, &other_waiting)
+            .expect("seed second provider interaction wait");
+        let unrelated_attempts = Cell::new(0_usize);
+        let error = mark_member_coordination_closed_with_hook(
+            &store,
+            &created.team_run.id,
+            &other_waiting.id,
+            |attempt, expected| {
+                unrelated_attempts.set(unrelated_attempts.get() + 1);
+                if attempt == 0 {
+                    let mut unrelated = expected.clone();
+                    unrelated.last_event_at = Some("unix-ms:201".into());
+                    store.compare_and_append_member_run(expected, &unrelated)?;
+                }
+                Ok(())
+            },
+        )
+        .expect_err("unrelated concurrent revisions fail closed");
+        assert!(error.to_string().contains(
+            "changed outside the admitted provider callback waiting-to-running transition"
+        ));
+        assert_eq!(
+            unrelated_attempts.get(),
+            1,
+            "unrelated drift is not retried"
+        );
+        assert!(
+            latest_member_runs_in_append_order(&store)
+                .expect("read members")
+                .into_iter()
+                .find(|member| member.id == other_waiting.id)
+                .expect("second member")
+                .coordination_is_active(),
+            "failed close must not mutate coordination authority"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

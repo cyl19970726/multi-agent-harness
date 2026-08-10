@@ -59,5 +59,6 @@ cargo clippy --all-targets -- -D warnings
 cargo test -- --test-threads=1
 cargo run -q -p firm-cli -- governance check
 pnpm check
+pnpm acceptance:wave4:live
 
 echo "clean-archive gate passed: $candidate_sha"

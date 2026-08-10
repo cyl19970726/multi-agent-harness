@@ -8,6 +8,7 @@
  * same-origin proxy; no snapshot, SSE frame, or business row is fabricated.
  */
 import { spawn, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -15,14 +16,31 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { createServer as createViteServer } from "vite";
+import Ajv2020 from "ajv/dist/2020.js";
 
 const dashboardRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(dashboardRoot, "../..");
 const harness = join(repoRoot, "target", "debug", "firm");
 const evidenceRoot = join(repoRoot, ".visual-evidence", "dashboard-runtime-live-e2e-v1");
 const token = `dashboard-runtime-live-${process.pid}`;
+const agentFirmToken = `agentfirm-runtime-live-${process.pid}`;
+const memberAgentFirmToken = `agentfirm-member-live-${process.pid}`;
+const operatorAgentFirmToken = `agentfirm-operator-live-${process.pid}`;
+const secondaryHostAgentFirmToken = `agentfirm-secondary-host-live-${process.pid}`;
+const siblingNodeAgentFirmToken = `agentfirm-sibling-node-live-${process.pid}`;
 const now = "2026-08-05T12:00:00+08:00";
 const actorRef = { actor_type: "human", actor_id: "human-live-owner" };
+
+const roleViewSchemaDir = join(repoRoot, "schemas", "role-views", "agentfirm.role_views.v1");
+const roleViewSchemaNames = ["common", "role-view", "company-work", "team-workspace", "host-console", "member-workbench", "operator"];
+const roleViewAjv = new Ajv2020({strict:false, allErrors:true});
+for (const name of roleViewSchemaNames) {
+  roleViewAjv.addSchema(JSON.parse(readFileSync(join(roleViewSchemaDir, `${name}.schema.json`), "utf8")));
+}
+function validateLiveRoleView(name, value) {
+  const validate = roleViewAjv.getSchema(`agentfirm.role_views.v1/${name}.schema.json`);
+  if (!validate?.(value)) throw new Error(`live ${name} RoleView violates schema: ${roleViewAjv.errorsText(validate?.errors)}`);
+}
 
 let passed = 0;
 let failed = 0;
@@ -138,6 +156,11 @@ const env = {
   FIRM_COMPANY_OS_TOKEN: token,
   HARNESS_HOME: harnessHome,
   HARNESS_COMPANY_OS_TOKEN: token,
+  AGENTFIRM_HTTP_CREDENTIALS_JSON: JSON.stringify([{
+    token: agentFirmToken,
+    actor: { kind: "agent_member", id: "host" },
+    authority_actors: [],
+  }]),
 };
 delete env.FIRM_ROOT;
 delete env.FIRM_PROJECT;
@@ -204,7 +227,7 @@ await waitFor(async () => (await fetch(`${apiBase}/health`).catch(() => null))?.
 const { current: projectId } = await requestJson(apiBase, "/v1/projects");
 const { current: spaceId } = await requestJson(apiBase, "/v1/spaces");
 
-function createCanonicalMember(id, name, role) {
+function createCanonicalMember(id, name, role, commandEnv = env) {
   runHarness([
     "member-trust", "mutate",
     "--actor-kind", "human",
@@ -230,7 +253,7 @@ function createCanonicalMember(id, name, role) {
         updated_at: now,
       },
     }),
-  ], env, projectRoot);
+  ], commandEnv, projectRoot);
 }
 
 // Build the complete Wave 3 admission chain. A TeamRun is never a free-standing
@@ -293,6 +316,89 @@ const liveTeamRunPayload = JSON.parse(runHarness([
 ], env, projectRoot));
 const liveTeamRunId = liveTeamRunPayload.team_run?.id ?? liveTeamRunPayload.id ?? liveTeamRunPayload.result?.id;
 if (!liveTeamRunId) throw new Error(`team-run create did not return an id: ${JSON.stringify(liveTeamRunPayload)}`);
+const liveMemberRunId = liveTeamRunPayload.member_runs?.[0]?.id ?? liveTeamRunPayload.result?.member_runs?.[0]?.id;
+if (!liveMemberRunId) throw new Error(`team-run create did not return a MemberRun: ${JSON.stringify(liveTeamRunPayload)}`);
+
+// A second Execution Space and sibling Team prove that Company Work is a
+// vector snapshot rather than a max-sequence illusion.
+const secondarySpaceId = "dashboard-secondary-space";
+runHarness([
+  "space", "init", "--id", secondarySpaceId, "--name", "Dashboard secondary space",
+  "--project-binding", projectId,
+], env, projectRoot);
+runHarness(["space", "switch", spaceId], env, projectRoot);
+const secondaryEnv = {...env, FIRM_SPACE: secondarySpaceId};
+const secondaryNode = JSON.parse(runHarness([
+  "node", "init", "--display-name", "dashboard-live-node",
+], secondaryEnv, projectRoot));
+if (secondaryNode.id !== liveNode.id) {
+  throw new Error(`one-machine invariant violated: ${secondaryNode.id} != ${liveNode.id}`);
+}
+runHarness([
+  "node", "project", "register",
+  "--node-id", secondaryNode.id,
+  "--execution-space-id", secondarySpaceId,
+  "--project-binding-id", projectId,
+], secondaryEnv, projectRoot);
+// Model a genuinely distinct machine by giving the same canonical Store an
+// independent FIRM_HOME (and therefore an independently generated immutable
+// Node identity). The Runtime still reads the real registered projection from
+// the shared Execution Space; no credential or RoleView row is fabricated.
+const siblingMachineHome = join(temporaryRoot, "sibling-machine-home");
+await mkdir(siblingMachineHome, {recursive:true});
+const siblingMachineEnv = {...secondaryEnv,FIRM_HOME:siblingMachineHome,HARNESS_HOME:siblingMachineHome};
+const secondaryStoreRoot = join(harnessHome, "execution-spaces", secondarySpaceId);
+const siblingNode = JSON.parse(runHarness([
+  "--store", secondaryStoreRoot, "node", "init", "--display-name", "dashboard-sibling-machine-node",
+], siblingMachineEnv, projectRoot));
+if (siblingNode.id === liveNode.id) throw new Error("distinct machine must have a distinct immutable Node identity");
+runHarness([
+  "node", "project", "register",
+  "--node-id", siblingNode.id,
+  "--execution-space-id", secondarySpaceId,
+  "--project-binding-id", projectId,
+], secondaryEnv, projectRoot);
+const secondaryMission = JSON.parse(runHarness([
+  "mission", "create", "--title", "Dashboard Sibling Mission",
+  "--objective", "Prove sibling Team and Execution Space isolation", "--json",
+], secondaryEnv, projectRoot));
+createCanonicalMember("host-secondary", "Dashboard Secondary Host", "host", secondaryEnv);
+createCanonicalMember("worker-secondary", "Dashboard Secondary Worker", "worker", secondaryEnv);
+const secondaryTeam = JSON.parse(runHarness([
+  "team", "create", "--name", "Dashboard Sibling Team",
+  "--description", "Sibling Team for isolation acceptance.",
+  "--mission-id", secondaryMission.id, "--host-agent-id", "host-secondary",
+  "--node-id", secondaryNode.id, "--member", "worker-secondary",
+], secondaryEnv, projectRoot));
+const secondaryRunPayload = JSON.parse(runHarness([
+  "team-run", "create", "--objective", "Sibling Team isolation",
+  "--agent-team-id", secondaryTeam.id,
+  "--member", "worker-secondary:worker:codex/app-server", "--json",
+], secondaryEnv, projectRoot));
+const secondaryTeamRunId = secondaryRunPayload.team_run?.id ?? secondaryRunPayload.id ?? secondaryRunPayload.result?.id;
+if (!secondaryTeamRunId) throw new Error(`secondary TeamRun missing: ${JSON.stringify(secondaryRunPayload)}`);
+runHarness([
+  "team-run", "work", "create", "--team-run-id", secondaryTeamRunId,
+  "--work-id", "work-secondary-live", "--title", "Secondary space Work",
+  "--context", "Prove Company vector aggregation.",
+  "--completion-criteria", "Visible only through authoritative aggregation.",
+  "--priority", "normal", "--claim-mode", "team_claim",
+  "--eligible-member-id", "worker-secondary",
+], secondaryEnv, projectRoot);
+env.AGENTFIRM_HTTP_CREDENTIALS_JSON = JSON.stringify([{
+  token: agentFirmToken, actor: {kind:"agent_member",id:"host"}, authority_actors: [],
+},{
+  token: memberAgentFirmToken, actor: {kind:"agent_member",id:"worker"}, authority_actors: [],
+},{
+  token: operatorAgentFirmToken, actor: {kind:"service",id:liveNode.id}, authority_actors: [],
+},{
+  token: secondaryHostAgentFirmToken, actor: {kind:"agent_member",id:"host-secondary"}, authority_actors: [],
+},{
+  token: siblingNodeAgentFirmToken, actor: {kind:"service",id:siblingNode.id}, authority_actors: [],
+}]);
+await stopRuntime();
+startRuntime();
+await waitFor(async () => (await fetch(`${apiBase}/health`).catch(() => null))?.ok, "Runtime with exact AgentFirm credentials");
 function createNativeWork(id, title) {
   runHarness([
     "team-run", "work", "create",
@@ -302,8 +408,59 @@ function createNativeWork(id, title) {
     "--context", "External Runtime acceptance write.",
     "--completion-criteria", "Visible without reload in the Company Work aggregate.",
     "--priority", "high",
+    "--claim-mode", "team_claim",
+    "--eligible-member-id", "worker",
   ], env, projectRoot);
 }
+createNativeWork("work-role-live", "Real browser RoleAction loop");
+
+async function roleView(path, capabilityToken) {
+  const response = await fetch(new URL(path, apiBase), {
+    headers: {accept:"application/json", "x-agentfirm-token": capabilityToken},
+  });
+  const body = await response.json().catch(() => ({}));
+  return {status:response.status, body};
+}
+const companyBefore = await roleView(`/v1/views/company-work?project=${projectId}`, agentFirmToken);
+if (companyBefore.status !== 200) throw new Error(`Company Work vector: ${JSON.stringify(companyBefore.body)}`);
+validateLiveRoleView("company-work", companyBefore.body);
+const vectorBefore = companyBefore.body.data.page.snapshot_vector;
+check(vectorBefore.some((point)=>point.execution_space_id===spaceId)
+  && vectorBefore.some((point)=>point.execution_space_id===secondarySpaceId),
+"Company Work exposes a per-Execution-Space snapshot vector");
+check(companyBefore.body.data.page.item_count >= 2, "Company Work is populated from both sibling Teams");
+const primaryDeniedBySecondary = await roleView(`/v1/views/host-console/${liveTeam.id}?project=${projectId}&space=${spaceId}`, secondaryHostAgentFirmToken);
+const secondaryDeniedByPrimary = await roleView(`/v1/views/host-console/${secondaryTeam.id}?project=${projectId}&space=${secondarySpaceId}`, agentFirmToken);
+check(primaryDeniedBySecondary.status===403 && secondaryDeniedByPrimary.status===403,
+"sibling Team Host identities are denied bidirectionally");
+const siblingNodeDenied = await roleView(`/v1/views/operator/${liveNode.id}?project=${projectId}&space=${spaceId}`, siblingNodeAgentFirmToken);
+const primaryNodeDeniedOnSibling = await roleView(`/v1/views/operator/${siblingNode.id}?project=${projectId}&space=${secondarySpaceId}`, operatorAgentFirmToken);
+const siblingNodeProjection = await roleView(`/v1/views/operator/${siblingNode.id}?project=${projectId}&space=${secondarySpaceId}`, siblingNodeAgentFirmToken);
+check(siblingNodeDenied.status===403 && primaryNodeDeniedOnSibling.status===403 && siblingNodeProjection.status===200,
+  "distinct registered sibling Nodes are isolated bidirectionally by Node and Execution Space");
+validateLiveRoleView("operator", siblingNodeProjection.body);
+const siblingDaemonAction = siblingNodeProjection.body.allowed_actions.find((action)=>["start_daemon","stop_daemon"].includes(action.kind));
+check(Number.isSafeInteger(siblingDaemonAction?.authority_generation),
+  "real populated Operator RoleView carries an exact schema-valid daemon authority generation");
+runHarness([
+  "team-run", "work", "create", "--team-run-id", secondaryTeamRunId,
+  "--work-id", "work-secondary-vector-advance", "--title", "Advance secondary vector",
+  "--context", "Mutate only the secondary space.",
+  "--completion-criteria", "Only the secondary snapshot point advances.",
+  "--priority", "normal", "--claim-mode", "team_claim",
+  "--eligible-member-id", "worker-secondary",
+], secondaryEnv, projectRoot);
+await waitFor(async()=>{
+  const current = await roleView(`/v1/views/company-work?project=${projectId}`, agentFirmToken);
+  if(current.status!==200)return false;
+  const beforePrimary=vectorBefore.find((point)=>point.execution_space_id===spaceId);
+  const beforeSecondary=vectorBefore.find((point)=>point.execution_space_id===secondarySpaceId);
+  const afterPrimary=current.body.data.page.snapshot_vector.find((point)=>point.execution_space_id===spaceId);
+  const afterSecondary=current.body.data.page.snapshot_vector.find((point)=>point.execution_space_id===secondarySpaceId);
+  return JSON.stringify(beforePrimary)===JSON.stringify(afterPrimary)
+    && afterSecondary.work_operation_count>beforeSecondary.work_operation_count;
+}, "secondary Execution Space vector advances independently");
+check(true, "Company cursor invalidation advances only the mutated Execution Space point");
 
 const vite = await createViteServer({
   configFile: join(dashboardRoot, "vite.config.ts"),
@@ -335,9 +492,12 @@ try {
       get: () => window.__dashboardVisibility,
     });
   });
+  await page.addInitScript(({capabilityToken}) => {
+    window.__AGENTFIRM_BOOTSTRAP__ = { capabilityToken };
+  }, {capabilityToken: agentFirmToken});
 
   let snapshotReads = 0;
-  let delayNextCompanyBSnapshotMs = 0;
+  let delayedDomainSnapshot = null;
   let delayedCompanyB = null;
   await page.route("**/v1/snapshot?**", async (route) => {
     snapshotReads += 1;
@@ -351,12 +511,16 @@ try {
       await route.fulfill({ response });
       return;
     }
-    if (delayNextCompanyBSnapshotMs > 0 && url.searchParams.get("company") === "company-b") {
-      const delay = delayNextCompanyBSnapshotMs;
-      delayNextCompanyBSnapshotMs = 0;
+    if (delayedDomainSnapshot && url.searchParams.get("company") === "company-b") {
       const response = await route.fetch();
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, delay));
-      await route.fulfill({ response });
+      const body = await response.body();
+      if (body.toString("utf8").includes(delayedDomainSnapshot.marker)) {
+        const gate = delayedDomainSnapshot;
+        delayedDomainSnapshot = null;
+        gate.started();
+        await gate.releasePromise;
+      }
+      await route.fulfill({ response, body });
       return;
     }
     await route.continue();
@@ -374,6 +538,84 @@ try {
     check(await page.locator(`[data-freshness-domain="${domain}"]`).count() === 1, `${domain} freshness is exposed independently`);
   }
 
+  // Real five-view product loop. No route is fulfilled or fixture-injected:
+  // each browser credential reaches the real serve process and Store.
+  const roleBaseQuery = {api:appBase,project:projectId,space:spaceId,company:"company-a"};
+  await page.goto(`${appBase}/?${new URLSearchParams({...roleBaseQuery,surface:"work"})}`, {waitUntil:"domcontentloaded"});
+  await waitForText(page, "work-role-live");
+  check(true, "real Company Work RoleView is populated");
+  await page.goto(`${appBase}/?${new URLSearchParams({...roleBaseQuery,surface:"team",team:liveTeamRunId})}`, {waitUntil:"domcontentloaded"});
+  await page.getByText("Team Workspace", {exact:true}).waitFor();
+  await waitForText(page, "work-role-live");
+  check(true, "real Team Workspace RoleView is populated before Host navigation");
+  await page.getByRole("button", {name:"Open Host Console"}).click();
+  await page.getByRole("heading", {name:"Host Console"}).waitFor();
+  await page.getByRole("button", {name:"assign work",exact:true}).click();
+  await page.getByLabel("MemberRun ID").fill(liveMemberRunId);
+  await page.getByRole("button", {name:"Execute action"}).click();
+  await page.getByRole("button", {name:"rebind work",exact:true}).waitFor();
+  check(true, "Host browser executes authenticated assign_work and refetches HostConsole");
+
+  const memberContext = await browser.newContext({viewport:{width:1200,height:900},reducedMotion:"reduce"});
+  const memberPage = await memberContext.newPage();
+  await memberPage.addInitScript(({capabilityToken})=>{window.__AGENTFIRM_BOOTSTRAP__={capabilityToken}}, {capabilityToken:memberAgentFirmToken});
+  await memberPage.goto(`${appBase}/?${new URLSearchParams({...roleBaseQuery,surface:"team",memberRun:liveMemberRunId})}`, {waitUntil:"domcontentloaded"});
+  await memberPage.getByRole("heading", {name:"Member Workbench"}).waitFor();
+  await memberPage.getByRole("button", {name:"start work"}).click();
+  await memberPage.getByRole("button", {name:"Execute action"}).click();
+  await memberPage.getByRole("button", {name:"block work",exact:true}).waitFor();
+  check(true, "Member browser executes authenticated start_work and refetches MemberWorkbench");
+  await memberContext.close();
+
+  const operatorContext = await browser.newContext({viewport:{width:1200,height:900},reducedMotion:"reduce"});
+  const operatorPage = await operatorContext.newPage();
+  await operatorPage.addInitScript(({capabilityToken})=>{window.__AGENTFIRM_BOOTSTRAP__={capabilityToken}}, {capabilityToken:operatorAgentFirmToken});
+  await operatorPage.goto(`${appBase}/?${new URLSearchParams({...roleBaseQuery,surface:"operator",node:liveNode.id})}`, {waitUntil:"domcontentloaded"});
+  await operatorPage.getByRole("heading", {name:"Operator View"}).waitFor();
+  await waitForText(operatorPage, "daemon_lease");
+  check(await operatorPage.getByRole("button", {name:"diagnose",exact:true}).count()===1,
+    "real Operator RoleView is populated with server-derived diagnostics/actions");
+  for(let attempt=0;attempt<20;attempt+=1){
+    await operatorPage.getByRole("button", {name:"diagnose"}).click();
+    await operatorPage.getByRole("button", {name:"Execute action"}).click();
+    await waitForText(operatorPage, "Diagnostics are read-only");
+    await operatorPage.getByText("Refreshing authoritative OperatorView…").waitFor({state:"hidden"});
+    await waitForText(operatorPage, "Diagnostics are read-only");
+  }
+  check(true, "Operator diagnostics survives 20/20 authoritative refetch cycles");
+  await operatorPage.getByText("Refreshing authoritative OperatorView…").waitFor({state:"hidden"});
+  const operatorEnvelope = await roleView(`/v1/views/operator/${liveNode.id}?project=${projectId}&space=${spaceId}`, operatorAgentFirmToken);
+  if (operatorEnvelope.status!==200)throw new Error(`authoritative Operator envelope: ${JSON.stringify(operatorEnvelope.body)}`);
+  validateLiveRoleView("operator", operatorEnvelope.body);
+  const codexAdmissionAction = operatorEnvelope.body.allowed_actions.find((action)=>action.kind==="admit_provider"&&action.intent_binding?.provider==="codex"&&action.intent_binding?.execution_mode==="codex_app_server");
+  if(!codexAdmissionAction)throw new Error("authoritative Operator envelope omitted registered Codex admission tuple");
+  const admissionLabel="admit provider · codex/codex_app_server";
+  const admitProvider = operatorPage.getByRole("button", {name:admissionLabel,exact:true});
+  await admitProvider.waitFor();
+  if (codexAdmissionAction.disabled_reason) {
+    await waitFor(async()=>await admitProvider.getAttribute("title")===codexAdmissionAction.disabled_reason,
+      "browser settles on the server-authored provider disabled reason");
+    check(await admitProvider.isDisabled() && await admitProvider.getAttribute("title")===codexAdmissionAction.disabled_reason,
+      "Operator browser fails closed on the stable server-authored tuple eligibility");
+  } else {
+    await admitProvider.click();
+    await waitForText(operatorPage, "Server-observed tuple: codex/codex_app_server · eligible");
+    const admissionResponse = operatorPage.waitForResponse((response) => response.request().method()==="POST" && response.url().includes(`/v1/agentfirm/nodes/${liveNode.id}/provider-admission`));
+    await operatorPage.getByRole("button", {name:"Execute action"}).click();
+    const admissionHttp = await admissionResponse;
+    const admissionBody = await admissionHttp.json();
+    check(admissionHttp.status()===200 && admissionBody?.projection?.evidence_refs?.every((ref)=>ref.startsWith("server-")), "Operator browser executes server-probed provider admission through the real service");
+    await operatorPage.getByText("Refreshing authoritative OperatorView…").waitFor({state:"hidden"});
+    await operatorPage.getByRole("button", {name:admissionLabel,exact:true}).waitFor();
+  }
+  await operatorContext.close();
+
+  await page.goto(`${appBase}/?${new URLSearchParams({...roleBaseQuery,surface:"work"})}`, {waitUntil:"domcontentloaded"});
+  await waitForText(page, "work-role-live");
+  await waitForText(page, "active");
+  check(true, "five-view loop converges the Member mutation into real Company Work truth");
+
+  await navigate(page, "Docs");
   const defaultBefore = await requestJson(apiBase, "/v1/companies/current");
   await page.getByLabel("Active company").selectOption("company-a");
   await waitForDomain(page, "runtime", "live");
@@ -390,27 +632,45 @@ try {
   // Every write below is external to the browser and lands in the real Company
   // Store. The Runtime watcher emits freshness-only invalidations; the browser
   // may display a row only after its authoritative scoped snapshot converges.
+  const armDomainSnapshot = (marker) => {
+    let signalStarted;
+    let releaseDelayed;
+    const startedPromise = new Promise((resolveStarted) => { signalStarted = resolveStarted; });
+    const releasePromise = new Promise((resolveRelease) => { releaseDelayed = resolveRelease; });
+    delayedDomainSnapshot = {marker, started:signalStarted, releasePromise};
+    return {startedPromise, release:releaseDelayed};
+  };
+
   await navigate(page, "Work");
-  delayNextCompanyBSnapshotMs = 400;
+  const workSnapshotGate = armDomainSnapshot("work-live-external");
   createNativeWork("work-live-external", "External Work converged");
-  await waitForDomain(page, "works", "stale");
-  check(await page.locator('[data-freshness-domain="docs"][data-freshness-status="live"]').count() === 1, "Work invalidation leaves Docs freshness truthful and independent");
-  await waitForText(page, "External Work converged");
+  await workSnapshotGate.startedPromise;
+  try {
+    await waitForDomain(page, "works", "stale");
+    check(await page.locator('[data-freshness-domain="docs"][data-freshness-status="live"]').count() === 1, "Work invalidation leaves Docs freshness truthful and independent");
+  } finally { workSnapshotGate.release(); }
+  await waitForText(page, "work-live-external");
   check(true, "external Work write converges into the open page without reload");
 
   await navigate(page, "Docs");
-  delayNextCompanyBSnapshotMs = 400;
+  const docsSnapshotGate = armDomainSnapshot("document-live-external");
   await postCompany("company-b", "documents", documentRecord("document-live-external", "External Docs converged"));
-  await waitForDomain(page, "docs", "stale");
-  check(await page.locator('[data-freshness-domain="works"][data-freshness-status="live"]').count() === 1, "Docs invalidation leaves Works freshness truthful and independent");
+  await docsSnapshotGate.startedPromise;
+  try {
+    await waitForDomain(page, "docs", "stale");
+    check(await page.locator('[data-freshness-domain="works"][data-freshness-status="live"]').count() === 1, "Docs invalidation leaves Works freshness truthful and independent");
+  } finally { docsSnapshotGate.release(); }
   await waitForText(page, "External Docs converged");
   check(true, "external Docs write converges into the open page without reload");
 
   await navigate(page, "Organization");
-  delayNextCompanyBSnapshotMs = 400;
+  const orgSnapshotGate = armDomainSnapshot("org-live-external");
   await postCompany("company-b", "org-units", orgUnitRecord("org-live-external", "External Org converged"));
-  await waitForDomain(page, "organization", "stale");
-  check(await page.locator('[data-freshness-domain="docs"][data-freshness-status="live"]').count() === 1, "Org invalidation leaves Docs freshness truthful and independent");
+  await orgSnapshotGate.startedPromise;
+  try {
+    await waitForDomain(page, "organization", "stale");
+    check(await page.locator('[data-freshness-domain="docs"][data-freshness-status="live"]').count() === 1, "Org invalidation leaves Docs freshness truthful and independent");
+  } finally { orgSnapshotGate.release(); }
   await waitForText(page, "External Org converged");
   check(true, "external Organization write converges into the open page without reload");
 
@@ -488,6 +748,7 @@ try {
     company_scope: "company-a",
     snapshot_reads: snapshotReads,
     checks: { passed, failed },
+    candidate_sha: spawnSync("git", ["rev-parse", "HEAD"], {cwd: repoRoot, encoding:"utf8"}).stdout.trim(),
   }, null, 2)}\n`);
 } finally {
   if (context) await context.setOffline(false).catch(() => {});

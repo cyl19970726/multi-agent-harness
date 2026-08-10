@@ -78,6 +78,22 @@ enum ControlReadState {
     Invalid(&'static str),
 }
 
+fn daemon_control_generation_authorized(
+    lease: Option<&harness_core::NodeDaemonLease>,
+    daemon_id: &str,
+    instance_id: &str,
+    expected_generation: u64,
+    now_ms: u64,
+) -> bool {
+    lease.is_some_and(|lease| {
+        lease.daemon_id == daemon_id
+            && lease.instance_id == instance_id
+            && lease.generation == expected_generation
+            && lease.status == harness_core::NodeDaemonLeaseStatus::Active
+            && lease.expires_unix_ms > now_ms
+    })
+}
+
 /// The one machine-scoped NodeDaemon.
 pub(crate) struct MultiTeamDaemon {
     firm_home: PathBuf,
@@ -849,9 +865,54 @@ impl MultiTeamDaemon {
                 Self::write_control_response(stream, &resp)?;
             }
             "stop" => {
-                // P0-1 fix: actually set shutdown, not just reply ok.
+                let execution_space_id = cmd["execution_space_id"].as_str().unwrap_or("");
+                let daemon_generation = cmd["daemon_generation"].as_u64();
+                if execution_space_id.is_empty() || daemon_generation.is_none() {
+                    Self::write_control_response(
+                        stream,
+                        &serde_json::json!({
+                            "ok": false,
+                            "error": "execution_space_id and daemon_generation are required"
+                        }),
+                    )?;
+                    return Ok(());
+                }
+                let space =
+                    crate::execution_space::context_for_id(&self.firm_home, execution_space_id)
+                        .map_err(|error| CliError::Usage(error.to_string()))?
+                        .ok_or_else(|| {
+                            CliError::Usage(format!(
+                                "Execution Space not found: {execution_space_id}"
+                            ))
+                        })?;
+                let store = HarnessStore::new(space.store_root);
+                let now_ms = current_unix_ms_u64();
+                let lease = store.latest_node_daemon_lease(&self.node_id)?;
+                let authorized = daemon_control_generation_authorized(
+                    lease.as_ref(),
+                    &self.daemon_id,
+                    &self.instance_id,
+                    daemon_generation.unwrap_or_default(),
+                    now_ms,
+                );
+                if !authorized {
+                    Self::write_control_response(
+                        stream,
+                        &serde_json::json!({
+                            "ok": false,
+                            "error": "SUPERVISOR_GENERATION_FENCED: stop does not match this live NodeDaemon generation"
+                        }),
+                    )?;
+                    return Ok(());
+                }
                 self.shutdown.store(true, Ordering::SeqCst);
-                Self::write_control_response(stream, &serde_json::json!({"ok": true}))?;
+                Self::write_control_response(
+                    stream,
+                    &serde_json::json!({
+                        "ok": true,
+                        "daemon_generation": daemon_generation
+                    }),
+                )?;
             }
             _ => {
                 let response = serde_json::json!({
@@ -1010,13 +1071,116 @@ pub(crate) fn daemon_status_via_socket(firm_home: &Path, node_id: &str) -> Optio
     Some(response)
 }
 
+/// Start a NodeDaemon for an exact observed predecessor generation. Unlike the
+/// convenience CLI helper, this never treats an already-running or concurrently
+/// winning daemon as the requested external effect. The child PID in the
+/// server-owned status response must be the process spawned by this request.
+pub(crate) fn start_daemon_process_fenced(
+    firm_home: &Path,
+    node_id: &str,
+    max_concurrency: usize,
+    execution_space_id: &str,
+    observed_generation: u64,
+) -> CliResult<String> {
+    if max_concurrency == 0 {
+        return Err(CliError::Usage(
+            "daemon max_concurrency must be greater than zero".into(),
+        ));
+    }
+    if daemon_status_via_socket(firm_home, node_id).is_some() {
+        return Err(CliError::Usage(
+            "SUPERVISOR_GENERATION_FENCED: a NodeDaemon is already live".into(),
+        ));
+    }
+    let space = crate::execution_space::context_for_id(firm_home, execution_space_id)
+        .map_err(|error| CliError::Usage(error.to_string()))?
+        .ok_or_else(|| {
+            CliError::Usage(format!("Execution Space not found: {execution_space_id}"))
+        })?;
+    let store = HarnessStore::new(space.store_root);
+    let current_generation = store
+        .latest_node_daemon_lease(node_id)?
+        .map(|lease| lease.generation)
+        .unwrap_or(0);
+    if current_generation != observed_generation {
+        return Err(CliError::Usage(format!(
+            "SUPERVISOR_GENERATION_FENCED: observed generation {observed_generation}, current generation {current_generation}"
+        )));
+    }
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    command
+        .arg("daemon")
+        .arg("serve")
+        .arg("--max-concurrency")
+        .arg(max_concurrency.to_string())
+        .arg("--idle-timeout-secs")
+        .arg("300")
+        .arg("--scan-interval-secs")
+        .arg("5")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let mut child = command.spawn()?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(status) = daemon_status_via_socket(firm_home, node_id) {
+            let status_value = serde_json::from_str::<serde_json::Value>(&status).ok();
+            let process_id = status_value
+                .as_ref()
+                .and_then(|value| value["process_id"].as_u64());
+            if process_id == Some(u64::from(child.id())) {
+                let instance_id = status_value
+                    .as_ref()
+                    .and_then(|value| value["instance_id"].as_str());
+                let lease = store.latest_node_daemon_lease(node_id)?;
+                if lease.as_ref().is_some_and(|lease| {
+                    lease.daemon_id == format!("node-daemon:{node_id}")
+                        && Some(lease.instance_id.as_str()) == instance_id
+                        && lease.generation > observed_generation
+                        && lease.status == harness_core::NodeDaemonLeaseStatus::Active
+                        && lease.expires_unix_ms > current_unix_ms_u64()
+                }) {
+                    return Ok(status);
+                }
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            }
+            return Err(CliError::Usage(
+                "SUPERVISOR_GENERATION_FENCED: another NodeDaemon generation won startup".into(),
+            ));
+        }
+        if let Some(status) = child.try_wait()? {
+            return Err(CliError::Usage(format!(
+                "NodeDaemon pid {} exited before acquiring generation: {status}",
+                child.id()
+            )));
+        }
+        if Instant::now() >= deadline {
+            return Err(CliError::Usage(format!(
+                "NodeDaemon pid {} did not become ready within 10s",
+                child.id()
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Send a stop command to the multi-team daemon.
-pub(crate) fn daemon_stop_via_socket(firm_home: &Path, node_id: &str) -> Option<String> {
+pub(crate) fn daemon_stop_via_socket(
+    firm_home: &Path,
+    node_id: &str,
+    execution_space_id: &str,
+    daemon_generation: u64,
+) -> Option<String> {
     let socket_path = node_daemon_socket_path(firm_home, node_id);
     let mut stream = UnixStream::connect(&socket_path).ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
 
-    let cmd = r#"{"cmd":"stop"}"#;
+    let cmd = serde_json::json!({
+        "cmd": "stop",
+        "execution_space_id": execution_space_id,
+        "daemon_generation": daemon_generation,
+    });
     writeln!(stream, "{cmd}").ok()?;
     stream.flush().ok()?;
 
@@ -1061,5 +1225,41 @@ mod tests {
         let p1 = node_daemon_socket_path(root, "00000000-0000-4000-8000-000000000001");
         let p2 = node_daemon_socket_path(root, "00000000-0000-4000-8000-000000000001");
         assert_eq!(p1, p2);
+    }
+
+    #[test]
+    fn daemon_control_generation_fences_stale_and_successor_instances() {
+        let lease = harness_core::NodeDaemonLease {
+            node_id: "00000000-0000-4000-8000-000000000001".into(),
+            daemon_id: "node-daemon:00000000-0000-4000-8000-000000000001".into(),
+            generation: 8,
+            instance_id: "successor-instance".into(),
+            status: harness_core::NodeDaemonLeaseStatus::Active,
+            acquired_unix_ms: 1,
+            renewed_unix_ms: 10,
+            expires_unix_ms: 100,
+            released_unix_ms: None,
+        };
+        assert!(!daemon_control_generation_authorized(
+            Some(&lease),
+            &lease.daemon_id,
+            "predecessor-instance",
+            7,
+            20,
+        ));
+        assert!(!daemon_control_generation_authorized(
+            Some(&lease),
+            &lease.daemon_id,
+            &lease.instance_id,
+            7,
+            20,
+        ));
+        assert!(daemon_control_generation_authorized(
+            Some(&lease),
+            &lease.daemon_id,
+            &lease.instance_id,
+            8,
+            20,
+        ));
     }
 }

@@ -58,9 +58,10 @@ gate, only entries to append.
 
 ### Truth versus drive cache, at every level
 
-Exactly three intent truths exist: Company WorkItem (business intent and
-approval), Mission plus its Log (host-level durable intent and judgment),
-and Work (member-level current responsibility). Provider-native goal mode
+Exactly two execution-intent truths exist: Mission plus its Log (host-level
+durable intent and judgment), and Team-scoped Work (member-level current
+responsibility). Company domain records such as Approval, Finance and Document
+remain their own business truths but do not create a parallel Work lifecycle. Provider-native goal mode
 and provider-native plan mode are derived drive caches, never truth. On Host
 spawn, resume, or post-compaction re-entry, the Host's native goal text MUST
 be derived from `mission show` plus the latest Log entries plus the board

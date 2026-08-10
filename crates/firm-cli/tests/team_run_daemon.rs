@@ -222,8 +222,24 @@ fn socket_request(socket: &Path, request: &str) -> serde_json::Value {
     serde_json::from_str(response.trim()).expect("daemon response JSON")
 }
 
-fn stop_daemon(child: &mut std::process::Child, socket: &Path) {
-    assert_eq!(socket_request(socket, r#"{"cmd":"stop"}"#)["ok"], true);
+fn stop_daemon(
+    home: &TempHome,
+    fixture: &RuntimeFixture,
+    child: &mut std::process::Child,
+    socket: &Path,
+) {
+    let store = HarnessStore::new(home.spaces_dir().join(&fixture.execution_space_id));
+    let generation = store
+        .latest_node_daemon_lease(&fixture.node_id)
+        .expect("NodeDaemon lease read")
+        .expect("live NodeDaemon lease")
+        .generation;
+    let request = serde_json::json!({
+        "cmd":"stop",
+        "execution_space_id":fixture.execution_space_id,
+        "daemon_generation":generation,
+    });
+    assert_eq!(socket_request(socket, &request.to_string())["ok"], true);
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         if child.try_wait().expect("inspect daemon stop").is_some() {
@@ -339,7 +355,7 @@ fn daemon_serve_uses_stable_node_socket_and_reports_identity() {
     );
     assert!(status["runs"].as_array().is_some_and(Vec::is_empty));
 
-    stop_daemon(&mut daemon, &socket);
+    stop_daemon(&home, &fixture, &mut daemon, &socket);
 }
 
 #[test]
@@ -387,7 +403,7 @@ fn team_run_start_delegates_to_node_daemon_and_is_idempotent() {
     let replay_status = wait_for_run(&socket, &fixture.execution_space_id, &run_id);
     assert_eq!(replay_status["runs"].as_array().map(Vec::len), Some(1));
 
-    stop_daemon(&mut daemon, &socket);
+    stop_daemon(&home, &fixture, &mut daemon, &socket);
     let store = HarnessStore::new(home.spaces_dir().join(&fixture.execution_space_id));
     let lease = store
         .latest_team_supervisor_lease(&run_id)
@@ -485,7 +501,7 @@ fn daemon_rejects_second_machine_owner_and_bad_commands() {
         String::from_utf8_lossy(&second.stderr)
     );
 
-    stop_daemon(&mut daemon, &socket);
+    stop_daemon(&home, &fixture, &mut daemon, &socket);
 }
 
 #[test]
@@ -609,5 +625,5 @@ fn one_node_daemon_adopts_runs_from_two_execution_spaces() {
         lease_b.node_daemon_generation
     );
 
-    stop_daemon(&mut daemon, &socket);
+    stop_daemon(&home, &fixture_a, &mut daemon, &socket);
 }

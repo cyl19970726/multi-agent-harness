@@ -2007,11 +2007,6 @@ fn post_team_run_message_and_start_async() {
         .filter_map(|m| m["id"].as_str().map(str::to_string))
         .collect();
     assert_eq!(member_ids.len(), 2);
-    let worker_work_id = body["result"]["works"][1]["id"]
-        .as_str()
-        .expect("worker Work id")
-        .to_string();
-
     // Route a handoff from the worker to the lead.
     let (status, body) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/messages"),
@@ -2020,7 +2015,6 @@ fn post_team_run_message_and_start_async() {
             "recipient_runtime_ids": [member_ids[0]],
             "kind": "message",
             "body": "take over the review",
-            "work_id": worker_work_id,
         }),
     );
     assert_eq!(status, 200, "body: {body}");
@@ -2081,7 +2075,6 @@ fn post_team_run_message_and_start_async() {
             "recipient_runtime_ids": [member_ids[0].clone()],
             "kind": "message",
             "body": "The Work is ready for Host review",
-            "work_id": worker_work_id,
         }),
     );
     assert_eq!(status, 200, "body: {host_notice}");
@@ -3226,7 +3219,6 @@ fn codex_app_server_post_handoff_steer_is_independent_and_converges_before_follo
             "recipient_runtime_ids": [member_id.clone()],
             "kind": "message",
             "body": "## RESULT\ndone\n## SUMMARY\nexplicit same-turn handoff",
-            "work_id": work_id,
         }),
     );
     assert_eq!(status, 200, "body: {explicit_handoff}");
@@ -5376,7 +5368,7 @@ fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
 #[test]
 fn close_cancels_kimi_provider_request_without_resuming_member() {
     let home = TempHome::new("team-run-kimi-waiting-close");
-    let _project_id = init_project(&home, "alpha");
+    let project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
     let fake_kimi = fake_bin.join("kimi").display().to_string();
     let serve = ServeHandle::spawn_with_env(
@@ -5492,6 +5484,54 @@ fn close_cancels_kimi_provider_request_without_resuming_member() {
     assert!(snapshot["pending_interactions"]
         .as_array()
         .is_some_and(Vec::is_empty));
+
+    let close_requests = snapshot["team_member_close_requests"]
+        .as_array()
+        .expect("close requests");
+    assert_eq!(
+        close_requests
+            .iter()
+            .filter(|request| request["member_run_id"].as_str() == Some(member_id.as_str()))
+            .count(),
+        1,
+        "the close has one latest durable request"
+    );
+    assert_eq!(
+        close_requests
+            .iter()
+            .find(|request| request["member_run_id"].as_str() == Some(member_id.as_str()))
+            .and_then(|request| request["status"].as_str()),
+        Some("applied")
+    );
+
+    let store_root = home.firm_home().join("execution-spaces").join(project_id);
+    let ledgers = [
+        "team_member_close_requests.jsonl",
+        "team_messages.jsonl",
+        "member_runs.jsonl",
+        "pending_interactions.jsonl",
+        "member_actions.jsonl",
+        "team_run_events.jsonl",
+    ];
+    let ledger_bytes = |name: &str| std::fs::read(store_root.join(name)).unwrap_or_default();
+    let before_replay = ledgers
+        .iter()
+        .map(|name| ledger_bytes(name))
+        .collect::<Vec<_>>();
+    let (replay_status, replay) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
+        &serde_json::json!({"reason": "close while waiting", "requested_by": "operator"}),
+    );
+    assert_eq!(replay_status, 200, "body: {replay}");
+    assert_eq!(replay["result"]["idempotent"].as_bool(), Some(true));
+    let after_replay = ledgers
+        .iter()
+        .map(|name| ledger_bytes(name))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        after_replay, before_replay,
+        "close replay must not repeat cancellation, lifecycle, event, or receipt effects"
+    );
 }
 
 #[test]
@@ -5765,15 +5805,15 @@ fn post_team_run_transition_and_compatibility_lineage() {
 }
 
 #[test]
-fn sse_streams_team_run_events() {
+fn sse_invalidates_team_run_projection_and_snapshot_converges() {
     let home = TempHome::new("team-run-sse");
     let project_id = init_project(&home, "alpha");
 
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
     let mut sse = serve.open_sse("");
 
-    // Create a run AFTER the stream is live: the watcher tails
-    // team_run_events.jsonl and broadcasts each folded event.
+    // Create a run AFTER the stream is live. SSE carries freshness only; the
+    // durable TeamRun row must be recovered from the authoritative snapshot.
     let out = run_firm(
         &home,
         home.base(),
@@ -5797,18 +5837,31 @@ fn sse_streams_team_run_events() {
     );
     let run_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
 
-    // Native row frames are now multiplexed alongside the folded event rows,
-    // so collect the complete create burst rather than stopping after the first
-    // three typed projections.
+    // Collect the complete create burst and prove it contains only scoped
+    // invalidations, never a durable TeamRun row that the browser could fold.
     let frames = collect_sse_data(&mut sse, Duration::from_secs(6), 6);
     assert!(
         frames.iter().any(|frame| {
-            frame["entity_type"].as_str() == Some("team_run")
-                && frame["operation"].as_str() == Some("created")
-                && frame["team_run_id"].as_str() == Some(run_id.as_str())
+            frame["scope"].as_str() == Some("execution_space")
+                && frame["scope_id"].as_str() == Some(project_id.as_str())
+                && matches!(
+                    frame["ledger"].as_str(),
+                    Some("team_runs.jsonl" | "team_run_events.jsonl")
+                )
         }),
-        "expected a team_run created frame for {run_id}; got: {frames:?}"
+        "expected a scoped TeamRun invalidation for {run_id}; got: {frames:?}"
     );
+    assert!(
+        frames
+            .iter()
+            .all(|frame| frame.get("entity_type").is_none()),
+        "SSE must not publish durable TeamRun row truth: {frames:?}"
+    );
+    let (status, snapshot) = serve.get_json(&format!("/v1/snapshot?project={project_id}"));
+    assert_eq!(status, 200, "snapshot: {snapshot}");
+    assert!(snapshot["team_runs"]
+        .as_array()
+        .is_some_and(|runs| runs.iter().any(|run| run["id"] == run_id)));
 }
 
 #[test]
@@ -6272,7 +6325,6 @@ fn kimi_provider_error_round_records_failure_without_fabricated_handoff_and_reco
             "kind": "message",
             "response_intent": "response_required",
             "body": "Retry the lane after the provider outage",
-            "work_id": work_id,
         }),
     );
     assert_eq!(status, 200, "body: {follow_up}");

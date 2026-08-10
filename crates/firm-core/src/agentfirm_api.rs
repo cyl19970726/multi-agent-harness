@@ -707,6 +707,11 @@ pub struct MutationContext {
     pub command_name: String,
     pub idempotency_key: String,
     pub expected_version: u64,
+    /// Stable transport-bound fingerprint for an authenticated semantic
+    /// action. Direct CLI/MCP commands leave this unset and use the canonical
+    /// command payload fingerprint instead.
+    #[serde(default)]
+    pub request_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

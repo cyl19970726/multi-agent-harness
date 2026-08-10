@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agentfirm.role_views.v1/company-work.schema.json",
+  "allOf": [
+    { "$ref": "role-view.schema.json" },
+    {
+      "type": "object",
+      "properties": {
+        "view_kind": { "const": "company_work" },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["query", "sort", "items", "page", "facets"],
+          "properties": {
+            "query": { "type": "object", "additionalProperties": false, "properties": {"team_id":{"type":"array","items":{"type":"string"}},"mission_id":{"type":"array","items":{"type":"string"}},"node_id":{"type":"array","items":{"type":"string"}},"host_id":{"type":"array","items":{"type":"string"}},"member_id":{"type":"array","items":{"type":"string"}},"phase":{"type":"array","items":{"type":"string"}},"condition":{"type":"array","items":{"type":"string"}},"resolution":{"type":"array","items":{"type":"string"}},"priority":{"type":"array","items":{"type":"string"}},"module_id":{"type":"array","items":{"type":"string"}},"gate_state":{"type":"array","items":{"type":"string"}},"updated_after":{"type":"array","items":{"type":"string"}},"updated_before":{"type":"array","items":{"type":"string"}}} },
+            "sort": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["field", "direction"], "properties": { "field": { "enum": ["updated_at", "priority", "work_id"] }, "direction": { "enum": ["asc", "desc"] } } } },
+            "items": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/workSummary" } },
+            "page": { "allOf": [{ "$ref": "common.schema.json#/$defs/page" }, { "type": "object", "required": ["snapshot_vector"] }] },
+            "facets": { "type": "object", "additionalProperties": false, "required":["teams","missions","nodes","hosts","members","phases","conditions","resolutions","modules","gate_states"], "properties":{"teams":{"type":"array","items":{"type":"string"}},"missions":{"type":"array","items":{"type":"string"}},"nodes":{"type":"array","items":{"type":"string"}},"hosts":{"type":"array","items":{"type":"string"}},"members":{"type":"array","items":{"type":"string"}},"phases":{"type":"array","items":{"type":"string"}},"conditions":{"type":"array","items":{"type":"string"}},"resolutions":{"type":"array","items":{"type":"string"}},"modules":{"type":"array","items":{"type":"string"}},"gate_states":{"type":"array","items":{"type":"string"}}} }
+          }
+        }
+      }
+    }
+  ]
+}

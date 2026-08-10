@@ -13,6 +13,7 @@ export type SurfaceId =
   | "workflows"
   | "docs"
   | "docs-v2"
+  | "operator"
   | "debug";
 
 /** Tabs on the agent detail page. "conversation" is the default. */
@@ -82,6 +83,10 @@ export interface SelectionState {
   orgExpanded?: string;
   /** Selected native Team Work row in an owning Team War Room. */
   teamWorkId?: string;
+  /** Responsibility lens inside one Team: shared workspace or Host console. */
+  teamMode?: "workspace" | "host";
+  /** Machine selected in the Operator responsibility view. */
+  nodeId?: string;
   /** URL-backed filters for the cross-TeamRun Team Works aggregate. */
   workTeamId?: string;
   workMissionId?: string;
@@ -120,6 +125,7 @@ const surfaceIds: SurfaceId[] = [
   "workflows",
   "docs",
   "docs-v2",
+  "operator",
   "debug",
 ];
 
@@ -268,6 +274,10 @@ function selectionFromSearch(search: string, pathname = "/"): SelectionState {
   if (orgExpanded) next.orgExpanded = orgExpanded;
   const teamWork = params.get("teamWork");
   if (teamWork) next.teamWorkId = teamWork;
+  const teamMode = params.get("teamMode");
+  if (teamMode === "workspace" || teamMode === "host") next.teamMode = teamMode;
+  const node = params.get("node");
+  if (node) { next.nodeId = node; if (!surface) next.surface = "operator"; }
   const filterParams = [
     ["workTeam", "workTeamId"],
     ["workMission", "workMissionId"],
@@ -350,6 +360,8 @@ export function syncSelectionToLocation(selection: SelectionState): void {
   setOrDelete("orgTeam", selection.orgTeamId);
   setOrDelete("orgExpanded", selection.orgExpanded);
   setOrDelete("teamWork", selection.teamWorkId);
+  setOrDelete("teamMode", selection.teamMode);
+  setOrDelete("node", selection.nodeId);
   setOrDelete("workTeam", selection.workTeamId);
   setOrDelete("workMission", selection.workMissionId);
   setOrDelete("workNode", selection.workNodeId);
@@ -403,6 +415,8 @@ const selectionCompareKeys = [
   "orgTeamId",
   "orgExpanded",
   "teamWorkId",
+  "teamMode",
+  "nodeId",
   "workTeamId",
   "workMissionId",
   "workNodeId",

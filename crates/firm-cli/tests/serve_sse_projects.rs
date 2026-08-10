@@ -140,10 +140,16 @@ fn create_team(home: &TempHome, space_id: &str, project_id: &str) -> String {
     team["id"].as_str().expect("team id").to_string()
 }
 
-fn record_ids(frames: &[serde_json::Value]) -> Vec<String> {
+fn invalidation_keys(frames: &[serde_json::Value]) -> Vec<String> {
     frames
         .iter()
-        .filter_map(|f| f["id"].as_str().map(|s| s.to_string()))
+        .filter_map(|frame| {
+            Some(format!(
+                "{}:{}",
+                frame["scope_id"].as_str()?,
+                frame["ledger"].as_str()?
+            ))
+        })
         .collect()
 }
 
@@ -183,23 +189,23 @@ fn sse_streams_are_isolated_per_execution_space() {
     let frames_a = collect_sse_data(&mut sse_a, Duration::from_secs(4), 1);
     let frames_b = collect_sse_data(&mut sse_b, Duration::from_secs(4), 1);
 
-    let ids_a = record_ids(&frames_a);
-    let ids_b = record_ids(&frames_b);
+    let ids_a = invalidation_keys(&frames_a);
+    let ids_b = invalidation_keys(&frames_b);
 
     assert!(
-        ids_a.contains(&"mission-alpha".to_string()),
+        ids_a.contains(&"space-alpha:missions.jsonl".to_string()),
         "stream A missing its own frame: {ids_a:?}"
     );
     assert!(
-        !ids_a.contains(&"mission-beta".to_string()),
+        !ids_a.contains(&"space-beta:missions.jsonl".to_string()),
         "stream A LEAKED project B's frame: {ids_a:?}"
     );
     assert!(
-        ids_b.contains(&"mission-beta".to_string()),
+        ids_b.contains(&"space-beta:missions.jsonl".to_string()),
         "stream B missing its own frame: {ids_b:?}"
     );
     assert!(
-        !ids_b.contains(&"mission-alpha".to_string()),
+        !ids_b.contains(&"space-alpha:missions.jsonl".to_string()),
         "stream B LEAKED project A's frame: {ids_b:?}"
     );
 }
@@ -237,9 +243,9 @@ fn newly_registered_space_gets_live_sse_without_restart() {
     );
 
     let frames = collect_sse_data(&mut sse_new, Duration::from_secs(6), 1);
-    let ids = record_ids(&frames);
+    let ids = invalidation_keys(&frames);
     assert!(
-        ids.contains(&"mission-gamma".to_string()),
+        ids.contains(&"space-gamma:missions.jsonl".to_string()),
         "newly-registered project's SSE stream did not receive its live frame \
          (watcher likely did not re-scan the registry): {ids:?}"
     );
@@ -258,9 +264,9 @@ fn events_without_space_uses_active_default_stream() {
     create_mission(&home, "space-beta", &id_b, "mission-default", "to active");
 
     let frames = collect_sse_data(&mut sse, Duration::from_secs(4), 1);
-    let ids = record_ids(&frames);
+    let ids = invalidation_keys(&frames);
     assert!(
-        ids.contains(&"mission-default".to_string()),
+        ids.contains(&"space-beta:missions.jsonl".to_string()),
         "default stream did not receive active project's frame: {ids:?}"
     );
 }
@@ -294,7 +300,7 @@ fn invalidation_is_queued_across_snapshot_marker_to_get_boundary() {
 
     let frames = collect_sse_data(&mut sse, Duration::from_secs(5), 1);
     assert!(
-        record_ids(&frames).contains(&"mission-crossing".to_string()),
+        invalidation_keys(&frames).contains(&"space-alpha:missions.jsonl".to_string()),
         "write crossing initial marker boundary was not queued: {frames:?}"
     );
 }

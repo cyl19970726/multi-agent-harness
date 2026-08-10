@@ -1,6 +1,6 @@
 use crate::{HarnessStore, StoreError, StoreResult};
 use firm_core::agentfirm_api::{
-    integration_plan_module_v1, ActorKind, AgentMember, AgentMemberOrganizationStatus,
+    integration_plan_module_v1, ActorKind, ActorRef, AgentMember, AgentMemberOrganizationStatus,
     CanonicalMutationEvent, CanonicalOperation, DeliveryClaim, DeliveryReconcileOutcome,
     FailureAnalysis, GateEvaluation, GateRequirement, GateRequirementSource, GateVerdict,
     GateWaiver, GateWaiverState, MemberCoordinationStatus, MemberRun, MemberRuntimeStatus,
@@ -383,6 +383,60 @@ impl HarnessStore {
         Ok(work)
     }
 
+    fn require_exact_work_member_unlocked(
+        &self,
+        execution_space_id: &str,
+        work: &Work,
+        actor: &ActorRef,
+    ) -> StoreResult<MemberRun> {
+        if actor.kind != ActorKind::AgentMember
+            || work.owner_member_id.as_deref() != Some(actor.id.as_str())
+        {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "member-owned Work mutation requires the exact accountable AgentMember",
+                "work",
+                &work.id,
+                Some(work.version),
+            ));
+        }
+        let active_member_run_id = work.active_member_run_id.as_deref().ok_or_else(|| {
+            trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "member-owned Work mutation requires an active WorkExecutionBinding",
+                "work",
+                &work.id,
+                Some(work.version),
+            )
+        })?;
+        let run = self
+            .latest_trust_envelopes_unlocked(execution_space_id, "member_run")?
+            .remove(active_member_run_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::UnauthorizedActor,
+                    "WorkExecutionBinding references a missing MemberRun",
+                    "work",
+                    &work.id,
+                    Some(work.version),
+                )
+            })
+            .and_then(|envelope| event_projection::<MemberRun>(&envelope))?;
+        if run.agent_member_id != actor.id
+            || run.team_run_id != work.team_run_id
+            || run.coordination_status != MemberCoordinationStatus::Active
+        {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "WorkExecutionBinding is not the authenticated Member's exact active MemberRun",
+                "work",
+                &work.id,
+                Some(work.version),
+            ));
+        }
+        Ok(run)
+    }
+
     fn trust_operation_envelopes_unlocked(&self) -> StoreResult<Vec<TrustOperationEnvelope>> {
         let path = self.root.join(TRUST_OPERATIONS_LEDGER);
         if !path.exists() {
@@ -433,6 +487,21 @@ impl HarnessStore {
         Ok(self
             .trust_operation_envelopes_unlocked()?
             .into_iter()
+            .map(|envelope| envelope.operation)
+            .collect())
+    }
+
+    /// Scope-preserving canonical operation read for server-built RoleViews.
+    /// A physical Store may temporarily contain more than one Execution Space
+    /// during recovery/import; callers must never fold another scope's truth.
+    pub fn canonical_operations_for_space(
+        &self,
+        execution_space_id: &str,
+    ) -> StoreResult<Vec<CanonicalOperation>> {
+        Ok(self
+            .trust_operation_envelopes_unlocked()?
+            .into_iter()
+            .filter(|envelope| envelope.execution_space_id == execution_space_id)
             .map(|envelope| envelope.operation)
             .collect())
     }
@@ -501,7 +570,10 @@ impl HarnessStore {
         required(aggregate_kind, "aggregate_kind")?;
         required(aggregate_id, "aggregate_id")?;
         let existing = self.trust_operation_envelopes_unlocked()?;
-        let fingerprint = canonical_json_fingerprint(&request_payload);
+        let fingerprint = context
+            .request_fingerprint
+            .clone()
+            .unwrap_or_else(|| canonical_json_fingerprint(&request_payload));
 
         if let Some(replay) = existing.iter().find(|envelope| {
             envelope.execution_space_id == context.execution_space_id
@@ -617,7 +689,10 @@ impl HarnessStore {
         immutable_side_records: Vec<Value>,
     ) -> StoreResult<CanonicalMutationResult<Work>> {
         let existing = self.trust_operation_envelopes_unlocked()?;
-        let fingerprint = canonical_json_fingerprint(&request_payload);
+        let fingerprint = context
+            .request_fingerprint
+            .clone()
+            .unwrap_or_else(|| canonical_json_fingerprint(&request_payload));
         if let Some(replay) = existing.iter().find(|envelope| {
             envelope.execution_space_id == context.execution_space_id
                 && envelope.authenticated_actor_kind == context.authenticated_actor.kind
@@ -1325,21 +1400,35 @@ impl HarnessStore {
                 None,
             ));
         }
-        if !self
+        let team_run = self
             .team_runs()?
             .into_iter()
-            .any(|run| run.id == message.team_run_id)
-        {
-            return Err(trust_error(
-                TrustErrorCode::InvalidStateTransition,
-                "message references a missing TeamRun",
-                "team_message",
-                &message.id,
-                None,
-            ));
-        }
+            .rev()
+            .find(|run| run.id == message.team_run_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "message references a missing TeamRun",
+                    "team_message",
+                    &message.id,
+                    None,
+                )
+            })?;
+        let team = self
+            .latest_teams()?
+            .remove(&team_run.agent_team_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "message TeamRun references a missing AgentTeam",
+                    "team_message",
+                    &message.id,
+                    None,
+                )
+            })?;
         let runs = self.trust_member_runs(&context.execution_space_id)?;
         if message.sender.kind == ActorKind::AgentMember
+            && message.sender.id != team.host_agent_id
             && !runs.iter().any(|run| {
                 run.team_run_id == message.team_run_id
                     && run.agent_member_id == message.sender.id
@@ -1353,6 +1442,44 @@ impl HarnessStore {
                 &message.id,
                 None,
             ));
+        }
+        if let Some(work_id) = message.work_id.as_deref() {
+            let work = self
+                .latest_works_unlocked()?
+                .remove(work_id)
+                .ok_or_else(|| {
+                    trust_error(
+                        TrustErrorCode::InvalidStateTransition,
+                        "linked TeamMessage references a missing Work",
+                        "work",
+                        work_id,
+                        None,
+                    )
+                })?;
+            if work.team_run_id != message.team_run_id
+                || work.team_id.as_deref() != Some(team.id.as_str())
+            {
+                return Err(trust_error(
+                    TrustErrorCode::UnauthorizedActor,
+                    "linked TeamMessage Work must belong to the exact Team and TeamRun",
+                    "work",
+                    work_id,
+                    Some(work.version),
+                ));
+            }
+            let actor_is_host = context.authenticated_actor.kind == ActorKind::AgentMember
+                && (context.authenticated_actor.id == team.host_agent_id
+                    || context.authority_actor.as_ref().is_some_and(|authority| {
+                        authority.kind == ActorKind::AgentMember
+                            && authority.id == team.host_agent_id
+                    }));
+            if !actor_is_host {
+                self.require_exact_work_member_unlocked(
+                    &context.execution_space_id,
+                    &work,
+                    &context.authenticated_actor,
+                )?;
+            }
         }
         let mut seen = BTreeSet::new();
         let mut deliveries = Vec::new();
@@ -1374,6 +1501,9 @@ impl HarnessStore {
                         && run.coordination_status != MemberCoordinationStatus::Retired
                 })
                 .collect::<Vec<_>>();
+            if recipient.id == team.host_agent_id && matching.is_empty() {
+                continue;
+            }
             if matching.len() != 1 {
                 return Err(trust_error(
                     TrustErrorCode::InvalidStateTransition,
@@ -2243,6 +2373,11 @@ impl HarnessStore {
         };
         let current_work =
             self.trust_team_work_unlocked(team_id, &report.work_id, source_work_revision)?;
+        self.require_exact_work_member_unlocked(
+            &context.execution_space_id,
+            &current_work,
+            &context.authenticated_actor,
+        )?;
         if report.authored_by != context.authenticated_actor {
             return Err(trust_error(
                 TrustErrorCode::UnauthorizedActor,
@@ -2269,30 +2404,18 @@ impl HarnessStore {
                 None,
             ));
         }
-        if report.kind == WorkReportKind::Result {
-            if current_work.phase != firm_core::WorkPhase::Active
+        if report.kind == WorkReportKind::Result
+            && (current_work.phase != firm_core::WorkPhase::Active
                 || current_work.condition != firm_core::WorkCondition::Normal
-                || report.work_revision != current_work.version + 1
-            {
-                return Err(trust_error(
-                    TrustErrorCode::InvalidStateTransition,
-                    "result report may submit only normal active Work and must name the resulting Work revision",
-                    "work_report",
-                    &report.id,
-                    Some(current_work.version),
-                ));
-            }
-            if current_work.owner_member_id.as_deref()
-                != Some(context.authenticated_actor.id.as_str())
-            {
-                return Err(trust_error(
-                    TrustErrorCode::UnauthorizedActor,
-                    "only the accountable AgentMember may submit a result report",
-                    "work_report",
-                    &report.id,
-                    Some(current_work.version),
-                ));
-            }
+                || report.work_revision != current_work.version + 1)
+        {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "result report may submit only normal active Work and must name the resulting Work revision",
+                "work_report",
+                &report.id,
+                Some(current_work.version),
+            ));
         }
         if let (Some(candidate), Some(fingerprint)) = (
             report.candidate.as_ref(),
@@ -2457,7 +2580,22 @@ impl HarnessStore {
     ) -> StoreResult<CanonicalMutationResult<WorkFinding>> {
         self.init()?;
         let _trust_lock = self.acquire_write_lock()?;
-        self.trust_team_work_unlocked(team_id, &finding.work_id, finding.work_revision)?;
+        let work =
+            self.trust_team_work_unlocked(team_id, &finding.work_id, finding.work_revision)?;
+        self.require_exact_work_member_unlocked(
+            &context.execution_space_id,
+            &work,
+            &context.authenticated_actor,
+        )?;
+        if finding.reported_by != context.authenticated_actor {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "WorkFinding.reported_by must equal the authenticated actor",
+                "work_finding",
+                &finding.id,
+                None,
+            ));
+        }
         self.commit_trust_projection_unlocked(
             context,
             "work_finding",
@@ -2478,7 +2616,24 @@ impl HarnessStore {
     ) -> StoreResult<CanonicalMutationResult<FailureAnalysis>> {
         self.init()?;
         let _trust_lock = self.acquire_write_lock()?;
-        self.trust_team_work_unlocked(team_id, &analysis.work_id, analysis.work_revision)?;
+        let work =
+            self.trust_team_work_unlocked(team_id, &analysis.work_id, analysis.work_revision)?;
+        let run = self.require_exact_work_member_unlocked(
+            &context.execution_space_id,
+            &work,
+            &context.authenticated_actor,
+        )?;
+        if analysis.reported_by != context.authenticated_actor
+            || analysis.member_run_id.as_deref() != Some(run.id.as_str())
+        {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "FailureAnalysis must name the authenticated Work owner's exact active MemberRun",
+                "failure_analysis",
+                &analysis.id,
+                None,
+            ));
+        }
         self.commit_trust_projection_unlocked(
             context,
             "failure_analysis",
@@ -3705,6 +3860,7 @@ mod tests {
             command_name: command.into(),
             idempotency_key: key.into(),
             expected_version: expected,
+            request_fingerprint: None,
         }
     }
 

@@ -423,6 +423,7 @@ const EXECUTION_INVALIDATION_FILES: &[&str] = &[
     "work_operations.jsonl",
     "work_delivery_updates.jsonl",
     "host_attentions.jsonl",
+    "agentfirm_trust_operations.jsonl",
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -963,6 +964,7 @@ fn check_and_broadcast_appends<F>(
     };
 
     let complete = &buf[..=last_newline];
+    let mut observed_durable_row = false;
     for line in complete.split(|&b| b == b'\n') {
         if line.is_empty() {
             continue;
@@ -974,9 +976,12 @@ fn check_and_broadcast_appends<F>(
         if trimmed.is_empty() {
             continue;
         }
-        for frame in parse_line(trimmed) {
-            manager.broadcast(project_id, frame);
+        if !parse_line(trimmed).is_empty() {
+            observed_durable_row = true;
         }
+    }
+    if observed_durable_row {
+        manager.invalidate_execution_space(project_id, filename, "append");
     }
 
     // Advance only past the complete lines we just consumed.
@@ -989,7 +994,6 @@ pub fn write_sse_header(stream: &mut TcpStream) -> std::io::Result<()> {
                     Content-Type: text/event-stream\r\n\
                     Cache-Control: no-cache\r\n\
                     Connection: keep-alive\r\n\
-                    Access-Control-Allow-Origin: *\r\n\
                     \r\n";
     stream.write_all(response.as_bytes())?;
     stream.flush()?;
@@ -1223,15 +1227,18 @@ mod tests {
         let mut received = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             match frame {
-                SseEventFrame::RegistryMessage(m) => received.push(m.id),
+                SseEventFrame::ProjectionInvalidated(invalidation) => {
+                    assert_eq!(invalidation.ledger, "messages.jsonl");
+                    received.push(invalidation.revision)
+                }
                 other => panic!("unexpected frame {other:?}"),
             }
         }
 
         assert_eq!(
             received,
-            vec!["message-a".to_string(), "message-b".to_string()],
-            "each row delivered exactly once and in order, torn fragment never dropped"
+            vec![1, 2],
+            "each completed append invalidates exactly once; torn fragments do not"
         );
 
         std::fs::remove_dir_all(&root).expect("cleanup");
@@ -1315,12 +1322,14 @@ mod tests {
         let mut received = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             match frame {
-                SseEventFrame::RegistryMessage(message) => received.push(message.id),
+                SseEventFrame::ProjectionInvalidated(invalidation) => {
+                    received.push(invalidation.ledger)
+                }
                 other => panic!("unexpected frame {other:?}"),
             }
         }
 
-        assert_eq!(received, vec!["message-valid".to_string()]);
+        assert_eq!(received, vec!["messages.jsonl".to_string()]);
 
         std::fs::remove_dir_all(&root).expect("cleanup");
     }
@@ -1388,14 +1397,16 @@ mod tests {
         let mut received = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             match frame {
-                SseEventFrame::RegistryMessage(message) => received.push(message.id),
+                SseEventFrame::ProjectionInvalidated(invalidation) => {
+                    received.push(invalidation.ledger)
+                }
                 other => panic!("unexpected frame {other:?}"),
             }
         }
         assert_eq!(
             received,
-            vec!["message-after-compaction".to_string()],
-            "post-compaction state must reach connected clients"
+            vec!["messages.jsonl".to_string()],
+            "post-compaction state must invalidate connected clients"
         );
 
         std::fs::remove_dir_all(&root).expect("cleanup");
@@ -1457,24 +1468,17 @@ mod tests {
             &manager,
         );
 
-        let mut run_count = 0;
-        let mut step_count = 0;
+        let mut ledgers = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             match frame {
-                SseEventFrame::WorkflowRun(r) => {
-                    assert_eq!(r.id, "run-1");
-                    run_count += 1;
-                }
-                SseEventFrame::WorkflowStep(s) => {
-                    assert_eq!(s.id, "step-1");
-                    step_count += 1;
+                SseEventFrame::ProjectionInvalidated(invalidation) => {
+                    ledgers.push(invalidation.ledger)
                 }
                 other => panic!("unexpected frame {other:?}"),
             }
         }
 
-        assert_eq!(run_count, 1, "workflow run broadcast exactly once");
-        assert_eq!(step_count, 1, "workflow step broadcast exactly once");
+        assert_eq!(ledgers, ["workflow_runs.jsonl", "workflow_steps.jsonl"]);
 
         std::fs::remove_dir_all(&root).expect("cleanup");
     }
@@ -1516,7 +1520,9 @@ mod tests {
         );
 
         match rx.try_recv() {
-            Ok(SseEventFrame::MemberAction(action)) => assert_eq!(action.id, "mact-1"),
+            Ok(SseEventFrame::ProjectionInvalidated(invalidation)) => {
+                assert_eq!(invalidation.ledger, "member_actions.jsonl")
+            }
             other => panic!("expected member action frame, got {other:?}"),
         }
         assert!(
@@ -1598,7 +1604,9 @@ mod tests {
         );
 
         match rx_a.try_recv() {
-            Ok(SseEventFrame::RegistryMessage(m)) => assert_eq!(m.id, "a-row"),
+            Ok(SseEventFrame::ProjectionInvalidated(invalidation)) => {
+                assert_eq!(invalidation.ledger, "messages.jsonl")
+            }
             other => panic!("A should receive its row, got {other:?}"),
         }
         assert!(rx_b.try_recv().is_err(), "B must not see A's row");
@@ -1648,29 +1656,19 @@ mod tests {
 
         poll_project(TEST_PID, &root, &mut offsets, &manager);
 
-        let mut kinds = Vec::new();
+        let mut ledgers = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             match frame {
-                SseEventFrame::Mission(mission) => kinds.push(("mission", mission.id)),
-                SseEventFrame::Wave(wave) => kinds.push(("wave", wave.id)),
-                SseEventFrame::AgentTeamRun(run) => kinds.push(("team_run", run.id)),
-                SseEventFrame::ProviderRuntimeProjection(member) => {
-                    kinds.push(("member_run", member.id))
-                }
-                SseEventFrame::ProviderDispatchEnvelope(message) => {
-                    kinds.push(("team_message", message.id))
+                SseEventFrame::ProjectionInvalidated(invalidation) => {
+                    ledgers.push(invalidation.ledger)
                 }
                 other => panic!("unexpected native-ledger frame {other:?}"),
             }
         }
 
         assert_eq!(
-            kinds,
-            vec![
-                ("mission", "mission-1".into()),
-                ("wave", "wave-1".into()),
-                ("team_run", "trun-1".into()),
-            ]
+            ledgers,
+            vec!["missions.jsonl", "waves.jsonl", "team_runs.jsonl"]
         );
         for (filename, _) in rows {
             assert!(

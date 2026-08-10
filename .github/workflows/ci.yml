@@ -23,6 +23,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm check
+      - run: pnpm acceptance:wave4:live
       - run: pnpm acceptance:skill-install
   rust:
     runs-on: ubuntu-latest

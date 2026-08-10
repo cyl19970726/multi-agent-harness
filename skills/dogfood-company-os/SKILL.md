@@ -5,6 +5,14 @@ description: Run Company OS as its own operating system through repeated, eviden
 
 # Dogfood Company OS
 
+## AgentFirm local product loop
+
+Company Work is now the cross-Team aggregate at `GET /v1/views/company-work`.
+Drill into the owning Team, then use the Host, Member or Operator responsibility
+view. Do not create a Company-side Work copy and do not fold raw Store ledgers
+in the Dashboard. Record the exact schema/protocol/build handshake with dogfood
+evidence.
+
 Operate the Company through its own native objects. Dogfood means the system
 that discovers, assigns, executes, reviews, and records the improvement is the
 same Company OS being improved. A repository report or locally fixed bug is
