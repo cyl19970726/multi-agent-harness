@@ -38,6 +38,7 @@ export function roleActionRoute(action:AllowedAction,context:{teamId?:string;tea
   if(action.kind==="write_report"&&team)return `/v1/teams/${team}/works/${id}/reports`;
   if(action.kind==="write_finding"&&team)return `/v1/teams/${team}/works/${id}/findings`;
   if(action.kind==="write_failure"&&team)return `/v1/teams/${team}/works/${id}/failure-analyses`;
+  if(action.kind==="request_gate_evaluation"&&team)return `/v1/teams/${team}/works/${id}/gate-requirements`;
   if(action.kind==="create_work"&&run)return `/v1/team-runs/${run}/works`;
   if(["send_message","reply_message","request_decision"].includes(action.kind)&&run)return `/v1/team-runs/${run}/messages`;
   if(["close_member_run","reopen_member_run","retire_member_run"].includes(action.kind))return `/v1/member-runs/${id}/${action.kind.replace("_member_run","")}`;
@@ -69,6 +70,19 @@ export interface WorkSummary {
   delivery_summary: Record<string, number | string>; runtime_summary: Record<string, unknown>;
   workspace_summary: Record<string, unknown>; delegation_summary: Record<string, unknown>; updated_at: string;
 }
+export interface RoleRecordSummary {
+  kind:string; id:string; work_id:string|null; member_run_id:string|null; requirement_id:string|null;
+  status:string|null; version:number|null; actor_ref:ActorRef|null; summary:string|null;
+  created_at:string|null; source_id:string|null; target_id:string|null; locator:string|null;
+}
+export interface MemberCapacitySummary {
+  agent_member_ref:ActorRef; role:string; organization_status:string; current_member_run_ref:string|null;
+  runtime_state:string|null; runtime_generation:number|null; capacity:"available"|"busy"|"paused"|"unknown";
+}
+export interface MessageSummary {
+  message_id:string; work_id:string|null; sender:ActorRef; recipients:ActorRef[];
+  response_intent:string; created_at:string; delivery_summary:string[];
+}
 export interface CompanyWorkIndexData {
   query: Record<string, string[]>; sort: Array<{field: string; direction: string}>; items: WorkSummary[];
   page: { as_of_event_sequence: number; item_count: number; next_cursor: string | null };
@@ -76,27 +90,27 @@ export interface CompanyWorkIndexData {
 }
 export interface TeamWorkspaceData {
   team: {team_id:string; team_revision:number; mission_id:string; node_id:string; placement_generation:number|null; status:string};
-  works: WorkSummary[]; members: Array<Record<string, unknown>>; messages: Array<Record<string, unknown>>;
-  reports: unknown[]; findings: unknown[]; failures: unknown[]; gate_requirements: unknown[];
-  gate_evaluations: unknown[]; gate_waivers: unknown[]; workspace_attention: unknown[];
-  delegation_provenance: unknown[]; page: {as_of_event_sequence:number;item_count:number;next_cursor:string|null};
+  works: WorkSummary[]; members: MemberCapacitySummary[]; messages: MessageSummary[];
+  reports: RoleRecordSummary[]; findings: RoleRecordSummary[]; failures: RoleRecordSummary[]; gate_requirements: RoleRecordSummary[];
+  gate_evaluations: RoleRecordSummary[]; gate_waivers: RoleRecordSummary[]; workspace_attention: RoleRecordSummary[];
+  delegation_provenance: RoleRecordSummary[]; page: {as_of_event_sequence:number;item_count:number;next_cursor:string|null};
 }
 export interface HostConsoleData {
   team_ref:string; mission_ref:string; work_queues:Record<string,WorkSummary[]>;
-  member_capacity:Array<Record<string,unknown>>; convergence_plans:unknown[]; reusable_findings:unknown[];
-  workspace_conflicts:unknown[]; provider_capacity_attention:unknown[]; deliveries_requiring_reconcile:unknown[];
-  gate_attention:unknown[]; daemon_summary:Record<string,unknown>;
+  member_capacity:MemberCapacitySummary[]; convergence_plans:RoleRecordSummary[]; reusable_findings:RoleRecordSummary[];
+  workspace_conflicts:RoleRecordSummary[]; provider_capacity_attention:Array<{state:"not_modeled";reason:string}>; deliveries_requiring_reconcile:RoleRecordSummary[];
+  gate_attention:RoleRecordSummary[]; daemon_summary:{node_id:string;lease_status:string|null;generation:number|null};
 }
 export interface MemberWorkbenchData {
-  agent_member:Record<string,unknown>; member_run:Record<string,unknown>; my_works:WorkSummary[];
-  eligible_ready_pool:WorkSummary[]; unread_messages:unknown[]; queued_deliveries:unknown[];
-  workspace_binding:Record<string,unknown>|null; native_session_health:string; pending_provider_interactions:unknown[];
-  report_history:unknown[]; finding_history:unknown[]; failure_history:unknown[]; gate_requirements:unknown[];
+  agent_member:{id:string;role:string;organization_status:string}; member_run:{id:string;agent_member_id:string;team_run_id:string;coordination_status:string;runtime_status:string;runtime_generation:number;native_session_health:string}; my_works:WorkSummary[];
+  eligible_ready_pool:WorkSummary[]; unread_messages:MessageSummary[]; queued_deliveries:RoleRecordSummary[];
+  workspace_binding:RoleRecordSummary|null; native_session_health:string; pending_provider_interactions:RoleRecordSummary[];
+  report_history:RoleRecordSummary[]; finding_history:RoleRecordSummary[]; failure_history:RoleRecordSummary[]; gate_requirements:RoleRecordSummary[];
 }
 export interface OperatorViewData {
-  node:Record<string,unknown>; build:{build_sha:string;protocol_version:string;schema_version:string};
-  projects:unknown[]; team_supervisors:unknown[]; delivery_backlog:{depth:number;oldest_age_ms:number|null;recovery_required:boolean};
-  runtime_recovery:unknown[]; provider_admission:unknown[]; workspace_safety:unknown[]; diagnostics:unknown[];
+  node:{node_id:string;node_revision:number;daemon_generation:number|null;status:string}; build:{build_sha:string;protocol_version:string;schema_version:string};
+  projects:RoleRecordSummary[]; team_supervisors:RoleRecordSummary[]; delivery_backlog:{depth:number;oldest_age_ms:number|null;recovery_required:boolean};
+  runtime_recovery:RoleRecordSummary[]; provider_admission:RoleRecordSummary[]; workspace_safety:RoleRecordSummary[]; diagnostics:Array<{kind:string;state:string}>;
 }
 
 export async function fetchRoleView<T>(apiUrl:string,path:string,scope:{project?:string;space?:string;company?:string}={}):Promise<RoleView<T>>{

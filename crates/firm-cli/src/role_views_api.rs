@@ -228,6 +228,90 @@ fn records(facts: &Facts, predicate: impl Fn(&Value) -> bool) -> Vec<Value> {
         .collect()
 }
 
+/// Project canonical records into one closed, display-safe RoleView summary.
+/// RoleViews deliberately do not leak evolving ledger wire objects into the
+/// browser: every field below is stable, bounded, and schema-validated.
+fn record_summary(kind: &str, value: &Value) -> Value {
+    let first_string = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|key| value.get(*key).and_then(Value::as_str))
+    };
+    let actor_ref = [
+        "authored_by",
+        "reported_by",
+        "performed_by",
+        "performed_by_actor",
+        "authority_actor",
+        "evaluator_ref",
+    ]
+    .iter()
+    .find_map(|key| value.get(*key))
+    .filter(|actor| actor.get("kind").is_some() && actor.get("id").is_some())
+    .cloned();
+    let source_id = value
+        .get("source_work_ref")
+        .and_then(|reference| reference.get("work_id"))
+        .and_then(Value::as_str);
+    let target_id = value
+        .get("target_work_ref")
+        .and_then(|reference| reference.get("work_id"))
+        .and_then(Value::as_str);
+    json!({
+        "kind":kind,
+        "id":first_string(&["id","message_id","work_id"]).unwrap_or("unknown"),
+        "work_id":first_string(&["work_id"]),
+        "member_run_id":first_string(&["member_run_id","recipient_member_run_id"]),
+        "requirement_id":first_string(&["requirement_id"]),
+        "status":first_string(&["state","status","lifecycle","verdict","runtime_status"]),
+        "version":value.get("version").and_then(Value::as_u64),
+        "actor_ref":actor_ref,
+        "summary":first_string(&["summary","summary_markdown","detail_markdown","observed_failure","reason"]),
+        "created_at":first_string(&["created_at","evaluated_at","updated_at"]),
+        "source_id":source_id,
+        "target_id":target_id,
+        "locator":first_string(&["canonical_root","project_root","store_root"]),
+    })
+}
+
+fn record_summaries(kind: &str, values: Vec<Value>) -> Vec<Value> {
+    values
+        .iter()
+        .map(|value| record_summary(kind, value))
+        .collect()
+}
+
+fn member_run_summary(value: &Value) -> Value {
+    json!({
+        "id":value["id"],
+        "agent_member_id":value["agent_member_id"],
+        "team_run_id":value["team_run_id"],
+        "coordination_status":value["coordination_status"],
+        "runtime_status":value["runtime_status"],
+        "runtime_generation":value["runtime_generation"],
+        "native_session_health":value["native_session"].get("availability").cloned().unwrap_or(json!("unknown")),
+    })
+}
+
+fn agent_member_summary(value: &Value) -> Value {
+    json!({
+        "id":value["id"],
+        "role":value["role"],
+        "organization_status":value["organization_status"],
+    })
+}
+
+fn message_summary(value: &Value, deliveries: &[Value]) -> Value {
+    json!({
+        "message_id":value["id"],
+        "work_id":value["work_id"],
+        "sender":value["sender"],
+        "recipients":value["recipients"],
+        "response_intent":value["response_intent"],
+        "created_at":value["created_at"],
+        "delivery_summary":deliveries.iter().filter(|delivery|delivery["message_id"]==value["id"]).map(|delivery|delivery["status"].clone()).collect::<Vec<_>>(),
+    })
+}
+
 fn latest_record_ref(facts: &Facts, work_id: &str, kind: &str) -> Option<String> {
     records(facts, |value| {
         value.get("work_id").and_then(Value::as_str) == Some(work_id)
@@ -612,7 +696,12 @@ fn team_view(
         let member_id=member["id"].as_str().unwrap_or_default(); let current=facts.member_runs.iter().filter(|r|r["agent_member_id"]==member_id&&run_id.is_some_and(|id|r["team_run_id"]==id)&&r["coordination_status"]=="active").max_by_key(|r|r["runtime_generation"].as_u64().unwrap_or(0));
         json!({"agent_member_ref":{"kind":"agent_member","id":member_id},"role":member["role"],"organization_status":member["organization_status"],"current_member_run_ref":current.and_then(|r|r["id"].as_str()),"runtime_state":current.and_then(|r|r["runtime_status"].as_str()),"runtime_generation":current.and_then(|r|r["runtime_generation"].as_u64()),"capacity":match current.and_then(|r|r["runtime_status"].as_str()){Some("running")|Some("queued")=>"busy",Some("idle")|Some("waiting")=>"available",_=>"unknown"}})
     }).collect::<Vec<_>>();
-    let messages=facts.messages.iter().filter(|m|run_id.is_some_and(|id|m["team_run_id"]==id)).map(|m|json!({"message_id":m["id"],"work_id":m["work_id"],"sender":m["sender"],"recipients":m["recipients"],"response_intent":m["response_intent"],"created_at":m["created_at"],"delivery_summary":facts.message_deliveries.iter().filter(|d|d["message_id"]==m["id"]).map(|d|d["status"].clone()).collect::<Vec<_>>() })).collect::<Vec<_>>();
+    let messages = facts
+        .messages
+        .iter()
+        .filter(|m| run_id.is_some_and(|id| m["team_run_id"] == id))
+        .map(|m| message_summary(m, &facts.message_deliveries))
+        .collect::<Vec<_>>();
     let identity_attention = team_member_ids
         .iter()
         .filter(|member_id| {
@@ -632,11 +721,36 @@ fn team_view(
             json!({"kind":"identity_conflict","severity":"critical","source_ref":{"kind":"agent_member","id":member_id},"reason_code":"multiple_active_member_runs","first_seen_at":observed_at,"last_seen_at":observed_at,"recommended_action":"Host must reconcile duplicate active MemberRuns before assigning or delivering Work"})
         })
         .collect::<Vec<_>>();
-    let reports = records(&facts, |v| v.get("report_revision").is_some());
-    let findings = records(&facts, |v| v.get("detail_markdown").is_some());
-    let failures = records(&facts, |v| v.get("observed_failure").is_some());
+    let raw_reports = records(&facts, |v| v.get("report_revision").is_some());
+    let raw_findings = records(&facts, |v| v.get("detail_markdown").is_some());
+    let raw_failures = records(&facts, |v| v.get("observed_failure").is_some());
+    let raw_requirements = records(&facts, |v| v.get("requirement_set_fingerprint").is_some());
+    let raw_evaluations = records(&facts, |v| {
+        v.get("verdict").is_some() && v.get("requirement_id").is_some()
+    });
+    let raw_waivers = records(&facts, |v| {
+        v.get("authority_actor").is_some() && v.get("requirement_id").is_some()
+    });
+    let raw_workspace_attention = records(&facts, |v| {
+        v.get("canonical_root").is_some() && v["lifecycle"] != "ready"
+    });
+    let raw_delegations = facts
+        .side
+        .iter()
+        .filter(|v| v.get("source_work_ref").is_some() || v.get("target_work_ref").is_some())
+        .cloned()
+        .collect::<Vec<_>>();
+    let reports = record_summaries("work_report", raw_reports);
+    let findings = record_summaries("work_finding", raw_findings);
+    let failures = record_summaries("failure_analysis", raw_failures);
+    let requirements = record_summaries("gate_requirement", raw_requirements.clone());
+    let evaluations = record_summaries("gate_evaluation", raw_evaluations);
+    let waivers = record_summaries("gate_waiver", raw_waivers.clone());
+    let workspace_attention =
+        record_summaries("workspace_binding", raw_workspace_attention.clone());
+    let delegations = record_summaries("work_delegation", raw_delegations);
     if !host {
-        let data = json!({"team":{"team_id":team.id,"team_revision":1,"mission_id":team.mission_id,"node_id":team.node_id,"placement_generation":run.map(|_|1),"status":enum_string(&team.status)},"works":works,"members":members,"messages":messages,"reports":reports,"findings":findings,"failures":failures,"gate_requirements":records(&facts,|v|v.get("requirement_set_fingerprint").is_some()),"gate_evaluations":records(&facts,|v|v.get("verdict").is_some()&&v.get("requirement_id").is_some()),"gate_waivers":records(&facts,|v|v.get("authority_actor").is_some()&&v.get("requirement_id").is_some()),"workspace_attention":records(&facts,|v|v.get("canonical_root").is_some()&&v["lifecycle"]!="ready"),"delegation_provenance":facts.side.iter().filter(|v|v.get("source_work_ref").is_some()||v.get("target_work_ref").is_some()).cloned().collect::<Vec<_>>(),"page":{"as_of_event_sequence":facts.sequence,"item_count":works.len(),"next_cursor":null}});
+        let data = json!({"team":{"team_id":team.id,"team_revision":1,"mission_id":team.mission_id,"node_id":team.node_id,"placement_generation":run.map(|_|1),"status":enum_string(&team.status)},"works":works,"members":members,"messages":messages,"reports":reports,"findings":findings,"failures":failures,"gate_requirements":requirements,"gate_evaluations":evaluations,"gate_waivers":waivers,"workspace_attention":workspace_attention,"delegation_provenance":delegations,"page":{"as_of_event_sequence":facts.sequence,"item_count":works.len(),"next_cursor":null}});
         return Ok(envelope(
             "team_workspace",
             &facts,
@@ -678,6 +792,57 @@ fn team_view(
         ] {
             actions.push(action(kind, "work", id, version, disabled));
         }
+        actions.push(action(
+            "request_gate_evaluation",
+            "work",
+            id,
+            version,
+            disabled,
+        ));
+    }
+    for requirement in &raw_requirements {
+        let Some(id) = requirement["id"].as_str() else {
+            continue;
+        };
+        let evaluator_enabled = identity.is_some_and(|identity| {
+            serde_json::to_value(&identity.actor).ok().as_ref() == requirement.get("evaluator_ref")
+        });
+        actions.push(action(
+            "evaluate_gate",
+            "gate_requirement",
+            id,
+            requirement["version"].as_u64(),
+            (!evaluator_enabled).then_some("authenticated actor is not the frozen evaluator"),
+        ));
+        let waiver_enabled = identity.is_some_and(|identity| !identity.authority_actors.is_empty());
+        actions.push(action(
+            "waive_gate",
+            "gate_requirement",
+            id,
+            requirement["version"].as_u64(),
+            (!waiver_enabled).then_some("credential has no waiver authority"),
+        ));
+    }
+    for waiver in &raw_waivers {
+        if waiver["state"] != "active" {
+            continue;
+        }
+        let Some(id) = waiver["id"].as_str() else {
+            continue;
+        };
+        let revoke_enabled = identity.is_some_and(|identity| {
+            serde_json::to_value(&identity.actor).ok().as_ref() == waiver.get("performed_by_actor")
+                && identity.authority_actors.iter().any(|actor| {
+                    serde_json::to_value(actor).ok().as_ref() == waiver.get("authority_actor")
+                })
+        });
+        actions.push(action(
+            "revoke_waiver",
+            "gate_waiver",
+            id,
+            waiver["version"].as_u64(),
+            (!revoke_enabled).then_some("credential does not match the waiver authority"),
+        ));
     }
     for member in &members {
         if let Some(member_run_id) = member["current_member_run_ref"].as_str() {
@@ -712,7 +877,7 @@ fn team_view(
     Ok(envelope(
         "host_console",
         &facts,
-        json!({"team_ref":team.id,"mission_ref":team.mission_id,"work_queues":{"ready":works.iter().filter(|w|w["phase"]=="open"&&w["condition"]=="normal").cloned().collect::<Vec<_>>(),"unassigned":works.iter().filter(|w|w["owner_actor_ref"].is_null()).cloned().collect::<Vec<_>>(),"blocked":works.iter().filter(|w|w["condition"]=="blocked").cloned().collect::<Vec<_>>(),"review":by_phase("review"),"integration":works.iter().filter(|w|w["module_refs"].as_array().is_some_and(|a|a.iter().any(|m|m=="integration-plan"))).cloned().collect::<Vec<_>>()},"member_capacity":members,"convergence_plans":[],"reusable_findings":findings,"workspace_conflicts":records(&facts,|v|v.get("canonical_root").is_some()&&matches!(v["lifecycle"].as_str(),Some("dirty"|"conflicted"|"cleanup_blocked"))),"provider_capacity_attention":[{"state":"not_modeled","reason":"generic tool leases are outside Wave 4B"}],"deliveries_requiring_reconcile":facts.work_deliveries.iter().filter(|d|matches!(d["status"].as_str(),Some("failed"|"expired"))).cloned().collect::<Vec<_>>(),"gate_attention":[],"daemon_summary":{"node_id":team.node_id,"lease":store.latest_node_daemon_lease(&team.node_id).ok().flatten()}}),
+        json!({"team_ref":team.id,"mission_ref":team.mission_id,"work_queues":{"ready":works.iter().filter(|w|w["phase"]=="open"&&w["condition"]=="normal").cloned().collect::<Vec<_>>(),"unassigned":works.iter().filter(|w|w["owner_actor_ref"].is_null()).cloned().collect::<Vec<_>>(),"blocked":works.iter().filter(|w|w["condition"]=="blocked").cloned().collect::<Vec<_>>(),"review":by_phase("review"),"integration":works.iter().filter(|w|w["module_refs"].as_array().is_some_and(|a|a.iter().any(|m|m=="integration-plan"))).cloned().collect::<Vec<_>>()},"member_capacity":members,"convergence_plans":[],"reusable_findings":findings,"workspace_conflicts":record_summaries("workspace_binding",raw_workspace_attention),"provider_capacity_attention":[{"state":"not_modeled","reason":"generic tool leases are outside Wave 4B"}],"deliveries_requiring_reconcile":record_summaries("work_delivery",facts.work_deliveries.iter().filter(|d|matches!(d["status"].as_str(),Some("failed"|"expired"))).cloned().collect()),"gate_attention":requirements,"daemon_summary":{"node_id":team.node_id,"lease_status":store.latest_node_daemon_lease(&team.node_id).ok().flatten().map(|lease|enum_string(&lease.status)),"generation":store.latest_node_daemon_lease(&team.node_id).ok().flatten().map(|lease|lease.generation)}}),
         identity_attention,
         actions,
     ))
@@ -793,7 +958,7 @@ fn member_view(
         .messages
         .iter()
         .filter(|m| m["id"].as_str().is_some_and(|id| message_ids.contains(id)))
-        .cloned()
+        .map(|message| message_summary(message, &facts.message_deliveries))
         .collect::<Vec<_>>();
     let workspace = facts
         .side
@@ -835,10 +1000,27 @@ fn member_view(
         None,
         None,
     ));
+    for requirement in records(&facts, |value| {
+        value.get("requirement_set_fingerprint").is_some()
+            && value.get("evaluator_ref")
+                == identity
+                    .and_then(|identity| serde_json::to_value(&identity.actor).ok())
+                    .as_ref()
+    }) {
+        if let Some(id) = requirement["id"].as_str() {
+            actions.push(action(
+                "evaluate_gate",
+                "gate_requirement",
+                id,
+                requirement["version"].as_u64(),
+                None,
+            ));
+        }
+    }
     Ok(envelope(
         "member_workbench",
         &facts,
-        json!({"agent_member":member,"member_run":run,"my_works":my,"eligible_ready_pool":pool,"unread_messages":unread,"queued_deliveries":queued,"workspace_binding":workspace,"native_session_health":run["native_session"].get("availability").cloned().unwrap_or(json!("unknown")),"pending_provider_interactions":[],"report_history":records(&facts,|v|v["authored_by"]["id"]==member_id&&v.get("report_revision").is_some()),"finding_history":records(&facts,|v|v["reported_by"]["id"]==member_id&&v.get("detail_markdown").is_some()),"failure_history":records(&facts,|v|v["reported_by"]["id"]==member_id&&v.get("observed_failure").is_some()),"gate_requirements":records(&facts,|v|v.get("requirement_set_fingerprint").is_some())}),
+        json!({"agent_member":agent_member_summary(&member),"member_run":member_run_summary(run),"my_works":my,"eligible_ready_pool":pool,"unread_messages":unread,"queued_deliveries":record_summaries("message_delivery",queued),"workspace_binding":workspace.as_ref().map(|value|record_summary("workspace_binding",value)),"native_session_health":run["native_session"].get("availability").cloned().unwrap_or(json!("unknown")),"pending_provider_interactions":[],"report_history":record_summaries("work_report",records(&facts,|v|v["authored_by"]["id"]==member_id&&v.get("report_revision").is_some())),"finding_history":record_summaries("work_finding",records(&facts,|v|v["reported_by"]["id"]==member_id&&v.get("detail_markdown").is_some())),"failure_history":record_summaries("failure_analysis",records(&facts,|v|v["reported_by"]["id"]==member_id&&v.get("observed_failure").is_some())),"gate_requirements":record_summaries("gate_requirement",records(&facts,|v|v.get("requirement_set_fingerprint").is_some()))}),
         vec![],
         actions,
     ))
@@ -889,7 +1071,17 @@ fn operator_view(
     Ok(envelope(
         "operator",
         &facts,
-        json!({"node":{"node_id":node.id,"node_revision":1,"daemon_generation":lease.as_ref().map(|l|l.generation),"status":enum_string(&node.status)},"build":{"build_sha":build_sha,"protocol_version":"agentfirm-member-trust/1","schema_version":SCHEMA_VERSION},"projects":store.latest_node_project_registrations().unwrap_or_default().into_iter().filter(|p|p.node_id==node_id).collect::<Vec<_>>(),"team_supervisors":store.team_runs().unwrap_or_default().into_iter().filter(|r|r.execution_node_id==node_id).filter_map(|r|store.latest_team_supervisor_lease(&r.id).ok().flatten()).collect::<Vec<_>>(),"delivery_backlog":{"depth":backlog,"oldest_age_ms":null,"recovery_required":backlog>0},"runtime_recovery":facts.member_runs.iter().filter(|r|matches!(r["runtime_status"].as_str(),Some("disconnected"|"failed"|"stopped"))).cloned().collect::<Vec<_>>(),"provider_admission":store.latest_provider_compatibility_admissions().unwrap_or_default(),"workspace_safety":facts.side.iter().filter(|v|v.get("canonical_root").is_some()).cloned().collect::<Vec<_>>(),"diagnostics":[{"kind":"daemon_lease","state":lease.as_ref().map(|l|enum_string(&l.status)).unwrap_or_else(||"unavailable".into())}]}),
+        json!({
+            "node":{"node_id":node.id,"node_revision":1,"daemon_generation":lease.as_ref().map(|l|l.generation),"status":enum_string(&node.status)},
+            "build":{"build_sha":build_sha,"protocol_version":"agentfirm-member-trust/1","schema_version":SCHEMA_VERSION},
+            "projects":record_summaries("node_project_registration",store.latest_node_project_registrations().unwrap_or_default().into_iter().filter(|p|p.node_id==node_id).filter_map(|value|serde_json::to_value(value).ok()).collect()),
+            "team_supervisors":record_summaries("team_supervisor_lease",store.team_runs().unwrap_or_default().into_iter().filter(|r|r.execution_node_id==node_id).filter_map(|r|store.latest_team_supervisor_lease(&r.id).ok().flatten()).filter_map(|value|serde_json::to_value(value).ok()).collect()),
+            "delivery_backlog":{"depth":backlog,"oldest_age_ms":null,"recovery_required":backlog>0},
+            "runtime_recovery":record_summaries("member_run",facts.member_runs.iter().filter(|r|matches!(r["runtime_status"].as_str(),Some("disconnected"|"failed"|"stopped"))).cloned().collect()),
+            "provider_admission":record_summaries("provider_compatibility_admission",store.latest_provider_compatibility_admissions().unwrap_or_default().into_iter().filter_map(|value|serde_json::to_value(value).ok()).collect()),
+            "workspace_safety":record_summaries("workspace_binding",facts.side.iter().filter(|v|v.get("canonical_root").is_some()).cloned().collect()),
+            "diagnostics":[{"kind":"daemon_lease","state":lease.as_ref().map(|l|enum_string(&l.status)).unwrap_or_else(||"unavailable".into())}]
+        }),
         vec![],
         std::iter::once(action(
             "daemon_diagnostics",

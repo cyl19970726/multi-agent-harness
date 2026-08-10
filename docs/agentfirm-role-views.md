@@ -16,6 +16,16 @@ identity and canonical event sequence, and exposes explicit freshness,
 attention, and allowed-action records. The JSON Schemas under
 `schemas/role-views/agentfirm.role_views.v1/` are the wire authority. The
 versioned action mapping is `schemas/role-views/role-action-manifest.v1.json`.
+Every projected object is closed with `additionalProperties: false`; evolving
+canonical ledger records cross the boundary only as bounded `RecordSummary`
+values. Contract tests reject browser-invented fields at nested boundaries.
+
+The Host action set includes `request_gate_evaluation` (canonical
+`gate_requirement.create`). Evaluation is enabled only for the frozen
+evaluator identity, and waiver/revocation only for credentials carrying the
+matching authority. Provider admission truth is visible in Operator View, but
+its existing operational mutation remains the explicit `harness provider
+admit` command; 4B does not invent a second browser admission authority.
 
 ## Authentication and desktop bootstrap
 
