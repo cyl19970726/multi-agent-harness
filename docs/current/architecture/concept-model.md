@@ -195,6 +195,15 @@ owned by one historical Wave.
 | `DelegationRun` | Attribution record for observed or orchestrated delegation. | Parent permissions, paths, and budgets bound the child. |
 | `TeamRunEvent` | Transitional ordered event projection for Harness-owned run lifecycle. | It must not become a mirror of provider-native activity. |
 
+Runtime control authority is resolved by the server as exact self, the active
+owning Host, or the exact machine Operator. Callers cannot submit capabilities,
+provider profiles, permission envelopes, full AgentSession objects, or a
+different Team placement. A Team and AgentIdentity have at most one active
+TeamMembership generation; duplicate historical authority makes RoleViews fail
+closed. Unknown provider effects remain Operator-visible RecoveryRequired work
+until an evidence-backed, generation-fenced resolution records certainty
+without replaying the native effect.
+
 Relationship rules:
 
 - a Mission owns one flat AgentTeam and may create multiple runs of that same

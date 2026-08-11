@@ -108,6 +108,14 @@ Session, or generation fails with an idempotency conflict. Authorization and
 generation rejection have zero canonical ledger, provider, process, Message,
 and delivery side effects.
 
+The public runtime-command route accepts only closed semantic intents. It does
+not accept caller-selected capabilities, permission envelopes, provider
+profiles, or complete AgentSession payloads. For session control, the server
+resolves exact self, the active owning Host in the same Team, or the exact
+machine Operator. StartSession additionally derives the one active Team
+placement and enforces the frozen AgentIdentity permission ceiling under the
+same Store lock before any session, command, process, or provider side effect.
+
 ## Effect certainty and recovery
 
 | Observation | Durable result | Retry rule |
@@ -123,6 +131,12 @@ fabricated completion. A successor NodeDaemon or AgentSession cannot settle an
 older generation's command. An active WorkExecutionBinding must be explicitly
 released or atomically rebound before Session close/replacement.
 
+`RecoveryRequired / Unknown` is visible in the exact Node Operator RoleView.
+Resolution is a critical confirmed action bound to command version, Node,
+NodeDaemon and AgentSession generation, authority, and idempotency fingerprint.
+The Operator may record evidence that the effect was applied, was not applied,
+or remains unknown; resolution never blindly repeats the native effect.
+
 ## Provider conformance
 
 Codex, Claude, Kimi, and Pi map the same closed contracts:
@@ -133,6 +147,11 @@ Codex, Claude, Kimi, and Pi map the same closed contracts:
   safe point;
 - unsupported or unprovable permission, queue, interrupt, resume, or stop
   behavior fails closed;
+- every interrupt/close path freezes an executable provider-native control
+  plan before RuntimeCommand admission and settles only from the observed
+  provider acknowledgement;
+- provider binary/version availability is probed explicitly; an unavailable or
+  unprovable provider is disabled and cannot be reported as conformance PASS;
 - the browser cannot declare provider compatibility, permission, current turn,
   or effect success;
 - provider transcripts, tool calls, commands, files, reasoning, and child
@@ -171,6 +190,9 @@ Release requires:
   subscriptions, per-recipient delivery, provider receipt, ACK/cursor, and
   sibling Team/Node/Space negatives;
 - Codex/Claude/Kimi/Pi permission and queue/current-turn conformance;
+- executable native control conformance for all four adapters, explicit
+  unavailable-provider negatives, and real provider-backed dogfood for each
+  provider available in the release environment;
 - executable zero-match governance for retired runtime/message authorities;
 - populated RoleView and live provider/message acceptance;
 - full Rust, formatting, clippy, repository governance, docs/plugin mirror,

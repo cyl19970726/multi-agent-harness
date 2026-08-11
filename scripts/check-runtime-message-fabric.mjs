@@ -64,6 +64,7 @@ const core = readFileSync("crates/firm-core/src/agentfirm_api.rs", "utf8");
 const store = readFileSync("crates/firm-store/src/trust_kernel.rs", "utf8");
 const daemon = readFileSync("crates/firm-cli/src/supervisor_daemon.rs", "utf8");
 const server = readFileSync("crates/firm-cli/src/main.rs", "utf8");
+const providerAdapter = readFileSync("crates/firm-cli/src/provider_adapter.rs", "utf8");
 
 for (const token of [
   "pub struct AgentIdentity",
@@ -95,6 +96,33 @@ if (!daemon.includes('"runtime" =>')) failures.push("NodeDaemon does not own Run
 if (!daemon.includes("runtime_command_via_socket")) failures.push("runtime command socket transport missing");
 if (!server.includes('/v1/agentfirm/runtime-commands')) failures.push("authenticated HTTP runtime command route missing");
 if (!server.includes("target_node_daemon_generation: lease.generation")) failures.push("server does not freeze current daemon generation");
+for (const token of [
+  "RuntimeStartSessionIntent",
+  "runtime_control_actor_is_authorized",
+  "caller-selected StartSession Node does not match the server-resolved Team placement",
+  "provider_availability(provider_kind)",
+]) {
+  if (!server.includes(token)) failures.push(`runtime HTTP authority is missing: ${token}`);
+}
+for (const token of [
+  "ProviderControlAction",
+  "NativeControlPrimitive",
+  "control_plan",
+  "execute_control_plan",
+  "provider_availability",
+  "PROVIDER_CONTROL_FAILED",
+]) {
+  if (!providerAdapter.includes(token)) failures.push(`provider conformance is not executable: ${token}`);
+}
+if (!store.includes("StartSession must use the one server-resolved active Team placement")) {
+  failures.push("Store does not enforce server-resolved StartSession placement under lock");
+}
+if (!store.includes("StartSession cannot widen the frozen AgentIdentity permission ceiling")) {
+  failures.push("Store does not enforce the AgentIdentity permission ceiling");
+}
+if (!store.includes("resolve_runtime_command_recovery")) {
+  failures.push("Operator RecoveryRequired resolution authority is missing");
+}
 
 const activeRuntimeSources = [
   "crates/firm-cli/src/main.rs",

@@ -338,6 +338,13 @@ destructive external actions without the applicable authority.
   generation after delivery reconciliation.
 - Retire is permanent; unfinished Work must be reassigned or cancelled.
 
+Runtime control never accepts a Member-authored capability, permission
+envelope, provider profile, AgentSession object, or target placement. The
+server resolves exact self/owning Host/machine Operator authority and the
+AgentIdentity ceiling. If a provider is unavailable or cannot prove the native
+interrupt/close acknowledgement, the command fails closed or remains
+`RecoveryRequired`; never report it as completed or retry an unknown effect.
+
 Work ownership survives process exit — see shared hard invariants §9. Never clear ownership, duplicate side effects, or reconstruct a session from Harness messages after a crash.
 
 ## Before Returning Control

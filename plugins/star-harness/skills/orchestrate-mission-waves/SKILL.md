@@ -274,6 +274,14 @@ Ordinary mail never interrupts the middle of a Host or Member turn. Use real
 Steer only when the selected Provider mode acknowledges current-turn injection;
 otherwise send a queued Message for the next safe boundary.
 
+Provider runtime controls are server-built actions, not free-form commands.
+The server binds exact self/owning Host/machine Operator authority, active Team
+placement, AgentSession and NodeDaemon generations, and the AgentIdentity
+permission ceiling. An unavailable provider is disabled. An unknown native
+effect is visible as `RecoveryRequired` in the Operator view and must be
+resolved with evidence; never blindly replay it or treat a static capability
+claim as four-provider conformance.
+
 ## Review Work Explicitly
 
 Provider completion and conversational updates never submit or accept Work. The
