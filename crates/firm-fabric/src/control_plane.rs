@@ -68,10 +68,10 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
                         prior.revision,
                     ));
                 }
-                if prior.expires_at_unix_ms > now_unix_ms && prior.instance_id != self.instance_id {
+                if prior.expires_at_unix_ms > now_unix_ms {
                     return Err(FabricError::none(
                         FabricErrorCode::LeaseConflict,
-                        "another Control Plane generation is still active",
+                        "a Control Plane generation is still active; instance labels cannot bypass the lease",
                     ));
                 }
             } else if expected_revision != 0 {
@@ -198,6 +198,46 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
                 node_id,
                 display_name,
                 proof,
+                certificate_serial,
+                certificate_expires_at_unix_ms,
+                schema_bundle_digest,
+                now_unix_ms,
+            )
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn consume_enrollment_csr(
+        &self,
+        generation: u64,
+        raw_token: &str,
+        node_id: &str,
+        display_name: &str,
+        csr_pem: &str,
+        certificate_serial: &str,
+        certificate_expires_at_unix_ms: u64,
+        schema_bundle_digest: &str,
+        now_unix_ms: u64,
+    ) -> Result<(CompanyNode, NodeCertificate), FabricError> {
+        let public_key_fingerprint =
+            crate::pki::verify_node_csr(csr_pem, &self.company_id, node_id)?;
+        let csr_digest = crate::sha256_hex(csr_pem.as_bytes());
+        self.store.transact(|state| {
+            require_active_control_plane(
+                state,
+                &self.company_id,
+                &self.instance_id,
+                generation,
+                now_unix_ms,
+            )?;
+            enrollment::consume_enrollment_csr(
+                state,
+                &self.company_id,
+                raw_token,
+                node_id,
+                display_name,
+                &public_key_fingerprint,
+                &csr_digest,
                 certificate_serial,
                 certificate_expires_at_unix_ms,
                 schema_bundle_digest,

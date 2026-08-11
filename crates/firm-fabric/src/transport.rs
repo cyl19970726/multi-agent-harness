@@ -137,7 +137,7 @@ pub fn connect_outbound_mtls(
         return Err(transport_error("client certificate chain is empty"));
     }
     let private_key = read_private_key(&identity.client_private_key_pem)?;
-    let tls = rustls::ClientConfig::builder()
+    let tls = rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .with_root_certificates(roots)
         .with_client_auth_cert(certificates, private_key)
         .map_err(|error| transport_error(format!("client TLS identity is invalid: {error}")))?;
@@ -211,7 +211,7 @@ pub fn connect_outbound_mtls(
 pub fn accept_control_plane_mtls(
     tcp: TcpStream,
     identity: &ControlPlaneTlsFiles,
-) -> Result<(ControlPlaneGatewaySocket, crate::pki::PeerNodeIdentity), FabricError> {
+) -> Result<(ControlPlaneGatewaySocket, VerifiedMtlsPeer), FabricError> {
     identity.validate()?;
     let mut roots = rustls::RootCertStore::empty();
     for certificate in read_certificates(&identity.node_ca_pem)? {
@@ -225,7 +225,7 @@ pub fn accept_control_plane_mtls(
     let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
         .build()
         .map_err(|error| transport_error(format!("Node client verifier is invalid: {error}")))?;
-    let server = rustls::ServerConfig::builder()
+    let server = rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .with_client_cert_verifier(verifier)
         .with_single_cert(
             read_certificates(&identity.server_certificate_chain_pem)?,
@@ -268,8 +268,24 @@ pub fn accept_control_plane_mtls(
         .peer_certificates()
         .and_then(|certificates| certificates.first())
         .ok_or_else(|| transport_error("verified Node client certificate is unavailable"))?;
-    let peer = crate::pki::parse_peer_node_identity(certificate)?;
-    Ok((socket, peer))
+    if socket.get_ref().conn.protocol_version() != Some(rustls::ProtocolVersion::TLSv1_3) {
+        return Err(FabricError::none(
+            FabricErrorCode::ProtocolIncompatible,
+            "Remote Fabric negotiated a TLS version other than TLS 1.3",
+        ));
+    }
+    let identity = crate::pki::parse_peer_node_identity(certificate)?;
+    Ok((
+        socket,
+        VerifiedMtlsPeer {
+            company_id: identity.company_id,
+            node_id: identity.node_id,
+            certificate_serial: identity.certificate_serial,
+            public_key_fingerprint: identity.public_key_fingerprint,
+            tls_version: "TLS1.3".into(),
+            websocket_subprotocol: FABRIC_WEBSOCKET_SUBPROTOCOL.into(),
+        },
+    ))
 }
 
 fn read_certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>, FabricError> {
@@ -416,9 +432,22 @@ pub fn read_frame<S: std::io::Read + std::io::Write>(
     socket: &mut WebSocket<S>,
 ) -> Result<FabricFrame, FabricError> {
     loop {
-        let message = socket
-            .read()
-            .map_err(|error| transport_error(format!("Fabric frame read failed: {error}")))?;
+        let message = socket.read().map_err(|error| match &error {
+            tungstenite::Error::Io(io_error)
+                if matches!(
+                    io_error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                let mut timeout = FabricError::none(
+                    FabricErrorCode::TargetOffline,
+                    "Fabric frame read timed out without changing connection authority",
+                );
+                timeout.retryable = true;
+                timeout
+            }
+            _ => transport_error(format!("Fabric frame read failed: {error}")),
+        })?;
         match message {
             tungstenite::Message::Binary(bytes) => return decode_frame(&bytes),
             tungstenite::Message::Text(text) => return decode_frame(text.as_bytes()),
@@ -440,4 +469,21 @@ pub fn read_frame<S: std::io::Read + std::io::Write>(
             }
         }
     }
+}
+
+pub fn set_node_gateway_read_timeout(
+    socket: &mut NodeGatewaySocket,
+    timeout: Option<std::time::Duration>,
+) -> Result<(), FabricError> {
+    match socket.get_mut() {
+        MaybeTlsStream::Plain(stream) => stream.set_read_timeout(timeout),
+        MaybeTlsStream::Rustls(stream) => stream.get_mut().set_read_timeout(timeout),
+        _ => {
+            return Err(FabricError::none(
+                FabricErrorCode::ProtocolIncompatible,
+                "NodeGateway uses an unsupported TLS backend",
+            ))
+        }
+    }
+    .map_err(|error| transport_error(format!("gateway read timeout setup failed: {error}")))
 }

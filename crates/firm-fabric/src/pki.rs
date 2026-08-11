@@ -123,6 +123,30 @@ fn csr_public_key_fingerprint(csr_pem: &str) -> Result<String, FabricError> {
     ))
 }
 
+pub fn verify_node_csr(
+    csr_pem: &str,
+    company_id: &str,
+    node_id: &str,
+) -> Result<String, FabricError> {
+    validate_identity_part(company_id, "Company")?;
+    validate_identity_part(node_id, "Node")?;
+    let request = CertificateSigningRequestParams::from_pem(csr_pem).map_err(pki_error)?;
+    let expected_uri = node_identity_uri(company_id, node_id);
+    if request.params.subject_alt_names
+        != vec![SanType::URI(expected_uri.try_into().map_err(pki_error)?)]
+        || !request
+            .params
+            .extended_key_usages
+            .contains(&ExtendedKeyUsagePurpose::ClientAuth)
+    {
+        return Err(FabricError::none(
+            FabricErrorCode::EnrollmentInvalid,
+            "Node CSR must bind exact Company/Node URI and clientAuth usage",
+        ));
+    }
+    csr_public_key_fingerprint(csr_pem)
+}
+
 pub fn issue_node_certificate(
     ca: &FabricCaMaterial,
     csr_pem: &str,

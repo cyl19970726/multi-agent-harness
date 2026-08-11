@@ -13,7 +13,8 @@ use crate::artifacts::ArtifactKeyBackend;
 use crate::control_plane::ControlPlane;
 use crate::protocol::*;
 use crate::transport::{
-    connect_outbound_mtls, NodeFabricConfig, NodeGatewaySocket, NodeTlsIdentityFiles,
+    connect_outbound_mtls, set_node_gateway_read_timeout, NodeFabricConfig, NodeGatewaySocket,
+    NodeTlsIdentityFiles,
 };
 use crate::transport::{read_frame, write_frame, FabricSessionFence, VerifiedMtlsPeer};
 use crate::NodeLocalFabricStore;
@@ -497,7 +498,28 @@ impl NodeGatewayConnection {
             ));
         }
         local_store.claim_inbox(&self.session, &delivery.operation.id)?;
-        let (result_schema, result, effect) = application.apply(&delivery.operation)?;
+        let (result_schema, result, effect) = match application.apply(&delivery.operation) {
+            Ok(result) => result,
+            Err(error) => {
+                let effect = match error.effect {
+                    EffectCertainty::Applied => EffectCertainty::Applied,
+                    EffectCertainty::Unknown => EffectCertainty::Unknown,
+                    EffectCertainty::None | EffectCertainty::NotApplied => {
+                        EffectCertainty::NotApplied
+                    }
+                };
+                (
+                    "agentfirm.remote_fabric.application_error.v1".into(),
+                    serde_json::to_value(&error).map_err(|encode_error| {
+                        FabricError::unknown(
+                            delivery.operation.id.clone(),
+                            format!("application error could not be journaled: {encode_error}"),
+                        )
+                    })?,
+                    effect,
+                )
+            }
+        };
         local_store.record_application_result(
             &self.session,
             &delivery.operation.id,
@@ -541,6 +563,13 @@ impl NodeGatewayConnection {
         self.socket
             .close(None)
             .map_err(|error| FabricError::none(FabricErrorCode::TargetOffline, error.to_string()))
+    }
+
+    pub fn set_read_timeout(
+        &mut self,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<(), FabricError> {
+        set_node_gateway_read_timeout(&mut self.socket, timeout)
     }
 }
 

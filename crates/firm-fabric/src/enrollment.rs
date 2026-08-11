@@ -239,6 +239,134 @@ pub(crate) fn consume_enrollment(
     Ok((node, certificate))
 }
 
+/// Consume a one-use enrollment using a verified CSR as proof-of-possession.
+/// This is the production one-request enrollment path: the Node cannot sign a
+/// challenge containing a certificate serial that the CA has not issued yet.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn consume_enrollment_csr(
+    state: &mut FabricState,
+    company_id: &str,
+    raw_token: &str,
+    node_id: &str,
+    display_name: &str,
+    public_key_fingerprint: &str,
+    csr_digest: &str,
+    certificate_serial: &str,
+    certificate_expires_at_unix_ms: u64,
+    schema_bundle_digest: &str,
+    now_unix_ms: u64,
+) -> Result<(CompanyNode, NodeCertificate), FabricError> {
+    let token_digest = sha256_hex(raw_token.as_bytes());
+    if certificate_expires_at_unix_ms <= now_unix_ms
+        || certificate_expires_at_unix_ms.saturating_sub(now_unix_ms)
+            > NODE_CERTIFICATE_LIFETIME_MAX_MS
+        || public_key_fingerprint.len() != 64
+        || csr_digest.len() != 64
+    {
+        return Err(FabricError::none(
+            FabricErrorCode::EnrollmentInvalid,
+            "CSR enrollment certificate lifetime or proof is invalid",
+        ));
+    }
+    let enrollment_id = state
+        .enrollments
+        .values()
+        .find(|enrollment| enrollment.token_digest == token_digest)
+        .map(|enrollment| enrollment.id.clone())
+        .ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::EnrollmentInvalid,
+                "enrollment token is invalid",
+            )
+        })?;
+    let enrollment = state
+        .enrollments
+        .get_mut(&enrollment_id)
+        .expect("selected enrollment exists");
+    if enrollment.company_id != company_id {
+        return Err(FabricError::none(
+            FabricErrorCode::WrongCompany,
+            "enrollment token belongs to another Company",
+        ));
+    }
+    match enrollment.status {
+        EnrollmentStatus::Consumed => {
+            return Err(FabricError::none(
+                FabricErrorCode::EnrollmentConsumed,
+                "enrollment token was already consumed",
+            ))
+        }
+        EnrollmentStatus::Revoked => {
+            return Err(FabricError::none(
+                FabricErrorCode::EnrollmentRevoked,
+                "enrollment token was revoked",
+            ))
+        }
+        EnrollmentStatus::Expired => {
+            return Err(FabricError::none(
+                FabricErrorCode::EnrollmentExpired,
+                "enrollment token expired",
+            ))
+        }
+        EnrollmentStatus::Pending => {}
+    }
+    if enrollment.expires_at_unix_ms <= now_unix_ms {
+        enrollment.status = EnrollmentStatus::Expired;
+        enrollment.updated_at_unix_ms = now_unix_ms;
+        return Err(FabricError::none(
+            FabricErrorCode::EnrollmentExpired,
+            "enrollment token expired",
+        ));
+    }
+    if state.nodes.contains_key(node_id) || state.certificates.contains_key(certificate_serial) {
+        return Err(FabricError::none(
+            FabricErrorCode::EnrollmentInvalid,
+            "node identity or certificate already exists",
+        ));
+    }
+    enrollment.status = EnrollmentStatus::Consumed;
+    enrollment.revision = enrollment.revision.saturating_add(1);
+    enrollment.consumed_at_unix_ms = Some(now_unix_ms);
+    enrollment.consumed_by_node_id = Some(node_id.into());
+    enrollment.updated_at_unix_ms = now_unix_ms;
+    let node = CompanyNode {
+        id: node_id.into(),
+        company_id: company_id.into(),
+        display_name: display_name.into(),
+        public_key_fingerprint: public_key_fingerprint.into(),
+        certificate_serial: certificate_serial.into(),
+        allowed_capabilities: enrollment.allowed_capabilities.clone(),
+        administrative_status: NodeAdministrativeStatus::Active,
+        node_revision: 1,
+        enrolled_at_unix_ms: now_unix_ms,
+        last_seen_at_unix_ms: None,
+        revoked_at_unix_ms: None,
+        revoke_reason: None,
+        protocol_min: FABRIC_PROTOCOL_VERSION,
+        protocol_max: FABRIC_PROTOCOL_VERSION,
+        schema_bundle_digest: schema_bundle_digest.into(),
+        schema_version: FABRIC_SCHEMA_VERSION.into(),
+        created_at_unix_ms: now_unix_ms,
+        updated_at_unix_ms: now_unix_ms,
+    };
+    let certificate = NodeCertificate {
+        serial: certificate_serial.into(),
+        company_id: company_id.into(),
+        node_id: node_id.into(),
+        public_key_fingerprint: public_key_fingerprint.into(),
+        issued_at_unix_ms: now_unix_ms,
+        expires_at_unix_ms: certificate_expires_at_unix_ms,
+        revoked_at_unix_ms: None,
+        proof_of_possession_digest: csr_digest.into(),
+        schema_version: FABRIC_SCHEMA_VERSION.into(),
+    };
+    state.nodes.insert(node.id.clone(), node.clone());
+    state
+        .certificates
+        .insert(certificate.serial.clone(), certificate.clone());
+    Ok((node, certificate))
+}
+
 pub(crate) fn revoke_enrollment(
     state: &mut FabricState,
     actor: &AuthenticatedActor,

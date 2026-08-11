@@ -2114,17 +2114,8 @@ fn two_outbound_gateways_route_one_operation_through_durable_target_apply() {
             let tls = tls.clone();
             let fabric_root = server_fabric_root.clone();
             sessions.push(std::thread::spawn(move || {
-                let (mut socket, peer_identity) =
+                let (mut socket, peer) =
                     accept_control_plane_mtls(tcp, &tls).expect("mTLS gateway");
-                let peer = firm_fabric::transport::VerifiedMtlsPeer {
-                    company_id: peer_identity.company_id,
-                    node_id: peer_identity.node_id,
-                    certificate_serial: peer_identity.certificate_serial,
-                    public_key_fingerprint: peer_identity.public_key_fingerprint,
-                    tls_version: "TLS1.3".into(),
-                    websocket_subprotocol: firm_fabric::transport::FABRIC_WEBSOCKET_SUBPROTOCOL
-                        .into(),
-                };
                 let store = FabricStore::open(fabric_root).expect("reopen shared Store");
                 let keys = InMemoryArtifactKeyBackend::default();
                 keys.insert(COMPANY, [7; 32]);

@@ -58,6 +58,8 @@ mod company_os_api;
 mod company_store;
 mod docs_v2_page;
 mod execution_space;
+#[cfg(unix)]
+mod fabric_runtime;
 mod host_dispatcher;
 mod kimi_acp;
 mod legacy_export;
@@ -1992,6 +1994,8 @@ fn run() -> CliResult<()> {
         "workflow" => workflow_command(&store, resolved.context.as_ref(), &args[1..])?,
         "hook" => hook_command(&store, &args[1..])?,
         "serve" => serve_command(&store, &resolved, &args[1..])?,
+        #[cfg(unix)]
+        "fabric" => fabric_runtime::fabric_command(&store, &resolved, &args[1..])?,
         "mcp" => mcp::run(&store, &resolved)?,
         #[cfg(unix)]
         "daemon" => daemon_command(&args[1..])?,

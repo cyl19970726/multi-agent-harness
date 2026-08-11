@@ -5,7 +5,7 @@
 //! re-verifies every authority/fingerprint field, then calls the existing
 //! NodeDaemon socket. A missing resolver or mismatch fails before the socket.
 
-#![allow(clippy::result_large_err)]
+#![allow(clippy::result_large_err, dead_code)]
 
 use harness_core::agentfirm_api::{ActorKind as RuntimeActorKind, ControlCommandEnvelope, Message};
 use harness_core::{ExecutionNodeStatus, NodeDaemonLease, NodeDaemonLeaseStatus};
@@ -62,6 +62,7 @@ pub(crate) fn validate_resolved_runtime_command(
 /// Join the Company directory Node to the one Wave 4C machine identity and
 /// exact current NodeDaemon generation. The Fabric directory never creates a
 /// parallel machine identity or daemon authority.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn validate_wave4c_node_authority(
     store: &harness_store::HarnessStore,
     company_node: &CompanyNode,
@@ -196,6 +197,7 @@ fn decode_embedded_message(
     Ok(message)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn store_error(error: harness_store::StoreError) -> FabricError {
     FabricError::none(
         FabricErrorCode::StoreUnavailable,
