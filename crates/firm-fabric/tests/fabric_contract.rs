@@ -3063,13 +3063,44 @@ fn three_independent_store_roots_preserve_control_plane_and_node_authority() {
     let control_state = store.snapshot().expect("Control Plane snapshot");
     assert_eq!(control_state.operations.len(), 1);
     assert_eq!(control_state.receipts.len(), 3);
-    let source_state = source_local.snapshot().expect("source snapshot");
+    let mut source_state = source_local.snapshot().expect("source snapshot");
     assert_eq!(source_state.outboxes.len(), 1);
     assert!(source_state.inboxes.is_empty());
     let target_state = target_local.snapshot().expect("target snapshot");
     assert_eq!(target_state.inboxes.len(), 1);
     assert_eq!(target_state.results.len(), 1);
     assert!(target_state.outboxes.is_empty());
+
+    let mut independent = request;
+    independent.id = "operation-target-store-unavailable".into();
+    independent.idempotency_key = "idempotency-target-store-unavailable".into();
+    source_local
+        .prepare_outbox(
+            &source_session,
+            &actor("fabric-client", &["fabric_submit"]),
+            &independent,
+            104,
+        )
+        .expect("healthy source Node remains writable");
+    let (_, independent_attempt, _, _) = accept_fabric_operation(
+        &control,
+        lease.control_plane_generation,
+        source.gateway_generation,
+        independent.clone(),
+        105,
+    )
+    .expect("Control Plane remains healthy when one Node Store fails");
+    target_local.fail_next_commit_for_test();
+    let unavailable = target_local
+        .persist_inbox(&target_session, &independent, &independent_attempt)
+        .expect_err("target Store failure is isolated and explicit");
+    assert_eq!(unavailable.code, FabricErrorCode::StoreUnavailable);
+    assert_eq!(
+        target_local.snapshot().expect("target snapshot"),
+        target_state
+    );
+    source_state = source_local.snapshot().expect("healthy source snapshot");
+    assert_eq!(source_state.outboxes.len(), 2);
     drop(source_local);
     drop(target_local);
     assert_eq!(
