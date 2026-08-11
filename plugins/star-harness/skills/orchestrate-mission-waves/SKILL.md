@@ -250,36 +250,24 @@ generation fences, then records a provider receipt before considering it
 received.
 ## Use Messages Only For Conversation
 
-Start a Work-linked conversation:
-
-```bash
-harness team-run send --id <team-run-id> \
-  --from host --to <member-run-id> --kind message \
-  --work-id <work-id> \
-  --body "<question, clarification, plan request, or explanation>" --json
-```
-
-Reply to a specific message without changing Work state:
-
-```bash
-harness team-run send --id <team-run-id> \
-  --from host --to <member-run-id> --kind message \
-  --work-id <work-id> \
-  --body "<reply>" \
-  --correlation-id <conversation-correlation-id> \
-  --causation-id <message-id> --json
-```
+Legacy TeamRun message commands are retired. Start or reply to a Work-linked
+conversation through the authenticated Host Role Action in the current
+server-built view. The server resolves the Host AgentIdentity/AgentSession,
+TeamMembership, exact Work/Team, recipients, NodeDaemon generation, timestamp,
+idempotency fingerprint, and subscriptions. The caller supplies only the
+conversation content/intent and server-returned correlation/causation tokens;
+it cannot impersonate a Member or fabricate delivery/runtime state.
 
 Harness has no Plan Mode or Plan Gate. When you want a plan first, ask for a Markdown plan in an ordinary linked conversation, argue/revise there, then explicitly tell the Member to proceed — see shared hard invariants §8.
 
 At Host safe boundaries, read the bound Lead Inbox. ACK means receipt, not
-semantic approval:
+semantic approval. Read through the bound Host inbox command, then acknowledge
+through the authenticated Host Role Action so the server resolves the exact
+recipient delivery and subscription cursor:
 
 ```bash
 harness team-run host-inbox \
   --surface <provider-surface> --thread-id <native-host-task-id> --json
-harness team-run ack --id <team-run-id> \
-  --message-id <message-id> --member-id host
 ```
 
 Ordinary mail never interrupts the middle of a Host or Member turn. Use real
@@ -433,11 +421,9 @@ harness team-run work list --team-run-id <team-run-id> --since <cursor>
 
 `board-summary` prints a ≤500-character summary: open/in-progress/blocked/review/done/cancelled counts plus each Member's idle/working/awaiting-review state. `--brief` prints one plain-text line per Work. `--since` takes a monotonic cursor from a prior `list` response and returns only new or updated Works.
 
-To acknowledge all delivered manual-ack messages at once:
-
-```bash
-harness team-run ack --id <team-run-id> --member-id host --all-delivered
-```
+Batch acknowledgement is likewise a server-built Host action over the exact
+currently delivered rows; never select a Host or recipient id in a legacy CLI
+mutation.
 
 ## Execution Driver Reference
 

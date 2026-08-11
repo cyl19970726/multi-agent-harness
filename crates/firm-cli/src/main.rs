@@ -17293,6 +17293,8 @@ struct LiveMemberControlResponse {
     result: Option<serde_json::Value>,
     #[serde(default)]
     error: Option<String>,
+    #[serde(default)]
+    store_lock_timeout: Option<String>,
 }
 
 enum MemberControlCommand {
@@ -17443,9 +17445,12 @@ fn prepare_provider_effect_kind(
         "content_fingerprint": content_fingerprint,
     });
     let payload_fingerprint = harness_store::canonical_json_fingerprint(&payload);
+    let source_fingerprint = harness_store::canonical_json_fingerprint(
+        &serde_json::json!({"source_record_id": source_record_id}),
+    );
     let idempotency_key = format!(
-        "provider-effect:{}:{}:{}",
-        session.id, session.runtime_generation, content_fingerprint
+        "provider-effect:{}:{}:{}:{}",
+        session.id, session.runtime_generation, source_fingerprint, content_fingerprint
     );
     let command_id = format!("runtime-command:{idempotency_key}");
     let daemon_actor = ActorRef {
@@ -17999,6 +18004,8 @@ fn claim_canonical_messages_for_member(
     let triggers_round = queued.iter().any(|delivery| {
         messages.get(&delivery.message_id).is_some_and(|message| {
             message.response_intent == harness_core::agentfirm_api::ResponseIntent::ResponseRequired
+                || message.kind
+                    == harness_core::agentfirm_api::MessageKind::ProviderInteractionResponse
         })
     });
     if !triggers_round {
@@ -18615,9 +18622,9 @@ fn mark_member_coordination_closed_with_hook(
             return Ok(member);
         }
         if let Some(expected) = conflicted_expected.take() {
-            if !is_provider_callback_resume_drift(&expected, &member) {
+            if !is_same_runtime_close_drift(&expected, &member) {
                 return Err(CliError::Usage(format!(
-                    "ProviderRuntimeProjection {member_run_id} changed outside the admitted provider callback waiting-to-running transition"
+                    "ProviderRuntimeProjection {member_run_id} changed outside the exact runtime generation admitted by Close"
                 )));
             }
         }
@@ -18640,21 +18647,21 @@ fn mark_member_coordination_closed_with_hook(
     unreachable!("bounded coordination-close CAS loop returns on every path")
 }
 
-fn is_provider_callback_resume_drift(
+fn is_same_runtime_close_drift(
     expected: &ProviderRuntimeProjection,
     latest: &ProviderRuntimeProjection,
 ) -> bool {
-    if expected.status != MemberRunStatus::Waiting
-        || latest.status != MemberRunStatus::Running
-        || !expected.coordination_is_active()
-        || !latest.coordination_is_active()
-    {
-        return false;
-    }
-    let mut normalized = latest.clone();
-    normalized.status = expected.status;
-    normalized.last_event_at = expected.last_event_at.clone();
-    normalized == *expected
+    // The Close latch was already committed under the exact current
+    // Supervisor generation. A provider callback may concurrently advance
+    // transient status/action timestamps before this projection CAS. Rebase
+    // only while stable Member identity, Team, runtime generation, requested
+    // controls, workspace authority, and native-session ownership are still
+    // identical. A reopen, rebind, successor session, or operator authority
+    // change fails closed.
+    expected.coordination_is_active()
+        && latest.coordination_is_active()
+        && member_runtime_anchor_matches(expected, latest)
+        && latest.native_session == expected.native_session
 }
 
 fn dispatch_local_live_member_control(
@@ -18846,10 +18853,33 @@ where
     };
     if control.sender.send(command).is_err() {
         if is_close {
+            // The provider loop may have quiesced after this exact generation
+            // admitted the durable Close but before it consumed the process-
+            // local command. Complete the same latched command through the
+            // canonical RuntimeCommand/AgentSession path; returning 200 with a
+            // permanently pending latch would falsely claim an applied close.
+            let mut member = latest_member_runs_in_append_order(store)?
+                .into_iter()
+                .find(|member| member.id == member_run_id && member.team_run_id == team_run_id)
+                .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+            let close = pending_member_close(store, &member_run_id)?.ok_or_else(|| {
+                CliError::Usage(
+                    "RUNTIME_COMMAND_RECOVERY_REQUIRED: close channel ended without a durable latch"
+                        .into(),
+                )
+            })?;
+            let ledger = TeamRunLedger::new(
+                store,
+                &team_run_id,
+                supervisor_id,
+                generation,
+                Arc::new(AtomicBool::new(true)),
+            );
+            stop_member_for_latched_close(&ledger, &mut member, &close)?;
             return Ok(serde_json::json!({
                 "member_run_id": member_run_id,
-                "status": "close_requested",
-                "provider_ack": "supervisor_close_latched",
+                "status": "closed",
+                "provider_ack": "runtime_command_applied_after_transport_quiesce",
             }));
         }
         return Err(CliError::Usage(format!(
@@ -18858,11 +18888,9 @@ where
     }
     match reply_rx.recv_timeout(Duration::from_secs(15)) {
         Ok(result) => result,
-        Err(_) if is_close => Ok(serde_json::json!({
-            "member_run_id": member_run_id,
-            "status": "close_requested",
-            "provider_ack": "supervisor_close_latched",
-        })),
+        Err(_) if is_close => Err(CliError::Usage(format!(
+            "RUNTIME_COMMAND_RECOVERY_REQUIRED: Close for {member_run_id} is durably latched but provider acknowledgement is uncertain"
+        ))),
         Err(_) => Err(CliError::Usage(
             "provider control acknowledgement timed out".to_string(),
         )),
@@ -18911,12 +18939,20 @@ fn handle_live_member_control_connection(
             ok: true,
             result: Some(result),
             error: None,
+            store_lock_timeout: None,
         },
-        Err(error) => LiveMemberControlResponse {
-            ok: false,
-            result: None,
-            error: Some(error.to_string()),
-        },
+        Err(error) => {
+            let store_lock_timeout = match &error {
+                CliError::Store(StoreError::LockTimeout(path)) => Some(path.clone()),
+                _ => None,
+            };
+            LiveMemberControlResponse {
+                ok: false,
+                result: None,
+                error: Some(error.to_string()),
+                store_lock_timeout,
+            }
+        }
     };
     if let Ok(mut payload) = serde_json::to_vec(&envelope) {
         payload.push(b'\n');
@@ -18975,6 +19011,9 @@ fn dispatch_live_member_control(
             CliError::Usage("Supervisor returned an empty control acknowledgement".to_string())
         })
     } else {
+        if let Some(path) = response.store_lock_timeout {
+            return Err(CliError::Store(StoreError::LockTimeout(path)));
+        }
         Err(CliError::Usage(response.error.unwrap_or_else(|| {
             "Supervisor rejected provider control".to_string()
         })))
@@ -19754,8 +19793,7 @@ impl TeamRunLedger {
                 .into_iter()
                 .filter(|session| {
                     session.agent_identity_id == member.agent_member_id
-                        && session.lifecycle
-                            != harness_core::agentfirm_api::AgentSessionStatus::Closed
+                        && session.runtime_generation == member.runtime_generation
                 })
             {
                 placements.push((execution_space_id.clone(), session));
@@ -20040,7 +20078,24 @@ fn refresh_member_after_provider_callbacks(
     let latest = ledger
         .latest_member_run(&round_start.id)?
         .ok_or_else(|| CliError::Usage(format!("member run {} not found", round_start.id)))?;
-    validate_provider_callback_drift(round_start, &latest)?;
+    if latest.coordination_status != round_start.coordination_status
+        && latest.coordination_status == MemberCoordinationStatus::Closed
+        && pending_member_close(&ledger.store, &latest.id)?.is_some()
+    {
+        // An admitted Close durably latches the request and closes the
+        // coordination plane before it asks the provider transport to stop.
+        // The provider round that was already in flight must therefore be
+        // allowed to observe that one exact same-generation lifecycle advance
+        // and finish the RuntimeCommand/AgentSession terminal projection.
+        // Normalize only coordination_status for the ordinary drift check so
+        // generation, native-session, controls, provenance, Work progress, and
+        // every other authority field remain frozen.
+        let mut normalized = latest.clone();
+        normalized.coordination_status = round_start.coordination_status.clone();
+        validate_provider_callback_drift(round_start, &normalized)?;
+    } else {
+        validate_provider_callback_drift(round_start, &latest)?;
+    }
     if latest.status == MemberRunStatus::Waiting {
         let legacy_unresolved = latest_pending_interactions_in_append_order(&ledger.store)?
             .into_iter()
@@ -20803,16 +20858,22 @@ pub(crate) fn ensure_team_runtime_fabric(
                     authority_actor: None,
                     command_name: "runtime_fabric.session.materialize".into(),
                     idempotency_key: format!(
-                        "session:{}:{}:{}",
-                        durable.id, body.run.execution_node_id, daemon_generation
+                        "session:{}:{}:{}:{}",
+                        durable.id,
+                        body.run.execution_node_id,
+                        daemon_generation,
+                        member.runtime_generation
                     ),
                     expected_version: 0,
                     request_fingerprint: None,
                 },
                 AgentSession {
                     id: format!(
-                        "agent-session:{}:{}:{}",
-                        durable.id, body.run.execution_node_id, daemon_generation
+                        "agent-session:{}:{}:{}:{}",
+                        durable.id,
+                        body.run.execution_node_id,
+                        daemon_generation,
+                        member.runtime_generation
                     ),
                     agent_identity_id: durable.id.clone(),
                     node_id: body.run.execution_node_id.clone(),
@@ -22151,6 +22212,45 @@ fn run_member_orchestration(
                         )
                     }
                 }
+                // Provider/process effects that may already have crossed the
+                // boundary are never auto-resumed. The durable
+                // RuntimeCommand is the recovery inventory; surface that
+                // state once and stop the supervisor instead of creating an
+                // unbounded reconnect loop that could repeat the effect.
+                if reason.contains("RUNTIME_COMMAND_RECOVERY_REQUIRED")
+                    || reason.contains("ambiguous in-flight RuntimeCommand")
+                {
+                    let _ = transition_provider_session_for_member(
+                        ledger,
+                        &latest,
+                        harness_core::agentfirm_api::AgentSessionStatus::RecoveryRequired,
+                    );
+                    let expected = latest.clone();
+                    latest.status = MemberRunStatus::Blocked;
+                    latest.finished_at = None;
+                    latest.last_event_at = Some(now_string());
+                    if ledger.save_member_run(&expected, &latest).is_ok() {
+                        let _ = ledger.append_action(
+                            &latest.id,
+                            "runtime_recovery_required",
+                            MemberActionStatus::Failed,
+                            "provider effect requires operator reconciliation",
+                            &reason,
+                        );
+                        let _ = ledger.fold_event(
+                            TeamRunEventSourceKind::Member,
+                            Some(latest.id.clone()),
+                            "member_run",
+                            &latest.id,
+                            "recovery_required",
+                            &format!(
+                                "member {} stopped before replaying an uncertain provider effect",
+                                latest.name
+                            ),
+                        );
+                    }
+                    return MemberOutcome::new(&latest, MemberRunStatus::Blocked, reason);
+                }
                 if latest.native_session.is_none() {
                     journal_member_failure(ledger, &latest, &reason);
                     // Pre-bind: mail queued for this member can never be
@@ -22210,7 +22310,9 @@ fn run_codex_member(
     member: &ProviderRuntimeProjection,
     context: &MemberRuntimeContext,
 ) -> CliResult<MemberOutcome> {
-    require_provider_session_authority(ledger, &member.agent_member_id, true)?;
+    // Process admission owns the Cold/Idle -> provider-ready boundary. The
+    // Session becomes Active only when a concrete turn/input is dispatched.
+    require_provider_session_authority(ledger, &member.agent_member_id, false)?;
     let project_id = context.project_id.as_deref();
     let project_selector = context.project_selector.as_deref();
     let cwd = &context.cwd;
@@ -22219,7 +22321,7 @@ fn run_codex_member(
     let turn_leases = &context.turn_leases;
     let mut member_row = member.clone();
     if let Some(profile) = member_row.provider_profile.as_mut() {
-        require_provider_session_authority(ledger, &member.agent_member_id, true)?;
+        require_provider_session_authority(ledger, &member.agent_member_id, false)?;
         apply_provider_version(profile, provider_version_output("codex").ok());
     }
     ledger.fold_event(
@@ -22471,6 +22573,7 @@ fn run_codex_member(
             .or_else(|| accepted_messages.last().map(|message| message.id.as_str()))
             .map(str::to_string)
             .unwrap_or_else(|| format!("continuation:{}:{round}", member_row.id));
+        let source_record_id = format!("{source_record_id}:turn:{round}");
         let effect = prepare_provider_effect(ledger, &member_row, &source_record_id, &prompt_text)?;
         let turn_result = {
             let _turn_lease = turn_leases.acquire();
@@ -24774,7 +24877,9 @@ fn run_kimi_member(
             .or_else(|| accepted_messages.last().map(|message| message.id.as_str()))
             .map(str::to_string)
             .unwrap_or_else(|| format!("continuation:{}:{round}", member_row.id));
+        let source_record_id = format!("{source_record_id}:turn:{round}");
         let effect = prepare_provider_effect(ledger, &member_row, &source_record_id, &prompt_text)?;
+        let mut provider_effect_started = false;
         let outcome_result = {
             let _turn_lease = turn_leases.acquire();
             let claimed_reverse_response = Arc::new(Mutex::new(None::<TeamMessageProjection>));
@@ -24784,6 +24889,7 @@ fn run_kimi_member(
                 &prompt_text,
                 idle_timeout,
                 |receipt| {
+                    provider_effect_started = true;
                     if let Some(claimed) = active_work.as_ref() {
                         ledger.complete_work_delivery(claimed, receipt)?;
                     }
@@ -24890,23 +24996,58 @@ fn run_kimi_member(
                 },
             )
         };
+        // `prompt` owns its blocking receive loop. Its terminal result can
+        // arrive after this Supervisor generation has been replaced. Fence
+        // before settling the provider RuntimeCommand or writing any Member,
+        // AgentSession, receipt, action, or result projection. A stale result
+        // deliberately leaves the command effect uncertain for recovery.
+        supervisor_test_terminal_receive_barrier("kimi")?;
+        ledger.require_supervisor_lease()?;
+        require_provider_session_authority(ledger, &member.agent_member_id, true)?;
         let outcome = match outcome_result {
             Ok(outcome) => {
-                settle_provider_effect(
-                    ledger,
-                    &effect,
-                    true,
-                    Some(serde_json::json!({
-                        "provider": "kimi",
-                        "round": round,
-                        "stop_reason": outcome.stop_reason,
-                    })),
-                    None,
-                )?;
+                if let Some(provider_error) = outcome.provider_error.as_deref() {
+                    if provider_effect_started {
+                        settle_provider_effect(
+                            ledger,
+                            &effect,
+                            false,
+                            None,
+                            Some(provider_error.to_string()),
+                        )?;
+                        return Err(CliError::Usage(format!(
+                            "RUNTIME_COMMAND_RECOVERY_REQUIRED: Kimi reported a provider error after accepting the turn: {provider_error}"
+                        )));
+                    }
+                    settle_provider_effect_not_applied(
+                        ledger,
+                        &effect,
+                        provider_error.to_string(),
+                    )?;
+                } else {
+                    settle_provider_effect(
+                        ledger,
+                        &effect,
+                        true,
+                        Some(serde_json::json!({
+                            "provider": "kimi",
+                            "round": round,
+                            "stop_reason": outcome.stop_reason,
+                        })),
+                        None,
+                    )?;
+                }
                 outcome
             }
             Err(error) => {
-                settle_provider_effect(ledger, &effect, false, None, Some(error.to_string()))?;
+                if provider_effect_started {
+                    settle_provider_effect(ledger, &effect, false, None, Some(error.to_string()))?;
+                    return Err(CliError::Usage(format!(
+                        "RUNTIME_COMMAND_RECOVERY_REQUIRED: Kimi transport failed after the provider accepted the turn: {error}"
+                    )));
+                } else {
+                    settle_provider_effect_not_applied(ledger, &effect, error.to_string())?;
+                }
                 return Err(error);
             }
         };
@@ -24938,11 +25079,6 @@ fn run_kimi_member(
                 }),
             )?;
         }
-        // `prompt` owns its blocking receive loop. Its terminal result can
-        // arrive after the last control callback, so barrier then fence before
-        // consuming the result or writing any semantic state.
-        supervisor_test_terminal_receive_barrier("kimi")?;
-        require_provider_session_authority(ledger, &member.agent_member_id, true)?;
         let round_trigger = accepted_messages.last().cloned();
         accepted_messages.clear();
         active_work = None;
@@ -25502,6 +25638,7 @@ fn run_pi_team_member(
             .or_else(|| accepted_messages.last().map(|message| message.id.as_str()))
             .map(str::to_string)
             .unwrap_or_else(|| format!("continuation:{}:{round}", member_row.id));
+        let source_record_id = format!("{source_record_id}:turn:{round}");
         let effect = prepare_provider_effect(ledger, &member_row, &source_record_id, &prompt)?;
         let mut pending_control_effect: Option<(ProviderEffectAdmission, bool)> = None;
         let mut control_prepare_error: Option<String> = None;
@@ -26294,6 +26431,17 @@ fn wait_for_provider_interaction_response(
             )
             || latest_team_run(&ledger.store, &ledger.run_id)?.status != TeamRunStatus::Running
         {
+            return Ok(None);
+        }
+        let lifecycle_cancelled = latest_team_run_events_in_append_order(&ledger.store)?
+            .into_iter()
+            .any(|event| {
+                event.team_run_id == ledger.run_id
+                    && event.entity_type == "message"
+                    && event.entity_id == request.id
+                    && event.operation == "cancelled"
+            });
+        if lifecycle_cancelled {
             return Ok(None);
         }
 
@@ -30332,21 +30480,26 @@ fn cancel_pending_member_interactions(
     requested_by: &str,
     reason: &str,
 ) -> CliResult<()> {
-    // RegistryMessage-bridged provider requests have no PendingInteraction row. ACK
-    // the delivered Host request without fabricating an answer; the blocked
-    // provider callback observes the ACK and returns a native cancellation.
-    for request in latest_team_messages_in_append_order(store)?
+    let member_identity_id = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .find(|member| member.id == member_run_id && member.team_run_id == team_run_id)
+        .map(|member| member.agent_member_id)
+        .ok_or_else(|| CliError::Usage(format!("member run not found: {member_run_id}")))?;
+    // Canonical provider requests have no PendingInteraction row. Drive their
+    // exact Host MessageDelivery through claim -> provider receipt -> ACK
+    // without fabricating an answer; the blocked provider callback observes
+    // the ACK and returns a native cancellation. The retired TeamMessage
+    // delivery ledger is never mutated here.
+    for request in canonical_team_messages_for_run(store, team_run_id)?
         .into_iter()
         .filter(|message| {
             message.team_run_id == team_run_id
                 && message.kind == ProviderDispatchIntent::ProviderInteractionRequest
-                && message.sender_runtime_id == member_run_id
-                && message.deliveries.iter().any(|delivery| {
-                    delivery.member_id == "host" && delivery.status == TeamDeliveryStatus::Delivered
-                })
+                && (message.sender_runtime_id == member_run_id
+                    || message.sender_runtime_id == member_identity_id)
         })
     {
-        store.acknowledge_team_message_delivery(team_run_id, &request.id, "host", &now_string())?;
+        acknowledge_provider_request_as_host(store, team_run_id, &request)?;
         append_team_run_event(
             store,
             team_run_id,
@@ -30940,9 +31093,11 @@ fn resolve_provider_interaction_message_value(
     request_id: &str,
     body: &serde_json::Value,
 ) -> CliResult<serde_json::Value> {
-    let request = latest_team_messages_in_append_order(store)?
-        .into_iter()
+    let current_messages = canonical_team_messages_for_run(store, team_run_id)?;
+    let request = current_messages
+        .iter()
         .find(|message| message.id == request_id)
+        .cloned()
         .ok_or_else(|| CliError::Usage(format!("interaction not found: {request_id}")))?;
     if request.team_run_id != team_run_id
         || request.kind != ProviderDispatchIntent::ProviderInteractionRequest
@@ -30970,6 +31125,7 @@ fn resolve_provider_interaction_message_value(
             "provider interaction {request_id} does not authorize resolved_by={resolved_by}"
         )));
     }
+    acknowledge_provider_request_as_host(store, team_run_id, &request)?;
     let choice = optional_json_string(body, "option_id")?;
     let text = optional_json_string(body, "response_text")?;
     if choice.is_some() == text.is_some() {
@@ -31007,12 +31163,18 @@ fn resolve_provider_interaction_message_value(
         },
     };
     let response_id = provider_interaction_response_id(request_id).map_err(CliError::Usage)?;
-    let existed = latest_team_messages_in_append_order(store)?
-        .into_iter()
-        .any(|message| {
-            message.kind == ProviderDispatchIntent::ProviderInteractionResponse
-                && message.causation_id.as_deref() == Some(request_id)
-        });
+    let existing_response = current_messages.into_iter().find(|message| {
+        message.kind == ProviderDispatchIntent::ProviderInteractionResponse
+            && message.causation_id.as_deref() == Some(request_id)
+    });
+    if let Some(existing) = existing_response {
+        if existing.body != response_json || existing.correlation_id != request.correlation_id {
+            return Err(CliError::Usage(format!(
+                "provider interaction response {request_id} was replayed with different semantics"
+            )));
+        }
+        return serde_json::to_value(existing).map_err(CliError::Json);
+    }
     let response = TeamMessageProjection {
         id: response_id,
         team_run_id: team_run_id.to_string(),
@@ -31051,21 +31213,143 @@ fn resolve_provider_interaction_message_value(
         }],
         created_at: now_string(),
     };
-    let response = store.record_provider_interaction_response(&response, &now_string())?;
-    if !existed {
-        append_team_run_event(
-            store,
-            team_run_id,
-            0,
-            team_event_source_for_actor(&sender),
-            None,
-            "message",
-            &response.id,
-            "created",
-            "provider interaction response queued for native injection",
+    let response = publish_team_message(store, &sender, response)?;
+    serde_json::to_value(response).map_err(CliError::Json)
+}
+
+fn acknowledge_provider_request_as_host(
+    store: &HarnessStore,
+    team_run_id: &str,
+    request: &TeamMessageProjection,
+) -> CliResult<()> {
+    use harness_core::agentfirm_api::{
+        ActorKind, ActorRef, CanonicalMessageDeliveryStatus, RuntimeDispatchMode,
+    };
+    let run = latest_team_run(store, team_run_id)?;
+    let host_identity = latest_teams(store)?
+        .remove(&run.agent_team_id)
+        .map(|team| team.host_agent_id)
+        .ok_or_else(|| CliError::Usage("TeamRun references a missing AgentTeam".into()))?;
+    let mut matches = Vec::new();
+    for execution_space_id in store.canonical_execution_space_ids()? {
+        for delivery in store
+            .fabric_message_deliveries(&execution_space_id)?
+            .into_iter()
+            .filter(|delivery| {
+                delivery.message_id == request.id && delivery.recipient_identity_id == host_identity
+            })
+        {
+            matches.push((execution_space_id.clone(), delivery));
+        }
+    }
+    let (execution_space_id, mut delivery) = match matches.as_slice() {
+        [(space, delivery)] => (space.clone(), delivery.clone()),
+        [] => {
+            return Err(CliError::Usage(format!(
+                "provider interaction {} has no exact Host delivery",
+                request.id
+            )))
+        }
+        _ => {
+            return Err(CliError::Usage(format!(
+                "provider interaction {} has ambiguous Host deliveries",
+                request.id
+            )))
+        }
+    };
+    if delivery.status == CanonicalMessageDeliveryStatus::Acknowledged {
+        return Ok(());
+    }
+    let session = store
+        .fabric_agent_sessions(&execution_space_id)?
+        .into_iter()
+        .find(|session| {
+            session.agent_identity_id == host_identity
+                && session.lifecycle != harness_core::agentfirm_api::AgentSessionStatus::Closed
+        })
+        .ok_or_else(|| CliError::Usage("Host has no current AgentSession".into()))?;
+    let lease = store
+        .latest_node_daemon_lease(&session.node_id)?
+        .filter(|lease| {
+            lease.daemon_id == session.node_daemon_id
+                && lease.generation == session.node_daemon_generation
+                && lease.status == NodeDaemonLeaseStatus::Active
+                && lease.expires_unix_ms > current_unix_ms_u64()
+        })
+        .ok_or_else(|| CliError::Usage("NODE_DAEMON_GENERATION_FENCED".into()))?;
+    let daemon = ActorRef {
+        kind: ActorKind::Service,
+        id: lease.daemon_id.clone(),
+    };
+    let claim_id = format!("host-interaction-resolve:{}", request.id);
+    if matches!(
+        delivery.status,
+        CanonicalMessageDeliveryStatus::Queued | CanonicalMessageDeliveryStatus::Routed
+    ) {
+        store.claim_message_for_provider(
+            &canonical_delivery_context(
+                &execution_space_id,
+                &lease.daemon_id,
+                "node_daemon.host_interaction.claim",
+                format!("{claim_id}:claim"),
+                delivery.version.saturating_sub(1),
+            ),
+            &delivery.id,
+            &session.node_id,
+            &lease.daemon_id,
+            lease.generation,
+            &claim_id,
+            RuntimeDispatchMode::QueueOnly,
+            &now_string(),
+        )?;
+        delivery = store
+            .fabric_message_deliveries(&execution_space_id)?
+            .into_iter()
+            .find(|candidate| candidate.id == delivery.id)
+            .ok_or_else(|| CliError::Usage("Host delivery disappeared after claim".into()))?;
+    }
+    if delivery.status == CanonicalMessageDeliveryStatus::Claimed {
+        store.record_message_provider_receipt(
+            &canonical_delivery_context(
+                &execution_space_id,
+                &lease.daemon_id,
+                "node_daemon.host_interaction.receipt",
+                format!("{claim_id}:receipt"),
+                0,
+            ),
+            &delivery.id,
+            &session.node_id,
+            &lease.daemon_id,
+            lease.generation,
+            delivery.claim_id.as_deref().unwrap_or(&claim_id),
+            &format!("host-control-plane:{}", request.id),
+            &now_string(),
+        )?;
+        delivery = store
+            .fabric_message_deliveries(&execution_space_id)?
+            .into_iter()
+            .find(|candidate| candidate.id == delivery.id)
+            .ok_or_else(|| CliError::Usage("Host delivery disappeared after receipt".into()))?;
+    }
+    if delivery.status == CanonicalMessageDeliveryStatus::ProviderReceived {
+        store.acknowledge_message_delivery(
+            &harness_core::agentfirm_api::MutationContext {
+                execution_space_id,
+                authenticated_actor: ActorRef {
+                    kind: ActorKind::AgentMember,
+                    id: host_identity,
+                },
+                authority_actor: Some(daemon),
+                command_name: "agent_session.host_interaction.acknowledge".into(),
+                idempotency_key: format!("{claim_id}:ack"),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            &delivery.id,
+            &now_string(),
         )?;
     }
-    serde_json::to_value(response).map_err(CliError::Json)
+    Ok(())
 }
 
 /// POST /v1/missions — create native Mission intent from the JSON body.

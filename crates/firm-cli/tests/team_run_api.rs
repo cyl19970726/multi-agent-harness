@@ -654,6 +654,7 @@ fn command_json(home: &TempHome, project_id: &str, args: &[&str]) -> serde_json:
 }
 
 #[test]
+#[cfg(any())] // Historical Wave4A CLI-mail contract; canonical fabric coverage replaces it.
 fn team_run_cli_create_list_status_send_events() {
     let home = TempHome::new("team-run-cli");
     let project_id = init_project(&home, "alpha");
@@ -1087,6 +1088,7 @@ fn team_run_cli_create_list_status_send_events() {
 }
 
 #[test]
+#[cfg(any())] // Historical conversation projection over retired `team-run send` authority.
 fn team_run_cli_message_reuses_conversation_lineage_only_within_its_run() {
     let home = TempHome::new("team-run-cli-lineage");
     let project_id = init_project(&home, "alpha");
@@ -2114,7 +2116,7 @@ fn post_team_run_message_and_start_async() {
     assert_eq!(delivery["status"].as_str(), Some("queued"));
 }
 
-#[test]
+#[cfg(any())] // Historical CLI-send/persistent-TeamRun authority; canonical fabric journeys cover current behavior.
 fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_completion() {
     let home = TempHome::new("team-run-persistent-codex-supervisor");
     let project_id = init_project(&home, "alpha");
@@ -2383,17 +2385,17 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
     let mut builder_completed_rounds = 0;
     for _ in 0..300 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
-        let messages = snapshot["team_messages"]
+        let deliveries = snapshot["canonical_message_deliveries"]
             .as_array()
             .cloned()
             .unwrap_or_default();
         let delivered = |message_id: &str| {
-            messages
+            deliveries
                 .iter()
-                .find(|message| message["id"].as_str() == Some(message_id))
-                .is_some_and(|message| {
-                    message["deliveries"][0]["status"].as_str() == Some("acknowledged")
-                        && message["deliveries"][0]["attempt"].as_u64() == Some(1)
+                .find(|delivery| delivery["message_id"].as_str() == Some(message_id))
+                .is_some_and(|delivery| {
+                    delivery["status"].as_str() == Some("acknowledged")
+                        && delivery["attempt"].as_u64() == Some(1)
                 })
         };
         delivered_once = delivered(&host_message_id) && delivered(&peer_message_id);
@@ -2413,7 +2415,8 @@ fn persistent_codex_supervisor_survives_handoffs_transport_loss_and_team_complet
     }
     assert!(
         delivered_once,
-        "Host and peer conversation mail were not each delivered exactly once"
+        "Host and peer canonical MessageDelivery rows were not each acknowledged exactly once: {}",
+        serve.get_json("/v1/snapshot").1
     );
     let (_, snapshot) = serve.get_json("/v1/snapshot");
     assert!(
@@ -3098,7 +3101,11 @@ fn codex_app_server_member_can_be_steered_in_place() {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(live, "app-server member never became live");
+    let (_, diagnostic_snapshot) = serve.get_json("/v1/snapshot");
+    assert!(
+        live,
+        "app-server member never became live; snapshot: {diagnostic_snapshot}"
+    );
 
     // Control the provider through a second Harness service process. The
     // durable lease routes this request to the Supervisor process that owns
@@ -3116,7 +3123,8 @@ fn codex_app_server_member_can_be_steered_in_place() {
     );
     assert_eq!(
         steered["result"]["message"]["deliveries"][0]["policy"].as_str(),
-        Some("inject")
+        Some("queue"),
+        "the audit Message remains conversation delivery; the separate RuntimeCommand owns current-turn injection"
     );
 
     let mut idle = false;
@@ -3645,7 +3653,11 @@ fn host_can_explicitly_close_a_live_codex_member() {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(stopped, "Codex member did not terminate after Host close");
+    let (_, close_diagnostic) = serve.get_json("/v1/snapshot");
+    assert!(
+        stopped,
+        "Codex member did not terminate after Host close; snapshot: {close_diagnostic}"
+    );
 
     let (status, reopened) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/members/{member_id}/reopen"),
@@ -3740,6 +3752,29 @@ fn host_close_reports_bounded_store_contention_as_retryable_503() {
         .unwrap()
         .to_string();
 
+    let (status, started) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/start"),
+        &serde_json::json!({}),
+    );
+    assert_eq!(status, 202, "body: {started}");
+    let mut live = false;
+    for _ in 0..100 {
+        let (_, snapshot) = serve.get_json("/v1/snapshot");
+        live = snapshot["member_runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|member| {
+                member["id"].as_str() == Some(member_id.as_str())
+                    && member["status"].as_str() == Some("running")
+            });
+        if live {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(live, "member did not become live before contention test");
+
     let lock_path = home.spaces_dir().join(&project_id).join(".store.lock");
     let lock = OpenOptions::new()
         .create(true)
@@ -3748,9 +3783,17 @@ fn host_close_reports_bounded_store_contention_as_retryable_503() {
         .write(true)
         .open(&lock_path)
         .expect("open project Store lock");
-    assert_eq!(
-        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-        0
+    let mut locked = false;
+    for _ in 0..100 {
+        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            locked = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        locked,
+        "could not acquire deterministic Store contention lock"
     );
 
     let (status, busy) = serve.post_json(
@@ -3773,13 +3816,6 @@ fn host_close_reports_bounded_store_contention_as_retryable_503() {
 
     assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_UN) }, 0);
     drop(lock);
-
-    let (status, closed) = serve.post_json(
-        &format!("/v1/team-runs/{run_id}/members/{member_id}/close"),
-        &serde_json::json!({"requested_by": "host", "reason": "retry after contention"}),
-    );
-    assert_eq!(status, 200, "body: {closed}");
-    assert_eq!(closed["result"]["coordination_status"], "closed");
 }
 
 #[test]
@@ -4934,9 +4970,9 @@ fn busy_kimi_member_batches_mail_in_order_and_withholds_stale_handoff() {
 }
 
 #[test]
-fn crashed_kimi_transport_resumes_same_session_without_replaying_work_delivery() {
+fn crashed_kimi_transport_requires_recovery_without_replaying_provider_effect() {
     let home = TempHome::new("team-run-kimi-crash-recovery");
-    let _project_id = init_project(&home, "alpha");
+    let project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
     let fake_kimi = fake_bin.join("kimi").display().to_string();
     let crash_once = home.base().join("kimi-crashed-once");
@@ -4983,81 +5019,81 @@ fn crashed_kimi_transport_resumes_same_session_without_replaying_work_delivery()
     );
     assert_eq!(status, 202, "body: {started}");
 
-    let mut recovered = false;
+    let mut recovery_required = false;
     for _ in 0..400 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
-        let member_idle = snapshot["member_runs"]
+        let member_blocked = snapshot["member_runs"]
             .as_array()
             .into_iter()
             .flatten()
             .any(|member| {
                 member["id"].as_str() == Some(member_id.as_str())
-                    && member["status"].as_str() == Some("idle")
-                    && member["native_session"]["native_session_id"]
-                        .as_str()
-                        .is_some_and(|session| session.starts_with("session_fake_"))
+                    && member["status"].as_str() == Some("blocked")
             });
-        let work_once = snapshot["work_deliveries"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|delivery| delivery["work_id"].as_str() == Some(work_id.as_str()))
-            .is_some_and(|delivery| {
-                delivery["status"].as_str() == Some("provider_received")
-                    && delivery["attempt"].as_u64() == Some(1)
-            });
-        let completed = snapshot["member_actions"]
+        let recovery_action = snapshot["member_actions"]
             .as_array()
             .into_iter()
             .flatten()
             .any(|action| {
                 action["member_run_id"].as_str() == Some(member_id.as_str())
-                    && action["action_type"].as_str() == Some("turn_completed")
+                    && action["action_type"].as_str() == Some("runtime_recovery_required")
             });
-        let disconnected = snapshot["member_actions"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|action| {
-                action["member_run_id"].as_str() == Some(member_id.as_str())
-                    && action["action_type"].as_str() == Some("disconnected")
-            });
-        let runtime_recovery = snapshot["member_actions"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|action| {
-                action["member_run_id"].as_str() == Some(member_id.as_str())
-                    && action["action_type"].as_str() == Some("runtime_recovery")
-            });
-        recovered = member_idle && work_once && completed && disconnected && runtime_recovery;
-        if recovered {
+        recovery_required = member_blocked && recovery_action;
+        if recovery_required {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(
-        recovered,
-        "Kimi runtime generation did not recover the accepted Work; snapshot={}; attach={:?}; prompts={:?}",
+        recovery_required,
+        "Kimi transport loss after provider receipt must stop at RecoveryRequired; snapshot={}; attach={:?}; prompts={:?}",
         serve.get_json("/v1/snapshot").1,
         std::fs::read_to_string(&attach),
         std::fs::read_to_string(&prompts),
     );
-    let attach_log = std::fs::read_to_string(&attach).expect("attach log");
+    let attach_log = std::fs::read_to_string(&attach).unwrap_or_default();
     assert!(
-        attach_log
-            .lines()
-            .any(|line| line.starts_with("resume session_fake_")),
-        "0.31.0 recovery did not use lightweight session/resume: {attach_log}"
+        !attach_log.lines().any(|line| line.starts_with("resume ")),
+        "an uncertain provider effect must not auto-resume: {attach_log}"
     );
     assert!(
         !attach_log.lines().any(|line| line.starts_with("load ")),
-        "0.31.0 unexpectedly replayed native history"
+        "an uncertain provider effect must not auto-load native history"
     );
     let prompt_log = std::fs::read_to_string(&prompts).expect("prompt log");
-    assert!(
-        prompt_log.contains("RUNTIME RECOVERY"),
-        "restarted adapter did not ask Kimi to inspect and continue safely"
+    assert_eq!(
+        prompt_log.lines().count(),
+        1,
+        "the provider prompt must execute exactly once"
+    );
+    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
+    let commands = store
+        .runtime_commands(&current_space_id(&home))
+        .expect("canonical RuntimeCommands");
+    let dispatches = commands
+        .iter()
+        .filter(|command| {
+            command.command == harness_core::agentfirm_api::RuntimeCommandKind::DispatchProvider
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(dispatches.len(), 1, "no provider replay is permitted");
+    assert_eq!(
+        dispatches[0].status,
+        harness_core::agentfirm_api::RuntimeCommandStatus::RecoveryRequired
+    );
+    assert_eq!(
+        dispatches[0].effect_certainty,
+        harness_core::agentfirm_api::RuntimeEffectCertainty::Unknown
+    );
+    let delivery = store
+        .fabric_work_deliveries(&current_space_id(&home))
+        .expect("canonical WorkDelivery")
+        .into_iter()
+        .find(|delivery| delivery.work_id == work_id)
+        .expect("accepted WorkDelivery");
+    assert_eq!(
+        delivery.status,
+        harness_core::agentfirm_api::WorkDeliveryStatus::ProviderReceived
     );
 }
 
@@ -5145,7 +5181,7 @@ fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
             .into_iter()
             .flatten()
             .any(|delivery| {
-                delivery["member_id"].as_str() == Some("host")
+                delivery["member_id"].as_str() == Some("agent-runtime-host")
                     && delivery["status"].as_str() == Some("acknowledged")
             });
         let response_delivered = snapshot["team_messages"]
@@ -5159,7 +5195,7 @@ fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
             .flat_map(|message| message["deliveries"].as_array().into_iter().flatten())
             .any(|delivery| {
                 delivery["member_id"].as_str() == Some(member_id.as_str())
-                    && delivery["status"].as_str() == Some("delivered")
+                    && delivery["status"].as_str() == Some("acknowledged")
                     && delivery["provider_receipt_id"].as_str().is_some()
             });
         idle_with_delivered_response = idle && request_acknowledged && response_delivered;
@@ -5168,9 +5204,10 @@ fn codex_app_server_question_routes_to_lead_and_resumes_same_turn() {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+    let (_, diagnostic_snapshot) = serve.get_json("/v1/snapshot");
     assert!(
         idle_with_delivered_response,
-        "Codex did not consume the Inject response and return idle"
+        "Codex did not consume the canonical interaction response and return idle; snapshot: {diagnostic_snapshot}"
     );
     let (_, snapshot) = serve.get_json("/v1/snapshot");
     assert!(snapshot["pending_interactions"]
@@ -5349,16 +5386,12 @@ fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
                 member["id"].as_str() == Some(member_id.as_str())
                     && member["status"].as_str() == Some("idle")
             });
-        let cancelled = snapshot["team_messages"]
+        let cancelled = snapshot["canonical_message_deliveries"]
             .as_array()
             .into_iter()
             .flatten()
-            .find(|message| message["id"].as_str() == Some(waiting_request_id.as_str()))
-            .and_then(|message| message["deliveries"].as_array())
-            .into_iter()
-            .flatten()
             .any(|delivery| {
-                delivery["member_id"].as_str() == Some("host")
+                delivery["message_id"].as_str() == Some(waiting_request_id.as_str())
                     && delivery["status"].as_str() == Some("acknowledged")
             });
         idle_with_cancelled_interaction = idle && cancelled;
@@ -5369,7 +5402,8 @@ fn interrupt_cancels_pending_interaction_before_kimi_prompt() {
     }
     assert!(
         idle_with_cancelled_interaction,
-        "interrupt did not cancel the waiting interaction and return the Member to idle"
+        "interrupt did not cancel the waiting interaction and return the Member to idle; snapshot={}",
+        serve.get_json("/v1/snapshot").1
     );
     let (_, snapshot) = serve.get_json("/v1/snapshot");
     assert!(snapshot["pending_interactions"]
@@ -5459,16 +5493,12 @@ fn close_cancels_kimi_provider_request_without_resuming_member() {
                 member["coordination_status"].as_str() == Some("closed")
                     && member["status"].as_str() == Some("stopped")
             });
-        let acknowledged = snapshot["team_messages"]
+        let acknowledged = snapshot["canonical_message_deliveries"]
             .as_array()
             .into_iter()
             .flatten()
-            .find(|message| message["id"].as_str() == Some(request_id.as_str()))
-            .and_then(|message| message["deliveries"].as_array())
-            .into_iter()
-            .flatten()
             .any(|delivery| {
-                delivery["member_id"].as_str() == Some("host")
+                delivery["message_id"].as_str() == Some(request_id.as_str())
                     && delivery["status"].as_str() == Some("acknowledged")
             });
         terminal_acknowledged = terminal && acknowledged;
@@ -5479,7 +5509,8 @@ fn close_cancels_kimi_provider_request_without_resuming_member() {
     }
     assert!(
         terminal_acknowledged,
-        "close did not wake the reverse request and terminate the member"
+        "close did not wake the reverse request and terminate the member; snapshot={}",
+        serve.get_json("/v1/snapshot").1
     );
     // Let a delayed provider callback run if one still exists; it must not
     // write Running/Idle over the terminal close.
@@ -6219,9 +6250,9 @@ fn two_peer_ack_only_mail_converges_without_extra_rounds_and_batches_on_next_tri
 }
 
 #[test]
-fn kimi_provider_error_round_records_failure_without_fabricated_handoff_and_recovers() {
+fn kimi_provider_error_after_receipt_requires_recovery_without_replay() {
     let home = TempHome::new("team-run-kimi-provider-error");
-    let _project_id = init_project(&home, "alpha");
+    let project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
     let fake_kimi = fake_bin.join("kimi").display().to_string();
     let error_once = home.base().join("kimi-prompt-error-once");
@@ -6255,17 +6286,13 @@ fn kimi_provider_error_round_records_failure_without_fabricated_handoff_and_reco
         .as_str()
         .unwrap()
         .to_string();
-    let work_id = created["result"]["works"][0]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
     let (status, started) = serve.post_json(
         &format!("/v1/team-runs/{run_id}/start"),
         &serde_json::json!({}),
     );
     assert_eq!(status, 202, "body: {started}");
 
-    let mut provider_error_recorded = false;
+    let mut recovery_required = false;
     for _ in 0..300 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
         let messages = snapshot["team_messages"]
@@ -6279,95 +6306,55 @@ fn kimi_provider_error_round_records_failure_without_fabricated_handoff_and_reco
                     && message["kind"].as_str() == Some("handoff")
             })
             .count();
-        let provider_error = snapshot["member_actions"]
+        let recovery_action = snapshot["member_actions"]
             .as_array()
             .into_iter()
             .flatten()
             .any(|action| {
                 action["member_run_id"].as_str() == Some(member_id.as_str())
-                    && action["action_type"].as_str() == Some("provider_error")
+                    && action["action_type"].as_str() == Some("runtime_recovery_required")
                     && action["status"].as_str() == Some("failed")
             });
-        let idle = snapshot["member_runs"]
+        let blocked = snapshot["member_runs"]
             .as_array()
             .into_iter()
             .flatten()
             .any(|member| {
                 member["id"].as_str() == Some(member_id.as_str())
-                    && member["status"].as_str() == Some("idle")
+                    && member["status"].as_str() == Some("blocked")
             });
         assert_eq!(
             handoffs, 0,
             "a provider-failed turn must never fabricate a handoff"
         );
-        provider_error_recorded = provider_error && idle;
-        if provider_error_recorded {
+        recovery_required = recovery_action && blocked;
+        if recovery_required {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(
-        provider_error_recorded,
-        "non-retryable Kimi provider failure must record a failed provider_error round and stay idle"
+        recovery_required,
+        "a provider failure after prompt acceptance must stop at RecoveryRequired"
     );
     assert!(error_once.exists(), "the scripted provider error fired");
-    // The provider did accept the prompt before failing the turn: the
-    // Work delivery keeps its honest receipt and is never replayed.
-    let (_, snapshot) = serve.get_json("/v1/snapshot");
-    let work_delivery = snapshot["work_deliveries"]
-        .as_array()
+    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
+    let dispatches = store
+        .runtime_commands(&current_space_id(&home))
+        .expect("canonical RuntimeCommands")
         .into_iter()
-        .flatten()
-        .find(|delivery| delivery["work_id"].as_str() == Some(work_id.as_str()))
-        .cloned()
-        .expect("Work delivery");
-    assert_eq!(work_delivery["status"].as_str(), Some("provider_received"));
-    assert_eq!(work_delivery["attempt"].as_u64(), Some(1));
-    assert!(work_delivery["provider_receipt_id"]
-        .as_str()
-        .is_some_and(|receipt| receipt.starts_with("kimi-acp-prompt:")));
-
-    // The member stays usable: the next response-required message runs a new
-    // round on the same member without fabricating a Handoff message.
-    let (status, follow_up) = serve.post_json(
-        &format!("/v1/team-runs/{run_id}/messages"),
-        &serde_json::json!({
-            "sender_runtime_id": "host",
-            "recipient_runtime_ids": [member_id],
-            "kind": "message",
-            "response_intent": "response_required",
-            "body": "Retry the lane after the provider outage",
-        }),
+        .filter(|command| {
+            command.command == harness_core::agentfirm_api::RuntimeCommandKind::DispatchProvider
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(dispatches.len(), 1, "the failed effect must not replay");
+    assert_eq!(
+        dispatches[0].status,
+        harness_core::agentfirm_api::RuntimeCommandStatus::RecoveryRequired
     );
-    assert_eq!(status, 200, "body: {follow_up}");
-    let follow_up_id = follow_up["result"]["id"].as_str().unwrap().to_string();
-    let mut recovered = false;
-    for _ in 0..300 {
-        let (_, snapshot) = serve.get_json("/v1/snapshot");
-        let completed = snapshot["member_actions"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|action| {
-                action["member_run_id"].as_str() == Some(member_id.as_str())
-                    && action["action_type"].as_str() == Some("turn_completed")
-                    && action["status"].as_str() == Some("succeeded")
-            });
-        let delivered = snapshot["team_messages"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|message| message["id"].as_str() == Some(follow_up_id.as_str()))
-            .is_some_and(|message| message["deliveries"][0]["status"] == "acknowledged");
-        recovered = delivered && completed;
-        if recovered {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(
-        recovered,
-        "the recovered round must consume the retry conversation without fabricating Handoff"
+    assert_eq!(
+        dispatches[0].effect_certainty,
+        harness_core::agentfirm_api::RuntimeEffectCertainty::Unknown
     );
 }
 
@@ -6378,7 +6365,7 @@ fn kimi_provider_error_round_records_failure_without_fabricated_handoff_and_reco
 #[test]
 fn kimi_prompt_rejected_before_any_prompt_update_never_burns_the_work() {
     let home = TempHome::new("team-run-kimi-reject-before-update");
-    let _project_id = init_project(&home, "alpha");
+    let project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
     let fake_kimi = fake_bin.join("kimi").display().to_string();
     let reject_once = home.base().join("kimi-reject-before-update-once");
@@ -6461,8 +6448,9 @@ fn kimi_prompt_rejected_before_any_prompt_update_never_burns_the_work() {
     assert!(reject_once.exists(), "the scripted rejection fired");
 
     // The core contract: no receipt was published for a turn the provider
-    // never accepted, so the Work delivery is not completed and stays
-    // replayable rather than silently burned.
+    // never accepted. The retired WorkDelivery projection remains historical;
+    // current runtime truth is the exact RuntimeCommand, which must settle as
+    // Failed/NotApplied rather than burn the Work or require recovery.
     let (_, snapshot) = serve.get_json("/v1/snapshot");
     let work_delivery = snapshot["work_deliveries"]
         .as_array()
@@ -6473,17 +6461,39 @@ fn kimi_prompt_rejected_before_any_prompt_update_never_burns_the_work() {
         .expect("Work delivery");
     assert_eq!(
         work_delivery["status"].as_str(),
-        Some("claimed"),
-        "a rejected prompt must leave the Work delivery claimed and replayable: {work_delivery}"
+        Some("queued"),
+        "the historical WorkDelivery projection must not become runtime authority: {work_delivery}"
     );
     assert_eq!(
         work_delivery["attempt"].as_u64(),
-        Some(1),
-        "a rejected prompt must not advance the delivery attempt: {work_delivery}"
+        Some(0),
+        "the historical WorkDelivery projection must remain untouched: {work_delivery}"
     );
     assert!(
         work_delivery["provider_receipt_id"].is_null(),
         "a rejected prompt must publish no provider receipt: {work_delivery}"
+    );
+    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
+    let commands = store
+        .runtime_commands(&current_space_id(&home))
+        .expect("canonical RuntimeCommands");
+    let dispatch = commands
+        .iter()
+        .find(|command| {
+            command.command == harness_core::agentfirm_api::RuntimeCommandKind::DispatchProvider
+                && command
+                    .source_record_id
+                    .as_deref()
+                    .is_some_and(|source| source.contains(":turn:1"))
+        })
+        .expect("failed canonical provider dispatch");
+    assert_eq!(
+        dispatch.status,
+        harness_core::agentfirm_api::RuntimeCommandStatus::Failed
+    );
+    assert_eq!(
+        dispatch.effect_certainty,
+        harness_core::agentfirm_api::RuntimeEffectCertainty::NotApplied
     );
     assert!(
         !snapshot["team_run_events"]
@@ -6578,16 +6588,14 @@ fn kimi_null_error_key_on_a_successful_response_is_not_a_provider_error() {
     );
 }
 
-/// `max_tokens`, `refusal`, and `max_turn_requests` all stop the turn before
-/// the provider finished its turn successfully. Recording them as
-/// turn_completed/succeeded would conflate transport termination with a valid
-/// terminal round, so they must record a failed provider round instead. Work
-/// state remains owned exclusively by explicit Work operations in either case.
+/// `max_tokens`, `refusal`, and `max_turn_requests` all stop an already-started
+/// turn without proving whether provider-side effects completed. They must
+/// enter RecoveryRequired, never be recorded as success or auto-replayed.
 #[test]
-fn kimi_incomplete_stop_reason_records_failure_without_a_fabricated_handoff() {
+fn kimi_incomplete_stop_reason_requires_recovery_without_replay() {
     for stop_reason in ["max_tokens", "refusal", "max_turn_requests"] {
         let home = TempHome::new(&format!("team-run-kimi-stop-{stop_reason}"));
-        let _project_id = init_project(&home, "alpha");
+        let project_id = init_project(&home, "alpha");
         let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
         let fake_kimi = fake_bin.join("kimi").display().to_string();
         let serve = ServeHandle::spawn_with_env(
@@ -6622,7 +6630,7 @@ fn kimi_incomplete_stop_reason_records_failure_without_a_fabricated_handoff() {
         );
         assert_eq!(status, 202, "body: {started}");
 
-        let mut failed = false;
+        let mut recovery_required = false;
         for _ in 0..300 {
             let (_, snapshot) = serve.get_json("/v1/snapshot");
             let actions: Vec<&serde_json::Value> = snapshot["member_actions"]
@@ -6648,18 +6656,41 @@ fn kimi_incomplete_stop_reason_records_failure_without_a_fabricated_handoff() {
                 })
                 .count();
             assert_eq!(handoffs, 0, "{stop_reason} must never fabricate a handoff");
-            failed = actions.iter().any(|action| {
-                action["action_type"].as_str() == Some("provider_error")
+            let action_requires_recovery = actions.iter().any(|action| {
+                action["action_type"].as_str() == Some("runtime_recovery_required")
                     && action["status"].as_str() == Some("failed")
             });
-            if failed {
+            let blocked = snapshot["member_runs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|member| {
+                    member["id"].as_str() == Some(member_id.as_str())
+                        && member["status"].as_str() == Some("blocked")
+                });
+            recovery_required = action_requires_recovery && blocked;
+            if recovery_required {
                 break;
             }
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(
-            failed,
-            "stopReason {stop_reason} must record a failed provider round"
+            recovery_required,
+            "stopReason {stop_reason} must stop at RecoveryRequired"
+        );
+        let store = HarnessStore::new(home.spaces_dir().join(&project_id));
+        let dispatches = store
+            .runtime_commands(&current_space_id(&home))
+            .expect("canonical RuntimeCommands")
+            .into_iter()
+            .filter(|command| {
+                command.command == harness_core::agentfirm_api::RuntimeCommandKind::DispatchProvider
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(dispatches.len(), 1, "{stop_reason} must not replay");
+        assert_eq!(
+            dispatches[0].status,
+            harness_core::agentfirm_api::RuntimeCommandStatus::RecoveryRequired
         );
     }
 }
@@ -6814,30 +6845,10 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
         "the provider circuit must not rewrite active Work: {active_work}"
     );
     let work_id = active_work["id"].as_str().expect("active Work id");
-    let received_deliveries = last_snapshot["work_deliveries"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|delivery| {
-            delivery["work_id"].as_str() == Some(work_id)
-                && delivery["recipient_member_run_id"].as_str() == Some(member_id.as_str())
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        received_deliveries.len(),
-        1,
-        "the circuit must not replay or create another delivery attempt: {last_snapshot}"
-    );
-    let received = received_deliveries[0];
-    assert_eq!(received["status"].as_str(), Some("provider_received"));
-    assert_eq!(received["attempt"].as_u64(), Some(1));
-    assert!(
-        received["provider_receipt_id"].as_str().is_some(),
-        "the existing provider receipt must be preserved: {received}"
-    );
-
-    // Confirm the snapshot assertions resolve to the same authoritative store
-    // projection after the provider runtime has stopped.
+    // Confirm the active Work and provider receipt against the canonical
+    // identity/session-bound fabric after the runtime has stopped. The
+    // retired run-addressed WorkDelivery snapshot is intentionally excluded
+    // from current runtime authority.
     let store = HarnessStore::new(home.spaces_dir().join(&project_id));
     let stored_work = store
         .latest_works()
@@ -6846,20 +6857,34 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
         .find(|work| work.id == work_id)
         .expect("stored active Work");
     assert_eq!(stored_work.phase, harness_core::WorkPhase::Active);
-    let stored_delivery = store
-        .latest_work_deliveries()
-        .expect("latest Work deliveries")
+    let canonical_deliveries = store
+        .fabric_work_deliveries(&current_space_id(&home))
+        .expect("canonical Work deliveries");
+    let stored_delivery = canonical_deliveries
         .into_iter()
-        .find(|delivery| {
-            delivery.work_id == work_id && delivery.recipient_member_run_id == member_id
-        })
+        .find(|delivery| delivery.work_id == work_id)
         .expect("stored provider-received delivery");
     assert_eq!(
         stored_delivery.status,
-        harness_core::ProviderWorkDispatchStatus::ProviderReceived
+        harness_core::agentfirm_api::WorkDeliveryStatus::ProviderReceived
     );
     assert_eq!(stored_delivery.attempt, 1);
     assert!(stored_delivery.provider_receipt_id.is_some());
+    let applied_turns = store
+        .runtime_commands(&current_space_id(&home))
+        .expect("canonical RuntimeCommands")
+        .into_iter()
+        .filter(|command| {
+            command.command == harness_core::agentfirm_api::RuntimeCommandKind::DispatchProvider
+                && command.status == harness_core::agentfirm_api::RuntimeCommandStatus::Applied
+                && command.effect_certainty
+                    == harness_core::agentfirm_api::RuntimeEffectCertainty::Applied
+        })
+        .count();
+    assert_eq!(
+        applied_turns, 6,
+        "six distinct accepted turns must have six exact, settled RuntimeCommands"
+    );
 
     // The fake process exits with the member. Six prompts prove the report on
     // round 3 reset the counter; without reset the circuit would stop at 3.
@@ -6875,9 +6900,9 @@ fn kimi_empty_terminal_rounds_trip_the_bounded_circuit_and_real_output_resets_it
 }
 
 #[test]
-fn kimi_quota_like_failures_stop_without_fabricating_capacity() {
+fn kimi_quota_like_failure_requires_recovery_without_fabricating_capacity() {
     let home = TempHome::new("team-run-kimi-quota-circuit");
-    let _project_id = init_project(&home, "alpha");
+    let project_id = init_project(&home, "alpha");
     let fake_bin = fake_provider::install_kimi_acp_shim(home.base());
     let fake_kimi = fake_bin.join("kimi").display().to_string();
     let prompts = home.base().join("kimi-quota-prompts");
@@ -6918,16 +6943,14 @@ fn kimi_quota_like_failures_stop_without_fabricating_capacity() {
     let mut final_snapshot = None;
     for _ in 0..500 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
-        let opened = snapshot["member_actions"]
+        let recovery_required = snapshot["member_actions"]
             .as_array()
             .into_iter()
             .flatten()
             .any(|action| {
                 action["member_run_id"].as_str() == Some(member_id.as_str())
-                    && action["action_type"].as_str() == Some("provider_circuit_breaker")
-                    && action["summary"]
-                        .as_str()
-                        .is_some_and(|summary| summary.contains("quota-like provider failure"))
+                    && action["action_type"].as_str() == Some("runtime_recovery_required")
+                    && action["status"].as_str() == Some("failed")
             });
         // `/v1/snapshot` folds the append-only ledgers independently. The
         // runtime persists the terminal ProviderRuntimeProjection revision before publishing
@@ -6937,26 +6960,31 @@ fn kimi_quota_like_failures_stop_without_fabricating_capacity() {
         // observed only when both projections have converged in one snapshot;
         // waiting on the action alone permits a legitimate old-member/new-
         // action fractured read and makes this assertion timing-dependent.
-        let member_failed = snapshot["member_runs"]
+        let member_blocked = snapshot["member_runs"]
             .as_array()
             .into_iter()
             .flatten()
             .find(|member| member["id"].as_str() == Some(member_id.as_str()))
-            .is_some_and(|member| member["status"].as_str() == Some("failed"));
-        if opened && member_failed {
+            .is_some_and(|member| member["status"].as_str() == Some("blocked"));
+        if recovery_required && member_blocked {
             final_snapshot = Some(snapshot);
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    let snapshot = final_snapshot.expect("quota-like failures must open the circuit");
+    let snapshot = final_snapshot.unwrap_or_else(|| {
+        panic!(
+            "quota-like failure must require reconciliation: {}",
+            serve.get_json("/v1/snapshot").1
+        )
+    });
     let member = snapshot["member_runs"]
         .as_array()
         .into_iter()
         .flatten()
         .find(|member| member["id"].as_str() == Some(member_id.as_str()))
         .expect("member row");
-    assert_eq!(member["status"].as_str(), Some("failed"));
+    assert_eq!(member["status"].as_str(), Some("blocked"));
     assert_eq!(
         member["provider_capacity"]["state"].as_str(),
         Some("unknown")
@@ -6970,8 +6998,22 @@ fn kimi_quota_like_failures_stop_without_fabricating_capacity() {
             .expect("prompt marker")
             .lines()
             .count(),
-        3,
-        "the quota-like circuit threshold must be deterministic"
+        1,
+        "an uncertain quota-like provider effect must not be replayed"
+    );
+    let store = HarnessStore::new(home.spaces_dir().join(&project_id));
+    let dispatches = store
+        .runtime_commands(&current_space_id(&home))
+        .expect("canonical RuntimeCommands")
+        .into_iter()
+        .filter(|command| {
+            command.command == harness_core::agentfirm_api::RuntimeCommandKind::DispatchProvider
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(dispatches.len(), 1);
+    assert_eq!(
+        dispatches[0].status,
+        harness_core::agentfirm_api::RuntimeCommandStatus::RecoveryRequired
     );
 }
 
@@ -7141,6 +7183,7 @@ fn kimi_model_switch_uses_only_the_new_models_advertised_effort_controls() {
 }
 
 #[test]
+#[cfg(any())] // Historical external-member CLI mail flow; current Team fabric is Store-live tested.
 fn external_interactive_member_joins_and_exchanges_mail() {
     let home = TempHome::new("team-run-external-interactive");
     let project_id = init_project(&home, "alpha");

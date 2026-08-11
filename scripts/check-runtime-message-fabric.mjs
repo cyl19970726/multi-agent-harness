@@ -207,6 +207,56 @@ for (const path of activeRuntimeSources) {
   }
 }
 
+const runtimeDoc = readFileSync("docs/current/architecture/agent-runtime.md", "utf8");
+const rootRules = readFileSync("AGENTS.md", "utf8");
+for (const token of [
+  "AgentIdentity",
+  "AgentSession",
+  "TeamMembership",
+  "WorkExecutionBinding",
+  "MessageSubscription",
+  "CanonicalMessageDelivery",
+  "RuntimeCommand",
+  "ProviderInvocation",
+  "RecoveryRequired",
+]) {
+  if (!runtimeDoc.includes(token)) failures.push(`canonical runtime doc missing ${token}`);
+}
+for (const token of [
+  "AgentIdentity -> AgentSession",
+  "Work -> WorkExecutionBinding",
+  "Message -> Subscription",
+  "NodeDaemon -> durable RuntimeCommand",
+]) {
+  if (!rootRules.includes(token)) failures.push(`AGENTS.md runtime model drifted: ${token}`);
+}
+for (const path of [
+  "skills/collaborate-as-agent-team-member/SKILL.md",
+  "skills/orchestrate-mission-waves/SKILL.md",
+  "plugins/star-harness/skills/collaborate-as-agent-team-member/SKILL.md",
+  "plugins/star-harness/skills/orchestrate-mission-waves/SKILL.md",
+]) {
+  const text = readFileSync(path, "utf8");
+  if (text.includes("team-run send") || text.includes("team-run ack")) {
+    failures.push(`${path} advertises a retired caller-selected message authority`);
+  }
+  if (!text.includes("server-built")) {
+    failures.push(`${path} does not require server-built identity/runtime authority`);
+  }
+}
+
+const legacyCliSendTests = [
+  "crates/firm-cli/tests/team_run_api.rs",
+  "crates/firm-cli/tests/pi_team_member.rs",
+  "crates/firm-cli/tests/claude_agent_sdk_member.rs",
+];
+for (const path of legacyCliSendTests) {
+  const executable = stripCfgItems(readFileSync(path, "utf8"), "any()");
+  if (executable.includes('"team-run", "send"')) {
+    failures.push(`${path} retains an executable positive legacy CLI-send test seam`);
+  }
+}
+
 if (failures.length) {
   console.error(failures.join("\n"));
   process.exit(1);

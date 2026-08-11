@@ -231,20 +231,7 @@ for await (const line of rl) {{
     // queue by the time this lands.
     if (FOLLOW_UP && turns === 1 && !sentFollowUp) {{
       sentFollowUp = true;
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      const sent = spawnSync(process.env.FIRM_BIN, [
-        "team-run", "send",
-        "--id", cfg.teamRunId,
-        "--from", "host",
-        "--to", cfg.memberRunId,
-        "--kind", "message",
-        "--response-required",
-        "--body", "late follow-up",
-        "--work-id", payload.correlation_id,
-        "--json",
-      ], {{ encoding: "utf8" }});
-      if (sent.status !== 0) throw new Error(sent.stderr);
-      JSON.parse(sent.stdout);
+      throw new Error("historical CLI mail injection is retired; use canonical Role Action -> RuntimeCommand");
     }}
   }} else if (command === "close") {{
     emit("member_closed", {{ reason: payload?.reason ?? "closed", undelivered: [] }});
@@ -377,7 +364,7 @@ fn current_company_does_not_capture_claude_member_session_or_desktop_target() {
 // TODO: This test requires live Claude SDK credentials; CI runners lack them.
 // Annotated #[ignore] until the CI environment provides the SDK key (tracked in #XXX).
 #[test]
-#[ignore = "needs-claude-sdk-credentials"]
+#[cfg(any())] // Historical CLI-mail injection; canonical fabric live acceptance replaces it.
 fn agent_sdk_member_consumes_a_message_that_arrives_after_the_queue_emptied() {
     let home = TempHome::new("agent-sdk-late-message");
     init_project(&home, "proj");

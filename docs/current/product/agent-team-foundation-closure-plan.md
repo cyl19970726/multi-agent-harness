@@ -323,21 +323,31 @@ PendingInteraction, Close truth, and native-session reconstruction.
 
 ### Wave 5 — Multi-client UX and Plugin
 
-- surface Supervisor/receipt/control state in CLI, API, Dashboard, and Plugin;
+- consume server-built AgentIdentity, AgentSession, TeamMembership,
+  WorkExecutionBinding, MessageDelivery and RuntimeCommand projections in CLI,
+  API, Dashboard, and Plugin;
 - distinguish observation from control;
-- show disabled-control reasons and reconnect history;
+- show disabled-control reasons, exact NodeDaemon/AgentSession generation,
+  `RecoveryRequired`, and reconnect history;
+- never fold TeamRun/MemberRun history or provider-dispatch export rows into
+  current runtime truth; and
 - update canonical Skills and generated Plugin copies.
 
 Acceptance: concurrent Dashboard and native-client observation never creates a
-second driver, and every control reaches the owning Supervisor.
+second driver, every control reaches the machine-local NodeDaemon through a
+durable RuntimeCommand, and stale generations have byte-zero effects.
 
 ### Wave 6 — Dogfood and Organization integration
 
 - run a real self-host Mission with persistent Members;
-- exercise Host, peer, and external messages plus restart recovery;
+- exercise Host→Team/Member and Member→Host/Team canonical messaging,
+  subscriptions, per-recipient delivery, ACK/cursor, and restart recovery;
 - record Work submissions/acceptance, checks, native Session refs, Wave
   advances, and closeout;
-- provide the stable runtime contract to the Organization identity branch.
+- exercise Codex/Claude/Kimi/Pi permission ceilings and runtime-command
+  uncertainty recovery; and
+- provide the stable AgentIdentity/AgentSession/TeamMembership/
+  WorkExecutionBinding contract to Organization and Docs.
 
 Acceptance: a future Host can reconstruct why the work existed, who controlled
 each side effect, what each Provider accepted, what survived recovery, and why

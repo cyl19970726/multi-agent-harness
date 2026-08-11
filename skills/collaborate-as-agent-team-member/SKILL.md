@@ -161,51 +161,26 @@ Read actionable mail, or include history when needed:
   --member-run-id "$HARNESS_MEMBER_RUN_ID" --all --json
 ```
 
-To acknowledge all delivered messages whose manual-ack delivery is still pending:
+Legacy TeamRun send/ACK commands are retired because they let a caller select
+another Member's identity. Author or acknowledge through the authenticated
+Member Role Action exposed by the current server-built view. The server must
+resolve your stable AgentIdentity, exact current AgentSession generation,
+TeamMembership, Work/Team scope, NodeDaemon generation, and subscription
+cursor; never supply or override those facts from a prompt, browser, or shell.
 
-```bash
-"$HARNESS_BIN" team-run ack --id "$HARNESS_TEAM_RUN_ID" \
-  --member-run-id "$HARNESS_MEMBER_RUN_ID" --all-delivered
-```
-
-`--all-delivered` auto-selects every message with a delivered status in this run and batch-acks them.
-
-Ask the Host a decision-shaped question:
-
-```bash
-"$HARNESS_BIN" team-run send --id "$HARNESS_TEAM_RUN_ID" \
-  --from "$HARNESS_MEMBER_RUN_ID" --to host --kind message \
-  --work-id "$HARNESS_WORK_ID" \
-  --body "QUESTION: <decision needed, options, recommendation>" --json
-```
-
-Coordinate with a peer without transferring responsibility:
-
-```bash
-"$HARNESS_BIN" team-run send --id "$HARNESS_TEAM_RUN_ID" \
-  --from "$HARNESS_MEMBER_RUN_ID" --to <peer-member-run-id> --kind message \
-  --work-id "$HARNESS_WORK_ID" \
-  --body "COORDINATION: <bounded context or request>" --json
-```
-
-For a reply, preserve the conversation correlation and name the exact cause:
-
-```bash
-"$HARNESS_BIN" team-run send --id "$HARNESS_TEAM_RUN_ID" \
-  --from "$HARNESS_MEMBER_RUN_ID" --to <host-or-peer> --kind message \
-  --work-id "$HARNESS_WORK_ID" \
-  --body "<reply>" \
-  --correlation-id <conversation-correlation-id> \
-  --causation-id <message-id> --json
-```
+For a decision-shaped question, address the Host and include the exact Work id,
+decision needed, options, and recommendation. For peer coordination, address
+the peer AgentIdentity in the same Team without transferring Work. For a reply,
+preserve the server-returned correlation id and use the exact source Message id
+as causation. Acknowledge only the exact current recipient delivery/cursor.
 
 A Message may explain scope, a blocker, a result, or a review decision, but it never changes Work owner/status — see shared hard invariants §4. If conversation creates durable follow-up,
 create a self-owned or eligible unassigned Work explicitly.
 
 Ordinary mail queues until a safe boundary. Member-to-Host mail is durable in
 the Lead Inbox immediately but does not interrupt the Host's current reasoning.
-Peer informational mail does not create a Provider cycle by itself; use
-`--response-required` only when an answer or action is genuinely required.
+Peer informational mail does not create a provider cycle by itself; select
+response-required intent only when an answer or action is genuinely required.
 
 Provider-pausing questions and approvals are `PendingInteraction`, not ordinary
 mail. A tool status of `completed` is not the semantic answer.

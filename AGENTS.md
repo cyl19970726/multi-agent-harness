@@ -28,7 +28,11 @@ and MCP are the shared execution foundation. Their native relations are:
 Mission -> ordered Host-plan Wave
 Mission <-> exactly one flat AgentTeam
 AgentTeam -> immutable node_id -> one machine-scoped NodeDaemon
-AgentTeamRun -> MemberRun -> provider-native session
+AgentIdentity -> AgentSession -> provider-native session/thread
+AgentTeam -> TeamMembership -> AgentIdentity
+Work -> WorkExecutionBinding -> exact AgentSession generation
+Message -> Subscription -> per-recipient MessageDelivery
+NodeDaemon -> durable RuntimeCommand -> provider effect
 ```
 
 `Mission` is durable intent; `Wave` is a lightweight, versioned Markdown record
@@ -38,6 +42,11 @@ MemberRuns and native sessions continue. Every Team belongs to exactly one Missi
 one Mission owns exactly one Team, and a Team never spans machines.
 No two AgentTeams may reference the same Mission. `NodeDaemonLease` is machine-scoped authority for all local Teams across registered Execution Spaces;
 each machine has one machine-scoped NodeDaemon and the lease is never scoped to one Execution Space.
+`TeamRun` and `MemberRun` remain coordination/history projections; they never
+own a provider process or authorize a provider effect. Every provider effect is
+prepared and settled through a durable `RuntimeCommand` bound to the exact
+NodeDaemon and AgentSession generations. Messages, Work delivery, and runtime
+control are separate planes and cannot impersonate one another.
 Cross-Team responsibility uses explicit WorkDelegation rather than parent/child
 Team topology. Docs plus flat AgentTeam Organization is the accepted product
 direction; ADR 0052 is superseded historical evidence. AgentMember is the one

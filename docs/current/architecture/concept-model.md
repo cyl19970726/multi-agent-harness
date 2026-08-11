@@ -176,14 +176,21 @@ owned by one historical Wave.
 | --- | --- | --- |
 | `AgentTeam` | One Mission's flat execution agency with Host and immutable Node placement. | One Team equals one Mission; there is no parent/child Team topology. |
 | `AgentTeamRun` | One Team execution with frozen Team, Node, and Project Binding. | May span Waves; every terminal run remains read-only history. |
-| `MemberRun` | One member instance inside a run: role, provider, model, status, worktree, owned paths. | Exists only for that run; it is not a durable standing employee record. |
+| `AgentIdentity` | Durable addressable agent identity and organization status. | It is not a provider process, Team membership, Work owner, or native transcript. |
+| `AgentSession` | One machine-local provider session owned by an exact NodeDaemon generation. | It has no Team identity and cannot outlive or bypass its NodeDaemon authority. |
+| `TeamMembership` | The collaboration overlay joining an AgentIdentity to one flat Team on the Team's immutable Node. | It does not own the provider session or Work result. |
+| `WorkExecutionBinding` | Exact Work revision → membership → AgentIdentity → AgentSession generation binding. | A successor Session cannot inherit active Work implicitly. |
+| `MemberRun` | Run-scoped coordination/history projection for role and Work attribution. | It is not provider runtime authority and cannot dispatch, interrupt, resume, or stop a provider. |
 | `Work` | TeamRun-scoped responsibility, owner, readiness, state, criteria and result. | Assignment, claim, block, submission and acceptance are Work operations governed by ADR 0050. |
 | `WorkOperation` | Crash-atomic Store replay row containing one WorkEvent, its complete resulting Work, delivery creates/updates, and target-caused WorkDelegation revisions. | It prevents Work, delivery, and cross-Team roll-up projections from becoming independently visible; Hosts still act on Work, not WorkOperation. |
 | `WorkDelivery` | Reliable delivery of one Work version to a Member runtime. | It reuses delivery machinery but is not authored conversation or Work ownership. |
-| `TeamMessage` | Run-scoped authored conversation envelope with delivery records and optional Work link. | Questions, answers, planning and coordination live here; it is not task state or a fake live-control protocol. |
+| `Message` | Immutable source-NodeDaemon-authored conversation envelope, addressed through canonical subscriptions. | It cannot carry Work ownership or runtime-control authority. |
+| `MessageSubscription` / `SubscriptionCursor` | Recipient policy and exact delivery/ACK progress. | The browser and Control Plane cannot fabricate recipient state. |
 | `ExecutionNode` / `NodeDaemonLease` | Stable machine identity and its one active daemon generation. | One NodeDaemon owns all local Teams and registered Project Bindings. |
 | `TeamSupervisorLease` | Latest-wins cross-process authority for one active TeamRun generation. | Parent-fenced by NodeDaemon generation; owns this run's transports, claims, reconnect, and real controls. |
-| `MessageDelivery` | Delivery state for one canonical TeamMessage recipient at an exact MemberRun generation. | Makes provider acceptance, acknowledgement, retries, and uncertainty explicit without a second identity inbox. |
+| `CanonicalMessageDelivery` | Delivery state for one immutable Message recipient at an exact AgentSession generation. | Makes provider receipt, acknowledgement, retries, and uncertainty explicit without a second Message or inbox authority. |
+| `RuntimeCommand` | Durable prepare/settle journal for start, resume, turn/input, interrupt, and stop effects. | Ambiguous effects become `RecoveryRequired`; TeamRun, MemberRun, Message, and WorkDelivery cannot bypass it. |
+| `ProviderInvocation` | Clean-cut provider-facing projection derived by the target NodeDaemon from a claimed delivery. | Public callers and browsers cannot author it or select provider compatibility. |
 | `MemberAction` | Transitional Harness action row. Target use is limited to Harness-owned coordination/control facts. | Provider tool, command, file, chat, turn, and reasoning streams stay solely in the native provider session. |
 | `DelegationRun` | Attribution record for observed or orchestrated delegation. | Parent permissions, paths, and budgets bound the child. |
 | `TeamRunEvent` | Transitional ordered event projection for Harness-owned run lifecycle. | It must not become a mirror of provider-native activity. |

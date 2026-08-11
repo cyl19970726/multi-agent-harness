@@ -564,8 +564,8 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
         String::from_utf8_lossy(&cross_team_retry.stderr).contains("not for the same agent team")
     );
 
-    // Seeded historical, not created -- proves source_plan_ref cross-Mission
-    // validation still works against a pre-cutover row.
+    // A seeded historical wave cannot revive the retired CLI message writer.
+    // Mission/source-plan validation now belongs to canonical Message authoring.
     seed_historical_wave(&home, &project_id, "wave-other", "mission-other", 1, "host");
     let cross_mission_origin = run_firm(
         &home,
@@ -590,8 +590,9 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
         ],
     );
     assert!(!cross_mission_origin.status.success());
-    assert!(String::from_utf8_lossy(&cross_mission_origin.stderr)
-        .contains("not TeamRun Mission mission-host-plan"));
+    assert!(
+        String::from_utf8_lossy(&cross_mission_origin.stderr).contains("RETIRED_WRITE_AUTHORITY")
+    );
     // Mission is immutable Team metadata; callers cannot rebind a TeamRun by
     // supplying a different Mission at attempt creation.
     let cross_mission_retry = run_firm(

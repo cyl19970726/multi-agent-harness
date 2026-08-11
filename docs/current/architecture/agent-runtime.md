@@ -1,395 +1,182 @@
-# Provider Runtime Contract
+# Node Runtime and Message Fabric
 
 ```text
-status: implementation reference; ADR 0050 Work/WorkDelivery cutover in progress
+status: accepted implementation contract
+authority: AF-ADR-011
+canonical_for: Agent identity/session separation, NodeDaemon runtime ownership,
+  messaging, provider dispatch, runtime control, recovery, and provider parity
 ```
 
-This implementation reference defines the provider-neutral runtime substrate
-shared by Host execution, Agent Team members, Dynamic Workflow steps and future
-Agent Membership operation. Provider-specific files under `docs/current/integration/`
-explain how a concrete provider implements the substrate.
+Provider runtime is machine-local infrastructure. It does not own Company
+identity, Team membership, Work responsibility, acceptance, or provider-native
+transcripts. One machine-scoped NodeDaemon owns every local AgentSession,
+provider process/thread, provider delivery, and runtime-control effect across
+the machine's registered Execution Spaces.
 
-The provider-neutral rule for continuous, multi-cycle Member execution lives
-in [Member Continuation Model](member-continuation-model.md). Runtime lifecycle,
-mail delivery, and continuation are related but separate contracts.
-
-Provider records are execution infrastructure. They do not own company
-identity, organization authority, TeamWork responsibility, Mission/Wave
-acceptance or business results. The owning executor and product systems keep
-those truths.
-
-## Vision Link
-
-The product needs provider turns that can be launched, correlated, observed,
-resumed and closed. A provider turn is useful only after the Harness can relate
-it to the executor or Host that requested it. Harness references the
-provider-native session without copying its transcript or activity stream and
-without inventing lifecycle control.
-
-Final acceptance for this mechanism:
+## Canonical separation
 
 ```text
-select Mission-linked execution, Host-plan context, or direct TeamWork action
-  -> start or resume MemberRun provider execution
-  -> deliver bounded Work or executor-native request
-  -> bind provider-native session
-  -> project native activity on demand
-  -> promote explicit outcome, artifacts, checks and optional attribution
-  -> close or recover runtime
+AgentIdentity
+  ├─ TeamMembership (collaboration overlay)
+  └─ AgentSession (machine-local provider runtime)
+
+Work revision
+  └─ WorkExecutionBinding
+       └─ exact TeamMembership + AgentIdentity + AgentSession generation
+
+Message
+  └─ MessageSubscription
+       └─ CanonicalMessageDelivery per recipient
+
+NodeDaemon
+  └─ RuntimeCommand
+       └─ ProviderInvocation / provider effect
 ```
 
-## Key Questions
+The objects are intentionally independent:
 
-| Question | Runtime answer |
-| --- | --- |
-| What requested execution? | Mission-linked run, Host action, Dynamic Workflow invocation, or linked TeamWork execution reference. |
-| Who or what is acting? | A run-scoped member, Host, optional Agent Membership link, human/service actor or external provider identity. |
-| What is running? | `MemberRun` plus provider-process/session health. |
-| What did the provider do? | Provider-native session via `NativeSessionRef`; ephemeral adapter projection for UI. |
-| How does a member receive work? | `WorkDelivery` projects the latest assigned Work id/version into a provider turn; the Member also reads My Works and the ready pool. |
-| Who starts the next provider cycle? | The Member's selected `execution_driver`: Harness (`host_driven`), one reviewed native continuation controller (`provider_driven`), or the user's own out-of-band session (`user_driven`, declared `external_interactive` members only). |
-| Who decides the work is accepted? | The Team Host, using Work completion criteria and evidence; provider completion is only an execution signal. |
-| What happens when busy? | Harness-owned queue policy decides enqueue, interrupt, reject, or fail. |
-| How is context built? | Harness packages bounded execution context, artifact refs, skill refs and permissions per delivery. |
-| How are providers swapped? | Providers implement the same interfaces and cannot own harness state. |
-
-## Runtime contract updates and reconciliation
-
-A long-lived Agent may outlive the Harness binary or adapter configuration that
-started its current process. Updating the Dashboard bundle or a Docs projection
-does not require restarting provider runtimes. Updating an adapter protocol,
-provider-control mapping, permission envelope, provider version, or delivery
-contract does.
-
-| Change | Required action |
-| --- | --- |
-| Docs/UI/read projection only | refresh the projection; keep MemberRun and native session |
-| Harness process restart with the same adapter contract | acquire a new Supervisor generation and reattach the same unclosed MemberRun/native session |
-| adapter, protocol, permission, model/effort mapping, or Plugin contract change | drain or interrupt the active turn, release the old runtime owner, create an explicit replacement runtime generation, and resume the provider-native session only when that version/mode declares it compatible |
-| incompatible or unavailable native session | keep the old binding as historical evidence and start a new native session under an explicit replacement MemberRun; never replay Harness mail as a transcript |
-
-At no point may both generations drive the same writable Workspace. Durable
-Work/TeamWork ownership, Message correlation, Agent Membership identity, and accepted
-evidence survive the transition. Provider upgrades still require explicit
-Human confirmation under ADR 0031; an ordinary Harness build update is not
-permission to upgrade Codex, Claude Code, or Kimi.
-
-## A-ROM Objects
-
-| Object | Owns | Refuses |
+| Object | Owns | Never owns |
 | --- | --- | --- |
-| `AgentMember` | compatibility/runtime configuration for an addressable agent; may be explicitly linked to a Agent Membership or MemberRun | automatic company identity, organization authority, or provider transcript as identity |
-| `MemberRun` | coordination generation plus provider-process/session health | Work/TeamWork or acceptance ownership |
-| `WorkDelivery` | reliable delivery of one WorkEvent and Work id/version to a Member runtime | Work ownership or authored conversation |
-| `MessageDelivery` | delivery request for authored conversation and terminal delivery state | Work ownership or status |
-| `TeamSupervisorLease` | single cross-process owner generation for TeamRun controls and delivery claims | provider transcript or proof that an uncertain claim was consumed |
-| `TeamMemberCloseRequest` | durable pending/applied Host Close latch for one MemberRun | process-local control acknowledgement or provider transcript |
-| `MessageDelivery` | canonical queued/claimed/provider-received/acknowledged delivery bound to exact MemberRun generation | implicit Organization identity, duplicate delivery, or transcript storage |
-| `NativeSessionRef` | mode-aware provider session identity, availability, version, and resume capability | transcript or event copy |
-| `ProviderExecutionControls` | requested versus effective model, reasoning effort, and service tier with native receipt status | provider capability inference or Organization authority |
-| `ProviderCapacitySnapshot` | execution-mode-specific runtime availability of one provider ACCOUNT, with observation time, evidence source and confidence | adapter compatibility, a synthesised usage number, or an availability claim from an absent observation |
-| `NativeContinuationProjection` | ephemeral observation of the selected provider's continuation condition, state, cycle and terminal reason | durable Goal identity, Work ownership, or Host acceptance |
-| `MemberRunEvent` | explicit Harness-owned lifecycle, control, and summary facts | provider transcript, tool stream, or turn history |
-| `ProviderChildThread` | provider-native subagent or child thread visibility | durable firm member identity by default |
-| `PermissionProfile` | allowed tools, approval policy, sandbox, live/destructive boundaries | prompt-only safety |
-| `WorkspaceRef` | cwd, worktree, branch, environment, owned paths | implicit global workspace |
+| `AgentIdentity` | stable addressable agent identity and organization status | provider process, Team membership, Work, transcript |
+| `AgentSession` | one provider session on one Node and exact NodeDaemon generation | Team identity, Work acceptance |
+| `TeamMembership` | one AgentIdentity's active participation in one flat Team | provider lifecycle |
+| `WorkExecutionBinding` | one exact Work revision bound to one membership and AgentSession generation | authored conversation |
+| `Message` | immutable source-authored conversation | Work ownership or runtime control |
+| `MessageSubscription` | authorized recipient policy and delivery mode | a second Message or browser-chosen recipient truth |
+| `CanonicalMessageDelivery` | per-recipient queue, claim, provider receipt and ACK/cursor state | provider transcript |
+| `RuntimeCommand` | crash-recoverable prepare/settle journal for provider/process effects | conversation or Work state |
+| `ProviderInvocation` | target-NodeDaemon-built provider input derived from a claimed delivery | public mutation authority |
 
-## Agent Team Collaboration Boundary
+`TeamRun` and `MemberRun` may remain as coordination and historical
+projections. They are not provider runtime authority. No CLI, HTTP, MCP,
+Dashboard, adapter, or mutable Store seam may dispatch, resume, interrupt, or
+stop a provider through them.
 
-An Agent Team member is an accountable, multi-turn actor with a stable
-`MemberRun`, Workspace, mailbox address, active Works, and
-provider-native session. Its provider-native subagents are child execution
-threads, not additional Harness members. The parent member retains permission,
-evidence, and acceptance responsibility.
+## Authority flow
 
-Harness owns Work responsibility through `Work`, `WorkEvent`, and
-`WorkDelivery`; it owns authored coordination through `TeamMessage`.
-Assignment, claim, start, block, submission, review, and acceptance are Work
-operations, not Message kinds. There is no Assignment-message compatibility
-path. Question, answer, discussion, and peer coordination remain ordinary
-message intents. Members may send
-ordinary messages to the Host or direct peer
-messages to active members in the same TeamRun. Member-to-Host messages
-are delivered when appended because the control plane already received them.
-Messages and WorkDeliveries addressed to a member remain queued until the current Supervisor
-claims them and the adapter returns a provider-native acceptance receipt for
-the selected MemberRun and native session. The adapter must poll or
-subscribe independently of provider turn completion; busy modes that cannot
-inject safely keep mail visibly queued for the next turn.
+### Same-node messaging
 
-New writes carry typed actor provenance. An unbound MCP connection may author
-only as the Host, an Operator, or a Service; it cannot select `member_run` or
-`agent_member` by id. Member-originated messages come from that Member's bound
-Provider runtime.
+1. The authenticated source AgentSession sends an authoring RuntimeCommand to
+   its current NodeDaemon.
+2. The source NodeDaemon freezes sender identity/session, immutable content,
+   sequence, Team/Work relation, recipients, and content fingerprint.
+3. Canonical subscriptions produce one delivery per authorized recipient.
+4. The target NodeDaemon claims the delivery for the exact current recipient
+   AgentSession generation.
+5. Only after the durable claim does it build a `ProviderInvocation` and touch
+   the provider.
+6. Provider receipt and recipient ACK/cursor are separate durable facts.
 
-The member Inbox projects unread authored messages and WorkDeliveries addressed
-to that MemberRun. My Works and the ready pool come from Work projections, not
-mail. The Inbox does not read or copy provider-native chat.
+The source and target may be the same NodeDaemon. That does not allow a second
+Message, sequence, or delivery authority.
 
-Delivery does not imply that a semantic reply is required. An ordinary
-coordination message should declare response intent explicitly when the sender
-needs another provider round. Receipt acknowledgements, final scope
-confirmations, and other messages with no new fact, question, blocker, review
-request, or requested action must be allowed to converge without recursive
-acknowledgement replies. The durable transport ACK remains a control-plane fact
-and is not implemented by asking the provider to write another chat message.
+### Cross-node messaging
 
-`PendingInteraction` is reserved for a provider turn actually paused on a
-question or approval. It is not a replacement for ordinary peer or Host chat,
-including planning discussion. Steer, interrupt, and resume must reflect the real selected execution
-mode: unsupported live Steer fails. The caller may separately choose an
-ordinary queued next-round Message; Harness never silently converts it or emits
-a fake current-turn ACK.
+The source NodeDaemon remains the only Message author. The Control Plane owns
+only a route journal for the immutable Message id and source fingerprint. The
+target NodeDaemon owns recipient delivery and provider state. Routing may
+retry, but it may not rewrite content, allocate a second source sequence, or
+fold target delivery into Control Plane truth.
 
-## Provider Interfaces
+### Work delivery
 
-This is the provider-neutral interface model, not a claim that every operation
-is one public Rust trait today. Implemented V1 native reads return a bounded
-projection with `truncated`; cursor pagination remains an extension documented
-in [integration/native-session-storage.md](../integration/native-session-storage.md).
+Work and Message are separate planes. `CanonicalWorkDelivery` carries an exact
+Work id/revision to an active `WorkExecutionBinding`. Claiming Work verifies the
+current membership, AgentIdentity, AgentSession generation, Node placement,
+NodeDaemon lease, and Work owner under canonical Store authority. Work result,
+progress, finding, failure, revise, submit, gate, and acceptance remain Work
+operations.
+
+### Runtime control
+
+Start, resume, turn, queued input, interrupt, and stop all use the same durable
+RuntimeCommand protocol:
 
 ```text
-AgentProvider
-  create_runtime(actor_config, workspace, permissions)
-  close_runtime(runtime)
-  health(runtime)
-  deliver(request, context)
-  interrupt(runtime, reason)
-  bind_native_session(launch_receipt)
-  read_native_session(session_ref) -> bounded projection
-  resume_native_session(session_ref, input)
-
-ContinuationController
-  capabilities(mode, version)
-  start_or_replace(session_ref, condition)
-  inspect(session_ref) -> NativeContinuationProjection
-  inject_or_queue(session_ref, message)
-  interrupt_current_cycle(session_ref, reason)
-  clear(session_ref)
-
-Delivery
-  package_context(request, execution_refs, artifact_refs, skill_refs, permissions)
-  send(provider_request)
-  correlate_response(response_or_event)
-  record_delivery(status, native_session_ref)
-
-NativeActivityProjector
-  provider-native record -> ephemeral sanitized projection
-  provider interaction boundary -> PendingInteraction / control acknowledgement
-  explicit promotion -> Work submission / outcome / artifact or check ref
-
-WorkspaceProvider
-  prepare_workspace(execution)
-  attach_branch_or_pr(execution)
-  inspect_changed_paths(execution)
-  cleanup_or_archive(execution)
+authenticate and resolve authority
+  -> bind exact Node + NodeDaemon generation
+  -> bind exact AgentSession generation and permission ceiling
+  -> validate full command fingerprint and idempotency key
+  -> persist Accepted / effect=Unknown
+  -> touch process/provider
+  -> persist Applied, Failed/NotApplied, or RecoveryRequired/Unknown
 ```
 
-Codex, Claude Code, Kimi, OpenClaw, a Permission Agent, or a future cloud
-provider should implement these boundaries without changing Mission/Wave,
-executor-native records, TeamMessage, PendingInteraction, outcome, artifact,
-TeamWork, Approval, gate, or organization semantics.
+Exact replay returns the original durable result and never repeats the effect.
+The same key with a changed provider, mode, payload, permission, Node, Space,
+Session, or generation fails with an idempotency conflict. Authorization and
+generation rejection have zero canonical ledger, provider, process, Message,
+and delivery side effects.
 
-## Queue And Context Policy
+## Effect certainty and recovery
 
-The harness owns delivery policy:
+| Observation | Durable result | Retry rule |
+| --- | --- | --- |
+| failure proven before provider/process boundary | `Failed / NotApplied` | a new command may be issued intentionally |
+| provider/process effect observed complete | `Applied / Applied` | exact replay returns completion |
+| socket loss, timeout, callback race, or torn state after the boundary | `RecoveryRequired / Unknown` | no automatic repeat; reconcile first |
+| stale NodeDaemon or AgentSession generation | typed fenced error | zero side effects |
 
-| Member state | Message policy |
-| --- | --- |
-| `idle` | deliver the next eligible response-required message and start a round; informational mail stays queued and batches into that round |
-| `running` | enqueue normal messages; allow explicit interrupt only by policy |
-| `waiting_for_input` | deliver clarification or decision messages |
-| `waiting_for_approval` | deliver approval decision or keep queued |
-| `blocked` | queue or reassign, depending on Leader decision |
-| `closed` / `error` | fail delivery and create evidence/blocker |
+Canonical operation rows are recovered atomically. A torn prepared or settled
+tail must yield the last complete operation, never an unreadable ledger or a
+fabricated completion. A successor NodeDaemon or AgentSession cannot settle an
+older generation's command. An active WorkExecutionBinding must be explicitly
+released or atomically rebound before Session close/replacement.
 
-The selected execution driver owns cycle creation. In `host_driven` mode,
-eligible mail causes Harness to start exactly one next provider cycle. In
-`provider_driven` mode, Harness may queue or inject mail according to the
-reviewed native protocol, but it must not independently start a competing
-top-level cycle. The lease is scoped to one MemberRun, native session, and
-writable Workspace; it is not a claim that a Member can perform only one turn.
+## Provider conformance
 
-Team `max_concurrency` applies to active execution leases, not Member
-supervisors. An idle Member retains its native session, mailbox and Host control
-handle without occupying a provider-turn permit.
+Codex, Claude, Kimi, and Pi map the same closed contracts:
 
-Provider context is ephemeral. Harness state is durable. Each delivery should
-include only the bounded context needed for that turn: active Work id/version,
-context and completion criteria, assigned/ready summaries, relevant messages,
-artifact refs, skill refs, owned paths, workspace refs, permission profile and
-necessary Company OS links.
+- requested permission must fit both the AgentIdentity ceiling and provider
+  adapter capability;
+- safe current-turn injection requires both adapter support and an observed
+  safe point;
+- unsupported or unprovable permission, queue, interrupt, resume, or stop
+  behavior fails closed;
+- the browser cannot declare provider compatibility, permission, current turn,
+  or effect success;
+- provider transcripts, tool calls, commands, files, reasoning, and child
+  threads remain in native provider storage unless explicitly promoted as a
+  result/evidence reference.
 
-Delivery queues must be built from the latest projection of mutable objects.
-For an append-only store, this means selecting the latest row per Message or
-WorkDelivery id before checking `delivery_status=queued`. Raw historical rows
-are audit data, not deliverable input.
+Provider adapters consume only canonical claimed MessageDelivery or
+WorkDelivery plus a NodeDaemon-built `ProviderInvocation`. The retired
+`ProviderDispatchEnvelope` and Wave4A Team message ledgers have no current
+writer, reader, fallback, migration, SSE, RoleView, Dashboard, CLI, HTTP, MCP,
+or adapter authority. A narrowly enumerated historical export may remain
+read-only and is excluded from current projections and migration.
 
-Delivery correctness also requires a claim/lease before provider side effects.
-Starting a runtime, creating a provider thread, or sending provider input can
-change external state. A provider implementation must not perform those effects
-until the current Supervisor has verified that the selected provider transport
-is live and atomically claimed the latest queued Message or WorkDelivery. A successful provider
-acceptance creates a separate receipt; semantic reply and recipient ACK remain
-separate facts. The claim must be visible to later dispatchers and to the
-Dashboard. If transport health fails before claim, the delivery stays queued and the
-Supervisor must reconnect the recorded native session before retrying.
+## Product views and clients
 
-Crash recovery depends on the last durable boundary:
+Server-built RoleViews project current canonical state. Browsers refetch after
+SSE invalidation; they do not fold raw ledgers or invent lifecycle truth.
+Current inboxes use canonical MessageDelivery and SubscriptionCursor. Current
+runtime state uses AgentSession and RuntimeCommand. Historical TeamRun,
+MemberRun, native-session locator, and legacy export rows are labeled history
+and cannot enable actions.
 
-- `queued` means the provider has not accepted the Message or WorkDelivery; reconnect before
-  claiming it;
-- `claimed` means provider acceptance is uncertain; reconcile explicitly and
-  never blindly replay it;
-- `provider_received` without a Work submission or required reply means the provider
-  accepted the input but semantic completion is missing. Resume the same native
-  session and ask the Member to inspect its native state, latest Work version,
-  and Workspace before continuing.
+CLI, HTTP, MCP, Dashboard, skills, and plugin mirrors must expose only actions
+the server can bind to authenticated identity, authority, target, exact version,
+idempotency, confirmation, and current Node/Session generations. Retired
+message and runtime mutation routes fail closed with typed errors.
 
-For Kimi ACP specifically, a disconnected transport is disposable beneath the
-native session. If no provider receipt exists, the same Supervisor may reuse
-its fenced claim and a successor generation must reconcile then reclaim it. If
-the receipt already exists, Harness resumes the same Kimi session without
-replaying or completing the WorkDelivery again. In both cases the recovery
-prompt names the durable boundary and tells the Member to inspect the native
-session and Workspace before continuing, so crash recovery does not guess
-whether a writable effect already occurred.
+## Acceptance boundary
 
-The provider receipt is written at the earliest native acceptance boundary:
-Codex `turn/start`, Claude Agent SDK consumed/delivery receipt, or Kimi ACP's
-first accepted update/request/terminal frame. Waiting for a terminal response
-before recording receipt creates a duplicate-execution window after a
-Supervisor crash. A failed claimed delivery must become durable `failed`
-pressure or be explicitly reconciled by a successor generation; it must not
-remain indefinitely ambiguous in the current generation.
+Release requires:
 
-A Member cannot submit a Work while a newer WorkDelivery for that Work, or a
-newer linked **response-required** Message, is `queued` or `claimed`. This fence
-preserves the difference between a pre-correction result and the result that
-actually absorbed the Host's latest instruction. Informational mail such as
-peer acknowledgements does not fence submission.
+- deterministic start/resume/turn/input/interrupt/stop replay and recovery
+  tests, including terminal, socket-loss, callback-race, torn-row, and
+  successor-generation cases;
+- real Host→Team/Member and Member→Host/Team Message journeys with
+  subscriptions, per-recipient delivery, provider receipt, ACK/cursor, and
+  sibling Team/Node/Space negatives;
+- Codex/Claude/Kimi/Pi permission and queue/current-turn conformance;
+- executable zero-match governance for retired runtime/message authorities;
+- populated RoleView and live provider/message acceptance;
+- full Rust, formatting, clippy, repository governance, docs/plugin mirror,
+  and fresh clean-archive gates.
 
-Closed, closing, or retired members cannot be revived by delivery. Explicit
-Reopen is the only transition from `closed` to `active`: it keeps the same
-MemberRun, increments `runtime_generation`, and for managed adapters resumes the
-recorded provider-native session with its verified provider operation. Queued
-mail is frozen while closed and becomes actionable after Reopen. Retired
-members cannot reopen. Close intent is durably latched before the process-local
-handle is released, so a lease/receiver race cannot silently resurrect the
-member.
-
-The delivered provider input must carry a stable Harness envelope containing
-the requesting Mission/Wave/run or TeamWork reference, sender, recipient,
-delivery attempt and content as applicable. Provider-specific transcript text
-is not a substitute for this correlation envelope.
-
-## Provider-Specific Docs
-
-Use this split:
-
-```text
-docs/current/architecture/agent-integration-model.md  # how to integrate a new agent (three pillars + launch spec)
-docs/current/architecture/agent-runtime.md        # provider-neutral runtime substrate and interfaces
-docs/current/architecture/member-continuation-model.md
-                             # execution-driver, completion and native continuation contract
-docs/current/integration/README.md   # integration rules and template
-docs/current/integration/codex.md    # Codex implementation
-docs/current/integration/claude.md   # Claude implementation
-docs/current/integration/kimi.md     # Kimi implementation
-docs/current/integration/<name>.md   # future provider implementation
-```
-
-The [Agent Integration Model](agent-integration-model.md) is the canonical
-"to integrate a new provider you define X, Y, Z" doc; this file is the runtime
-substrate it builds on. Do not let the first provider implementation define the
-generic runtime or product authority.
-
-## Invariants
-
-1. Harness store is canonical for coordination; the provider-native session is
-   canonical for per-agent transcript, activity, turn lifecycle, and resume.
-2. Hooks and provider notifications are event inputs, not assignment ownership.
-3. A runtime can fail while the member identity remains recoverable.
-4. Provider-native subagents are visible child threads, not harness members
-   unless explicitly promoted.
-5. Dashboard joins normalized Harness coordination with provider-adapter native
-   session projections; browser code does not read private provider files
-   directly and Harness does not mirror them.
-6. Delivery claims happen before provider side effects.
-7. Closed, closing, and retired members fail normal delivery; only explicit
-   Reopen reactivates a closed member, while Retire is permanent.
-
-## Real-Time Event Streaming (SSE)
-
-The harness serves real-time events via Server-Sent Events (SSE) at the `/v1/events` endpoint. This allows clients to maintain a live view of harness state without polling.
-
-### Endpoint: `GET /v1/events`
-
-**Purpose**: Stream Harness coordination/lifecycle changes plus transient native
-activity projections to connected clients. The stream is project-scoped:
-`?project=<id>` selects the project; frames from other projects never leak.
-
-**Response Headers**:
-```
-Content-Type: text/event-stream
-Cache-Control: no-cache
-Connection: keep-alive
-Access-Control-Allow-Origin: *
-```
-
-### Event Kinds
-
-The endpoint emits the following event types:
-
-- **`snapshot`**: Initial state sent on connection (contains `generated_at` timestamp). Clients use this to initialize their state during reconnect.
-- **`member_run_event`**: A new `MemberRunEvent` was recorded (provider/runtime/hook event).
-- **`message`**: A new `Message` was created or its `delivery_status` changed.
-- **`workflow_run`** / **`workflow_step`**: A `WorkflowRun` / `WorkflowStep` record was appended or updated (dynamic workflow runtime).
-- **`native_activity`**: Ephemeral provider-native projection when the selected
-  adapter/mode supports live publication; reconnect re-reads native state.
-
-### Event Frame Format
-
-Each event is transmitted as:
-```
-event: <event_kind>
-data: <JSON object>
-
-```
-
-Example (agent_event):
-```
-event: agent_event
-data: {"id":"evt-001","agent_member_id":"mem-001","provider":"claude","event_type":"message_queued",...}
-
-```
-
-### Keepalive
-
-The connection sends a keepalive comment every ~15 seconds (when no events are being transmitted) to prevent proxy/client idle timeouts:
-
-```
-: keepalive
-
-```
-
-### Client Behavior
-
-1. On connection: receive `snapshot` event to initialize state.
-2. Stream in events as they arrive (typical latency <1s from append).
-3. On reconnect: fetch `/v1/snapshot` to resync, then reconnect to `/v1/events`.
-4. Handle client disconnect gracefully (connection drop, drop receiver).
-
-### Implementation
-
-The watcher monitors Harness-owned project JSONL files. Provider adapters
-publish ephemeral native projections and support on-demand reconstruction from
-`NativeSessionRef`.
-
-### How A Member Looks Live
-
-The end-to-end model of how these events, the four-layer `runtime_health`
-probe, `MessageDelivery`, and the native session binding compose into an `AgentMember`'s
-real-time state — and how that state reaches the Agent Dashboard — is the
-canonical contract in
-member-runtime-observability.md.
+Wave 5 must consume these server-built projections and disabled reasons; it may
+not reconstruct runtime state in the client. Wave 6 dogfood must prove the
+multi-provider Message/Work/RuntimeCommand journeys and recovery contracts on
+real Company work before widening permissions or topology.

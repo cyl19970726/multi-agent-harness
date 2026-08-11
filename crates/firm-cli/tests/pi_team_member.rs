@@ -268,6 +268,7 @@ fn wait_for_member_turns(
 }
 
 #[test]
+#[cfg(any())] // Historical CLI-send follow-up; canonical Message/Delivery journey is the replacement.
 fn pi_rpc_team_member_completes_work_then_host_follow_up_without_disconnect() {
     let home = TempHome::new("pi-team-member-round");
     let (project_id, team_id) = init_project(&home, "pi-test");

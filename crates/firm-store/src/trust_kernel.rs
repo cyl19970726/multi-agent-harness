@@ -4435,10 +4435,30 @@ impl HarnessStore {
         &self,
         execution_space_id: &str,
     ) -> StoreResult<Vec<WorkExecutionBinding>> {
-        self.latest_trust_envelopes_unlocked(execution_space_id, "work_execution_binding")?
-            .values()
-            .map(event_projection)
-            .collect()
+        let mut latest = BTreeMap::<String, WorkExecutionBinding>::new();
+        for envelope in self.trust_operation_envelopes_unlocked()? {
+            if envelope.execution_space_id != execution_space_id {
+                continue;
+            }
+            if envelope.operation.event.aggregate_kind == "work_execution_binding" {
+                let binding = event_projection::<WorkExecutionBinding>(&envelope)?;
+                latest.insert(binding.id.clone(), binding);
+            }
+            // StopSession atomically quiesces active Work bindings in the same
+            // RuntimeCommand operation. Side records are full resulting
+            // projections and participate in latest-version selection.
+            for record in envelope.operation.immutable_side_records {
+                if let Ok(binding) = serde_json::from_value::<WorkExecutionBinding>(record) {
+                    let replace = latest
+                        .get(&binding.id)
+                        .is_none_or(|current| binding.version > current.version);
+                    if replace {
+                        latest.insert(binding.id.clone(), binding);
+                    }
+                }
+            }
+        }
+        Ok(latest.into_values().collect())
     }
 
     pub fn fabric_work_deliveries(
@@ -5752,6 +5772,7 @@ impl HarnessStore {
         }
         let target_session_id = command.payload["session_id"].as_str().map(str::to_string);
         let target_session_generation = command.payload["session_generation"].as_u64();
+        let mut atomic_side_records = Vec::new();
         if let Some(session_id) = target_session_id.as_deref() {
             let session = self
                 .fabric_agent_sessions(&context.execution_space_id)?
@@ -5779,14 +5800,15 @@ impl HarnessStore {
                     Some(session.version),
                 ));
             }
-            let active_work = self
+            let active_bindings = self
                 .fabric_work_execution_bindings(&context.execution_space_id)?
                 .into_iter()
-                .any(|binding| {
+                .filter(|binding| {
                     binding.agent_session_id == session.id
                         && binding.agent_session_generation == session.runtime_generation
                         && binding.status == WorkExecutionBindingStatus::Active
-                });
+                })
+                .collect::<Vec<_>>();
             match command.command {
                 RuntimeCommandKind::DispatchProvider => {
                     if session.lifecycle != AgentSessionStatus::Active {
@@ -5820,24 +5842,37 @@ impl HarnessStore {
                             | AgentSessionStatus::Idle
                             | AgentSessionStatus::Waiting
                             | AgentSessionStatus::Interrupted
-                    ) || active_work
-                    {
+                    ) {
                         return Err(trust_error(
                             TrustErrorCode::InvalidStateTransition,
-                            if active_work {
-                                "AgentSession stop requires the active WorkExecutionBinding to be released or atomically handed off first"
-                            } else {
-                                "AgentSession stop cannot target a terminal session"
-                            },
+                            "AgentSession stop cannot target a terminal session",
+                            "runtime_command",
+                            &command.id,
+                            Some(session.version),
+                        ));
+                    }
+                    for mut binding in active_bindings.clone() {
+                        binding.status = WorkExecutionBindingStatus::Released;
+                        binding.version += 1;
+                        binding.ended_at = Some(now.to_string());
+                        atomic_side_records.push(serde_json::to_value(binding)?);
+                    }
+                }
+                RuntimeCommandKind::StartSession | RuntimeCommandKind::ResumeSession => {
+                    if matches!(
+                        session.lifecycle,
+                        AgentSessionStatus::Closed | AgentSessionStatus::RecoveryRequired
+                    ) {
+                        return Err(trust_error(
+                            TrustErrorCode::InvalidStateTransition,
+                            "provider process start/resume cannot target a terminal or recovery-required AgentSession",
                             "runtime_command",
                             &command.id,
                             Some(session.version),
                         ));
                     }
                 }
-                RuntimeCommandKind::AuthorMessage
-                | RuntimeCommandKind::StartSession
-                | RuntimeCommandKind::ResumeSession => {}
+                RuntimeCommandKind::AuthorMessage => {}
             }
             let ambiguous = self
                 .runtime_commands(&context.execution_space_id)?
@@ -5852,6 +5887,14 @@ impl HarnessStore {
                                 | RuntimeCommandStatus::RecoveryRequired
                         )
                         && prior.effect_certainty == RuntimeEffectCertainty::Unknown
+                        && !matches!(
+                            (command.command, prior.command),
+                            (
+                                RuntimeCommandKind::CancelProviderTurn
+                                    | RuntimeCommandKind::StopSession,
+                                RuntimeCommandKind::DispatchProvider
+                            )
+                        )
                 });
             if ambiguous {
                 return Err(trust_error(
@@ -5892,7 +5935,7 @@ impl HarnessStore {
             "accepted",
             serde_json::to_value(command)?,
             &record,
-            Vec::new(),
+            atomic_side_records,
             Vec::new(),
         )
     }
@@ -6024,6 +6067,7 @@ mod tests {
     use super::*;
     use firm_core::agentfirm_api::{ActorRef, AgentMemberOrganizationStatus, PermissionCeiling};
     use std::fs;
+    use std::io::Write;
 
     fn actor(id: &str) -> ActorRef {
         ActorRef {
@@ -6161,6 +6205,45 @@ mod tests {
             last_active_at: "t1".into(),
             closed_at: None,
         }
+    }
+
+    fn runtime_command_fixture(
+        id: &str,
+        kind: RuntimeCommandKind,
+        session: &AgentSession,
+        operation: &str,
+    ) -> (ControlCommandEnvelope, MutationContext) {
+        let payload = serde_json::json!({
+            "session_id": session.id,
+            "session_generation": session.runtime_generation,
+            "operation": operation,
+            "delivery_id": format!("delivery-{id}"),
+        });
+        let command = ControlCommandEnvelope {
+            id: id.into(),
+            execution_space_id: session.execution_space_id.clone(),
+            target_node_id: session.node_id.clone(),
+            target_node_daemon_id: session.node_daemon_id.clone(),
+            target_node_daemon_generation: session.node_daemon_generation,
+            authenticated_actor: ActorRef {
+                kind: ActorKind::Service,
+                id: session.node_daemon_id.clone(),
+            },
+            command: kind,
+            required_capability: format!("provider.{operation}"),
+            idempotency_key: id.into(),
+            expected_version: 0,
+            expires_unix_ms: current_unix_ms() + 60_000,
+            payload_fingerprint: canonical_json_fingerprint(&payload),
+            payload,
+            issued_at: "t-command".into(),
+        };
+        let mut context = service_context("node_daemon.runtime.prepare", id, 0);
+        context.authority_actor = Some(command.authenticated_actor.clone());
+        context.request_fingerprint = Some(canonical_json_fingerprint(
+            &serde_json::to_value(&command).unwrap(),
+        ));
+        (command, context)
     }
 
     fn fabric_store() -> (HarnessStore, PathBuf) {
@@ -6605,7 +6688,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_control_rejects_missing_turn_and_active_work_without_side_effects() {
+    fn runtime_control_rejects_missing_turn_and_atomically_quiesces_work_on_stop() {
         let (store, root) = fabric_store();
         store
             .create_agent_identity(
@@ -6726,16 +6809,14 @@ mod tests {
         stop_context.request_fingerprint = Some(canonical_json_fingerprint(
             &serde_json::to_value(&stop).unwrap(),
         ));
-        let operations_before_stop = store.canonical_operations().unwrap();
-        let error = store
+        let stopped = store
             .prepare_runtime_command(&stop_context, &stop, current_unix_ms(), "t3")
-            .expect_err("active Work must fence Session stop");
-        assert!(error.to_string().contains("active WorkExecutionBinding"));
-        assert_eq!(
-            store.canonical_operations().unwrap(),
-            operations_before_stop
-        );
-        assert!(store.runtime_commands("space-test").unwrap().is_empty());
+            .expect("StopSession atomically quiesces the exact active binding");
+        assert_eq!(stopped.projection.status, RuntimeCommandStatus::Accepted);
+        let released = store.fabric_work_execution_bindings("space-test").unwrap();
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0].status, WorkExecutionBindingStatus::Released);
+        assert_eq!(released[0].ended_at.as_deref(), Some("t3"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -6832,6 +6913,289 @@ mod tests {
             store.fabric_agent_sessions("space-test").unwrap()[0].lifecycle,
             AgentSessionStatus::Closed
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn runtime_command_effect_matrix_is_exactly_replayable_and_fingerprint_closed() {
+        let cases = [
+            ("start", RuntimeCommandKind::StartSession, false),
+            ("resume", RuntimeCommandKind::ResumeSession, false),
+            ("turn", RuntimeCommandKind::DispatchProvider, true),
+            ("input", RuntimeCommandKind::DispatchProvider, true),
+            ("interrupt", RuntimeCommandKind::CancelProviderTurn, true),
+            ("stop", RuntimeCommandKind::StopSession, false),
+        ];
+        for (operation, kind, needs_active_turn) in cases {
+            let (store, root) = fabric_store();
+            let identity_id = format!("runtime-{operation}");
+            let session_id = format!("session-{operation}");
+            store
+                .create_agent_identity(
+                    &context(
+                        "host",
+                        "identity.create",
+                        &format!("identity-{operation}"),
+                        0,
+                    ),
+                    identity(&identity_id),
+                )
+                .unwrap();
+            store
+                .create_agent_session(
+                    &service_context("session.create", &format!("session-create-{operation}"), 0),
+                    session(&session_id, &identity_id),
+                )
+                .unwrap();
+            if needs_active_turn {
+                store
+                    .transition_agent_session(
+                        &service_context(
+                            "session.activate",
+                            &format!("session-activate-{operation}"),
+                            1,
+                        ),
+                        &session_id,
+                        AgentSessionStatus::Active,
+                        "t-active",
+                    )
+                    .unwrap();
+            }
+            let current_session = store
+                .fabric_agent_sessions("space-test")
+                .unwrap()
+                .into_iter()
+                .find(|candidate| candidate.id == session_id)
+                .unwrap();
+            let command_id = format!("runtime-{operation}");
+            let (command, admission_context) =
+                runtime_command_fixture(&command_id, kind, &current_session, operation);
+            let accepted = store
+                .prepare_runtime_command(
+                    &admission_context,
+                    &command,
+                    current_unix_ms(),
+                    "t-accepted",
+                )
+                .unwrap();
+            assert_eq!(accepted.projection.status, RuntimeCommandStatus::Accepted);
+
+            let operations_after_accept = store.canonical_operations().unwrap();
+            let accepted_replay = store
+                .prepare_runtime_command(
+                    &admission_context,
+                    &command,
+                    current_unix_ms(),
+                    "t-replay",
+                )
+                .unwrap();
+            assert!(accepted_replay.replayed, "{operation} accepted replay");
+            assert_eq!(
+                store.canonical_operations().unwrap(),
+                operations_after_accept
+            );
+
+            let mut drifted = command.clone();
+            drifted.payload["operation"] = serde_json::json!(format!("{operation}-drift"));
+            drifted.payload_fingerprint = canonical_json_fingerprint(&drifted.payload);
+            let mut drifted_context = admission_context.clone();
+            drifted_context.request_fingerprint = Some(canonical_json_fingerprint(
+                &serde_json::to_value(&drifted).unwrap(),
+            ));
+            let conflict = store
+                .prepare_runtime_command(&drifted_context, &drifted, current_unix_ms(), "t-drift")
+                .expect_err("changed full fingerprint must conflict");
+            assert!(conflict.to_string().contains("IDEMPOTENCY_KEY_REUSED"));
+            assert_eq!(
+                store.canonical_operations().unwrap(),
+                operations_after_accept
+            );
+
+            let settled = store
+                .settle_runtime_command(
+                    &service_context(
+                        "node_daemon.runtime.settle",
+                        &format!("{command_id}:settle"),
+                        accepted.projection.version,
+                    ),
+                    &command_id,
+                    RuntimeCommandStatus::Applied,
+                    RuntimeEffectCertainty::Applied,
+                    Some(serde_json::json!({"operation": operation, "applied": true})),
+                    None,
+                    "t-applied",
+                )
+                .unwrap();
+            assert_eq!(settled.projection.status, RuntimeCommandStatus::Applied);
+            let operations_after_settle = store.canonical_operations().unwrap();
+            let terminal_replay = store
+                .prepare_runtime_command(
+                    &admission_context,
+                    &command,
+                    current_unix_ms(),
+                    "t-terminal-replay",
+                )
+                .unwrap();
+            assert!(terminal_replay.replayed, "{operation} terminal replay");
+            assert_eq!(
+                terminal_replay.projection.status,
+                RuntimeCommandStatus::Applied
+            );
+            assert_eq!(
+                store.canonical_operations().unwrap(),
+                operations_after_settle
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn runtime_command_failure_certainty_and_torn_rows_recover_without_duplicate_effect() {
+        let outcomes = [
+            (
+                "socket-lost-before-effect",
+                RuntimeCommandStatus::Failed,
+                RuntimeEffectCertainty::NotApplied,
+            ),
+            (
+                "socket-lost-after-effect",
+                RuntimeCommandStatus::RecoveryRequired,
+                RuntimeEffectCertainty::Unknown,
+            ),
+            (
+                "provider-terminal-callback-race",
+                RuntimeCommandStatus::Applied,
+                RuntimeEffectCertainty::Applied,
+            ),
+        ];
+        for (label, status, certainty) in outcomes {
+            let (store, root) = fabric_store();
+            store
+                .create_agent_identity(
+                    &context("host", "identity.create", &format!("identity-{label}"), 0),
+                    identity(label),
+                )
+                .unwrap();
+            let session_id = format!("session-{label}");
+            store
+                .create_agent_session(
+                    &service_context("session.create", &format!("session-{label}"), 0),
+                    session(&session_id, label),
+                )
+                .unwrap();
+            let current = store
+                .fabric_agent_sessions("space-test")
+                .unwrap()
+                .pop()
+                .unwrap();
+            let command_id = format!("runtime-{label}");
+            let (command, admission_context) = runtime_command_fixture(
+                &command_id,
+                RuntimeCommandKind::StartSession,
+                &current,
+                label,
+            );
+            let admitted = store
+                .prepare_runtime_command(
+                    &admission_context,
+                    &command,
+                    current_unix_ms(),
+                    "t-prepared",
+                )
+                .unwrap();
+            let ledger = root.join("agentfirm_trust_operations.jsonl");
+            let mut torn = fs::OpenOptions::new().append(true).open(&ledger).unwrap();
+            torn.write_all(b"{\"torn_prepared\":").unwrap();
+            torn.sync_all().unwrap();
+            assert_eq!(store.runtime_commands("space-test").unwrap().len(), 1);
+
+            store
+                .settle_runtime_command(
+                    &service_context(
+                        "node_daemon.runtime.settle",
+                        &format!("{command_id}:settle"),
+                        admitted.projection.version,
+                    ),
+                    &command_id,
+                    status,
+                    certainty,
+                    (certainty == RuntimeEffectCertainty::Applied)
+                        .then(|| serde_json::json!({"effect": "observed"})),
+                    (certainty != RuntimeEffectCertainty::Applied).then(|| label.to_string()),
+                    "t-settled",
+                )
+                .unwrap();
+            let mut torn = fs::OpenOptions::new().append(true).open(&ledger).unwrap();
+            torn.write_all(b"{\"torn_completed\":").unwrap();
+            torn.sync_all().unwrap();
+            let recovered = store.runtime_commands("space-test").unwrap();
+            assert_eq!(recovered.len(), 1);
+            assert_eq!(recovered[0].status, status);
+            assert_eq!(recovered[0].effect_certainty, certainty);
+            let operations_before_replay = store.canonical_operations().unwrap();
+            let replay = store
+                .prepare_runtime_command(
+                    &admission_context,
+                    &command,
+                    current_unix_ms(),
+                    "t-replay",
+                )
+                .unwrap();
+            assert!(replay.replayed);
+            assert_eq!(replay.projection.status, status);
+            assert_eq!(
+                store.canonical_operations().unwrap(),
+                operations_before_replay
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn terminal_session_rejects_every_provider_runtime_effect_with_zero_delta() {
+        let (store, root) = fabric_store();
+        store
+            .create_agent_identity(
+                &context("host", "identity.create", "identity-terminal", 0),
+                identity("terminal"),
+            )
+            .unwrap();
+        store
+            .create_agent_session(
+                &service_context("session.create", "session-terminal", 0),
+                session("session-terminal", "terminal"),
+            )
+            .unwrap();
+        store
+            .transition_agent_session(
+                &service_context("session.close", "session-terminal-close", 1),
+                "session-terminal",
+                AgentSessionStatus::Closed,
+                "t-closed",
+            )
+            .unwrap();
+        let closed = store
+            .fabric_agent_sessions("space-test")
+            .unwrap()
+            .pop()
+            .unwrap();
+        let operations_before = store.canonical_operations().unwrap();
+        for (operation, kind) in [
+            ("start", RuntimeCommandKind::StartSession),
+            ("resume", RuntimeCommandKind::ResumeSession),
+            ("turn", RuntimeCommandKind::DispatchProvider),
+            ("input", RuntimeCommandKind::DispatchProvider),
+            ("interrupt", RuntimeCommandKind::CancelProviderTurn),
+            ("stop", RuntimeCommandKind::StopSession),
+        ] {
+            let (command, context) =
+                runtime_command_fixture(&format!("terminal-{operation}"), kind, &closed, operation);
+            store
+                .prepare_runtime_command(&context, &command, current_unix_ms(), "t-rejected")
+                .expect_err("terminal AgentSession must reject runtime effects");
+            assert_eq!(store.canonical_operations().unwrap(), operations_before);
+            assert!(store.runtime_commands("space-test").unwrap().is_empty());
+        }
         fs::remove_dir_all(root).unwrap();
     }
 }
