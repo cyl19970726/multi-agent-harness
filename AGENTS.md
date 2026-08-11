@@ -10,6 +10,27 @@ lives in [docs/current/product/agent-operating-rules.md](docs/current/product/ag
 canonical contracts live in the docs linked under [Routing](#routing). Where
 this file and a canonical doc conflict, the canonical doc wins — fix this file.
 
+## AgentFirm CompanyOS Authority
+
+AgentFirm's current product mental model and development control plane live in
+Notion. Repository files remain the versioned implementation truth for code,
+tests, CI, executable contracts, and shipped behavior.
+
+- Start at [AgentFirm Home](https://app.notion.com/p/3b849a4fa3798115939cca2b0b9e6f2d)
+  and verify its current authority notice before any Notion mutation.
+- Use the [Development System](https://app.notion.com/p/21e49a4fa37982a5b9f781cf04584034)
+  for Work, immutable Delivery Runs, and typed Development Documents.
+- Follow the [Development Playbook](https://app.notion.com/p/3b849a4fa37981a990a5cf0059dcfa4a)
+  for claim, execution, exact-candidate review, merge, and closeout.
+- Never claim or update work in the Notion area labeled Legacy Production /
+  READ ONLY / DO NOT CLAIM. Page location and relations never grant authority;
+  authority follows the current AgentFirm Home notice.
+
+Notion owns current product intent and operating state. The repository owns
+what is actually implemented. When they diverge, record the gap in the
+Implementation Crosswalk and Development Work rather than silently rewriting
+either side.
+
 ## Product Identity
 
 Star Harness is an AI Company OS with two primary systems: a Notion-like Docs

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Design Notion Information Architecture"
+  short_description: "Audit and redesign governed Notion workspaces safely"
+  default_prompt: "Use $design-notion-information-architecture to audit this Notion workspace and propose a staged, reversible redesign."
