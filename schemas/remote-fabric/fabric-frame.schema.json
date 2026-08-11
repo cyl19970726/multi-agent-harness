@@ -16,21 +16,29 @@
     "canonicalization_version": { "const": "agentfirm.canonical-json.v1" },
     "company_id": { "type": "string", "minLength": 1 },
     "node_id": { "type": "string", "minLength": 1 },
-    "gateway_generation": { "type": "integer", "minimum": 1 },
+    "gateway_generation": { "type": "integer", "minimum": 0 },
     "node_daemon_id": { "type": "string", "minLength": 1 },
     "node_daemon_generation": { "type": "integer", "minimum": 1 },
-    "control_plane_generation": { "type": "integer", "minimum": 1 },
+    "control_plane_generation": { "type": "integer", "minimum": 0 },
     "sent_at_unix_ms": { "type": "integer", "minimum": 0 },
     "correlation_id": { "type": "string", "minLength": 1 },
     "payload": { "$ref": "#/$defs/payload" },
     "payload_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
   },
+  "allOf": [{
+    "if": { "properties": { "payload": { "type": "object", "properties": { "frame_kind": { "const": "hello" } } } } },
+    "then": { "properties": { "gateway_generation": { "type": "integer", "const": 0 }, "control_plane_generation": { "type": "integer", "const": 0 } } },
+    "else": { "properties": { "gateway_generation": { "type": "integer", "minimum": 1 }, "control_plane_generation": { "type": "integer", "minimum": 1 } } }
+  }],
   "$defs": {
     "payload": {
       "oneOf": [
         { "$ref": "#/$defs/hello" },
         { "$ref": "#/$defs/welcome" },
+        { "$ref": "#/$defs/operation_submit" },
         { "$ref": "#/$defs/routed_operation" },
+        { "$ref": "#/$defs/target_persisted" },
+        { "$ref": "#/$defs/operation_result" },
         { "$ref": "#/$defs/receipt" },
         { "$ref": "#/$defs/heartbeat" },
         { "$ref": "#/$defs/heartbeat_ack" },
@@ -62,7 +70,55 @@
       "required": ["frame_kind", "payload"],
       "properties": {
         "frame_kind": { "const": "routed_operation" },
+        "payload": {
+          "type": "object", "additionalProperties": false,
+          "required": ["operation", "attempt"],
+          "properties": {
+            "operation": { "$ref": "routed-operation.schema.json" },
+            "attempt": { "$ref": "route-attempt.schema.json" }
+          }
+        }
+      }
+    },
+    "operation_submit": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "const": "operation_submit" },
         "payload": { "$ref": "routed-operation.schema.json" }
+      }
+    },
+    "target_persisted": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "const": "target_persisted" },
+        "payload": {
+          "type": "object", "additionalProperties": false,
+          "required": ["operation_id", "request_digest", "route_seq"],
+          "properties": {
+            "operation_id": { "type": "string", "minLength": 1 },
+            "request_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "route_seq": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+    "operation_result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "const": "operation_result" },
+        "payload": {
+          "type": "object", "additionalProperties": false,
+          "required": ["operation_id", "result_schema", "result", "effect"],
+          "properties": {
+            "operation_id": { "type": "string", "minLength": 1 },
+            "result_schema": { "type": "string", "minLength": 1 },
+            "result": {},
+            "effect": { "enum": ["not_applied", "applied", "unknown"] }
+          }
+        }
       }
     },
     "receipt": {

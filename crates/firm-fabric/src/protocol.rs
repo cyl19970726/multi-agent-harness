@@ -671,6 +671,37 @@ pub struct RouteReceipt {
     pub schema_version: String,
 }
 
+/// Control Plane delivery to an authenticated target gateway. The attempt is
+/// transport authority owned by FabricStore; a Node may not invent route_seq
+/// or the generation it is acknowledging.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoutedOperationDelivery {
+    pub operation: RoutedOperation,
+    pub attempt: RouteAttempt,
+}
+
+/// Target claim emitted only after the exact operation bytes and attempt have
+/// been durably persisted in the Node-local inbox.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetPersistedClaim {
+    pub operation_id: String,
+    pub request_digest: String,
+    pub route_seq: u64,
+}
+
+/// Generation-fenced target application result. RouteAttempt never carries
+/// this authority and the Control Plane constructs the canonical receipt.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetApplicationResult {
+    pub operation_id: String,
+    pub result_schema: String,
+    pub result: Value,
+    pub effect: EffectCertainty,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LocalOutboxState {
@@ -783,7 +814,10 @@ pub struct ArtifactCapability {
 pub enum FabricPayload {
     Hello(NodeHello),
     Welcome(NodeWelcome),
-    RoutedOperation(Box<RoutedOperation>),
+    OperationSubmit(Box<RoutedOperation>),
+    RoutedOperation(Box<RoutedOperationDelivery>),
+    TargetPersisted(TargetPersistedClaim),
+    OperationResult(TargetApplicationResult),
     Receipt(Box<RouteReceipt>),
     Heartbeat { observed_at_unix_ms: u64 },
     HeartbeatAck { observed_at_unix_ms: u64 },
@@ -847,14 +881,17 @@ impl FabricFrame {
     }
 
     pub fn validate(&self) -> Result<(), FabricError> {
+        let pre_lease_hello = matches!(self.payload, FabricPayload::Hello(_));
         if self.frame_id.trim().is_empty()
             || self.company_id.trim().is_empty()
             || self.node_id.trim().is_empty()
             || self.correlation_id.trim().is_empty()
-            || self.gateway_generation == 0
             || self.node_daemon_id.trim().is_empty()
             || self.node_daemon_generation == 0
-            || self.control_plane_generation == 0
+            || (!pre_lease_hello
+                && (self.gateway_generation == 0 || self.control_plane_generation == 0))
+            || (pre_lease_hello
+                && (self.gateway_generation != 0 || self.control_plane_generation != 0))
         {
             return Err(FabricError::none(
                 FabricErrorCode::InvalidPayload,

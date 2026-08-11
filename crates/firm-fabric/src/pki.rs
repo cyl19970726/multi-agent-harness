@@ -1,5 +1,7 @@
 //! Control Plane CA and Node client-certificate contract.
 
+use ed25519_dalek::pkcs8::DecodePrivateKey;
+use ed25519_dalek::{Signer, SigningKey};
 use rcgen::{
     BasicConstraints, CertificateParams, CertificateSigningRequestParams, DistinguishedName,
     DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair, KeyUsagePurpose, SanType, PKCS_ED25519,
@@ -87,6 +89,20 @@ pub fn generate_node_csr(company_id: &str, node_id: &str) -> Result<NodeCsrMater
         csr_pem,
         private_key_pem: key.serialize_pem(),
         public_key_fingerprint,
+    })
+}
+
+/// Produce the enrollment proof with the exact private key used by the CSR.
+/// The proof can be sent to the Control Plane; the PEM private key cannot.
+pub fn enrollment_proof_from_node_key(
+    private_key_pem: &str,
+    challenge: String,
+) -> Result<crate::EnrollmentProof, FabricError> {
+    let signing_key = SigningKey::from_pkcs8_pem(private_key_pem).map_err(pki_error)?;
+    Ok(crate::EnrollmentProof {
+        public_key: signing_key.verifying_key().to_bytes().to_vec(),
+        signature: signing_key.sign(challenge.as_bytes()).to_bytes().to_vec(),
+        challenge,
     })
 }
 

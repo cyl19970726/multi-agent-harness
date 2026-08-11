@@ -15,6 +15,7 @@ const schemas = [
   ["node-gateway-lease.schema.json", "node-gateway-lease"],
   ["node-hello.schema.json", "node-hello"],
   ["node-welcome.schema.json", "node-welcome"],
+  ["route-attempt.schema.json", "route-attempt"],
   ["message-reference.schema.json", "message-reference"],
   ["routed-operation.schema.json", "routed-operation"],
   ["route-receipt.schema.json", "route-receipt"],

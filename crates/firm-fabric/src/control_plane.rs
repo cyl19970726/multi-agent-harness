@@ -261,6 +261,37 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
         })
     }
 
+    /// Establish a gateway using the proof-of-possession already completed by
+    /// the TLS 1.3 client-certificate handshake. This is the production wire
+    /// path: the certificate-derived peer, never Hello JSON, selects machine
+    /// identity. The explicit signed challenge remains available for offline
+    /// protocol and enrollment tests.
+    pub fn connect_gateway_mtls(
+        &self,
+        generation: u64,
+        peer: &VerifiedMtlsPeer,
+        hello: &NodeHello,
+        now_unix_ms: u64,
+    ) -> Result<NodeWelcome, FabricError> {
+        self.store.transact(|state| {
+            require_active_control_plane(
+                state,
+                &self.company_id,
+                &self.instance_id,
+                generation,
+                now_unix_ms,
+            )?;
+            node_gateway::connect_mtls(
+                state,
+                &self.company_id,
+                generation,
+                peer,
+                hello,
+                now_unix_ms,
+            )
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn heartbeat_gateway(
         &self,

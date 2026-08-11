@@ -13,6 +13,43 @@ pub(crate) fn connect(
     proof: &NodeHelloProof,
     now_unix_ms: u64,
 ) -> Result<NodeWelcome, FabricError> {
+    verify_hello_proof(company_id, control_plane_generation, hello, proof)?;
+    connect_verified(
+        state,
+        company_id,
+        control_plane_generation,
+        peer,
+        hello,
+        now_unix_ms,
+    )
+}
+
+pub(crate) fn connect_mtls(
+    state: &mut FabricState,
+    company_id: &str,
+    control_plane_generation: u64,
+    peer: &VerifiedMtlsPeer,
+    hello: &NodeHello,
+    now_unix_ms: u64,
+) -> Result<NodeWelcome, FabricError> {
+    connect_verified(
+        state,
+        company_id,
+        control_plane_generation,
+        peer,
+        hello,
+        now_unix_ms,
+    )
+}
+
+fn connect_verified(
+    state: &mut FabricState,
+    company_id: &str,
+    control_plane_generation: u64,
+    peer: &VerifiedMtlsPeer,
+    hello: &NodeHello,
+    now_unix_ms: u64,
+) -> Result<NodeWelcome, FabricError> {
     peer.validate_node_hello(hello)?;
     if hello.company_id != company_id {
         return Err(FabricError::none(
@@ -36,7 +73,6 @@ pub(crate) fn connect(
     let node = state.nodes.get(&hello.node_id).cloned().ok_or_else(|| {
         FabricError::none(FabricErrorCode::SourceMismatch, "Node is not enrolled")
     })?;
-    verify_hello_proof(company_id, control_plane_generation, hello, proof)?;
     if node.company_id != company_id {
         return Err(FabricError::none(
             FabricErrorCode::WrongCompany,

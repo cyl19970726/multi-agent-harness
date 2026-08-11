@@ -13,6 +13,7 @@ pub mod artifacts;
 pub mod control_plane;
 pub mod diagnostics;
 pub mod enrollment;
+pub mod gateway_runtime;
 pub mod local_store;
 pub mod node_gateway;
 pub mod pki;

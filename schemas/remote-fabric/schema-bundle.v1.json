@@ -12,6 +12,7 @@
     "node-gateway-lease.schema.json",
     "node-hello.schema.json",
     "node-welcome.schema.json",
+    "route-attempt.schema.json",
     "route-receipt.schema.json",
     "routed-operation.schema.json",
     "runtime-command-reference.schema.json"
