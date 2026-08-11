@@ -1,4 +1,6 @@
-//! Regression coverage for the TeamRun ProviderWorkDispatch lifecycle contract in
+#![cfg(any())]
+
+//! Historical regression coverage for the TeamRun ProviderWorkDispatch lifecycle contract in
 //! `docs/product/agent-team-works.md` and the runtime/mailbox table of
 //! `specs/nested-agent-team-organization/design.md` (PR #302):
 //!
@@ -14,8 +16,10 @@
 //! - retired members: no new ProviderWorkDispatch and no member-driven transitions;
 //!   ordinary delivery cannot revive the member.
 //!
-//! These tests pin behavior of the current TeamRun-scoped Work store only;
-//! they do not depend on the future persistent Team-scoped Work schema.
+//! Wave 4C compile-quarantines this suite because its claims mutate the
+//! retired run-addressed WorkDelivery ledger. The canonical replacement is
+//! the identity-first WorkExecutionBinding + WorkDelivery matrix in
+//! `member_execution_trust` and `trust_kernel`.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};

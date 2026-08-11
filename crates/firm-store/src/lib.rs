@@ -8772,14 +8772,12 @@ mod tests {
     use firm_core::{
         DelegationMode, DelegationStatus, HostAttentionKind, MemberActionStatus,
         MemberExecutionDriver, MemberRunStatus, MemberWorkspaceSnapshot, Mission, MissionLogEntry,
-        MissionLogEntryKind, MissionStatus, NativeSessionAvailability, NativeSessionRef,
-        OrdinaryMessageBoundary, ProviderCompatibilityBlockBoundary,
-        ProviderCompatibilityBlockSource, ProviderDispatchAttempt, ProviderDispatchIntent,
-        ProviderEventFidelity, ProviderFeatureMode, ProviderInteractionMessageOption,
-        ProviderInteractionMode, ProviderInteractionRequestBody, ProviderInteractionResponseBody,
-        ProviderInteractionType, ProviderResponseIntent, RegistryMessageIntent, SenderKind,
-        TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamRecipientKind,
-        TeamRecipientRef, TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind,
+        MissionLogEntryKind, MissionStatus, OrdinaryMessageBoundary,
+        ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockSource,
+        ProviderDispatchAttempt, ProviderDispatchIntent, ProviderEventFidelity,
+        ProviderFeatureMode, ProviderInteractionMode, ProviderResponseIntent,
+        RegistryMessageIntent, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy,
+        TeamDeliveryStatus, TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind,
         WaveGateStatus, WaveStatus, WorkPriority,
     };
 
