@@ -9,8 +9,9 @@ use harness_core::agentfirm_api::{
     ActorKind, ActorRef, CandidateKind, CandidateRef, Confidence, DeliveryReconcileOutcome,
     FailureAnalysis, GateEvaluation, GateRequirement, GateRequirementSource, GateVerdict,
     GateWaiver, GateWaiverState, MemberCoordinationStatus, MemberWorkspaceBinding, MessageKind,
-    MutationContext, PrimaryCauseStatus, RetrySafety, WorkFinding, WorkFindingKind, WorkReport,
-    WorkReportKind, WorkspaceLifecycle, WorkspaceMode, WorkspaceOwnership, WorkspaceSafetyProof,
+    MutationContext, PrimaryCauseStatus, RetrySafety, RuntimeRecoveryResolution, WorkFinding,
+    WorkFindingKind, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
+    WorkspaceOwnership, WorkspaceSafetyProof,
 };
 use harness_core::{
     NodeDaemonLeaseStatus, TeamActorKind, TeamActorRef, Work, WorkCausationRef, WorkClaimMode,
@@ -191,6 +192,10 @@ enum OperatorActionIntent {
     },
     ReconcileMessageDelivery {
         outcome: DeliveryReconcileOutcome,
+        evidence_ref: String,
+    },
+    ResolveRuntimeRecovery {
+        resolution: RuntimeRecoveryResolution,
         evidence_ref: String,
     },
     DaemonStart {
@@ -487,6 +492,10 @@ enum CanonicalRoute<'a> {
         node_id: &'a str,
         delivery_id: &'a str,
     },
+    RuntimeRecovery {
+        node_id: &'a str,
+        command_id: &'a str,
+    },
     Operator {
         node_id: &'a str,
         operation: &'a str,
@@ -555,6 +564,12 @@ fn parse_canonical_route(path: &str) -> Option<CanonicalRoute<'_>> {
             Some(CanonicalRoute::MessageDelivery {
                 node_id: node,
                 delivery_id: delivery,
+            })
+        }
+        ["v1", "agentfirm", "nodes", node, "runtime-commands", command, "resolve"] => {
+            Some(CanonicalRoute::RuntimeRecovery {
+                node_id: node,
+                command_id: command,
             })
         }
         ["v1", "agentfirm", "nodes", node, operation]
@@ -1965,6 +1980,91 @@ fn execute_canonical_role_action(
                 &lease.daemon_id,
                 lease.generation,
                 outcome,
+                &evidence_ref,
+                &now_string(),
+            )?)
+        }
+        CanonicalRoute::RuntimeRecovery {
+            node_id,
+            command_id,
+        } => {
+            let intent = serde_json::from_slice::<OperatorActionIntent>(body).map_err(|error| {
+                encoded_error(
+                    "INVALID_STATE_TRANSITION",
+                    format!("invalid RuntimeCommand recovery intent: {error}"),
+                    "runtime_command",
+                    command_id,
+                    None,
+                )
+            })?;
+            let OperatorActionIntent::ResolveRuntimeRecovery {
+                resolution,
+                evidence_ref,
+            } = intent
+            else {
+                return Err(encoded_error(
+                    "INVALID_STATE_TRANSITION",
+                    "semantic action does not match RuntimeCommand recovery route",
+                    "runtime_command",
+                    command_id,
+                    None,
+                ));
+            };
+            if auth.actor.kind != ActorKind::Service || auth.actor.id != node_id {
+                return Err(encoded_error(
+                    "UNAUTHORIZED_ACTOR",
+                    "RuntimeCommand recovery requires the exact Execution Node Operator",
+                    "execution_node",
+                    node_id,
+                    None,
+                ));
+            }
+            if confirmed_action != Some("resolve_runtime_recovery") {
+                return Err(encoded_error(
+                    "CONFIRMATION_REQUIRED",
+                    "server confirmation must exactly confirm resolve_runtime_recovery",
+                    "runtime_command",
+                    command_id,
+                    None,
+                ));
+            }
+            let lease = store
+                .latest_node_daemon_lease(node_id)?
+                .filter(|lease| {
+                    lease.status == NodeDaemonLeaseStatus::Active
+                        && lease.expires_unix_ms > crate::current_unix_ms_u64()
+                })
+                .ok_or_else(|| {
+                    encoded_error(
+                        "NODE_DAEMON_GENERATION_FENCED",
+                        "RuntimeCommand recovery requires the exact current NodeDaemon",
+                        "execution_node",
+                        node_id,
+                        None,
+                    )
+                })?;
+            let context = MutationContext {
+                execution_space_id: auth.execution_space_id,
+                authenticated_actor: ActorRef {
+                    kind: ActorKind::Service,
+                    id: lease.daemon_id.clone(),
+                },
+                authority_actor: Some(auth.actor.clone()),
+                command_name: "node_daemon.runtime_command.resolve".into(),
+                idempotency_key: format!(
+                    "role-runtime-recovery:{}:{}",
+                    auth.actor.id, auth.idempotency_key
+                ),
+                expected_version: auth.expected_version,
+                request_fingerprint: auth.request_fingerprint,
+            };
+            canonical_mutation_result(store.resolve_runtime_command_recovery(
+                &context,
+                command_id,
+                node_id,
+                &lease.daemon_id,
+                lease.generation,
+                resolution,
                 &evidence_ref,
                 &now_string(),
             )?)

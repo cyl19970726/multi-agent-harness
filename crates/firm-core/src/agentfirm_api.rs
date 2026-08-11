@@ -35,7 +35,7 @@ pub struct AgentIdentity {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionCeiling {
     ReadOnly,
@@ -784,6 +784,14 @@ pub struct ProviderReceipt {
 pub enum DeliveryReconcileOutcome {
     Acknowledged,
     RetrySafeFailure,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeRecoveryResolution {
+    ConfirmApplied,
+    ConfirmNotApplied,
+    KeepRecoveryRequired,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

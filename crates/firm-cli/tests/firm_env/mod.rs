@@ -581,7 +581,6 @@ impl ServeHandle {
         let request = serde_json::json!({
             "target_node_id": run.execution_node_id,
             "command": "author_message",
-            "required_capability": "message.author",
             "expires_unix_ms": current_unix_ms_for_fixture() + 30_000,
             "payload": {"draft": {
                 "address_kind": if recipients.len() == 1 { "direct_agent" } else { "authorized_broadcast" },

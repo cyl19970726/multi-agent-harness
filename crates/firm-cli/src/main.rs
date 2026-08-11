@@ -17354,6 +17354,7 @@ fn canonical_delivery_context(
 struct ProviderEffectAdmission {
     command_id: String,
     settle_context: harness_core::agentfirm_api::MutationContext,
+    control_plan: Option<crate::provider_adapter::ProviderControlPlan>,
 }
 
 /// Durably admit one real provider turn before crossing the provider boundary.
@@ -17511,6 +17512,7 @@ fn prepare_provider_effect_kind(
     }
     Ok(ProviderEffectAdmission {
         command_id,
+        control_plan: None,
         settle_context: harness_core::agentfirm_api::MutationContext {
             execution_space_id: admission_context.execution_space_id,
             authenticated_actor: daemon_actor,
@@ -17535,7 +17537,7 @@ fn prepare_provider_effect(
         source_record_id,
         content,
         harness_core::agentfirm_api::RuntimeCommandKind::DispatchProvider,
-        "provider.effect",
+        "provider.dispatch",
     )
 }
 
@@ -17546,7 +17548,19 @@ fn prepare_provider_control_effect(
     reason: &str,
     close: bool,
 ) -> CliResult<ProviderEffectAdmission> {
-    prepare_provider_effect_kind(
+    // Freeze a provider-native executable control plan before durable
+    // admission. Unknown or unproved adapters fail closed and cannot create a
+    // RuntimeCommand that no provider loop can truthfully execute.
+    let control_plan = crate::provider_adapter::control_plan(
+        &member.provider,
+        if close {
+            crate::provider_adapter::ProviderControlAction::CloseSession
+        } else {
+            crate::provider_adapter::ProviderControlAction::CancelProviderTurn
+        },
+    )
+    .map_err(CliError::Usage)?;
+    let mut admission = prepare_provider_effect_kind(
         ledger,
         member,
         source_record_id,
@@ -17561,7 +17575,9 @@ fn prepare_provider_control_effect(
         } else {
             "provider.cancel"
         },
-    )
+    )?;
+    admission.control_plan = Some(control_plan);
+    Ok(admission)
 }
 
 fn execute_provider_control_effect(
@@ -17582,7 +17598,12 @@ fn execute_provider_control_effect(
             }
             Err(error) => return Err(error),
         };
-    match effect() {
+    let plan = admission.control_plan.as_ref().ok_or_else(|| {
+        CliError::Usage("PROVIDER_CONTROL_UNPROVEN: missing frozen control plan".into())
+    })?;
+    match crate::provider_adapter::execute_control_plan(plan, |_| {
+        effect().map_err(|error| error.to_string())
+    }) {
         Ok(()) => settle_provider_effect(
             ledger,
             &admission,
@@ -17594,8 +17615,8 @@ fn execute_provider_control_effect(
             None,
         ),
         Err(error) => {
-            settle_provider_effect(ledger, &admission, false, None, Some(error.to_string()))?;
-            Err(error)
+            settle_provider_effect(ledger, &admission, false, None, Some(error.clone()))?;
+            Err(CliError::Usage(error))
         }
     }
 }
@@ -17760,6 +17781,7 @@ fn prepare_provider_process_effect(
     }
     Ok(ProviderEffectAdmission {
         command_id,
+        control_plan: None,
         settle_context: harness_core::agentfirm_api::MutationContext {
             execution_space_id: context.execution_space_id,
             authenticated_actor: daemon_actor,
@@ -28665,11 +28687,91 @@ struct AgentFirmHttpCredential {
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RuntimeCommandHttpRequest {
-    target_node_id: String,
+    #[serde(default)]
+    target_node_id: Option<String>,
     command: harness_core::agentfirm_api::RuntimeCommandKind,
-    required_capability: String,
     expires_unix_ms: u64,
     payload: serde_json::Value,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeStartSessionIntent {
+    agent_identity_id: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeSessionIntent {
+    session_id: String,
+    session_generation: u64,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeDispatchIntent {
+    session_id: String,
+    session_generation: u64,
+    delivery_id: String,
+    claim_id: String,
+    dispatch_mode: harness_core::agentfirm_api::RuntimeDispatchMode,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeAuthorMessageIntent {
+    draft: harness_core::agentfirm_api::MessageDraft,
+}
+
+fn runtime_command_capability(
+    command: harness_core::agentfirm_api::RuntimeCommandKind,
+) -> &'static str {
+    use harness_core::agentfirm_api::RuntimeCommandKind;
+    match command {
+        RuntimeCommandKind::AuthorMessage => "message.author",
+        RuntimeCommandKind::StartSession => "agent_session.start",
+        RuntimeCommandKind::StopSession => "agent_session.stop",
+        RuntimeCommandKind::ResumeSession => "agent_session.resume",
+        RuntimeCommandKind::DispatchProvider => "provider.dispatch",
+        RuntimeCommandKind::CancelProviderTurn => "provider.cancel",
+    }
+}
+
+fn runtime_control_actor_is_authorized(
+    store: &HarnessStore,
+    execution_space_id: &str,
+    actor: &harness_core::agentfirm_api::ActorRef,
+    target_identity_id: &str,
+    target_node_id: &str,
+    target_daemon_id: &str,
+) -> Result<bool, StoreError> {
+    use harness_core::agentfirm_api::{ActorKind, TeamMembershipRole, TeamMembershipStatus};
+    if actor.kind == ActorKind::AgentMember && actor.id == target_identity_id {
+        return Ok(true);
+    }
+    if actor.kind == ActorKind::Service
+        && (actor.id == target_node_id || actor.id == target_daemon_id)
+    {
+        return Ok(true);
+    }
+    if !matches!(actor.kind, ActorKind::AgentMember | ActorKind::Human) {
+        return Ok(false);
+    }
+    let memberships = store.fabric_team_memberships(execution_space_id)?;
+    let target_teams = memberships
+        .iter()
+        .filter(|membership| {
+            membership.agent_identity_id == target_identity_id
+                && membership.state == TeamMembershipStatus::Active
+        })
+        .map(|membership| membership.team_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    Ok(memberships.iter().any(|membership| {
+        membership.agent_identity_id == actor.id
+            && membership.role == TeamMembershipRole::Host
+            && membership.state == TeamMembershipStatus::Active
+            && target_teams.contains(membership.team_id.as_str())
+    }))
 }
 
 fn resolve_agentfirm_http_credential(
@@ -28918,15 +29020,250 @@ fn handle_http_connection(
                 return Ok(());
             }
         };
+        use harness_core::agentfirm_api::{AgentSession, AgentSessionStatus, RuntimeCommandKind};
+        let now = now_string();
+        let (target_node_id, target_identity_id, server_payload) = match request.command {
+            RuntimeCommandKind::AuthorMessage => {
+                let intent = match serde_json::from_value::<RuntimeAuthorMessageIntent>(
+                    request.payload,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        write_http_json(
+                            &mut stream,
+                            "400 Bad Request",
+                            &serde_json::json!({"ok":false,"error":{"code":"INVALID_STATE_TRANSITION","message":format!("invalid author_message intent: {error}")}}),
+                        )?;
+                        return Ok(());
+                    }
+                };
+                let target_node_id = intent
+                    .draft
+                    .team_run_id
+                    .as_deref()
+                    .and_then(|run_id| {
+                        store_owned
+                            .team_runs()
+                            .ok()?
+                            .into_iter()
+                            .rev()
+                            .find(|run| run.id == run_id)
+                            .map(|run| run.execution_node_id)
+                    })
+                    .or(request.target_node_id)
+                    .ok_or_else(|| {
+                        CliError::Usage(
+                            "INVALID_RUNTIME_COMMAND: Message target Node cannot be resolved"
+                                .into(),
+                        )
+                    })?;
+                (
+                    target_node_id,
+                    None,
+                    serde_json::json!({"draft": intent.draft}),
+                )
+            }
+            RuntimeCommandKind::StartSession => {
+                let intent = match serde_json::from_value::<RuntimeStartSessionIntent>(
+                    request.payload,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        write_http_json(
+                            &mut stream,
+                            "400 Bad Request",
+                            &serde_json::json!({"ok":false,"error":{"code":"INVALID_STATE_TRANSITION","message":format!("invalid start_session intent: {error}")}}),
+                        )?;
+                        return Ok(());
+                    }
+                };
+                let identity = store_owned
+                    .fabric_agent_identities(&project_id)?
+                    .into_iter()
+                    .find(|identity| identity.id == intent.agent_identity_id)
+                    .ok_or_else(|| CliError::Usage("AGENT_IDENTITY_NOT_FOUND".into()))?;
+                let membership_team_ids = store_owned
+                    .fabric_team_memberships(&project_id)?
+                    .into_iter()
+                    .filter(|membership| {
+                        membership.agent_identity_id == identity.id
+                            && membership.state
+                                == harness_core::agentfirm_api::TeamMembershipStatus::Active
+                    })
+                    .map(|membership| membership.team_id)
+                    .collect::<std::collections::BTreeSet<_>>();
+                let target_nodes = store_owned
+                    .team_runs()?
+                    .into_iter()
+                    .filter(|run| membership_team_ids.contains(&run.agent_team_id))
+                    .map(|run| run.execution_node_id)
+                    .collect::<std::collections::BTreeSet<_>>();
+                let target_node_id = if target_nodes.len() == 1 {
+                    target_nodes.into_iter().next().expect("one target Node")
+                } else {
+                    write_http_json(
+                        &mut stream,
+                        "409 Conflict",
+                        &serde_json::json!({"ok":false,"error":{"code":"IDENTITY_CONFLICT","message":format!("StartSession requires one server-resolved active Team placement; found {} Nodes",target_nodes.len())}}),
+                    )?;
+                    return Ok(());
+                };
+                if request
+                    .target_node_id
+                    .as_deref()
+                    .is_some_and(|claimed| claimed != target_node_id)
+                {
+                    write_http_json(
+                        &mut stream,
+                        "403 Forbidden",
+                        &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":"caller-selected StartSession Node does not match the server-resolved Team placement"}}),
+                    )?;
+                    return Ok(());
+                }
+                let member = store_owned
+                    .trust_agent_members(&project_id)?
+                    .into_iter()
+                    .find(|member| member.id == identity.id)
+                    .ok_or_else(|| {
+                        CliError::Usage(
+                            "SERVER_PROVIDER_PROFILE_UNAVAILABLE: AgentIdentity has no canonical AgentMember profile"
+                                .into(),
+                        )
+                    })?;
+                let provider_profile_ref = member.provider_profile_ref.ok_or_else(|| {
+                    CliError::Usage(
+                        "SERVER_PROVIDER_PROFILE_UNAVAILABLE: AgentMember has no frozen provider profile"
+                            .into(),
+                    )
+                })?;
+                let provider_kind = ["codex", "claude", "kimi", "pi"]
+                    .into_iter()
+                    .find(|provider| provider_profile_ref.starts_with(provider))
+                    .ok_or_else(|| {
+                        CliError::Usage(
+                            "SERVER_PROVIDER_PROFILE_UNAVAILABLE: provider profile is not a closed supported provider"
+                                .into(),
+                        )
+                    })?;
+                let availability = crate::provider_adapter::provider_availability(provider_kind)
+                    .map_err(CliError::Usage)?;
+                if !availability.available {
+                    return Err(CliError::Usage(format!(
+                        "PROVIDER_UNAVAILABLE: {} binary {} is not installed or failed its version probe",
+                        availability.provider, availability.binary
+                    )));
+                }
+                let session_id = format!(
+                    "session:{}:{}",
+                    identity.id,
+                    harness_store::canonical_json_fingerprint(&serde_json::json!({
+                        "identity":identity.id,
+                        "node":target_node_id,
+                        "key":idempotency_key,
+                    }))
+                );
+                let session = AgentSession {
+                    id: session_id.clone(),
+                    agent_identity_id: identity.id.clone(),
+                    node_id: target_node_id.clone(),
+                    execution_space_id: project_id.clone(),
+                    node_daemon_id: String::new(),
+                    node_daemon_generation: 0,
+                    provider_kind: provider_kind.to_string(),
+                    provider_profile_ref,
+                    permission_envelope_ref: format!(
+                        "agent-identity:{}:permission:v{}",
+                        identity.id, identity.version
+                    ),
+                    effective_permission_ceiling: identity.permission_ceiling,
+                    lifecycle: AgentSessionStatus::Cold,
+                    runtime_generation: 1,
+                    native_session_ref: None,
+                    current_turn_id: None,
+                    queued_input_count: 0,
+                    version: 1,
+                    opened_at: now.clone(),
+                    last_active_at: now.clone(),
+                    closed_at: None,
+                };
+                (
+                    target_node_id,
+                    Some(identity.id),
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "session_generation": 1,
+                        "session": session,
+                    }),
+                )
+            }
+            RuntimeCommandKind::DispatchProvider => {
+                let intent = match serde_json::from_value::<RuntimeDispatchIntent>(request.payload)
+                {
+                    Ok(value) => value,
+                    Err(error) => {
+                        write_http_json(
+                            &mut stream,
+                            "400 Bad Request",
+                            &serde_json::json!({"ok":false,"error":{"code":"INVALID_STATE_TRANSITION","message":format!("invalid provider dispatch intent: {error}")}}),
+                        )?;
+                        return Ok(());
+                    }
+                };
+                let session = store_owned
+                    .fabric_agent_sessions(&project_id)?
+                    .into_iter()
+                    .find(|session| session.id == intent.session_id)
+                    .ok_or_else(|| CliError::Usage("AGENT_SESSION_NOT_FOUND".into()))?;
+                (
+                    session.node_id,
+                    Some(session.agent_identity_id),
+                    serde_json::json!({
+                        "session_id":intent.session_id,
+                        "session_generation":intent.session_generation,
+                        "delivery_id":intent.delivery_id,
+                        "claim_id":intent.claim_id,
+                        "dispatch_mode":intent.dispatch_mode,
+                    }),
+                )
+            }
+            RuntimeCommandKind::StopSession
+            | RuntimeCommandKind::ResumeSession
+            | RuntimeCommandKind::CancelProviderTurn => {
+                let intent = match serde_json::from_value::<RuntimeSessionIntent>(request.payload) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        write_http_json(
+                            &mut stream,
+                            "400 Bad Request",
+                            &serde_json::json!({"ok":false,"error":{"code":"INVALID_STATE_TRANSITION","message":format!("invalid session control intent: {error}")}}),
+                        )?;
+                        return Ok(());
+                    }
+                };
+                let session = store_owned
+                    .fabric_agent_sessions(&project_id)?
+                    .into_iter()
+                    .find(|session| session.id == intent.session_id)
+                    .ok_or_else(|| CliError::Usage("AGENT_SESSION_NOT_FOUND".into()))?;
+                (
+                    session.node_id,
+                    Some(session.agent_identity_id),
+                    serde_json::json!({
+                        "session_id":intent.session_id,
+                        "session_generation":intent.session_generation,
+                    }),
+                )
+            }
+        };
         let registered = store_owned
             .latest_node_project_registrations()?
             .into_iter()
             .any(|registration| {
-                registration.node_id == request.target_node_id
+                registration.node_id == target_node_id
                     && registration.execution_space_id == project_id
                     && registration.status == NodeProjectRegistrationStatus::Active
             });
-        let lease = store_owned.latest_node_daemon_lease(&request.target_node_id)?;
+        let lease = store_owned.latest_node_daemon_lease(&target_node_id)?;
         let Some(lease) = lease.filter(|lease| {
             registered
                 && lease.status == NodeDaemonLeaseStatus::Active
@@ -28939,21 +29276,66 @@ fn handle_http_connection(
             )?;
             return Ok(());
         };
+        let mut authority_candidates = vec![credential.actor.clone()];
+        authority_candidates.extend(credential.authority_actors.iter().cloned());
+        let authenticated_actor = if let Some(identity_id) = target_identity_id.as_deref() {
+            let mut resolved = None;
+            for actor in authority_candidates {
+                if runtime_control_actor_is_authorized(
+                    &store_owned,
+                    &project_id,
+                    &actor,
+                    identity_id,
+                    &target_node_id,
+                    &lease.daemon_id,
+                )? {
+                    resolved = Some(actor);
+                    break;
+                }
+            }
+            let Some(actor) = resolved else {
+                write_http_json(
+                    &mut stream,
+                    "403 Forbidden",
+                    &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":"credential is not exact self, owning Host, or exact machine Operator for the target AgentSession"}}),
+                )?;
+                return Ok(());
+            };
+            actor
+        } else {
+            credential.actor
+        };
+        let server_payload = if request.command == RuntimeCommandKind::StartSession {
+            let mut payload = server_payload;
+            if let Some(session) = payload
+                .get_mut("session")
+                .and_then(|value| value.as_object_mut())
+            {
+                session.insert("node_daemon_id".into(), serde_json::json!(lease.daemon_id));
+                session.insert(
+                    "node_daemon_generation".into(),
+                    serde_json::json!(lease.generation),
+                );
+            }
+            payload
+        } else {
+            server_payload
+        };
         let envelope = harness_core::agentfirm_api::ControlCommandEnvelope {
             id: format!("runtime-command:{}", idempotency_key),
             execution_space_id: project_id.clone(),
-            target_node_id: request.target_node_id,
+            target_node_id,
             target_node_daemon_id: lease.daemon_id,
             target_node_daemon_generation: lease.generation,
-            authenticated_actor: credential.actor,
+            authenticated_actor,
             command: request.command,
-            required_capability: request.required_capability,
+            required_capability: runtime_command_capability(request.command).to_string(),
             idempotency_key,
             expected_version,
             expires_unix_ms: request.expires_unix_ms,
-            payload_fingerprint: harness_store::canonical_json_fingerprint(&request.payload),
-            payload: request.payload,
-            issued_at: now_string(),
+            payload_fingerprint: harness_store::canonical_json_fingerprint(&server_payload),
+            payload: server_payload,
+            issued_at: now,
         };
         let firm_home = execution_space::firm_home().map_err(execution_space_err)?;
         match supervisor_daemon::runtime_command_via_socket(

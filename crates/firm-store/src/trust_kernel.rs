@@ -9,10 +9,10 @@ use firm_core::agentfirm_api::{
     MemberWorkspaceBinding, Message, MessageRecipientKind, MessageRouteJournal,
     MessageSubscription, MessageSubscriptionKind, MessageSubscriptionStatus, MutationContext,
     ProviderInvocation, ProviderReceipt, RouteJournalStatus, RuntimeCommandKind,
-    RuntimeCommandRecord, RuntimeCommandStatus, RuntimeEffectCertainty, SubscriptionCursor,
-    TeamMembership, TeamMembershipStatus, TrustError, TrustErrorCode, WorkDelivery,
-    WorkDeliveryStatus, WorkExecutionBinding, WorkExecutionBindingStatus, WorkFinding,
-    WorkModuleBinding, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
+    RuntimeCommandRecord, RuntimeCommandStatus, RuntimeEffectCertainty, RuntimeRecoveryResolution,
+    SubscriptionCursor, TeamMembership, TeamMembershipStatus, TrustError, TrustErrorCode,
+    WorkDelivery, WorkDeliveryStatus, WorkExecutionBinding, WorkExecutionBindingStatus,
+    WorkFinding, WorkModuleBinding, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
     WorkspaceOwnership, WorkspaceSafetyProof,
 };
 use firm_core::{TeamActorKind, TeamActorRef, Work, WorkCommandContext, WorkDelegationRevision};
@@ -3993,14 +3993,32 @@ impl HarnessStore {
             "agent_session",
             &session.id,
         )?;
-        if !self
+        let identity = self
             .fabric_agent_identities(&context.execution_space_id)?
-            .iter()
-            .any(|identity| identity.id == session.agent_identity_id)
-        {
+            .into_iter()
+            .find(|identity| identity.id == session.agent_identity_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "AgentSession references a missing AgentIdentity",
+                    "agent_session",
+                    &session.id,
+                    None,
+                )
+            })?;
+        if identity.organization_status != AgentMemberOrganizationStatus::Active {
             return Err(trust_error(
                 TrustErrorCode::InvalidStateTransition,
-                "AgentSession references a missing AgentIdentity",
+                "AgentSession requires an active AgentIdentity",
+                "agent_session",
+                &session.id,
+                None,
+            ));
+        }
+        if session.effective_permission_ceiling > identity.permission_ceiling {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "AgentSession effective permission exceeds the frozen AgentIdentity ceiling",
                 "agent_session",
                 &session.id,
                 None,
@@ -4101,6 +4119,45 @@ impl HarnessStore {
                 "team_membership",
                 &membership.id,
                 None,
+            ));
+        }
+        // Membership is a generation-fenced collaboration binding.  The
+        // cardinality check and the append deliberately share this Store
+        // write lock so two concurrent joins cannot both observe an empty
+        // active set and create ambiguous authority.
+        let prior_memberships = self.fabric_team_memberships(&context.execution_space_id)?;
+        if prior_memberships.iter().any(|row| {
+            row.team_id == membership.team_id
+                && row.agent_identity_id == membership.agent_identity_id
+                && row.state == TeamMembershipStatus::Active
+        }) {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "Team and AgentIdentity already have an active TeamMembership generation",
+                "team_membership",
+                &membership.id,
+                None,
+            ));
+        }
+        let expected_generation = prior_memberships
+            .iter()
+            .filter(|row| {
+                row.team_id == membership.team_id
+                    && row.agent_identity_id == membership.agent_identity_id
+            })
+            .map(|row| row.membership_generation)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        if membership.membership_generation != expected_generation {
+            return Err(trust_error(
+                TrustErrorCode::MemberRunGenerationFenced,
+                &format!(
+                    "TeamMembership generation must be the exact successor generation {expected_generation}"
+                ),
+                "team_membership",
+                &membership.id,
+                Some(expected_generation.saturating_sub(1)),
             ));
         }
         let direct = MessageSubscription {
@@ -5774,23 +5831,82 @@ impl HarnessStore {
                 None,
             ));
         }
-        let target_session_id = command.payload["session_id"].as_str().map(str::to_string);
-        let target_session_generation = command.payload["session_generation"].as_u64();
+        let expected_capability = match command.command {
+            RuntimeCommandKind::AuthorMessage => "message.author",
+            RuntimeCommandKind::StartSession => "agent_session.start",
+            RuntimeCommandKind::StopSession => "agent_session.stop",
+            RuntimeCommandKind::ResumeSession => "agent_session.resume",
+            RuntimeCommandKind::DispatchProvider => "provider.dispatch",
+            RuntimeCommandKind::CancelProviderTurn => "provider.cancel",
+        };
+        if command.required_capability != expected_capability {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "RuntimeCommand capability is not the server-owned capability for this command",
+                "runtime_command",
+                &command.id,
+                None,
+            ));
+        }
+        let requested_start_session = if command.command == RuntimeCommandKind::StartSession
+            && command.payload.get("session").is_some()
+        {
+            Some(
+                serde_json::from_value::<AgentSession>(command.payload["session"].clone())
+                    .map_err(|error| {
+                        trust_error(
+                            TrustErrorCode::InvalidStateTransition,
+                            &format!("StartSession payload is invalid: {error}"),
+                            "runtime_command",
+                            &command.id,
+                            None,
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
+        let target_session_id = command.payload["session_id"]
+            .as_str()
+            .map(str::to_string)
+            .or_else(|| {
+                requested_start_session
+                    .as_ref()
+                    .map(|session| session.id.clone())
+            });
+        let target_session_generation =
+            command.payload["session_generation"].as_u64().or_else(|| {
+                requested_start_session
+                    .as_ref()
+                    .map(|session| session.runtime_generation)
+            });
         let mut atomic_side_records = Vec::new();
-        if let Some(session_id) = target_session_id.as_deref() {
-            let session = self
-                .fabric_agent_sessions(&context.execution_space_id)?
-                .into_iter()
-                .find(|session| session.id == session_id)
-                .ok_or_else(|| {
+        if command.command != RuntimeCommandKind::AuthorMessage {
+            let session = if let Some(session) = requested_start_session.as_ref() {
+                session.clone()
+            } else {
+                let session_id = target_session_id.as_deref().ok_or_else(|| {
                     trust_error(
                         TrustErrorCode::InvalidStateTransition,
-                        "RuntimeCommand target AgentSession does not exist",
+                        "RuntimeCommand requires an exact target AgentSession",
                         "runtime_command",
                         &command.id,
                         None,
                     )
                 })?;
+                self.fabric_agent_sessions(&context.execution_space_id)?
+                    .into_iter()
+                    .find(|session| session.id == session_id)
+                    .ok_or_else(|| {
+                        trust_error(
+                            TrustErrorCode::InvalidStateTransition,
+                            "RuntimeCommand target AgentSession does not exist",
+                            "runtime_command",
+                            &command.id,
+                            None,
+                        )
+                    })?
+            };
             if session.node_id != command.target_node_id
                 || session.node_daemon_id != command.target_node_daemon_id
                 || session.node_daemon_generation != command.target_node_daemon_generation
@@ -5803,6 +5919,84 @@ impl HarnessStore {
                     &command.id,
                     Some(session.version),
                 ));
+            }
+            let actor = &command.authenticated_actor;
+            let exact_self =
+                actor.kind == ActorKind::AgentMember && actor.id == session.agent_identity_id;
+            let exact_operator = actor.kind == ActorKind::Service
+                && (actor.id == session.node_id || actor.id == session.node_daemon_id);
+            let memberships = self.fabric_team_memberships(&context.execution_space_id)?;
+            let target_teams = memberships
+                .iter()
+                .filter(|membership| {
+                    membership.agent_identity_id == session.agent_identity_id
+                        && membership.state == TeamMembershipStatus::Active
+                })
+                .map(|membership| membership.team_id.as_str())
+                .collect::<BTreeSet<_>>();
+            let exact_owning_host = matches!(actor.kind, ActorKind::AgentMember | ActorKind::Human)
+                && memberships.iter().any(|membership| {
+                    membership.agent_identity_id == actor.id
+                        && membership.role == firm_core::agentfirm_api::TeamMembershipRole::Host
+                        && membership.state == TeamMembershipStatus::Active
+                        && target_teams.contains(membership.team_id.as_str())
+                });
+            if !exact_self && !exact_operator && !exact_owning_host {
+                return Err(trust_error(
+                    TrustErrorCode::UnauthorizedActor,
+                    "RuntimeCommand requires exact self, owning Host, or exact machine Operator authority",
+                    "runtime_command",
+                    &command.id,
+                    None,
+                ));
+            }
+            if let Some(requested) = requested_start_session.as_ref() {
+                let identity = self
+                    .fabric_agent_identities(&context.execution_space_id)?
+                    .into_iter()
+                    .find(|identity| identity.id == requested.agent_identity_id)
+                    .ok_or_else(|| {
+                        trust_error(
+                            TrustErrorCode::InvalidStateTransition,
+                            "StartSession target AgentIdentity does not exist",
+                            "runtime_command",
+                            &command.id,
+                            None,
+                        )
+                    })?;
+                if requested.effective_permission_ceiling > identity.permission_ceiling {
+                    return Err(trust_error(
+                        TrustErrorCode::UnauthorizedActor,
+                        "StartSession cannot widen the frozen AgentIdentity permission ceiling",
+                        "runtime_command",
+                        &command.id,
+                        None,
+                    ));
+                }
+                let active_team_ids = self
+                    .fabric_team_memberships(&context.execution_space_id)?
+                    .into_iter()
+                    .filter(|membership| {
+                        membership.agent_identity_id == requested.agent_identity_id
+                            && membership.state == TeamMembershipStatus::Active
+                    })
+                    .map(|membership| membership.team_id)
+                    .collect::<BTreeSet<_>>();
+                let placed_nodes = self
+                    .team_runs()?
+                    .into_iter()
+                    .filter(|run| active_team_ids.contains(&run.agent_team_id))
+                    .map(|run| run.execution_node_id)
+                    .collect::<BTreeSet<_>>();
+                if placed_nodes.len() != 1 || !placed_nodes.contains(&requested.node_id) {
+                    return Err(trust_error(
+                        TrustErrorCode::UnauthorizedActor,
+                        "StartSession must use the one server-resolved active Team placement",
+                        "runtime_command",
+                        &command.id,
+                        None,
+                    ));
+                }
             }
             let active_bindings = self
                 .fabric_work_execution_bindings(&context.execution_space_id)?
@@ -5883,7 +6077,7 @@ impl HarnessStore {
                 .into_iter()
                 .any(|prior| {
                     prior.id != command.id
-                        && prior.target_session_id.as_deref() == Some(session_id)
+                        && prior.target_session_id.as_deref() == Some(session.id.as_str())
                         && matches!(
                             prior.status,
                             RuntimeCommandStatus::Accepted
@@ -5940,6 +6134,168 @@ impl HarnessStore {
             serde_json::to_value(command)?,
             &record,
             atomic_side_records,
+            Vec::new(),
+        )
+    }
+
+    /// Resolve an Unknown provider effect without blindly repeating it. The
+    /// exact current machine Operator asks the current NodeDaemon to record an
+    /// evidence-backed certainty decision for one immutable command/session
+    /// generation. Exact replay returns the original decision; changed
+    /// semantics under the same key conflict before mutable-state checks.
+    #[allow(clippy::too_many_arguments)]
+    pub fn resolve_runtime_command_recovery(
+        &self,
+        context: &MutationContext,
+        command_id: &str,
+        node_id: &str,
+        daemon_id: &str,
+        daemon_generation: u64,
+        resolution: RuntimeRecoveryResolution,
+        evidence_ref: &str,
+        updated_at: &str,
+    ) -> StoreResult<CanonicalMutationResult<RuntimeCommandRecord>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        required(evidence_ref, "RuntimeCommand recovery evidence_ref")?;
+        let fingerprint = canonical_json_fingerprint(&serde_json::json!({
+            "transport_request_fingerprint": context.request_fingerprint,
+            "command_id": command_id,
+            "node_id": node_id,
+            "daemon_id": daemon_id,
+            "daemon_generation": daemon_generation,
+            "resolution": resolution,
+            "evidence_ref": evidence_ref,
+        }));
+        let existing = self.trust_operation_envelopes_unlocked()?;
+        if let Some(replay) = existing.iter().find(|envelope| {
+            envelope.execution_space_id == context.execution_space_id
+                && envelope.authenticated_actor_kind == context.authenticated_actor.kind
+                && envelope.authenticated_actor_id == context.authenticated_actor.id
+                && envelope.command_name == context.command_name
+                && envelope.operation.event.idempotency_key == context.idempotency_key
+        }) {
+            if replay.operation.event.canonical_request_fingerprint != fingerprint
+                || replay.operation.event.aggregate_kind != "runtime_command"
+                || replay.operation.event.aggregate_id != command_id
+            {
+                return Err(trust_error(
+                    TrustErrorCode::IdempotencyKeyReused,
+                    "RuntimeCommand recovery key was reused with different semantics",
+                    "runtime_command",
+                    command_id,
+                    Some(replay.operation.event.resulting_version),
+                ));
+            }
+            return Ok(CanonicalMutationResult {
+                projection: event_projection(replay)?,
+                event: replay.operation.event.clone(),
+                replayed: true,
+            });
+        }
+        self.require_current_node_daemon_unlocked(
+            &context.execution_space_id,
+            node_id,
+            daemon_id,
+            daemon_generation,
+            &context.authenticated_actor,
+            "runtime_command",
+            command_id,
+        )?;
+        if context.authority_actor.as_ref()
+            != Some(&ActorRef {
+                kind: ActorKind::Service,
+                id: node_id.to_string(),
+            })
+        {
+            return Err(trust_error(
+                TrustErrorCode::UnauthorizedActor,
+                "RuntimeCommand recovery requires the exact Execution Node Operator",
+                "runtime_command",
+                command_id,
+                None,
+            ));
+        }
+        let mut record = self
+            .latest_trust_envelopes_unlocked(&context.execution_space_id, "runtime_command")?
+            .remove(command_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "RuntimeCommand recovery target does not exist",
+                    "runtime_command",
+                    command_id,
+                    None,
+                )
+            })
+            .and_then(|envelope| event_projection::<RuntimeCommandRecord>(&envelope))?;
+        if record.target_node_id != node_id || context.expected_version != record.version {
+            return Err(trust_error(
+                TrustErrorCode::VersionConflict,
+                "RuntimeCommand recovery requires the exact command Node and revision",
+                "runtime_command",
+                command_id,
+                Some(record.version),
+            ));
+        }
+        if record.status != RuntimeCommandStatus::RecoveryRequired
+            || record.effect_certainty != RuntimeEffectCertainty::Unknown
+        {
+            return Err(trust_error(
+                TrustErrorCode::InvalidStateTransition,
+                "only an Unknown RecoveryRequired RuntimeCommand can be resolved",
+                "runtime_command",
+                command_id,
+                Some(record.version),
+            ));
+        }
+        match resolution {
+            RuntimeRecoveryResolution::ConfirmApplied => {
+                record.status = RuntimeCommandStatus::Applied;
+                record.effect_certainty = RuntimeEffectCertainty::Applied;
+                record.failure_code = None;
+            }
+            RuntimeRecoveryResolution::ConfirmNotApplied => {
+                record.status = RuntimeCommandStatus::Failed;
+                record.effect_certainty = RuntimeEffectCertainty::NotApplied;
+                record.failure_code = Some("RECOVERY_CONFIRMED_NOT_APPLIED".into());
+            }
+            RuntimeRecoveryResolution::KeepRecoveryRequired => {
+                record.failure_code = Some("RECOVERY_EVIDENCE_INSUFFICIENT".into());
+            }
+        }
+        record.result = Some(serde_json::json!({
+            "resolution": resolution,
+            "evidence_ref": evidence_ref,
+            "blind_replay": false,
+        }));
+        record.version += 1;
+        record.updated_at = updated_at.to_string();
+        let aggregate_version = existing
+            .iter()
+            .filter(|envelope| {
+                envelope.execution_space_id == context.execution_space_id
+                    && envelope.operation.event.aggregate_kind == "runtime_command"
+                    && envelope.operation.event.aggregate_id == command_id
+            })
+            .map(|envelope| envelope.operation.event.resulting_version)
+            .max()
+            .unwrap_or(0);
+        let mut commit_context = context.clone();
+        commit_context.expected_version = aggregate_version;
+        commit_context.request_fingerprint = Some(fingerprint);
+        self.commit_trust_projection_unlocked(
+            &commit_context,
+            "runtime_command",
+            command_id,
+            "recovery_resolved",
+            serde_json::json!({
+                "resolution": resolution,
+                "evidence_ref": evidence_ref,
+                "daemon_generation": daemon_generation,
+            }),
+            &record,
+            Vec::new(),
             Vec::new(),
         )
     }
@@ -6223,6 +6579,14 @@ mod tests {
             "operation": operation,
             "delivery_id": format!("delivery-{id}"),
         });
+        let required_capability = match kind {
+            RuntimeCommandKind::AuthorMessage => "message.author",
+            RuntimeCommandKind::StartSession => "agent_session.start",
+            RuntimeCommandKind::StopSession => "agent_session.stop",
+            RuntimeCommandKind::ResumeSession => "agent_session.resume",
+            RuntimeCommandKind::DispatchProvider => "provider.dispatch",
+            RuntimeCommandKind::CancelProviderTurn => "provider.cancel",
+        };
         let command = ControlCommandEnvelope {
             id: id.into(),
             execution_space_id: session.execution_space_id.clone(),
@@ -6234,7 +6598,7 @@ mod tests {
                 id: session.node_daemon_id.clone(),
             },
             command: kind,
-            required_capability: format!("provider.{operation}"),
+            required_capability: required_capability.into(),
             idempotency_key: id.into(),
             expected_version: 0,
             expires_unix_ms: current_unix_ms() + 60_000,
@@ -6293,6 +6657,171 @@ mod tests {
             )
             .unwrap();
         (store, root)
+    }
+
+    fn membership_fixture(id: &str, generation: u64) -> TeamMembership {
+        TeamMembership {
+            id: id.into(),
+            team_id: "team-membership-test".into(),
+            agent_identity_id: "membership-agent".into(),
+            node_id: "11111111-1111-4111-8111-111111111111".into(),
+            role: firm_core::agentfirm_api::TeamMembershipRole::Member,
+            state: TeamMembershipStatus::Active,
+            membership_generation: generation,
+            default_subscription_refs: Vec::new(),
+            created_by: actor("host"),
+            revision: 1,
+            joined_at: format!("t-join-{generation}"),
+            left_at: None,
+        }
+    }
+
+    fn seed_membership_scope(store: &HarnessStore) {
+        store
+            .append_team_run(&firm_core::AgentTeamRun {
+                id: "team-run-membership-test".into(),
+                agent_team_id: "team-membership-test".into(),
+                execution_node_id: "11111111-1111-4111-8111-111111111111".into(),
+                project_binding_id: "project-1".into(),
+                previous_run_id: None,
+                host_surface: "test".into(),
+                host_thread_id: None,
+                host_actor: None,
+                host_control_mode: firm_core::HostControlMode::External,
+                objective: "membership cardinality".into(),
+                execution_root: None,
+                status: firm_core::TeamRunStatus::Running,
+                member_run_ids: Vec::new(),
+                budget_limit_usd: None,
+                created_at: "t1".into(),
+                updated_at: "t1".into(),
+                completed_at: None,
+            })
+            .unwrap();
+        store
+            .create_agent_identity(
+                &context("host", "identity.create", "identity-membership-agent", 0),
+                identity("membership-agent"),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn team_membership_is_single_active_generation_and_rejoin_is_exact_successor() {
+        let (store, root) = fabric_store();
+        seed_membership_scope(&store);
+        let first = membership_fixture("membership-1", 1);
+        store
+            .join_team_membership(
+                &context("host", "membership.join", "membership-1", 0),
+                first.clone(),
+            )
+            .unwrap();
+
+        let operations_before_duplicate = store.canonical_operations().unwrap();
+        let subscriptions_before_duplicate =
+            store.fabric_message_subscriptions("space-test").unwrap();
+        let duplicate = store
+            .join_team_membership(
+                &context("host", "membership.join", "membership-2", 0),
+                membership_fixture("membership-2", 2),
+            )
+            .expect_err("a second active generation must fail under the Store lock");
+        assert!(duplicate.to_string().contains("already have an active"));
+        assert_eq!(
+            store.canonical_operations().unwrap(),
+            operations_before_duplicate
+        );
+        assert_eq!(
+            store.fabric_message_subscriptions("space-test").unwrap(),
+            subscriptions_before_duplicate
+        );
+
+        let mut leave_context = context(
+            "membership-agent",
+            "membership.leave",
+            "membership-1:leave",
+            1,
+        );
+        leave_context.authenticated_actor.kind = ActorKind::AgentMember;
+        store
+            .leave_team_membership(&leave_context, &first.id, "t-leave")
+            .unwrap();
+
+        let wrong_generation = store
+            .join_team_membership(
+                &context("host", "membership.join", "membership-3", 0),
+                membership_fixture("membership-3", 3),
+            )
+            .expect_err("rejoin cannot skip a membership generation");
+        assert!(wrong_generation
+            .to_string()
+            .contains("exact successor generation 2"));
+        store
+            .join_team_membership(
+                &context("host", "membership.join", "membership-2", 0),
+                membership_fixture("membership-2", 2),
+            )
+            .unwrap();
+        let active = store
+            .fabric_team_memberships("space-test")
+            .unwrap()
+            .into_iter()
+            .filter(|membership| membership.state == TeamMembershipStatus::Active)
+            .collect::<Vec<_>>();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].membership_generation, 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_team_membership_join_has_one_linearized_winner() {
+        let (store, root) = fabric_store();
+        seed_membership_scope(&store);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let mut workers = Vec::new();
+        for suffix in ["a", "b"] {
+            let root = root.clone();
+            let barrier = barrier.clone();
+            workers.push(std::thread::spawn(move || {
+                let contender = HarnessStore::new(root);
+                barrier.wait();
+                contender.join_team_membership(
+                    &context(
+                        "host",
+                        "membership.join",
+                        &format!("membership-concurrent-{suffix}"),
+                        0,
+                    ),
+                    membership_fixture(&format!("membership-concurrent-{suffix}"), 1),
+                )
+            }));
+        }
+        barrier.wait();
+        let outcomes = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("membership contender"))
+            .collect::<Vec<_>>();
+        assert_eq!(outcomes.iter().filter(|outcome| outcome.is_ok()).count(), 1);
+        assert_eq!(
+            outcomes.iter().filter(|outcome| outcome.is_err()).count(),
+            1
+        );
+        let active = store
+            .fabric_team_memberships("space-test")
+            .unwrap()
+            .into_iter()
+            .filter(|membership| membership.state == TeamMembershipStatus::Active)
+            .collect::<Vec<_>>();
+        assert_eq!(active.len(), 1);
+        assert_eq!(
+            store
+                .fabric_message_subscriptions("space-test")
+                .unwrap()
+                .len(),
+            2
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -6522,7 +7051,10 @@ mod tests {
             target_node_id: "11111111-1111-4111-8111-111111111111".into(),
             target_node_daemon_id: "daemon-1".into(),
             target_node_daemon_generation: 1,
-            authenticated_actor: actor("host"),
+            authenticated_actor: ActorRef {
+                kind: ActorKind::Service,
+                id: "daemon-1".into(),
+            },
             command: firm_core::agentfirm_api::RuntimeCommandKind::StopSession,
             required_capability: "agent_session.stop".into(),
             idempotency_key: "runtime-command-1".into(),
@@ -6540,7 +7072,10 @@ mod tests {
                 kind: ActorKind::Service,
                 id: "daemon-1".into(),
             },
-            authority_actor: Some(actor("host")),
+            authority_actor: Some(ActorRef {
+                kind: ActorKind::Service,
+                id: "daemon-1".into(),
+            }),
             command_name: "runtime.stop".into(),
             idempotency_key: "runtime-command-1".into(),
             expected_version: 0,
@@ -6629,9 +7164,12 @@ mod tests {
             target_node_id: "11111111-1111-4111-8111-111111111111".into(),
             target_node_daemon_id: "daemon-1".into(),
             target_node_daemon_generation: 1,
-            authenticated_actor: actor("host"),
+            authenticated_actor: ActorRef {
+                kind: ActorKind::Service,
+                id: "daemon-1".into(),
+            },
             command: firm_core::agentfirm_api::RuntimeCommandKind::DispatchProvider,
-            required_capability: "provider.effect".into(),
+            required_capability: "provider.dispatch".into(),
             idempotency_key: "runtime-command-fence".into(),
             expected_version: 0,
             expires_unix_ms: current_unix_ms() + 120_000,
@@ -6644,7 +7182,10 @@ mod tests {
             "runtime-command-fence",
             0,
         );
-        admission_context.authority_actor = Some(actor("host"));
+        admission_context.authority_actor = Some(ActorRef {
+            kind: ActorKind::Service,
+            id: "daemon-1".into(),
+        });
         admission_context.request_fingerprint = Some(canonical_json_fingerprint(
             &serde_json::to_value(&command).unwrap(),
         ));
@@ -7153,6 +7694,270 @@ mod tests {
             );
             fs::remove_dir_all(root).unwrap();
         }
+    }
+
+    #[test]
+    fn runtime_recovery_resolution_is_operator_fenced_replay_safe_and_never_blind_replays() {
+        let (store, root) = fabric_store();
+        store
+            .create_agent_identity(
+                &context("host", "identity.create", "identity-recovery-agent", 0),
+                identity("recovery-agent"),
+            )
+            .unwrap();
+        let target_session = session("session-recovery-agent", "recovery-agent");
+        store
+            .create_agent_session(
+                &service_context("session.create", "session-recovery-agent", 0),
+                target_session.clone(),
+            )
+            .unwrap();
+        let (command, admission_context) = runtime_command_fixture(
+            "runtime-recovery-command",
+            RuntimeCommandKind::StopSession,
+            &target_session,
+            "stop_session",
+        );
+        store
+            .prepare_runtime_command(&admission_context, &command, current_unix_ms(), "t-prepare")
+            .unwrap();
+        let mut settle_context = service_context(
+            "node_daemon.runtime.settle",
+            "runtime-recovery-command:settle",
+            1,
+        );
+        settle_context.authority_actor = Some(command.authenticated_actor.clone());
+        store
+            .settle_runtime_command(
+                &settle_context,
+                &command.id,
+                RuntimeCommandStatus::RecoveryRequired,
+                RuntimeEffectCertainty::Unknown,
+                None,
+                Some("PROVIDER_EFFECT_AMBIGUOUS".into()),
+                "t-ambiguous",
+            )
+            .unwrap();
+
+        let operations_before_hostile = store.canonical_operations().unwrap();
+        let mut hostile = service_context(
+            "operator.runtime.resolve",
+            "runtime-recovery-command:hostile",
+            2,
+        );
+        hostile.authority_actor = Some(ActorRef {
+            kind: ActorKind::Service,
+            id: "sibling-node".into(),
+        });
+        let rejected = store
+            .resolve_runtime_command_recovery(
+                &hostile,
+                &command.id,
+                &target_session.node_id,
+                &target_session.node_daemon_id,
+                target_session.node_daemon_generation,
+                RuntimeRecoveryResolution::ConfirmApplied,
+                "evidence:hostile",
+                "t-hostile",
+            )
+            .expect_err("a sibling Operator cannot resolve another Node's effect");
+        assert!(rejected
+            .to_string()
+            .contains("exact Execution Node Operator"));
+        assert_eq!(
+            store.canonical_operations().unwrap(),
+            operations_before_hostile
+        );
+
+        let mut resolve_context = service_context(
+            "operator.runtime.resolve",
+            "runtime-recovery-command:resolve",
+            2,
+        );
+        resolve_context.authority_actor = Some(ActorRef {
+            kind: ActorKind::Service,
+            id: target_session.node_id.clone(),
+        });
+        let resolved = store
+            .resolve_runtime_command_recovery(
+                &resolve_context,
+                &command.id,
+                &target_session.node_id,
+                &target_session.node_daemon_id,
+                target_session.node_daemon_generation,
+                RuntimeRecoveryResolution::ConfirmNotApplied,
+                "evidence:provider-process-absent",
+                "t-resolved",
+            )
+            .unwrap();
+        assert_eq!(resolved.projection.status, RuntimeCommandStatus::Failed);
+        assert_eq!(
+            resolved.projection.effect_certainty,
+            RuntimeEffectCertainty::NotApplied
+        );
+        assert_eq!(
+            resolved.projection.result.as_ref().unwrap()["blind_replay"],
+            false
+        );
+        let operations_after_resolution = store.canonical_operations().unwrap();
+        let replay = store
+            .resolve_runtime_command_recovery(
+                &resolve_context,
+                &command.id,
+                &target_session.node_id,
+                &target_session.node_daemon_id,
+                target_session.node_daemon_generation,
+                RuntimeRecoveryResolution::ConfirmNotApplied,
+                "evidence:provider-process-absent",
+                "t-replay",
+            )
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(
+            store.canonical_operations().unwrap(),
+            operations_after_resolution
+        );
+
+        let conflict = store
+            .resolve_runtime_command_recovery(
+                &resolve_context,
+                &command.id,
+                &target_session.node_id,
+                &target_session.node_daemon_id,
+                target_session.node_daemon_generation,
+                RuntimeRecoveryResolution::ConfirmApplied,
+                "evidence:different-semantics",
+                "t-conflict",
+            )
+            .expect_err("same key with changed resolution must conflict");
+        assert!(conflict.to_string().contains("IDEMPOTENCY_KEY_REUSED"));
+        assert_eq!(
+            store.canonical_operations().unwrap(),
+            operations_after_resolution
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn runtime_command_hostile_member_and_permission_widening_have_zero_side_effects() {
+        let (store, root) = fabric_store();
+        for identity_id in ["runtime-owner", "runtime-sibling"] {
+            store
+                .create_agent_identity(
+                    &context(
+                        "host",
+                        "identity.create",
+                        &format!("identity-{identity_id}"),
+                        0,
+                    ),
+                    identity(identity_id),
+                )
+                .unwrap();
+        }
+        let owner_session = session("session-runtime-owner", "runtime-owner");
+        store
+            .create_agent_session(
+                &service_context("session.create", "session-runtime-owner", 0),
+                owner_session.clone(),
+            )
+            .unwrap();
+
+        let (mut hostile_command, mut hostile_context) = runtime_command_fixture(
+            "runtime-hostile-sibling",
+            RuntimeCommandKind::StopSession,
+            &owner_session,
+            "stop_session",
+        );
+        hostile_command.authenticated_actor = ActorRef {
+            kind: ActorKind::AgentMember,
+            id: "runtime-sibling".into(),
+        };
+        hostile_context.authenticated_actor = hostile_command.authenticated_actor.clone();
+        hostile_context.authority_actor = Some(hostile_command.authenticated_actor.clone());
+        hostile_context.request_fingerprint = Some(canonical_json_fingerprint(
+            &serde_json::to_value(&hostile_command).unwrap(),
+        ));
+        let operations_before_hostile = store.canonical_operations().unwrap();
+        let sessions_before_hostile = store.fabric_agent_sessions("space-test").unwrap();
+        let commands_before_hostile = store.runtime_commands("space-test").unwrap();
+        let error = store
+            .prepare_runtime_command(
+                &hostile_context,
+                &hostile_command,
+                current_unix_ms(),
+                "t-hostile",
+            )
+            .expect_err("an ordinary sibling Member cannot control this AgentSession");
+        assert!(error.to_string().contains("exact self, owning Host"));
+        assert_eq!(
+            store.canonical_operations().unwrap(),
+            operations_before_hostile
+        );
+        assert_eq!(
+            store.fabric_agent_sessions("space-test").unwrap(),
+            sessions_before_hostile
+        );
+        assert_eq!(
+            store.runtime_commands("space-test").unwrap(),
+            commands_before_hostile
+        );
+
+        let mut widened = session("session-runtime-widened", "runtime-owner");
+        widened.effective_permission_ceiling = PermissionCeiling::FullAccess;
+        let payload = serde_json::json!({"session": widened});
+        let widening_command = ControlCommandEnvelope {
+            id: "runtime-permission-widening".into(),
+            execution_space_id: "space-test".into(),
+            target_node_id: owner_session.node_id.clone(),
+            target_node_daemon_id: owner_session.node_daemon_id.clone(),
+            target_node_daemon_generation: owner_session.node_daemon_generation,
+            authenticated_actor: ActorRef {
+                kind: ActorKind::Service,
+                id: owner_session.node_daemon_id.clone(),
+            },
+            command: RuntimeCommandKind::StartSession,
+            required_capability: "agent_session.start".into(),
+            idempotency_key: "runtime-permission-widening".into(),
+            expected_version: 0,
+            expires_unix_ms: current_unix_ms() + 60_000,
+            payload_fingerprint: canonical_json_fingerprint(&payload),
+            payload,
+            issued_at: "t-widening".into(),
+        };
+        let mut widening_context = service_context(
+            "node_daemon.runtime.prepare",
+            "runtime-permission-widening",
+            0,
+        );
+        widening_context.authority_actor = Some(widening_command.authenticated_actor.clone());
+        widening_context.request_fingerprint = Some(canonical_json_fingerprint(
+            &serde_json::to_value(&widening_command).unwrap(),
+        ));
+        let operations_before_widening = store.canonical_operations().unwrap();
+        let sessions_before_widening = store.fabric_agent_sessions("space-test").unwrap();
+        let commands_before_widening = store.runtime_commands("space-test").unwrap();
+        let error = store
+            .prepare_runtime_command(
+                &widening_context,
+                &widening_command,
+                current_unix_ms(),
+                "t-widening",
+            )
+            .expect_err("StartSession cannot widen the AgentIdentity ceiling");
+        assert!(error.to_string().contains("cannot widen"));
+        assert_eq!(
+            store.canonical_operations().unwrap(),
+            operations_before_widening
+        );
+        assert_eq!(
+            store.fabric_agent_sessions("space-test").unwrap(),
+            sessions_before_widening
+        );
+        assert_eq!(
+            store.runtime_commands("space-test").unwrap(),
+            commands_before_widening
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -1364,6 +1364,10 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
         "token": MEMBER_TOKEN,
         "actor": {"kind":"agent_member","id":member_id},
         "authority_actors": []
+    },{
+        "token": OPERATOR_TOKEN,
+        "actor": {"kind":"service","id":node_id},
+        "authority_actors": []
     }])
     .to_string();
     let serve = ServeHandle::spawn_with_env(
@@ -1421,6 +1425,178 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
         assert_eq!(current[0].node_daemon_id, lease.daemon_id);
         assert_eq!(current[0].node_daemon_generation, lease.generation);
     }
+
+    let host_session = sessions
+        .iter()
+        .find(|session| session.agent_identity_id == host_id)
+        .expect("Host AgentSession");
+    let space_store_root = home.spaces_dir().join(&space_id);
+    let before_hostile_runtime = ledger_digest(&space_store_root);
+    let hostile_headers = [
+        ("X-AgentFirm-Token", MEMBER_TOKEN),
+        ("Idempotency-Key", "hostile-sibling-runtime-control"),
+        ("If-Match", "0"),
+    ];
+    let (status, hostile_runtime) = serve.post_json_with_headers(
+        "/v1/agentfirm/runtime-commands",
+        &serde_json::json!({
+            "command":"stop_session",
+            "expires_unix_ms":unix_ms()+30_000,
+            "payload":{
+                "session_id":host_session.id,
+                "session_generation":host_session.runtime_generation
+            }
+        }),
+        &hostile_headers,
+    );
+    assert_eq!(status, 403, "sibling runtime control: {hostile_runtime}");
+    assert_eq!(hostile_runtime["error"]["code"], "UNAUTHORIZED_ACTOR");
+    assert_eq!(
+        ledger_digest(&space_store_root),
+        before_hostile_runtime,
+        "hostile runtime control must have byte-zero durable side effects"
+    );
+
+    let spoof_headers = [
+        ("X-AgentFirm-Token", MEMBER_TOKEN),
+        ("Idempotency-Key", "hostile-runtime-capability-spoof"),
+        ("If-Match", "0"),
+    ];
+    let (status, capability_spoof) = serve.post_json_with_headers(
+        "/v1/agentfirm/runtime-commands",
+        &serde_json::json!({
+            "target_node_id":node_id,
+            "command":"start_session",
+            "required_capability":"full_control",
+            "expires_unix_ms":unix_ms()+30_000,
+            "payload":{
+                "agent_identity_id":member_id,
+                "session":{
+                    "effective_permission_ceiling":"full_access"
+                }
+            }
+        }),
+        &spoof_headers,
+    );
+    assert_eq!(status, 400, "capability/session spoof: {capability_spoof}");
+    assert_eq!(
+        ledger_digest(&space_store_root),
+        before_hostile_runtime,
+        "caller-selected capability or AgentSession payload must have byte-zero side effects"
+    );
+
+    let member_session = sessions
+        .iter()
+        .find(|session| session.agent_identity_id == member_id)
+        .expect("Member AgentSession");
+    let recovery_payload = serde_json::json!({
+        "session_id":member_session.id,
+        "session_generation":member_session.runtime_generation,
+        "operation":"stop_session",
+        "delivery_id":"recovery-role-view-fixture"
+    });
+    let recovery_command = harness_core::agentfirm_api::ControlCommandEnvelope {
+        id: "runtime-command-role-view-recovery".into(),
+        execution_space_id: space_id.clone(),
+        target_node_id: node_id.clone(),
+        target_node_daemon_id: lease.daemon_id.clone(),
+        target_node_daemon_generation: lease.generation,
+        authenticated_actor: ActorRef {
+            kind: ActorKind::Service,
+            id: lease.daemon_id.clone(),
+        },
+        command: harness_core::agentfirm_api::RuntimeCommandKind::StopSession,
+        required_capability: "agent_session.stop".into(),
+        idempotency_key: "runtime-command-role-view-recovery".into(),
+        expected_version: 0,
+        expires_unix_ms: unix_ms() + 30_000,
+        payload_fingerprint: harness_store::canonical_json_fingerprint(&recovery_payload),
+        payload: recovery_payload,
+        issued_at: "2026-08-11T00:00:00Z".into(),
+    };
+    let recovery_fingerprint = harness_store::canonical_json_fingerprint(
+        &serde_json::to_value(&recovery_command).expect("recovery command JSON"),
+    );
+    let recovery_prepare_context = MutationContext {
+        execution_space_id: space_id.clone(),
+        authenticated_actor: recovery_command.authenticated_actor.clone(),
+        authority_actor: Some(recovery_command.authenticated_actor.clone()),
+        command_name: "node_daemon.runtime.prepare".into(),
+        idempotency_key: recovery_command.idempotency_key.clone(),
+        expected_version: 0,
+        request_fingerprint: Some(recovery_fingerprint),
+    };
+    store
+        .prepare_runtime_command(
+            &recovery_prepare_context,
+            &recovery_command,
+            unix_ms(),
+            "2026-08-11T00:00:01Z",
+        )
+        .expect("prepare ambiguous runtime effect");
+    store
+        .settle_runtime_command(
+            &MutationContext {
+                execution_space_id: space_id.clone(),
+                authenticated_actor: recovery_command.authenticated_actor.clone(),
+                authority_actor: Some(recovery_command.authenticated_actor.clone()),
+                command_name: "node_daemon.runtime.settle".into(),
+                idempotency_key: "runtime-command-role-view-recovery:settle".into(),
+                expected_version: 1,
+                request_fingerprint: None,
+            },
+            &recovery_command.id,
+            harness_core::agentfirm_api::RuntimeCommandStatus::RecoveryRequired,
+            harness_core::agentfirm_api::RuntimeEffectCertainty::Unknown,
+            None,
+            Some("PROVIDER_EFFECT_AMBIGUOUS".into()),
+            "2026-08-11T00:00:02Z",
+        )
+        .expect("mark RecoveryRequired");
+    let operator_route = format!("/v1/views/operator/{node_id}?project={project_id}");
+    let (status, operator_view) =
+        serve.get_json_with_headers(&operator_route, &[("X-AgentFirm-Token", OPERATOR_TOKEN)]);
+    assert_eq!(status, 200, "Operator recovery view: {operator_view}");
+    let recovery_action = operator_view["allowed_actions"]
+        .as_array()
+        .and_then(|actions| {
+            actions.iter().find(|action| {
+                action["kind"] == "resolve_runtime_recovery"
+                    && action["target_ref"]["id"] == recovery_command.id
+            })
+        })
+        .expect("Operator recovery action");
+    assert_eq!(recovery_action["required_version"], 2);
+    let recovery_route = format!(
+        "/v1/agentfirm/nodes/{node_id}/runtime-commands/{}/resolve?project={project_id}",
+        recovery_command.id
+    );
+    let recovery_headers = [
+        ("X-AgentFirm-Token", OPERATOR_TOKEN),
+        ("Idempotency-Key", "operator-resolve-runtime-recovery"),
+        ("If-Match", "2"),
+        ("X-AgentFirm-Confirm", "resolve_runtime_recovery"),
+    ];
+    let recovery_intent = serde_json::json!({
+        "action":"resolve_runtime_recovery",
+        "resolution":"confirm_not_applied",
+        "evidence_ref":"check:provider-process-absent"
+    });
+    let (status, resolved) =
+        serve.post_json_with_headers(&recovery_route, &recovery_intent, &recovery_headers);
+    assert_eq!(status, 200, "resolve RecoveryRequired: {resolved}");
+    assert_eq!(resolved["projection"]["status"], "failed");
+    assert_eq!(resolved["projection"]["effect_certainty"], "not_applied");
+    let operations_after_resolution = store.canonical_operations().expect("operations");
+    let (status, replayed) =
+        serve.post_json_with_headers(&recovery_route, &recovery_intent, &recovery_headers);
+    assert_eq!(status, 200, "replay recovery resolution: {replayed}");
+    assert_eq!(replayed["replayed"], true);
+    assert_eq!(
+        store.canonical_operations().expect("operations"),
+        operations_after_resolution,
+        "replayed recovery resolution cannot repeat a provider or durable effect"
+    );
 
     let host_view_route = format!("/v1/views/host-console/{}?project={project_id}", team.id);
     let (status, host_view) =

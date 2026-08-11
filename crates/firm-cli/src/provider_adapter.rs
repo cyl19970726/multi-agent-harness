@@ -5,6 +5,7 @@
 
 use harness_core::agentfirm_api::{AgentSessionStatus, PermissionCeiling, RuntimeDispatchMode};
 use serde::Serialize;
+use std::process::Command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ProviderCapabilities {
@@ -26,6 +27,38 @@ pub(crate) struct ProviderPermissionMapping {
     pub native_approval: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ProviderControlAction {
+    CancelProviderTurn,
+    CloseSession,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum NativeControlPrimitive {
+    CodexTurnInterrupt,
+    ClaudeAgentSdkInterrupt,
+    KimiAcpCancel,
+    PiRpcInterrupt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct ProviderControlPlan {
+    pub provider: String,
+    pub action: ProviderControlAction,
+    pub primitive: NativeControlPrimitive,
+    pub requires_terminal_ack: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct ProviderAvailability {
+    pub provider: String,
+    pub binary: String,
+    pub available: bool,
+    pub version_probe: Option<String>,
+}
+
 pub(crate) fn capabilities(provider: &str) -> Option<ProviderCapabilities> {
     let safe_current_turn_injection = match provider {
         // Codex app-server exposes steer, but the adapter still has to prove a
@@ -42,6 +75,71 @@ pub(crate) fn capabilities(provider: &str) -> Option<ProviderCapabilities> {
         close: true,
         inspect_state: true,
         reconcile_effect: true,
+    })
+}
+
+/// Freeze the provider-native control primitive before a RuntimeCommand is
+/// admitted. Provider loops must execute this plan and settle the durable
+/// command from the observed acknowledgement; static capability flags alone
+/// never count as conformance evidence.
+pub(crate) fn control_plan(
+    provider: &str,
+    action: ProviderControlAction,
+) -> Result<ProviderControlPlan, String> {
+    let primitive = match provider {
+        "codex" => NativeControlPrimitive::CodexTurnInterrupt,
+        "claude" => NativeControlPrimitive::ClaudeAgentSdkInterrupt,
+        "kimi" => NativeControlPrimitive::KimiAcpCancel,
+        "pi" => NativeControlPrimitive::PiRpcInterrupt,
+        _ => return Err(format!("PROVIDER_CONTROL_UNSUPPORTED: {provider}")),
+    };
+    Ok(ProviderControlPlan {
+        provider: provider.to_string(),
+        action,
+        primitive,
+        requires_terminal_ack: true,
+    })
+}
+
+/// Execute one frozen native control plan through the provider transport. A
+/// transport error or mismatched acknowledgement remains fail-closed so the
+/// caller can settle NotApplied or RecoveryRequired rather than claiming a
+/// false conformance PASS.
+pub(crate) fn execute_control_plan<T>(
+    plan: &ProviderControlPlan,
+    execute: impl FnOnce(NativeControlPrimitive) -> Result<T, String>,
+) -> Result<T, String> {
+    execute(plan.primitive).map_err(|error| {
+        format!(
+            "PROVIDER_CONTROL_FAILED:{}:{:?}:{error}",
+            plan.provider, plan.action
+        )
+    })
+}
+
+pub(crate) fn provider_availability(provider: &str) -> Result<ProviderAvailability, String> {
+    let binary = match provider {
+        "codex" => "codex",
+        "claude" => "claude",
+        "kimi" => "kimi",
+        "pi" => "pi",
+        _ => return Err(format!("PROVIDER_CAPABILITY_UNPROVABLE: {provider}")),
+    };
+    let output = Command::new(binary).arg("--version").output();
+    let (available, version_probe) = match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let version = if stdout.is_empty() { stderr } else { stdout };
+            (true, (!version.is_empty()).then_some(version))
+        }
+        _ => (false, None),
+    };
+    Ok(ProviderAvailability {
+        provider: provider.to_string(),
+        binary: binary.to_string(),
+        available,
+        version_probe,
     })
 }
 
@@ -117,6 +215,18 @@ mod tests {
             assert!(capabilities.inspect_state && capabilities.reconcile_effect);
             assert!(map_permission(provider, PermissionCeiling::ReadOnly).is_ok());
             assert!(map_permission(provider, PermissionCeiling::WorkspaceWrite).is_ok());
+            for action in [
+                ProviderControlAction::CancelProviderTurn,
+                ProviderControlAction::CloseSession,
+            ] {
+                let plan = control_plan(provider, action).expect("known provider control plan");
+                let observed = execute_control_plan(&plan, |primitive| Ok(primitive))
+                    .expect("deterministic provider acknowledgement");
+                assert_eq!(observed, plan.primitive);
+                let failure = execute_control_plan::<()>(&plan, |_| Err("socket_lost".into()))
+                    .expect_err("transport loss cannot be reported as conformance PASS");
+                assert!(failure.contains("PROVIDER_CONTROL_FAILED"));
+            }
         }
         assert!(map_permission("unknown", PermissionCeiling::ReadOnly).is_err());
         for provider in ["claude", "kimi", "pi"] {
@@ -125,6 +235,22 @@ mod tests {
         let codex = map_permission("codex", PermissionCeiling::FullAccess).unwrap();
         assert_eq!(codex.native_approval, "on-request");
         assert_ne!(codex.native_approval, "never");
+        assert!(control_plan("unknown", ProviderControlAction::CancelProviderTurn).is_err());
+    }
+
+    #[test]
+    fn provider_binary_probe_is_explicit_and_never_fabricates_availability() {
+        for provider in ["codex", "claude", "kimi", "pi"] {
+            let availability = provider_availability(provider).expect("known provider");
+            assert_eq!(availability.provider, provider);
+            assert!(!availability.binary.is_empty());
+            if availability.available {
+                assert!(availability.version_probe.is_some());
+            } else {
+                assert!(availability.version_probe.is_none());
+            }
+        }
+        assert!(provider_availability("unknown").is_err());
     }
 
     #[test]

@@ -62,7 +62,7 @@ for(const required of [
   "send_message","reply_message","close_member_run","reopen_member_run","retire_member_run","resume_native_session",
   "provision_workspace","attach_workspace","archive_workspace","cleanup_workspace","request_gate_evaluation","evaluate_gate","waive_gate","revoke_waiver",
   "claim_work","start_work","block_work","unblock_work","submit_work","revise_work","write_report","write_finding","write_failure","request_decision",
-  "reconcile_delivery","reconcile_message_delivery","start_daemon","stop_daemon","admit_provider","diagnose",
+  "reconcile_delivery","reconcile_message_delivery","resolve_runtime_recovery","start_daemon","stop_daemon","admit_provider","diagnose",
 ])assert.ok(actions.has(required),`action manifest missing ${required}`);
 for(const item of manifest.actions){for(const field of ["http_endpoint","application_command","actor_policy","expected_version_source","resulting_event","returns"])assert.equal(typeof item[field],"string",`${item.ui_action}.${field}`)}
 for(const kind of ["start_daemon","stop_daemon"])assert.equal(typeof manifest.actions.find(item=>item.ui_action===kind)?.authority_generation_source,"string",`${kind} must declare its server authority-generation source`);
