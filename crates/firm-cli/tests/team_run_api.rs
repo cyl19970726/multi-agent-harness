@@ -3128,9 +3128,11 @@ fn codex_app_server_member_can_be_steered_in_place() {
     );
 
     let mut idle = false;
-    // A complete fake app-server turn takes ~3s on a loaded serial workspace
-    // runner; keep this bounded but above the observed provider lifecycle.
-    for _ in 0..300 {
+    // A complete fake app-server turn normally takes ~3s, but a clean CI
+    // runner can be CPU-starved while the full workspace suite is draining.
+    // Keep the assertion bounded without treating scheduler delay as a
+    // provider-lifecycle failure.
+    for _ in 0..1_000 {
         let (_, snapshot) = serve.get_json("/v1/snapshot");
         idle = snapshot["member_runs"]
             .as_array()
@@ -3145,7 +3147,11 @@ fn codex_app_server_member_can_be_steered_in_place() {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(idle, "steered member did not return to persistent idle");
+    let (_, diagnostic_snapshot) = serve.get_json("/v1/snapshot");
+    assert!(
+        idle,
+        "steered member did not return to persistent idle; snapshot: {diagnostic_snapshot}"
+    );
 }
 
 #[test]
