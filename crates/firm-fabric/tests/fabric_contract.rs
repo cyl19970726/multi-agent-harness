@@ -766,7 +766,12 @@ fn node_local_journal_recovers_lost_ack_without_duplicate_native_effect() {
     let before = source.snapshot().expect("source snapshot");
     source.fail_next_commit_for_test();
     let rejected = source
-        .prepare_outbox(&source_session, &request, 100)
+        .prepare_outbox(
+            &source_session,
+            &actor("fabric-client", &["fabric_submit"]),
+            &request,
+            100,
+        )
         .expect_err("failure before append must be effect-none");
     assert_eq!(rejected.code, FabricErrorCode::StoreUnavailable);
     assert_eq!(rejected.effect, EffectCertainty::None);
@@ -774,7 +779,12 @@ fn node_local_journal_recovers_lost_ack_without_duplicate_native_effect() {
 
     source.fail_after_append_for_test();
     let unknown = source
-        .prepare_outbox(&source_session, &request, 101)
+        .prepare_outbox(
+            &source_session,
+            &actor("fabric-client", &["fabric_submit"]),
+            &request,
+            101,
+        )
         .expect_err("lost local append acknowledgement is unknown");
     assert_eq!(unknown.code, FabricErrorCode::RecoveryRequired);
     assert_eq!(unknown.effect, EffectCertainty::Unknown);
@@ -789,7 +799,12 @@ fn node_local_journal_recovers_lost_ack_without_duplicate_native_effect() {
     let recovered_source = NodeLocalFabricStore::open(source_root.path(), COMPANY, "node-a")
         .expect("reopen source store");
     let (_, replayed) = recovered_source
-        .prepare_outbox(&source_session, &request, 102)
+        .prepare_outbox(
+            &source_session,
+            &actor("fabric-client", &["fabric_submit"]),
+            &request,
+            102,
+        )
         .expect("exact outbox replay after reopen");
     assert!(replayed);
     assert_eq!(
@@ -899,7 +914,12 @@ fn node_local_store_rejects_foreign_and_stale_sessions_with_zero_delta() {
         fabric_session("node-a", 7, 2),
     ] {
         let error = source
-            .prepare_outbox(&hostile, &request, 100)
+            .prepare_outbox(
+                &hostile,
+                &actor("fabric-client", &["fabric_submit"]),
+                &request,
+                100,
+            )
             .expect_err("foreign or stale source session must fail closed");
         assert!(matches!(
             error.code,
@@ -908,6 +928,17 @@ fn node_local_store_rejects_foreign_and_stale_sessions_with_zero_delta() {
         assert_eq!(error.effect, EffectCertainty::None);
         assert_eq!(source.snapshot().expect("source snapshot"), before);
     }
+    let error = source
+        .prepare_outbox(
+            &fabric_session("node-a", 7, 3),
+            &actor("sibling-agent", &["fabric_submit"]),
+            &request,
+            100,
+        )
+        .expect_err("wire actor cannot differ from authenticated source actor");
+    assert_eq!(error.code, FabricErrorCode::UnauthorizedActor);
+    assert_eq!(error.effect, EffectCertainty::None);
+    assert_eq!(source.snapshot().expect("source snapshot"), before);
 
     let target_root = TestRoot::new("local-session-fence-target");
     let target =
@@ -2059,7 +2090,12 @@ fn three_independent_store_roots_preserve_control_plane_and_node_authority() {
     let request = operation(source.gateway_generation, lease.control_plane_generation);
     let request_digest = json_digest(&request).expect("request digest");
     let (source_outbox, replayed) = source_local
-        .prepare_outbox(&source_session, &request, 90)
+        .prepare_outbox(
+            &source_session,
+            &actor("fabric-client", &["fabric_submit"]),
+            &request,
+            90,
+        )
         .expect("source durably prepares before submission");
     assert!(!replayed);
     assert_eq!(
@@ -2068,7 +2104,12 @@ fn three_independent_store_roots_preserve_control_plane_and_node_authority() {
     );
     assert_eq!(source_outbox.attempt_count, 0);
     source_local
-        .mark_outbox_submitted(&source_session, &request, 99)
+        .mark_outbox_submitted(
+            &source_session,
+            &actor("fabric-client", &["fabric_submit"]),
+            &request,
+            99,
+        )
         .expect("live gateway begins exact submission");
     let (_, attempt, accepted, _) = accept_fabric_operation(
         &control,

@@ -167,6 +167,7 @@ impl NodeLocalFabricStore {
     pub fn prepare_outbox(
         &self,
         session: &FabricSessionFence,
+        authenticated_actor: &AuthenticatedActor,
         operation: &RoutedOperation,
         _now_unix_ms: u64,
     ) -> Result<(LocalRemoteOutbox, bool), FabricError> {
@@ -175,6 +176,14 @@ impl NodeLocalFabricStore {
             return Err(FabricError::none(
                 FabricErrorCode::SourceMismatch,
                 "source outbox operation does not match this Node authority",
+            ));
+        }
+        if authenticated_actor != &operation.actor
+            || authenticated_actor.company_id != self.company_id
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::UnauthorizedActor,
+                "source outbox actor must be resolved by the authenticated Node session",
             ));
         }
         if operation.source_gateway_generation != session.gateway_generation
@@ -225,10 +234,19 @@ impl NodeLocalFabricStore {
     pub fn mark_outbox_submitted(
         &self,
         session: &FabricSessionFence,
+        authenticated_actor: &AuthenticatedActor,
         operation: &RoutedOperation,
         now_unix_ms: u64,
     ) -> Result<LocalRemoteOutbox, FabricError> {
         self.require_session(session)?;
+        if authenticated_actor != &operation.actor
+            || authenticated_actor.company_id != self.company_id
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::UnauthorizedActor,
+                "outbox submit actor does not match the authenticated source identity",
+            ));
+        }
         if operation.company_id != self.company_id
             || operation.source_node_id != self.node_id
             || operation.source_gateway_generation != session.gateway_generation
