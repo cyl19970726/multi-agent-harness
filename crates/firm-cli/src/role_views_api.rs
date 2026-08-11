@@ -1299,10 +1299,19 @@ fn team_view(
         .filter_map(|work| work["work_id"].as_str())
         .collect::<BTreeSet<_>>();
     let (activity, activity_truncated) = team_activity(&facts, &team_work_ids, run_id);
+    // Team creation retains the Host identity for messaging, but that does
+    // not fabricate an executing member. Show the Host in member capacity
+    // only when this exact TeamRun has an explicit Host MemberRun.
+    let host_has_member_run = run_id.is_some_and(|selected_run_id| {
+        facts.member_runs.iter().any(|member_run| {
+            member_run["team_run_id"] == selected_run_id
+                && member_run["agent_member_id"] == team.host_agent_id
+        })
+    });
     let team_member_ids = team
         .member_ids
         .iter()
-        .chain(std::iter::once(&team.host_agent_id))
+        .filter(|member_id| member_id.as_str() != team.host_agent_id || host_has_member_run)
         .collect::<BTreeSet<_>>();
     let members=facts.members.iter().filter(|m|m["id"].as_str().is_some_and(|id|team_member_ids.iter().any(|member|member.as_str()==id))).map(|member|{
         let member_id=member["id"].as_str().unwrap_or_default();
@@ -1724,14 +1733,14 @@ fn team_view(
         let current = enum_string(&lease.status) == "active" && lease.expires_unix_ms > SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
         json!({"team_run_id":lease.team_run_id,"supervisor_id":lease.supervisor_id,"generation":lease.generation,"current":current,"heartbeat_unix_ms":lease.heartbeat_unix_ms,"expires_unix_ms":lease.expires_unix_ms,"owner_locator":lease.owner_locator,"node_daemon_generation":lease.node_daemon_generation,"status":enum_string(&lease.status)})
     });
-    let host_reply_correlations = facts
+    let host_reply_causations = facts
         .messages
         .iter()
         .filter(|message| {
             run_id.is_some_and(|id| message["team_run_id"] == id)
                 && message["sender_actor_ref"]["id"] == team.host_agent_id
         })
-        .filter_map(|message| message["correlation_id"].as_str())
+        .filter_map(|message| message["causation_id"].as_str())
         .collect::<BTreeSet<_>>();
     let mut host_inbox = facts
         .messages
@@ -1740,9 +1749,9 @@ fn team_view(
             run_id.is_some_and(|id| message["team_run_id"] == id)
                 && message["sender_actor_ref"]["id"] != team.host_agent_id
                 && message["response_intent"] == "response_required"
-                && !message["correlation_id"]
+                && !message["id"]
                     .as_str()
-                    .is_some_and(|id| host_reply_correlations.contains(id))
+                    .is_some_and(|id| host_reply_causations.contains(id))
                 && (message["recipients"].as_array().is_some_and(|recipients| {
                     recipients
                         .iter()

@@ -38,12 +38,17 @@ captures, comparisons and two iterations.
 
 ## Implemented evidence
 
-The deterministic authenticated fixture covers a populated Team, its shared
-Works/Activity/Members views, embedded Host tools, and a useful empty Team. It
+The deterministic authenticated fixture covers a populated Team with Open,
+Assigned, In progress, blocked, Review and Done responsibility; its shared
+Works/Activity/Members views; selected Work and member context; the exact-self
+Member home; embedded Host tools; and a useful empty Team at desktop, mobile,
+and the 320px overflow gate. It
 negotiates the RoleView protocol, supplies a memory-only capability, exercises
 SSE invalidation/refetch, proves Browser Back and URL-owned Team filters,
 performs one prepared `send_message` action with exact CAS and idempotency
-headers, proves keyboard focus containment/restoration for the Work sheet, and
+headers, proves a correlated reply path, displays enabled and server-disabled
+contextual Work actions with exact reasons, proves completed-Run/live-runtime
+Close availability, proves keyboard focus containment/restoration for the Work sheet, and
 records zero unexpected console or HTTP errors and no horizontal overflow at
 every normal viewport. A separate deliberate initial-503 case records the
 recoverable initial error state. Durable selected captures live under

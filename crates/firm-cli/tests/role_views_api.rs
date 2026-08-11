@@ -341,7 +341,10 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert!(refreshed["data"]["member_runtime"].is_array());
     assert!(refreshed["data"]["runtime_recovery"].is_array());
     assert_eq!(refreshed["data"]["pressure_summary"]["ready_work"], 1);
-    assert_eq!(refreshed["data"]["pressure_summary"]["total_members"], 3);
+    assert_eq!(
+        refreshed["data"]["pressure_summary"]["total_members"], 2,
+        "Team Lead must not be synthesized into execution capacity"
+    );
     assert!(refreshed["data"]["all_works"]
         .as_array()
         .is_some_and(|items| items
@@ -531,7 +534,7 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         .and_then(|actions| {
             actions
                 .iter()
-                .find(|action| action["kind"] == "request_decision")
+                .find(|action| action["kind"] == "reply_message")
         })
         .is_some_and(|action| action["disabled_reason"].as_str().is_some()));
     let before_unroutable_decision = ledger_digest(serve.fixture_store_root());
@@ -2071,12 +2074,51 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
         &action_headers(TOKEN, "host-member-canonical-reply", &reply_version),
     );
     assert_eq!(status, 200, "Host reply: {host_reply}");
+    let host_reply_id = host_reply["projection"]["id"].as_str().unwrap();
     let (status, resolved_host_view) =
         serve.get_json_with_headers(&host_view_route, &[("X-AgentFirm-Token", TOKEN)]);
     assert_eq!(status, 200, "resolved Host inbox: {resolved_host_view}");
     assert_eq!(
         resolved_host_view["data"]["host_inbox"],
         serde_json::json!([])
+    );
+
+    let (status, followup_member_view) =
+        serve.get_json_with_headers(&member_view_route, &[("X-AgentFirm-Token", MEMBER_TOKEN)]);
+    assert_eq!(
+        status, 200,
+        "follow-up Member RoleView: {followup_member_view}"
+    );
+    let followup_version = followup_member_view["allowed_actions"]
+        .as_array()
+        .and_then(|actions| {
+            actions
+                .iter()
+                .find(|action| action["kind"] == "reply_message")
+        })
+        .and_then(|action| action["required_version"].as_u64())
+        .expect("follow-up reply version")
+        .to_string();
+    let (status, followup_message) = serve.post_json_with_headers(
+        &format!("/v1/agentfirm/team-runs/{run_id}/messages/reply?project={project_id}"),
+        &serde_json::json!({
+            "action":"reply_message",
+            "recipient_ids":[host_id],
+            "body":"Member follow-up after the Host reply",
+            "correlation_id":correlation_id,
+            "causation_id":host_reply_id,
+            "response_required":true
+        }),
+        &action_headers(MEMBER_TOKEN, "member-host-followup", &followup_version),
+    );
+    assert_eq!(status, 200, "Member follow-up: {followup_message}");
+    let followup_message_id = followup_message["projection"]["id"].as_str().unwrap();
+    let (status, followup_host_view) =
+        serve.get_json_with_headers(&host_view_route, &[("X-AgentFirm-Token", TOKEN)]);
+    assert_eq!(status, 200, "follow-up Host inbox: {followup_host_view}");
+    assert_eq!(
+        followup_host_view["data"]["host_inbox"][0]["message_id"], followup_message_id,
+        "a later member question in the same correlation remains actionable"
     );
 
     let messages = store

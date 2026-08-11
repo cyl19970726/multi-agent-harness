@@ -9,6 +9,7 @@ const activeFiles = [
   "src/model/roleViews.ts",
   "src/surfaces/TeamWorkspace.tsx",
   "src/surfaces/HostConsole.tsx",
+  "src/surfaces/HostActivityComposer.tsx",
   "src/surfaces/RoleViewPrimitives.tsx",
   "src/components/workbench/team/TeamCapacityStrip.tsx",
   "src/components/workbench/team/TeamWorksBoard.tsx",
@@ -36,6 +37,9 @@ const teamRouteSource=workbenchShell.split('case "team":')[1].split('case "opera
 assert.doesNotMatch(teamRouteSource,/model\.snapshot\.team_runs/,"active Team route still joins global snapshot TeamRun rows");
 assert.doesNotMatch(teamRouteSource,/TeamWorkspace key=/,"snapshot generation remounts and destroys last-good TeamWorkspace state");
 assert.match(sources["src/surfaces/TeamWorkspace.tsx"],/<HostConsole\s+embedded/,"Host-only truth replaces instead of composing the shared War Room");
+assert.match(sources["src/surfaces/TeamWorkspace.tsx"],/<HostActivityComposer /,"Activity lacks an authenticated same-surface composer");
+assert.match(sources["src/components/workbench/team/TeamWorksBoard.tsx"],/label: "Assigned"/,"assigned Work is collapsed into an ambiguous lane");
+assert.match(sources["src/components/workbench/team/TeamWorksBoard.tsx"],/label: "In progress"/,"in-progress Work is not explicit");
 assert.match(sources["src/components/workbench/team/TeamMembersCapacity.tsx"],/<Avatar /,"mature member portraits are not reused");
 assert.match(sources["src/components/workbench/team/TeamMessageComposer.tsx"], /prepareRoleAction/, "compact composer bypasses closed Role Actions");
 assert.match(sources["src/surfaces/TeamWorkspace.tsx"], /Last authoritative view|last authoritative view|last-good truth|Showing the last authoritative view/, "last-good refresh state is missing");

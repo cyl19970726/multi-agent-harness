@@ -11,10 +11,11 @@ import type { MemberCapacitySummary, WorkSummary } from "../../../model/roleView
 type OwnerFilter = "all" | "unassigned" | string;
 type AttentionFilter = "all" | "blocked" | "review";
 const LANES = [
-  { id: "open", label: "Open", matches: (work: WorkSummary) => work.phase === "open" },
-  { id: "active", label: "Active", matches: (work: WorkSummary) => work.phase === "active" },
+  { id: "open", label: "Open", matches: (work: WorkSummary) => work.phase === "open" && !work.owner_actor_ref },
+  { id: "assigned", label: "Assigned", matches: (work: WorkSummary) => work.phase === "open" && Boolean(work.owner_actor_ref) },
+  { id: "active", label: "In progress", matches: (work: WorkSummary) => work.phase === "active" },
   { id: "review", label: "Review", matches: (work: WorkSummary) => work.phase === "review" },
-  { id: "closed", label: "Closed", matches: (work: WorkSummary) => work.phase === "closed" },
+  { id: "closed", label: "Done", matches: (work: WorkSummary) => work.phase === "closed" },
 ] as const;
 
 function memberLabel(member: MemberCapacitySummary | undefined, fallback?: string | null) {
@@ -100,7 +101,7 @@ export function TeamWorksBoard({ works, members, selectedWorkId, onSelectWork, o
         <div className="flex min-w-0 flex-wrap gap-1" role="group" aria-label="Attention filter">{(["all", "blocked", "review"] as const).map((value) => <Button key={value} size="sm" variant={attention === value ? "default" : "secondary"} className="min-h-10 flex-1" onClick={() => updateFilters({attention:value})}>{value}</Button>)}</div>
       </div>
 
-      {visible.length ? <div className="mt-3 grid gap-3 lg:grid-cols-4" data-testid="team-work-lanes">{LANES.map((lane) => {
+      {visible.length ? <div className="mt-3 grid gap-3 lg:grid-cols-5" data-testid="team-work-lanes">{LANES.map((lane) => {
         const laneWorks = visible.filter(lane.matches);
         return <section key={lane.id} data-work-lane={lane.id} className={cn("min-w-0 rounded-xl border border-border bg-muted/15 p-2.5", !laneWorks.length && "hidden sm:block")}><header className="mb-2 flex items-center justify-between px-1"><h3 className="text-[11px] font-semibold uppercase tracking-[.12em] text-muted-foreground">{lane.label}</h3><span className="text-xs tabular-nums text-muted-foreground">{laneWorks.length}</span></header><div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1">{laneWorks.map((work) => {
           const ownerMember = work.owner_actor_ref ? membersById.get(work.owner_actor_ref.id) : undefined;

@@ -47,6 +47,24 @@ Work/conversation/member components, and expands state and responsive browser
 acceptance. Retired client authority and superseded coordination objects were
 not restored.
 
+## Second exact-candidate review — `f80409ca`
+
+The second independent passes also rejected the candidate: PM reported P0=0,
+P1=3, P2=2; operator reported P0=0, P1=5, P2=3. Blocking findings covered
+historical-TeamRun Host action scoping, correlation-wide Inbox resolution,
+screenshots stamped with the previous SHA, missing completed-run Close proof,
+read-only/raw-id Activity, collapsed Work lifecycle lanes, implicit Host
+membership in capacity, and incomplete selected-context/action evidence.
+
+The next correction preserves the selected TeamRun route identity through
+HostConsole and fails closed on mismatched action targets; resolves Inbox rows
+only by exact causation; keeps Host separate from explicit Team membership;
+restores the five canonical Work lanes; adds same-surface authenticated
+Activity reply/composer, filters, readable actors and portraits; and expands
+evidence across empty mobile, Work details/actions, selected member, Member
+home, and completed-run Close. Exact-SHA evidence is captured only after the
+corrected source commit is frozen.
+
 ## Final review
 
 Pending independent PM/real-user re-review of the corrected exact SHA.
