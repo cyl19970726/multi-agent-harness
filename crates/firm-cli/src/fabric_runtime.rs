@@ -873,7 +873,7 @@ fn handle_host_http<K: harness_fabric::ArtifactKeyBackend>(
             .headers
             .get("authorization")
             .and_then(|value| value.strip_prefix("Bearer "));
-        if presented != Some(host_token)
+        if !presented.is_some_and(|presented| constant_time_secret_eq(presented, host_token))
             || request.headers.keys().any(|name| {
                 matches!(
                     name.as_str(),
@@ -956,6 +956,15 @@ fn route_host_http<K: harness_fabric::ArtifactKeyBackend>(
         })
     };
     if method == "POST" && path == "/v1/fabric/enrollments" {
+        reject_unknown_json_fields(
+            body,
+            &[
+                "enrollment_id",
+                "requested_name",
+                "allowed_capabilities",
+                "expires_at_unix_ms",
+            ],
+        )?;
         let actor = required_actor()?;
         let enrollment_id = json_string(body, "enrollment_id")?;
         let requested_name = json_string(body, "requested_name")?;
@@ -981,6 +990,16 @@ fn route_host_http<K: harness_fabric::ArtifactKeyBackend>(
         return Ok(serde_json::json!({"enrollment":enrollment,"raw_token":raw_token}));
     }
     if method == "POST" && path == "/v1/fabric/nodes/enroll" {
+        reject_unknown_json_fields(
+            body,
+            &[
+                "raw_token",
+                "node_id",
+                "display_name",
+                "csr_pem",
+                "schema_bundle_digest",
+            ],
+        )?;
         let raw_token = json_string(body, "raw_token")?;
         let node_id = json_string(body, "node_id")?;
         let display_name = json_string(body, "display_name")?;
@@ -1132,6 +1151,7 @@ fn route_host_http<K: harness_fabric::ArtifactKeyBackend>(
             .strip_prefix("/v1/fabric/nodes/")
             .and_then(|rest| rest.strip_suffix("/drain"))
         {
+            reject_unknown_json_fields(body, &["expected_revision"])?;
             let revision = json_u64(body, "expected_revision")?;
             let node = control.set_node_administrative_status(
                 required_actor()?,
@@ -1147,6 +1167,7 @@ fn route_host_http<K: harness_fabric::ArtifactKeyBackend>(
             .strip_prefix("/v1/fabric/nodes/")
             .and_then(|rest| rest.strip_suffix("/revoke"))
         {
+            reject_unknown_json_fields(body, &["expected_revision", "reason"])?;
             let revision = json_u64(body, "expected_revision")?;
             let reason = json_string(body, "reason")?;
             let node = control.revoke_node(
@@ -1160,6 +1181,19 @@ fn route_host_http<K: harness_fabric::ArtifactKeyBackend>(
             return Ok(serde_json::json!({"node":node}));
         }
         if path == "/v1/fabric/artifacts/initiate" {
+            reject_unknown_json_fields(
+                body,
+                &[
+                    "artifact_id",
+                    "source_node_id",
+                    "operation_id",
+                    "media_type",
+                    "size_bytes",
+                    "sha256",
+                    "classification",
+                    "authorized_readers",
+                ],
+            )?;
             let classification = match json_string(body, "classification")?.as_str() {
                 "company_internal" => ArtifactClassification::CompanyInternal,
                 "sensitive" => ArtifactClassification::Sensitive,
@@ -1189,6 +1223,7 @@ fn route_host_http<K: harness_fabric::ArtifactKeyBackend>(
             .strip_prefix("/v1/fabric/artifacts/")
             .and_then(|rest| rest.strip_suffix("/complete"))
         {
+            reject_unknown_json_fields(body, &["capability", "bytes_hex"])?;
             let capability: harness_fabric::ArtifactCapability =
                 serde_json::from_value(body.get("capability").cloned().ok_or_else(|| {
                     FabricError::none(FabricErrorCode::CapabilityInvalid, "capability is required")
@@ -1277,6 +1312,39 @@ fn json_string(value: &serde_json::Value, key: &str) -> Result<String, FabricErr
                 format!("{key} is required"),
             )
         })
+}
+
+fn reject_unknown_json_fields(
+    value: &serde_json::Value,
+    allowed: &[&str],
+) -> Result<(), FabricError> {
+    let object = value.as_object().ok_or_else(|| {
+        FabricError::none(
+            FabricErrorCode::InvalidPayload,
+            "Remote Fabric mutation body must be a JSON object",
+        )
+    })?;
+    if let Some(field) = object
+        .keys()
+        .find(|field| !allowed.contains(&field.as_str()))
+    {
+        return Err(FabricError::none(
+            FabricErrorCode::InvalidPayload,
+            format!("unknown Remote Fabric mutation field: {field}"),
+        ));
+    }
+    Ok(())
+}
+
+fn constant_time_secret_eq(left: &str, right: &str) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.as_bytes()
+        .iter()
+        .zip(right.as_bytes())
+        .fold(0u8, |difference, (left, right)| difference | (left ^ right))
+        == 0
 }
 
 fn json_u64(value: &serde_json::Value, key: &str) -> Result<u64, FabricError> {
@@ -1534,6 +1602,27 @@ mod tests {
         assert_eq!(
             fabric_http_body_limit("POST", "/v1/fabric/artifacts/a/nested/complete"),
             STANDARD_FABRIC_HTTP_BODY_LIMIT
+        );
+    }
+
+    #[test]
+    fn host_rest_secret_and_mutation_shapes_fail_closed() {
+        assert!(constant_time_secret_eq("host-secret-a", "host-secret-a"));
+        assert!(!constant_time_secret_eq("host-secret-a", "host-secret-b"));
+        assert!(!constant_time_secret_eq("short", "longer"));
+        reject_unknown_json_fields(
+            &serde_json::json!({"expected_revision": 1}),
+            &["expected_revision"],
+        )
+        .expect("closed mutation shape");
+        assert_eq!(
+            reject_unknown_json_fields(
+                &serde_json::json!({"expected_revision": 1, "actor_id": "browser"}),
+                &["expected_revision"],
+            )
+            .expect_err("browser identity field fails closed")
+            .code,
+            FabricErrorCode::InvalidPayload
         );
     }
 
