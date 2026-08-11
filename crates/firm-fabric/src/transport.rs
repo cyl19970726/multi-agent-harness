@@ -355,7 +355,8 @@ impl NodeFabricConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FabricSessionFence {
     pub company_id: String,
     pub node_id: String,

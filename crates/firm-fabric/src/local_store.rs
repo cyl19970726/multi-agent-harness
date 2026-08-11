@@ -30,6 +30,8 @@ pub struct NodeLocalFabricState {
     pub revision: u64,
     pub authority_company_id: Option<String>,
     pub authority_node_id: Option<String>,
+    #[serde(default)]
+    pub active_session: Option<FabricSessionFence>,
     pub outboxes: BTreeMap<String, LocalRemoteOutbox>,
     pub inboxes: BTreeMap<String, LocalRemoteInbox>,
     pub persisted_ordering_sequences: BTreeMap<String, u64>,
@@ -71,6 +73,58 @@ pub struct NodeLocalFabricStore {
 }
 
 impl NodeLocalFabricStore {
+    pub fn bind_gateway_session(&self, session: &FabricSessionFence) -> Result<(), FabricError> {
+        if session.company_id != self.company_id || session.node_id != self.node_id {
+            return Err(FabricError::none(
+                FabricErrorCode::SourceMismatch,
+                "gateway session belongs to another Company or Node",
+            ));
+        }
+        self.transact(|state| {
+            if state.active_session.as_ref() == Some(session) {
+                return Ok(());
+            }
+            if state.active_session.as_ref().is_some_and(|current| {
+                session.control_plane_generation < current.control_plane_generation
+                    || session.node_daemon_generation < current.node_daemon_generation
+                    || (session.control_plane_generation == current.control_plane_generation
+                        && session.gateway_generation < current.gateway_generation)
+                    || (session.gateway_generation == current.gateway_generation
+                        && (session.node_daemon_id != current.node_daemon_id
+                            || session.node_daemon_generation
+                                != current.node_daemon_generation))
+            }) {
+                return Err(FabricError::none(
+                    FabricErrorCode::NodeStaleGeneration,
+                    "Node-local gateway session cannot move authority backwards or alias a generation",
+                ));
+            }
+            state.active_session = Some(session.clone());
+            Ok(())
+        })
+    }
+
+    pub fn active_session(&self) -> Result<Option<FabricSessionFence>, FabricError> {
+        Ok(self.snapshot()?.active_session)
+    }
+
+    pub fn pending_outbox_operations(&self) -> Result<Vec<RoutedOperation>, FabricError> {
+        let state = self.snapshot()?;
+        let mut operations = state
+            .outboxes
+            .values()
+            .filter(|outbox| {
+                matches!(
+                    outbox.local_state,
+                    LocalOutboxState::QueuedForControlPlane | LocalOutboxState::Submitted
+                )
+            })
+            .filter_map(|outbox| outbox.operation.clone())
+            .collect::<Vec<_>>();
+        operations.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(operations)
+    }
+
     pub fn open(
         root: impl AsRef<Path>,
         company_id: impl Into<String>,
@@ -235,6 +289,7 @@ impl NodeLocalFabricStore {
                 attempt_count: 0,
                 last_attempt_at_unix_ms: None,
                 terminal_receipt_ref: None,
+                operation: Some(operation.clone()),
                 schema_version: FABRIC_SCHEMA_VERSION.into(),
             };
             state.outboxes.insert(operation.id.clone(), outbox.clone());

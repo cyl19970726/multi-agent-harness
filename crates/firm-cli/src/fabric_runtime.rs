@@ -38,8 +38,206 @@ pub(crate) fn fabric_command(
     match command {
         "control-plane" => control_plane_command(resolved, &args[1..]),
         "node-gateway" => node_gateway_command(store, resolved, &args[1..]),
+        "route" => route_command(store, resolved, &args[1..]),
         other => Err(CliError::Usage(format!("unknown fabric command: {other}"))),
     }
+}
+
+fn route_command(
+    wave4c_store: &HarnessStore,
+    resolved: &ResolvedStore,
+    args: &[String],
+) -> CliResult<()> {
+    if args.first().map(String::as_str) != Some("queue") {
+        return Err(CliError::Usage(
+            "fabric route queue --company <id> --target-node <uuid> --target-space <id> --kind runtime|message --body-file <path> --operation-id <id> --idempotency-key <key> --ordering-key <key> [--source-space <id>]".into(),
+        ));
+    }
+    let company_id = required(args, "--company")?;
+    let target_node_id = required(args, "--target-node")?;
+    let target_execution_space_id = required(args, "--target-space")?;
+    let operation_id = required(args, "--operation-id")?;
+    let idempotency_key = required(args, "--idempotency-key")?;
+    let ordering_key = required(args, "--ordering-key")?;
+    let kind = required(args, "--kind")?;
+    let body: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(required_path(args, "--body-file")?)?)?;
+    let node_id = super::read_local_node_id()?;
+    if target_node_id == node_id {
+        return Err(CliError::Usage(
+            "Remote Fabric route target must be a distinct ExecutionNode".into(),
+        ));
+    }
+    let now = now_unix_ms().map_err(fabric_error)?;
+    let firm_home = firm_home(resolved, args)?;
+    let layout = RemoteFabricStoreLayout::open(&firm_home).map_err(fabric_error)?;
+    let local = layout
+        .open_node_local(&company_id, &node_id)
+        .map_err(fabric_error)?;
+    let session = local
+        .active_session()
+        .map_err(fabric_error)?
+        .ok_or_else(|| {
+            CliError::Usage(
+                "NodeGateway has no durable active session; start the current NodeGateway first"
+                    .into(),
+            )
+        })?;
+    let lease = wave4c_store
+        .latest_node_daemon_lease(&node_id)?
+        .filter(|lease| {
+            lease.status == harness_core::NodeDaemonLeaseStatus::Active
+                && lease.expires_unix_ms > now
+                && lease.daemon_id == session.node_daemon_id
+                && lease.generation == session.node_daemon_generation
+        })
+        .ok_or_else(|| {
+            CliError::Usage(
+                "NodeGateway session is not a child of the exact current NodeDaemonLease".into(),
+            )
+        })?;
+    let (
+        wire_kind,
+        body_schema,
+        source_execution_space_id,
+        expected_target_revision,
+        priority,
+        expires_at_unix_ms,
+    ) = match kind.as_str() {
+        "runtime" => {
+            let reference: harness_fabric::RuntimeCommandReference =
+                serde_json::from_value(body.clone())?;
+            let envelope: harness_core::agentfirm_api::ControlCommandEnvelope =
+                serde_json::from_value(reference.canonical_command_envelope.clone())?;
+            if envelope.target_node_id != target_node_id
+                || envelope.execution_space_id != target_execution_space_id
+                || envelope.authenticated_actor.kind
+                    != harness_core::agentfirm_api::ActorKind::Service
+                || envelope.authenticated_actor.id != node_id
+            {
+                return Err(CliError::Usage(
+                        "remote RuntimeCommand must bind the exact target and current source Node service authority"
+                            .into(),
+                    ));
+            }
+            (
+                harness_fabric::RUNTIME_COMMAND_REFERENCE_KIND,
+                harness_fabric::RUNTIME_COMMAND_REFERENCE_SCHEMA,
+                value(args, "--source-space"),
+                Some(envelope.expected_version),
+                harness_fabric::OperationPriority::Control,
+                envelope.expires_unix_ms,
+            )
+        }
+        "message" => {
+            let reference: harness_fabric::MessageReference = serde_json::from_value(body.clone())?;
+            let envelope = reference
+                .canonical_message_envelope
+                .as_ref()
+                .ok_or_else(|| {
+                    CliError::Usage(
+                        "route queue currently requires an embedded canonical Message envelope"
+                            .into(),
+                    )
+                })?;
+            let message: harness_core::agentfirm_api::Message =
+                serde_json::from_value(envelope.clone())?;
+            if !wave4c_store
+                .fabric_messages(&message.source_execution_space_id)?
+                .iter()
+                .any(|stored| stored == &message)
+            {
+                return Err(CliError::Usage(
+                        "remote Message must already exist as the exact immutable source-authored Message"
+                            .into(),
+                    ));
+            }
+            (
+                harness_fabric::MESSAGE_REFERENCE_KIND,
+                harness_fabric::MESSAGE_REFERENCE_SCHEMA,
+                Some(message.source_execution_space_id),
+                Some(0),
+                harness_fabric::OperationPriority::Normal,
+                now.saturating_add(5 * 60_000),
+            )
+        }
+        _ => {
+            return Err(CliError::Usage(
+                "--kind must be runtime|message; arbitrary transport mutations are closed".into(),
+            ))
+        }
+    };
+    let actor = AuthenticatedActor {
+        company_id: company_id.clone(),
+        actor_id: node_id.clone(),
+        actor_kind: harness_fabric::ActorKind::Service,
+        role_bindings: std::collections::BTreeSet::from(["fabric_submit".into()]),
+        session_id: format!("node-daemon:{}:{}", lease.daemon_id, lease.generation),
+        issued_at_unix_ms: now,
+        expires_at_unix_ms: now.saturating_add(30_000),
+    };
+    let operation = harness_fabric::RoutedOperation {
+        id: operation_id.clone(),
+        company_id,
+        kind: wire_kind.into(),
+        source_authority: harness_fabric::OperationSourceAuthority::Node,
+        source_node_id: Some(node_id),
+        target_node_id,
+        source_gateway_generation: Some(session.gateway_generation),
+        source_node_daemon_id: Some(lease.daemon_id),
+        source_node_daemon_generation: Some(lease.generation),
+        control_plane_generation: session.control_plane_generation,
+        source_execution_space_id,
+        target_execution_space_id: Some(target_execution_space_id),
+        actor: actor.clone(),
+        actor_runtime_generation: None,
+        authorization_context: std::collections::BTreeMap::from([(
+            "capability".into(),
+            match kind.as_str() {
+                "runtime" => "remote-runtime",
+                "message" => "remote-message",
+                _ => unreachable!(),
+            }
+            .into(),
+        )]),
+        idempotency_key,
+        ordering_key,
+        correlation_id: format!("route:{operation_id}"),
+        causation_id: None,
+        expected_target_revision,
+        body_schema: body_schema.into(),
+        body_digest: harness_fabric::json_digest(&body).map_err(fabric_error)?,
+        body,
+        priority,
+        created_at_unix_ms: now,
+        expires_at_unix_ms,
+        protocol_version: harness_fabric::FABRIC_PROTOCOL_VERSION,
+        schema_version: harness_fabric::FABRIC_SCHEMA_VERSION.into(),
+        canonicalization_version: harness_fabric::FABRIC_CANONICALIZATION_VERSION.into(),
+    };
+    operation.closed_body().map_err(fabric_error)?;
+    if kind == "runtime" {
+        let envelope = super::remote_fabric::resolved_runtime_command_from_operation(&operation)
+            .map_err(fabric_error)?;
+        if envelope.expires_unix_ms <= now {
+            return Err(CliError::Usage(
+                "remote RuntimeCommand expired before local durable queueing".into(),
+            ));
+        }
+    } else {
+        super::remote_fabric::resolved_message_from_operation(&operation).map_err(fabric_error)?;
+    }
+    let (queued, replayed) = local
+        .prepare_outbox(&session, &actor, &operation, now)
+        .map_err(fabric_error)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "queued_operation": queued,
+            "replayed": replayed,
+        }))?
+    );
+    Ok(())
 }
 
 fn control_plane_command(resolved: &ResolvedStore, args: &[String]) -> CliResult<()> {
@@ -276,6 +474,9 @@ fn node_gateway_command(
         control_plane_ca_pem: required_path(args, "--control-plane-ca")?,
     };
     let mut gateway = NodeGatewayConnection::connect(&config, &tls, hello).map_err(fabric_error)?;
+    local
+        .bind_gateway_session(&gateway.session)
+        .map_err(fabric_error)?;
     gateway
         .set_read_timeout(Some(Duration::from_millis(250)))
         .map_err(fabric_error)?;
@@ -306,6 +507,25 @@ fn node_gateway_command(
                 }
                 Err(error) => return Err(fabric_error(error)),
             }
+        }
+        for operation in local.pending_outbox_operations().map_err(fabric_error)? {
+            if operation.source_gateway_generation != Some(gateway.session.gateway_generation)
+                || operation.control_plane_generation != gateway.session.control_plane_generation
+            {
+                eprintln!(
+                    "Remote Fabric queued operation {} requires reconciliation after gateway generation change",
+                    operation.id
+                );
+                continue;
+            }
+            let actor = operation.actor.clone();
+            let receipt = gateway
+                .submit_operation(&local, &actor, operation)
+                .map_err(fabric_error)?;
+            println!(
+                "Remote Fabric submitted operation={} receipt={:?}",
+                receipt.operation_id, receipt.kind
+            );
         }
         if once {
             gateway.close().map_err(fabric_error)?;
@@ -609,6 +829,7 @@ fn handle_host_http<K: harness_fabric::ArtifactKeyBackend>(
             actor_kind: harness_fabric::ActorKind::Human,
             role_bindings: std::collections::BTreeSet::from([
                 "company_host".into(),
+                "fabric_submit".into(),
                 "artifact_write".into(),
                 "artifact_read".into(),
             ]),
@@ -801,6 +1022,27 @@ fn route_host_http<K: harness_fabric::ArtifactKeyBackend>(
         }
     }
     if method == "POST" {
+        if path == "/v1/fabric/operations" {
+            let operation: harness_fabric::RoutedOperation =
+                serde_json::from_value(body.get("operation").cloned().ok_or_else(|| {
+                    FabricError::none(FabricErrorCode::InvalidPayload, "operation is required")
+                })?)
+                .map_err(|error| {
+                    FabricError::none(FabricErrorCode::InvalidPayload, error.to_string())
+                })?;
+            let (operation, attempt, receipt, replayed) = control.accept_control_plane_operation(
+                generation,
+                required_actor()?,
+                operation,
+                now,
+            )?;
+            return Ok(serde_json::json!({
+                "operation": operation,
+                "attempt": attempt,
+                "receipt": receipt,
+                "replayed": replayed,
+            }));
+        }
         if let Some(node_id) = path
             .strip_prefix("/v1/fabric/nodes/")
             .and_then(|rest| rest.strip_suffix("/drain"))
@@ -1107,7 +1349,10 @@ mod tests {
             company_id: "company-test".into(),
             actor_id: "company-host:http".into(),
             actor_kind: harness_fabric::ActorKind::Human,
-            role_bindings: std::collections::BTreeSet::from(["company_host".into()]),
+            role_bindings: std::collections::BTreeSet::from([
+                "company_host".into(),
+                "fabric_submit".into(),
+            ]),
             session_id: "host-test".into(),
             issued_at_unix_ms: now,
             expires_at_unix_ms: now + 60_000,
@@ -1156,6 +1401,97 @@ mod tests {
             enrolled["node"]["public_key_fingerprint"],
             csr.public_key_fingerprint
         );
+        let node: harness_fabric::CompanyNode =
+            serde_json::from_value(enrolled["node"].clone()).expect("enrolled node");
+        let peer = harness_fabric::transport::VerifiedMtlsPeer {
+            company_id: "company-test".into(),
+            node_id: "node-a".into(),
+            certificate_serial: node.certificate_serial.clone(),
+            public_key_fingerprint: node.public_key_fingerprint.clone(),
+            tls_version: "TLS1.3".into(),
+            websocket_subprotocol: harness_fabric::transport::FABRIC_WEBSOCKET_SUBPROTOCOL.into(),
+        };
+        control
+            .connect_gateway_mtls(
+                lease.control_plane_generation,
+                &peer,
+                &harness_fabric::NodeHello {
+                    company_id: "company-test".into(),
+                    node_id: "node-a".into(),
+                    instance_id: "gateway-a".into(),
+                    node_daemon_id: "daemon-a".into(),
+                    node_daemon_generation: 1,
+                    protocol_min: 1,
+                    protocol_max: 1,
+                    schema_bundle_digest: "schema-test".into(),
+                    features: std::collections::BTreeSet::from(["durable-routing".into()]),
+                    build_sha: "test".into(),
+                    last_persisted_route_seq: 0,
+                    unresolved_operation_ids: std::collections::BTreeSet::new(),
+                    certificate_serial: node.certificate_serial,
+                    public_key_fingerprint: node.public_key_fingerprint,
+                },
+                now + 3,
+            )
+            .expect("connect exact target gateway");
+        let probe_body = serde_json::json!({"probe":"host-route"});
+        let routed = harness_fabric::RoutedOperation {
+            id: "host-probe-1".into(),
+            company_id: "company-test".into(),
+            kind: harness_fabric::PROBE_OPERATION_KIND.into(),
+            source_authority: harness_fabric::OperationSourceAuthority::ControlPlane,
+            source_node_id: None,
+            target_node_id: "node-a".into(),
+            source_gateway_generation: None,
+            source_node_daemon_id: None,
+            source_node_daemon_generation: None,
+            control_plane_generation: lease.control_plane_generation,
+            source_execution_space_id: None,
+            target_execution_space_id: None,
+            actor: AuthenticatedActor {
+                company_id: "foreign".into(),
+                actor_id: "browser-selected".into(),
+                actor_kind: harness_fabric::ActorKind::Human,
+                role_bindings: std::collections::BTreeSet::new(),
+                session_id: "forged".into(),
+                issued_at_unix_ms: 0,
+                expires_at_unix_ms: 1,
+            },
+            actor_runtime_generation: None,
+            authorization_context: std::collections::BTreeMap::from([(
+                "capability".into(),
+                "durable-routing".into(),
+            )]),
+            idempotency_key: "host-probe-1".into(),
+            ordering_key: "probe:node-a".into(),
+            correlation_id: "probe:1".into(),
+            causation_id: None,
+            expected_target_revision: None,
+            body_schema: harness_fabric::PROBE_BODY_SCHEMA.into(),
+            body_digest: harness_fabric::json_digest(&probe_body).unwrap(),
+            body: probe_body,
+            priority: harness_fabric::OperationPriority::Normal,
+            created_at_unix_ms: now + 4,
+            expires_at_unix_ms: now + 60_000,
+            protocol_version: harness_fabric::FABRIC_PROTOCOL_VERSION,
+            schema_version: harness_fabric::FABRIC_SCHEMA_VERSION.into(),
+            canonicalization_version: harness_fabric::FABRIC_CANONICALIZATION_VERSION.into(),
+        };
+        let accepted = route_host_http(
+            "POST",
+            "/v1/fabric/operations",
+            "/v1/fabric/operations",
+            &serde_json::json!({"operation":routed}),
+            Some(&actor),
+            &control,
+            lease.control_plane_generation,
+            &ca,
+            now + 4,
+            "host-token-00000000000000000000000000000000",
+        )
+        .expect("Host submits a closed Control Plane operation");
+        assert_eq!(accepted["operation"]["actor"]["actor_id"], actor.actor_id);
+        assert_eq!(accepted["receipt"]["kind"], "control_plane_accepted");
         let before = store.snapshot().expect("before replay");
         let replay = route_host_http(
             "POST",

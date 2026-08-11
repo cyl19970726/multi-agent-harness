@@ -714,7 +714,7 @@ pub enum LocalOutboxState {
     ReconcileRequired,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LocalRemoteOutbox {
     pub company_id: String,
@@ -727,6 +727,11 @@ pub struct LocalRemoteOutbox {
     pub attempt_count: u32,
     pub last_attempt_at_unix_ms: Option<u64>,
     pub terminal_receipt_ref: Option<String>,
+    /// Durable pre-acceptance transport envelope. FabricStore becomes the sole
+    /// route truth after Control Plane acceptance; this copy exists only so a
+    /// live source gateway can safely retry its own queued submission.
+    #[serde(default)]
+    pub operation: Option<RoutedOperation>,
     pub schema_version: String,
 }
 
