@@ -186,6 +186,7 @@ impl NodeLocalFabricStore {
             ));
         }
         operation.validate_digest()?;
+        operation.closed_body()?;
         let request_digest = canonical_digest(operation)?;
         self.transact(|state| {
             if let Some(existing) = state.outboxes.get(&operation.id) {
@@ -313,11 +314,17 @@ impl NodeLocalFabricStore {
         attempt: &RouteAttempt,
     ) -> Result<(LocalRemoteInbox, bool), FabricError> {
         self.require_session(session)?;
+        operation.validate_digest()?;
+        operation.closed_body()?;
         if operation.company_id != self.company_id
             || operation.target_node_id != self.node_id
             || attempt.company_id != self.company_id
             || attempt.target_node_id != self.node_id
             || attempt.operation_id != operation.id
+            || !matches!(
+                attempt.state,
+                RouteAttemptState::Queued | RouteAttemptState::Sent
+            )
         {
             return Err(FabricError::none(
                 FabricErrorCode::SourceMismatch,

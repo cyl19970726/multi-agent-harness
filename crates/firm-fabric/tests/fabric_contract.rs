@@ -915,6 +915,15 @@ fn node_local_store_rejects_foreign_and_stale_sessions_with_zero_delta() {
         assert_eq!(error.effect, EffectCertainty::None);
         assert_eq!(target.snapshot().expect("target snapshot"), before);
     }
+    let mut hostile_body = request.clone();
+    hostile_body.body["authority"] = json!("browser-selected-host");
+    hostile_body.body_digest = json_digest(&hostile_body.body).expect("hostile body digest");
+    let error = target
+        .persist_inbox(&fabric_session("node-b", 9, 3), &hostile_body, &attempt)
+        .expect_err("target independently rejects an unregistered body shape");
+    assert_eq!(error.code, FabricErrorCode::InvalidPayload);
+    assert_eq!(error.effect, EffectCertainty::None);
+    assert_eq!(target.snapshot().expect("target snapshot"), before);
 }
 
 #[test]
