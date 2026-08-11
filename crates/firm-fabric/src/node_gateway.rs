@@ -1,5 +1,6 @@
 use crate::protocol::*;
 use crate::store::FabricState;
+use crate::transport::VerifiedMtlsPeer;
 use crate::{FabricError, FabricErrorCode, FABRIC_PROTOCOL_VERSION, FABRIC_SCHEMA_VERSION};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
@@ -7,10 +8,12 @@ pub(crate) fn connect(
     state: &mut FabricState,
     company_id: &str,
     control_plane_generation: u64,
+    peer: &VerifiedMtlsPeer,
     hello: &NodeHello,
     proof: &NodeHelloProof,
     now_unix_ms: u64,
 ) -> Result<NodeWelcome, FabricError> {
+    peer.validate_node_hello(hello)?;
     if hello.company_id != company_id {
         return Err(FabricError::none(
             FabricErrorCode::WrongCompany,

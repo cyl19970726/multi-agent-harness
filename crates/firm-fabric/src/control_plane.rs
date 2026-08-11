@@ -6,7 +6,7 @@ use crate::node_gateway;
 use crate::protocol::*;
 use crate::router;
 use crate::store::{FabricState, FabricStore};
-use crate::transport::FabricSessionFence;
+use crate::transport::{FabricSessionFence, VerifiedMtlsPeer};
 use crate::{FabricError, FabricErrorCode, FABRIC_SCHEMA_VERSION};
 
 pub struct ControlPlane<'a, K: ArtifactKeyBackend> {
@@ -225,6 +225,7 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
     pub fn connect_gateway(
         &self,
         generation: u64,
+        peer: &VerifiedMtlsPeer,
         hello: &NodeHello,
         proof: &NodeHelloProof,
         now_unix_ms: u64,
@@ -241,6 +242,7 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
                 state,
                 &self.company_id,
                 generation,
+                peer,
                 hello,
                 proof,
                 now_unix_ms,

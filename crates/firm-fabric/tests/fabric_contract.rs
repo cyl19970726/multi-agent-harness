@@ -122,6 +122,17 @@ fn hello_proof(
     }
 }
 
+fn verified_peer(hello: &NodeHello) -> firm_fabric::transport::VerifiedMtlsPeer {
+    firm_fabric::transport::VerifiedMtlsPeer {
+        company_id: hello.company_id.clone(),
+        node_id: hello.node_id.clone(),
+        certificate_serial: hello.certificate_serial.clone(),
+        public_key_fingerprint: hello.public_key_fingerprint.clone(),
+        tls_version: "TLS1.3".into(),
+        websocket_subprotocol: firm_fabric::transport::FABRIC_WEBSOCKET_SUBPROTOCOL.into(),
+    }
+}
+
 fn connect_node<K: ArtifactKeyBackend>(
     control: &ControlPlane<'_, K>,
     generation: u64,
@@ -131,6 +142,7 @@ fn connect_node<K: ArtifactKeyBackend>(
 ) -> Result<NodeWelcome, FabricError> {
     control.connect_gateway(
         generation,
+        &verified_peer(hello),
         hello,
         &hello_proof(hello, generation, key),
         now_unix_ms,
@@ -978,9 +990,34 @@ fn enrollment_proof_and_certificate_rotation_are_cryptographic_and_generation_fe
     assert_eq!(feature_error.code, FabricErrorCode::FeatureIncompatible);
     assert_eq!(store.snapshot().expect("snapshot"), before_feature);
     let before_impersonation = store.snapshot().expect("snapshot");
+    let insecure_transport = control
+        .connect_gateway(
+            lease.control_plane_generation,
+            &firm_fabric::transport::VerifiedMtlsPeer {
+                tls_version: "TLS1.2".into(),
+                ..verified_peer(&first_hello)
+            },
+            &first_hello,
+            &hello_proof(
+                &first_hello,
+                lease.control_plane_generation,
+                &signing_key("node-a"),
+            ),
+            29,
+        )
+        .expect_err("TLS below 1.3 must fail closed");
+    assert_eq!(
+        insecure_transport.code,
+        FabricErrorCode::ProtocolIncompatible
+    );
+    assert_eq!(store.snapshot().expect("snapshot"), before_impersonation);
     let impersonation = control
         .connect_gateway(
             lease.control_plane_generation,
+            &firm_fabric::transport::VerifiedMtlsPeer {
+                node_id: "node-b".into(),
+                ..verified_peer(&first_hello)
+            },
             &first_hello,
             &hello_proof(
                 &first_hello,

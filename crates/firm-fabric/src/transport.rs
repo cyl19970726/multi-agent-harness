@@ -7,6 +7,43 @@ pub const GATEWAY_HEARTBEAT_INTERVAL_MS: u64 = 10_000;
 pub const GATEWAY_LEASE_DURATION_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedMtlsPeer {
+    pub company_id: String,
+    pub node_id: String,
+    pub certificate_serial: String,
+    pub public_key_fingerprint: String,
+    pub tls_version: String,
+    pub websocket_subprotocol: String,
+}
+
+impl VerifiedMtlsPeer {
+    pub fn validate_node_hello(
+        &self,
+        hello: &crate::protocol::NodeHello,
+    ) -> Result<(), FabricError> {
+        if self.tls_version != "TLS1.3"
+            || self.websocket_subprotocol != FABRIC_WEBSOCKET_SUBPROTOCOL
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::ProtocolIncompatible,
+                "Remote Fabric requires verified mutual TLS 1.3 and agentfirm.node.v1",
+            ));
+        }
+        if self.company_id != hello.company_id
+            || self.node_id != hello.node_id
+            || self.certificate_serial != hello.certificate_serial
+            || self.public_key_fingerprint != hello.public_key_fingerprint
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::UnauthorizedActor,
+                "NodeHello identity does not match the verified mTLS peer certificate",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeFabricConfig {
     pub company_id: String,
     pub node_id: String,
