@@ -1,0 +1,8 @@
+{
+  "company_id": "company-a", "node_id": "node-a", "lease_id": "lease-a-1",
+  "gateway_generation": 1, "instance_id": "daemon-a-1", "revision": 1,
+  "control_plane_generation": 2, "acquired_at_unix_ms": 10,
+  "expires_at_unix_ms": 30010, "last_heartbeat_at_unix_ms": 10,
+  "protocol_version": 1, "build_sha": "build-a", "schema_bundle_digest": "bundle-a",
+  "schema_version": "agentfirm.remote_fabric.v1"
+}

@@ -1,0 +1,10 @@
+{
+  "id": "node-a", "company_id": "company-a", "display_name": "Node A",
+  "public_key_fingerprint": "fingerprint-a", "certificate_serial": "cert-a",
+  "administrative_status": "active", "node_revision": 1,
+  "enrolled_at_unix_ms": 10, "last_seen_at_unix_ms": 20,
+  "revoked_at_unix_ms": null, "revoke_reason": null,
+  "protocol_min": 1, "protocol_max": 1, "schema_bundle_digest": "digest-v1",
+  "schema_version": "agentfirm.remote_fabric.v1", "created_at_unix_ms": 10,
+  "updated_at_unix_ms": 20
+}

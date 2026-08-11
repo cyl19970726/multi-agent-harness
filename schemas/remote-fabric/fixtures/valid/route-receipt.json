@@ -1,0 +1,7 @@
+{
+  "id": "receipt-1", "company_id": "company-a", "operation_id": "operation-1",
+  "target_node_id": "node-b", "target_gateway_generation": 1,
+  "control_plane_generation": 2, "route_seq": 1, "kind": "target_persisted",
+  "result_schema": null, "result": null, "result_digest": null, "error": null,
+  "created_at_unix_ms": 20, "schema_version": "agentfirm.remote_fabric.v1"
+}

@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/firm-core",
+  "crates/firm-fabric",
   "crates/firm-store",
   "crates/firm-workflow",
   "crates/firm-governance",
@@ -18,3 +19,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "1"
+chacha20poly1305 = "0.10"
+ed25519-dalek = "2"
+hmac = "0.12"
