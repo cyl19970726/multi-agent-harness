@@ -201,9 +201,17 @@ impl MultiTeamDaemon {
             .and_then(|()| daemon.serve_loop(&listener));
         drop(listener);
         let _ = std::fs::remove_file(&socket_path);
+        // Release the machine authority before waiting on provider threads.
+        // AgentSession/provider loops fence themselves against the current
+        // NodeDaemon lease, so keeping that lease live while joining children
+        // lets an idle provider remain authoritative until its normal idle
+        // timeout. Publishing the release first is the shutdown linearization
+        // point: no new runtime effect may start, every existing loop observes
+        // NODE_DAEMON_GENERATION_FENCED, and graceful_shutdown can reap it
+        // without inventing a semantic Member close.
+        let release_result = daemon.release_node_authorities();
         let shutdown_result = daemon.graceful_shutdown();
 
-        let release_result = daemon.release_node_authorities();
         eprintln!("[node-daemon] shutdown complete");
         serve_result.and(shutdown_result).and(release_result)
     }
