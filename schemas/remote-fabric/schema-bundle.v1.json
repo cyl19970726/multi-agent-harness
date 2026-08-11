@@ -24,6 +24,7 @@
     "gateway_heartbeat_interval_ms": 10000,
     "gateway_lease_duration_ms": 30000,
     "artifact_capability_lifetime_ms": 300000,
-    "enrollment_lifetime_max_ms": 600000
+    "enrollment_lifetime_max_ms": 600000,
+    "node_certificate_lifetime_max_ms": 2592000000
   }
 }

@@ -56,6 +56,7 @@ for (const [schemaName, fixturePrefix] of schemas) {
 
 const router = readFileSync("crates/firm-fabric/src/router.rs", "utf8");
 const protocol = readFileSync("crates/firm-fabric/src/protocol.rs", "utf8");
+const enrollment = readFileSync("crates/firm-fabric/src/enrollment.rs", "utf8");
 const requiredKinds = [
   "fabric.probe.v1",
   "fabric.reconcile_probe.v1",
@@ -86,6 +87,18 @@ for (const forbidden of ["work.accept.v1", "provider.start.v1", "message.send.v1
   if (router.includes(`\"${forbidden}\"`)) {
     failures.push(`transport registry illegally owns business mutation ${forbidden}`);
   }
+}
+if (
+  bundle.limits.enrollment_lifetime_max_ms !== 600000 ||
+  !enrollment.includes("ENROLLMENT_LIFETIME_MAX_MS: u64 = 10 * 60 * 1000")
+) {
+  failures.push("enrollment lifetime differs between schema bundle and Rust authority");
+}
+if (
+  bundle.limits.node_certificate_lifetime_max_ms !== 2592000000 ||
+  !enrollment.includes("NODE_CERTIFICATE_LIFETIME_MAX_MS: u64 = 30 * 24 * 60 * 60 * 1000")
+) {
+  failures.push("Node certificate lifetime differs between schema bundle and Rust authority");
 }
 
 if (failures.length) {

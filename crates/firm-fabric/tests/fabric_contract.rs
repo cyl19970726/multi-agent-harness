@@ -255,6 +255,27 @@ fn one_use_enrollment_and_stale_control_plane_have_zero_side_effects() {
         2,
     )
     .expect("create enrollment");
+    for invalid_expiry in [
+        3,
+        3 + firm_fabric::enrollment::NODE_CERTIFICATE_LIFETIME_MAX_MS + 1,
+    ] {
+        let before_invalid = store.snapshot().expect("snapshot");
+        let invalid = old
+            .consume_enrollment(
+                lease.control_plane_generation,
+                TOKEN_A,
+                "node-a",
+                "Node A",
+                &enrollment_proof("enrollment-1", "node-a", "cert-a"),
+                "cert-a",
+                invalid_expiry,
+                SCHEMA_DIGEST,
+                3,
+            )
+            .expect_err("certificate lifetime must be bounded");
+        assert_eq!(invalid.code, FabricErrorCode::EnrollmentInvalid);
+        assert_eq!(store.snapshot().expect("snapshot"), before_invalid);
+    }
     old.consume_enrollment(
         lease.control_plane_generation,
         TOKEN_A,

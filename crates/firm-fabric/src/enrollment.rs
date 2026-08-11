@@ -5,6 +5,9 @@ use crate::{
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
+pub const ENROLLMENT_LIFETIME_MAX_MS: u64 = 10 * 60 * 1000;
+pub const NODE_CERTIFICATE_LIFETIME_MAX_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_enrollment(
     state: &mut FabricState,
@@ -24,7 +27,7 @@ pub(crate) fn create_enrollment(
             "enrollment token must be strong and have a future expiry",
         ));
     }
-    if expires_at_unix_ms.saturating_sub(now_unix_ms) > 10 * 60 * 1000 {
+    if expires_at_unix_ms.saturating_sub(now_unix_ms) > ENROLLMENT_LIFETIME_MAX_MS {
         return Err(FabricError::none(
             FabricErrorCode::EnrollmentInvalid,
             "enrollment token lifetime exceeds 10 minutes",
@@ -83,6 +86,15 @@ pub(crate) fn consume_enrollment(
     now_unix_ms: u64,
 ) -> Result<(CompanyNode, NodeCertificate), FabricError> {
     let token_digest = sha256_hex(raw_token.as_bytes());
+    if certificate_expires_at_unix_ms <= now_unix_ms
+        || certificate_expires_at_unix_ms.saturating_sub(now_unix_ms)
+            > NODE_CERTIFICATE_LIFETIME_MAX_MS
+    {
+        return Err(FabricError::none(
+            FabricErrorCode::EnrollmentInvalid,
+            "Node certificate lifetime must be positive and no longer than 30 days",
+        ));
+    }
     let Some(enrollment_id) = state
         .enrollments
         .values()
@@ -339,6 +351,8 @@ pub(crate) fn rotate_certificate(
             .contains(current_certificate_serial)
         || state.certificates.contains_key(next_certificate_serial)
         || next_certificate_expires_at_unix_ms <= now_unix_ms
+        || next_certificate_expires_at_unix_ms.saturating_sub(now_unix_ms)
+            > NODE_CERTIFICATE_LIFETIME_MAX_MS
     {
         return Err(FabricError::none(
             FabricErrorCode::EnrollmentInvalid,
