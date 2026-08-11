@@ -44,6 +44,8 @@ fn thread_open_params(
     reasoning_effort: Option<&str>,
     service_tier: Option<&str>,
     resume_thread_id: Option<&str>,
+    sandbox: &str,
+    approval_policy: &str,
 ) -> serde_json::Value {
     let mut params = match resume_thread_id {
         Some(thread_id) => serde_json::json!({
@@ -51,15 +53,15 @@ fn thread_open_params(
             "cwd": cwd,
             "model": model,
             "serviceTier": service_tier,
-            "sandbox": DEVELOPMENT_SANDBOX,
-            "approvalPolicy": DEVELOPMENT_APPROVAL_POLICY
+            "sandbox": sandbox,
+            "approvalPolicy": approval_policy
         }),
         None => serde_json::json!({
             "cwd": cwd,
             "model": model,
             "serviceTier": service_tier,
-            "sandbox": DEVELOPMENT_SANDBOX,
-            "approvalPolicy": DEVELOPMENT_APPROVAL_POLICY,
+            "sandbox": sandbox,
+            "approvalPolicy": approval_policy,
             "ephemeral": false
         }),
     };
@@ -152,6 +154,11 @@ pub(crate) struct CodexAppServerSpawnOptions<'a> {
     pub(crate) member_name: &'a str,
     pub(crate) collaboration_env: &'a [(String, String)],
     pub(crate) plan_mode: bool,
+    /// NodeDaemon-owned AgentSessions pass the frozen AgentIdentity ceiling
+    /// here. Team-runtime callers may omit both to retain their separately
+    /// governed development policy.
+    pub(crate) sandbox: Option<&'a str>,
+    pub(crate) approval_policy: Option<&'a str>,
 }
 
 impl CodexAppServerClient {
@@ -174,6 +181,10 @@ impl CodexAppServerClient {
             options.reasoning_effort,
             options.service_tier,
             options.resume_thread_id,
+            options.sandbox.unwrap_or(DEVELOPMENT_SANDBOX),
+            options
+                .approval_policy
+                .unwrap_or(DEVELOPMENT_APPROVAL_POLICY),
         );
         let response = client.request_blocking(method, params, HANDSHAKE_TIMEOUT)?;
         client.thread_id = response
@@ -853,6 +864,8 @@ mod tests {
             Some("max"),
             Some("priority"),
             None,
+            DEVELOPMENT_SANDBOX,
+            DEVELOPMENT_APPROVAL_POLICY,
         );
 
         assert_eq!(params["sandbox"], "danger-full-access");
@@ -871,6 +884,8 @@ mod tests {
             Some("high"),
             Some("default"),
             Some("thread-123"),
+            DEVELOPMENT_SANDBOX,
+            DEVELOPMENT_APPROVAL_POLICY,
         );
 
         assert_eq!(params["sandbox"], "danger-full-access");

@@ -561,7 +561,7 @@ export function reviewTeamWork(
   };
 }
 
-/** Acknowledge one delivered ProviderDispatchEnvelope recipient row. */
+/** Acknowledge one delivered TeamMessageProjection recipient row. */
 export function acknowledgeTeamMessage(
   teamRunId: string,
   messageId: string,

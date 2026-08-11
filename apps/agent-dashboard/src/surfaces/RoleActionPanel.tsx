@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import type { AllowedAction, RoleActionExecutor } from "../model/roleViews";
 import { prepareRoleAction, roleActionRoute } from "../model/roleViews";
 
-const CRITICAL = new Set(["accept_work", "cancel_work", "reconcile_delivery", "reconcile_message_delivery", "close_member_run", "retire_member_run", "cleanup_workspace", "waive_gate", "revoke_waiver", "start_daemon", "stop_daemon"]);
+const CRITICAL = new Set(["accept_work", "cancel_work", "reconcile_delivery", "reconcile_message_delivery", "resolve_runtime_recovery", "close_member_run", "retire_member_run", "cleanup_workspace", "waive_gate", "revoke_waiver", "start_daemon", "stop_daemon"]);
 const EXECUTABLE = new Set([
   "create_work", "assign_work", "rebind_work", "release_work", "accept_work",
   "cancel_work", "claim_work", "start_work", "block_work", "unblock_work", "submit_work",
@@ -13,7 +13,7 @@ const EXECUTABLE = new Set([
   "close_member_run", "reopen_member_run", "retire_member_run", "resume_native_session",
   "provision_workspace", "attach_workspace", "archive_workspace", "cleanup_workspace",
   "write_report", "write_finding", "write_failure", "request_gate_evaluation", "evaluate_gate", "waive_gate", "revoke_waiver",
-  "reconcile_message_delivery", "start_daemon", "stop_daemon", "admit_provider", "diagnose",
+  "reconcile_message_delivery", "resolve_runtime_recovery", "start_daemon", "stop_daemon", "admit_provider", "diagnose",
 ]);
 
 const FIELD_SPECS: Record<string, Array<{ name: string; label: string; multiline?: boolean }>> = {
@@ -37,6 +37,7 @@ const FIELD_SPECS: Record<string, Array<{ name: string; label: string; multiline
   ],
   reconcile_delivery: [{ name: "evidence_ref", label: "Recovery evidence ref" }],
   reconcile_message_delivery: [{ name: "evidence_ref", label: "Recovery evidence ref" },{name:"outcome",label:"Outcome (acknowledged or retry_safe_failure)"}],
+  resolve_runtime_recovery: [{ name: "evidence_ref", label: "Provider/native-session evidence ref" },{name:"resolution",label:"Resolution (confirm_applied, confirm_not_applied, or keep_recovery_required)"}],
   request_changes: [{name:"reason",label:"Requested changes",multiline:true}],
   revise_work: [{name:"result_summary",label:"Revised result",multiline:true},{name:"candidate_revision",label:"Candidate commit SHA"},{name:"artifact_refs",label:"Artifact refs (comma-separated)"},{name:"check_refs",label:"Check refs (comma-separated)"}],
   send_message: [{name:"recipient_ids",label:"Recipient AgentMember IDs (comma-separated)"},{name:"body",label:"Message",multiline:true}],

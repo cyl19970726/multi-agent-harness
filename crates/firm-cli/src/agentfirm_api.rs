@@ -224,9 +224,7 @@ impl TrustCommand {
                 Self::ResumeNativeSession { member_run_id, .. },
                 ["v1", "member-runs", id, "resume-native-session"],
             ) => member_run_id == id,
-            (Self::CreateTeamMessage { message, .. }, ["v1", "team-runs", id, "messages"]) => {
-                &message.team_run_id == id
-            }
+            (Self::CreateTeamMessage { .. }, ["v1", "team-runs", _, "messages"]) => false,
             (
                 Self::RetryMessageDelivery { delivery_id, .. },
                 ["v1", "message-deliveries", id, "retry"],
@@ -234,7 +232,10 @@ impl TrustCommand {
             | (
                 Self::ReconcileMessageDelivery { delivery_id, .. },
                 ["v1", "message-deliveries", id, "reconcile"],
-            ) => delivery_id == id,
+            ) => {
+                let _ = (delivery_id, id);
+                false
+            }
             (
                 Self::RetryWorkDelivery { delivery_id, .. },
                 ["v1", "work-deliveries", id, "retry"],
@@ -376,12 +377,8 @@ fn enforce_machine_scoped_service(
             .into_iter()
             .find(|delivery| delivery.id == *delivery_id)
             .map(|delivery| delivery.recipient_member_run_id),
-        TrustCommand::RetryMessageDelivery { delivery_id, .. }
-        | TrustCommand::ReconcileMessageDelivery { delivery_id, .. } => store
-            .trust_message_deliveries(&auth.execution_space_id)?
-            .into_iter()
-            .find(|delivery| delivery.id == *delivery_id)
-            .map(|delivery| delivery.recipient_member_run_id),
+        TrustCommand::RetryMessageDelivery { .. }
+        | TrustCommand::ReconcileMessageDelivery { .. } => return Ok(()),
         _ => return Ok(()),
     };
     let Some(member_run_id) = recipient_member_run_id else {
@@ -665,33 +662,12 @@ pub fn execute(
             member_run_id,
             updated_at,
         } => result(store.resume_trust_native_session(&context, &member_run_id, &updated_at)?),
-        TrustCommand::CreateTeamMessage {
-            mut message,
-            updated_at,
-        } => {
-            message.sender = auth.actor;
-            result(store.create_trust_team_message_with_deliveries(
-                &context,
-                message,
-                &updated_at,
-            )?)
-        }
-        TrustCommand::RetryMessageDelivery {
-            delivery_id,
-            updated_at,
-        } => result(store.retry_trust_message_delivery(&context, &delivery_id, &updated_at)?),
-        TrustCommand::ReconcileMessageDelivery {
-            delivery_id,
-            outcome,
-            evidence_ref,
-            updated_at,
-        } => result(store.reconcile_trust_message_delivery(
-            &context,
-            &delivery_id,
-            outcome,
-            &evidence_ref,
-            &updated_at,
-        )?),
+        TrustCommand::CreateTeamMessage { .. }
+        | TrustCommand::RetryMessageDelivery { .. }
+        | TrustCommand::ReconcileMessageDelivery { .. } => Err(StoreError::Conflict(
+            "RETIRED_RUNTIME_WRITER: use NodeDaemon-authored canonical Message and MessageDelivery"
+                .into(),
+        )),
         TrustCommand::CreateWorkDeliveries {
             work_event_id,
             work_id,

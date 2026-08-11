@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/canonical-message-delivery.schema.json",
+  "title": "CanonicalMessageDelivery",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "message_id", "subscription_id", "recipient_identity_id", "target_node_id", "status", "attempt", "version", "created_at", "updated_at"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "message_id": {"type": "string", "minLength": 1},
+    "subscription_id": {"type": "string", "minLength": 1},
+    "recipient_identity_id": {"type": "string", "minLength": 1},
+    "target_node_id": {"type": "string", "format": "uuid"},
+    "recipient_session_id": {"type": ["string", "null"]},
+    "recipient_session_generation": {"type": ["integer", "null"], "minimum": 1},
+    "status": {"enum": ["queued", "routed", "claimed", "provider_received", "acknowledged", "failed", "expired", "invalidated"]},
+    "attempt": {"type": "integer", "minimum": 1},
+    "claim_id": {"type": ["string", "null"]},
+    "claimed_node_daemon_generation": {"type": ["integer", "null"], "minimum": 1},
+    "provider_receipt_id": {"type": ["string", "null"]},
+    "failure_code": {"type": ["string", "null"]},
+    "failure_detail": {"type": ["string", "null"]},
+    "version": {"type": "integer", "minimum": 1},
+    "created_at": {"type": "string", "minLength": 1},
+    "updated_at": {"type": "string", "minLength": 1}
+  }
+}

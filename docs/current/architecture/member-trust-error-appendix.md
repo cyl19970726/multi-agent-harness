@@ -22,6 +22,7 @@ Protocol: `agentfirm-member-trust/1`
 | `DELIVERY_RECEIPT_MISSING` | Typed kernel rejection; inspect message, resource and current_version. | false unless the returned payload explicitly says otherwise |
 | `DELIVERY_RECOVERY_UNCERTAIN` | Typed kernel rejection; inspect message, resource and current_version. | false unless the returned payload explicitly says otherwise |
 | `WORK_REVISION_STALE` | Typed kernel rejection; inspect message, resource and current_version. | false unless the returned payload explicitly says otherwise |
+| `WORK_EXECUTION_BINDING_ACTIVE` | Typed kernel rejection; inspect message, resource and current_version. | false unless the returned payload explicitly says otherwise |
 | `WORKSPACE_PATH_UNSAFE` | Typed kernel rejection; inspect message, resource and current_version. | false unless the returned payload explicitly says otherwise |
 | `WORKSPACE_REPOSITORY_MISMATCH` | Typed kernel rejection; inspect message, resource and current_version. | false unless the returned payload explicitly says otherwise |
 | `WORKSPACE_LINK_ESCAPE` | Typed kernel rejection; inspect message, resource and current_version. | false unless the returned payload explicitly says otherwise |

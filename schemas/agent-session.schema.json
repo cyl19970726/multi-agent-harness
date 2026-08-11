@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/agent-session.schema.json",
+  "title": "AgentSession",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "agent_identity_id", "node_id", "execution_space_id", "node_daemon_id", "node_daemon_generation", "provider", "provider_profile_ref", "effective_permission_ceiling", "status", "generation", "version", "created_at", "updated_at"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "agent_identity_id": {"type": "string", "minLength": 1},
+    "node_id": {"type": "string", "format": "uuid"},
+    "execution_space_id": {"type": "string", "minLength": 1},
+    "node_daemon_id": {"type": "string", "minLength": 1},
+    "node_daemon_generation": {"type": "integer", "minimum": 1},
+    "provider": {"type": "string", "minLength": 1},
+    "provider_profile_ref": {"type": "string", "minLength": 1},
+    "effective_permission_ceiling": {"enum": ["read_only", "workspace_write", "full_access"]},
+    "status": {"enum": ["starting", "idle", "running", "waiting", "disconnected", "stopped", "failed"]},
+    "generation": {"type": "integer", "minimum": 1},
+    "native_session": {"anyOf": [{"$ref": "native-session-ref.schema.json"}, {"type": "null"}]},
+    "version": {"type": "integer", "minimum": 1},
+    "created_at": {"type": "string", "minLength": 1},
+    "updated_at": {"type": "string", "minLength": 1}
+  }
+}

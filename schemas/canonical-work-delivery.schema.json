@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/canonical-work-delivery.schema.json",
+  "title": "CanonicalWorkDelivery",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "work_id", "work_revision", "work_execution_binding_id", "recipient_identity_id", "recipient_session_id", "recipient_session_generation", "status", "attempt", "version", "updated_at"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "work_id": {"type": "string", "minLength": 1},
+    "work_revision": {"type": "integer", "minimum": 1},
+    "work_execution_binding_id": {"type": "string", "minLength": 1},
+    "recipient_identity_id": {"type": "string", "minLength": 1},
+    "recipient_session_id": {"type": "string", "minLength": 1},
+    "recipient_session_generation": {"type": "integer", "minimum": 1},
+    "status": {"enum": ["queued", "claimed", "provider_received", "acknowledged", "failed", "invalidated"]},
+    "attempt": {"type": "integer", "minimum": 1},
+    "claim_id": {"type": ["string", "null"]},
+    "claimed_node_id": {"type": ["string", "null"], "format": "uuid"},
+    "claimed_node_daemon_id": {"type": ["string", "null"]},
+    "claimed_node_daemon_generation": {"type": ["integer", "null"], "minimum": 1},
+    "provider_receipt_id": {"type": ["string", "null"]},
+    "failure_code": {"type": ["string", "null"]},
+    "version": {"type": "integer", "minimum": 1},
+    "updated_at": {"type": "string", "minLength": 1}
+  }
+}

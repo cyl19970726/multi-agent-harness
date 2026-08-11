@@ -5,7 +5,8 @@
   "type": "module",
   "packageManager": "pnpm@9.15.4",
   "scripts": {
-    "check": "pnpm validate:json && pnpm check:schema-fixtures && pnpm check:member-execution-trust && pnpm check:tool-descriptors && pnpm check:native-session-boundary && pnpm check:star-harness-plugin && node scripts/check-cross-layer-consistency.mjs && pnpm check:role-views && pnpm check:dashboard && pnpm check:company-os",
+    "check": "pnpm validate:json && pnpm check:schema-fixtures && pnpm check:member-execution-trust && pnpm check:runtime-message-fabric && pnpm check:tool-descriptors && pnpm check:native-session-boundary && pnpm check:star-harness-plugin && node scripts/check-cross-layer-consistency.mjs && pnpm check:role-views && pnpm check:dashboard && pnpm check:company-os",
+    "check:runtime-message-fabric": "node scripts/check-runtime-message-fabric.mjs",
     "check:role-views": "node apps/agent-dashboard/tests/role-view-contract-check.mjs && node apps/agent-dashboard/tests/local-agentfirm-product-loop.mjs && node apps/agent-dashboard/tests/desktop-handoff-check.mjs && node apps/agent-dashboard/tests/local-agentfirm-product-loop-browser-check.mjs",
     "check:wave4-zero-match": "node scripts/check-wave4-zero-match.mjs",
     "acceptance:wave4:deterministic": "pnpm check:role-views && cargo test -p firm-cli role_views_api -- --test-threads=1",

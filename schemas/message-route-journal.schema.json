@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/message-route-journal.schema.json",
+  "title": "MessageRouteJournal",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "message_id", "source_node_id", "target_node_id", "target_execution_space_id", "attempt", "status", "version", "updated_at"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "message_id": {"type": "string", "minLength": 1},
+    "source_node_id": {"type": "string", "format": "uuid"},
+    "target_node_id": {"type": "string", "format": "uuid"},
+    "target_execution_space_id": {"type": "string", "minLength": 1},
+    "attempt": {"type": "integer", "minimum": 1},
+    "status": {"enum": ["pending", "routed", "received", "failed"]},
+    "receipt_id": {"type": ["string", "null"]},
+    "version": {"type": "integer", "minimum": 1},
+    "updated_at": {"type": "string", "minLength": 1}
+  }
+}
