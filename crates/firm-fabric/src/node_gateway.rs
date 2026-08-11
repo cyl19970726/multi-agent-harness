@@ -86,10 +86,10 @@ pub(crate) fn connect(
         ));
     }
     let prior = state.gateway_leases.get(&hello.node_id).cloned();
-    if prior
-        .as_ref()
-        .is_some_and(|lease| lease.expires_at_unix_ms > now_unix_ms)
-    {
+    if prior.as_ref().is_some_and(|lease| {
+        lease.expires_at_unix_ms > now_unix_ms
+            && lease.control_plane_generation == control_plane_generation
+    }) {
         return Err(FabricError::none(
             FabricErrorCode::LeaseConflict,
             "Node already has an active gateway generation",
