@@ -615,6 +615,7 @@ pub struct RouteReceipt {
 #[serde(rename_all = "snake_case")]
 pub enum LocalOutboxState {
     Pending,
+    QueuedForControlPlane,
     Submitted,
     Accepted,
     Terminal,

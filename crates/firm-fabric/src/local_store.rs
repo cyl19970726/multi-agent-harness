@@ -168,7 +168,7 @@ impl NodeLocalFabricStore {
         &self,
         session: &FabricSessionFence,
         operation: &RoutedOperation,
-        now_unix_ms: u64,
+        _now_unix_ms: u64,
     ) -> Result<(LocalRemoteOutbox, bool), FabricError> {
         self.require_session(session)?;
         if operation.company_id != self.company_id || operation.source_node_id != self.node_id {
@@ -205,16 +205,64 @@ impl NodeLocalFabricStore {
                 node_id: self.node_id.clone(),
                 operation_id: operation.id.clone(),
                 request_digest,
-                local_state: LocalOutboxState::Submitted,
+                local_state: LocalOutboxState::QueuedForControlPlane,
                 gateway_generation: operation.source_gateway_generation,
                 control_plane_generation: operation.control_plane_generation,
-                attempt_count: 1,
-                last_attempt_at_unix_ms: Some(now_unix_ms),
+                attempt_count: 0,
+                last_attempt_at_unix_ms: None,
                 terminal_receipt_ref: None,
                 schema_version: FABRIC_SCHEMA_VERSION.into(),
             };
             state.outboxes.insert(operation.id.clone(), outbox.clone());
             Ok((outbox, false))
+        })
+    }
+
+    /// Record that a live authenticated gateway is about to submit the exact
+    /// durable operation. Merely preparing an outbox while the Control Plane
+    /// is offline remains visibly `queued_for_control_plane`.
+    pub fn mark_outbox_submitted(
+        &self,
+        session: &FabricSessionFence,
+        operation: &RoutedOperation,
+        now_unix_ms: u64,
+    ) -> Result<LocalRemoteOutbox, FabricError> {
+        self.require_session(session)?;
+        if operation.company_id != self.company_id
+            || operation.source_node_id != self.node_id
+            || operation.source_gateway_generation != session.gateway_generation
+            || operation.control_plane_generation != session.control_plane_generation
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::SourceMismatch,
+                "outbox submission does not match this authenticated source generation",
+            ));
+        }
+        let request_digest = canonical_digest(operation)?;
+        self.transact(|state| {
+            let mut outbox = state.outboxes.get(&operation.id).cloned().ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::OperationUnknown,
+                    "operation must be durably queued before submission",
+                )
+            })?;
+            if outbox.request_digest != request_digest
+                || outbox.gateway_generation != session.gateway_generation
+                || outbox.control_plane_generation != session.control_plane_generation
+            {
+                return Err(FabricError::none(
+                    FabricErrorCode::IdempotencyConflict,
+                    "outbox submission changed its durable request fingerprint",
+                ));
+            }
+            if outbox.local_state == LocalOutboxState::Terminal {
+                return Ok(outbox);
+            }
+            outbox.local_state = LocalOutboxState::Submitted;
+            outbox.attempt_count = outbox.attempt_count.saturating_add(1);
+            outbox.last_attempt_at_unix_ms = Some(now_unix_ms);
+            state.outboxes.insert(operation.id.clone(), outbox.clone());
+            Ok(outbox)
         })
     }
 

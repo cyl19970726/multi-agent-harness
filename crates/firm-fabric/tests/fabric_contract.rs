@@ -2023,7 +2023,14 @@ fn three_independent_store_roots_preserve_control_plane_and_node_authority() {
         .prepare_outbox(&source_session, &request, 90)
         .expect("source durably prepares before submission");
     assert!(!replayed);
-    assert_eq!(source_outbox.local_state, LocalOutboxState::Submitted);
+    assert_eq!(
+        source_outbox.local_state,
+        LocalOutboxState::QueuedForControlPlane
+    );
+    assert_eq!(source_outbox.attempt_count, 0);
+    source_local
+        .mark_outbox_submitted(&source_session, &request, 99)
+        .expect("live gateway begins exact submission");
     let (_, attempt, accepted, _) = accept_fabric_operation(
         &control,
         lease.control_plane_generation,
