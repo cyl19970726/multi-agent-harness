@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/runtime-command-record.schema.json",
+  "title": "RuntimeCommandRecord",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "execution_space_id", "target_node_id", "target_node_daemon_id", "target_node_daemon_generation", "authenticated_actor", "command", "required_capability", "idempotency_key", "request_fingerprint", "status", "effect_certainty", "version", "created_at", "updated_at"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "execution_space_id": {"type": "string", "minLength": 1},
+    "target_node_id": {"type": "string", "format": "uuid"},
+    "target_node_daemon_id": {"type": "string", "minLength": 1},
+    "target_node_daemon_generation": {"type": "integer", "minimum": 1},
+    "authenticated_actor": {"type": "object", "additionalProperties": false, "required": ["kind", "id"], "properties": {"kind": {"enum": ["human", "agent_member", "service"]}, "id": {"type": "string", "minLength": 1}}},
+    "command": {"enum": ["author_message", "start_session", "stop_session", "resume_session", "dispatch_provider", "cancel_provider_turn"]},
+    "required_capability": {"type": "string", "minLength": 1},
+    "idempotency_key": {"type": "string", "minLength": 1},
+    "request_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "status": {"enum": ["requested", "accepted", "quiesced", "applied", "failed", "recovery_required"]},
+    "effect_certainty": {"enum": ["none", "not_applied", "applied", "unknown"]},
+    "target_session_id": {"type": ["string", "null"]},
+    "target_session_generation": {"type": ["integer", "null"], "minimum": 1},
+    "source_record_id": {"type": ["string", "null"]},
+    "result": {},
+    "failure_code": {"type": ["string", "null"]},
+    "version": {"type": "integer", "minimum": 1},
+    "created_at": {"type": "string", "minLength": 1},
+    "updated_at": {"type": "string", "minLength": 1}
+  }
+}

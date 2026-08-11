@@ -1776,7 +1776,7 @@ impl Validate for WorkflowArtifactManifest {
 //
 // A team run is one execution of an agent team against an objective, hosted on
 // a single host surface (codex-app / kimi-cli / claude-cli). `ProviderRuntimeProjection`s are
-// the per-member session rows inside it; `ProviderDispatchEnvelope`s the routed mail;
+// the per-member session rows inside it; `TeamMessageProjection`s the routed mail;
 // `MemberAction`s the fine-grained action journal; `DelegationRun`s the
 // provider-native / harness-worker / dynamic-workflow child runs; and
 // `TeamRunEvent` the folded per-run event log. All journal to their own
@@ -3312,7 +3312,7 @@ pub enum PendingInteractionStatus {
     Cancelled,
 }
 
-/// Kind of a routed [`ProviderDispatchEnvelope`].
+/// Kind of a routed [`TeamMessageProjection`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderDispatchIntent {
@@ -3353,7 +3353,7 @@ pub struct ProviderInteractionMessageOption {
     pub intent: Option<String>,
 }
 
-/// Canonical JSON body of a provider-interaction request ProviderDispatchEnvelope.
+/// Canonical JSON body of a provider-interaction request TeamMessageProjection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderInteractionRequestBody {
@@ -3369,7 +3369,7 @@ pub struct ProviderInteractionRequestBody {
     pub generation: u64,
 }
 
-/// Canonical JSON body of a provider-interaction response ProviderDispatchEnvelope.
+/// Canonical JSON body of a provider-interaction response TeamMessageProjection.
 /// Exactly one of `choice` and `text` is present. Choice answers are checked
 /// against the request's option ids by the Store's atomic response boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3564,7 +3564,7 @@ pub struct TeamRecipientRef {
     pub id: String,
 }
 
-/// How a [`ProviderDispatchEnvelope`] should be delivered to one recipient.
+/// How a [`TeamMessageProjection`] should be delivered to one recipient.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TeamDeliveryPolicy {
@@ -3574,7 +3574,7 @@ pub enum TeamDeliveryPolicy {
     ManualAck,
 }
 
-/// Per-recipient delivery state of a [`ProviderDispatchEnvelope`].
+/// Per-recipient delivery state of a [`TeamMessageProjection`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TeamDeliveryStatus {
@@ -3586,7 +3586,7 @@ pub enum TeamDeliveryStatus {
     Expired,
 }
 
-/// Explicit response intent carried by a [`ProviderDispatchEnvelope`] (ADR 0046 §4). A
+/// Explicit response intent carried by a [`TeamMessageProjection`] (ADR 0046 §4). A
 /// transport delivery and a semantic reply are distinct facts: mail that only
 /// informs or acknowledges must stay durable and correlated without starting
 /// another provider round, so two Agents can converge instead of bouncing
@@ -3604,7 +3604,7 @@ pub enum ProviderResponseIntent {
     ResponseRequired,
 }
 
-/// One recipient's delivery record inside a [`ProviderDispatchEnvelope`].
+/// One recipient's delivery record inside a [`TeamMessageProjection`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderDispatchAttempt {
@@ -3639,7 +3639,7 @@ pub struct ProviderDispatchAttempt {
 /// with its replies; `causation_id` points at the message this one answers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ProviderDispatchEnvelope {
+pub struct TeamMessageProjection {
     pub id: String,
     pub team_run_id: String,
     /// Optional Work discussed by this message. The relation is navigational
@@ -3670,7 +3670,7 @@ pub struct ProviderDispatchEnvelope {
     pub causation_id: Option<String>,
     /// Explicit response intent. Absent on historical rows; the effective
     /// intent then derives from `kind` (see
-    /// [`ProviderDispatchEnvelope::effective_response_intent`]).
+    /// [`TeamMessageProjection::effective_response_intent`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_intent: Option<ProviderResponseIntent>,
     #[serde(default)]
@@ -3680,7 +3680,7 @@ pub struct ProviderDispatchEnvelope {
     pub created_at: String,
 }
 
-impl ProviderDispatchEnvelope {
+impl TeamMessageProjection {
     /// Effective response intent: the explicit field always wins; otherwise
     /// kind **and sender** decide (ADR 0046 §4).
     ///
@@ -5235,8 +5235,8 @@ mod tests {
         assert_eq!(ProviderKind::from("gemini".to_string()), kind);
     }
 
-    fn bare_team_message(kind: ProviderDispatchIntent) -> ProviderDispatchEnvelope {
-        ProviderDispatchEnvelope {
+    fn bare_team_message(kind: ProviderDispatchIntent) -> TeamMessageProjection {
+        TeamMessageProjection {
             id: "tmsg-1".to_string(),
             team_run_id: "run-1".to_string(),
             work_id: None,
@@ -5256,7 +5256,7 @@ mod tests {
         }
     }
 
-    fn peer_team_message(kind: ProviderDispatchIntent) -> ProviderDispatchEnvelope {
+    fn peer_team_message(kind: ProviderDispatchIntent) -> TeamMessageProjection {
         let mut message = bare_team_message(kind);
         message.sender_runtime_id = "member-run-2".to_string();
         message.sender = Some(TeamActorRef {
@@ -5518,7 +5518,7 @@ mod tests {
         let without = peer_team_message(ProviderDispatchIntent::Message);
         let json = serde_json::to_string(&without).expect("serialize");
         assert!(!json.contains("response_intent"));
-        let historical: ProviderDispatchEnvelope =
+        let historical: TeamMessageProjection =
             serde_json::from_str(&json).expect("deserialize without the field");
         assert_eq!(historical.response_intent, None);
         assert!(!historical.requires_response());

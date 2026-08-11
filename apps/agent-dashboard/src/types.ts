@@ -630,7 +630,7 @@ export interface LiveMemberActivity {
   expires_at: string;
 }
 
-/** Delivery of a {@link ProviderDispatchEnvelope} to one recipient. */
+/** Delivery of a {@link TeamMessageProjection} to one recipient. */
 export interface ProviderDispatchAttempt {
   member_id?: string;
   policy?: string;
@@ -659,7 +659,7 @@ export interface TeamRecipientRef {
   id: string;
 }
 
-/** Kind of a {@link ProviderDispatchEnvelope} (open enum; rendered as a colored pill). */
+/** Kind of a {@link TeamMessageProjection} (open enum; rendered as a colored pill). */
 export type ProviderDispatchIntent =
   | "message"
   | "control"
@@ -667,7 +667,7 @@ export type ProviderDispatchIntent =
   | "provider_interaction_response";
 
 /**
- * Explicit response intent on a {@link ProviderDispatchEnvelope} (ADR 0046 §4).
+ * Explicit response intent on a {@link TeamMessageProjection} (ADR 0046 §4).
  * `informational` mail is durable and correlated but never starts a provider
  * round on its own; `response_required` asks the recipient for a semantic
  * reply and wakes an idle provider member.
@@ -678,10 +678,10 @@ export type ProviderResponseIntent = "informational" | "response_required";
  * Effective response intent: the explicit field wins; otherwise kind AND
  * sender decide — control always requires a response round,
  * and ordinary message mail requires one unless a peer member sent it
- * (mirrors the Rust `ProviderDispatchEnvelope::effective_response_intent` contract).
+ * (mirrors the Rust `TeamMessageProjection::effective_response_intent` contract).
  */
 export function effectiveTeamMessageResponseIntent(
-  message: Pick<ProviderDispatchEnvelope, "kind" | "response_intent" | "sender" | "sender_runtime_id">,
+  message: Pick<TeamMessageProjection, "kind" | "response_intent" | "sender" | "sender_runtime_id">,
 ): ProviderResponseIntent {
   if (message.response_intent === "informational" || message.response_intent === "response_required") {
     return message.response_intent;
@@ -698,7 +698,7 @@ export function effectiveTeamMessageResponseIntent(
  * coordination plane (Host, Operator, Service). Historical rows carry no typed
  * `sender`, so they fall back to the reserved `"host"` `sender_runtime_id`.
  */
-function sentByPeerMember(message: Pick<ProviderDispatchEnvelope, "sender" | "sender_runtime_id">): boolean {
+function sentByPeerMember(message: Pick<TeamMessageProjection, "sender" | "sender_runtime_id">): boolean {
   const senderKind = message.sender?.kind;
   if (senderKind === "member_run" || senderKind === "agent_member") {
     return true;
@@ -714,7 +714,7 @@ function sentByPeerMember(message: Pick<ProviderDispatchEnvelope, "sender" | "se
  * member run id; `deliveries` tracks per-recipient ack state (an unacknowledged
  * delivery is a needs-you signal for the operator).
  */
-export interface ProviderDispatchEnvelope {
+export interface TeamMessageProjection {
   id: string;
   team_run_id?: string;
   /** Optional conversational link. Work remains the responsibility source. */
@@ -732,6 +732,98 @@ export interface ProviderDispatchEnvelope {
   evidence_refs?: string[];
   deliveries?: ProviderDispatchAttempt[];
   created_at?: string;
+}
+
+export type AgentSessionStatus = "starting" | "idle" | "running" | "waiting" | "disconnected" | "stopped" | "failed";
+
+export interface AgentIdentity {
+  id: string;
+  display_name: string;
+  organization_status: "active" | "paused" | "retired";
+  permission_ceiling: "read_only" | "workspace_write" | "full_access";
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentSession {
+  id: string;
+  agent_identity_id: string;
+  node_id: string;
+  execution_space_id: string;
+  node_daemon_id: string;
+  node_daemon_generation: number;
+  provider: string;
+  provider_profile_ref: string;
+  effective_permission_ceiling: "read_only" | "workspace_write" | "full_access";
+  status: AgentSessionStatus;
+  generation: number;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TeamMembership {
+  id: string;
+  team_id: string;
+  team_run_id: string;
+  agent_identity_id: string;
+  node_id: string;
+  role_snapshot: string;
+  status: "active" | "left" | "revoked";
+  version: number;
+  joined_at: string;
+  ended_at?: string | null;
+}
+
+export interface WorkExecutionBinding {
+  id: string;
+  work_id: string;
+  work_revision: number;
+  team_membership_id: string;
+  agent_identity_id: string;
+  agent_session_id: string;
+  agent_session_generation: number;
+  status: "active" | "released" | "completed" | "cancelled";
+  version: number;
+  bound_at: string;
+  ended_at?: string | null;
+}
+
+export interface CanonicalMessage {
+  id: string;
+  execution_space_id: string;
+  author_node_id: string;
+  author_node_daemon_id: string;
+  author_node_daemon_generation: number;
+  sender_identity_id: string;
+  recipients: Array<{kind: "agent_identity" | "team"; id: string}>;
+  team_id?: string | null;
+  team_run_id?: string | null;
+  work_id?: string | null;
+  kind: "message" | "reply" | "request_decision" | "provider_interaction_request" | "provider_interaction_response";
+  body: string;
+  correlation_id: string;
+  causation_id?: string | null;
+  response_intent: "informational" | "response_required";
+  evidence_refs?: string[];
+  content_fingerprint: string;
+  created_at: string;
+}
+
+export interface CanonicalMessageDelivery {
+  id: string;
+  message_id: string;
+  subscription_id: string;
+  recipient_identity_id: string;
+  target_node_id: string;
+  recipient_session_id?: string | null;
+  recipient_session_generation?: number | null;
+  status: "queued" | "routed" | "claimed" | "provider_received" | "acknowledged" | "failed" | "expired" | "invalidated";
+  attempt: number;
+  version: number;
+  created_at: string;
+  updated_at: string;
 }
 
 export type WorkPhase = "open" | "active" | "review" | "closed";
@@ -1031,7 +1123,14 @@ export interface DashboardSnapshot {
   /** Agent Team runs (team-console): host-orchestrated member groups. */
   team_runs?: TeamRun[];
   member_runs?: MemberRun[];
-  team_messages?: ProviderDispatchEnvelope[];
+  team_messages?: TeamMessageProjection[];
+  /** Wave 4C canonical runtime/message fabric. Legacy `team_messages` is read-only history. */
+  agent_identities?: AgentIdentity[];
+  agent_sessions?: AgentSession[];
+  team_memberships?: TeamMembership[];
+  work_execution_bindings?: WorkExecutionBinding[];
+  canonical_messages?: CanonicalMessage[];
+  canonical_message_deliveries?: CanonicalMessageDelivery[];
   works?: Work[];
   work_events?: WorkEvent[];
   work_deliveries?: WorkDelivery[];

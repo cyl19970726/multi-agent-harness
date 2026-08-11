@@ -15,9 +15,12 @@ and Report/Finding/Failure/Gate history; private execution mechanics are not
 product Work.
 
 Own one shared-board Work end to end. This skill is a procedural capability, not
-product authority. You are a durable MemberRun with a Workspace, Provider-native
-session, mailbox, permission ceiling, and review responsibility. Your
-Provider-native subagents are implementation details.
+product authority. You are a durable AgentIdentity participating through one
+exact active TeamMembership. The machine-local NodeDaemon owns your current
+AgentSession and provider thread; Work responsibility is frozen separately in
+WorkExecutionBinding. MemberRun and Workspace rows are coordination/history
+projections, not provider runtime authority. Your Provider-native subagents are
+implementation details.
 
 Use the exact `HARNESS_BIN` and identifiers supplied by the collaboration
 envelope. Do not substitute another binary from `PATH` or infer identity from a
@@ -133,8 +136,9 @@ A successful self-claim is already responsibility possession inside this
 bound MemberRun/native turn. It records the `claimed` WorkEvent and returns the
 new Work version; it does not send a WorkDelivery back to yourself. After a
 runtime restart, continue the same `in_progress` Work only through the same
-MemberRun and verified provider-native session, inspect native history and the
-Workspace first, and never invent a provider receipt. Host assignment,
+stable AgentIdentity, active TeamMembership, exact WorkExecutionBinding, and
+current AgentSession generation. Inspect native history and the Workspace first,
+and never invent a provider receipt. Host assignment,
 resume, request-changes, and rebind are external changes and still arrive as
 WorkDelivery.
 
@@ -161,51 +165,27 @@ Read actionable mail, or include history when needed:
   --member-run-id "$HARNESS_MEMBER_RUN_ID" --all --json
 ```
 
-To acknowledge all delivered messages whose manual-ack delivery is still pending:
+Legacy TeamRun send/ACK commands are retired because they let a caller select
+another Member's identity. Author or acknowledge through the authenticated
+Member Role Action (`send_message`, `reply_message`, or `request_decision`)
+exposed by the current server-built view. The server must
+resolve your stable AgentIdentity, exact current AgentSession generation,
+TeamMembership, Work/Team scope, NodeDaemon generation, and subscription
+cursor; never supply or override those facts from a prompt, browser, or shell.
 
-```bash
-"$HARNESS_BIN" team-run ack --id "$HARNESS_TEAM_RUN_ID" \
-  --member-run-id "$HARNESS_MEMBER_RUN_ID" --all-delivered
-```
-
-`--all-delivered` auto-selects every message with a delivered status in this run and batch-acks them.
-
-Ask the Host a decision-shaped question:
-
-```bash
-"$HARNESS_BIN" team-run send --id "$HARNESS_TEAM_RUN_ID" \
-  --from "$HARNESS_MEMBER_RUN_ID" --to host --kind message \
-  --work-id "$HARNESS_WORK_ID" \
-  --body "QUESTION: <decision needed, options, recommendation>" --json
-```
-
-Coordinate with a peer without transferring responsibility:
-
-```bash
-"$HARNESS_BIN" team-run send --id "$HARNESS_TEAM_RUN_ID" \
-  --from "$HARNESS_MEMBER_RUN_ID" --to <peer-member-run-id> --kind message \
-  --work-id "$HARNESS_WORK_ID" \
-  --body "COORDINATION: <bounded context or request>" --json
-```
-
-For a reply, preserve the conversation correlation and name the exact cause:
-
-```bash
-"$HARNESS_BIN" team-run send --id "$HARNESS_TEAM_RUN_ID" \
-  --from "$HARNESS_MEMBER_RUN_ID" --to <host-or-peer> --kind message \
-  --work-id "$HARNESS_WORK_ID" \
-  --body "<reply>" \
-  --correlation-id <conversation-correlation-id> \
-  --causation-id <message-id> --json
-```
+For a decision-shaped question, address the Host and include the exact Work id,
+decision needed, options, and recommendation. For peer coordination, address
+the peer AgentIdentity in the same Team without transferring Work. For a reply,
+preserve the server-returned correlation id and use the exact source Message id
+as causation. Acknowledge only the exact current recipient delivery/cursor.
 
 A Message may explain scope, a blocker, a result, or a review decision, but it never changes Work owner/status — see shared hard invariants §4. If conversation creates durable follow-up,
 create a self-owned or eligible unassigned Work explicitly.
 
 Ordinary mail queues until a safe boundary. Member-to-Host mail is durable in
 the Lead Inbox immediately but does not interrupt the Host's current reasoning.
-Peer informational mail does not create a Provider cycle by itself; use
-`--response-required` only when an answer or action is genuinely required.
+Peer informational mail does not create a provider cycle by itself; select
+response-required intent only when an answer or action is genuinely required.
 
 Provider-pausing questions and approvals are `PendingInteraction`, not ordinary
 mail. A tool status of `completed` is not the semantic answer.
@@ -353,10 +333,21 @@ destructive external actions without the applicable authority.
 - Steer changes a current turn only when the Provider acknowledges it.
 - Queued Message affects the next safe boundary, not the current turn.
 - Interrupt stops one current turn; it does not close the Member.
-- Close freezes coordination and releases the managed runtime.
+- Close freezes this Team's MemberRun and cancels its current provider turn;
+  it does not close the machine-owned AgentSession or release Work bindings.
 - Reopen resumes the exact compatible native session under a new runtime
   generation after delivery reconciliation.
 - Retire is permanent; unfinished Work must be reassigned or cancelled.
+
+Runtime control never accepts a Member-authored capability, permission
+envelope, provider profile, AgentSession object, or target placement. The
+server resolves exact self or exact machine Operator/NodeDaemon authority and
+the AgentIdentity ceiling. A Team Host cannot control the global Session;
+TeamMembership join/leave also cannot create or close it. StopSession fails
+closed while any active WorkExecutionBinding references the Session. If a
+provider is unavailable or cannot prove the native
+interrupt/close acknowledgement, the command fails closed or remains
+`RecoveryRequired`; never report it as completed or retry an unknown effect.
 
 Work ownership survives process exit — see shared hard invariants §9. Never clear ownership, duplicate side effects, or reconstruct a session from Harness messages after a crash.
 

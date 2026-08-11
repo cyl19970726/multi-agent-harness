@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-harness.local/schemas/team-membership.schema.json",
+  "title": "TeamMembership",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "team_id", "team_run_id", "agent_identity_id", "node_id", "role_snapshot", "status", "version", "joined_at"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "team_id": {"type": "string", "minLength": 1},
+    "team_run_id": {"type": "string", "minLength": 1},
+    "agent_identity_id": {"type": "string", "minLength": 1},
+    "node_id": {"type": "string", "format": "uuid"},
+    "role_snapshot": {"type": "string", "minLength": 1},
+    "status": {"enum": ["active", "left", "revoked"]},
+    "version": {"type": "integer", "minimum": 1},
+    "joined_at": {"type": "string", "minLength": 1},
+    "ended_at": {"type": ["string", "null"]}
+  }
+}

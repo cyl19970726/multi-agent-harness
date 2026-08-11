@@ -5,7 +5,7 @@
 //! are children of that daemon generation; they are not independently
 //! discoverable or startable daemons.
 
-use std::collections::{hash_map::DefaultHasher, HashSet};
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -15,8 +15,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::{
-    current_unix_ms_u64, drive_prepared_team_run, prepare_team_run_start_body, CliError, CliResult,
-    HarnessStore, PreparedTeamRunStart, TeamRunLedger, TeamSupervisorRegistration,
+    current_unix_ms_u64, drive_prepared_team_run, ensure_team_message_fabric,
+    ensure_team_runtime_fabric, prepare_team_run_start_body, CliError, CliResult, HarnessStore,
+    PreparedTeamRunStart, TeamRunLedger, TeamSupervisorRegistration,
 };
 
 // ---------------------------------------------------------------------------
@@ -101,6 +102,9 @@ pub(crate) struct MultiTeamDaemon {
     daemon_id: String,
     instance_id: String,
     contexts: Mutex<Vec<MultiTeamContext>>,
+    /// Machine-local provider handles keyed by canonical AgentSession id.
+    /// Team membership is intentionally absent from this registry.
+    session_runtimes: Mutex<HashMap<String, crate::provider_adapter::NodeSessionRuntime>>,
     max_concurrency: usize,
     idle_timeout_secs: u64,
     scan_interval: Duration,
@@ -187,6 +191,7 @@ impl MultiTeamDaemon {
             daemon_id,
             instance_id,
             contexts: Mutex::new(Vec::new()),
+            session_runtimes: Mutex::new(HashMap::new()),
             max_concurrency,
             idle_timeout_secs,
             scan_interval: Duration::from_secs(scan_interval_secs),
@@ -200,9 +205,17 @@ impl MultiTeamDaemon {
             .and_then(|()| daemon.serve_loop(&listener));
         drop(listener);
         let _ = std::fs::remove_file(&socket_path);
+        // Release the machine authority before waiting on provider threads.
+        // AgentSession/provider loops fence themselves against the current
+        // NodeDaemon lease, so keeping that lease live while joining children
+        // lets an idle provider remain authoritative until its normal idle
+        // timeout. Publishing the release first is the shutdown linearization
+        // point: no new runtime effect may start, every existing loop observes
+        // NODE_DAEMON_GENERATION_FENCED, and graceful_shutdown can reap it
+        // without inventing a semantic Member close.
+        let release_result = daemon.release_node_authorities();
         let shutdown_result = daemon.graceful_shutdown();
 
-        let release_result = daemon.release_node_authorities();
         eprintln!("[node-daemon] shutdown complete");
         serve_result.and(shutdown_result).and(release_result)
     }
@@ -510,6 +523,16 @@ impl MultiTeamDaemon {
             )));
         }
         let project_binding_id = body.run.project_binding_id.clone();
+        let daemon_generation = store
+            .latest_node_daemon_lease(&self.node_id)?
+            .filter(|lease| {
+                lease.daemon_id == self.daemon_id && lease.instance_id == self.instance_id
+            })
+            .ok_or_else(|| {
+                CliError::Usage("NODE_DAEMON_GENERATION_FENCED: current lease is missing".into())
+            })?
+            .generation;
+        ensure_team_runtime_fabric(&store, &body, &space.id, &self.daemon_id, daemon_generation)?;
         let registration = TeamSupervisorRegistration::start(&store, &run_id, Some(&space.id))?;
         let heartbeat_valid = Arc::clone(&registration.heartbeat_valid);
 
@@ -770,6 +793,558 @@ impl MultiTeamDaemon {
 
         let cmd_name = cmd["cmd"].as_str().unwrap_or("");
         match cmd_name {
+            "runtime" => {
+                let envelope: harness_core::agentfirm_api::ControlCommandEnvelope =
+                    match serde_json::from_value(cmd["envelope"].clone()) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            Self::write_control_response(
+                                stream,
+                                &serde_json::json!({
+                                    "ok": false,
+                                    "error": format!("INVALID_RUNTIME_COMMAND: {error}")
+                                }),
+                            )?;
+                            return Ok(());
+                        }
+                    };
+                if envelope.target_node_id != self.node_id
+                    || envelope.target_node_daemon_id != self.daemon_id
+                {
+                    Self::write_control_response(
+                        stream,
+                        &serde_json::json!({
+                            "ok": false,
+                            "error": "NODE_DAEMON_GENERATION_FENCED: command targets another daemon"
+                        }),
+                    )?;
+                    return Ok(());
+                }
+                let space = match crate::execution_space::context_for_id(
+                    &self.firm_home,
+                    &envelope.execution_space_id,
+                )
+                .map_err(|error| CliError::Usage(error.to_string()))?
+                {
+                    Some(space) => space,
+                    None => {
+                        Self::write_control_response(
+                            stream,
+                            &serde_json::json!({
+                                "ok": false,
+                                "error": "EXECUTION_SPACE_SCOPE_MISMATCH: Execution Space not registered"
+                            }),
+                        )?;
+                        return Ok(());
+                    }
+                };
+                let command_fingerprint =
+                    harness_store::runtime_command_envelope_fingerprint(&envelope)?;
+                let store = HarnessStore::new(&space.store_root);
+                if let Err(error) = store.validate_runtime_command(&envelope, current_unix_ms_u64())
+                {
+                    Self::write_control_response(
+                        stream,
+                        &serde_json::json!({"ok": false, "error": error.to_string()}),
+                    )?;
+                    return Ok(());
+                }
+                let mutation = harness_core::agentfirm_api::MutationContext {
+                    execution_space_id: envelope.execution_space_id.clone(),
+                    authenticated_actor: harness_core::agentfirm_api::ActorRef {
+                        kind: harness_core::agentfirm_api::ActorKind::Service,
+                        id: self.daemon_id.clone(),
+                    },
+                    authority_actor: Some(envelope.authenticated_actor.clone()),
+                    command_name: format!("runtime.{:?}", envelope.command).to_lowercase(),
+                    idempotency_key: envelope.idempotency_key.clone(),
+                    expected_version: envelope.expected_version,
+                    request_fingerprint: Some(command_fingerprint),
+                };
+                let accepted_at = format!("unix-ms:{}", current_unix_ms_u64());
+                let admission = match store.prepare_runtime_command(
+                    &mutation,
+                    &envelope,
+                    current_unix_ms_u64(),
+                    &accepted_at,
+                ) {
+                    Ok(admission) => admission,
+                    Err(error) => {
+                        Self::write_control_response(
+                            stream,
+                            &serde_json::json!({"ok": false, "error": error.to_string()}),
+                        )?;
+                        return Ok(());
+                    }
+                };
+                if admission.replayed {
+                    Self::write_control_response(
+                        stream,
+                        &serde_json::json!({"ok": true, "result": admission.projection.result, "replayed": true}),
+                    )?;
+                    return Ok(());
+                }
+                let effect_mutation = harness_core::agentfirm_api::MutationContext {
+                    command_name: format!("{}.effect", mutation.command_name),
+                    idempotency_key: format!("{}:effect", mutation.idempotency_key),
+                    expected_version: envelope.expected_version,
+                    ..mutation.clone()
+                };
+                // Set only after a provider-native process/thread may have
+                // started. A later Store/registry failure is then Unknown,
+                // never falsely reported as NotApplied.
+                let mut provider_effect_started = false;
+                let result = (|| -> CliResult<serde_json::Value> {
+                    match envelope.command {
+                    harness_core::agentfirm_api::RuntimeCommandKind::AuthorMessage => {
+                        if envelope.required_capability != "message.author" {
+                            Err(CliError::Usage(
+                                "CAPABILITY_DENIED: author requires message.author".into(),
+                            ))
+                        } else {
+                            serde_json::from_value::<harness_core::agentfirm_api::MessageDraft>(
+                                envelope.payload["draft"].clone(),
+                            )
+                            .map_err(|error| {
+                                CliError::Usage(format!("INVALID_RUNTIME_COMMAND: {error}"))
+                            })
+                            .and_then(|draft| {
+                                if let Some(team_run_id) = draft.team_run_id.as_deref() {
+                                    ensure_team_message_fabric(
+                                        &store,
+                                        team_run_id,
+                                        &envelope.execution_space_id,
+                                        &self.daemon_id,
+                                        envelope.target_node_daemon_generation,
+                                    )?;
+                                }
+                                let (sender_agent_id, sender_session_id) = if envelope
+                                    .authenticated_actor
+                                    .kind
+                                    == harness_core::agentfirm_api::ActorKind::AgentMember
+                                {
+                                    let current = store
+                                        .fabric_agent_sessions(&envelope.execution_space_id)
+                                        .map_err(|error| CliError::Usage(error.to_string()))?
+                                        .into_iter()
+                                        .filter(|session| {
+                                            session.agent_identity_id
+                                                == envelope.authenticated_actor.id
+                                                && session.node_id == self.node_id
+                                                && session.node_daemon_id == self.daemon_id
+                                                && session.node_daemon_generation
+                                                    == envelope.target_node_daemon_generation
+                                                && session.lifecycle
+                                                    != harness_core::agentfirm_api::AgentSessionStatus::Closed
+                                        })
+                                        .collect::<Vec<_>>();
+                                    if current.len() != 1 {
+                                        return Err(CliError::Usage(
+                                            "AGENT_SESSION_AMBIGUOUS: message author requires one exact current local session".into(),
+                                        ));
+                                    }
+                                    (
+                                        Some(envelope.authenticated_actor.id.clone()),
+                                        Some(current[0].id.clone()),
+                                    )
+                                } else {
+                                    (None, None)
+                                };
+                                let body_digest = harness_store::canonical_json_fingerprint(
+                                    &serde_json::json!({"body": draft.body}),
+                                );
+                                let fingerprint = harness_store::canonical_json_fingerprint(
+                                    &serde_json::json!({
+                                        "sender_actor_ref": envelope.authenticated_actor,
+                                        "sender_agent_id": sender_agent_id,
+                                        "sender_session_id": sender_session_id,
+                                        "address_kind": draft.address_kind,
+                                        "target_ref": draft.target_ref,
+                                        "recipients": draft.recipients,
+                                        "team_id": draft.team_id,
+                                        "team_run_id": draft.team_run_id,
+                                        "work_id": draft.work_id,
+                                        "kind": draft.kind,
+                                        "body": draft.body,
+                                        "body_digest": body_digest,
+                                        "correlation_id": draft.correlation_id,
+                                        "causation_id": draft.causation_id,
+                                        "response_intent": draft.response_intent,
+                                        "evidence_refs": draft.evidence_refs,
+                                        "schema_version": draft.schema_version,
+                                        "idempotency_key": envelope.idempotency_key,
+                                    }),
+                                );
+                                store
+                                    .author_message(
+                                        &effect_mutation,
+                                        harness_core::agentfirm_api::Message {
+                                            id: format!("message:{}", envelope.idempotency_key),
+                                            source_execution_space_id: envelope.execution_space_id.clone(),
+                                            source_node_id: self.node_id.clone(),
+                                            source_node_daemon_id: self.daemon_id.clone(),
+                                            source_authority_generation: envelope.target_node_daemon_generation,
+                                            sender_actor_ref: envelope.authenticated_actor.clone(),
+                                            sender_agent_id,
+                                            sender_session_id,
+                                            address_kind: draft.address_kind,
+                                            target_ref: draft.target_ref,
+                                            recipients: draft.recipients,
+                                            team_id: draft.team_id,
+                                            team_run_id: draft.team_run_id,
+                                            work_id: draft.work_id,
+                                            kind: draft.kind,
+                                            body: draft.body,
+                                            body_digest,
+                                            correlation_id: draft.correlation_id,
+                                            causation_id: draft.causation_id,
+                                            response_intent: draft.response_intent,
+                                            evidence_refs: draft.evidence_refs,
+                                            content_fingerprint: fingerprint,
+                                            schema_version: draft.schema_version,
+                                            idempotency_key: envelope.idempotency_key.clone(),
+                                            created_at: accepted_at.clone(),
+                                        },
+                                    )
+                                    .map_err(|error| CliError::Usage(error.to_string()))
+                                    .and_then(|result| {
+                                        serde_json::to_value(result.projection)
+                                            .map_err(CliError::Json)
+                                    })
+                            })
+                        }
+                    }
+                    harness_core::agentfirm_api::RuntimeCommandKind::StartSession => {
+                        if envelope.required_capability != "agent_session.start" {
+                            Err(CliError::Usage(
+                                "CAPABILITY_DENIED: start requires agent_session.start".into(),
+                            ))
+                        } else {
+                            serde_json::from_value::<harness_core::agentfirm_api::AgentSession>(
+                                envelope.payload["session"].clone(),
+                            )
+                            .map_err(|error| {
+                                CliError::Usage(format!("INVALID_RUNTIME_COMMAND: {error}"))
+                            })
+                            .and_then(|mut session| {
+                                let display_name = store
+                                    .fabric_agent_identities(&envelope.execution_space_id)
+                                    .map_err(|error| CliError::Usage(error.to_string()))?
+                                    .into_iter()
+                                    .find(|identity| identity.id == session.agent_identity_id)
+                                    .map(|identity| identity.display_name)
+                                    .ok_or_else(|| {
+                                        CliError::Usage("AGENT_IDENTITY_NOT_FOUND".into())
+                                    })?;
+                                let opened = crate::provider_adapter::open_node_session(
+                                    &session,
+                                    &space.store_root,
+                                    &display_name,
+                                )
+                                .map_err(CliError::Usage)?;
+                                provider_effect_started = true;
+                                let runtime_provider = opened.runtime.provider().to_string();
+                                let runtime_native_session_id =
+                                    opened.runtime.native_session_id().to_string();
+                                session.native_session_ref =
+                                    Some(opened.native_session_ref.clone());
+                                let session_id = session.id.clone();
+                                let result = store
+                                    .create_agent_session(&effect_mutation, session)
+                                    .map_err(|error| CliError::Usage(error.to_string()))?;
+                                let mut runtimes = self.session_runtimes.lock().map_err(|_| {
+                                    CliError::Usage(
+                                        "RUNTIME_COMMAND_RECOVERY_REQUIRED: provider runtime registry poisoned"
+                                            .into(),
+                                    )
+                                })?;
+                                if runtimes.insert(session_id, opened.runtime).is_some() {
+                                    return Err(CliError::Usage(
+                                        "RUNTIME_COMMAND_RECOVERY_REQUIRED: duplicate provider runtime handle"
+                                            .into(),
+                                    ));
+                                }
+                                serde_json::to_value(serde_json::json!({
+                                    "session": result.projection,
+                                    "provider": opened.permission_mapping.provider,
+                                    "runtime_provider": runtime_provider,
+                                    "runtime_native_session_id": runtime_native_session_id,
+                                    "permission": opened.permission_mapping,
+                                    "native_session": opened.native_session_ref,
+                                }))
+                                .map_err(CliError::Json)
+                            })
+                        }
+                    }
+                    harness_core::agentfirm_api::RuntimeCommandKind::StopSession
+                    | harness_core::agentfirm_api::RuntimeCommandKind::ResumeSession => {
+                        let required = if matches!(
+                            envelope.command,
+                            harness_core::agentfirm_api::RuntimeCommandKind::StopSession
+                        ) {
+                            "agent_session.stop"
+                        } else {
+                            "agent_session.resume"
+                        };
+                        if envelope.required_capability != required {
+                            Err(CliError::Usage(format!(
+                                "CAPABILITY_DENIED: command requires {required}"
+                            )))
+                        } else {
+                            let session_id = envelope.payload["session_id"]
+                                .as_str()
+                                .ok_or_else(|| {
+                                    CliError::Usage(
+                                        "INVALID_RUNTIME_COMMAND: session_id is required".into(),
+                                    )
+                                })?;
+                            let stopping = matches!(
+                                envelope.command,
+                                harness_core::agentfirm_api::RuntimeCommandKind::StopSession
+                            );
+                            let next = if stopping {
+                                harness_core::agentfirm_api::AgentSessionStatus::Closed
+                            } else {
+                                harness_core::agentfirm_api::AgentSessionStatus::Cold
+                            };
+                            let session = store
+                                .fabric_agent_sessions(&envelope.execution_space_id)
+                                .map_err(|error| CliError::Usage(error.to_string()))?
+                                .into_iter()
+                                .find(|session| session.id == session_id)
+                                .ok_or_else(|| CliError::Usage("AGENT_SESSION_NOT_FOUND".into()))?;
+                            let capabilities = crate::provider_adapter::node_session_capabilities(
+                                &session.provider_kind,
+                            )
+                            .ok_or_else(|| {
+                                CliError::Usage(format!(
+                                    "PROVIDER_CAPABILITY_UNPROVABLE: {}",
+                                    session.provider_kind
+                                ))
+                            })?;
+                            if (stopping && !capabilities.stop)
+                                || (!stopping && !capabilities.resume)
+                            {
+                                return Err(CliError::Usage(format!(
+                                    "PROVIDER_RUNTIME_UNSUPPORTED: {} cannot {:?} through the NodeDaemon session adapter",
+                                    session.provider_kind, envelope.command
+                                )));
+                            }
+                            let has_runtime = self
+                                .session_runtimes
+                                .lock()
+                                .map_err(|_| {
+                                    CliError::Usage(
+                                        "RUNTIME_COMMAND_RECOVERY_REQUIRED: provider runtime registry poisoned"
+                                            .into(),
+                                    )
+                                })?
+                                .contains_key(session_id);
+                            if stopping && !has_runtime {
+                                return Err(CliError::Usage(
+                                    "RUNTIME_COMMAND_RECOVERY_REQUIRED: NodeDaemon has no exact provider handle for StopSession"
+                                        .into(),
+                                ));
+                            }
+                            if !stopping && has_runtime {
+                                // Resume against the exact live NodeDaemon
+                                // handle is a truthful, idempotent liveness
+                                // confirmation. It must not reopen the native
+                                // provider thread or rewrite lifecycle state.
+                                return serde_json::to_value(session).map_err(CliError::Json);
+                            }
+                            let mut resumed_runtime = None;
+                            if !stopping && !has_runtime {
+                                let display_name = store
+                                    .fabric_agent_identities(&envelope.execution_space_id)
+                                    .map_err(|error| CliError::Usage(error.to_string()))?
+                                    .into_iter()
+                                    .find(|identity| identity.id == session.agent_identity_id)
+                                    .map(|identity| identity.display_name)
+                                    .ok_or_else(|| {
+                                        CliError::Usage("AGENT_IDENTITY_NOT_FOUND".into())
+                                    })?;
+                                let opened = crate::provider_adapter::open_node_session(
+                                    &session,
+                                    &space.store_root,
+                                    &display_name,
+                                )
+                                .map_err(CliError::Usage)?;
+                                provider_effect_started = true;
+                                resumed_runtime = Some(opened.runtime);
+                            }
+                            let session_mutation = harness_core::agentfirm_api::MutationContext {
+                                expected_version: session.version,
+                                ..effect_mutation.clone()
+                            };
+                            let transitioned = store
+                                .transition_agent_session(
+                                    &session_mutation,
+                                    session_id,
+                                    next,
+                                    &format!("unix-ms:{}", current_unix_ms_u64()),
+                                )
+                                .map_err(|error| CliError::Usage(error.to_string()))?;
+                            if stopping {
+                                self.session_runtimes
+                                    .lock()
+                                    .map_err(|_| {
+                                        CliError::Usage(
+                                            "RUNTIME_COMMAND_RECOVERY_REQUIRED: provider runtime registry poisoned"
+                                                .into(),
+                                        )
+                                    })?
+                                    .remove(session_id);
+                            } else if let Some(runtime) = resumed_runtime {
+                                let replaced = self
+                                    .session_runtimes
+                                    .lock()
+                                    .map_err(|_| {
+                                        CliError::Usage(
+                                            "RUNTIME_COMMAND_RECOVERY_REQUIRED: provider runtime registry poisoned"
+                                                .into(),
+                                        )
+                                    })?
+                                    .insert(session_id.to_string(), runtime);
+                                if replaced.is_some() {
+                                    return Err(CliError::Usage(
+                                        "RUNTIME_COMMAND_RECOVERY_REQUIRED: concurrent provider runtime appeared during ResumeSession"
+                                            .into(),
+                                    ));
+                                }
+                            }
+                            serde_json::to_value(transitioned.projection).map_err(CliError::Json)
+                        }
+                    }
+                    harness_core::agentfirm_api::RuntimeCommandKind::DispatchProvider => {
+                        if envelope.required_capability != "provider.dispatch" {
+                            Err(CliError::Usage(
+                                "CAPABILITY_DENIED: dispatch requires provider.dispatch".into(),
+                            ))
+                        } else {
+                            let delivery_id = envelope.payload["delivery_id"]
+                                .as_str()
+                                .ok_or_else(|| {
+                                    CliError::Usage(
+                                        "INVALID_RUNTIME_COMMAND: delivery_id is required".into(),
+                                    )
+                                })?;
+                            let claim_id = envelope.payload["claim_id"].as_str().ok_or_else(|| {
+                                CliError::Usage(
+                                    "INVALID_RUNTIME_COMMAND: claim_id is required".into(),
+                                )
+                            })?;
+                            let requested_mode = serde_json::from_value(
+                                envelope.payload["dispatch_mode"].clone(),
+                            )
+                            .map_err(|error| {
+                                CliError::Usage(format!("INVALID_RUNTIME_COMMAND: {error}"))
+                            })?;
+                            let session_id = envelope.payload["session_id"].as_str().ok_or_else(|| {
+                                CliError::Usage("INVALID_RUNTIME_COMMAND: session_id is required".into())
+                            })?;
+                            let session = store
+                                .fabric_agent_sessions(&envelope.execution_space_id)
+                                .map_err(|error| CliError::Usage(error.to_string()))?
+                                .into_iter()
+                                .find(|session| session.id == session_id)
+                                .ok_or_else(|| CliError::Usage("AGENT_SESSION_NOT_FOUND".into()))?;
+                            crate::provider_adapter::map_permission(
+                                &session.provider_kind,
+                                session.effective_permission_ceiling,
+                            )
+                            .map_err(CliError::Usage)?;
+                            let dispatch_mode = crate::provider_adapter::effective_delivery_mode(
+                                &session.provider_kind,
+                                requested_mode,
+                                session.lifecycle,
+                                false,
+                            )
+                            .map_err(CliError::Usage)?;
+                            store
+                                .claim_message_for_provider(
+                                    &effect_mutation,
+                                    delivery_id,
+                                    &self.node_id,
+                                    &self.daemon_id,
+                                    envelope.target_node_daemon_generation,
+                                    claim_id,
+                                    dispatch_mode,
+                                    &format!("unix-ms:{}", current_unix_ms_u64()),
+                                )
+                                .map_err(|error| CliError::Usage(error.to_string()))
+                                .and_then(|result| {
+                                    serde_json::to_value(result.projection).map_err(CliError::Json)
+                                })
+                        }
+                    }
+                    harness_core::agentfirm_api::RuntimeCommandKind::CancelProviderTurn => {
+                        Err(CliError::Usage(
+                            "RUNTIME_COMMAND_UNSUPPORTED: provider adapter has no proven cancel capability"
+                                .into(),
+                        ))
+                    }
+                }
+                })();
+                let settled_at = format!("unix-ms:{}", current_unix_ms_u64());
+                let (status, certainty, settled_result, failure_code) = match &result {
+                    Ok(value) => (
+                        harness_core::agentfirm_api::RuntimeCommandStatus::Applied,
+                        harness_core::agentfirm_api::RuntimeEffectCertainty::Applied,
+                        Some(value.clone()),
+                        None,
+                    ),
+                    Err(error) => (
+                        if provider_effect_started {
+                            harness_core::agentfirm_api::RuntimeCommandStatus::RecoveryRequired
+                        } else {
+                            harness_core::agentfirm_api::RuntimeCommandStatus::Failed
+                        },
+                        if provider_effect_started {
+                            harness_core::agentfirm_api::RuntimeEffectCertainty::Unknown
+                        } else {
+                            harness_core::agentfirm_api::RuntimeEffectCertainty::NotApplied
+                        },
+                        None,
+                        Some(error.to_string()),
+                    ),
+                };
+                let settle_context = harness_core::agentfirm_api::MutationContext {
+                    command_name: format!("{}.settle", mutation.command_name),
+                    idempotency_key: format!("{}:settle", mutation.idempotency_key),
+                    expected_version: admission.projection.version,
+                    request_fingerprint: None,
+                    ..mutation
+                };
+                if let Err(error) = store.settle_runtime_command(
+                    &settle_context,
+                    &envelope.id,
+                    status,
+                    certainty,
+                    settled_result,
+                    failure_code,
+                    &settled_at,
+                ) {
+                    Self::write_control_response(
+                        stream,
+                        &serde_json::json!({
+                            "ok": false,
+                            "error": format!("RUNTIME_COMMAND_RECOVERY_REQUIRED: {error}")
+                        }),
+                    )?;
+                    return Ok(());
+                }
+                match result {
+                    Ok(value) => Self::write_control_response(
+                        stream,
+                        &serde_json::json!({"ok": true, "result": value}),
+                    )?,
+                    Err(error) => Self::write_control_response(
+                        stream,
+                        &serde_json::json!({"ok": false, "error": error.to_string()}),
+                    )?,
+                }
+            }
             "start" => {
                 let run_id = cmd["run_id"].as_str().unwrap_or("");
                 let execution_space_id = cmd["execution_space_id"].as_str().unwrap_or("");
@@ -1069,6 +1644,36 @@ pub(crate) fn daemon_status_via_socket(firm_home: &Path, node_id: &str) -> Optio
         return None;
     }
     Some(response)
+}
+
+/// Send an authenticated runtime command to the one local NodeDaemon. The
+/// caller receives only the daemon's fenced result; it never mutates provider
+/// or session ledgers directly.
+pub(crate) fn runtime_command_via_socket(
+    firm_home: &Path,
+    node_id: &str,
+    envelope: &harness_core::agentfirm_api::ControlCommandEnvelope,
+) -> Result<serde_json::Value, std::io::Error> {
+    let socket_path = node_daemon_socket_path(firm_home, node_id);
+    let mut stream = UnixStream::connect(&socket_path)?;
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+    let command = serde_json::json!({"cmd": "runtime", "envelope": envelope});
+    writeln!(
+        stream,
+        "{}",
+        serde_json::to_string(&command).map_err(std::io::Error::other)?
+    )?;
+    stream.flush()?;
+    let mut line = String::new();
+    std::io::BufReader::new(&mut stream).read_line(&mut line)?;
+    if line.trim().is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "NodeDaemon returned an empty runtime response",
+        ));
+    }
+    serde_json::from_str(line.trim()).map_err(std::io::Error::other)
 }
 
 /// Start a NodeDaemon for an exact observed predecessor generation. Unlike the

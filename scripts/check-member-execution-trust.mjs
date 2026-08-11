@@ -31,6 +31,15 @@ const requiredSchemas = [
   "schemas/gate-evaluation.schema.json",
   "schemas/gate-waiver.schema.json",
   "schemas/trust-error.schema.json",
+  "schemas/agent-identity.schema.json",
+  "schemas/agent-session.schema.json",
+  "schemas/team-membership.schema.json",
+  "schemas/work-execution-binding.schema.json",
+  "schemas/message.schema.json",
+  "schemas/message-subscription.schema.json",
+  "schemas/canonical-message-delivery.schema.json",
+  "schemas/canonical-work-delivery.schema.json",
+  "schemas/runtime-command-record.schema.json",
 ];
 for (const path of requiredSchemas) {
   assert(existsSync(path), `${path}: canonical schema is required`);
@@ -40,13 +49,11 @@ const retiredPaths = [
   "schemas/durable-agent-member.schema.json",
   "schemas/agent-runtime.schema.json",
   "schemas/agent-event.schema.json",
-  "schemas/message.schema.json",
   "schemas/team-member-close-request.schema.json",
   "schemas/work-gate-evaluation.schema.json",
   "schemas/fixtures/durable-agent-member",
   "schemas/fixtures/agent-runtime",
   "schemas/fixtures/agent-event",
-  "schemas/fixtures/message",
   "schemas/fixtures/team-member-close-request",
   "schemas/fixtures/work-gate-evaluation",
 ];
@@ -265,7 +272,6 @@ const retiredPatterns = [
   ["legacy MemberRun workspace field", /\bworktree_ref\b|\bworkspace_snapshot\b/g],
   ["legacy TeamMessage routing field", /\borigin_wave_id\b|\bfrom_member_id\b|\bto_member_ids\b/g],
   ["legacy authored TeamMessage kind", /["']kind["']\s*:\s*["'](?:plan_request|plan_proposal|plan_feedback|plan_approval|broadcast|progress|handoff|blocker|review_request|review_result)["']/g],
-  ["disabled compatibility code", /#\s*\[\s*cfg\s*\(\s*any\s*\(\s*\)\s*\)\s*\]/g],
 ];
 
 for (const path of activeFiles) {

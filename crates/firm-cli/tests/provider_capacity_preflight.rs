@@ -11,9 +11,17 @@ use std::path::Path;
 mod fake_provider;
 mod firm_env;
 
-use firm_env::{
-    create_canonical_agent_member, current_project_id, run_firm, work_deliveries, TempHome,
-};
+use firm_env::{create_canonical_agent_member, current_project_id, run_firm, TempHome};
+use harness_store::HarnessStore;
+
+fn canonical_work_deliveries(home: &TempHome, execution_space_id: &str) -> Vec<serde_json::Value> {
+    HarnessStore::new(home.spaces_dir().join(execution_space_id))
+        .fabric_work_deliveries(execution_space_id)
+        .expect("canonical WorkDelivery fabric")
+        .into_iter()
+        .map(|delivery| serde_json::to_value(delivery).expect("WorkDelivery JSON"))
+        .collect()
+}
 
 /// A rate-limit payload whose only saturated signal is the one under test.
 fn rate_limits_json(used_percent: i64, reached_type: &str, spend_control: bool) -> String {
@@ -748,17 +756,21 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
         Some("current")
     );
 
-    // 1. ProviderWorkDispatch was never claimed: it is still queued and deliverable.
-    let deliveries = work_deliveries(&home, &project_id);
-    let delivery = deliveries.first().expect("ProviderWorkDispatch");
-    assert_eq!(
-        delivery["status"],
-        serde_json::json!("queued"),
-        "a blocked start must not consume the ProviderWorkDispatch: {delivery}"
+    // 1. Capacity refusal happens before WorkExecutionBinding/WorkDelivery
+    // materialization. Ownership remains on Work, while the canonical runtime
+    // fabric has no delivery attempt to claim or accidentally advance.
+    assert!(
+        canonical_work_deliveries(&home, &project_id).is_empty(),
+        "a blocked start must not materialize a canonical WorkDelivery"
     );
-    assert_eq!(delivery["attempt"], serde_json::json!(0));
-    assert_eq!(delivery["claim_id"], serde_json::Value::Null);
-    assert_eq!(delivery["provider_receipt_id"], serde_json::Value::Null);
+    assert!(
+        HarnessStore::new(home.spaces_dir().join(&project_id))
+            .latest_works()
+            .expect("Works")
+            .into_iter()
+            .any(|work| work.team_run_id == run_id && !work.is_terminal()),
+        "the assigned Work must remain open and owned"
+    );
 
     // 2. `provider_unavailable` is recorded, with the observed evidence.
     let actions = store_rows(&home, &project_id, "member_actions.jsonl");
@@ -811,9 +823,10 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
         std::fs::read_to_string(&thread_marker).unwrap_or_default()
     );
 
-    // 6. Preservation is actionable, not cosmetic: once the account recovers,
-    //    the SAME queued Assignment is claimed and delivered by a plain
-    //    re-start. No requeue, reconcile, or re-create is needed.
+    // 6. A replacement NodeDaemon generation may not silently adopt the old
+    // AgentSession even when capacity has recovered. Until an explicit atomic
+    // session handoff/rebind is performed, successor start fails closed and
+    // leaves Work/runtime ledgers unchanged.
     let recovered = FakeCodex {
         rate_limits_json: Some(rate_limits_json(5, "null", false)),
         thread_marker: Some(thread_marker.clone()),
@@ -833,39 +846,19 @@ fn fresh_exhausted_capacity_blocks_start_and_leaves_work_queued() {
         ],
     );
     assert!(
-        restart.status.success(),
-        "restart failed: {}",
+        !restart.status.success(),
+        "successor must not adopt old session"
+    );
+    assert!(
+        String::from_utf8_lossy(&restart.stderr).contains("AGENT_SESSION_RECOVERY_REQUIRED"),
+        "restart must return a typed recovery fence: {}",
         String::from_utf8_lossy(&restart.stderr)
     );
-    wait_for_runtime_projection("recovered provider delivery", || {
-        store_rows(&home, &project_id, "member_runs.jsonl")
-            .into_iter()
-            .next()
-            .is_some_and(|member| member["provider_capacity"]["state"] == "available")
-            && work_deliveries(&home, &project_id)
-                .into_iter()
-                .next()
-                .is_some_and(|delivery| delivery["status"] == "provider_received")
-    });
-    let delivery = work_deliveries(&home, &project_id)
-        .into_iter()
-        .next()
-        .expect("ProviderWorkDispatch");
-    assert_eq!(
-        delivery["status"],
-        serde_json::json!("provider_received"),
-        "the preserved Work must be deliverable after recovery: {delivery}"
+    assert!(canonical_work_deliveries(&home, &project_id).is_empty());
+    assert!(
+        !thread_marker.exists(),
+        "rejected successor must not start provider"
     );
-    let member = store_rows(&home, &project_id, "member_runs.jsonl")
-        .into_iter()
-        .next()
-        .expect("member run");
-    assert_eq!(
-        member["provider_capacity"]["state"],
-        serde_json::json!("available"),
-        "the recovered observation replaces the blocking one"
-    );
-    assert_ne!(member["status"], serde_json::json!("blocked"));
     stop_node_authority(&home, &mut daemon);
 }
 
@@ -909,7 +902,7 @@ fn unknown_capacity_still_starts_the_member_and_delivers_work() {
             .into_iter()
             .next()
             .is_some_and(|member| member["provider_capacity"]["state"] == "unknown")
-            && work_deliveries(&home, &project_id)
+            && canonical_work_deliveries(&home, &project_id)
                 .into_iter()
                 .next()
                 .is_some_and(|delivery| delivery["status"] != "queued")
@@ -933,7 +926,7 @@ fn unknown_capacity_still_starts_the_member_and_delivers_work() {
         "unknown capacity must not record provider_unavailable: {actions:?}"
     );
     // ProviderWorkDispatch was consumed by a real round, proving the guard opened.
-    let delivery = work_deliveries(&home, &project_id)
+    let delivery = canonical_work_deliveries(&home, &project_id)
         .into_iter()
         .next()
         .expect("ProviderWorkDispatch");
@@ -1018,7 +1011,7 @@ fn a_disabled_preflight_records_no_snapshot_and_never_blocks() {
         String::from_utf8_lossy(&start.stderr)
     );
     wait_for_runtime_projection("preflight-disabled provider delivery", || {
-        work_deliveries(&home, &project_id)
+        canonical_work_deliveries(&home, &project_id)
             .into_iter()
             .next()
             .is_some_and(|delivery| delivery["status"] != "queued")

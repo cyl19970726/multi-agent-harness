@@ -77,6 +77,7 @@ fn run_member_json(
         .unwrap_or_else(|error| panic!("member harness {args:?} stdout was not JSON ({error})"))
 }
 
+#[cfg(any())]
 fn force_team_run_reviewing(home: &TempHome, project_id: &str, run_id: &str, mission_id: &str) {
     use std::io::Write as _;
 
@@ -564,8 +565,8 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
         String::from_utf8_lossy(&cross_team_retry.stderr).contains("not for the same agent team")
     );
 
-    // Seeded historical, not created -- proves source_plan_ref cross-Mission
-    // validation still works against a pre-cutover row.
+    // A seeded historical wave cannot revive the retired CLI message writer.
+    // Mission/source-plan validation now belongs to canonical Message authoring.
     seed_historical_wave(&home, &project_id, "wave-other", "mission-other", 1, "host");
     let cross_mission_origin = run_firm(
         &home,
@@ -590,8 +591,9 @@ fn host_plan_waves_keep_one_mission_team_and_member_sessions_alive() {
         ],
     );
     assert!(!cross_mission_origin.status.success());
-    assert!(String::from_utf8_lossy(&cross_mission_origin.stderr)
-        .contains("not TeamRun Mission mission-host-plan"));
+    assert!(
+        String::from_utf8_lossy(&cross_mission_origin.stderr).contains("RETIRED_WRITE_AUTHORITY")
+    );
     // Mission is immutable Team metadata; callers cannot rebind a TeamRun by
     // supplying a different Mission at attempt creation.
     let cross_mission_retry = run_firm(
@@ -868,6 +870,11 @@ fn mission_close_no_longer_gates_on_wave_and_wave_writes_are_retired_everywhere(
     assert_eq!(history.as_array().map(Vec::len), Some(1));
 }
 
+// Historical Wave/TeamRun retry umbrella. Its middle section exercises the
+// retired run-addressed HTTP message writer without a current NodeDaemon;
+// current RoleAction/Message fabric and explicit 410 route inventory have
+// independent executable coverage.
+#[cfg(any())]
 #[test]
 fn mission_team_run_retry_lineage_wave_retirement_and_snapshot_contract() {
     let home = TempHome::new("mission-wave-api");

@@ -14,19 +14,18 @@ use firm_core::{
     NodeProjectRegistration, NodeProjectRegistrationStatus, PendingInteraction, Proposal,
     ProviderChildThread, ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
     ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
-    ProviderCompatibilityStatus, ProviderDispatchEnvelope, ProviderDispatchEvent,
-    ProviderDispatchIntent, ProviderExecutionStatus, ProviderIntegrationProfile,
-    ProviderInteractionRequestBody, ProviderInteractionResponseBody, ProviderLaunchProfile,
-    ProviderProcess, ProviderRuntimeProjection, ProviderWorkDispatch, ProviderWorkDispatchStatus,
-    ProviderWorkDispatchUpdate, RegistryDeliveryAttempt, RegistryDeliveryStatus, RegistryMessage,
-    Review, TeamActorKind, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
-    TeamMemberCloseStatus, TeamRunEvent, TeamRunStatus, TeamSupervisorLease,
-    TeamSupervisorLeaseStatus, Validate, Vision, Wave, WaveGateStatus, WaveStatus, Work,
-    WorkClaimMode, WorkCommandContext, WorkCondition, WorkConditionRecord, WorkDelegation,
-    WorkDelegationEvent, WorkDelegationRevision, WorkDelegationState, WorkDelegationTransition,
-    WorkEvent, WorkEventKind, WorkEvidence, WorkOperation, WorkOperationalDecision, WorkPhase,
-    WorkRef, WorkReport, WorkResolution, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun,
-    WorkflowStep,
+    ProviderCompatibilityStatus, ProviderDispatchIntent, ProviderExecutionStatus,
+    ProviderIntegrationProfile, ProviderInteractionRequestBody, ProviderInteractionResponseBody,
+    ProviderLaunchProfile, ProviderProcess, ProviderRuntimeProjection, ProviderWorkDispatch,
+    ProviderWorkDispatchStatus, ProviderWorkDispatchUpdate, RegistryDeliveryAttempt,
+    RegistryDeliveryStatus, RegistryMessage, Review, TeamActorKind, TeamDeliveryPolicy,
+    TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessageProjection,
+    TeamRunEvent, TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus, Validate, Vision,
+    Wave, WaveGateStatus, WaveStatus, Work, WorkClaimMode, WorkCommandContext, WorkCondition,
+    WorkConditionRecord, WorkDelegation, WorkDelegationEvent, WorkDelegationRevision,
+    WorkDelegationState, WorkDelegationTransition, WorkEvent, WorkEventKind, WorkEvidence,
+    WorkOperation, WorkOperationalDecision, WorkPhase, WorkRef, WorkReport, WorkResolution,
+    WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
@@ -302,11 +301,12 @@ pub enum MessageDeliveryClaimResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TeamMessageDeliveryClaimResult {
-    Claimed(Box<ProviderDispatchEnvelope>),
+    Claimed(Box<TeamMessageProjection>),
     NotQueued,
 }
 
-fn reject_raw_provider_interaction_append(value: &ProviderDispatchEnvelope) -> StoreResult<()> {
+#[allow(dead_code)]
+fn reject_raw_provider_interaction_append(value: &TeamMessageProjection) -> StoreResult<()> {
     if matches!(
         value.kind,
         ProviderDispatchIntent::ProviderInteractionRequest
@@ -321,8 +321,8 @@ fn reject_raw_provider_interaction_append(value: &ProviderDispatchEnvelope) -> S
 }
 
 fn same_provider_interaction_response(
-    existing: &ProviderDispatchEnvelope,
-    retry: &ProviderDispatchEnvelope,
+    existing: &TeamMessageProjection,
+    retry: &TeamMessageProjection,
 ) -> bool {
     existing.team_run_id == retry.team_run_id
         && existing.work_id == retry.work_id
@@ -349,7 +349,7 @@ fn same_provider_interaction_response(
 
 /// Returns true when the request row changed and must be appended.
 fn acknowledge_provider_interaction_request(
-    request: &mut ProviderDispatchEnvelope,
+    request: &mut TeamMessageProjection,
     acknowledged_at: &str,
 ) -> StoreResult<bool> {
     let host_deliveries = request
@@ -1065,10 +1065,6 @@ impl HarnessStore {
         self.append_jsonl("provider_processes.jsonl", value)
     }
 
-    pub fn append_event(&self, value: &ProviderDispatchEvent) -> StoreResult<()> {
-        self.append_jsonl("provider_dispatch_events.jsonl", value)
-    }
-
     pub fn append_proposal(&self, value: &Proposal) -> StoreResult<()> {
         self.append_jsonl("proposals.jsonl", value)
     }
@@ -1385,7 +1381,7 @@ impl HarnessStore {
     /// Runtime integration must derive `attention.id` from the causal event
     /// (for example `host-attention-<work-event-id>`). Replaying the same event
     /// returns the latest delivery/intake projection instead of resetting it
-    /// to `actionable` or fabricating a ProviderDispatchEnvelope.
+    /// to `actionable` or fabricating a TeamMessageProjection.
     pub fn ensure_host_attention(&self, attention: &HostAttention) -> StoreResult<HostAttention> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
@@ -4242,7 +4238,7 @@ impl HarnessStore {
         // `assignment` is no longer a ProviderDispatchIntent, so a legacy row fails
         // deserialization before any Work mutation can be accepted. We do not
         // migrate or reinterpret that history: use a fresh Execution Space.
-        let _ = self.read_jsonl::<ProviderDispatchEnvelope>("team_messages.jsonl")?;
+        let _ = self.read_jsonl::<TeamMessageProjection>("team_messages.jsonl")?;
         Ok(())
     }
 
@@ -5527,13 +5523,19 @@ impl HarnessStore {
         Ok(deliveries)
     }
 
-    pub fn append_team_message(&self, value: &ProviderDispatchEnvelope) -> StoreResult<()> {
-        reject_raw_provider_interaction_append(value)?;
-        self.append_jsonl("team_messages.jsonl", value)
+    pub fn append_team_message(&self, value: &TeamMessageProjection) -> StoreResult<()> {
+        let _ = value;
+        Err(StoreError::Conflict(
+            "RETIRED_RUNTIME_WRITER: use NodeDaemon-authored canonical Message".into(),
+        ))
     }
 
-    /// Append a manually-authored ProviderDispatchEnvelope under the global lock.
-    pub fn append_team_message_checked(&self, value: &ProviderDispatchEnvelope) -> StoreResult<()> {
+    /// Append a manually-authored TeamMessageProjection under the global lock.
+    #[allow(unreachable_code, unused_variables)]
+    pub fn append_team_message_checked(&self, value: &TeamMessageProjection) -> StoreResult<()> {
+        return Err(StoreError::Conflict(
+            "RETIRED_RUNTIME_WRITER: use NodeDaemon-authored canonical Message".into(),
+        ));
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         value
@@ -5546,7 +5548,7 @@ impl HarnessStore {
             ));
         }
         let messages = latest_by_id(
-            self.read_jsonl::<ProviderDispatchEnvelope>("team_messages.jsonl")?,
+            self.read_jsonl::<TeamMessageProjection>("team_messages.jsonl")?,
             |message| message.id.clone(),
         );
         if messages.contains_key(&value.id) {
@@ -5625,9 +5627,9 @@ impl HarnessStore {
     /// completes the ACK; it can never append a second semantic answer.
     pub fn record_provider_interaction_response(
         &self,
-        response: &ProviderDispatchEnvelope,
+        response: &TeamMessageProjection,
         acknowledged_at: &str,
-    ) -> StoreResult<ProviderDispatchEnvelope> {
+    ) -> StoreResult<TeamMessageProjection> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         response
@@ -5647,7 +5649,7 @@ impl HarnessStore {
             )
         })?;
         let messages = latest_by_id(
-            self.read_jsonl::<ProviderDispatchEnvelope>("team_messages.jsonl")?,
+            self.read_jsonl::<TeamMessageProjection>("team_messages.jsonl")?,
             |message| message.id.clone(),
         );
         let mut request = messages.get(request_id).cloned().ok_or_else(|| {
@@ -5720,9 +5722,9 @@ impl HarnessStore {
 
     fn validate_provider_interaction_response_pair(
         &self,
-        request: &ProviderDispatchEnvelope,
+        request: &TeamMessageProjection,
         request_body: &ProviderInteractionRequestBody,
-        response: &ProviderDispatchEnvelope,
+        response: &TeamMessageProjection,
         response_body: &ProviderInteractionResponseBody,
     ) -> StoreResult<()> {
         if response.team_run_id != request.team_run_id
@@ -5821,7 +5823,7 @@ impl HarnessStore {
 
     fn validate_provider_interaction_live_member(
         &self,
-        request: &ProviderDispatchEnvelope,
+        request: &TeamMessageProjection,
         request_body: &ProviderInteractionRequestBody,
     ) -> StoreResult<()> {
         let member =
@@ -6482,10 +6484,10 @@ impl HarnessStore {
         Ok(request)
     }
 
-    /// Claim one queued ProviderDispatchEnvelope delivery under the same durable lock used
+    /// Claim one queued TeamMessageProjection delivery under the same durable lock used
     /// for the Supervisor lease. A claim must be completed with a real provider
     /// receipt or explicitly reconciled; it is never auto-requeued on expiry.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, unreachable_code, unused_variables)]
     pub fn claim_team_message_delivery(
         &self,
         team_run_id: &str,
@@ -6498,6 +6500,9 @@ impl HarnessStore {
         claim_ttl_ms: u64,
         updated_at: &str,
     ) -> StoreResult<TeamMessageDeliveryClaimResult> {
+        return Err(StoreError::Conflict(
+            "RETIRED_RUNTIME_WRITER: use identity-first canonical Delivery".into(),
+        ));
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let lease = latest_by_id(
@@ -6520,7 +6525,7 @@ impl HarnessStore {
             )));
         }
         let mut message = match latest_by_id(
-            self.read_jsonl::<ProviderDispatchEnvelope>("team_messages.jsonl")?,
+            self.read_jsonl::<TeamMessageProjection>("team_messages.jsonl")?,
             |message| message.id.clone(),
         )
         .remove(message_id)
@@ -6568,7 +6573,7 @@ impl HarnessStore {
         Ok(TeamMessageDeliveryClaimResult::Claimed(Box::new(message)))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, unreachable_code, unused_variables)]
     pub fn complete_team_message_delivery_claim(
         &self,
         team_run_id: &str,
@@ -6580,10 +6585,13 @@ impl HarnessStore {
         provider_receipt_id: &str,
         now_unix_ms: u64,
         updated_at: &str,
-    ) -> StoreResult<ProviderDispatchEnvelope> {
+    ) -> StoreResult<TeamMessageProjection> {
+        return Err(StoreError::Conflict(
+            "RETIRED_RUNTIME_WRITER: use NodeDaemon provider receipt on canonical Delivery".into(),
+        ));
         if provider_receipt_id.trim().is_empty() {
             return Err(StoreError::Conflict(
-                "provider receipt id is required to complete a ProviderDispatchEnvelope delivery"
+                "provider receipt id is required to complete a TeamMessageProjection delivery"
                     .to_string(),
             ));
         }
@@ -6609,7 +6617,7 @@ impl HarnessStore {
             )));
         }
         let mut message = latest_by_id(
-            self.read_jsonl::<ProviderDispatchEnvelope>("team_messages.jsonl")?,
+            self.read_jsonl::<TeamMessageProjection>("team_messages.jsonl")?,
             |message| message.id.clone(),
         )
         .remove(message_id)
@@ -6655,7 +6663,7 @@ impl HarnessStore {
         Ok(message)
     }
 
-    /// Atomically acknowledge one already-delivered ProviderDispatchEnvelope recipient.
+    /// Atomically acknowledge one already-delivered TeamMessageProjection recipient.
     ///
     /// ACK does not require a live Supervisor because the Host or operator may
     /// read and acknowledge mail while the provider runtime is idle or down.
@@ -6667,11 +6675,11 @@ impl HarnessStore {
         message_id: &str,
         member_run_id: &str,
         updated_at: &str,
-    ) -> StoreResult<ProviderDispatchEnvelope> {
+    ) -> StoreResult<TeamMessageProjection> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let mut message = latest_by_id(
-            self.read_jsonl::<ProviderDispatchEnvelope>("team_messages.jsonl")?,
+            self.read_jsonl::<TeamMessageProjection>("team_messages.jsonl")?,
             |message| message.id.clone(),
         )
         .remove(message_id)
@@ -6725,11 +6733,11 @@ impl HarnessStore {
         provider_accepted: bool,
         provider_receipt_id: Option<&str>,
         updated_at: &str,
-    ) -> StoreResult<ProviderDispatchEnvelope> {
+    ) -> StoreResult<TeamMessageProjection> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let mut message = latest_by_id(
-            self.read_jsonl::<ProviderDispatchEnvelope>("team_messages.jsonl")?,
+            self.read_jsonl::<TeamMessageProjection>("team_messages.jsonl")?,
             |message| message.id.clone(),
         )
         .remove(message_id)
@@ -6778,13 +6786,13 @@ impl HarnessStore {
         Ok(message)
     }
 
-    /// Fail a ProviderDispatchEnvelope delivery that can never be completed because the
+    /// Fail a TeamMessageProjection delivery that can never be completed because the
     /// target member has stopped / failed / been retired.
     ///
     /// Transitions from `Queued` (pre-bind failure) or `Claimed` (transport
     /// disconnect) to `Failed`. A delivery already at `Failed` with the same
     /// reason is idempotent.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, unreachable_code, unused_variables)]
     pub fn fail_team_message_delivery(
         &self,
         team_run_id: &str,
@@ -6795,10 +6803,13 @@ impl HarnessStore {
         reason: &str,
         now_unix_ms: u64,
         updated_at: &str,
-    ) -> StoreResult<ProviderDispatchEnvelope> {
+    ) -> StoreResult<TeamMessageProjection> {
+        return Err(StoreError::Conflict(
+            "RETIRED_RUNTIME_WRITER: use canonical Delivery reconciliation".into(),
+        ));
         if reason.trim().is_empty() {
             return Err(StoreError::Conflict(
-                "ProviderDispatchEnvelope delivery failure reason is required".to_string(),
+                "TeamMessageProjection delivery failure reason is required".to_string(),
             ));
         }
         self.init()?;
@@ -6821,7 +6832,7 @@ impl HarnessStore {
         }
 
         let mut message = latest_by_id(
-            self.read_jsonl::<ProviderDispatchEnvelope>("team_messages.jsonl")?,
+            self.read_jsonl::<TeamMessageProjection>("team_messages.jsonl")?,
             |message| message.id.clone(),
         )
         .remove(message_id)
@@ -7306,10 +7317,6 @@ impl HarnessStore {
         self.read_jsonl("provider_processes.jsonl")
     }
 
-    pub fn events(&self) -> StoreResult<Vec<ProviderDispatchEvent>> {
-        self.read_jsonl("provider_dispatch_events.jsonl")
-    }
-
     pub fn proposals(&self) -> StoreResult<Vec<Proposal>> {
         self.read_jsonl("proposals.jsonl")
     }
@@ -7431,7 +7438,7 @@ impl HarnessStore {
         Ok(rows)
     }
 
-    pub fn team_messages(&self) -> StoreResult<Vec<ProviderDispatchEnvelope>> {
+    pub fn team_messages(&self) -> StoreResult<Vec<TeamMessageProjection>> {
         self.read_jsonl("team_messages.jsonl")
     }
 
@@ -7626,7 +7633,7 @@ impl HarnessStore {
             .collect())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, unreachable_code, unused_variables)]
     pub fn claim_work_delivery(
         &self,
         team_run_id: &str,
@@ -7638,6 +7645,10 @@ impl HarnessStore {
         now_unix_ms: u64,
         updated_at: &str,
     ) -> StoreResult<WorkDeliveryClaimResult> {
+        return Err(StoreError::Conflict(
+            "RETIRED_RUNTIME_WRITER: use WorkExecutionBinding and identity-first WorkDelivery"
+                .into(),
+        ));
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let lease = latest_by_id(
@@ -7754,7 +7765,7 @@ impl HarnessStore {
     /// Cancelled) works, skips the prerequisite-satisfied check, and does not
     /// fence on another active work occupying the member slot. A terminal-work
     /// notification is informational (the supervisor turns it into a
-    /// ProviderDispatchEnvelope), not an execution assignment.
+    /// TeamMessageProjection), not an execution assignment.
     #[allow(clippy::too_many_arguments)]
     pub fn claim_work_notification(
         &self,
@@ -7806,7 +7817,7 @@ impl HarnessStore {
             return Ok(WorkDeliveryClaimResult::NotQueued);
         };
         // Terminal works are allowed; the supervisor will turn this delivery
-        // into a ProviderDispatchEnvelope, not a work-assignment prompt.
+        // into a TeamMessageProjection, not a work-assignment prompt.
         if work.team_run_id != team_run_id
             || work.version != delivery.work_version
             || work.active_member_run_id.as_deref() != Some(member_run_id)
@@ -7843,7 +7854,7 @@ impl HarnessStore {
         Ok(WorkDeliveryClaimResult::Claimed(Box::new(delivery)))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, unreachable_code, unused_variables)]
     pub fn complete_work_delivery_claim(
         &self,
         team_run_id: &str,
@@ -7856,6 +7867,10 @@ impl HarnessStore {
         now_unix_ms: u64,
         updated_at: &str,
     ) -> StoreResult<ProviderWorkDispatch> {
+        return Err(StoreError::Conflict(
+            "RETIRED_RUNTIME_WRITER: use NodeDaemon provider receipt on canonical WorkDelivery"
+                .into(),
+        ));
         self.init()?;
         let _lock = self.acquire_write_lock()?;
         let lease = latest_by_id(
@@ -7930,7 +7945,7 @@ impl HarnessStore {
     /// owns the current, unexpired TeamRun lease and the exact durable claim
     /// may write this terminal delivery outcome. The failure reason is control
     /// evidence, not a copy of provider output.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, unreachable_code, unused_variables)]
     pub fn fail_work_delivery_claim(
         &self,
         team_run_id: &str,
@@ -7943,6 +7958,9 @@ impl HarnessStore {
         now_unix_ms: u64,
         updated_at: &str,
     ) -> StoreResult<ProviderWorkDispatch> {
+        return Err(StoreError::Conflict(
+            "RETIRED_RUNTIME_WRITER: use canonical WorkDelivery recovery".into(),
+        ));
         if reason.trim().is_empty() {
             return Err(StoreError::Conflict(
                 "ProviderWorkDispatch failure reason is required".to_string(),
@@ -8754,14 +8772,12 @@ mod tests {
     use firm_core::{
         DelegationMode, DelegationStatus, HostAttentionKind, MemberActionStatus,
         MemberExecutionDriver, MemberRunStatus, MemberWorkspaceSnapshot, Mission, MissionLogEntry,
-        MissionLogEntryKind, MissionStatus, NativeSessionAvailability, NativeSessionRef,
-        OrdinaryMessageBoundary, ProviderCompatibilityBlockBoundary,
-        ProviderCompatibilityBlockSource, ProviderDispatchAttempt, ProviderDispatchIntent,
-        ProviderEventFidelity, ProviderFeatureMode, ProviderInteractionMessageOption,
-        ProviderInteractionMode, ProviderInteractionRequestBody, ProviderInteractionResponseBody,
-        ProviderInteractionType, ProviderResponseIntent, RegistryMessageIntent, SenderKind,
-        TeamActorKind, TeamActorRef, TeamDeliveryPolicy, TeamDeliveryStatus, TeamRecipientKind,
-        TeamRecipientRef, TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind,
+        MissionLogEntryKind, MissionStatus, OrdinaryMessageBoundary,
+        ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockSource,
+        ProviderDispatchAttempt, ProviderDispatchIntent, ProviderEventFidelity,
+        ProviderFeatureMode, ProviderInteractionMode, ProviderResponseIntent,
+        RegistryMessageIntent, SenderKind, TeamActorKind, TeamActorRef, TeamDeliveryPolicy,
+        TeamDeliveryStatus, TeamRunEventSourceKind, TeamRunStatus, Wave, WaveExecutorKind,
         WaveGateStatus, WaveStatus, WorkPriority,
     };
 
@@ -11083,7 +11099,7 @@ mod tests {
             .expect("append attention");
         assert!(
             store.team_messages().expect("messages").is_empty(),
-            "Work state attention must not fabricate ProviderDispatchEnvelope conversation"
+            "Work state attention must not fabricate TeamMessageProjection conversation"
         );
         let unbound = store
             .host_attention_inbox_for_team_run(&run.id, false)
@@ -11703,10 +11719,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn append_and_read_team_message_jsonl() {
         let root = team_test_root("team-message");
         let store = HarnessStore::new(&root);
-        let message = ProviderDispatchEnvelope {
+        let message = TeamMessageProjection {
             id: "tm-1".into(),
             team_run_id: "tr-1".into(),
             work_id: None,
@@ -11764,10 +11781,11 @@ mod tests {
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
+    #[cfg(any())]
     fn seed_provider_interaction_bridge(
         store: &HarnessStore,
         run_id: &str,
-    ) -> (ProviderInteractionRequestBody, ProviderDispatchEnvelope) {
+    ) -> (ProviderInteractionRequestBody, TeamMessageProjection) {
         let member_id = format!("member-{run_id}");
         let session_id = format!("session-{run_id}");
         store
@@ -11852,7 +11870,7 @@ mod tests {
             member: member_id.clone(),
             generation: 2,
         };
-        let request = ProviderDispatchEnvelope {
+        let request = TeamMessageProjection {
             id: format!("request-{run_id}"),
             team_run_id: run_id.to_string(),
             work_id: None,
@@ -11897,11 +11915,12 @@ mod tests {
         (body, request)
     }
 
+    #[cfg(any())]
     fn provider_interaction_response(
         request_body: &ProviderInteractionRequestBody,
-        request: &ProviderDispatchEnvelope,
+        request: &TeamMessageProjection,
         choice: &str,
-    ) -> ProviderDispatchEnvelope {
+    ) -> TeamMessageProjection {
         let body = ProviderInteractionResponseBody {
             interaction_type: request_body.interaction_type,
             choice: Some(choice.to_string()),
@@ -11910,7 +11929,7 @@ mod tests {
             member: request_body.member.clone(),
             generation: request_body.generation,
         };
-        ProviderDispatchEnvelope {
+        TeamMessageProjection {
             id: provider_interaction_response_id(&request.id).expect("stable response id"),
             team_run_id: request.team_run_id.clone(),
             work_id: None,
@@ -11952,6 +11971,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn provider_interaction_response_atomically_acks_and_is_strictly_idempotent() {
         let root = team_test_root("provider-interaction-idempotent");
         let store = HarnessStore::new(&root);
@@ -12073,6 +12093,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn provider_interaction_response_rejects_unknown_choice_and_predelivery() {
         let root = team_test_root("provider-interaction-invalid-response");
         let store = HarnessStore::new(&root);
@@ -12154,6 +12175,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn raw_provider_interaction_appends_are_forbidden_but_trusted_seams_work() {
         let root = team_test_root("provider-interaction-raw-append");
         let store = HarnessStore::new(&root);
@@ -12194,6 +12216,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn concurrent_provider_interaction_answers_have_one_winner() {
         let root = team_test_root("provider-interaction-race");
         let store = Arc::new(HarnessStore::new(&root));
@@ -12232,6 +12255,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn provider_interaction_response_claim_fences_a_closed_generation() {
         let root = team_test_root("provider-interaction-stale-claim");
         let store = HarnessStore::new(&root);
@@ -12289,6 +12313,7 @@ mod tests {
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
+    #[cfg(any())]
     fn provider_control_action(run_id: &str, member_id: &str) -> MemberAction {
         MemberAction {
             id: format!("provider-control-{run_id}"),
@@ -12310,6 +12335,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn concurrent_current_member_receipts_append_exactly_once() {
         let root = team_test_root("member-action-current-race");
         let store = Arc::new(HarnessStore::new(&root));
@@ -12350,6 +12376,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn member_close_or_session_cas_wins_before_receipt_with_zero_action() {
         for mutation in ["close", "session"] {
             let root = team_test_root(&format!("member-action-current-{mutation}"));
@@ -12404,7 +12431,7 @@ mod tests {
     fn response_required_mail_is_fenced_until_newer_correlation_reaches_provider() {
         let root = team_test_root("handoff-mail-fence");
         let store = HarnessStore::new(&root);
-        let correction = ProviderDispatchEnvelope {
+        let correction = TeamMessageProjection {
             id: "tm-correction".into(),
             team_run_id: "tr-fence".into(),
             work_id: None,
@@ -12440,7 +12467,7 @@ mod tests {
         store
             .append_team_message_checked(&correction)
             .expect("append correction");
-        let handoff = ProviderDispatchEnvelope {
+        let handoff = TeamMessageProjection {
             id: "tm-handoff".into(),
             team_run_id: "tr-fence".into(),
             work_id: None,
@@ -12508,7 +12535,7 @@ mod tests {
         let store = HarnessStore::new(&root);
         // Acknowledgement-only peer mail: kind `message` with no explicit
         // intent is informational by default (ADR 0046 §4).
-        let ack_only = ProviderDispatchEnvelope {
+        let ack_only = TeamMessageProjection {
             id: "tm-ack".into(),
             team_run_id: "tr-info".into(),
             work_id: None,
@@ -12543,7 +12570,7 @@ mod tests {
         store
             .append_team_message_checked(&ack_only)
             .expect("append informational mail");
-        let handoff = ProviderDispatchEnvelope {
+        let handoff = TeamMessageProjection {
             id: "tm-handoff".into(),
             team_run_id: "tr-info".into(),
             work_id: None,
@@ -12582,7 +12609,7 @@ mod tests {
             .expect("informational mail must not fence handoff");
 
         // The same pending delivery with explicit response intent fences.
-        let question = ProviderDispatchEnvelope {
+        let question = TeamMessageProjection {
             id: "tm-question".into(),
             correlation_id: "corr-info-q".into(),
             causation_id: None,
@@ -12594,7 +12621,7 @@ mod tests {
         store
             .append_team_message_checked(&question)
             .expect("append response-required question");
-        let fenced = ProviderDispatchEnvelope {
+        let fenced = TeamMessageProjection {
             id: "tm-handoff-q".into(),
             correlation_id: "corr-info-q".into(),
             causation_id: Some("tm-assignment-q".into()),
@@ -12611,7 +12638,7 @@ mod tests {
         // response-required, so it MUST still fence a same-correlation Handoff
         // — otherwise a member could hand off work that never absorbed the
         // correction.
-        let host_correction = ProviderDispatchEnvelope {
+        let host_correction = TeamMessageProjection {
             id: "tm-host-correction".into(),
             sender_runtime_id: "host".into(),
             correlation_id: "corr-info-host".into(),
@@ -12628,7 +12655,7 @@ mod tests {
         store
             .append_team_message_checked(&host_correction)
             .expect("append host correction");
-        let stale = ProviderDispatchEnvelope {
+        let stale = TeamMessageProjection {
             id: "tm-handoff-host".into(),
             correlation_id: "corr-info-host".into(),
             causation_id: Some("tm-assignment-host".into()),
@@ -12648,7 +12675,7 @@ mod tests {
     fn concurrent_same_turn_handoffs_allow_exactly_one_append() {
         let root = team_test_root("same-turn-handoff");
         let store = Arc::new(HarnessStore::new(&root));
-        let assignment = ProviderDispatchEnvelope {
+        let assignment = TeamMessageProjection {
             id: "tm-assignment".into(),
             team_run_id: "tr-converge".into(),
             work_id: None,
@@ -12682,7 +12709,7 @@ mod tests {
         store
             .append_team_message_checked(&assignment)
             .expect("append conversation anchor");
-        let handoff = ProviderDispatchEnvelope {
+        let handoff = TeamMessageProjection {
             id: "tm-handoff-a".into(),
             team_run_id: assignment.team_run_id.clone(),
             work_id: None,
@@ -12751,6 +12778,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn durable_supervisor_lease_and_message_claim_are_cross_process_safe() {
         let root = team_test_root("supervisor-claim");
         let store = Arc::new(HarnessStore::new(&root));
@@ -12788,7 +12816,7 @@ mod tests {
             .expect("expired lease may be replaced");
         assert_eq!(second.generation, 2);
 
-        let message = ProviderDispatchEnvelope {
+        let message = TeamMessageProjection {
             id: "tm-claim".into(),
             team_run_id: run.id.clone(),
             work_id: None,
@@ -12952,9 +12980,10 @@ mod tests {
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
-    /// When a member fails before binding (pre-bind), queued ProviderDispatchEnvelope deliveries
+    /// When a member fails before binding (pre-bind), queued TeamMessageProjection deliveries
     /// transition to Failed so they do not stay permanently actionable in the inbox.
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn fail_queued_delivery_clears_pre_bind_mail_and_is_idempotent() {
         let root = team_test_root("pre-bind-mail-fail");
         let store = HarnessStore::new(&root);
@@ -12990,7 +13019,7 @@ mod tests {
             )
             .expect("acquire Supervisor lease");
 
-        let message = ProviderDispatchEnvelope {
+        let message = TeamMessageProjection {
             id: "tm-orphan".into(),
             team_run_id: run.id.clone(),
             work_id: None,
@@ -14277,6 +14306,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn release_clears_safe_open_ownership_and_rejects_an_in_flight_delivery() {
         let (root, store, run, member, _) = work_test_fixture("work-release");
         let mut assigned = unassigned_test_work(&run.id, "work-release-safe");
@@ -14379,6 +14409,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn historical_provider_receipt_does_not_lock_later_work_revisions() {
         let (root, store, run, member, peer) = work_test_fixture("historical-receipt");
         let mut assigned = unassigned_test_work(&run.id, "work-historical-receipt");
@@ -14540,6 +14571,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn delivery_projection_folds_cross_file_updates_by_store_sequence() {
         let (root, store, run, member, _) = work_test_fixture("delivery-fold-sequence");
         let mut assigned = unassigned_test_work(&run.id, "work-fold-sequence");
@@ -14667,6 +14699,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn successor_supervisor_reconciles_a_stale_work_delivery_claim_before_reclaim() {
         let (root, store, run, member, _) = work_test_fixture("work-delivery-reconcile");
         let mut assigned = unassigned_test_work(&run.id, "work-reconcile");
@@ -14969,6 +15002,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn host_rebind_fences_old_runtime_and_preserves_provider_receipt_evidence() {
         let (root, store, run, member, peer) = work_test_fixture("work-rebind-runtime");
         let mut assigned = unassigned_test_work(&run.id, "work-rebind");
@@ -15656,6 +15690,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn team_message_work_link_must_resolve_inside_the_same_team_run() {
         let (root, store, run, member, _) = work_test_fixture("message-work-link");
         let work = store
@@ -15664,7 +15699,7 @@ mod tests {
                 host_work_context("we-discussed", "create-discussed", "unix-ms:2"),
             )
             .expect("create discussed Work");
-        let message = ProviderDispatchEnvelope {
+        let message = TeamMessageProjection {
             id: "tm-work-discussion".into(),
             team_run_id: run.id.clone(),
             work_id: Some(work.id.clone()),
@@ -16492,6 +16527,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn work_delivery_failure_emits_host_attention() {
         let (root, store, run, member, _) = work_test_fixture("work-wdf-ha");
         let mut assigned = unassigned_test_work(&run.id, "work-wdf-ha-1");

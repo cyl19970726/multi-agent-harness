@@ -118,6 +118,14 @@ struct Facts {
     member_runs: Vec<Value>,
     messages: Vec<Value>,
     message_deliveries: Vec<Value>,
+    agent_identities: Vec<Value>,
+    agent_sessions: Vec<Value>,
+    team_memberships: Vec<Value>,
+    message_subscriptions: Vec<Value>,
+    work_execution_bindings: Vec<Value>,
+    canonical_messages: Vec<Value>,
+    canonical_message_deliveries: Vec<Value>,
+    runtime_commands: Vec<Value>,
     work_deliveries: Vec<Value>,
     side: Vec<Value>,
 }
@@ -279,6 +287,13 @@ impl Facts {
             .unwrap_or_else(|_| store.root().to_path_buf())
             .display()
             .to_string();
+        let team_memberships = store
+            .fabric_team_memberships(space_id)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
+            .collect::<Vec<_>>();
+        ensure_active_membership_cardinality(&team_memberships)?;
         Ok(Self {
             space_id: space_id.to_string(),
             store_identity,
@@ -312,13 +327,56 @@ impl Facts {
                 .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
                 .collect(),
             messages: store
-                .trust_team_messages(space_id)
+                .fabric_messages(space_id)
                 .map_err(|error| error.to_string())?
                 .into_iter()
                 .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
                 .collect(),
             message_deliveries: store
-                .trust_message_deliveries(space_id)
+                .fabric_message_deliveries(space_id)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
+                .collect(),
+            agent_identities: store
+                .fabric_agent_identities(space_id)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
+                .collect(),
+            agent_sessions: store
+                .fabric_agent_sessions(space_id)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
+                .collect(),
+            team_memberships,
+            message_subscriptions: store
+                .fabric_message_subscriptions(space_id)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
+                .collect(),
+            work_execution_bindings: store
+                .fabric_work_execution_bindings(space_id)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
+                .collect(),
+            canonical_messages: store
+                .fabric_messages(space_id)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
+                .collect(),
+            canonical_message_deliveries: store
+                .fabric_message_deliveries(space_id)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
+                .collect(),
+            runtime_commands: store
+                .runtime_commands(space_id)
                 .map_err(|error| error.to_string())?
                 .into_iter()
                 .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
@@ -350,6 +408,32 @@ impl Facts {
             .filter(|run| run.agent_team_id == team_id)
             .max_by(|a, b| a.updated_at.cmp(&b.updated_at).then(a.id.cmp(&b.id)))
     }
+}
+
+fn ensure_active_membership_cardinality(team_memberships: &[Value]) -> Result<(), String> {
+    let mut active_membership_keys = BTreeSet::new();
+    for membership in team_memberships
+        .iter()
+        .filter(|membership| membership["state"] == "active")
+    {
+        let key = (
+            membership["team_id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            membership["agent_identity_id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        );
+        if !active_membership_keys.insert(key.clone()) {
+            return Err(format!(
+                "IDENTITY_CONFLICT: Team {} and AgentIdentity {} have multiple active TeamMembership generations",
+                key.0, key.1
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn now() -> String {
@@ -470,7 +554,7 @@ fn message_summary(value: &Value, deliveries: &[Value]) -> Value {
     json!({
         "message_id":value["id"],
         "work_id":value["work_id"],
-        "sender":value["sender"],
+        "sender":value["sender_actor_ref"],
         "recipients":value["recipients"],
         "response_intent":value["response_intent"],
         "created_at":value["created_at"],
@@ -648,10 +732,23 @@ fn work_summary(facts: &Facts, team: &AgentTeam, work: &Work) -> Value {
 fn envelope(
     kind: &str,
     facts: &Facts,
-    data: Value,
+    mut data: Value,
     attention: Vec<Value>,
     actions: Vec<Value>,
 ) -> Value {
+    if let Some(object) = data.as_object_mut() {
+        object.insert(
+            "runtime_fabric".into(),
+            json!({
+                "agent_identities": record_summaries("agent_identity", facts.agent_identities.clone()),
+                "agent_sessions": record_summaries("agent_session", facts.agent_sessions.clone()),
+                "team_memberships": record_summaries("team_membership", facts.team_memberships.clone()),
+                "work_execution_bindings": record_summaries("work_execution_binding", facts.work_execution_bindings.clone()),
+                "messages": record_summaries("message", facts.canonical_messages.clone()),
+                "message_deliveries": record_summaries("canonical_message_delivery", facts.canonical_message_deliveries.clone()),
+            }),
+        );
+    }
     json!({"view_kind":kind,"schema_version":SCHEMA_VERSION,"source_execution_space_id":facts.space_id,
         "source_store_identity":facts.store_identity,"as_of_event_sequence":facts.sequence,"generated_at":now(),
         "freshness":"current","data":data,"attention":attention,"allowed_actions":actions})
@@ -665,6 +762,51 @@ fn action(
     disabled: Option<&str>,
 ) -> Value {
     json!({"kind":kind,"target_ref":{"kind":target_kind,"id":target_id},"required_version":version,"disabled_reason":disabled})
+}
+
+fn message_fabric_disabled(
+    facts: &Facts,
+    store: &HarnessStore,
+    team: &AgentTeam,
+) -> Option<String> {
+    let daemon_is_current = store
+        .latest_node_daemon_lease(&team.node_id)
+        .ok()
+        .flatten()
+        .is_some_and(|lease| {
+            lease.status == harness_core::NodeDaemonLeaseStatus::Active
+                && lease.expires_unix_ms > crate::current_unix_ms_u64()
+        });
+    if !daemon_is_current {
+        return Some(
+            "canonical Message authoring requires the Team machine's current NodeDaemon".into(),
+        );
+    }
+    let identities = team
+        .member_ids
+        .iter()
+        .chain(std::iter::once(&team.host_agent_id))
+        .collect::<BTreeSet<_>>();
+    let routable = identities.iter().all(|identity_id| {
+        let memberships = facts
+            .team_memberships
+            .iter()
+            .filter(|membership| {
+                membership["team_id"] == team.id
+                    && membership["agent_identity_id"] == identity_id.as_str()
+                    && membership["node_id"] == team.node_id
+                    && membership["state"] == "active"
+            })
+            .collect::<Vec<_>>();
+        memberships.len() == 1
+            && facts.message_subscriptions.iter().any(|subscription| {
+                subscription["subscriber_agent_id"] == identity_id.as_str()
+                    && subscription["membership_ref"] == memberships[0]["id"]
+                    && subscription["status"] == "active"
+            })
+    });
+    (!routable)
+        .then(|| "canonical Team membership and Message subscription fabric is not ready".into())
 }
 
 fn error(status: &'static str, code: &str, detail: impl Into<String>) -> HttpResponse {
@@ -946,6 +1088,14 @@ fn company_view(spaces: &[(String, HarnessStore)], query: &Query) -> ViewResult 
         member_runs: vec![],
         messages: vec![],
         message_deliveries: vec![],
+        agent_identities: vec![],
+        agent_sessions: vec![],
+        team_memberships: vec![],
+        message_subscriptions: vec![],
+        work_execution_bindings: vec![],
+        canonical_messages: vec![],
+        canonical_message_deliveries: vec![],
+        runtime_commands: vec![],
         work_deliveries: vec![],
         side: vec![],
     };
@@ -1157,6 +1307,9 @@ fn team_view(
     let identity_conflicted = !identity_attention.is_empty();
     let disabled =
         (!host_authorized).then_some("authenticated actor is not this Team's exact Host");
+    let message_disabled = disabled
+        .map(str::to_string)
+        .or_else(|| message_fabric_disabled(&facts, store, team));
     let mut actions = Vec::new();
     if let Some(run_id) = run_id {
         actions.push(action("create_work", "team_run", run_id, 0, disabled));
@@ -1165,14 +1318,14 @@ fn team_view(
             "team_run",
             run_id,
             team_revision,
-            disabled,
+            message_disabled.as_deref(),
         ));
         actions.push(action(
             "reply_message",
             "team_run",
             run_id,
             team_revision,
-            disabled,
+            message_disabled.as_deref(),
         ));
     }
     for w in &works {
@@ -1474,7 +1627,7 @@ fn member_view(
     let queued = facts
         .message_deliveries
         .iter()
-        .filter(|d| d["recipient_member_run_id"] == member_run_id && d["status"] == "queued")
+        .filter(|d| d["recipient_identity_id"] == member_id && d["status"] == "queued")
         .cloned()
         .collect::<Vec<_>>();
     let message_ids = queued
@@ -1493,26 +1646,27 @@ fn member_view(
         run["coordination_status"] == "active" && active_generations == 1;
     let team_revision = facts.team_revisions.get(&team.id).copied().unwrap_or(0);
     if addressed_generation_is_current {
+        let message_disabled = message_fabric_disabled(&facts, store, team);
         actions.push(action(
             "send_message",
             "team_run",
             team_run_id,
             team_revision,
-            None,
+            message_disabled.as_deref(),
         ));
         actions.push(action(
             "reply_message",
             "team_run",
             team_run_id,
             team_revision,
-            None,
+            message_disabled.as_deref(),
         ));
         actions.push(action(
             "request_decision",
             "team_run",
             team_run_id,
             team_revision,
-            None,
+            message_disabled.as_deref(),
         ));
     }
     for w in &my {
@@ -1638,38 +1792,6 @@ fn operator_view(
         .into_iter()
         .filter(|candidate| candidate.id == node_id)
         .count() as u64;
-    let backlog = facts
-        .message_deliveries
-        .iter()
-        .chain(facts.work_deliveries.iter())
-        .filter(|delivery| {
-            let node_run_ids = facts
-                .runs
-                .iter()
-                .filter(|run| run.execution_node_id == node_id)
-                .map(|run| run.id.as_str())
-                .collect::<BTreeSet<_>>();
-            let node_member_run_ids = facts
-                .member_runs
-                .iter()
-                .filter(|run| {
-                    run["team_run_id"]
-                        .as_str()
-                        .is_some_and(|id| node_run_ids.contains(id))
-                })
-                .filter_map(|run| run["id"].as_str())
-                .collect::<BTreeSet<_>>();
-            delivery["recipient_member_run_id"]
-                .as_str()
-                .is_some_and(|id| node_member_run_ids.contains(id))
-        })
-        .filter(|d| {
-            matches!(
-                d["status"].as_str(),
-                Some("queued" | "claimed" | "failed" | "expired")
-            )
-        })
-        .count();
     let node_run_ids = facts
         .runs
         .iter()
@@ -1686,6 +1808,54 @@ fn operator_view(
         })
         .filter_map(|run| run["id"].as_str())
         .collect::<BTreeSet<_>>();
+    let message_backlog = facts
+        .message_deliveries
+        .iter()
+        .filter(|delivery| delivery["target_node_id"] == node_id)
+        .filter(|d| {
+            matches!(
+                d["status"].as_str(),
+                Some("queued" | "claimed" | "failed" | "expired")
+            )
+        })
+        .count();
+    let work_backlog = facts
+        .work_deliveries
+        .iter()
+        .filter(|delivery| {
+            delivery["recipient_member_run_id"]
+                .as_str()
+                .is_some_and(|id| node_member_run_ids.contains(id))
+        })
+        .filter(|delivery| {
+            matches!(
+                delivery["status"].as_str(),
+                Some("queued" | "claimed" | "failed" | "expired")
+            )
+        })
+        .count();
+    let backlog = message_backlog + work_backlog;
+    let runtime_recovery = facts
+        .runtime_commands
+        .iter()
+        .filter(|command| {
+            command["target_node_id"] == node_id
+                && command["status"] == "recovery_required"
+                && command["effect_certainty"] == "unknown"
+        })
+        .map(|command| {
+            let mut projected = command.clone();
+            projected["summary"] = json!(format!(
+                "command={} effect_certainty={} session={} generation={} failure={}",
+                command["command"].as_str().unwrap_or("unknown"),
+                command["effect_certainty"].as_str().unwrap_or("unknown"),
+                command["target_session_id"].as_str().unwrap_or("none"),
+                command["target_session_generation"].as_u64().unwrap_or(0),
+                command["failure_code"].as_str().unwrap_or("unclassified"),
+            ));
+            projected
+        })
+        .collect::<Vec<_>>();
     let mut operator_actions = facts
         .work_deliveries
         .iter()
@@ -1708,25 +1878,26 @@ fn operator_view(
             ))
         })
         .collect::<Vec<_>>();
-    for delivery in facts.message_deliveries.iter().filter(|delivery| {
-        delivery["status"] == "claimed"
-            && delivery["recipient_member_run_id"]
-                .as_str()
-                .is_some_and(|id| node_member_run_ids.contains(id))
-    }) {
-        if let (Some(id), Some(version)) = (
-            delivery["id"].as_str(),
-            facts
-                .canonical_versions
-                .get(&(
-                    "message_delivery".into(),
-                    delivery["id"].as_str().unwrap_or_default().into(),
-                ))
-                .copied(),
-        ) {
+    for delivery in facts
+        .message_deliveries
+        .iter()
+        .filter(|delivery| delivery["status"] == "claimed" && delivery["target_node_id"] == node_id)
+    {
+        if let (Some(id), Some(version)) = (delivery["id"].as_str(), delivery["version"].as_u64()) {
             operator_actions.push(action(
                 "reconcile_message_delivery",
-                "message_delivery",
+                "canonical_message_delivery",
+                id,
+                version,
+                None,
+            ));
+        }
+    }
+    for command in &runtime_recovery {
+        if let (Some(id), Some(version)) = (command["id"].as_str(), command["version"].as_u64()) {
+            operator_actions.push(action(
+                "resolve_runtime_recovery",
+                "runtime_command",
                 id,
                 version,
                 None,
@@ -1794,7 +1965,7 @@ fn operator_view(
             "projects":record_summaries("node_project_registration",store.latest_node_project_registrations().unwrap_or_default().into_iter().filter(|p|p.node_id==node_id).filter_map(|value|serde_json::to_value(value).ok()).collect()),
             "team_supervisors":record_summaries("team_supervisor_lease",store.team_runs().unwrap_or_default().into_iter().filter(|r|r.execution_node_id==node_id).filter_map(|r|store.latest_team_supervisor_lease(&r.id).ok().flatten()).filter_map(|value|serde_json::to_value(value).ok()).collect()),
             "delivery_backlog":{"depth":backlog,"oldest_age_ms":null,"recovery_required":backlog>0},
-            "runtime_recovery":record_summaries("member_run",facts.member_runs.iter().filter(|r|r["id"].as_str().is_some_and(|id|node_member_run_ids.contains(id))).filter(|r|matches!(r["runtime_status"].as_str(),Some("disconnected"|"failed"|"stopped"))).cloned().collect()),
+            "runtime_recovery":record_summaries("runtime_command",runtime_recovery),
             "provider_admission":record_summaries("provider_compatibility_admission",store.latest_provider_compatibility_admissions().unwrap_or_default().into_iter().filter_map(|value|serde_json::to_value(value).ok()).collect()),
             "workspace_safety":record_summaries("workspace_binding",node_member_run_ids.iter().filter_map(|id|current_workspace(&facts,id)).cloned().collect()),
             "diagnostics":[{"kind":"daemon_lease","state":lease.as_ref().map(|l|enum_string(&l.status)).unwrap_or_else(||"unavailable".into())}]
@@ -1837,5 +2008,16 @@ mod tests {
             !root.exists(),
             "read-only RoleView must not initialize a Store"
         );
+    }
+
+    #[test]
+    fn historical_duplicate_active_membership_fails_role_view_closed() {
+        let duplicate = vec![
+            json!({"id":"membership-1","team_id":"team-1","agent_identity_id":"agent-1","state":"active","membership_generation":1}),
+            json!({"id":"membership-2","team_id":"team-1","agent_identity_id":"agent-1","state":"active","membership_generation":2}),
+        ];
+        let error = ensure_active_membership_cardinality(&duplicate)
+            .expect_err("ambiguous historical authority must fail closed");
+        assert!(error.contains("IDENTITY_CONFLICT"));
     }
 }
