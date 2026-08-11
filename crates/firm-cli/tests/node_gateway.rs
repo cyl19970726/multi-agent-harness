@@ -6,9 +6,11 @@ mod remote_fabric;
 use harness_core::agentfirm_api::{
     ActorKind as RuntimeActorKind, ActorRef, ControlCommandEnvelope, RuntimeCommandKind,
 };
+use harness_core::{ExecutionNode, ExecutionNodeStatus};
 use harness_fabric::{
-    json_digest, ActorKind, AuthenticatedActor, OperationPriority, RoutedOperation,
-    RUNTIME_COMMAND_REFERENCE_KIND, RUNTIME_COMMAND_REFERENCE_SCHEMA,
+    json_digest, ActorKind, AuthenticatedActor, CompanyNode, NodeAdministrativeStatus,
+    OperationPriority, RoutedOperation, RUNTIME_COMMAND_REFERENCE_KIND,
+    RUNTIME_COMMAND_REFERENCE_SCHEMA,
 };
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
@@ -119,4 +121,76 @@ fn hostile_runtime_resolution_fails_before_node_daemon_effect() {
     ] {
         assert!(remote_fabric::validate_resolved_runtime_command(&operation, &hostile).is_err());
     }
+}
+
+#[test]
+fn company_node_is_the_wave4c_execution_node_and_gateway_is_daemon_child() {
+    let root =
+        std::env::temp_dir().join(format!("agentfirm-node-authority-{}", std::process::id()));
+    if root.exists() {
+        std::fs::remove_dir_all(&root).expect("remove prior isolated test root");
+    }
+    std::fs::create_dir(&root).expect("create isolated Store root");
+    let store = harness_store::HarnessStore::new(&root);
+    let node_id = "11111111-1111-4111-8111-111111111111";
+    store
+        .insert_execution_node(&ExecutionNode {
+            id: node_id.into(),
+            display_name: "Node A".into(),
+            status: ExecutionNodeStatus::Active,
+            created_at: "unix-ms:1".into(),
+            updated_at: "unix-ms:1".into(),
+        })
+        .expect("insert ExecutionNode");
+    let lease = store
+        .acquire_node_daemon_lease(node_id, "daemon-a", "instance-a", 10, 30_000)
+        .expect("acquire NodeDaemon lease");
+    let node = CompanyNode {
+        id: node_id.into(),
+        company_id: "company-a".into(),
+        display_name: "Node A".into(),
+        public_key_fingerprint: "fingerprint".into(),
+        certificate_serial: "cert-a".into(),
+        allowed_capabilities: BTreeSet::from(["durable-routing".into()]),
+        administrative_status: NodeAdministrativeStatus::Active,
+        node_revision: 1,
+        enrolled_at_unix_ms: 1,
+        last_seen_at_unix_ms: None,
+        revoked_at_unix_ms: None,
+        revoke_reason: None,
+        protocol_min: 1,
+        protocol_max: 1,
+        schema_bundle_digest: "schema".into(),
+        schema_version: "agentfirm.remote_fabric.v1".into(),
+        created_at_unix_ms: 1,
+        updated_at_unix_ms: 1,
+    };
+    remote_fabric::validate_wave4c_node_authority(&store, &node, &lease, 11)
+        .expect("one exact machine and daemon authority");
+
+    let before = std::fs::read(root.join("node_daemon_leases.jsonl")).expect("lease bytes");
+    let mut wrong_node = node;
+    wrong_node.id = "22222222-2222-4222-8222-222222222222".into();
+    assert_eq!(
+        remote_fabric::validate_wave4c_node_authority(&store, &wrong_node, &lease, 11)
+            .expect_err("Fabric cannot invent a second machine identity")
+            .code,
+        harness_fabric::FabricErrorCode::SourceMismatch
+    );
+    assert_eq!(
+        std::fs::read(root.join("node_daemon_leases.jsonl")).expect("lease bytes"),
+        before
+    );
+    std::fs::remove_dir_all(root).expect("remove isolated Store root");
+}
+
+#[test]
+fn runtime_route_cannot_be_reinterpreted_as_a_message() {
+    let envelope = envelope();
+    assert_eq!(
+        remote_fabric::resolved_message_from_operation(&operation(&envelope))
+            .expect_err("closed registry prevents route kind confusion")
+            .code,
+        harness_fabric::FabricErrorCode::InvalidPayload
+    );
 }
