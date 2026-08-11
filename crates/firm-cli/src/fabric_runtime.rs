@@ -829,7 +829,6 @@ fn handle_host_http<K: harness_fabric::ArtifactKeyBackend>(
             actor_kind: harness_fabric::ActorKind::Human,
             role_bindings: std::collections::BTreeSet::from([
                 "company_host".into(),
-                "fabric_submit".into(),
                 "artifact_write".into(),
                 "artifact_read".into(),
             ]),
@@ -964,7 +963,16 @@ fn route_host_http<K: harness_fabric::ArtifactKeyBackend>(
         });
         let page = nodes.into_iter().take(limit).collect::<Vec<_>>();
         let next_cursor = page.last().map(|node| node.id.clone());
-        return Ok(serde_json::json!({"nodes":page,"next_cursor":next_cursor}));
+        let diagnostics = harness_fabric::diagnostics::inspect_fabric(
+            control.store(),
+            control.company_id(),
+            now,
+        )?;
+        return Ok(serde_json::json!({
+            "nodes":page,
+            "next_cursor":next_cursor,
+            "diagnostics":diagnostics,
+        }));
     }
     if method == "GET" {
         if let Some(artifact_id) = path
@@ -991,10 +999,19 @@ fn route_host_http<K: harness_fabric::ArtifactKeyBackend>(
                 FabricError::none(FabricErrorCode::TargetNotPlaced, "Node does not exist")
             })?;
             let lease = state.gateway_leases.get(node_id);
+            let diagnostic = harness_fabric::diagnostics::inspect_fabric(
+                control.store(),
+                control.company_id(),
+                now,
+            )?
+            .nodes
+            .into_iter()
+            .find(|diagnostic| diagnostic.node_id == node_id);
             return Ok(serde_json::json!({
                 "node":node,
                 "gateway_lease":lease,
                 "connection_status":node.connection_status(lease, generation, now),
+                "diagnostic":diagnostic,
             }));
         }
         if let Some(operation_id) = path.strip_prefix("/v1/fabric/operations/") {
@@ -1022,27 +1039,6 @@ fn route_host_http<K: harness_fabric::ArtifactKeyBackend>(
         }
     }
     if method == "POST" {
-        if path == "/v1/fabric/operations" {
-            let operation: harness_fabric::RoutedOperation =
-                serde_json::from_value(body.get("operation").cloned().ok_or_else(|| {
-                    FabricError::none(FabricErrorCode::InvalidPayload, "operation is required")
-                })?)
-                .map_err(|error| {
-                    FabricError::none(FabricErrorCode::InvalidPayload, error.to_string())
-                })?;
-            let (operation, attempt, receipt, replayed) = control.accept_control_plane_operation(
-                generation,
-                required_actor()?,
-                operation,
-                now,
-            )?;
-            return Ok(serde_json::json!({
-                "operation": operation,
-                "attempt": attempt,
-                "receipt": receipt,
-                "replayed": replayed,
-            }));
-        }
         if let Some(node_id) = path
             .strip_prefix("/v1/fabric/nodes/")
             .and_then(|rest| rest.strip_suffix("/drain"))
@@ -1349,10 +1345,7 @@ mod tests {
             company_id: "company-test".into(),
             actor_id: "company-host:http".into(),
             actor_kind: harness_fabric::ActorKind::Human,
-            role_bindings: std::collections::BTreeSet::from([
-                "company_host".into(),
-                "fabric_submit".into(),
-            ]),
+            role_bindings: std::collections::BTreeSet::from(["company_host".into()]),
             session_id: "host-test".into(),
             issued_at_unix_ms: now,
             expires_at_unix_ms: now + 60_000,
@@ -1401,97 +1394,6 @@ mod tests {
             enrolled["node"]["public_key_fingerprint"],
             csr.public_key_fingerprint
         );
-        let node: harness_fabric::CompanyNode =
-            serde_json::from_value(enrolled["node"].clone()).expect("enrolled node");
-        let peer = harness_fabric::transport::VerifiedMtlsPeer {
-            company_id: "company-test".into(),
-            node_id: "node-a".into(),
-            certificate_serial: node.certificate_serial.clone(),
-            public_key_fingerprint: node.public_key_fingerprint.clone(),
-            tls_version: "TLS1.3".into(),
-            websocket_subprotocol: harness_fabric::transport::FABRIC_WEBSOCKET_SUBPROTOCOL.into(),
-        };
-        control
-            .connect_gateway_mtls(
-                lease.control_plane_generation,
-                &peer,
-                &harness_fabric::NodeHello {
-                    company_id: "company-test".into(),
-                    node_id: "node-a".into(),
-                    instance_id: "gateway-a".into(),
-                    node_daemon_id: "daemon-a".into(),
-                    node_daemon_generation: 1,
-                    protocol_min: 1,
-                    protocol_max: 1,
-                    schema_bundle_digest: "schema-test".into(),
-                    features: std::collections::BTreeSet::from(["durable-routing".into()]),
-                    build_sha: "test".into(),
-                    last_persisted_route_seq: 0,
-                    unresolved_operation_ids: std::collections::BTreeSet::new(),
-                    certificate_serial: node.certificate_serial,
-                    public_key_fingerprint: node.public_key_fingerprint,
-                },
-                now + 3,
-            )
-            .expect("connect exact target gateway");
-        let probe_body = serde_json::json!({"probe":"host-route"});
-        let routed = harness_fabric::RoutedOperation {
-            id: "host-probe-1".into(),
-            company_id: "company-test".into(),
-            kind: harness_fabric::PROBE_OPERATION_KIND.into(),
-            source_authority: harness_fabric::OperationSourceAuthority::ControlPlane,
-            source_node_id: None,
-            target_node_id: "node-a".into(),
-            source_gateway_generation: None,
-            source_node_daemon_id: None,
-            source_node_daemon_generation: None,
-            control_plane_generation: lease.control_plane_generation,
-            source_execution_space_id: None,
-            target_execution_space_id: None,
-            actor: AuthenticatedActor {
-                company_id: "foreign".into(),
-                actor_id: "browser-selected".into(),
-                actor_kind: harness_fabric::ActorKind::Human,
-                role_bindings: std::collections::BTreeSet::new(),
-                session_id: "forged".into(),
-                issued_at_unix_ms: 0,
-                expires_at_unix_ms: 1,
-            },
-            actor_runtime_generation: None,
-            authorization_context: std::collections::BTreeMap::from([(
-                "capability".into(),
-                "durable-routing".into(),
-            )]),
-            idempotency_key: "host-probe-1".into(),
-            ordering_key: "probe:node-a".into(),
-            correlation_id: "probe:1".into(),
-            causation_id: None,
-            expected_target_revision: None,
-            body_schema: harness_fabric::PROBE_BODY_SCHEMA.into(),
-            body_digest: harness_fabric::json_digest(&probe_body).unwrap(),
-            body: probe_body,
-            priority: harness_fabric::OperationPriority::Normal,
-            created_at_unix_ms: now + 4,
-            expires_at_unix_ms: now + 60_000,
-            protocol_version: harness_fabric::FABRIC_PROTOCOL_VERSION,
-            schema_version: harness_fabric::FABRIC_SCHEMA_VERSION.into(),
-            canonicalization_version: harness_fabric::FABRIC_CANONICALIZATION_VERSION.into(),
-        };
-        let accepted = route_host_http(
-            "POST",
-            "/v1/fabric/operations",
-            "/v1/fabric/operations",
-            &serde_json::json!({"operation":routed}),
-            Some(&actor),
-            &control,
-            lease.control_plane_generation,
-            &ca,
-            now + 4,
-            "host-token-00000000000000000000000000000000",
-        )
-        .expect("Host submits a closed Control Plane operation");
-        assert_eq!(accepted["operation"]["actor"]["actor_id"], actor.actor_id);
-        assert_eq!(accepted["receipt"]["kind"], "control_plane_accepted");
         let before = store.snapshot().expect("before replay");
         let replay = route_host_http(
             "POST",
