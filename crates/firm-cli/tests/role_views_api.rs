@@ -6,7 +6,9 @@ use firm_env::{
     create_canonical_agent_member, current_project_id, current_space_id, run_firm, ServeHandle,
     TempHome,
 };
-use harness_core::agentfirm_api::{ActorKind, ActorRef, DeliveryClaim, MutationContext};
+use harness_core::agentfirm_api::{
+    ActorKind, ActorRef, DeliveryClaim, MutationContext, RuntimeDispatchMode,
+};
 use harness_core::{
     ExecutionNode, ExecutionNodeStatus, MemberRunStatus, NodeProjectRegistration,
     NodeProjectRegistrationStatus,
@@ -504,9 +506,11 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     let decision_headers = action_headers(MEMBER_TOKEN, "request-host-decision", &team_revision);
     assert!(member_view["allowed_actions"]
         .as_array()
-        .and_then(|actions| actions
-            .iter()
-            .find(|action| action["kind"] == "request_decision"))
+        .and_then(|actions| {
+            actions
+                .iter()
+                .find(|action| action["kind"] == "request_decision")
+        })
         .is_some_and(|action| action["disabled_reason"].as_str().is_some()));
     let before_unroutable_decision = ledger_digest(serve.fixture_store_root());
     let (status, decision) = serve.post_json_with_headers(
@@ -1279,6 +1283,304 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         status, 403,
         "Host must not read MemberWorkbench: {cross_team_denied}"
     );
+}
+
+#[test]
+fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_cursor() {
+    let home = TempHome::new("canonical-role-message-journey");
+    let root = home.base().join("project");
+    std::fs::create_dir_all(&root).expect("project root");
+    assert!(run_firm(&home, &root, &["init"]).status.success());
+    let project_id = current_project_id(&home);
+    let space_id = current_space_id(&home);
+    let run = |args: &[&str]| {
+        let mut full = vec!["--project", project_id.as_str()];
+        full.extend_from_slice(args);
+        let output = run_firm(&home, &root, &full);
+        assert!(output.status.success(), "fixture {args:?}: {output:?}");
+        output
+    };
+    let node: serde_json::Value =
+        serde_json::from_slice(&run(&["node", "init"]).stdout).expect("node JSON");
+    let node_id = node["id"].as_str().expect("node id").to_string();
+    run(&[
+        "node",
+        "project",
+        "register",
+        "--node-id",
+        &node_id,
+        "--project-binding-id",
+        &project_id,
+    ]);
+    let mission = run(&[
+        "mission",
+        "create",
+        "--title",
+        "Canonical message journey",
+        "--objective",
+        "Prove Host and Member use one NodeDaemon-owned message fabric",
+    ]);
+    let mission_id = String::from_utf8_lossy(&mission.stdout).trim().to_string();
+    let host_id = "agent-message-host";
+    let member_id = "agent-message-member";
+    for (id, name, role) in [
+        (host_id, "Message Host", "host"),
+        (member_id, "Message Member", "builder"),
+    ] {
+        let created =
+            create_canonical_agent_member(&home, &root, &project_id, id, name, role, "codex", &[]);
+        assert!(created.status.success(), "AgentMember {id}: {created:?}");
+    }
+    run(&[
+        "team",
+        "create",
+        "--name",
+        "Canonical Message Team",
+        "--description",
+        "Wave4C real message journey",
+        "--mission-id",
+        &mission_id,
+        "--host-agent-id",
+        host_id,
+        "--node-id",
+        &node_id,
+        "--member",
+        host_id,
+        "--member",
+        member_id,
+    ]);
+    let store = HarnessStore::new(home.spaces_dir().join(&space_id));
+    let team = store
+        .latest_teams()
+        .expect("teams")
+        .into_values()
+        .next()
+        .expect("Team");
+    let credentials = serde_json::json!([{
+        "token": TOKEN,
+        "actor": {"kind":"agent_member","id":host_id},
+        "authority_actors": []
+    },{
+        "token": MEMBER_TOKEN,
+        "actor": {"kind":"agent_member","id":member_id},
+        "authority_actors": []
+    }])
+    .to_string();
+    let serve = ServeHandle::spawn_with_env(
+        &home,
+        &root,
+        &["--space", &space_id],
+        &[("AGENTFIRM_HTTP_CREDENTIALS_JSON", credentials.as_str())],
+    );
+    let (status, created_run) = serve.post_json(
+        "/v1/team-runs",
+        &serde_json::json!({
+            "agent_team_id":team.id,
+            "objective":"Canonical Team Message journey",
+            "host_surface":"codex-app",
+            "host_thread_id":"canonical-message-host-thread",
+            "members":[{"agent_member_id":member_id,"name":"member","role":"builder","provider":"codex"}]
+        }),
+    );
+    assert_eq!(status, 200, "TeamRun: {created_run}");
+    let run_id = created_run["result"]["team_run"]["id"]
+        .as_str()
+        .expect("TeamRun id");
+    let member_run_id = created_run["result"]["member_runs"][0]["id"]
+        .as_str()
+        .expect("MemberRun id");
+
+    // The helper uses the real authenticated HTTP RuntimeCommand and daemon
+    // socket. It only replaces the retired test route inside ServeHandle.
+    let (status, bootstrap) = serve.post_json(
+        &format!("/v1/team-runs/{run_id}/messages"),
+        &serde_json::json!({
+            "sender_runtime_id":"host",
+            "recipient_runtime_ids":[member_run_id],
+            "kind":"message",
+            "body":"bootstrap canonical memberships and sessions"
+        }),
+    );
+    assert_eq!(status, 200, "NodeDaemon bootstrap: {bootstrap}");
+    let lease = store
+        .latest_node_daemon_lease(&node_id)
+        .expect("daemon lease")
+        .expect("current daemon lease");
+    let sessions = store
+        .fabric_agent_sessions(&space_id)
+        .expect("AgentSessions");
+    for identity in [host_id, member_id] {
+        let current = sessions
+            .iter()
+            .filter(|session| {
+                session.agent_identity_id == identity
+                    && session.lifecycle != harness_core::agentfirm_api::AgentSessionStatus::Closed
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(current.len(), 1, "one current session for {identity}");
+        assert_eq!(current[0].node_daemon_id, lease.daemon_id);
+        assert_eq!(current[0].node_daemon_generation, lease.generation);
+    }
+
+    let host_view_route = format!("/v1/views/host-console/{}?project={project_id}", team.id);
+    let (status, host_view) =
+        serve.get_json_with_headers(&host_view_route, &[("X-AgentFirm-Token", TOKEN)]);
+    assert_eq!(status, 200, "Host RoleView: {host_view}");
+    let host_action = host_view["allowed_actions"]
+        .as_array()
+        .and_then(|actions| {
+            actions
+                .iter()
+                .find(|action| action["kind"] == "send_message")
+        })
+        .expect("Host send action");
+    assert!(host_action["disabled_reason"].is_null(), "{host_action}");
+    let host_version = host_action["required_version"]
+        .as_u64()
+        .unwrap()
+        .to_string();
+    let host_route = format!("/v1/agentfirm/team-runs/{run_id}/messages/send?project={project_id}");
+    let (status, host_message) = serve.post_json_with_headers(
+        &host_route,
+        &serde_json::json!({
+            "action":"send_message",
+            "recipient_ids":[member_id],
+            "body":"Host to Member canonical message",
+            "response_required":true
+        }),
+        &action_headers(TOKEN, "host-member-canonical", &host_version),
+    );
+    assert_eq!(status, 200, "Host message: {host_message}");
+    let host_message_id = host_message["projection"]["id"].as_str().unwrap();
+
+    let member_view_route =
+        format!("/v1/views/member-workbench/{member_run_id}?project={project_id}");
+    let (status, member_view) =
+        serve.get_json_with_headers(&member_view_route, &[("X-AgentFirm-Token", MEMBER_TOKEN)]);
+    assert_eq!(status, 200, "Member RoleView: {member_view}");
+    let decision_action = member_view["allowed_actions"]
+        .as_array()
+        .and_then(|actions| {
+            actions
+                .iter()
+                .find(|action| action["kind"] == "request_decision")
+        })
+        .expect("Member decision action");
+    assert!(
+        decision_action["disabled_reason"].is_null(),
+        "{decision_action}"
+    );
+    let member_version = decision_action["required_version"]
+        .as_u64()
+        .unwrap()
+        .to_string();
+    let (status, member_message) = serve.post_json_with_headers(
+        &format!("/v1/agentfirm/team-runs/{run_id}/messages/request-decision?project={project_id}"),
+        &serde_json::json!({
+            "action":"request_decision",
+            "body":"Member to Host canonical decision request"
+        }),
+        &action_headers(MEMBER_TOKEN, "member-host-canonical", &member_version),
+    );
+    assert_eq!(status, 200, "Member message: {member_message}");
+    let member_message_id = member_message["projection"]["id"].as_str().unwrap();
+
+    let messages = store
+        .fabric_messages(&space_id)
+        .expect("canonical Messages");
+    for (id, sender) in [(host_message_id, host_id), (member_message_id, member_id)] {
+        let message = messages.iter().find(|message| message.id == id).unwrap();
+        assert_eq!(message.source_node_id, node_id);
+        assert_eq!(message.source_node_daemon_id, lease.daemon_id);
+        assert_eq!(message.source_authority_generation, lease.generation);
+        assert_eq!(message.sender_actor_ref.id, sender);
+        assert!(
+            message.sender_session_id.is_some(),
+            "agent-authored Message must freeze the exact sender session: {message:?}"
+        );
+    }
+
+    let host_delivery = store
+        .fabric_message_deliveries(&space_id)
+        .expect("canonical deliveries")
+        .into_iter()
+        .find(|delivery| {
+            delivery.message_id == host_message_id && delivery.recipient_identity_id == member_id
+        })
+        .expect("Host to Member delivery");
+    let daemon_context = MutationContext {
+        execution_space_id: space_id.clone(),
+        authenticated_actor: ActorRef {
+            kind: ActorKind::Service,
+            id: lease.daemon_id.clone(),
+        },
+        authority_actor: None,
+        command_name: "test.node_daemon.message_claim".into(),
+        idempotency_key: "claim-host-member-canonical".into(),
+        expected_version: 0,
+        request_fingerprint: None,
+    };
+    store
+        .claim_message_for_provider(
+            &daemon_context,
+            &host_delivery.id,
+            &node_id,
+            &lease.daemon_id,
+            lease.generation,
+            "claim-host-member-canonical",
+            RuntimeDispatchMode::QueueOnly,
+            "unix-ms:100",
+        )
+        .expect("target NodeDaemon claim");
+    let mut receipt_context = daemon_context.clone();
+    receipt_context.command_name = "test.node_daemon.message_receipt".into();
+    receipt_context.idempotency_key = "receipt-host-member-canonical".into();
+    store
+        .record_message_provider_receipt(
+            &receipt_context,
+            &host_delivery.id,
+            &node_id,
+            &lease.daemon_id,
+            lease.generation,
+            "claim-host-member-canonical",
+            "provider-receipt-host-member",
+            "unix-ms:101",
+        )
+        .expect("provider receipt");
+    store
+        .acknowledge_message_delivery(
+            &MutationContext {
+                execution_space_id: space_id.clone(),
+                authenticated_actor: ActorRef {
+                    kind: ActorKind::AgentMember,
+                    id: member_id.into(),
+                },
+                authority_actor: None,
+                command_name: "test.agent_session.message_ack".into(),
+                idempotency_key: "ack-host-member-canonical".into(),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            &host_delivery.id,
+            "unix-ms:102",
+        )
+        .expect("recipient ACK and cursor advance");
+    let acknowledged = store
+        .fabric_message_deliveries(&space_id)
+        .expect("acknowledged deliveries")
+        .into_iter()
+        .find(|delivery| delivery.id == host_delivery.id)
+        .unwrap();
+    assert_eq!(
+        acknowledged.status,
+        harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Acknowledged
+    );
+    assert!(store
+        .canonical_operations()
+        .expect("canonical operations")
+        .iter()
+        .flat_map(|operation| &operation.immutable_side_records)
+        .any(|record| record.get("cursor_revision").is_some()));
 }
 
 #[test]

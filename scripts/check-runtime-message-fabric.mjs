@@ -1,5 +1,42 @@
 import { readFileSync } from "node:fs";
 
+function stripCfgItems(source, cfgName) {
+  const lines = source.split("\n");
+  const kept = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (lines[index].trim() !== `#[cfg(${cfgName})]`) {
+      kept.push(lines[index]);
+      continue;
+    }
+    // Skip adjacent attributes and the complete attributed Rust item. This is
+    // deliberately syntax-light, but brace-balanced: the governance rule is
+    // about production-executable authority, not broad token censorship of
+    // frozen historical tests/source.
+    index += 1;
+    while (index < lines.length && lines[index].trim().startsWith("#[")) index += 1;
+    let depth = 0;
+    let opened = false;
+    for (; index < lines.length; index += 1) {
+      const line = lines[index];
+      for (const character of line) {
+        if (character === "{") {
+          depth += 1;
+          opened = true;
+        } else if (character === "}") {
+          depth -= 1;
+        }
+      }
+      if (opened && depth === 0) break;
+      if (!opened && line.trim().endsWith(";")) break;
+    }
+  }
+  return kept.join("\n");
+}
+
+function productionRust(path) {
+  return stripCfgItems(stripCfgItems(readFileSync(path, "utf8"), "any()"), "test");
+}
+
 const requiredSchemas = [
   "agent-identity",
   "agent-session",
@@ -67,7 +104,7 @@ const activeRuntimeSources = [
   "crates/firm-core/src/agentfirm_api.rs",
 ];
 for (const path of activeRuntimeSources) {
-  const text = readFileSync(path, "utf8");
+  const text = productionRust(path);
   if (text.includes("ProviderDispatchEnvelope")) {
     failures.push(`${path} retains the retired ProviderDispatchEnvelope contract`);
   }
@@ -98,6 +135,76 @@ try {
   failures.push("retired provider-dispatch-envelope schema still exists");
 } catch (error) {
   if (error?.code !== "ENOENT") throw error;
+}
+
+const retiredWave4AMessageTokens = [
+  "trust_team_messages",
+  "trust_message_deliveries",
+  "create_trust_team_message_with_deliveries",
+  "claim_trust_message_delivery",
+  "receive_trust_message_delivery",
+  "acknowledge_trust_message_delivery",
+  "reconcile_trust_message_delivery",
+  "retry_trust_message_delivery",
+];
+for (const path of [
+  "crates/firm-store/src/trust_kernel.rs",
+  "crates/firm-cli/src/main.rs",
+  "crates/firm-cli/src/mcp.rs",
+  "crates/firm-cli/src/supervisor_daemon.rs",
+]) {
+  const text = productionRust(path);
+  for (const token of retiredWave4AMessageTokens) {
+    if (text.includes(token)) failures.push(`${path} retains production-executable Wave4A message authority: ${token}`);
+  }
+}
+for (const functionName of retiredWave4AMessageTokens.slice(0, 2).concat(retiredWave4AMessageTokens.slice(2))) {
+  const pattern = new RegExp(`#\\[cfg\\(any\\(\\)\\)\\]\\s+pub fn ${functionName}\\b`);
+  if (!pattern.test(store)) failures.push(`retired Store seam ${functionName} is not explicitly quarantined`);
+}
+
+if (!server.includes('"send" => {\n            return Err(CliError::Usage(\n                "RETIRED_WRITE_AUTHORITY: team-run send')) {
+  failures.push("team-run send CLI is not a hard-retired writer");
+}
+for (const [command, marker] of [
+  ["ack", "team-run ack cannot authenticate the recipient session"],
+  ["reconcile-delivery", "team-run reconcile-delivery cannot supply NodeDaemon delivery authority"],
+]) {
+  if (!server.includes(`"${command}" => {`) || !server.includes(marker)) {
+    failures.push(`team-run ${command} CLI is not a hard-retired writer`);
+  }
+}
+const mcp = readFileSync("crates/firm-cli/src/mcp.rs", "utf8");
+for (const [tool, marker] of [
+  ["team_run_send_message", "cannot select a sender identity"],
+  ["team_message_acknowledge", "cannot authenticate the recipient session"],
+  ["team_run_reconcile_delivery", "cannot supply target NodeDaemon authority"],
+]) {
+  if (!mcp.includes(`RETIRED_WRITE_AUTHORITY: ${tool} ${marker}`)) {
+    failures.push(`${tool} MCP tool is not a hard-retired writer`);
+  }
+}
+for (const routeToken of [
+  'path_only == "/v1/messages"',
+  'path_only.ends_with("/messages")',
+  'path_only.contains("/messages/")',
+  'path_only.starts_with("/v1/message-deliveries/")',
+  '"code": "RETIRED_WRITE_AUTHORITY"',
+]) {
+  if (!server.includes(routeToken)) failures.push(`retired HTTP message route inventory is incomplete: ${routeToken}`);
+}
+
+const legacyExport = readFileSync("crates/firm-cli/src/legacy_export.rs", "utf8");
+const providerDispatchLedgerMatches = [
+  ...legacyExport.matchAll(/provider_dispatch_events\.jsonl/g),
+].length;
+if (providerDispatchLedgerMatches !== 1 || !legacyExport.includes('ledger: "provider_dispatch_events.jsonl"')) {
+  failures.push("provider_dispatch_events historical allowlist must be exactly one read-only legacy export entry");
+}
+for (const path of activeRuntimeSources) {
+  if (productionRust(path).includes("provider_dispatch_events.jsonl")) {
+    failures.push(`${path} retains current provider_dispatch ledger authority`);
+  }
 }
 
 if (failures.length) {

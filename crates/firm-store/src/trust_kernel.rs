@@ -6,11 +6,11 @@ use firm_core::agentfirm_api::{
     CanonicalWorkDelivery, ControlCommandEnvelope, DeliveryClaim, DeliveryReconcileOutcome,
     FailureAnalysis, GateEvaluation, GateRequirement, GateRequirementSource, GateVerdict,
     GateWaiver, GateWaiverState, MemberCoordinationStatus, MemberRun, MemberRuntimeStatus,
-    MemberWorkspaceBinding, Message, MessageDelivery, MessageDeliveryStatus, MessageRecipientKind,
-    MessageRouteJournal, MessageSubscription, MessageSubscriptionKind, MessageSubscriptionStatus,
-    MutationContext, ProviderInvocation, ProviderReceipt, RouteJournalStatus, RuntimeCommandKind,
+    MemberWorkspaceBinding, Message, MessageRecipientKind, MessageRouteJournal,
+    MessageSubscription, MessageSubscriptionKind, MessageSubscriptionStatus, MutationContext,
+    ProviderInvocation, ProviderReceipt, RouteJournalStatus, RuntimeCommandKind,
     RuntimeCommandRecord, RuntimeCommandStatus, RuntimeEffectCertainty, SubscriptionCursor,
-    TeamMembership, TeamMembershipStatus, TeamMessage, TrustError, TrustErrorCode, WorkDelivery,
+    TeamMembership, TeamMembershipStatus, TrustError, TrustErrorCode, WorkDelivery,
     WorkDeliveryStatus, WorkExecutionBinding, WorkExecutionBindingStatus, WorkFinding,
     WorkModuleBinding, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
     WorkspaceOwnership, WorkspaceSafetyProof,
@@ -324,6 +324,7 @@ impl HarnessStore {
         Ok(())
     }
 
+    #[cfg(any())]
     fn trust_message_team_run_unlocked(
         &self,
         execution_space_id: &str,
@@ -1183,27 +1184,6 @@ impl HarnessStore {
             }
         }
         if transition == "closed" || transition == "retired" {
-            for mut delivery in self.trust_message_deliveries(&context.execution_space_id)? {
-                if delivery.recipient_member_run_id != member_run_id {
-                    continue;
-                }
-                if transition == "closed" && delivery.status == MessageDeliveryStatus::Queued {
-                    delivery.freeze_generation = Some(run.runtime_generation);
-                    delivery.version += 1;
-                    delivery.updated_at = updated_at.to_string();
-                    side_records.push(serde_json::to_value(delivery)?);
-                } else if transition == "retired"
-                    && matches!(
-                        delivery.status,
-                        MessageDeliveryStatus::Queued | MessageDeliveryStatus::Claimed
-                    )
-                {
-                    delivery.status = MessageDeliveryStatus::Invalidated;
-                    delivery.version += 1;
-                    delivery.updated_at = updated_at.to_string();
-                    side_records.push(serde_json::to_value(delivery)?);
-                }
-            }
             for mut delivery in self.trust_work_deliveries(&context.execution_space_id)? {
                 if delivery.recipient_member_run_id != member_run_id {
                     continue;
@@ -1350,6 +1330,7 @@ impl HarnessStore {
         Ok(latest)
     }
 
+    #[cfg(any())]
     pub fn trust_message_deliveries(
         &self,
         execution_space_id: &str,
@@ -1361,6 +1342,7 @@ impl HarnessStore {
         Ok(latest.into_values().collect())
     }
 
+    #[cfg(any())]
     pub fn trust_team_messages(&self, execution_space_id: &str) -> StoreResult<Vec<TeamMessage>> {
         self.latest_trust_envelopes_unlocked(execution_space_id, "team_message")?
             .values()
@@ -1386,6 +1368,7 @@ impl HarnessStore {
         Ok(latest.into_values().collect())
     }
 
+    #[cfg(any())]
     pub fn create_trust_team_message_with_deliveries(
         &self,
         context: &MutationContext,
@@ -1742,6 +1725,7 @@ impl HarnessStore {
         }
     }
 
+    #[cfg(any())]
     pub fn claim_trust_message_delivery(
         &self,
         context: &MutationContext,
@@ -1819,6 +1803,7 @@ impl HarnessStore {
         )
     }
 
+    #[cfg(any())]
     pub fn receive_trust_message_delivery(
         &self,
         context: &MutationContext,
@@ -1894,6 +1879,7 @@ impl HarnessStore {
         )
     }
 
+    #[cfg(any())]
     pub fn acknowledge_trust_message_delivery(
         &self,
         context: &MutationContext,
@@ -1978,6 +1964,7 @@ impl HarnessStore {
         )
     }
 
+    #[cfg(any())]
     pub fn reconcile_trust_message_delivery(
         &self,
         context: &MutationContext,
@@ -2039,6 +2026,7 @@ impl HarnessStore {
         )
     }
 
+    #[cfg(any())]
     pub fn retry_trust_message_delivery(
         &self,
         context: &MutationContext,

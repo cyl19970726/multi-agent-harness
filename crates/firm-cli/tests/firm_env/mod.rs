@@ -506,6 +506,24 @@ impl ServeHandle {
             .nth(2)
             .expect("team-run id");
         let store = HarnessStore::new(&self.fixture_store_root);
+        let Some(run) = store
+            .team_runs()
+            .expect("read TeamRuns")
+            .into_iter()
+            .rev()
+            .find(|run| run.id == team_run_id)
+        else {
+            return (
+                409,
+                serde_json::json!({"ok":false,"error":{"code":"TEAM_RUN_NOT_FOUND"}}),
+            );
+        };
+        let host_identity_id = store
+            .latest_teams()
+            .expect("read AgentTeams")
+            .remove(&run.agent_team_id)
+            .expect("TeamRun AgentTeam")
+            .host_agent_id;
         let runs = store
             .trust_member_runs(&self.fixture_execution_space_id)
             .expect("read canonical MemberRuns");
@@ -518,23 +536,25 @@ impl ServeHandle {
             .iter()
             .filter_map(serde_json::Value::as_str)
             .map(|recipient| {
-                let stable_id = runs
-                    .iter()
-                    .find(|run| run.id == recipient)
-                    .map(|run| run.agent_member_id.as_str())
-                    .unwrap_or(recipient);
-                serde_json::json!({"kind": "agent_member", "id": stable_id})
+                let stable_id = if recipient == "host" {
+                    host_identity_id.as_str()
+                } else {
+                    runs.iter()
+                        .find(|run| run.id == recipient)
+                        .map(|run| run.agent_member_id.as_str())
+                        .unwrap_or(recipient)
+                };
+                serde_json::json!({"kind": "agent_identity", "id": stable_id})
             })
             .collect::<Vec<_>>();
         let generation = COUNTER.fetch_add(1, Ordering::SeqCst);
         let message_id = format!("message-it-{generation}");
-        let now = format!("unix-ms:{}", current_unix_ms_for_fixture());
         let kind = match body
             .get("kind")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("message")
         {
-            "control" => "control",
+            "control" => "request_decision",
             other => {
                 assert_eq!(other, "message", "unsupported legacy fixture message kind");
                 "message"
@@ -547,21 +567,29 @@ impl ServeHandle {
             .or_else(|| {
                 let cause = body.get("causation_id")?.as_str()?;
                 store
-                    .trust_team_messages(&self.fixture_execution_space_id)
+                    .fabric_messages(&self.fixture_execution_space_id)
                     .ok()?
                     .into_iter()
                     .find(|message| message.id == cause)
                     .map(|message| message.correlation_id)
             })
             .unwrap_or_else(|| message_id.clone());
+        let target_ref = recipients
+            .first()
+            .cloned()
+            .expect("canonical message fixture requires a recipient");
         let request = serde_json::json!({
-            "command": "create_team_message",
-            "message": {
-                "id": message_id.clone(),
+            "target_node_id": run.execution_node_id,
+            "command": "author_message",
+            "required_capability": "message.author",
+            "expires_unix_ms": current_unix_ms_for_fixture() + 30_000,
+            "payload": {"draft": {
+                "address_kind": if recipients.len() == 1 { "direct_agent" } else { "authorized_broadcast" },
+                "target_ref": target_ref,
+                "recipients": recipients,
+                "team_id": run.agent_team_id,
                 "team_run_id": team_run_id,
                 "work_id": body.get("work_id").cloned().unwrap_or(serde_json::Value::Null),
-                "sender": {"kind": "service", "id": "integration-test-fixture"},
-                "recipients": recipients,
                 "kind": kind,
                 "body": body.get("body").and_then(serde_json::Value::as_str).unwrap_or("test message"),
                 "correlation_id": correlation_id,
@@ -577,9 +605,8 @@ impl ServeHandle {
                         }
                     }),
                 "evidence_refs": body.get("evidence_refs").cloned().unwrap_or_else(|| serde_json::json!([])),
-                "created_at": now,
-            },
-            "updated_at": format!("unix-ms:{}", current_unix_ms_for_fixture()),
+                "schema_version": 1
+            }}
         });
         let expected = "0";
         let headers = [
@@ -587,10 +614,11 @@ impl ServeHandle {
             ("Idempotency-Key", message_id.as_str()),
             ("If-Match", expected),
         ];
-        let (status, response) = self.post_json_with_headers(path, &request, &headers);
-        if status == 200 {
+        let (status, response) =
+            self.post_json_with_headers("/v1/agentfirm/runtime-commands", &request, &headers);
+        if status == 200 && response["ok"].as_bool() == Some(true) {
             let mut result = response
-                .get("projection")
+                .get("result")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
             if let Some(result) = result.as_object_mut() {
@@ -609,7 +637,7 @@ impl ServeHandle {
                 }),
             );
         }
-        (status, response)
+        (if status == 200 { 409 } else { status }, response)
     }
 
     /// Older runtime integration scenarios describe provider inputs inline.

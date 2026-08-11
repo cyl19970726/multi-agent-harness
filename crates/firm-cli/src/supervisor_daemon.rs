@@ -15,9 +15,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::{
-    current_unix_ms_u64, drive_prepared_team_run, ensure_team_runtime_fabric,
-    prepare_team_run_start_body, CliError, CliResult, HarnessStore, PreparedTeamRunStart,
-    TeamRunLedger, TeamSupervisorRegistration,
+    current_unix_ms_u64, drive_prepared_team_run, ensure_team_message_fabric,
+    ensure_team_runtime_fabric, prepare_team_run_start_body, CliError, CliResult, HarnessStore,
+    PreparedTeamRunStart, TeamRunLedger, TeamSupervisorRegistration,
 };
 
 // ---------------------------------------------------------------------------
@@ -893,6 +893,15 @@ impl MultiTeamDaemon {
                                 CliError::Usage(format!("INVALID_RUNTIME_COMMAND: {error}"))
                             })
                             .and_then(|draft| {
+                                if let Some(team_run_id) = draft.team_run_id.as_deref() {
+                                    ensure_team_message_fabric(
+                                        &store,
+                                        team_run_id,
+                                        &envelope.execution_space_id,
+                                        &self.daemon_id,
+                                        envelope.target_node_daemon_generation,
+                                    )?;
+                                }
                                 let (sender_agent_id, sender_session_id) = if envelope
                                     .authenticated_actor
                                     .kind

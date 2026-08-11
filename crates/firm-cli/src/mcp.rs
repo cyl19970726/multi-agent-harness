@@ -17,28 +17,26 @@
 use std::io::{BufRead, Write};
 
 use harness_core::{
-    MemberRunStatus, PendingInteractionStatus, TeamActorKind, TeamActorRef, TeamRunEvent,
-    TeamRunStatus, TeamSupervisorLeaseStatus, WaveStatus, Work, WorkCausationRef, WorkClaimMode,
+    PendingInteractionStatus, TeamActorKind, TeamActorRef, TeamRunEvent, TeamRunStatus,
+    TeamSupervisorLeaseStatus, WaveStatus, Work, WorkCausationRef, WorkClaimMode,
     WorkCommandContext, WorkCondition, WorkPhase, WorkPriority,
 };
 use harness_store::HarnessStore;
 use serde_json::{json, Value};
 
 use crate::{
-    acknowledge_team_message, add_team_run_member, agentfirm_api, cancel_work_delegation_value,
-    close_mission, close_team_member_value, create_mission, create_team_run,
-    create_work_delegation_value, current_unix_ms_u64, deactivate_team_run_member,
-    delegate_team_run_to_node_daemon, format_work_brief_line, generated_id,
-    has_actionable_delivered_manual_ack, host_inbox_for_native_thread, interrupt_team_member_value,
-    latest_member_runs_in_append_order, latest_pending_interactions_in_append_order,
-    latest_team_messages_in_append_order, latest_team_run, latest_team_runs_in_append_order,
-    mutate_team_work_value, now_string, parse_team_actor_kind, parse_team_message_kind,
-    parse_team_message_response_intent, reconcile_team_message_delivery_value,
+    add_team_run_member, agentfirm_api, cancel_work_delegation_value, close_mission,
+    close_team_member_value, create_mission, create_team_run, create_work_delegation_value,
+    current_unix_ms_u64, deactivate_team_run_member, delegate_team_run_to_node_daemon,
+    format_work_brief_line, generated_id, has_actionable_delivered_manual_ack,
+    host_inbox_for_native_thread, interrupt_team_member_value, latest_member_runs_in_append_order,
+    latest_pending_interactions_in_append_order, latest_team_messages_in_append_order,
+    latest_team_run, latest_team_runs_in_append_order, mutate_team_work_value, now_string,
     reconcile_team_work_delivery_value, rename_team_run_member, reopen_team_member_value,
     reopened_member_requires_supervisor_start, resolve_pending_interaction_value,
-    retired_wave_write_error, revise_mission_context, send_team_message_as_work, serde_snake_label,
-    steer_team_member_value, team_member_specs_from_definition, team_run_board_summary_text,
-    team_run_inbox, team_run_mission_id, team_run_wave_index, transition_team_run,
+    retired_wave_write_error, revise_mission_context, serde_snake_label, steer_team_member_value,
+    team_member_specs_from_definition, team_run_board_summary_text, team_run_inbox,
+    team_run_mission_id, team_run_wave_index, transition_team_run,
     visible_member_actions_in_append_order, work_operation_cursors, ResolvedStore, TeamMemberSpec,
 };
 
@@ -788,18 +786,11 @@ fn tool_team_run_cancel(
 }
 
 fn tool_team_message_acknowledge(
-    store: &HarnessStore,
-    resolved: &ResolvedStore,
-    arguments: &Value,
+    _store: &HarnessStore,
+    _resolved: &ResolvedStore,
+    _arguments: &Value,
 ) -> Result<Value, String> {
-    let message_id = required_str(arguments, "message_id")?;
-    let member_id = required_str(arguments, "member_id")?;
-    let message = acknowledge_team_message(store, message_id, member_id)
-        .map_err(|error| error.to_string())?;
-    Ok(json!({
-        "message": message,
-        "dashboard_url": team_dashboard_url(store, resolved, &message.team_run_id)
-    }))
+    Err("RETIRED_WRITE_AUTHORITY: team_message_acknowledge cannot authenticate the recipient session; acknowledge canonical MessageDelivery through the target NodeDaemon".to_string())
 }
 
 /// Read a required string argument, or the tool-error message.
@@ -1220,135 +1211,19 @@ fn tool_team_run_status(
     }))
 }
 
-/// `team_run_send_message` — route one message inside a run and fold it into
-/// the event log. `sender_runtime_id` may be the reserved sender `host`.
-fn tool_team_run_send_message(store: &HarnessStore, arguments: &Value) -> Result<Value, String> {
-    let team_run_id = required_str(arguments, "team_run_id")?;
-    let sender_runtime_id = required_str(arguments, "sender_runtime_id")?;
-    let recipient_runtime_ids: Vec<String> = arguments
-        .get("recipient_runtime_ids")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "missing required array argument `recipient_runtime_ids`".to_string())?
-        .iter()
-        .filter_map(Value::as_str)
-        .map(str::to_string)
-        .collect();
-    if recipient_runtime_ids.is_empty() {
-        return Err("`recipient_runtime_ids` must name at least one member id".to_string());
-    }
-    let kind = parse_team_message_kind(required_str(arguments, "kind")?)
-        .map_err(|error| error.to_string())?;
-    let body = required_str(arguments, "body")?;
-    let correlation_id = arguments
-        .get("correlation_id")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let causation_id = arguments
-        .get("causation_id")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let sender_kind = optional_str(arguments, "sender_kind")?.unwrap_or_else(|| {
-        if sender_runtime_id == "host" {
-            "host".to_string()
-        } else {
-            "member_run".to_string()
-        }
-    });
-    let sender_kind = parse_team_actor_kind(&sender_kind).map_err(|error| error.to_string())?;
-    let sender_id =
-        optional_str(arguments, "sender_id")?.unwrap_or_else(|| sender_runtime_id.to_string());
-    let mut authn_source = "mcp".to_string();
-    if matches!(
-        sender_kind,
-        TeamActorKind::ProviderRuntimeProjection | TeamActorKind::AgentMember
-    ) {
-        // The unbound-client impersonation invariant holds for driven
-        // members: their mail must originate from the bound provider runtime.
-        // The declared exception is a non-driven external_interactive member,
-        // whose user-driven session has no bound runtime and whose mail is
-        // accepted from this trusted loopback client with explicit provenance.
-        let external_member = latest_member_runs_in_append_order(store)
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .filter(|member| member.team_run_id == team_run_id)
-            .find(|member| match sender_kind {
-                TeamActorKind::ProviderRuntimeProjection => member.id == sender_id,
-                TeamActorKind::AgentMember => member.agent_member_id == sender_id,
-                _ => false,
-            });
-        match external_member {
-            Some(member)
-                if member.is_external_interactive()
-                    && member.coordination_is_active()
-                    && !matches!(
-                        member.status,
-                        MemberRunStatus::Completed
-                            | MemberRunStatus::Failed
-                            | MemberRunStatus::Stopped
-                    ) =>
-            {
-                authn_source = "mcp:external_interactive".to_string();
-            }
-            Some(member) if member.is_external_interactive() => {
-                return Err(format!(
-                    "member {} coordination is {} and runtime status is {}; explicitly Reopen a closed member or create a replacement for a retired member",
-                    member.id,
-                    serde_snake_label(&member.coordination_status),
-                    serde_snake_label(&member.status)
-                ));
-            }
-            _ => {
-                return Err(
-                    "unbound MCP connections may not author ProviderRuntimeProjection or AgentMember messages; \
-                     member-originated messages must come from that member's bound provider runtime \
-                     (declared external_interactive members excepted)"
-                        .to_string(),
-                );
-            }
-        }
-    }
-    if sender_kind == TeamActorKind::Host && sender_runtime_id != "host" {
-        return Err("sender_kind=host requires sender_runtime_id=host".to_string());
-    }
-    let message = send_team_message_as_work(
-        store,
-        team_run_id,
-        TeamActorRef {
-            kind: sender_kind,
-            id: sender_id,
-            display_name: optional_str(arguments, "sender_name")?,
-            authn_source: Some(authn_source),
-        },
-        recipient_runtime_ids,
-        kind,
-        body,
-        optional_str(arguments, "work_id")?,
-        correlation_id,
-        causation_id,
-        optional_str(arguments, "source_plan_ref")?,
-        optional_str(arguments, "response_intent")?
-            .map(|intent| parse_team_message_response_intent(&intent))
-            .transpose()
-            .map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(json!({
-        "message_id": message.id,
-        "correlation_id": message.correlation_id,
-    }))
+/// The retired MCP tool cannot authenticate a stable sender identity. Keep the
+/// name as an explicit hard-rejection surface until the MCP manifest removes
+/// it; canonical authorship is an authenticated Role Action or source
+/// NodeDaemon RuntimeCommand.
+fn tool_team_run_send_message(_store: &HarnessStore, _arguments: &Value) -> Result<Value, String> {
+    Err("RETIRED_WRITE_AUTHORITY: team_run_send_message cannot select a sender identity; use an authenticated AgentFirm Role Action or source NodeDaemon RuntimeCommand".to_string())
 }
 
 fn tool_team_run_reconcile_delivery(
-    store: &HarnessStore,
-    arguments: &Value,
+    _store: &HarnessStore,
+    _arguments: &Value,
 ) -> Result<Value, String> {
-    reconcile_team_message_delivery_value(
-        store,
-        required_str(arguments, "team_run_id")?,
-        required_str(arguments, "message_id")?,
-        arguments,
-    )
-    .map_err(|error| error.to_string())
+    Err("RETIRED_WRITE_AUTHORITY: team_run_reconcile_delivery cannot supply target NodeDaemon authority; use canonical target-NodeDaemon reconciliation".to_string())
 }
 
 /// `team_run_inbox` — latest-wins coordination mail addressed to one member.

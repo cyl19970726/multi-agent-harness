@@ -12212,6 +12212,7 @@ fn compatibility_team_recipient(id: &str) -> TeamRecipientRef {
     }
 }
 
+#[cfg(any())]
 fn parse_team_actor_kind(value: &str) -> CliResult<TeamActorKind> {
     match value {
         "host" => Ok(TeamActorKind::Host),
@@ -12327,6 +12328,7 @@ fn send_team_message_as(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn send_team_message_as_work(
     store: &HarnessStore,
     team_run_id: &str,
@@ -12606,7 +12608,21 @@ fn publish_team_message(
             kind: ActorKind::Service,
             id: sender.id.clone(),
         },
-        TeamActorKind::Host | TeamActorKind::Operator => ActorRef {
+        TeamActorKind::Host => ActorRef {
+            kind: ActorKind::AgentMember,
+            id: if sender.id == "host" {
+                store
+                    .latest_teams()?
+                    .remove(&run.agent_team_id)
+                    .map(|team| team.host_agent_id)
+                    .ok_or_else(|| {
+                        CliError::Usage("TeamRun references a missing AgentTeam".into())
+                    })?
+            } else {
+                sender.id.clone()
+            },
+        },
+        TeamActorKind::Operator => ActorRef {
             kind: ActorKind::Human,
             id: sender.id.clone(),
         },
@@ -13889,6 +13905,7 @@ fn recover_interrupted_team_run(
 }
 
 /// Parse a team message kind from its snake_case wire name.
+#[cfg(test)]
 fn parse_team_message_kind(s: &str) -> CliResult<ProviderDispatchIntent> {
     let kind = serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
         CliError::Usage(format!(
@@ -13909,6 +13926,7 @@ fn parse_team_message_kind(s: &str) -> CliResult<ProviderDispatchIntent> {
 /// Parse an explicit team message response intent from its snake_case wire
 /// name (HTTP API and MCP tool surface; the CLI spells the same two values as
 /// --response-required and --informational).
+#[cfg(any())]
 fn parse_team_message_response_intent(s: &str) -> CliResult<ProviderResponseIntent> {
     serde_json::from_value(serde_json::Value::String(s.to_string())).map_err(|_| {
         CliError::Usage(format!(
@@ -16601,208 +16619,22 @@ fn team_run_command(
             }
         }
         "ack" => {
-            let team_run_id = required(args, "--id")?;
-            let member_id = value(args, "--member-id").unwrap_or_else(|| "host".to_string());
-            // One CLI round-trip per message id is the dominant bookkeeping cost
-            // for a Host agent (measured 10 ack round-trips for 8 payload
-            // messages on one run). `--message-id` therefore accepts a CSV
-            // batch, and `--all-delivered` acknowledges every message that
-            // still has a delivered manual-ack delivery in this run.
-            let all_delivered = has_flag(args, "--all-delivered");
-            let message_ids: Vec<String> = if all_delivered {
-                latest_team_messages_in_append_order(store)?
-                    .into_iter()
-                    .filter(|message| message.team_run_id == team_run_id)
-                    .filter(has_actionable_delivered_manual_ack)
-                    .map(|message| message.id)
-                    .collect()
-            } else {
-                required(args, "--message-id")?
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|id| !id.is_empty())
-                    .map(str::to_string)
-                    .collect()
-            };
-            if message_ids.is_empty() {
-                if json {
-                    print_json(&serde_json::json!({"acknowledged": []}))?;
-                } else {
-                    println!("no messages to acknowledge");
-                }
-            } else {
-                let batch = all_delivered || message_ids.len() > 1;
-                let mut acknowledged = Vec::new();
-                for message_id in &message_ids {
-                    let message = acknowledge_team_message_value(
-                        store,
-                        &team_run_id,
-                        message_id,
-                        &serde_json::json!({"member_id": member_id}),
-                    )?;
-                    acknowledged.push(message);
-                }
-                if json {
-                    // A single explicit --message-id keeps the historical bare
-                    // message shape; batches get an envelope.
-                    if batch {
-                        print_json(&serde_json::json!({"acknowledged": acknowledged}))?;
-                    } else {
-                        print_json(&acknowledged[0])?;
-                    }
-                } else {
-                    for message_id in &message_ids {
-                        println!("{message_id}\tacknowledged\tmember={member_id}");
-                    }
-                }
-            }
+            return Err(CliError::Usage(
+                "RETIRED_WRITE_AUTHORITY: team-run ack cannot authenticate the recipient session; acknowledge canonical MessageDelivery through the target NodeDaemon"
+                    .to_string(),
+            ));
         }
         "reconcile-delivery" => {
-            let team_run_id = required(args, "--id")?;
-            let message_id = required(args, "--message-id")?;
-            let member_run_id = required(args, "--member-run-id")?;
-            let claim_id = required(args, "--claim-id")?;
-            let reason = required(args, "--reason")?;
-            let provider_accepted = has_flag(args, "--provider-accepted");
-            let requeue = has_flag(args, "--requeue");
-            let provider_receipt_id = value(args, "--provider-receipt-id");
-            let reconciled = reconcile_team_message_delivery_value(
-                store,
-                &team_run_id,
-                &message_id,
-                &serde_json::json!({
-                    "member_run_id": member_run_id,
-                    "claim_id": claim_id,
-                    "reason": reason,
-                    "provider_accepted": provider_accepted,
-                    "requeue": requeue,
-                    "provider_receipt_id": provider_receipt_id,
-                }),
-            )?;
-            if json {
-                print_json(&reconciled)?;
-            } else {
-                println!(
-                    "{message_id}\tmember={member_run_id}\t{}",
-                    if provider_accepted {
-                        "delivered"
-                    } else {
-                        "queued"
-                    }
-                );
-            }
+            return Err(CliError::Usage(
+                "RETIRED_WRITE_AUTHORITY: team-run reconcile-delivery cannot supply NodeDaemon delivery authority; use canonical target-NodeDaemon reconciliation"
+                    .to_string(),
+            ));
         }
         "send" => {
-            let recipient_runtime_ids: Vec<String> = required(args, "--to")?
-                .split(',')
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-                .map(str::to_string)
-                .collect();
-            if recipient_runtime_ids.is_empty() {
-                return Err(CliError::Usage(
-                    "--to must name at least one member id".to_string(),
-                ));
-            }
-            let team_run_id = required(args, "--id")?;
-            let from = required(args, "--from")?;
-            let kind = parse_team_message_kind(&required(args, "--kind")?)?;
-            let body = required(args, "--body")?;
-            // Explicit response intent (ADR 0046 §4). The default is
-            // sender-aware: coordination-plane `message` mail wakes an idle
-            // member, peer-to-peer `message` mail stays informational. Both
-            // overrides exist so either default can be reversed explicitly,
-            // matching the HTTP/MCP `response_intent` field.
-            let response_intent = match (
-                has_flag(args, "--response-required"),
-                has_flag(args, "--informational"),
-            ) {
-                (true, true) => {
-                    return Err(CliError::Usage(
-                        "--response-required and --informational are mutually exclusive"
-                            .to_string(),
-                    ))
-                }
-                (true, false) => Some(ProviderResponseIntent::ResponseRequired),
-                (false, true) => Some(ProviderResponseIntent::Informational),
-                (false, false) => None,
-            };
-            let message = if let Some(actor_kind) = value(args, "--actor-kind") {
-                send_team_message_as_work(
-                    store,
-                    &team_run_id,
-                    TeamActorRef {
-                        kind: parse_team_actor_kind(&actor_kind)?,
-                        id: from,
-                        display_name: value(args, "--actor-name"),
-                        authn_source: Some("local_cli_explicit".to_string()),
-                    },
-                    recipient_runtime_ids,
-                    kind,
-                    &body,
-                    value(args, "--work-id"),
-                    value(args, "--correlation-id"),
-                    value(args, "--causation-id"),
-                    value(args, "--origin-wave-id"),
-                    response_intent,
-                )?
-            } else {
-                // Compatibility path for existing Host/member scripts. New
-                // external clients should always supply --actor-kind.
-                send_team_message_as_work(
-                    store,
-                    &team_run_id,
-                    compatibility_team_actor(
-                        &from,
-                        if from == "host" {
-                            "host_cli"
-                        } else {
-                            "member_runtime"
-                        },
-                    ),
-                    recipient_runtime_ids,
-                    kind,
-                    &body,
-                    value(args, "--work-id"),
-                    value(args, "--correlation-id"),
-                    value(args, "--causation-id"),
-                    value(args, "--origin-wave-id"),
-                    response_intent,
-                )?
-            };
-            if json {
-                print_json(&message)?;
-            } else {
-                println!("{}", message.id);
-                let members = latest_member_runs_in_append_order(store)?
-                    .into_iter()
-                    .map(|member| (member.id.clone(), member))
-                    .collect::<HashMap<_, _>>();
-                for delivery in &message.deliveries {
-                    if delivery.status != TeamDeliveryStatus::Queued {
-                        continue;
-                    }
-                    let Some(member) = members.get(&delivery.member_id) else {
-                        continue;
-                    };
-                    let boundary = member
-                        .provider_profile
-                        .as_ref()
-                        .map(|profile| serde_snake_label(&profile.ordinary_message_boundary))
-                        .unwrap_or_else(|| "unknown".to_string());
-                    if boundary == "next_round_batched" {
-                        let pending = if message.requires_response() {
-                            "provider receipt pending until the next safe provider round"
-                        } else {
-                            "informational mail: batched into the next response-required provider round"
-                        };
-                        eprintln!(
-                            "delivery durable only: {} queued for {} ({}); {pending}",
-                            message.id, member.name, boundary
-                        );
-                    }
-                }
-            }
+            return Err(CliError::Usage(
+                "RETIRED_WRITE_AUTHORITY: team-run send cannot select a sender identity; use an authenticated AgentFirm Role Action or source NodeDaemon RuntimeCommand"
+                    .to_string(),
+            ));
         }
         "add-member" => {
             let mut member = parse_team_member_spec(&required(args, "--member")?)?;
@@ -21079,6 +20911,82 @@ pub(crate) fn ensure_team_runtime_fabric(
             },
         )?;
     }
+    let host_provider = host
+        .provider_profile_ref
+        .as_deref()
+        .filter(|provider| !provider.trim().is_empty())
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "AGENT_SESSION_RECOVERY_REQUIRED: Host {} has no provable provider profile",
+                host.id
+            ))
+        })?;
+    crate::provider_adapter::map_permission(host_provider, host.permission_ceiling)
+        .map_err(CliError::Usage)?;
+    let host_sessions = store
+        .fabric_agent_sessions(execution_space_id)?
+        .into_iter()
+        .filter(|session| {
+            session.agent_identity_id == host.id && session.lifecycle != AgentSessionStatus::Closed
+        })
+        .collect::<Vec<_>>();
+    if host_sessions.len() > 1 {
+        return Err(CliError::Usage(format!(
+            "AGENT_SESSION_AMBIGUOUS: Host {} has multiple current sessions",
+            host.id
+        )));
+    }
+    if let Some(session) = host_sessions.first() {
+        if session.node_id != body.run.execution_node_id
+            || session.node_daemon_id != daemon_id
+            || session.node_daemon_generation != daemon_generation
+            || session.provider_kind != host_provider
+        {
+            return Err(CliError::Usage(format!(
+                "AGENT_SESSION_RECOVERY_REQUIRED: Host session {} is bound to another node, daemon generation, or provider",
+                session.id
+            )));
+        }
+    } else {
+        store.create_agent_session(
+            &MutationContext {
+                execution_space_id: execution_space_id.to_string(),
+                authenticated_actor: daemon_actor.clone(),
+                authority_actor: None,
+                command_name: "runtime_fabric.host_session.materialize".into(),
+                idempotency_key: format!(
+                    "session:{}:{}:{}",
+                    host.id, body.run.execution_node_id, daemon_generation
+                ),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            AgentSession {
+                id: format!(
+                    "agent-session:{}:{}:{}",
+                    host.id, body.run.execution_node_id, daemon_generation
+                ),
+                agent_identity_id: host.id.clone(),
+                node_id: body.run.execution_node_id.clone(),
+                execution_space_id: execution_space_id.to_string(),
+                node_daemon_id: daemon_id.to_string(),
+                node_daemon_generation: daemon_generation,
+                provider_kind: host_provider.to_string(),
+                provider_profile_ref: host_provider.to_string(),
+                permission_envelope_ref: format!("agent-member:{}:permission", host.id),
+                effective_permission_ceiling: host.permission_ceiling,
+                lifecycle: AgentSessionStatus::Cold,
+                runtime_generation: 1,
+                native_session_ref: None,
+                current_turn_id: None,
+                queued_input_count: 0,
+                version: 1,
+                opened_at: timestamp.clone(),
+                last_active_at: timestamp.clone(),
+                closed_at: None,
+            },
+        )?;
+    }
     let host_membership_id = format!(
         "team-membership:{}:{}",
         body.run.agent_team_id, team.host_agent_id
@@ -21115,6 +21023,32 @@ pub(crate) fn ensure_team_runtime_fabric(
         )?;
     }
     Ok(())
+}
+
+pub(crate) fn ensure_team_message_fabric(
+    store: &HarnessStore,
+    team_run_id: &str,
+    execution_space_id: &str,
+    daemon_id: &str,
+    daemon_generation: u64,
+) -> CliResult<()> {
+    let run = latest_team_run(store, team_run_id)?;
+    let members = latest_member_runs_in_append_order(store)?
+        .into_iter()
+        .filter(|member| member.team_run_id == run.id && member.coordination_is_active())
+        .collect::<Vec<_>>();
+    ensure_team_runtime_fabric(
+        store,
+        &PreparedTeamRunBody {
+            run_id: run.id.clone(),
+            objective: run.objective.clone(),
+            run,
+            members,
+        },
+        execution_space_id,
+        daemon_id,
+        daemon_generation,
+    )
 }
 
 /// Validate the team run, filter active members, check provider compat, and
@@ -26066,6 +26000,7 @@ fn mark_message_delivered(
 /// Acknowledge one delivery and fold the state change into the TeamRun event
 /// stream. This is shared by Host-facing transports so ACK is durable,
 /// idempotent, and visible in the same audit trail as the message itself.
+#[cfg(any())]
 pub(crate) fn acknowledge_team_message(
     store: &HarnessStore,
     message_id: &str,
@@ -30209,15 +30144,21 @@ fn handle_http_action(
         .strip_prefix("/v1/team-runs/")
         .and_then(|rest| rest.strip_suffix("/messages"))
     {
-        return send_team_message_value(store, team_run_id, body);
+        return Err(CliError::Usage(format!(
+            "RETIRED_WRITE_AUTHORITY: run-addressed message writer is closed for {team_run_id}"
+        )));
     }
     if let Some(rest) = path.strip_prefix("/v1/team-runs/") {
         let parts = rest.split('/').collect::<Vec<_>>();
         if let [team_run_id, "messages", message_id, "ack"] = parts.as_slice() {
-            return acknowledge_team_message_value(store, team_run_id, message_id, body);
+            return Err(CliError::Usage(format!(
+                "RETIRED_WRITE_AUTHORITY: run-addressed message acknowledgement is closed for {team_run_id}/{message_id}"
+            )));
         }
         if let [team_run_id, "messages", message_id, "reconcile-delivery"] = parts.as_slice() {
-            return reconcile_team_message_delivery_value(store, team_run_id, message_id, body);
+            return Err(CliError::Usage(format!(
+                "RETIRED_WRITE_AUTHORITY: run-addressed message reconciliation is closed for {team_run_id}/{message_id}"
+            )));
         }
         if let [team_run_id, "interactions", interaction_id, "resolve"] = parts.as_slice() {
             return resolve_pending_interaction_value(store, team_run_id, interaction_id, body);
@@ -31307,6 +31248,7 @@ fn ack_host_attention_value(
 
 /// POST /v1/team-runs/{run}/messages/{message}/ack — acknowledge only a
 /// delivered recipient row belonging to the TeamRun named by the URL.
+#[cfg(any())]
 fn acknowledge_team_message_value(
     store: &HarnessStore,
     team_run_id: &str,
@@ -31330,6 +31272,7 @@ fn acknowledge_team_message_value(
 
 /// Explicit operator reconciliation for a delivery left in `claimed` after a
 /// Supervisor crash. It never guesses whether the provider consumed content.
+#[cfg(any())]
 pub(crate) fn reconcile_team_message_delivery_value(
     store: &HarnessStore,
     team_run_id: &str,
@@ -31981,6 +31924,7 @@ fn transition_team_run_value(
 
 /// POST /v1/team-runs/{id}/messages — route a message inside the run (same
 /// semantics as `team-run send`).
+#[cfg(any())]
 fn send_team_message_value(
     store: &HarnessStore,
     team_run_id: &str,
@@ -48504,6 +48448,7 @@ package:com.tencent.mm
     }
 
     #[test]
+    #[cfg(any())]
     fn supervisor_claims_and_acknowledges_canonical_message_delivery_in_one_ledger() {
         let (store, root) = temp_store("canonical-supervisor-message-delivery");
         let created = create_two_member_team_run(&store);

@@ -11,13 +11,14 @@
 
 use std::time::Duration;
 
+use harness_core::agentfirm_api::CanonicalMessageDeliveryStatus;
 use harness_store::HarnessStore;
 
 mod fake_provider;
 mod firm_env;
 use firm_env::{
-    collect_sse_data, create_canonical_agent_member, current_project_id, run_firm,
-    run_firm_with_env, ServeHandle, TempHome,
+    collect_sse_data, create_canonical_agent_member, current_project_id, current_space_id,
+    run_firm, run_firm_with_env, ServeHandle, TempHome,
 };
 
 const NATIVE_SELECTOR_CLEAN_ENV: &[(&str, &str)] = &[
@@ -1667,7 +1668,7 @@ fn get_team_member_inbox_uses_actionable_latest_wins_projection() {
 }
 
 #[test]
-fn canonical_team_message_rejects_host_as_a_runtime_recipient() {
+fn canonical_team_message_routes_member_to_host_identity_without_special_inbox_authority() {
     let home = TempHome::new("host-inbox-http");
     let _project_id = init_project(&home, "alpha");
     let serve = ServeHandle::spawn(&home, home.base(), &[]);
@@ -1698,16 +1699,27 @@ fn canonical_team_message_rejects_host_as_a_runtime_recipient() {
             "body": "QUESTION: choose A or B",
         }),
     );
-    assert_eq!(status, 409, "body: {sent}");
-    assert_eq!(
-        sent["error"]["code"].as_str(),
-        Some("INVALID_STATE_TRANSITION")
-    );
+    assert_eq!(status, 200, "body: {sent}");
+    let store = HarnessStore::new(serve.fixture_store_root());
+    let canonical_id = sent["result"]["id"].as_str().expect("canonical Message id");
+    let delivery = store
+        .fabric_message_deliveries(&current_space_id(&home))
+        .expect("canonical deliveries")
+        .into_iter()
+        .find(|delivery| delivery.message_id == canonical_id)
+        .expect("Host identity delivery");
+    assert_ne!(delivery.recipient_identity_id, "host");
+    assert_eq!(delivery.status, CanonicalMessageDeliveryStatus::Queued);
 
     let (status, exact) =
         serve.get_json("/v1/team-runs/host-inbox?surface=codex-app&thread_id=codex-thread-http-a");
     assert_eq!(status, 200, "body: {exact}");
-    assert_eq!(exact["runs"].as_array().map(Vec::len), Some(0));
+    assert_eq!(exact["runs"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        exact["runs"][0]["messages"][0]["id"].as_str(),
+        Some(canonical_id),
+        "native Host inbox is a projection of canonical MessageDelivery, not a special host ledger: {exact}"
+    );
 
     let (status, other) =
         serve.get_json("/v1/team-runs/host-inbox?surface=codex-app&thread_id=another-thread");
@@ -2090,7 +2102,7 @@ fn post_team_run_message_and_start_async() {
         &format!("/v1/team-runs/wrong-run/messages/{host_handoff_id}/ack"),
         &serde_json::json!({"member_id": "host"}),
     );
-    assert_eq!(status, 400, "body: {body}");
+    assert_eq!(status, 410, "retired manual ACK writer: {body}");
     let (_, snapshot) = serve.get_json("/v1/snapshot");
     let delivery = snapshot["team_messages"]
         .as_array()
