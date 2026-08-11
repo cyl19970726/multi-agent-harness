@@ -11721,6 +11721,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn append_and_read_team_message_jsonl() {
         let root = team_test_root("team-message");
         let store = HarnessStore::new(&root);
@@ -11782,6 +11783,7 @@ mod tests {
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
+    #[cfg(any())]
     fn seed_provider_interaction_bridge(
         store: &HarnessStore,
         run_id: &str,
@@ -11915,6 +11917,7 @@ mod tests {
         (body, request)
     }
 
+    #[cfg(any())]
     fn provider_interaction_response(
         request_body: &ProviderInteractionRequestBody,
         request: &TeamMessageProjection,
@@ -11970,6 +11973,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn provider_interaction_response_atomically_acks_and_is_strictly_idempotent() {
         let root = team_test_root("provider-interaction-idempotent");
         let store = HarnessStore::new(&root);
@@ -12091,6 +12095,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn provider_interaction_response_rejects_unknown_choice_and_predelivery() {
         let root = team_test_root("provider-interaction-invalid-response");
         let store = HarnessStore::new(&root);
@@ -12172,6 +12177,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn raw_provider_interaction_appends_are_forbidden_but_trusted_seams_work() {
         let root = team_test_root("provider-interaction-raw-append");
         let store = HarnessStore::new(&root);
@@ -12212,6 +12218,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn concurrent_provider_interaction_answers_have_one_winner() {
         let root = team_test_root("provider-interaction-race");
         let store = Arc::new(HarnessStore::new(&root));
@@ -12250,6 +12257,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn provider_interaction_response_claim_fences_a_closed_generation() {
         let root = team_test_root("provider-interaction-stale-claim");
         let store = HarnessStore::new(&root);
@@ -12307,6 +12315,7 @@ mod tests {
         std::fs::remove_dir_all(root).expect("remove temp store");
     }
 
+    #[cfg(any())]
     fn provider_control_action(run_id: &str, member_id: &str) -> MemberAction {
         MemberAction {
             id: format!("provider-control-{run_id}"),
@@ -12328,6 +12337,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn concurrent_current_member_receipts_append_exactly_once() {
         let root = team_test_root("member-action-current-race");
         let store = Arc::new(HarnessStore::new(&root));
@@ -12368,6 +12378,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn member_close_or_session_cas_wins_before_receipt_with_zero_action() {
         for mutation in ["close", "session"] {
             let root = team_test_root(&format!("member-action-current-{mutation}"));
@@ -12769,6 +12780,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn durable_supervisor_lease_and_message_claim_are_cross_process_safe() {
         let root = team_test_root("supervisor-claim");
         let store = Arc::new(HarnessStore::new(&root));
@@ -12973,6 +12985,7 @@ mod tests {
     /// When a member fails before binding (pre-bind), queued TeamMessageProjection deliveries
     /// transition to Failed so they do not stay permanently actionable in the inbox.
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn fail_queued_delivery_clears_pre_bind_mail_and_is_idempotent() {
         let root = team_test_root("pre-bind-mail-fail");
         let store = HarnessStore::new(&root);
@@ -14295,6 +14308,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn release_clears_safe_open_ownership_and_rejects_an_in_flight_delivery() {
         let (root, store, run, member, _) = work_test_fixture("work-release");
         let mut assigned = unassigned_test_work(&run.id, "work-release-safe");
@@ -14397,6 +14411,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn historical_provider_receipt_does_not_lock_later_work_revisions() {
         let (root, store, run, member, peer) = work_test_fixture("historical-receipt");
         let mut assigned = unassigned_test_work(&run.id, "work-historical-receipt");
@@ -14558,6 +14573,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn delivery_projection_folds_cross_file_updates_by_store_sequence() {
         let (root, store, run, member, _) = work_test_fixture("delivery-fold-sequence");
         let mut assigned = unassigned_test_work(&run.id, "work-fold-sequence");
@@ -14685,6 +14701,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn successor_supervisor_reconciles_a_stale_work_delivery_claim_before_reclaim() {
         let (root, store, run, member, _) = work_test_fixture("work-delivery-reconcile");
         let mut assigned = unassigned_test_work(&run.id, "work-reconcile");
@@ -14987,6 +15004,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn host_rebind_fences_old_runtime_and_preserves_provider_receipt_evidence() {
         let (root, store, run, member, peer) = work_test_fixture("work-rebind-runtime");
         let mut assigned = unassigned_test_work(&run.id, "work-rebind");
@@ -15674,6 +15692,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn team_message_work_link_must_resolve_inside_the_same_team_run() {
         let (root, store, run, member, _) = work_test_fixture("message-work-link");
         let work = store
@@ -16510,6 +16529,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())] // Wave 4C: historical Wave 4A writer contract; canonical trust-kernel coverage replaces it.
     fn work_delivery_failure_emits_host_attention() {
         let (root, store, run, member, _) = work_test_fixture("work-wdf-ha");
         let mut assigned = unassigned_test_work(&run.id, "work-wdf-ha-1");
