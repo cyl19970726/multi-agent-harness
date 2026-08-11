@@ -58,6 +58,24 @@ pub(crate) fn accept_and_enqueue(
             "operation id already exists",
         ));
     }
+    let rate_key = format!(
+        "{}:{}:{}",
+        company_id, operation.source_node_id, operation.actor.actor_id
+    );
+    let window_start = now_unix_ms - (now_unix_ms % 60_000);
+    if let Some(window) = state.rate_windows.get(&rate_key) {
+        if window.window_started_at_unix_ms == window_start
+            && window.accepted_count >= limits.max_operations_per_minute_per_source_actor
+        {
+            let mut error = FabricError::none(
+                FabricErrorCode::RateLimited,
+                "source Node and actor exceeded the durable per-minute operation limit",
+            );
+            error.retryable = true;
+            error.retry_after_ms = Some(window_start.saturating_add(60_000) - now_unix_ms);
+            return Err(error);
+        }
+    }
     let gateway = state
         .gateway_leases
         .get(&operation.target_node_id)
@@ -178,6 +196,22 @@ pub(crate) fn accept_and_enqueue(
     );
     state.attempts.insert(attempt.id.clone(), attempt.clone());
     state.receipts.insert(receipt.id.clone(), receipt.clone());
+    let window = state
+        .rate_windows
+        .entry(rate_key)
+        .or_insert(FabricRateWindow {
+            company_id: company_id.into(),
+            source_node_id: operation.source_node_id.clone(),
+            actor_id: operation.actor.actor_id.clone(),
+            window_started_at_unix_ms: window_start,
+            accepted_count: 0,
+            schema_version: FABRIC_SCHEMA_VERSION.into(),
+        });
+    if window.window_started_at_unix_ms != window_start {
+        window.window_started_at_unix_ms = window_start;
+        window.accepted_count = 0;
+    }
+    window.accepted_count = window.accepted_count.saturating_add(1);
     Ok((operation, attempt, receipt, false))
 }
 

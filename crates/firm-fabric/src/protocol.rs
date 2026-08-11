@@ -392,6 +392,17 @@ pub struct RouteAttempt {
     pub schema_version: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FabricRateWindow {
+    pub company_id: String,
+    pub source_node_id: String,
+    pub actor_id: String,
+    pub window_started_at_unix_ms: u64,
+    pub accepted_count: u32,
+    pub schema_version: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReceiptKind {

@@ -15,6 +15,7 @@ pub struct FabricStoreLimits {
     pub max_queued_bytes_per_node: u64,
     pub max_artifact_bytes: u64,
     pub max_operation_artifact_bytes: u64,
+    pub max_operations_per_minute_per_source_actor: u32,
 }
 
 impl Default for FabricStoreLimits {
@@ -24,6 +25,7 @@ impl Default for FabricStoreLimits {
             max_queued_bytes_per_node: 1024 * 1024 * 1024,
             max_artifact_bytes: 64 * 1024 * 1024,
             max_operation_artifact_bytes: 256 * 1024 * 1024,
+            max_operations_per_minute_per_source_actor: 600,
         }
     }
 }
@@ -45,6 +47,7 @@ pub struct FabricState {
     pub inboxes: BTreeMap<String, LocalRemoteInbox>,
     pub outboxes: BTreeMap<String, LocalRemoteOutbox>,
     pub route_sequences: BTreeMap<String, u64>,
+    pub rate_windows: BTreeMap<String, FabricRateWindow>,
     pub artifacts: BTreeMap<String, RemoteArtifactManifest>,
     pub encrypted_artifacts: BTreeMap<String, EncryptedArtifact>,
     pub consumed_capabilities: BTreeSet<String>,
