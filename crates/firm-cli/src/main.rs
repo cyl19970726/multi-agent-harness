@@ -18948,7 +18948,12 @@ fn handle_live_member_control_connection(
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
         stream.set_write_timeout(Some(Duration::from_secs(20)))?;
         let mut line = String::new();
-        BufReader::new(stream.try_clone()?)
+        // Read directly from the accepted stream. Cloning this short-lived
+        // control socket consumes another file descriptor and can fail with
+        // EAGAIN under a fresh full-suite process load before any request is
+        // decoded. The reader borrow ends before the response write below, so
+        // the duplicate descriptor is unnecessary.
+        BufReader::new(&mut stream)
             .take(262_145)
             .read_line(&mut line)?;
         if line.len() > 262_144 {
