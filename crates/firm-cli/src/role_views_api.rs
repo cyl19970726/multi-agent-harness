@@ -2002,14 +2002,45 @@ fn operator_view(
                 .filter(|inbox| inbox.state == harness_fabric::LocalInboxState::RecoveryRequired)
                 .map(|inbox| inbox.operation_id.clone())
                 .collect::<Vec<_>>();
+            let now = crate::current_unix_ms_u64();
+            let oldest_outbox_age_ms = snapshot
+                .outboxes
+                .values()
+                .filter(|outbox| {
+                    !matches!(
+                        outbox.local_state,
+                        harness_fabric::LocalOutboxState::Terminal
+                    )
+                })
+                .filter_map(|outbox| outbox.operation.as_ref())
+                .map(|operation| now.saturating_sub(operation.created_at_unix_ms))
+                .max()
+                .unwrap_or_default();
+            let control_plane_metrics = layout
+                .control_plane_root(company_id)
+                .ok()
+                .filter(|root| root.exists())
+                .and_then(|_| layout.open_control_plane(company_id).ok())
+                .and_then(|control_store| {
+                    harness_fabric::diagnostics::inspect_fabric(&control_store, company_id, now)
+                        .ok()
+                })
+                .and_then(|diagnostics| {
+                    diagnostics
+                        .nodes
+                        .into_iter()
+                        .find(|diagnostic| diagnostic.node_id == node_id)
+                });
             Ok(json!({
                 "company_id":company_id,
                 "node_id":node_id,
                 "state":"observed",
                 "gateway_session":snapshot.active_session,
                 "outbox_depth":queued,
+                "oldest_outbox_age_ms":oldest_outbox_age_ms,
                 "inbox_depth":snapshot.inboxes.len(),
                 "recovery_required":recovery_required,
+                "control_plane_metrics":control_plane_metrics,
                 "store_revision":snapshot.revision,
             }))
         })();

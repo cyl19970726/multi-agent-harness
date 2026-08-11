@@ -102,10 +102,13 @@ export function OperatorView({
                 </span>
               </div>
               {fabricObserved ? (
-                <div className="grid gap-3 sm:grid-cols-4">
+                <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
                   <Card label="Gateway generation" value={String(fabric.gateway_session?.gateway_generation ?? "none")} />
                   <Card label="Remote outbox" value={String(fabric.outbox_depth ?? 0)} />
                   <Card label="Remote inbox" value={String(fabric.inbox_depth ?? 0)} />
+                  <Card label="Oldest queued age" value={formatAge(fabric.control_plane_metrics?.oldest_queued_age_ms ?? fabric.oldest_outbox_age_ms)} />
+                  <Card label="Gateway lease age" value={formatAge(fabric.control_plane_metrics?.gateway_lease_age_ms)} />
+                  <Card label="Reconcile lag" value={String(fabric.control_plane_metrics?.reconcile_lag ?? "unknown")} />
                   <Card label="Reconcile required" value={String(fabric.recovery_required?.length ?? 0)} />
                 </div>
               ) : (
@@ -140,4 +143,10 @@ function Card({ label, value }: { label: string; value: string }) {
       <div className="mt-2 font-mono text-lg font-semibold">{value}</div>
     </div>
   );
+}
+
+function formatAge(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "unknown";
+  if (value < 1000) return `${value} ms`;
+  return `${Math.floor(value / 1000)} s`;
 }

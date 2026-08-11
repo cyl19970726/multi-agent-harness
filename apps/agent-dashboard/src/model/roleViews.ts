@@ -227,7 +227,8 @@ export interface OperatorViewData {
   remote_fabric:null|{
     company_id:string;node_id:string;state:"observed"|"unavailable";reason?:string;
     gateway_session?:{gateway_generation:number;control_plane_generation:number;node_daemon_generation:number}|null;
-    outbox_depth?:number;inbox_depth?:number;recovery_required?:string[];store_revision?:number;
+    outbox_depth?:number;oldest_outbox_age_ms?:number;inbox_depth?:number;recovery_required?:string[];store_revision?:number;
+    control_plane_metrics?:null|{connection_status:string;queued_operations:number;oldest_queued_age_ms:number;gateway_lease_age_ms:number|null;reconcile_lag:number};
   };
 }
 
