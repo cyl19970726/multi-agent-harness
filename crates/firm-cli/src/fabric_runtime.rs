@@ -2,6 +2,7 @@
 
 #![allow(clippy::result_large_err)]
 
+use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -508,15 +509,26 @@ fn node_gateway_command(
                 Err(error) => return Err(fabric_error(error)),
             }
         }
-        for operation in local.pending_outbox_operations().map_err(fabric_error)? {
+        for mut operation in local.pending_outbox_operations().map_err(fabric_error)? {
+            let receipts = gateway
+                .reconcile_operations(&local, BTreeSet::from([operation.id.clone()]))
+                .map_err(fabric_error)?;
+            if !receipts.is_empty() {
+                // FabricStore already owns route truth. Accepted operations
+                // are reconciled on later heartbeats until a generation-fenced
+                // target terminal receipt arrives; they are never resubmitted.
+                continue;
+            }
             if operation.source_gateway_generation != Some(gateway.session.gateway_generation)
+                || operation.source_node_daemon_id.as_deref()
+                    != Some(gateway.session.node_daemon_id.as_str())
+                || operation.source_node_daemon_generation
+                    != Some(gateway.session.node_daemon_generation)
                 || operation.control_plane_generation != gateway.session.control_plane_generation
             {
-                eprintln!(
-                    "Remote Fabric queued operation {} requires reconciliation after gateway generation change",
-                    operation.id
-                );
-                continue;
+                operation = local
+                    .rebind_unaccepted_outbox(&gateway.session, &operation.id, &receipts)
+                    .map_err(fabric_error)?;
             }
             let actor = operation.actor.clone();
             let receipt = gateway

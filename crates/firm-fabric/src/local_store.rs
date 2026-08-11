@@ -116,7 +116,10 @@ impl NodeLocalFabricStore {
             .filter(|outbox| {
                 matches!(
                     outbox.local_state,
-                    LocalOutboxState::QueuedForControlPlane | LocalOutboxState::Submitted
+                    LocalOutboxState::QueuedForControlPlane
+                        | LocalOutboxState::Submitted
+                        | LocalOutboxState::Accepted
+                        | LocalOutboxState::ReconcileRequired
                 )
             })
             .filter_map(|outbox| outbox.operation.clone())
@@ -354,6 +357,66 @@ impl NodeLocalFabricStore {
             outbox.last_attempt_at_unix_ms = Some(now_unix_ms);
             state.outboxes.insert(operation.id.clone(), outbox.clone());
             Ok(outbox)
+        })
+    }
+
+    /// Rebind a durable source operation only after the current Control Plane
+    /// returned an empty, generation-fenced reconciliation result for its id.
+    /// Once FabricStore has accepted the operation, that Store remains the
+    /// sole route truth and the original fingerprint must never be rewritten.
+    pub fn rebind_unaccepted_outbox(
+        &self,
+        session: &FabricSessionFence,
+        operation_id: &str,
+        reconciled_receipts: &[RouteReceipt],
+    ) -> Result<RoutedOperation, FabricError> {
+        self.require_session(session)?;
+        if reconciled_receipts
+            .iter()
+            .any(|receipt| receipt.operation_id == operation_id)
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::IdempotencyConflict,
+                "accepted FabricStore operation cannot be rebound to a successor generation",
+            ));
+        }
+        self.transact(|state| {
+            let mut outbox = state.outboxes.get(operation_id).cloned().ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::OperationUnknown,
+                    "successor rebind requires a durable source outbox",
+                )
+            })?;
+            if !matches!(
+                outbox.local_state,
+                LocalOutboxState::QueuedForControlPlane
+                    | LocalOutboxState::Submitted
+                    | LocalOutboxState::ReconcileRequired
+            ) {
+                return Err(FabricError::none(
+                    FabricErrorCode::IdempotencyConflict,
+                    "only an unaccepted source outbox can be rebound",
+                ));
+            }
+            let mut operation = outbox.operation.clone().ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::OperationUnknown,
+                    "source outbox lost its pre-acceptance operation envelope",
+                )
+            })?;
+            operation.source_gateway_generation = Some(session.gateway_generation);
+            operation.source_node_daemon_id = Some(session.node_daemon_id.clone());
+            operation.source_node_daemon_generation = Some(session.node_daemon_generation);
+            operation.control_plane_generation = session.control_plane_generation;
+            operation.validate_digest()?;
+            operation.closed_body()?;
+            outbox.request_digest = canonical_digest(&operation)?;
+            outbox.gateway_generation = session.gateway_generation;
+            outbox.control_plane_generation = session.control_plane_generation;
+            outbox.local_state = LocalOutboxState::QueuedForControlPlane;
+            outbox.operation = Some(operation.clone());
+            state.outboxes.insert(operation_id.into(), outbox);
+            Ok(operation)
         })
     }
 

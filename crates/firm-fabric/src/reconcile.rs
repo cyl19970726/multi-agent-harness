@@ -29,27 +29,34 @@ pub(crate) fn reconcile(
     )?;
     let mut results = Vec::new();
     for operation_id in operation_ids {
-        let operation = state.operations.get(operation_id).ok_or_else(|| {
-            FabricError::none(
-                FabricErrorCode::OperationUnknown,
-                format!("operation {operation_id} is unknown"),
-            )
-        })?;
-        if operation.company_id != company_id || operation.target_node_id != node_id {
+        let Some(operation) = state.operations.get(operation_id) else {
+            // An empty result is the current generation-fenced proof that the
+            // Control Plane has never accepted this id. The source may then
+            // rebind its durable pre-acceptance outbox to the successor
+            // gateway generation without creating a second route truth.
+            continue;
+        };
+        let owns_route = operation.target_node_id == node_id
+            || operation.source_node_id.as_deref() == Some(node_id);
+        if operation.company_id != company_id || !owns_route {
             return Err(FabricError::none(
                 FabricErrorCode::SourceMismatch,
-                "reconcile request does not own the operation target",
+                "reconcile request does not own the operation source or target",
             ));
         }
-        let terminal = state
+        let operation_receipts = state
             .receipts
             .values()
+            .filter(|receipt| receipt.operation_id == *operation_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        let terminal = operation_receipts
+            .iter()
             .filter(|receipt| {
-                receipt.operation_id == *operation_id
-                    && matches!(
-                        receipt.kind,
-                        ReceiptKind::OperationApplied | ReceiptKind::OperationRejected
-                    )
+                matches!(
+                    receipt.kind,
+                    ReceiptKind::OperationApplied | ReceiptKind::OperationRejected
+                )
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -65,10 +72,8 @@ pub(crate) fn reconcile(
                     "application effect is unknown; blind replay is forbidden",
                 ));
             }
-            return Err(FabricError::none(
-                FabricErrorCode::OperationUnknown,
-                "operation has no terminal application receipt",
-            ));
+            results.extend(operation_receipts);
+            continue;
         }
         results.extend(terminal);
     }

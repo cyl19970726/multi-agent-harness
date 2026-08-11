@@ -449,6 +449,48 @@ impl NodeGatewayConnection {
         Ok(receipt)
     }
 
+    pub fn reconcile_operations(
+        &mut self,
+        local_store: &NodeLocalFabricStore,
+        operation_ids: BTreeSet<String>,
+    ) -> Result<Vec<RouteReceipt>, FabricError> {
+        let now = now_unix_ms()?;
+        send_payload(
+            &mut self.socket,
+            &self.session,
+            &format!("reconcile:{}", self.session.node_id),
+            FabricPayload::ReconcileRequest { operation_ids },
+            now,
+        )?;
+        let frame = read_frame(&mut self.socket)?;
+        self.session.validate_frame(&frame)?;
+        let receipts = match frame.payload {
+            FabricPayload::ReconcileResult { receipts } => receipts,
+            FabricPayload::LeaseFence { reason } => {
+                return Err(FabricError::none(
+                    FabricErrorCode::NodeStaleGeneration,
+                    reason,
+                ))
+            }
+            _ => {
+                return Err(FabricError::none(
+                    FabricErrorCode::ProtocolIncompatible,
+                    "reconciliation response was not ReconcileResult",
+                ))
+            }
+        };
+        for receipt in &receipts {
+            if local_store
+                .snapshot()?
+                .outboxes
+                .contains_key(&receipt.operation_id)
+            {
+                local_store.mark_outbox_receipt(receipt)?;
+            }
+        }
+        Ok(receipts)
+    }
+
     /// Process one server-routed operation completely. This method is
     /// intentionally single-operation and deterministic; the long-running
     /// NodeDaemon loop decides scheduling and repeatedly calls it.
