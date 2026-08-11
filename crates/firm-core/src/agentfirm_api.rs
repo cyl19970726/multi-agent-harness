@@ -394,6 +394,8 @@ pub struct Message {
     pub team_run_id: Option<String>,
     #[serde(default)]
     pub work_id: Option<String>,
+    #[serde(default)]
+    pub collaboration_scope: Option<crate::collaboration::CollaborationScope>,
     pub kind: MessageKind,
     pub body: String,
     pub body_digest: String,
@@ -424,6 +426,8 @@ pub struct MessageDraft {
     pub team_run_id: Option<String>,
     #[serde(default)]
     pub work_id: Option<String>,
+    #[serde(default)]
+    pub collaboration_scope: Option<crate::collaboration::CollaborationScope>,
     pub kind: MessageKind,
     pub body: String,
     pub correlation_id: String,

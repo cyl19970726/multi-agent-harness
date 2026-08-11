@@ -12694,6 +12694,7 @@ fn publish_team_message(
             team_id: Some(run.agent_team_id.clone()),
             team_run_id: Some(run.id.clone()),
             work_id: message.work_id.clone(),
+            collaboration_scope: None,
             kind,
             body: message.body.clone(),
             correlation_id: message.correlation_id.clone(),

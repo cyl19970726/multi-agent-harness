@@ -5,9 +5,11 @@ use firm_core::collaboration::{
     DelegationCancellationDecision, DelegationCancellationRequest, DelegationDecision,
     DelegationDecisionKind, DelegationInboundMode, DelegationInboundPolicy,
     DelegationInboundPolicySnapshot, DelegationState, DelegationTerminalOutcome,
-    FabricEffectCertainty, FabricError, FabricErrorCode, RemoteFactPublication, RemoteWorkRef,
-    RoutedBusinessKind, RoutedBusinessOperation, RoutedBusinessReceipt, TargetPlacementRef,
-    WorkDelegationV1, COLLABORATION_STORE_VERSION,
+    FabricEffectCertainty, FabricError, FabricErrorCode, ImmutableMessageTransferPayload,
+    RemoteFactPublication, RemoteMessageReplica, RemoteMessageTransferState, RemoteWorkRef,
+    RoutedBusinessKind, RoutedBusinessOperation, RoutedBusinessReceipt,
+    SourceRemoteMessageTransfer, SourceWorkAttestation, TargetPlacementRef, WorkDelegationV1,
+    COLLABORATION_STORE_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -55,14 +57,15 @@ pub struct ResolvedCollaborationAuthority {
     pub source_work_owner: ActorRef,
     pub target_host: ActorRef,
     pub target_placement: TargetPlacementRef,
+    pub source_work_application_service: ActorRef,
+    pub source_gateway_generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProposeDelegationRequest {
     pub delegation_id: String,
-    pub source_work_ref: RemoteWorkRef,
-    pub source_owner_ref: ActorRef,
+    pub source_work_attestation_id: String,
     pub target_placement: TargetPlacementRef,
     pub requested_outcome: String,
     pub outcome_class: String,
@@ -104,6 +107,186 @@ pub trait CollaborationFabricPort {
         &self,
         operation: &RoutedBusinessOperation,
     ) -> Result<RoutedBusinessReceipt, FabricError>;
+}
+
+/// Target-node persistence seam for a remote replica of the existing Wave 4C
+/// Message. The route journal cannot create delivery authority; callers must
+/// receive a successfully persisted replica before invoking canonical delivery.
+pub trait RemoteMessageReplicaPort {
+    fn fetch_message_object(&self, message_object_ref: &str) -> Result<Vec<u8>, FabricError>;
+
+    fn persist_remote_replica(
+        &self,
+        replica: &RemoteMessageReplica,
+    ) -> Result<RemoteMessageReplica, FabricError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteMessageReplicaExpectation {
+    pub source_execution_space_id: String,
+    pub message_id: String,
+    pub schema_version: u64,
+    pub content_fingerprint: String,
+    pub body_digest: String,
+    pub persisted_at: String,
+}
+
+fn direct_fabric_error(
+    code: FabricErrorCode,
+    message: impl Into<String>,
+    resource_kind: &str,
+    resource_id: &str,
+) -> FabricError {
+    FabricError {
+        code,
+        message: message.into(),
+        retryable: false,
+        effect_certainty: FabricEffectCertainty::None,
+        resource_kind: resource_kind.into(),
+        resource_id: resource_id.into(),
+        current_revision: None,
+    }
+}
+
+fn immutable_message_fingerprint(message: &Message) -> String {
+    canonical_json_fingerprint(&serde_json::json!({
+        "sender_actor_ref": message.sender_actor_ref,
+        "sender_agent_id": message.sender_agent_id,
+        "sender_session_id": message.sender_session_id,
+        "address_kind": message.address_kind,
+        "target_ref": message.target_ref,
+        "recipients": message.recipients,
+        "team_id": message.team_id,
+        "team_run_id": message.team_run_id,
+        "work_id": message.work_id,
+        "collaboration_scope": message.collaboration_scope,
+        "kind": message.kind,
+        "body": message.body,
+        "body_digest": message.body_digest,
+        "correlation_id": message.correlation_id,
+        "causation_id": message.causation_id,
+        "response_intent": message.response_intent,
+        "evidence_refs": message.evidence_refs,
+        "schema_version": message.schema_version,
+        "idempotency_key": message.idempotency_key,
+    }))
+}
+
+/// Resolve, authenticate and durably persist one immutable Message replica on
+/// the target Node. A digest-only transfer is impossible by construction.
+pub fn persist_verified_remote_message_replica<P: RemoteMessageReplicaPort>(
+    port: &P,
+    payload: &ImmutableMessageTransferPayload,
+    expected: &RemoteMessageReplicaExpectation,
+) -> Result<RemoteMessageReplica, FabricError> {
+    let bytes = match payload {
+        ImmutableMessageTransferPayload::CanonicalBytes {
+            canonical_message_bytes,
+        } => canonical_message_bytes.clone(),
+        ImmutableMessageTransferPayload::MessageObjectRef {
+            message_object_ref,
+            authenticated_content_digest,
+        } => {
+            let bytes = port.fetch_message_object(message_object_ref)?;
+            let value = serde_json::from_slice::<Value>(&bytes).map_err(|_| {
+                direct_fabric_error(
+                    FabricErrorCode::MessageReplicaMismatch,
+                    "message object is not a valid immutable Message payload",
+                    "message_object_ref",
+                    message_object_ref,
+                )
+            })?;
+            if canonical_json_fingerprint(&value) != *authenticated_content_digest {
+                return Err(direct_fabric_error(
+                    FabricErrorCode::MessageReplicaMismatch,
+                    "message object content-addressed digest does not match",
+                    "message_object_ref",
+                    message_object_ref,
+                ));
+            }
+            bytes
+        }
+    };
+    let message = serde_json::from_slice::<Message>(&bytes).map_err(|_| {
+        direct_fabric_error(
+            FabricErrorCode::MessageReplicaMismatch,
+            "cross-node payload is not the canonical Wave 4C Message schema",
+            "message",
+            &expected.message_id,
+        )
+    })?;
+    let body_digest = canonical_json_fingerprint(&serde_json::json!({"body": message.body}));
+    if message.source_execution_space_id != expected.source_execution_space_id
+        || message.id != expected.message_id
+        || message.schema_version != expected.schema_version
+        || message.content_fingerprint != expected.content_fingerprint
+        || message.body_digest != expected.body_digest
+        || message.content_fingerprint != immutable_message_fingerprint(&message)
+        || message.body_digest != body_digest
+    {
+        return Err(direct_fabric_error(
+            FabricErrorCode::MessageReplicaMismatch,
+            "immutable Message identity, schema, body digest, or content fingerprint changed in transit",
+            "message",
+            &expected.message_id,
+        ));
+    }
+    let replica = RemoteMessageReplica {
+        source_execution_space_id: message.source_execution_space_id,
+        message_id: message.id,
+        schema_version: message.schema_version,
+        content_fingerprint: message.content_fingerprint,
+        body_digest: message.body_digest,
+        canonical_message_bytes: bytes,
+        persisted_at: expected.persisted_at.clone(),
+    };
+    port.persist_remote_replica(&replica)
+}
+
+/// Build the non-authoritative source outbox row allowed while the Control
+/// Plane is offline. The Message already exists; this function cannot create a
+/// Delegation, Decision, publication, or replacement Message identity.
+pub fn queue_remote_message_transfer(
+    message: &Message,
+    target_placement: &TargetPlacementRef,
+    payload: ImmutableMessageTransferPayload,
+    queued_at: &str,
+) -> Result<SourceRemoteMessageTransfer, FabricError> {
+    let scope = message.collaboration_scope.as_ref().ok_or_else(|| {
+        direct_fabric_error(
+            FabricErrorCode::MessageRecipientUnauthorized,
+            "cross-node transfer requires the immutable Message CollaborationScope",
+            "message",
+            &message.id,
+        )
+    })?;
+    if target_placement.placement_generation != 1
+        || scope.target_team_id != target_placement.team_id
+        || scope.source_team_id == scope.target_team_id
+        || message.source_node_id == target_placement.node_id
+        || message.content_fingerprint != immutable_message_fingerprint(message)
+    {
+        return Err(direct_fabric_error(
+            FabricErrorCode::TargetTeamPlacementChanged,
+            "remote Message transfer does not match immutable v1 Team placement and authored scope",
+            "message",
+            &message.id,
+        ));
+    }
+    Ok(SourceRemoteMessageTransfer {
+        id: format!("remote-message-transfer:{}", message.id),
+        source_execution_space_id: message.source_execution_space_id.clone(),
+        source_node_id: message.source_node_id.clone(),
+        source_node_daemon_generation: message.source_authority_generation,
+        message_id: message.id.clone(),
+        message_schema_version: message.schema_version,
+        content_fingerprint: message.content_fingerprint.clone(),
+        body_digest: message.body_digest.clone(),
+        target_placement: target_placement.clone(),
+        payload,
+        state: RemoteMessageTransferState::QueuedForControlPlane,
+        queued_at: queued_at.into(),
+    })
 }
 
 /// Transport-neutral business orchestration. The fabric may route/reconcile
@@ -235,6 +418,19 @@ fn policy_snapshot(
         allowed_outcome_classes: policy.allowed_outcome_classes.clone(),
         max_active_delegations: policy.max_active_delegations,
     })
+}
+
+fn source_work_attestation_digest(attestation: &SourceWorkAttestation) -> StoreResult<String> {
+    Ok(canonical_json_fingerprint(&serde_json::json!({
+        "id": attestation.id,
+        "company_id": attestation.company_id,
+        "source_work_ref": attestation.source_work_ref,
+        "source_owner_ref": attestation.source_owner_ref,
+        "source_host_ref": attestation.source_host_ref,
+        "work_application_service_ref": attestation.work_application_service_ref,
+        "source_gateway_generation": attestation.source_gateway_generation,
+        "issued_at": attestation.issued_at,
+    })))
 }
 
 fn exact_actor(actual: &ActorRef, expected: &ActorRef) -> bool {
@@ -397,6 +593,50 @@ impl HarnessStore {
             .latest_collaboration_delegations_unlocked(company_id)?
             .into_values()
             .collect())
+    }
+
+    /// Persist a server-authored proof of exact source Work authority. The
+    /// source WorkApplicationService is the only writer; a Host request can
+    /// subsequently reference only this immutable attestation ID.
+    pub fn put_source_work_attestation(
+        &self,
+        context: &CollaborationMutationContext,
+        attestation: &SourceWorkAttestation,
+        resolved_work_application_service: &ActorRef,
+        current_source_gateway_generation: u64,
+    ) -> StoreResult<CollaborationMutationResult<SourceWorkAttestation>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        if context.expected_revision != 0
+            || context.company_id != attestation.company_id
+            || !exact_actor(
+                &context.authenticated_actor,
+                resolved_work_application_service,
+            )
+            || attestation.work_application_service_ref != *resolved_work_application_service
+            || attestation.source_gateway_generation != current_source_gateway_generation
+            || current_source_gateway_generation == 0
+            || attestation.source_work_ref.placement_generation != 1
+            || attestation.source_work_ref.team_id.is_empty()
+            || attestation.source_work_ref.node_id.is_empty()
+            || attestation.attestation_digest != source_work_attestation_digest(attestation)?
+        {
+            return Err(collaboration_error(
+                FabricErrorCode::SourceWorkAttestationInvalid,
+                "source Work attestation is not server-authored for the exact current Work, Team, and gateway generation",
+                "source_work_attestation",
+                &attestation.id,
+                None,
+            ));
+        }
+        self.commit_collaboration_projection_unlocked(
+            context,
+            "source_work_attestation",
+            &attestation.id,
+            serde_json::to_value(attestation)?,
+            attestation,
+            Vec::new(),
+        )
     }
 
     pub fn list_collaboration_delegations(
@@ -637,6 +877,10 @@ impl HarnessStore {
             (&context.company_id, "company_id"),
             (&context.idempotency_key, "idempotency_key"),
             (&request.delegation_id, "delegation_id"),
+            (
+                &request.source_work_attestation_id,
+                "source_work_attestation_id",
+            ),
             (&request.requested_outcome, "requested_outcome"),
             (&request.acceptance_contract, "acceptance_contract"),
         ] {
@@ -651,8 +895,37 @@ impl HarnessStore {
                 Some(context.expected_revision),
             ));
         }
-        if !exact_actor(&context.authenticated_actor, &authority.source_host)
-            && !exact_actor(&context.authenticated_actor, &authority.source_work_owner)
+        let attestation = self
+            .latest_collaboration_projection_unlocked::<SourceWorkAttestation>(
+                &context.company_id,
+                "source_work_attestation",
+                &request.source_work_attestation_id,
+            )?
+            .ok_or_else(|| {
+                collaboration_error(
+                    FabricErrorCode::SourceWorkAttestationInvalid,
+                    "delegation proposal requires a canonical source Work attestation",
+                    "source_work_attestation",
+                    &request.source_work_attestation_id,
+                    None,
+                )
+            })?;
+        if attestation.attestation_digest != source_work_attestation_digest(&attestation)?
+            || attestation.work_application_service_ref != authority.source_work_application_service
+            || attestation.source_gateway_generation != authority.source_gateway_generation
+            || attestation.source_host_ref != authority.source_host
+            || attestation.source_owner_ref != authority.source_work_owner
+        {
+            return Err(collaboration_error(
+                FabricErrorCode::SourceWorkAttestationInvalid,
+                "canonical source Work attestation is stale or outside the server-resolved source authority",
+                "source_work_attestation",
+                &attestation.id,
+                None,
+            ));
+        }
+        if !exact_actor(&context.authenticated_actor, &attestation.source_host_ref)
+            && !exact_actor(&context.authenticated_actor, &attestation.source_owner_ref)
         {
             return Err(collaboration_error(
                 FabricErrorCode::UnauthorizedActor,
@@ -662,11 +935,10 @@ impl HarnessStore {
                 None,
             ));
         }
-        if request.source_owner_ref != authority.source_work_owner
-            || request.source_work_ref.team_id.is_empty()
-            || request.source_work_ref.team_id == request.target_placement.team_id
+        if attestation.source_work_ref.team_id == request.target_placement.team_id
             || request.target_placement != authority.target_placement
-            || request.source_work_ref.node_id.is_empty()
+            || request.target_placement.placement_generation != 1
+            || attestation.source_work_ref.placement_generation != 1
         {
             return Err(collaboration_error(
                 FabricErrorCode::TargetTeamPlacementChanged,
@@ -677,7 +949,7 @@ impl HarnessStore {
             ));
         }
         if policy.company_id != context.company_id
-            || policy.source_team_id != request.source_work_ref.team_id
+            || policy.source_team_id != attestation.source_work_ref.team_id
             || policy.target_team_id != request.target_placement.team_id
             || policy.created_by_target_host != authority.target_host
             || policy.revoked_at.is_some()
@@ -724,7 +996,7 @@ impl HarnessStore {
             .latest_collaboration_delegations_unlocked(&context.company_id)?
             .values()
             .filter(|delegation| {
-                delegation.source_team_id == request.source_work_ref.team_id
+                delegation.source_team_id == attestation.source_work_ref.team_id
                     && delegation.target_placement.team_id == request.target_placement.team_id
                     && delegation.state != DelegationState::Terminal
             })
@@ -746,10 +1018,11 @@ impl HarnessStore {
         let delegation = WorkDelegationV1 {
             id: request.delegation_id.clone(),
             company_id: context.company_id.clone(),
-            source_work_ref: request.source_work_ref.clone(),
-            source_owner_ref: request.source_owner_ref.clone(),
-            source_team_id: request.source_work_ref.team_id.clone(),
-            source_node_id: request.source_work_ref.node_id.clone(),
+            source_work_attestation_id: attestation.id.clone(),
+            source_work_ref: attestation.source_work_ref.clone(),
+            source_owner_ref: attestation.source_owner_ref.clone(),
+            source_team_id: attestation.source_work_ref.team_id.clone(),
+            source_node_id: attestation.source_work_ref.node_id.clone(),
             target_placement: request.target_placement.clone(),
             target_host_ref: authority.target_host.clone(),
             requested_outcome: request.requested_outcome.clone(),
@@ -1531,12 +1804,31 @@ impl HarnessStore {
 /// delivered truth.
 pub fn project_cross_node_deliveries(
     message: &Message,
+    remote_replica: &RemoteMessageReplica,
     deliveries: &[CanonicalMessageDelivery],
     routed_operation_id: &str,
     target_gateway_generation: Option<u64>,
     target_observed_sequence: u64,
     observed_at: &str,
 ) -> StoreResult<Vec<CrossNodeDeliveryProjection>> {
+    let persisted_message =
+        serde_json::from_slice::<Message>(&remote_replica.canonical_message_bytes)
+            .map_err(StoreError::from)?;
+    if &persisted_message != message
+        || remote_replica.source_execution_space_id != message.source_execution_space_id
+        || remote_replica.message_id != message.id
+        || remote_replica.schema_version != message.schema_version
+        || remote_replica.content_fingerprint != message.content_fingerprint
+        || remote_replica.body_digest != message.body_digest
+    {
+        return Err(collaboration_error(
+            FabricErrorCode::MessageReplicaMismatch,
+            "canonical deliveries require the exact target-persisted immutable Message replica",
+            "message",
+            &message.id,
+            None,
+        ));
+    }
     let expected_direct = message
         .recipients
         .iter()

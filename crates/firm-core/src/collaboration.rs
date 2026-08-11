@@ -16,7 +16,39 @@ pub struct TargetPlacementRef {
     pub team_id: String,
     pub team_revision: u64,
     pub node_id: String,
+    #[serde(deserialize_with = "deserialize_placement_generation_v1")]
     pub placement_generation: u64,
+}
+
+fn deserialize_placement_generation_v1<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let generation = u64::deserialize(deserializer)?;
+    if generation == 1 {
+        Ok(generation)
+    } else {
+        Err(serde::de::Error::custom(
+            "Wave 6 v1 placement_generation must equal 1",
+        ))
+    }
+}
+
+/// Optional cross-Team context carried by the existing Wave 4C immutable
+/// Message. This is metadata, not a second Message or delivery authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CollaborationScope {
+    pub source_team_id: String,
+    pub target_team_id: String,
+    #[serde(default)]
+    pub delegation_id: Option<String>,
+    #[serde(default)]
+    pub expected_delegation_revision: Option<u64>,
+    #[serde(default)]
+    pub source_work_ref: Option<RemoteWorkRef>,
+    #[serde(default)]
+    pub target_work_ref: Option<RemoteWorkRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,6 +59,7 @@ pub struct RemoteWorkRef {
     pub node_id: String,
     pub team_id: String,
     pub team_revision: u64,
+    #[serde(deserialize_with = "deserialize_placement_generation_v1")]
     pub placement_generation: u64,
     pub work_id: String,
     pub work_revision: u64,
@@ -90,11 +123,29 @@ pub struct DelegationInboundPolicySnapshot {
     pub max_active_delegations: u64,
 }
 
+/// Work authority resolved and signed into the collaboration Store by the
+/// source Node WorkApplicationService. Public REST/MCP callers never author
+/// Work or owner fields on a delegation proposal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceWorkAttestation {
+    pub id: String,
+    pub company_id: String,
+    pub source_work_ref: RemoteWorkRef,
+    pub source_owner_ref: ActorRef,
+    pub source_host_ref: ActorRef,
+    pub work_application_service_ref: ActorRef,
+    pub source_gateway_generation: u64,
+    pub attestation_digest: String,
+    pub issued_at: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkDelegationV1 {
     pub id: String,
     pub company_id: String,
+    pub source_work_attestation_id: String,
     pub source_work_ref: RemoteWorkRef,
     pub source_owner_ref: ActorRef,
     pub source_team_id: String,
@@ -257,6 +308,98 @@ pub struct CrossNodeDeliveryProjection {
     pub observed_at: String,
 }
 
+/// Closed transfer choice for the source-authored immutable Message. Exactly
+/// one payload form is present. A digest-only route is intentionally invalid.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImmutableMessageTransferPayload {
+    CanonicalBytes {
+        canonical_message_bytes: Vec<u8>,
+    },
+    MessageObjectRef {
+        message_object_ref: String,
+        authenticated_content_digest: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteMessageReplica {
+    pub source_execution_space_id: String,
+    pub message_id: String,
+    pub schema_version: u64,
+    pub content_fingerprint: String,
+    pub body_digest: String,
+    pub canonical_message_bytes: Vec<u8>,
+    pub persisted_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteMessageTransferState {
+    QueuedForControlPlane,
+    Routed,
+    TargetPersisted,
+    Terminal,
+    Unknown,
+}
+
+/// Source-Node outbox intent. It carries the already-authored Message bytes or
+/// object reference and never represents a local WorkDelegation/Decision fact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceRemoteMessageTransfer {
+    pub id: String,
+    pub source_execution_space_id: String,
+    pub source_node_id: String,
+    pub source_node_daemon_generation: u64,
+    pub message_id: String,
+    pub message_schema_version: u64,
+    pub content_fingerprint: String,
+    pub body_digest: String,
+    pub target_placement: TargetPlacementRef,
+    pub payload: ImmutableMessageTransferPayload,
+    pub state: RemoteMessageTransferState,
+    pub queued_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CollaborationRetentionAnchor {
+    #[serde(default)]
+    pub terminal_transport_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub terminal_delegation_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub source_import_completed_at_unix_ms: Option<u64>,
+}
+
+impl CollaborationRetentionAnchor {
+    /// No deletion clock starts until transport, Delegation and durable source
+    /// import are all terminal. Once complete, the latest boundary wins.
+    pub fn safe_retention_start_unix_ms(&self) -> Option<u64> {
+        if self.terminal_transport_at_unix_ms.is_none()
+            || self.terminal_delegation_at_unix_ms.is_none()
+            || self.source_import_completed_at_unix_ms.is_none()
+        {
+            return None;
+        }
+        [
+            self.terminal_transport_at_unix_ms,
+            self.terminal_delegation_at_unix_ms,
+            self.source_import_completed_at_unix_ms,
+        ]
+        .into_iter()
+        .flatten()
+        .max()
+    }
+
+    pub fn retain_until_unix_ms(&self, retention_duration_ms: u64) -> Option<u64> {
+        self.safe_retention_start_unix_ms()?
+            .checked_add(retention_duration_ms)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RoutedBusinessKind {
@@ -307,6 +450,8 @@ pub enum FabricErrorCode {
     MessageExpired,
     PublicationDigestMismatch,
     PublicationScopeMismatch,
+    SourceWorkAttestationInvalid,
+    MessageReplicaMismatch,
     ArtifactScopeUnauthorized,
     ProtocolMismatch,
     RecoveryRequired,

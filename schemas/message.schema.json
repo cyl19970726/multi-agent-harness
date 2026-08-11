@@ -16,6 +16,7 @@
     "team_id": {"type": ["string", "null"]},
     "team_run_id": {"type": ["string", "null"]},
     "work_id": {"type": ["string", "null"]},
+    "collaboration_scope": {"oneOf": [{"$ref": "collaboration/collaboration-scope.schema.json"}, {"type": "null"}]},
     "kind": {"enum": ["message", "reply", "request_decision", "provider_interaction_request", "provider_interaction_response"]},
     "body": {"type": "string", "minLength": 1},
     "correlation_id": {"type": "string", "minLength": 1},

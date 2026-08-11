@@ -48,11 +48,17 @@ for (const { file, schema } of schemas) {
 const core = readFileSync("crates/firm-core/src/collaboration.rs", "utf8");
 for (const token of [
   "TargetPlacementRef",
+  "CollaborationScope",
   "RemoteWorkRef",
+  "SourceWorkAttestation",
   "WorkDelegationV1",
   "DelegationCancellationRequest",
   "RemoteFactSnapshot",
   "CrossNodeDeliveryProjection",
+  "ImmutableMessageTransferPayload",
+  "RemoteMessageReplica",
+  "SourceRemoteMessageTransfer",
+  "CollaborationRetentionAnchor",
   "RoutedBusinessKind",
 ]) {
   if (!core.includes(`pub struct ${token}`) && !core.includes(`pub enum ${token}`)) {

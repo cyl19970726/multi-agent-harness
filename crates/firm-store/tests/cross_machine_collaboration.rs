@@ -3,17 +3,20 @@ use firm_core::agentfirm_api::{
     MessageAddressKind, MessageKind, MessageRecipientKind, MessageRecipientRef, ResponseIntent,
 };
 use firm_core::collaboration::{
-    CancellationDecisionKind, CancellationRequestState, DelegationCancellationDecision,
-    DelegationCancellationRequest, DelegationDecision, DelegationDecisionKind,
-    DelegationInboundMode, DelegationInboundPolicy, DelegationState, DelegationTerminalOutcome,
-    FabricEffectCertainty, FabricError, FabricErrorCode, RemoteFactKind, RemoteFactPublication,
-    RemoteFactSnapshot, RemoteWorkRef, RoutedBusinessOperation, RoutedBusinessReceipt,
-    TargetPlacementRef, WorkOperationalDecisionRef,
+    CancellationDecisionKind, CancellationRequestState, CollaborationRetentionAnchor,
+    DelegationCancellationDecision, DelegationCancellationRequest, DelegationDecision,
+    DelegationDecisionKind, DelegationInboundMode, DelegationInboundPolicy, DelegationState,
+    DelegationTerminalOutcome, FabricEffectCertainty, FabricError, FabricErrorCode,
+    ImmutableMessageTransferPayload, RemoteFactKind, RemoteFactPublication, RemoteFactSnapshot,
+    RemoteMessageReplica, RemoteMessageTransferState, RemoteWorkRef, RoutedBusinessOperation,
+    RoutedBusinessReceipt, SourceWorkAttestation, TargetPlacementRef, WorkOperationalDecisionRef,
 };
 use firm_store::{
-    canonical_json_fingerprint, project_cross_node_deliveries, CollaborationApplicationService,
+    canonical_json_fingerprint, persist_verified_remote_message_replica,
+    project_cross_node_deliveries, queue_remote_message_transfer, CollaborationApplicationService,
     CollaborationDelegationFilter, CollaborationFabricPort, CollaborationMutationContext,
-    HarnessStore, ProposeDelegationRequest, ResolvedCollaborationAuthority,
+    HarnessStore, ProposeDelegationRequest, RemoteMessageReplicaExpectation,
+    RemoteMessageReplicaPort, ResolvedCollaborationAuthority,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -53,12 +56,16 @@ fn actor(kind: ActorKind, id: &str) -> ActorRef {
     }
 }
 
-fn placement(generation: u64) -> TargetPlacementRef {
+fn placement(observed_node: u64) -> TargetPlacementRef {
     TargetPlacementRef {
         team_id: "team-b".into(),
         team_revision: 7,
-        node_id: "node-b".into(),
-        placement_generation: generation,
+        node_id: if observed_node == 14 {
+            "node-c".into()
+        } else {
+            "node-b".into()
+        },
+        placement_generation: 1,
     }
 }
 
@@ -69,7 +76,7 @@ fn work_ref(node: &str, team: &str, work: &str, revision: u64) -> RemoteWorkRef 
         node_id: node.into(),
         team_id: team.into(),
         team_revision: if team == "team-a" { 5 } else { 7 },
-        placement_generation: if team == "team-a" { 11 } else { 13 },
+        placement_generation: 1,
         work_id: work.into(),
         work_revision: revision,
         work_event_id: format!("event-{work}-{revision}"),
@@ -83,6 +90,8 @@ fn authority() -> ResolvedCollaborationAuthority {
         source_work_owner: actor(ActorKind::AgentMember, "member-a"),
         target_host: actor(ActorKind::AgentMember, "host-b"),
         target_placement: placement(13),
+        source_work_application_service: actor(ActorKind::Service, "source-work-service-a"),
+        source_gateway_generation: 8,
     }
 }
 
@@ -112,6 +121,21 @@ fn install_policy(store: &HarnessStore) {
             &host,
         )
         .expect("target Host canonical inbound policy");
+    let attestation = source_attestation();
+    let service = attestation.work_application_service_ref.clone();
+    store
+        .put_source_work_attestation(
+            &context(
+                service.clone(),
+                "source_work.attest",
+                "source-work-attestation-1",
+                0,
+            ),
+            &attestation,
+            &service,
+            8,
+        )
+        .expect("source WorkApplicationService canonical attestation");
 }
 
 fn context(
@@ -133,14 +157,38 @@ fn context(
 fn proposal() -> ProposeDelegationRequest {
     ProposeDelegationRequest {
         delegation_id: "delegation-1".into(),
-        source_work_ref: work_ref("node-a", "team-a", "work-a", 9),
-        source_owner_ref: actor(ActorKind::AgentMember, "member-a"),
+        source_work_attestation_id: "source-work-attestation-1".into(),
         target_placement: placement(13),
         requested_outcome: "Implement the remote component".into(),
         outcome_class: "implementation".into(),
         acceptance_contract: "checks and evidence are required".into(),
         operation_id: "route-propose-1".into(),
     }
+}
+
+fn source_attestation() -> SourceWorkAttestation {
+    let mut attestation = SourceWorkAttestation {
+        id: "source-work-attestation-1".into(),
+        company_id: "company-1".into(),
+        source_work_ref: work_ref("node-a", "team-a", "work-a", 9),
+        source_owner_ref: actor(ActorKind::AgentMember, "member-a"),
+        source_host_ref: actor(ActorKind::AgentMember, "host-a"),
+        work_application_service_ref: actor(ActorKind::Service, "source-work-service-a"),
+        source_gateway_generation: 8,
+        attestation_digest: String::new(),
+        issued_at: "2026-08-11T00:00:00Z".into(),
+    };
+    attestation.attestation_digest = canonical_json_fingerprint(&serde_json::json!({
+        "id": attestation.id,
+        "company_id": attestation.company_id,
+        "source_work_ref": attestation.source_work_ref,
+        "source_owner_ref": attestation.source_owner_ref,
+        "source_host_ref": attestation.source_host_ref,
+        "work_application_service_ref": attestation.work_application_service_ref,
+        "source_gateway_generation": attestation.source_gateway_generation,
+        "issued_at": attestation.issued_at,
+    }));
+    attestation
 }
 
 #[derive(Default)]
@@ -281,7 +329,10 @@ fn active_delegation(store: &HarnessStore) -> RemoteWorkRef {
         )
         .expect("fold applied target Work result");
     assert_eq!(active.projection.state, DelegationState::Active);
-    assert_eq!(active.projection.source_work_ref, request.source_work_ref);
+    assert_eq!(
+        active.projection.source_work_ref,
+        source_attestation().source_work_ref
+    );
     assert_eq!(active.projection.target_work_ref.as_ref(), Some(&target));
     target
 }
@@ -454,7 +505,7 @@ fn delegation_relationship_is_idempotent_placement_fenced_and_source_independent
         .expect("exact proposal replay");
     assert!(!first.replayed);
     assert!(replay.replayed);
-    assert_eq!(test.store.collaboration_operations().unwrap().len(), 2);
+    assert_eq!(test.store.collaboration_operations().unwrap().len(), 3);
 
     let hostile_context = context(
         actor(ActorKind::AgentMember, "sibling-member"),
@@ -842,7 +893,7 @@ fn remote_fact_is_redacted_digest_bound_and_target_scoped() {
         origin_node_id: "node-b".into(),
         origin_team_id: "team-b".into(),
         fact_work_ref: target,
-        delegation_source_work_ref: proposal().source_work_ref,
+        delegation_source_work_ref: source_attestation().source_work_ref,
         fact_kind: RemoteFactKind::Report,
         fact_id: "report-b-1".into(),
         fact_revision: 1,
@@ -980,6 +1031,42 @@ fn canonical_delivery(
     }
 }
 
+fn message_fingerprint(message: &Message) -> String {
+    canonical_json_fingerprint(&serde_json::json!({
+        "sender_actor_ref": message.sender_actor_ref,
+        "sender_agent_id": message.sender_agent_id,
+        "sender_session_id": message.sender_session_id,
+        "address_kind": message.address_kind,
+        "target_ref": message.target_ref,
+        "recipients": message.recipients,
+        "team_id": message.team_id,
+        "team_run_id": message.team_run_id,
+        "work_id": message.work_id,
+        "collaboration_scope": message.collaboration_scope,
+        "kind": message.kind,
+        "body": message.body,
+        "body_digest": message.body_digest,
+        "correlation_id": message.correlation_id,
+        "causation_id": message.causation_id,
+        "response_intent": message.response_intent,
+        "evidence_refs": message.evidence_refs,
+        "schema_version": message.schema_version,
+        "idempotency_key": message.idempotency_key,
+    }))
+}
+
+fn persisted_replica(message: &Message) -> firm_core::collaboration::RemoteMessageReplica {
+    firm_core::collaboration::RemoteMessageReplica {
+        source_execution_space_id: message.source_execution_space_id.clone(),
+        message_id: message.id.clone(),
+        schema_version: message.schema_version,
+        content_fingerprint: message.content_fingerprint.clone(),
+        body_digest: message.body_digest.clone(),
+        canonical_message_bytes: serde_json::to_vec(message).unwrap(),
+        persisted_at: "2026-08-11T00:00:01Z".into(),
+    }
+}
+
 #[test]
 fn message_projection_preserves_per_recipient_partial_delivery_truth() {
     let recipients = vec![
@@ -992,7 +1079,7 @@ fn message_projection_preserves_per_recipient_partial_delivery_truth() {
             id: "member-b2".into(),
         },
     ];
-    let message = Message {
+    let mut message = Message {
         id: "message-1".into(),
         source_execution_space_id: "space-node-a".into(),
         source_node_id: "node-a".into(),
@@ -1007,18 +1094,30 @@ fn message_projection_preserves_per_recipient_partial_delivery_truth() {
         team_id: Some("team-a".into()),
         team_run_id: None,
         work_id: Some("work-a".into()),
+        collaboration_scope: Some(firm_core::collaboration::CollaborationScope {
+            source_team_id: "team-a".into(),
+            target_team_id: "team-b".into(),
+            delegation_id: Some("delegation-1".into()),
+            expected_delegation_revision: Some(3),
+            source_work_ref: Some(work_ref("node-a", "team-a", "work-a", 9)),
+            target_work_ref: Some(work_ref("node-b", "team-b", "work-b", 1)),
+        }),
         kind: MessageKind::Message,
         body: "Please review the delegated result".into(),
-        body_digest: format!("sha256:{:064x}", 1),
+        body_digest: canonical_json_fingerprint(&serde_json::json!({
+            "body": "Please review the delegated result"
+        })),
         correlation_id: "correlation-1".into(),
         causation_id: None,
         response_intent: ResponseIntent::ResponseRequired,
         evidence_refs: Vec::new(),
-        content_fingerprint: format!("sha256:{:064x}", 2),
+        content_fingerprint: String::new(),
         schema_version: 1,
         idempotency_key: "message-1".into(),
         created_at: "2026-08-11T00:00:00Z".into(),
     };
+    message.content_fingerprint = message_fingerprint(&message);
+    let replica = persisted_replica(&message);
     let deliveries = vec![
         canonical_delivery(
             "delivery-1",
@@ -1033,6 +1132,7 @@ fn message_projection_preserves_per_recipient_partial_delivery_truth() {
     ];
     let projections = project_cross_node_deliveries(
         &message,
+        &replica,
         &deliveries,
         "route-1",
         Some(9),
@@ -1051,6 +1151,7 @@ fn message_projection_preserves_per_recipient_partial_delivery_truth() {
     duplicate[1].recipient_identity_id = "member-b1".into();
     assert!(project_cross_node_deliveries(
         &message,
+        &replica,
         &duplicate,
         "route-1",
         Some(9),
@@ -1068,9 +1169,11 @@ fn message_projection_preserves_per_recipient_partial_delivery_truth() {
         recipients: vec![team_recipient],
         ..message.clone()
     };
+    let team_replica = persisted_replica(&team_message);
     assert_eq!(
         project_cross_node_deliveries(
             &team_message,
+            &team_replica,
             &deliveries,
             "route-team-1",
             Some(9),
@@ -1086,6 +1189,7 @@ fn message_projection_preserves_per_recipient_partial_delivery_truth() {
     mixed_nodes[1].target_node_id = "node-c".into();
     assert!(project_cross_node_deliveries(
         &team_message,
+        &team_replica,
         &mixed_nodes,
         "route-team-1",
         Some(9),
@@ -1093,4 +1197,281 @@ fn message_projection_preserves_per_recipient_partial_delivery_truth() {
         "2026-08-11T00:00:02Z",
     )
     .is_err());
+}
+
+#[derive(Default)]
+struct FaithfulReplicaStore {
+    objects: Mutex<BTreeMap<String, Vec<u8>>>,
+    replicas: Mutex<BTreeMap<(String, String), RemoteMessageReplica>>,
+}
+
+impl RemoteMessageReplicaPort for FaithfulReplicaStore {
+    fn fetch_message_object(&self, message_object_ref: &str) -> Result<Vec<u8>, FabricError> {
+        self.objects
+            .lock()
+            .unwrap()
+            .get(message_object_ref)
+            .cloned()
+            .ok_or_else(|| FabricError {
+                code: FabricErrorCode::MessageReplicaMismatch,
+                message: "message object unavailable".into(),
+                retryable: false,
+                effect_certainty: FabricEffectCertainty::None,
+                resource_kind: "message_object_ref".into(),
+                resource_id: message_object_ref.into(),
+                current_revision: None,
+            })
+    }
+
+    fn persist_remote_replica(
+        &self,
+        replica: &RemoteMessageReplica,
+    ) -> Result<RemoteMessageReplica, FabricError> {
+        let key = (
+            replica.source_execution_space_id.clone(),
+            replica.message_id.clone(),
+        );
+        let mut replicas = self.replicas.lock().unwrap();
+        if let Some(current) = replicas.get(&key) {
+            if current.content_fingerprint == replica.content_fingerprint
+                && current.body_digest == replica.body_digest
+                && current.canonical_message_bytes == replica.canonical_message_bytes
+            {
+                return Ok(current.clone());
+            }
+            return Err(FabricError {
+                code: FabricErrorCode::MessageReplicaMismatch,
+                message: "same remote Message identity was reused with different bytes".into(),
+                retryable: false,
+                effect_certainty: FabricEffectCertainty::None,
+                resource_kind: "remote_message_replica".into(),
+                resource_id: replica.message_id.clone(),
+                current_revision: None,
+            });
+        }
+        replicas.insert(key, replica.clone());
+        Ok(replica.clone())
+    }
+}
+
+#[test]
+fn immutable_message_transfer_persists_exact_replica_before_delivery_and_replays() {
+    let recipients = vec![MessageRecipientRef {
+        kind: MessageRecipientKind::AgentIdentity,
+        id: "member-b1".into(),
+    }];
+    let mut message = Message {
+        id: "remote-message-1".into(),
+        source_execution_space_id: "space-node-a".into(),
+        source_node_id: "node-a".into(),
+        source_node_daemon_id: "daemon-a".into(),
+        source_authority_generation: 8,
+        sender_actor_ref: actor(ActorKind::AgentMember, "host-a"),
+        sender_agent_id: Some("host-a".into()),
+        sender_session_id: Some("session-host-a".into()),
+        address_kind: MessageAddressKind::DirectAgent,
+        target_ref: recipients[0].clone(),
+        recipients,
+        team_id: Some("team-a".into()),
+        team_run_id: None,
+        work_id: Some("work-a".into()),
+        collaboration_scope: Some(firm_core::collaboration::CollaborationScope {
+            source_team_id: "team-a".into(),
+            target_team_id: "team-b".into(),
+            delegation_id: Some("delegation-1".into()),
+            expected_delegation_revision: Some(3),
+            source_work_ref: Some(work_ref("node-a", "team-a", "work-a", 9)),
+            target_work_ref: Some(work_ref("node-b", "team-b", "work-b", 1)),
+        }),
+        kind: MessageKind::Message,
+        body: "immutable remote body".into(),
+        body_digest: canonical_json_fingerprint(
+            &serde_json::json!({"body": "immutable remote body"}),
+        ),
+        correlation_id: "remote-correlation-1".into(),
+        causation_id: None,
+        response_intent: ResponseIntent::ResponseRequired,
+        evidence_refs: Vec::new(),
+        content_fingerprint: String::new(),
+        schema_version: 1,
+        idempotency_key: "remote-message-1".into(),
+        created_at: "2026-08-11T00:00:00Z".into(),
+    };
+    message.content_fingerprint = message_fingerprint(&message);
+    let bytes = serde_json::to_vec(&message).unwrap();
+    let port = FaithfulReplicaStore::default();
+    let inline = ImmutableMessageTransferPayload::CanonicalBytes {
+        canonical_message_bytes: bytes.clone(),
+    };
+    let queued = queue_remote_message_transfer(
+        &message,
+        &placement(13),
+        inline.clone(),
+        "2026-08-11T00:00:00Z",
+    )
+    .expect("source Node queues the already-authored Message while Control Plane is offline");
+    assert_eq!(
+        queued.state,
+        RemoteMessageTransferState::QueuedForControlPlane
+    );
+    assert_eq!(queued.message_id, message.id);
+    let expectation = |persisted_at: &str| RemoteMessageReplicaExpectation {
+        source_execution_space_id: message.source_execution_space_id.clone(),
+        message_id: message.id.clone(),
+        schema_version: message.schema_version,
+        content_fingerprint: message.content_fingerprint.clone(),
+        body_digest: message.body_digest.clone(),
+        persisted_at: persisted_at.into(),
+    };
+    let first = persist_verified_remote_message_replica(
+        &port,
+        &inline,
+        &expectation("2026-08-11T00:00:01Z"),
+    )
+    .expect("target persists exact inline remote replica");
+    let replay = persist_verified_remote_message_replica(
+        &port,
+        &inline,
+        &expectation("2026-08-11T00:00:02Z"),
+    )
+    .expect("same Message bytes replay the original target replica");
+    assert_eq!(first, replay);
+    assert_eq!(port.replicas.lock().unwrap().len(), 1);
+
+    let object_ref = "message-object:remote-message-1";
+    let object_digest =
+        canonical_json_fingerprint(&serde_json::from_slice::<serde_json::Value>(&bytes).unwrap());
+    port.objects
+        .lock()
+        .unwrap()
+        .insert(object_ref.into(), bytes.clone());
+    let referenced = ImmutableMessageTransferPayload::MessageObjectRef {
+        message_object_ref: object_ref.into(),
+        authenticated_content_digest: object_digest,
+    };
+    assert!(persist_verified_remote_message_replica(
+        &port,
+        &referenced,
+        &expectation("2026-08-11T00:00:03Z"),
+    )
+    .is_ok());
+
+    let before = port.replicas.lock().unwrap().clone();
+    let mut forged = message.clone();
+    forged.body = "forged body".into();
+    let forged_payload = ImmutableMessageTransferPayload::CanonicalBytes {
+        canonical_message_bytes: serde_json::to_vec(&forged).unwrap(),
+    };
+    assert!(persist_verified_remote_message_replica(
+        &port,
+        &forged_payload,
+        &expectation("2026-08-11T00:00:04Z"),
+    )
+    .is_err());
+    assert_eq!(*port.replicas.lock().unwrap(), before);
+
+    let deliveries = vec![CanonicalMessageDelivery {
+        message_id: message.id.clone(),
+        ..canonical_delivery(
+            "remote-delivery-1",
+            "member-b1",
+            CanonicalMessageDeliveryStatus::Queued,
+        )
+    }];
+    assert_eq!(
+        project_cross_node_deliveries(
+            &message,
+            &first,
+            &deliveries,
+            "route-remote-1",
+            Some(9),
+            45,
+            "2026-08-11T00:00:05Z",
+        )
+        .expect("delivery projection is derived only after replica persistence")
+        .len(),
+        1
+    );
+}
+
+#[test]
+fn source_work_attestation_and_placement_v1_fail_closed() {
+    let test = TestStore::new("attestation");
+    install_policy(&test.store);
+    let auth = authority();
+    let before = test.store.collaboration_operations().unwrap();
+
+    let mut caller_authored = source_attestation();
+    caller_authored.id = "caller-authored-attestation".into();
+    caller_authored.work_application_service_ref = auth.source_host.clone();
+    assert!(test
+        .store
+        .put_source_work_attestation(
+            &context(
+                auth.source_host.clone(),
+                "source_work.attest",
+                "caller-authored-attestation",
+                0,
+            ),
+            &caller_authored,
+            &auth.source_work_application_service,
+            auth.source_gateway_generation,
+        )
+        .is_err());
+    assert_eq!(test.store.collaboration_operations().unwrap(), before);
+
+    let mut stale_authority = auth.clone();
+    stale_authority.source_gateway_generation = 9;
+    assert!(test
+        .store
+        .propose_collaboration_delegation(
+            &context(
+                auth.source_host.clone(),
+                "delegation.propose",
+                "stale-attestation-propose",
+                0,
+            ),
+            &proposal(),
+            &stale_authority,
+            &policy(),
+        )
+        .is_err());
+    assert_eq!(test.store.collaboration_operations().unwrap(), before);
+
+    let mut non_v1 = proposal();
+    non_v1.target_placement.placement_generation = 2;
+    assert!(test
+        .store
+        .propose_collaboration_delegation(
+            &context(
+                auth.source_host.clone(),
+                "delegation.propose",
+                "non-v1-placement",
+                0,
+            ),
+            &non_v1,
+            &auth,
+            &policy(),
+        )
+        .is_err());
+    assert_eq!(test.store.collaboration_operations().unwrap(), before);
+
+    assert_eq!(
+        CollaborationRetentionAnchor {
+            terminal_transport_at_unix_ms: Some(100),
+            terminal_delegation_at_unix_ms: Some(300),
+            source_import_completed_at_unix_ms: Some(200),
+        }
+        .safe_retention_start_unix_ms(),
+        Some(300)
+    );
+    assert_eq!(
+        CollaborationRetentionAnchor {
+            terminal_transport_at_unix_ms: Some(100),
+            terminal_delegation_at_unix_ms: Some(300),
+            source_import_completed_at_unix_ms: None,
+        }
+        .retain_until_unix_ms(30 * 24 * 60 * 60 * 1_000),
+        None
+    );
 }
