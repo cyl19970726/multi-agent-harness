@@ -34,6 +34,7 @@ impl Default for FabricStoreLimits {
 #[serde(deny_unknown_fields)]
 pub struct FabricState {
     pub revision: u64,
+    pub authority_company_id: Option<String>,
     pub control_plane_leases: BTreeMap<String, CompanyControlPlaneLease>,
     pub enrollments: BTreeMap<String, NodeEnrollment>,
     pub nodes: BTreeMap<String, CompanyNode>,

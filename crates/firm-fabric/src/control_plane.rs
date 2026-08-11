@@ -49,6 +49,16 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
         now_unix_ms: u64,
     ) -> Result<CompanyControlPlaneLease, FabricError> {
         self.store.transact(|state| {
+            if state
+                .authority_company_id
+                .as_deref()
+                .is_some_and(|authority| authority != self.company_id)
+            {
+                return Err(FabricError::none(
+                    FabricErrorCode::WrongCompany,
+                    "FabricStore is durably bound to another Company",
+                ));
+            }
             let prior = state.control_plane_leases.get(&self.company_id).cloned();
             if let Some(prior) = prior.as_ref() {
                 if prior.revision != expected_revision {
@@ -86,6 +96,7 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
                 last_heartbeat_at_unix_ms: now_unix_ms,
                 schema_version: FABRIC_SCHEMA_VERSION.into(),
             };
+            state.authority_company_id = Some(self.company_id.clone());
             state
                 .control_plane_leases
                 .insert(self.company_id.clone(), lease.clone());
