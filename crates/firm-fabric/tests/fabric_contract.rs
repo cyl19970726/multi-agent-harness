@@ -518,6 +518,9 @@ fn durable_route_replays_exactly_and_fences_stale_source_generation() {
         .expect("persist inbox");
     assert!(!replayed);
     assert_eq!(persisted.kind, ReceiptKind::TargetPersisted);
+    target_local
+        .claim_inbox(&target_session, &request.id)
+        .expect("claim before native effect");
     let (terminal_inbox, local_result, replayed) = target_local
         .record_application_result(
             &target_session,
@@ -726,6 +729,17 @@ fn node_local_journal_recovers_lost_ack_without_duplicate_native_effect() {
     target
         .persist_inbox(&target_session, &request, &attempt)
         .expect("persist target inbox");
+    target
+        .claim_inbox(&target_session, &request.id)
+        .expect("claim before native effect");
+    assert_eq!(
+        target.unresolved_operation_ids().expect("unresolved ids"),
+        BTreeSet::from([request.id.clone()])
+    );
+    let duplicate_claim = target
+        .claim_inbox(&target_session, &request.id)
+        .expect_err("duplicate claim cannot blindly repeat a native effect");
+    assert_eq!(duplicate_claim.code, FabricErrorCode::RecoveryRequired);
     target.fail_after_append_for_test();
     let unknown = target
         .record_application_result(
@@ -754,6 +768,10 @@ fn node_local_journal_recovers_lost_ack_without_duplicate_native_effect() {
     assert!(replayed);
     assert_eq!(inbox.state, LocalInboxState::Applied);
     assert!(result.applied);
+    assert!(recovered_target
+        .unresolved_operation_ids()
+        .expect("unresolved ids")
+        .is_empty());
     assert_eq!(
         recovered_target
             .snapshot()
@@ -1290,6 +1308,9 @@ fn retry_requires_a_new_target_generation_and_reconcile_never_blind_replays() {
             30_034,
         )
         .expect("successor persists inbox");
+    target_local
+        .claim_inbox(&successor_session, &request.id)
+        .expect("successor claims before native effect");
     let (_, local_result, _) = target_local
         .record_application_result(
             &successor_session,
@@ -1694,6 +1715,9 @@ fn draining_rejects_new_target_work_but_preserves_inflight_completion() {
             103,
         )
         .expect("drain does not corrupt inflight operation");
+    target_local
+        .claim_inbox(&target_session, &first.id)
+        .expect("claim inflight operation before native effect");
     let (_, local_result, _) = target_local
         .record_application_result(
             &target_session,
@@ -1956,6 +1980,9 @@ fn three_independent_store_roots_preserve_control_plane_and_node_authority() {
     source_local
         .mark_outbox_receipt(&persisted)
         .expect("source records target persistence");
+    target_local
+        .claim_inbox(&target_session, &request.id)
+        .expect("target claims before native effect");
     let (_, local_result, _) = target_local
         .record_application_result(
             &target_session,

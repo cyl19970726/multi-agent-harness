@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -316,6 +316,66 @@ impl NodeLocalFabricStore {
         })
     }
 
+    pub fn claim_inbox(
+        &self,
+        session: &FabricSessionFence,
+        operation_id: &str,
+    ) -> Result<LocalRemoteInbox, FabricError> {
+        self.require_session(session)?;
+        self.transact(|state| {
+            let inbox = state.inboxes.get(operation_id).cloned().ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::OperationUnknown,
+                    "operation was not durably persisted in this Node inbox",
+                )
+            })?;
+            if inbox.gateway_generation != session.gateway_generation
+                || inbox.control_plane_generation != session.control_plane_generation
+            {
+                return Err(FabricError::none(
+                    FabricErrorCode::NodeStaleGeneration,
+                    "inbox claim does not own the persisted Fabric generation",
+                ));
+            }
+            match inbox.state {
+                LocalInboxState::Persisted => {
+                    let mut claimed = inbox;
+                    claimed.state = LocalInboxState::Claimed;
+                    claimed.claim_generation = Some(session.gateway_generation);
+                    state
+                        .inboxes
+                        .insert(operation_id.into(), claimed.clone());
+                    Ok(claimed)
+                }
+                LocalInboxState::Claimed | LocalInboxState::RecoveryRequired => {
+                    Err(FabricError::unknown(
+                        operation_id,
+                        "operation was already claimed; native effect must be reconciled before retry",
+                    ))
+                }
+                LocalInboxState::Applied | LocalInboxState::Rejected => Err(FabricError::none(
+                    FabricErrorCode::IdempotencyConflict,
+                    "terminal inbox cannot be claimed again",
+                )),
+            }
+        })
+    }
+
+    pub fn unresolved_operation_ids(&self) -> Result<BTreeSet<String>, FabricError> {
+        Ok(self
+            .snapshot()?
+            .inboxes
+            .values()
+            .filter(|inbox| {
+                matches!(
+                    inbox.state,
+                    LocalInboxState::Claimed | LocalInboxState::RecoveryRequired
+                )
+            })
+            .map(|inbox| inbox.operation_id.clone())
+            .collect())
+    }
+
     pub fn record_application_result(
         &self,
         session: &FabricSessionFence,
@@ -355,14 +415,11 @@ impl NodeLocalFabricStore {
             })?;
             if inbox.gateway_generation != session.gateway_generation
                 || inbox.control_plane_generation != session.control_plane_generation
-                || !matches!(
-                    inbox.state,
-                    LocalInboxState::Persisted | LocalInboxState::Claimed
-                )
+                || inbox.state != LocalInboxState::Claimed
             {
                 return Err(FabricError::none(
                     FabricErrorCode::NodeStaleGeneration,
-                    "application result does not own the persisted inbox generation",
+                    "application result requires the exact durably claimed inbox generation",
                 ));
             }
             let mut next_inbox = inbox;
