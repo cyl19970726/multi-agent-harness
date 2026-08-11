@@ -52,7 +52,7 @@ fn route_command(
 ) -> CliResult<()> {
     if args.first().map(String::as_str) != Some("queue") {
         return Err(CliError::Usage(
-            "fabric route queue --company <id> --target-node <uuid> --target-space <id> --kind runtime|message --body-file <path> --operation-id <id> --idempotency-key <key> --ordering-key <key> [--source-space <id>]".into(),
+            "fabric route queue --company <id> --target-node <uuid> --target-space <id> --kind probe|runtime|message --body-file <path> --operation-id <id> --idempotency-key <key> --ordering-key <key> [--source-space <id>]".into(),
         ));
     }
     let company_id = required(args, "--company")?;
@@ -106,6 +106,22 @@ fn route_command(
         priority,
         expires_at_unix_ms,
     ) = match kind.as_str() {
+        "probe" => {
+            let probe: harness_fabric::FabricProbeBody = serde_json::from_value(body.clone())?;
+            if probe.probe.trim().is_empty() {
+                return Err(CliError::Usage(
+                    "remote probe must contain a bounded non-empty probe label".into(),
+                ));
+            }
+            (
+                harness_fabric::PROBE_OPERATION_KIND,
+                harness_fabric::PROBE_BODY_SCHEMA,
+                value(args, "--source-space"),
+                None,
+                harness_fabric::OperationPriority::Control,
+                now.saturating_add(5 * 60_000),
+            )
+        }
         "runtime" => {
             let reference: harness_fabric::RuntimeCommandReference =
                 serde_json::from_value(body.clone())?;
@@ -165,7 +181,8 @@ fn route_command(
         }
         _ => {
             return Err(CliError::Usage(
-                "--kind must be runtime|message; arbitrary transport mutations are closed".into(),
+                "--kind must be probe|runtime|message; arbitrary transport mutations are closed"
+                    .into(),
             ))
         }
     };
@@ -196,6 +213,7 @@ fn route_command(
         authorization_context: std::collections::BTreeMap::from([(
             "capability".into(),
             match kind.as_str() {
+                "probe" => "remote-probe",
                 "runtime" => "remote-runtime",
                 "message" => "remote-message",
                 _ => unreachable!(),
@@ -226,7 +244,7 @@ fn route_command(
                 "remote RuntimeCommand expired before local durable queueing".into(),
             ));
         }
-    } else {
+    } else if kind == "message" {
         super::remote_fabric::resolved_message_from_operation(&operation).map_err(fabric_error)?;
     }
     let (queued, replayed) = local

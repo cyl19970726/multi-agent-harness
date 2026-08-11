@@ -102,3 +102,44 @@ reviewed SHA. It must contain exactly the documented JSON evidence files, no
 private keys/tokens, a three-process result, empty Node inbound-listener list,
 terminal target effect and source reconciliation. Confirm all child processes
 have exited before declaring the gate complete.
+
+## Real two-Mac dogfood
+
+The deterministic three-process gate does not satisfy the real-machine gate.
+Use two explicitly authorized Macs with distinct initialized ExecutionNode ids
+and the same Company Control Plane. Do not use SSH discovery or copy private
+keys between machines.
+
+1. On the Control Plane Mac, start the reviewed `firm fabric control-plane
+   serve` revision behind the trusted TLS endpoint. Record its exact Git SHA,
+   Company id, Control Plane generation and schema bundle digest.
+2. Create one enrollment per existing ExecutionNode id. Each Mac generates its
+   own key and CSR, consumes only its enrollment, and installs the returned
+   material in macOS Keychain using the accounts above.
+3. Start the current NodeDaemon and then `firm fabric node-gateway serve` on
+   both Macs with `--credential-backend macos-keychain`. Record the two exact
+   Node ids, NodeDaemon generations and gateway generations. Reject the run if
+   either Node exposes an inbound collaboration listener.
+4. On Node A create a bounded diagnostic body such as
+   `{"probe":"two-mac-a-to-b"}` and queue it with `firm fabric route queue
+   --kind probe`, targeting Node B and a real Node-B Execution Space. Keep the
+   operation id, idempotency key and ordering key stable for replay checks.
+5. Verify the Control Plane journal reaches `operation_applied`, Node A
+   reconciles the same terminal receipt, and an exact replay returns the
+   original result without a second target application.
+6. Stop Node B's gateway, wait until the server-derived lease is offline, queue
+   a second probe on Node A, and prove it remains durable/nonterminal. Restart
+   Node B under the same current NodeDaemon parent, require a successor gateway
+   generation, and verify the queued operation applies exactly once.
+7. Capture `remote_fabric_status` and `remote_fabric_operation_show` through
+   the local MCP surface or the equivalent authenticated Host REST reads.
+   Evidence must bind the immutable submitted SHA, Company/Node ids, Control
+   Plane and gateway generations, operation ids, protocol/schema digest,
+   disconnect/reconnect timestamps, terminal receipts and application count.
+   Evidence must not contain enrollment tokens, bearer credentials, PEM/key
+   bytes, Keychain values, Message bodies, provider transcripts or repository
+   content.
+
+If a second authorized Mac or a reachable trusted TLS endpoint is unavailable,
+report the real dogfood gate as blocked. Never substitute loopback processes or
+an extra process on one Mac while calling the result “two-Mac”.
