@@ -1,0 +1,29 @@
+{
+  "schema_version": "agentfirm.remote_fabric.v1",
+  "protocol_version": 1,
+  "schemas": [
+    "artifact-manifest.schema.json",
+    "company-node.schema.json",
+    "node-enrollment.schema.json",
+    "node-gateway-lease.schema.json",
+    "route-receipt.schema.json",
+    "routed-operation.schema.json"
+  ],
+  "operation_registry": [
+    "artifact.reference.v1",
+    "delivery_intent.reference.v1",
+    "fabric.probe.v1",
+    "fabric.reconcile_probe.v1",
+    "message.reference.v1",
+    "runtime_command.reference.v1"
+  ],
+  "limits": {
+    "max_frame_bytes": 1048576,
+    "max_artifact_bytes": 67108864,
+    "max_operation_artifact_bytes": 268435456,
+    "gateway_heartbeat_interval_ms": 10000,
+    "gateway_lease_duration_ms": 30000,
+    "artifact_capability_lifetime_ms": 300000,
+    "enrollment_lifetime_max_ms": 600000
+  }
+}

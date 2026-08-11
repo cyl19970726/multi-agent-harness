@@ -2,6 +2,7 @@ import Ajv2020 from "ajv/dist/2020.js";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 const root = "schemas/remote-fabric";
 const fixtureRoot = join(root, "fixtures");
@@ -16,6 +17,14 @@ const schemas = [
 const failures = [];
 let validCount = 0;
 let invalidCount = 0;
+const bundle = readJson(join(root, "schema-bundle.v1.json"));
+const checkedSchemaNames = schemas.map(([name]) => name).sort();
+if (bundle.schema_version !== "agentfirm.remote_fabric.v1" || bundle.protocol_version !== 1) {
+  failures.push("schema bundle version does not match the frozen Rust contract");
+}
+if (JSON.stringify([...bundle.schemas].sort()) !== JSON.stringify(checkedSchemaNames)) {
+  failures.push("schema bundle file inventory differs from the executable schema gate");
+}
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
@@ -60,6 +69,9 @@ for (const kind of requiredKinds) {
     failures.push(`Rust operation registry missing ${kind}`);
   }
 }
+if (JSON.stringify([...bundle.operation_registry].sort()) !== JSON.stringify([...requiredKinds].sort())) {
+  failures.push("schema bundle operation registry differs from the Rust registry");
+}
 for (const field of [
   "source_gateway_generation",
   "control_plane_generation",
@@ -90,6 +102,9 @@ if (tests.status !== 0) {
   process.exit(tests.status ?? 1);
 }
 
+const bundleDigest = createHash("sha256")
+  .update(JSON.stringify(bundle))
+  .digest("hex");
 console.log(
-  `remote fabric foundation accepted: ${validCount} valid schemas, ${invalidCount} hostile schemas, durable routing/security/recovery tests PASS`,
+  `remote fabric foundation accepted: ${validCount} valid schemas, ${invalidCount} hostile schemas, bundle ${bundleDigest}, durable routing/security/recovery tests PASS`,
 );
