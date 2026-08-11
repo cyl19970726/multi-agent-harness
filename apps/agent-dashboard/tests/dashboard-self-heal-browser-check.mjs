@@ -127,6 +127,11 @@ const api = createHttpServer((request, response) => {
     store_root: "/tmp/dashboard-self-heal",
     latest_op_seq: 0,
     server_version: "test",
+    schema_version: "agentfirm.role_views.v1",
+    protocol_version: "agentfirm-member-trust/1",
+    action_manifest_version: "agentfirm.role_actions.v1",
+    capability_auth: "x-agentfirm-token",
+    build_sha: "fbc401646f66b69a0269622c489441cfe643b54f",
   });
   if (url.pathname.startsWith("/v1/views/team-workspace/")) return jsonResponse(response, 200, {
     view_kind: "team_workspace",
@@ -137,10 +142,13 @@ const api = createHttpServer((request, response) => {
     generated_at: new Date().toISOString(),
     freshness: "current",
     data: {
-      team: {team_id: fixtureSnapshot.team_runs[0]?.agent_team_id, team_revision: 1, mission_id: fixtureSnapshot.missions[0]?.id, node_id: "node-fixture", placement_generation: 1, status: "active"},
-      works: [], members: [], messages: [], reports: [], findings: [], failures: [],
+      team: {team_id: fixtureSnapshot.team_runs[0]?.agent_team_id, display_name: "Self-heal Team", team_revision: 1, mission_id: fixtureSnapshot.missions[0]?.id, host_agent_id: "host-fixture", viewer_role: "member", node_id: "node-fixture", placement_generation: 1, status: "active", latest_run: null},
+      works: [], members: [], messages: [], activity: [], activity_truncated: false,
+      pressure_summary: {active_turns:0,ready_members:0,total_members:0,ready_work:0,review_work:0,blocked_work:0},
+      reports: [], findings: [], failures: [],
       gate_requirements: [], gate_evaluations: [], gate_waivers: [], workspace_attention: [], delegation_provenance: [],
       page: {as_of_event_sequence: 1, item_count: 0, next_cursor: null},
+      runtime_fabric: {agent_identities:[],agent_sessions:[],team_memberships:[],work_execution_bindings:[],messages:[],message_deliveries:[]},
     },
     attention: [], allowed_actions: [],
   });
@@ -481,7 +489,7 @@ try {
   state.titles.set(scopeKey("space-a", "company-a"), "full projection after team exit");
   const teamRoute = new URLSearchParams({ api: apiBase, project: "project-a", space: "space-a", company: "company-a", surface: "team", team: teamRunId });
   await boundaryPage.goto(`${appBase}/?${teamRoute}`, { waitUntil: "domcontentloaded", timeout: 15_000 });
-  await boundaryPage.getByText("Team Workspace", { exact: true }).waitFor({ timeout: 8_000 });
+  await boundaryPage.locator('[data-testid="authenticated-team-workspace"]').waitFor({ timeout: 8_000 });
   await waitFor(
     () => Promise.resolve([...state.streams].some((stream) => stream.space === "space-a" && stream.company === "company-a")),
     "Team stream connected",
