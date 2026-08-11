@@ -27304,8 +27304,8 @@ fn work_contract_prompt(
          - Read the board: \"$HARNESS_BIN\" team-run work list --team-run-id {team_run_id}\n\
          - Inspect the latest version before every transition: \"$HARNESS_BIN\" team-run work show --work-id {work_id}\n\
          - Ordinary TeamMessageProjection is conversation only. Link discussion with --work-id {work_id}; never create or transfer ownership through chat.\n\
-         - Ask Host: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to host --kind message --work-id {work_id} --body \"QUESTION: <question and recommendation>\" --json\n\
-         - Ask a peer to act: \"$HARNESS_BIN\" team-run send --id {team_run_id} --from {member_run_id} --to <peer-member-run-id> --kind message --work-id {work_id} --response-required --body \"COORDINATION: <request>\" --json\n\
+         - Send or reply through an authenticated Member Role Action from the current server-built RoleView. The server resolves your AgentIdentity, AgentSession generation, TeamMembership, Work/Team scope, NodeDaemon generation, and subscription cursor; never select a sender identity in a legacy command.\n\
+         - Ask the Host with the exact Work id, decision needed, options, and recommendation. Coordinate with a peer by addressing its stable AgentIdentity in the same Team; conversation never transfers Work.\n\
          - If blocked, run team-run work block with team/member/work ids, the latest expected version, and a reason; then send a concise Work-linked message explaining the decision needed.\n\
          - When complete, run team-run work submit with team/member/work ids, the latest expected version, a result summary, and useful --artifact-ref / --check-ref values. Host acceptance, not provider completion, moves Work to done.\n\
          - You may create self-owned or unassigned child Work, and may use provider-native subagents as implementation details.\n\

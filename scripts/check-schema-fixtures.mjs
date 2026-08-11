@@ -35,10 +35,21 @@ const schemaFiles = readdirSync(schemaRoot)
   .map((entry) => join(schemaRoot, entry))
   .sort();
 
-for (const schemaFile of schemaFiles) {
-  const schema = readJson(schemaFile);
-  const ajv = new Ajv2020({ allErrors: true, strict: false });
-  const validate = ajv.compile(schema);
+// Compile the official schema set as one registry. Wave 4C introduces
+// identity/session/message schemas with relative $refs; compiling every file
+// in an isolated Ajv instance makes valid cross-schema references look
+// missing and lets the fixture gate fail for the wrong reason.
+const ajv = new Ajv2020({ allErrors: true, strict: false });
+const schemas = schemaFiles.map((schemaFile) => ({
+  schemaFile,
+  schema: readJson(schemaFile),
+}));
+for (const { schema } of schemas) {
+  ajv.addSchema(schema);
+}
+
+for (const { schemaFile, schema } of schemas) {
+  const validate = ajv.getSchema(schema.$id) ?? ajv.compile(schema);
   const fixtureName = basename(schemaFile, ".schema.json");
   const validFixtures = jsonFiles(join(fixtureRoot, fixtureName, "valid"));
   const invalidFixtures = jsonFiles(join(fixtureRoot, fixtureName, "invalid"));

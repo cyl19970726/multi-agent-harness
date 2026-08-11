@@ -11,7 +11,7 @@
     "target_node_id": {"type": "string", "format": "uuid"},
     "target_node_daemon_id": {"type": "string", "minLength": 1},
     "target_node_daemon_generation": {"type": "integer", "minimum": 1},
-    "authenticated_actor": {"$ref": "actor-ref.schema.json"},
+    "authenticated_actor": {"type": "object", "additionalProperties": false, "required": ["kind", "id"], "properties": {"kind": {"enum": ["human", "agent_member", "service"]}, "id": {"type": "string", "minLength": 1}}},
     "command": {"enum": ["author_message", "start_session", "stop_session", "resume_session", "dispatch_provider", "cancel_provider_turn"]},
     "required_capability": {"type": "string", "minLength": 1},
     "idempotency_key": {"type": "string", "minLength": 1},

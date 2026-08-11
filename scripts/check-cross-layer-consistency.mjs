@@ -98,7 +98,11 @@ if (memberSkill && mainRs) {
     { name: "work start", skill: "work start", code: "team-run work start" },
     { name: "work submit", skill: "work submit", code: "team-run work submit" },
     { name: "inbox read", skill: "team-run inbox", code: "team-run inbox" },
-    { name: "send message", skill: "team-run send", code: "team-run send" },
+    {
+      name: "send message",
+      skill: "authenticated[\\s\\S]{0,80}Member Role Action",
+      code: "authenticated Member Role Action",
+    },
     { name: "board summary", skill: "board-summary", code: "board-summary" },
   ];
 

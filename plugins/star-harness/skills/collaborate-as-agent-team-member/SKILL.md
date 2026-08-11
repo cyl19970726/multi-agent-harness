@@ -163,7 +163,8 @@ Read actionable mail, or include history when needed:
 
 Legacy TeamRun send/ACK commands are retired because they let a caller select
 another Member's identity. Author or acknowledge through the authenticated
-Member Role Action exposed by the current server-built view. The server must
+Member Role Action (`send_message`, `reply_message`, or `request_decision`)
+exposed by the current server-built view. The server must
 resolve your stable AgentIdentity, exact current AgentSession generation,
 TeamMembership, Work/Team scope, NodeDaemon generation, and subscription
 cursor; never supply or override those facts from a prompt, browser, or shell.
