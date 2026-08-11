@@ -7,15 +7,19 @@ import { createHash } from "node:crypto";
 const root = "schemas/remote-fabric";
 const fixtureRoot = join(root, "fixtures");
 const schemas = [
+  ["artifact-reference.schema.json", "artifact-reference"],
   ["company-node.schema.json", "company-node"],
+  ["delivery-intent-reference.schema.json", "delivery-intent-reference"],
   ["fabric-frame.schema.json", "fabric-frame"],
   ["node-enrollment.schema.json", "node-enrollment"],
   ["node-gateway-lease.schema.json", "node-gateway-lease"],
   ["node-hello.schema.json", "node-hello"],
   ["node-welcome.schema.json", "node-welcome"],
+  ["message-reference.schema.json", "message-reference"],
   ["routed-operation.schema.json", "routed-operation"],
   ["route-receipt.schema.json", "route-receipt"],
   ["artifact-manifest.schema.json", "artifact-manifest"],
+  ["runtime-command-reference.schema.json", "runtime-command-reference"],
 ];
 const failures = [];
 let validCount = 0;
@@ -78,7 +82,7 @@ const requiredKinds = [
   "artifact.reference.v1",
 ];
 for (const kind of requiredKinds) {
-  if (!router.includes(`\"${kind}\"`)) {
+  if (!protocol.includes(`\"${kind}\"`)) {
     failures.push(`Rust operation registry missing ${kind}`);
   }
 }
@@ -96,7 +100,7 @@ for (const field of [
   }
 }
 for (const forbidden of ["work.accept.v1", "provider.start.v1", "message.send.v1"]) {
-  if (router.includes(`\"${forbidden}\"`)) {
+  if (router.includes(`\"${forbidden}\"`) || protocol.includes(`\"${forbidden}\"`)) {
     failures.push(`transport registry illegally owns business mutation ${forbidden}`);
   }
 }

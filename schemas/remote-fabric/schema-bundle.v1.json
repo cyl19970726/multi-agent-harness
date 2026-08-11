@@ -3,14 +3,18 @@
   "protocol_version": 1,
   "schemas": [
     "artifact-manifest.schema.json",
+    "artifact-reference.schema.json",
     "company-node.schema.json",
+    "delivery-intent-reference.schema.json",
     "fabric-frame.schema.json",
+    "message-reference.schema.json",
     "node-enrollment.schema.json",
     "node-gateway-lease.schema.json",
     "node-hello.schema.json",
     "node-welcome.schema.json",
     "route-receipt.schema.json",
-    "routed-operation.schema.json"
+    "routed-operation.schema.json",
+    "runtime-command-reference.schema.json"
   ],
   "operation_registry": [
     "artifact.reference.v1",

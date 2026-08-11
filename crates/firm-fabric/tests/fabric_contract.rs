@@ -227,6 +227,63 @@ fn fabric_session(
     }
 }
 
+#[test]
+fn operation_registry_requires_closed_kind_schema_and_body_scope() {
+    let mut request = operation(3, 2);
+    assert!(matches!(
+        request.closed_body().expect("closed probe"),
+        ClosedOperationBody::Probe(_)
+    ));
+
+    request.kind = RUNTIME_COMMAND_REFERENCE_KIND.into();
+    request.body_schema = RUNTIME_COMMAND_REFERENCE_SCHEMA.into();
+    request.body = json!({
+        "runtime_command_id": "runtime-command:remote-1",
+        "command_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "target_execution_space_id": "space-b",
+        "target_node_daemon_id": "node-daemon:node-b",
+        "target_node_daemon_generation": 4
+    });
+    request.body_digest = json_digest(&request.body).expect("body digest");
+    assert!(matches!(
+        request.closed_body().expect("closed runtime reference"),
+        ClosedOperationBody::RuntimeCommand(_)
+    ));
+
+    let mut browser_authority = request.clone();
+    browser_authority.body["actor_id"] = json!("browser-selected-host");
+    browser_authority.body_digest =
+        json_digest(&browser_authority.body).expect("hostile body digest");
+    assert_eq!(
+        browser_authority
+            .closed_body()
+            .expect_err("unknown authority field must fail closed")
+            .code,
+        FabricErrorCode::InvalidPayload
+    );
+
+    let mut wrong_scope = request.clone();
+    wrong_scope.body["target_execution_space_id"] = json!("space-c");
+    wrong_scope.body_digest = json_digest(&wrong_scope.body).expect("wrong-scope digest");
+    assert_eq!(
+        wrong_scope
+            .closed_body()
+            .expect_err("body scope cannot override route scope")
+            .code,
+        FabricErrorCode::InvalidPayload
+    );
+
+    let mut mismatched_schema = request;
+    mismatched_schema.body_schema = MESSAGE_REFERENCE_SCHEMA.into();
+    assert_eq!(
+        mismatched_schema
+            .closed_body()
+            .expect_err("kind and schema are one frozen pair")
+            .code,
+        FabricErrorCode::SchemaIncompatible
+    );
+}
+
 fn accept_fabric_operation<K: ArtifactKeyBackend>(
     control: &ControlPlane<'_, K>,
     control_plane_generation: u64,
@@ -414,7 +471,16 @@ fn durable_route_replays_exactly_and_fences_stale_source_generation() {
     let mut unsupported = request.clone();
     unsupported.id = "operation-unsupported-capability".into();
     unsupported.idempotency_key = "idempotency-unsupported-capability".into();
-    unsupported.kind = "runtime_command.reference.v1".into();
+    unsupported.kind = RUNTIME_COMMAND_REFERENCE_KIND.into();
+    unsupported.body_schema = RUNTIME_COMMAND_REFERENCE_SCHEMA.into();
+    unsupported.body = json!({
+        "runtime_command_id": "runtime-command:unsupported",
+        "command_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "target_execution_space_id": "space-b",
+        "target_node_daemon_id": "node-daemon:node-b",
+        "target_node_daemon_generation": 1
+    });
+    unsupported.body_digest = json_digest(&unsupported.body).expect("runtime reference digest");
     let before_unsupported = store.snapshot().expect("snapshot");
     let unavailable = control
         .accept_operation(

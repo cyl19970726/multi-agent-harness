@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentfirm.local/schemas/remote-fabric/message-reference.schema.json",
+  "title": "MessageReference",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["message_id", "body_digest"],
+  "properties": {
+    "message_id": { "type": "string", "minLength": 1 },
+    "body_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}

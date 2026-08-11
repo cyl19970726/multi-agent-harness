@@ -661,6 +661,7 @@ fn validate_operation(
         ));
     }
     operation.validate_digest()?;
+    operation.closed_body()?;
     if operation.control_plane_generation
         != state
             .control_plane_leases
@@ -681,12 +682,12 @@ fn validate_operation(
     }
     if !matches!(
         operation.kind.as_str(),
-        "fabric.probe.v1"
-            | "fabric.reconcile_probe.v1"
-            | "runtime_command.reference.v1"
-            | "message.reference.v1"
-            | "delivery_intent.reference.v1"
-            | "artifact.reference.v1"
+        PROBE_OPERATION_KIND
+            | RECONCILE_PROBE_OPERATION_KIND
+            | RUNTIME_COMMAND_REFERENCE_KIND
+            | MESSAGE_REFERENCE_KIND
+            | DELIVERY_INTENT_REFERENCE_KIND
+            | ARTIFACT_REFERENCE_KIND
     ) {
         return Err(FabricError::none(
             FabricErrorCode::UnauthorizedActor,
@@ -694,10 +695,10 @@ fn validate_operation(
         ));
     }
     let required_capability = match operation.kind.as_str() {
-        "fabric.probe.v1" | "fabric.reconcile_probe.v1" => "durable-routing",
-        "runtime_command.reference.v1" => "remote-runtime",
-        "message.reference.v1" | "delivery_intent.reference.v1" => "remote-message",
-        "artifact.reference.v1" => "artifact-transfer",
+        PROBE_OPERATION_KIND | RECONCILE_PROBE_OPERATION_KIND => "durable-routing",
+        RUNTIME_COMMAND_REFERENCE_KIND => "remote-runtime",
+        MESSAGE_REFERENCE_KIND | DELIVERY_INTENT_REFERENCE_KIND => "remote-message",
+        ARTIFACT_REFERENCE_KIND => "artifact-transfer",
         _ => unreachable!("closed operation registry was checked above"),
     };
     for node_id in [&operation.source_node_id, &operation.target_node_id] {

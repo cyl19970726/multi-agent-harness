@@ -328,6 +328,83 @@ pub enum OperationPriority {
     Control,
 }
 
+pub const PROBE_OPERATION_KIND: &str = "fabric.probe.v1";
+pub const RECONCILE_PROBE_OPERATION_KIND: &str = "fabric.reconcile_probe.v1";
+pub const RUNTIME_COMMAND_REFERENCE_KIND: &str = "runtime_command.reference.v1";
+pub const MESSAGE_REFERENCE_KIND: &str = "message.reference.v1";
+pub const DELIVERY_INTENT_REFERENCE_KIND: &str = "delivery_intent.reference.v1";
+pub const ARTIFACT_REFERENCE_KIND: &str = "artifact.reference.v1";
+
+pub const PROBE_BODY_SCHEMA: &str = "agentfirm.remote_fabric.probe.v1";
+pub const RECONCILE_PROBE_BODY_SCHEMA: &str = "agentfirm.remote_fabric.reconcile_probe.v1";
+pub const RUNTIME_COMMAND_REFERENCE_SCHEMA: &str =
+    "agentfirm.remote_fabric.runtime_command_reference.v1";
+pub const MESSAGE_REFERENCE_SCHEMA: &str = "agentfirm.remote_fabric.message_reference.v1";
+pub const DELIVERY_INTENT_REFERENCE_SCHEMA: &str =
+    "agentfirm.remote_fabric.delivery_intent_reference.v1";
+pub const ARTIFACT_REFERENCE_SCHEMA: &str = "agentfirm.remote_fabric.artifact_reference.v1";
+
+/// Closed transport probe. Probe operations never acquire application
+/// authority and cannot carry arbitrary fields that a future reader might
+/// mistake for authorization.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FabricProbeBody {
+    pub probe: String,
+}
+
+/// Immutable reference to the Wave 4C RuntimeCommand envelope. The target
+/// application must independently resolve and verify `command_fingerprint`
+/// before asking the exact NodeDaemon generation to execute it. Fabric never
+/// interprets or mutates the command payload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeCommandReference {
+    pub runtime_command_id: String,
+    pub command_fingerprint: String,
+    pub target_execution_space_id: String,
+    pub target_node_daemon_id: String,
+    pub target_node_daemon_generation: u64,
+}
+
+/// Wave 4C Message authority remains on the source NodeDaemon. Cross-node
+/// routing therefore carries only this immutable identity + content digest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessageReference {
+    pub message_id: String,
+    pub body_digest: String,
+}
+
+/// Per-recipient routing intent. The target NodeDaemon remains the only
+/// authority allowed to create/claim/settle the canonical MessageDelivery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeliveryIntentReference {
+    pub delivery_id: String,
+    pub message_id: String,
+    pub message_body_digest: String,
+    pub recipient_identity_id: String,
+    pub target_execution_space_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactReference {
+    pub artifact_id: String,
+    pub artifact_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClosedOperationBody {
+    Probe(FabricProbeBody),
+    ReconcileProbe(FabricProbeBody),
+    RuntimeCommand(RuntimeCommandReference),
+    Message(MessageReference),
+    DeliveryIntent(DeliveryIntentReference),
+    Artifact(ArtifactReference),
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RoutedOperation {
@@ -369,6 +446,96 @@ impl RoutedOperation {
         }
         Ok(())
     }
+
+    /// Parse the operation through the frozen kind/schema registry. This is
+    /// intentionally stronger than validating the outer JSON schema: it keeps
+    /// arbitrary browser/Node JSON from becoming a future application command.
+    pub fn closed_body(&self) -> Result<ClosedOperationBody, FabricError> {
+        fn decode<T: serde::de::DeserializeOwned>(
+            value: &Value,
+            kind: &str,
+        ) -> Result<T, FabricError> {
+            serde_json::from_value(value.clone()).map_err(|error| {
+                FabricError::none(
+                    FabricErrorCode::InvalidPayload,
+                    format!("{kind} body does not match its closed schema: {error}"),
+                )
+            })
+        }
+
+        let body = match (self.kind.as_str(), self.body_schema.as_str()) {
+            (PROBE_OPERATION_KIND, PROBE_BODY_SCHEMA) => {
+                ClosedOperationBody::Probe(decode(&self.body, &self.kind)?)
+            }
+            (RECONCILE_PROBE_OPERATION_KIND, RECONCILE_PROBE_BODY_SCHEMA) => {
+                ClosedOperationBody::ReconcileProbe(decode(&self.body, &self.kind)?)
+            }
+            (RUNTIME_COMMAND_REFERENCE_KIND, RUNTIME_COMMAND_REFERENCE_SCHEMA) => {
+                ClosedOperationBody::RuntimeCommand(decode(&self.body, &self.kind)?)
+            }
+            (MESSAGE_REFERENCE_KIND, MESSAGE_REFERENCE_SCHEMA) => {
+                ClosedOperationBody::Message(decode(&self.body, &self.kind)?)
+            }
+            (DELIVERY_INTENT_REFERENCE_KIND, DELIVERY_INTENT_REFERENCE_SCHEMA) => {
+                ClosedOperationBody::DeliveryIntent(decode(&self.body, &self.kind)?)
+            }
+            (ARTIFACT_REFERENCE_KIND, ARTIFACT_REFERENCE_SCHEMA) => {
+                ClosedOperationBody::Artifact(decode(&self.body, &self.kind)?)
+            }
+            _ => {
+                return Err(FabricError::none(
+                    FabricErrorCode::SchemaIncompatible,
+                    "operation kind/body_schema pair is not in the frozen registry",
+                ))
+            }
+        };
+        validate_closed_body(self, &body)?;
+        Ok(body)
+    }
+}
+
+fn validate_closed_body(
+    operation: &RoutedOperation,
+    body: &ClosedOperationBody,
+) -> Result<(), FabricError> {
+    let non_empty = |value: &str| !value.trim().is_empty();
+    let digest =
+        |value: &str| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit());
+    let valid = match body {
+        ClosedOperationBody::Probe(body) | ClosedOperationBody::ReconcileProbe(body) => {
+            non_empty(&body.probe)
+        }
+        ClosedOperationBody::RuntimeCommand(body) => {
+            non_empty(&body.runtime_command_id)
+                && digest(&body.command_fingerprint)
+                && non_empty(&body.target_execution_space_id)
+                && operation.target_execution_space_id.as_deref()
+                    == Some(body.target_execution_space_id.as_str())
+                && non_empty(&body.target_node_daemon_id)
+                && body.target_node_daemon_generation > 0
+        }
+        ClosedOperationBody::Message(body) => {
+            non_empty(&body.message_id) && digest(&body.body_digest)
+        }
+        ClosedOperationBody::DeliveryIntent(body) => {
+            non_empty(&body.delivery_id)
+                && non_empty(&body.message_id)
+                && digest(&body.message_body_digest)
+                && non_empty(&body.recipient_identity_id)
+                && operation.target_execution_space_id.as_deref()
+                    == Some(body.target_execution_space_id.as_str())
+        }
+        ClosedOperationBody::Artifact(body) => {
+            non_empty(&body.artifact_id) && digest(&body.artifact_digest)
+        }
+    };
+    if !valid {
+        return Err(FabricError::none(
+            FabricErrorCode::InvalidPayload,
+            "closed operation body is empty, malformed, or disagrees with the routed scope",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

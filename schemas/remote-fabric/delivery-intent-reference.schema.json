@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentfirm.local/schemas/remote-fabric/delivery-intent-reference.schema.json",
+  "title": "DeliveryIntentReference",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "delivery_id", "message_id", "message_body_digest",
+    "recipient_identity_id", "target_execution_space_id"
+  ],
+  "properties": {
+    "delivery_id": { "type": "string", "minLength": 1 },
+    "message_id": { "type": "string", "minLength": 1 },
+    "message_body_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "recipient_identity_id": { "type": "string", "minLength": 1 },
+    "target_execution_space_id": { "type": "string", "minLength": 1 }
+  }
+}
