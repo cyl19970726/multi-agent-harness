@@ -5,6 +5,23 @@ links only when the current decision needs them. The placement, authority,
 lifecycle and retirement rules are defined in
 [Documentation Governance](current/documentation-governance.md).
 
+## Notion and repository boundary
+
+The [AgentFirm Home](https://app.notion.com/p/3b849a4fa3798115939cca2b0b9e6f2d)
+is the current authority for the product mental model, Architecture Decisions,
+Implementation Crosswalk, and the live Development System. The
+[Development Playbook](https://app.notion.com/p/3b849a4fa37981a990a5cf0059dcfa4a)
+defines the operating path from accepted Specification through Delivery Run,
+evidence, exact-candidate Review, merge, and closeout.
+
+This repository remains authoritative for versioned implementation facts:
+source code, schemas, executable contracts, tests, CI, release artifacts, and
+the documentation snapshot required to understand the checked-out revision.
+Repository docs should explain the shipped revision and link to Notion for
+current intent; Notion should link back to issues, PRs, SHAs, checks, and repo
+contracts for implementation proof. Do not copy live Work or Run state into
+repository prose, and do not infer shipped behavior from Notion alone.
+
 ## Directory layout
 
 ```
@@ -75,6 +92,7 @@ integrating project repository, not in the generic core docs.
 | [collaborate-as-agent-team-member](../skills/collaborate-as-agent-team-member/SKILL.md) | Provider-neutral member guidance for Work claim/start/block/submit, Work-linked conversation, native subagents, evidence, and Host acceptance. |
 | [star-workflow](../skills/star-workflow/SKILL.md) | Optional Dynamic Workflow authoring capability; not a Mission/Wave planning authority. |
 | [bootstrap-project-workflow](../skills/bootstrap-project-workflow/SKILL.md) | Current doc-sync compatibility methodology. It is no longer a mandatory Lead skill or default install. |
+| [design-notion-information-architecture](../.agents/skills/design-notion-information-architecture/SKILL.md) | Audit, redesign, migrate, and review governed Notion systems with explicit authority, reader journeys, semantic relations, cutover, and rollback. |
 | [multi-agent-system-design](../.agents/skills/multi-agent-system-design/SKILL.md) | Reusable mailbox, runtime lifecycle, permission, recovery, and dashboard-proof design guidance. |
 
 ## Split rule
