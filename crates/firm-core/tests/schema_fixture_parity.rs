@@ -6,6 +6,11 @@
 //! an independent JS-only rule set.
 
 use firm_core::agentfirm_api::TeamMessage;
+use firm_core::collaboration::{
+    CrossNodeDeliveryProjection, DelegationCancellationRequest, DelegationDecision,
+    RemoteFactPublication, RemoteWorkRef, RoutedBusinessOperation, TargetPlacementRef,
+    WorkDelegationV1,
+};
 use firm_core::{
     AgentTeam, AgentTeamRun, ExecutionNode, Mission, NodeDaemonLease, NodeProjectRegistration,
     Review, TeamSupervisorLease, Validate, Work, WorkDelegation, WorkDelegationEvent,
@@ -63,6 +68,28 @@ where
     }
 }
 
+fn assert_closed_wire_fixture_contract<T>(root: &Path)
+where
+    T: DeserializeOwned,
+{
+    for path in json_files(&root.join("valid")) {
+        let bytes = fs::read(&path).expect("read valid collaboration fixture");
+        serde_json::from_slice::<T>(&bytes)
+            .unwrap_or_else(|error| panic!("Rust rejected {}: {error}", path.display()));
+    }
+    for path in json_files(&root.join("invalid")) {
+        let accepted = fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<T>(&bytes).ok())
+            .is_some();
+        assert!(
+            !accepted,
+            "Rust accepted invalid fixture {}",
+            path.display()
+        );
+    }
+}
+
 #[test]
 fn work_fixtures_match_rust_serde_and_validate() {
     assert_fixture_contract::<Work>("work");
@@ -105,6 +132,27 @@ fn team_message_fixtures_match_canonical_rust_wire_contract() {
             path.display()
         );
     }
+}
+
+#[test]
+fn collaboration_v1_schema_fixtures_match_closed_rust_wire_contracts() {
+    let root = fixture_root().join("../collaboration/fixtures");
+    assert_closed_wire_fixture_contract::<TargetPlacementRef>(&root.join("target-placement-ref"));
+    assert_closed_wire_fixture_contract::<RemoteWorkRef>(&root.join("remote-work-ref"));
+    assert_closed_wire_fixture_contract::<WorkDelegationV1>(&root.join("work-delegation-v1"));
+    assert_closed_wire_fixture_contract::<DelegationDecision>(&root.join("delegation-decision"));
+    assert_closed_wire_fixture_contract::<DelegationCancellationRequest>(
+        &root.join("delegation-cancellation-request"),
+    );
+    assert_closed_wire_fixture_contract::<RemoteFactPublication>(
+        &root.join("remote-fact-publication"),
+    );
+    assert_closed_wire_fixture_contract::<CrossNodeDeliveryProjection>(
+        &root.join("cross-node-delivery-projection"),
+    );
+    assert_closed_wire_fixture_contract::<RoutedBusinessOperation>(
+        &root.join("routed-business-operation"),
+    );
 }
 
 #[test]

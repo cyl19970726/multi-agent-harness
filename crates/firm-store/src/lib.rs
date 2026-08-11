@@ -33,6 +33,9 @@ use thiserror::Error;
 mod trust_kernel;
 pub use trust_kernel::*;
 
+mod collaboration;
+pub use collaboration::*;
+
 mod company_os;
 pub mod docs_v2;
 pub use company_os::{
