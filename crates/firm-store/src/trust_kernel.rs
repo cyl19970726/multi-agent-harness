@@ -5042,6 +5042,7 @@ impl HarnessStore {
                 None,
             ));
         }
+        crate::validate_message_collaboration_scope(&message)?;
         let subscriptions = self.fabric_message_subscriptions(&context.execution_space_id)?;
         let sessions = self.fabric_agent_sessions(&context.execution_space_id)?;
         let memberships = self.fabric_team_memberships(&context.execution_space_id)?;

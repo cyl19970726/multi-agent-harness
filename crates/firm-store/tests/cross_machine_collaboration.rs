@@ -13,7 +13,8 @@ use firm_core::collaboration::{
 };
 use firm_store::{
     canonical_json_fingerprint, persist_verified_remote_message_replica,
-    project_cross_node_deliveries, queue_remote_message_transfer, CollaborationApplicationService,
+    project_cross_node_deliveries, queue_remote_message_transfer,
+    validate_message_collaboration_scope, CollaborationApplicationService,
     CollaborationDelegationFilter, CollaborationFabricPort, CollaborationMutationContext,
     HarnessStore, ProposeDelegationRequest, RemoteMessageReplicaExpectation,
     RemoteMessageReplicaPort, ResolvedCollaborationAuthority,
@@ -1117,6 +1118,14 @@ fn message_projection_preserves_per_recipient_partial_delivery_truth() {
         created_at: "2026-08-11T00:00:00Z".into(),
     };
     message.content_fingerprint = message_fingerprint(&message);
+    validate_message_collaboration_scope(&message).expect("exact source/target scope");
+    let mut forged_scope = message.clone();
+    forged_scope
+        .collaboration_scope
+        .as_mut()
+        .unwrap()
+        .target_team_id = "team-a".into();
+    assert!(validate_message_collaboration_scope(&forged_scope).is_err());
     let replica = persisted_replica(&message);
     let deliveries = vec![
         canonical_delivery(

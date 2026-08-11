@@ -172,6 +172,39 @@ fn immutable_message_fingerprint(message: &Message) -> String {
     }))
 }
 
+pub fn validate_message_collaboration_scope(message: &Message) -> StoreResult<()> {
+    let Some(scope) = message.collaboration_scope.as_ref() else {
+        return Ok(());
+    };
+    let source_work_valid = scope.source_work_ref.as_ref().is_none_or(|source| {
+        source.execution_space_id == message.source_execution_space_id
+            && source.node_id == message.source_node_id
+            && source.team_id == scope.source_team_id
+            && source.placement_generation == 1
+            && message.work_id.as_ref() == Some(&source.work_id)
+    });
+    let target_work_valid = scope.target_work_ref.as_ref().is_none_or(|target| {
+        target.team_id == scope.target_team_id && target.placement_generation == 1
+    });
+    if scope.source_team_id.trim().is_empty()
+        || scope.target_team_id.trim().is_empty()
+        || scope.source_team_id == scope.target_team_id
+        || message.team_id.as_ref() != Some(&scope.source_team_id)
+        || !source_work_valid
+        || !target_work_valid
+        || (scope.expected_delegation_revision.is_some() && scope.delegation_id.is_none())
+    {
+        return Err(collaboration_error(
+            FabricErrorCode::MessageRecipientUnauthorized,
+            "Message CollaborationScope is outside the exact source Team/Work and target Team authority",
+            "message",
+            &message.id,
+            None,
+        ));
+    }
+    Ok(())
+}
+
 /// Resolve, authenticate and durably persist one immutable Message replica on
 /// the target Node. A digest-only transfer is impossible by construction.
 pub fn persist_verified_remote_message_replica<P: RemoteMessageReplicaPort>(
