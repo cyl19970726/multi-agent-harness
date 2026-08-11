@@ -746,6 +746,28 @@ struct HttpRequest {
     body: Vec<u8>,
 }
 
+const STANDARD_FABRIC_HTTP_BODY_LIMIT: usize = 1024 * 1024;
+const MAX_FABRIC_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
+// Artifact completion uses a closed JSON envelope with hexadecimal content.
+// Reserve bounded space for the signed capability and JSON framing without
+// widening any other Host REST endpoint beyond the normal 1 MiB limit.
+const ARTIFACT_COMPLETE_HTTP_BODY_LIMIT: usize = MAX_FABRIC_ARTIFACT_BYTES * 2 + 256 * 1024;
+
+fn is_artifact_complete_path(path: &str) -> bool {
+    path.strip_prefix("/v1/fabric/artifacts/")
+        .and_then(|rest| rest.strip_suffix("/complete"))
+        .is_some_and(|artifact_id| !artifact_id.is_empty() && !artifact_id.contains('/'))
+}
+
+fn fabric_http_body_limit(method: &str, target: &str) -> usize {
+    let path = target.split('?').next().unwrap_or_default();
+    if method == "POST" && is_artifact_complete_path(path) {
+        ARTIFACT_COMPLETE_HTTP_BODY_LIMIT
+    } else {
+        STANDARD_FABRIC_HTTP_BODY_LIMIT
+    }
+}
+
 fn read_http_request(mut stream: TcpStream) -> CliResult<HttpRequest> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut reader = BufReader::new(stream.try_clone()?);
@@ -787,10 +809,11 @@ fn read_http_request(mut stream: TcpStream) -> CliResult<HttpRequest> {
                 .map_err(|_| CliError::Usage("invalid Content-Length".into()))?;
         }
     }
-    if content_length > 1024 * 1024 {
-        return Err(CliError::Usage(
-            "Remote Fabric REST body exceeds 1 MiB".into(),
-        ));
+    let body_limit = fabric_http_body_limit(&method, &target);
+    if content_length > body_limit {
+        return Err(CliError::Usage(format!(
+            "Remote Fabric REST body exceeds endpoint limit of {body_limit} bytes"
+        )));
     }
     let mut body = vec![0; content_length];
     reader.read_exact(&mut body)?;
@@ -1492,6 +1515,27 @@ fn fabric_error(error: FabricError) -> CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn artifact_complete_body_limit_matches_the_frozen_64_mib_contract_only() {
+        assert_eq!(
+            fabric_http_body_limit("POST", "/v1/fabric/artifacts/artifact-a/complete"),
+            ARTIFACT_COMPLETE_HTTP_BODY_LIMIT
+        );
+        assert!(ARTIFACT_COMPLETE_HTTP_BODY_LIMIT > MAX_FABRIC_ARTIFACT_BYTES * 2);
+        assert_eq!(
+            fabric_http_body_limit("POST", "/v1/fabric/artifacts/initiate"),
+            STANDARD_FABRIC_HTTP_BODY_LIMIT
+        );
+        assert_eq!(
+            fabric_http_body_limit("GET", "/v1/fabric/artifacts/artifact-a/complete"),
+            STANDARD_FABRIC_HTTP_BODY_LIMIT
+        );
+        assert_eq!(
+            fabric_http_body_limit("POST", "/v1/fabric/artifacts/a/nested/complete"),
+            STANDARD_FABRIC_HTTP_BODY_LIMIT
+        );
+    }
 
     #[test]
     fn host_rest_enrollment_uses_csr_possession_and_one_atomic_consumption() {
