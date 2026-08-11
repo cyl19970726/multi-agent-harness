@@ -1264,3 +1264,88 @@ fn draining_rejects_new_target_work_but_preserves_inflight_completion() {
         )
         .expect("inflight operation reaches terminal state during drain");
 }
+
+#[test]
+fn target_persistence_rejects_unresolved_route_sequence_gaps() {
+    let root = TestRoot::new("route-ordering");
+    let store = FabricStore::open(root.path()).expect("open store");
+    let keys = InMemoryArtifactKeyBackend::default();
+    keys.insert(COMPANY, [7; 32]);
+    let control = ControlPlane::new(COMPANY, "control-1", &store, &keys, [9; 32]);
+    let lease = control.acquire_lease("cp-lease", 0, 1).expect("lease");
+    enroll_nodes(&control, lease.control_plane_generation);
+    let source_hello = hello("node-a", "gateway-a", "cert-a", &fingerprint("node-a"));
+    let source = connect_node(
+        &control,
+        lease.control_plane_generation,
+        &source_hello,
+        &signing_key("node-a"),
+        30,
+    )
+    .expect("source connect");
+    let target_hello = hello("node-b", "gateway-b", "cert-b", &fingerprint("node-b"));
+    let target = connect_node(
+        &control,
+        lease.control_plane_generation,
+        &target_hello,
+        &signing_key("node-b"),
+        30,
+    )
+    .expect("target connect");
+    let first = operation(source.gateway_generation, lease.control_plane_generation);
+    let first_digest = json_digest(&first).expect("first digest");
+    let (_, first_attempt, _, _) = control
+        .accept_operation(lease.control_plane_generation, first.clone(), 100)
+        .expect("first route");
+    let mut second = first.clone();
+    second.id = "operation-2".into();
+    second.idempotency_key = "idempotency-2".into();
+    let second_digest = json_digest(&second).expect("second digest");
+    let (_, second_attempt, _, _) = control
+        .accept_operation(lease.control_plane_generation, second.clone(), 101)
+        .expect("second route");
+    assert_eq!(second_attempt.route_seq, first_attempt.route_seq + 1);
+    let before = store.snapshot().expect("snapshot");
+    let gap = control
+        .persist_target_inbox(
+            lease.control_plane_generation,
+            "node-b",
+            target.gateway_generation,
+            &second.id,
+            &second_digest,
+            second_attempt.route_seq,
+            102,
+        )
+        .expect_err("seq=2 cannot pass unresolved seq=1");
+    assert_eq!(gap.code, FabricErrorCode::ExpectedRevisionConflict);
+    assert_eq!(store.snapshot().expect("snapshot"), before);
+    control
+        .persist_target_inbox(
+            lease.control_plane_generation,
+            "node-b",
+            target.gateway_generation,
+            &first.id,
+            &first_digest,
+            first_attempt.route_seq,
+            103,
+        )
+        .expect("persist seq=1");
+    control
+        .persist_target_inbox(
+            lease.control_plane_generation,
+            "node-b",
+            target.gateway_generation,
+            &second.id,
+            &second_digest,
+            second_attempt.route_seq,
+            104,
+        )
+        .expect("persist seq=2 after seq=1");
+    assert_eq!(
+        store
+            .snapshot()
+            .expect("snapshot")
+            .persisted_route_sequences["node-b"],
+        second_attempt.route_seq
+    );
+}

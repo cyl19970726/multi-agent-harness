@@ -183,10 +183,16 @@ impl CompanyNode {
     pub fn connection_status(
         &self,
         lease: Option<&NodeGatewayLease>,
+        current_control_plane_generation: u64,
         now_unix_ms: u64,
     ) -> NodeConnectionStatus {
         match lease {
-            Some(lease) if lease.expires_at_unix_ms > now_unix_ms => NodeConnectionStatus::Online,
+            Some(lease)
+                if lease.expires_at_unix_ms > now_unix_ms
+                    && lease.control_plane_generation == current_control_plane_generation =>
+            {
+                NodeConnectionStatus::Online
+            }
             Some(_) => NodeConnectionStatus::Stale,
             None => NodeConnectionStatus::Offline,
         }

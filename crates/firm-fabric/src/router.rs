@@ -265,7 +265,7 @@ pub(crate) fn persist_target_inbox(
                 "target persistence acknowledgement has no matching route attempt",
             )
         })?;
-    let attempt = state.attempts.get_mut(&attempt_id).ok_or_else(|| {
+    let attempt = state.attempts.get(&attempt_id).ok_or_else(|| {
         FabricError::none(
             FabricErrorCode::StoreUnavailable,
             "routed operation has no attempt",
@@ -298,6 +298,39 @@ pub(crate) fn persist_target_inbox(
         )?;
         return Ok((existing.clone(), receipt, true));
     }
+    let last_persisted = state
+        .persisted_route_sequences
+        .get(node_id)
+        .copied()
+        .unwrap_or(0);
+    if route_seq <= last_persisted {
+        return Err(FabricError::none(
+            FabricErrorCode::IdempotencyConflict,
+            "route sequence was already passed by another persisted operation",
+        ));
+    }
+    if route_seq > last_persisted.saturating_add(1) {
+        let gap_is_proven_effect_none = (last_persisted.saturating_add(1)..route_seq).all(|gap| {
+            state.attempts.values().any(|candidate| {
+                candidate.target_node_id == node_id
+                    && candidate.route_seq == gap
+                    && candidate.state == RouteAttemptState::Ended
+                    && candidate.effect == EffectCertainty::None
+            })
+        });
+        if !gap_is_proven_effect_none {
+            return Err(FabricError::none(
+                FabricErrorCode::ExpectedRevisionConflict,
+                "target inbox cannot persist a route sequence before unresolved predecessors",
+            ));
+        }
+    }
+    let attempt = state.attempts.get_mut(&attempt_id).ok_or_else(|| {
+        FabricError::none(
+            FabricErrorCode::StoreUnavailable,
+            "routed operation attempt disappeared before persistence",
+        )
+    })?;
     attempt.state = RouteAttemptState::TargetPersisted;
     attempt.effect = EffectCertainty::None;
     let inbox = LocalRemoteInbox {
@@ -334,6 +367,9 @@ pub(crate) fn persist_target_inbox(
         schema_version: FABRIC_SCHEMA_VERSION.into(),
     };
     state.inboxes.insert(operation_id.into(), inbox.clone());
+    state
+        .persisted_route_sequences
+        .insert(node_id.into(), route_seq);
     state.receipts.insert(receipt.id.clone(), receipt.clone());
     Ok((inbox, receipt, false))
 }

@@ -47,6 +47,7 @@ pub struct FabricState {
     pub inboxes: BTreeMap<String, LocalRemoteInbox>,
     pub outboxes: BTreeMap<String, LocalRemoteOutbox>,
     pub route_sequences: BTreeMap<String, u64>,
+    pub persisted_route_sequences: BTreeMap<String, u64>,
     pub rate_windows: BTreeMap<String, FabricRateWindow>,
     pub artifacts: BTreeMap<String, RemoteArtifactManifest>,
     pub encrypted_artifacts: BTreeMap<String, EncryptedArtifact>,
