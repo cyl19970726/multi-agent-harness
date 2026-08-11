@@ -715,7 +715,7 @@ fn serve_host_http(
             }
             Err(error) => return Err(error.into()),
         };
-        let request = match read_http_request(stream) {
+        let request = match read_http_request(stream, trusted_origin, host_token) {
             Ok(request) => request,
             Err(error) => {
                 eprintln!("Remote Fabric Host REST request rejected: {error}");
@@ -768,7 +768,34 @@ fn fabric_http_body_limit(method: &str, target: &str) -> usize {
     }
 }
 
-fn read_http_request(mut stream: TcpStream) -> CliResult<HttpRequest> {
+fn authorized_fabric_http_body_limit(
+    method: &str,
+    target: &str,
+    headers: &std::collections::BTreeMap<String, String>,
+    trusted_origin: &str,
+    host_token: &str,
+) -> usize {
+    let requested_limit = fabric_http_body_limit(method, target);
+    let large_body_authorized = requested_limit > STANDARD_FABRIC_HTTP_BODY_LIMIT
+        && headers
+            .get("authorization")
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .is_some_and(|presented| constant_time_secret_eq(presented, host_token))
+        && headers
+            .get("origin")
+            .is_none_or(|origin| origin == trusted_origin);
+    if large_body_authorized {
+        requested_limit
+    } else {
+        STANDARD_FABRIC_HTTP_BODY_LIMIT
+    }
+}
+
+fn read_http_request(
+    mut stream: TcpStream,
+    trusted_origin: &str,
+    host_token: &str,
+) -> CliResult<HttpRequest> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
@@ -809,7 +836,8 @@ fn read_http_request(mut stream: TcpStream) -> CliResult<HttpRequest> {
                 .map_err(|_| CliError::Usage("invalid Content-Length".into()))?;
         }
     }
-    let body_limit = fabric_http_body_limit(&method, &target);
+    let body_limit =
+        authorized_fabric_http_body_limit(&method, &target, &headers, trusted_origin, host_token);
     if content_length > body_limit {
         return Err(CliError::Usage(format!(
             "Remote Fabric REST body exceeds endpoint limit of {body_limit} bytes"
@@ -1623,6 +1651,44 @@ mod tests {
             .expect_err("browser identity field fails closed")
             .code,
             FabricErrorCode::InvalidPayload
+        );
+        let artifact_path = "/v1/fabric/artifacts/artifact-a/complete";
+        let trusted_origin = "https://company.example";
+        let host_token = "host-secret-a";
+        let mut headers = std::collections::BTreeMap::new();
+        assert_eq!(
+            authorized_fabric_http_body_limit(
+                "POST",
+                artifact_path,
+                &headers,
+                trusted_origin,
+                host_token,
+            ),
+            STANDARD_FABRIC_HTTP_BODY_LIMIT,
+            "unauthenticated local callers never receive the large allocation budget"
+        );
+        headers.insert("authorization".into(), "Bearer host-secret-a".into());
+        headers.insert("origin".into(), trusted_origin.into());
+        assert_eq!(
+            authorized_fabric_http_body_limit(
+                "POST",
+                artifact_path,
+                &headers,
+                trusted_origin,
+                host_token,
+            ),
+            ARTIFACT_COMPLETE_HTTP_BODY_LIMIT
+        );
+        headers.insert("origin".into(), "https://malicious.example".into());
+        assert_eq!(
+            authorized_fabric_http_body_limit(
+                "POST",
+                artifact_path,
+                &headers,
+                trusted_origin,
+                host_token,
+            ),
+            STANDARD_FABRIC_HTTP_BODY_LIMIT
         );
     }
 
