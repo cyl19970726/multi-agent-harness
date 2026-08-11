@@ -11,5 +11,11 @@
     "expected_viewport_must_match": true,
     "minimum_implementation_iterations": 2
   },
-  "cases": []
+  "cases": [
+    {"id":"populated-desktop","viewport":{"width":1440,"height":1000},"artifact":"docs/design/agent-team-war-room-roleviews/implemented/war-room-host--1440x1000.png","status":"captured"},
+    {"id":"populated-tablet","viewport":{"width":900,"height":1180},"artifact":"docs/design/agent-team-war-room-roleviews/implemented/war-room-host--900x1180.png","status":"captured"},
+    {"id":"populated-mobile","viewport":{"width":390,"height":844},"artifact":"docs/design/agent-team-war-room-roleviews/implemented/war-room-host--390x844.png","status":"captured"},
+    {"id":"overflow-320","viewport":{"width":320,"height":844},"artifact":"docs/design/agent-team-war-room-roleviews/implemented/war-room-host--320x844.png","status":"captured"},
+    {"id":"useful-empty-desktop","viewport":{"width":1440,"height":1000},"artifact":"docs/design/agent-team-war-room-roleviews/implemented/war-room-empty--1440x1000.png","status":"captured"}
+  ]
 }
