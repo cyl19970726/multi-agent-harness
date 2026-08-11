@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "workstream": "agent-team-war-room-roleviews",
+  "artifact_policy": {
+    "expected": "durable",
+    "selected_comparisons": "durable",
+    "raw_browser_runs": "/Users/hhh0x/.codex/worktrees/01d7/multi-agent-harness/.visual-evidence/agent-team-war-room-roleviews"
+  },
+  "fidelity_policy": {
+    "required_for_p0": true,
+    "expected_viewport_must_match": true,
+    "minimum_implementation_iterations": 2
+  },
+  "cases": []
+}

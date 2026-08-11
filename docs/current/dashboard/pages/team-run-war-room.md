@@ -1,7 +1,7 @@
 # Agent Team Workbench Page Spec
 
 ```text
-status: implemented baseline; Works visual and responsive closure in progress
+status: authenticated RoleView authority implemented; mature composition restoration tracked by issue #444
 owner_role: product-design
 canonical_for: one Mission-owned AgentTeamRun
 route_or_surface: Agent Teams -> TeamRun
@@ -17,7 +17,9 @@ Team: what Work exists, who owns it, what is ready or blocked, what needs
 review, what questions need
 answers, which native sessions can be resumed, and what evidence has arrived.
 
-The page must remain useful when the same TeamRun spans several Host-plan Waves.
+The page must remain useful while the same TeamRun spans several append-only
+Mission Log judgments and replans. Runs created before ADR 0051 may also retain
+read-only historical Wave navigation context.
 
 ## Canonical Semantics
 
@@ -48,8 +50,8 @@ events, turns, or thinking. A provider `completed` lifecycle update is not an
 answer, approval, or semantic result.
 
 Every TeamRun belongs to its required AgentTeam, and every AgentTeam belongs to
-exactly one Mission. A selected Wave is navigation and planning context only;
-it never owns the TeamRun.
+exactly one Mission. A selected historical Wave is navigation context only; it
+never owns the TeamRun or accepts new Host judgment.
 
 The Host Agent that created and coordinates the team is the Team Lead. The page
 must show that identity separately from the member roster. `host` means the
@@ -62,11 +64,14 @@ member with its own native-session binding.
 
 Use the shared Workbench shell with the compact execution rail, a primary Works
 surface, Activity conversation, Members capacity, and flexible context modules.
+The active page composes authenticated `TeamWorkspace` shared truth with
+authenticated `HostConsole` Host-only truth. It never reconstructs this page
+from the global snapshot.
 
 ```text
 +----------------------+--------------------------------------+------------------+
 | Compact exec rail    | Team header                          | Mission context  |
-|                      | definition · Lead · run · actions    | Current Wave     |
+|                      | definition · Lead · run · actions    | Mission Log      |
 |                      +--------------------------------------+ Selected member  |
 |                      | Works | Activity | Members           | Runtime          |
 |                      | Assigned · Unassigned · Review      | Artifacts        |
@@ -118,11 +123,89 @@ assign/claim/review changes, questions, answers and linked discussion; the compl
 remains one click away. Large message bodies use the safe shared Markdown
 renderer rather than displaying raw Markdown syntax.
 
+## Layout Contract
+
+### Desktop — 1440x1000
+
+```text
++----------+-----------------------------------------------+-------------------+
+| product  | Team identity · run · Supervisor · pressure  | Mission + Log     |
+| rail     +-----------------------------------------------+ Attempt/runtime   |
+|          | Works | Activity | Members                    | Selected member   |
+|          +-----------------------------------------------+ Artifacts/gates   |
+|          | primary board/list or source-aware timeline   |                   |
+|          | selected Work drawer within center surface    | independent scroll|
+|          +-----------------------------------------------+                   |
+|          | Activity composer (only when Activity active) | provenance        |
++----------+-----------------------------------------------+-------------------+
+```
+
+- The center surface is visually dominant and owns its long-content scroll.
+- The 272–320px context rail remains factual and independently reachable.
+- Works/Activity/Members tabs and current pressure remain above the fold.
+- The selected Work uses a non-modal drawer inside the center surface; it does
+  not replace entity deep links.
+
+### Tablet — 900x1180
+
+```text
++--------------------------------------------------------------------------+
+| compact shell · Team identity · Supervisor/pressure · context disclosure |
++--------------------------------------------------------------------------+
+| Works | Activity | Members                                               |
++--------------------------------------------------------------------------+
+| compact columns or grouped Work list / source-aware timeline             |
+| selected Work inline panel                                               |
++--------------------------------------------------------------------------+
+| Mission Log · runtime · member context inline or accessible side sheet   |
++--------------------------------------------------------------------------+
+```
+
+- Product rail collapses; context never disappears silently.
+- One page scroll owner is preferred. A side sheet traps focus and restores it
+  to its disclosure control.
+- Work mutations retain non-drag controls and full disabled reasons.
+
+### Mobile — 390x844 and 320x720 overflow gate
+
+```text
++--------------------------------------+
+| compact Team header · pressure       |
+| Supervisor status · context button   |
++--------------------------------------+
+| Works | Activity | Members           |
++--------------------------------------+
+| grouped status list / timeline       |
+| 44px row and action targets          |
++--------------------------------------+
+| collapsed composer when applicable   |
++--------------------------------------+
+| Work/context bottom sheet on demand  |
++--------------------------------------+
+```
+
+- No horizontal Kanban. Works become grouped status lists.
+- Context and selected Work use bottom sheets with Escape/Back and focus
+  restoration. The Activity composer starts collapsed and never covers rows.
+- At 320px, long ids truncate or wrap intentionally and
+  `scrollWidth === clientWidth`.
+
+### Scroll and state ownership
+
+- Initial loading shows an identity-preserving skeleton.
+- Refetch preserves last-good content, marks provenance stale and disables
+  mutations until a current authenticated view arrives.
+- Empty Team state explains member/runtime readiness and offers only actions
+  returned by HostConsole; it is never a blank main canvas.
+- Partial-source, unavailable Supervisor/native session, CAS conflict and
+  authorization failure remain distinct visible states.
+
 ## Context Modules
 
 1. **MissionCompact** — optional Mission relation and open-Mission action.
-2. **CurrentHostPlan** — selected/latest Wave context excerpt for orientation;
-   never claims runtime ownership.
+2. **CurrentHostJudgment** — latest append-only Mission Log entries for
+   orientation. Historical Wave context may be shown read-only; it never owns
+   runtime or accepts new judgment.
 3. **SelectedMember** — identity, active/queued Works, capability, message, steer,
    interrupt, resume, and open-member actions supported by the real adapter.
 4. **Runtime** — worktree, native session id, provider mode/version,
@@ -163,13 +246,14 @@ changes, accepted, released, or cancelled Work.
   delivery/ACK lineage, and answer PendingInteractions.
 - Answer Lead Inbox items with inherited correlation and causation. The
   Dashboard may author Host/operator messages; it never impersonates a member.
-- Open Mission, current Wave context, Member Focus, artifact, or native-session
+- Open Mission/Log context, optional historical Wave, Member Focus, artifact, or native-session
   summary.
 - Complete or stop the TeamRun only through a real acknowledged lifecycle
   transition.
 
-Wave creation/advance occurs from Mission Canvas. It never implicitly stops or
-restarts this TeamRun.
+Mission judgment is appended through the canonical Mission Log contract. New
+Wave creation/advance is retired by ADR 0051. Reading a historical Wave never
+stops or restarts this TeamRun.
 
 ## States And Responsive Behavior
 
@@ -181,8 +265,7 @@ restarts this TeamRun.
   source.
 - Completed/stopped: coordination history is read-only, but any still-live
   member runtime retains an explicit Host Close action. Resume/new-run choices
-  follow the provider/session contract; do not imply a Mission or Wave
-  completed.
+  follow the provider/session contract; do not imply the Mission closed.
 - **Works responsive surface:** desktop uses Kanban or a windowed dense list;
   tablet uses compact columns or grouped list; mobile uses grouped status lists
   and a Work bottom sheet, never horizontal Kanban. Drag/drop is optional and
@@ -201,11 +284,13 @@ restarts this TeamRun.
   denominator is omitted until the selected runtime ceiling is durable on the
   TeamRun. Provider-account capacity remains separately labelled per member;
   absent data means `not observed`, never `available`.
-- Navigation preserves filters, selected member, scroll, Mission id, selected
-  Wave id, TeamRun id, and project id across Team → Member → Team deep links.
-- A canonical MCP Dashboard URL for a Mission-scoped run includes the current
-  Host-plan Wave as cold-link navigation context. This does not attach runtime
-  ownership to that Wave and may change when the Host advances its plan.
+- Navigation preserves filters, selected member, scroll, Mission id, optional
+  historical Wave id, TeamRun id, and project id across Team → Member → Team
+  deep links.
+- A canonical Dashboard URL for a Mission-scoped run includes the Mission and
+  TeamRun. It includes a historical Wave only when that row already exists and
+  the user opened the Team from it; Mission Log revisions do not rewrite the
+  run URL.
 
 ## Screenshot And UX Acceptance
 
@@ -215,7 +300,7 @@ captures for Works, Activity, and Members at desktop `1440x1000`, tablet
 `900x1180`, mobile `390x844`, plus a `320px` overflow check.
 
 Works acceptance shows the shared shell, assigned/unassigned ownership with
-portraits, Kanban/list, Mission/Wave orientation, and the selected Work drawer.
+portraits, Kanban/list, Mission/Mission-Log orientation, and the selected Work drawer.
 Activity acceptance shows source-aware rendered Markdown conversation, typed
 sender -> recipient routes, events, delivery state, and composer. Members
 acceptance shows factual capacity and runtime pressure. Across all views verify:
@@ -225,7 +310,7 @@ acceptance shows factual capacity and runtime pressure. Across all views verify:
 - PendingInteraction answer, chat, steer, interrupt, Close, and resume states
   match real adapter acknowledgements;
 - Work submissions, Markdown discussion and tool activity render with suitable icons and density;
-- the same TeamRun remains visible after Mission Wave advance;
+- the same TeamRun remains visible after a new Mission Log judgment/replan;
 - empty, loading, error, unavailable-native-session, and long-stream behavior;
 - actual screenshot against the approved expected reference.
 
@@ -234,7 +319,8 @@ data, filtered empty, pending mutation, claim lost, version conflict, delivery
 queued/uncertain/failed, busy member, crash/disconnect, closed, retired, and
 Supervisor-generation change. A 1,000-Work/100-Member fixture proves stable
 sorting, bounded DOM/windowing, visible totals/load-more, and restorable URL
-state for view, filters, sort, selected Work, scroll anchor, Mission/Wave, and
+state for view, filters, sort, selected Work, scroll anchor, Mission/optional
+historical Wave, and
 cursor.
 
 Accessibility requires semantic tabs, keyboard board/list and non-drag action
@@ -248,11 +334,12 @@ disclosure; multi-recipient `+N` exposes the full accessible list.
 ## Explicit Boundaries
 
 - A TeamRun is not a Agent Membership or OrgUnit.
-- Work owns responsibility; Message carries conversation; Wave prose explains Host intent.
+- Work owns responsibility; Message carries conversation; Mission Log prose
+  explains current Host intent. Historical Wave prose is read-only context.
 - Provider-native subagents are observations unless a real orchestrated
   lifecycle exists.
 - A member-to-member message is allowed inside the same TeamRun and remains
   visible to the Lead. It is queued for the peer's next eligible round rather
   than interrupting the current turn.
-- TeamRun completion does not advance a Wave; Wave advance does not complete a
-  TeamRun.
+- TeamRun completion does not close a Mission; appending Mission Log judgment
+  does not complete a TeamRun.

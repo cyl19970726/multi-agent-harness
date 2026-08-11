@@ -548,7 +548,7 @@ try {
   await page.getByText("Team Workspace", {exact:true}).waitFor();
   await waitForText(page, "work-role-live");
   check(true, "real Team Workspace RoleView is populated before Host navigation");
-  await page.getByRole("button", {name:"Open Host Console"}).click();
+  await page.getByRole("button", {name:"Host Console"}).click();
   await page.getByRole("heading", {name:"Host Console"}).waitFor();
   await page.getByRole("button", {name:"assign work",exact:true}).click();
   await page.getByLabel("MemberRun ID").fill(liveMemberRunId);

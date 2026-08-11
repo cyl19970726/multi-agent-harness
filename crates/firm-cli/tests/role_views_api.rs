@@ -335,6 +335,13 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     let (status, refreshed) =
         serve.get_json_with_headers(&view_route, &[("X-AgentFirm-Token", TOKEN)]);
     assert_eq!(status, 200, "Host RoleView: {refreshed}");
+    assert_eq!(refreshed["data"]["mission_context"]["id"], mission_id);
+    assert!(refreshed["data"]["mission_context"]["log"].is_array());
+    assert!(refreshed["data"]["host_inbox"].is_array());
+    assert!(refreshed["data"]["member_runtime"].is_array());
+    assert!(refreshed["data"]["runtime_recovery"].is_array());
+    assert_eq!(refreshed["data"]["pressure_summary"]["ready_work"], 1);
+    assert_eq!(refreshed["data"]["pressure_summary"]["total_members"], 3);
     assert!(refreshed["data"]["work_queues"]["unassigned"]
         .as_array()
         .is_some_and(|items| items
@@ -1271,6 +1278,49 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         .is_some_and(|items| items
             .iter()
             .any(|work| work["work_id"] == "work-store-live-1")));
+    assert_eq!(
+        team_view["data"]["team"]["display_name"],
+        "Role action team"
+    );
+    assert_eq!(team_view["data"]["team"]["host_agent_id"], host_id);
+    assert_eq!(team_view["data"]["team"]["viewer_role"], "host");
+    assert_eq!(team_view["data"]["team"]["latest_run"]["id"], run_id);
+    let projected_work = team_view["data"]["works"]
+        .as_array()
+        .and_then(|works| {
+            works
+                .iter()
+                .find(|work| work["work_id"] == "work-store-live-1")
+        })
+        .expect("projected Work");
+    assert_eq!(projected_work["title"], "Close the local product loop");
+    assert_eq!(projected_work["claim_mode"], "team_claim");
+    assert!(projected_work["eligible_member_ids"].is_array());
+    assert!(projected_work["artifact_refs"].is_array());
+    assert!(projected_work["latest_event"].is_object());
+    assert!(team_view["data"]["members"]
+        .as_array()
+        .is_some_and(|members| members.iter().all(|member| {
+            member["display_name"].is_string()
+                && member["active_work_count"].is_u64()
+                && member["queued_work_count"].is_u64()
+                && member["review_work_count"].is_u64()
+                && member["blocked_work_count"].is_u64()
+        })));
+    assert!(team_view["data"]["messages"]
+        .as_array()
+        .is_some_and(|messages| messages
+            .iter()
+            .all(|message| { message["body"].is_string() && message["deliveries"].is_array() })));
+    assert!(team_view["data"]["activity"].is_array());
+    assert!(team_view["data"]["activity_truncated"].is_boolean());
+    assert_eq!(
+        team_view["data"]["pressure_summary"]["total_members"].as_u64(),
+        team_view["data"]["members"]
+            .as_array()
+            .map(|members| members.len() as u64)
+    );
+    assert!(team_view["data"]["pressure_summary"]["ready_work"].is_u64());
     let (status, operator) =
         serve.get_json_with_headers(&operator_route, &[("X-AgentFirm-Token", OPERATOR_TOKEN)]);
     assert_eq!(status, 200, "Operator RoleView: {operator}");
