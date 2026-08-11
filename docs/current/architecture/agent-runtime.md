@@ -187,6 +187,39 @@ read-only and is excluded from current projections and migration.
 
 ## Product views and clients
 
+## Remote Node Fabric
+
+One logical Company Control Plane coordinates machines, while each machine has
+exactly one ExecutionNode/CompanyNode identity and one current NodeDaemonLease.
+`CompanyNode.id == ExecutionNode.id`; a NodeGatewayLease is only a child of the
+exact current NodeDaemonLease generation and never a second machine authority.
+Nodes initiate outbound TLS 1.3 mutual-authenticated WSS connections to the
+Control Plane. They do not expose an inbound collaboration listener and do not
+connect directly to sibling Nodes.
+
+`FabricStore` operations, attempts and receipts are the sole cross-Node route
+truth. A cross-Node `MessageRouteJournal` may exist only as a read-only
+projection. It is not written in parallel and cannot drive replay, delivery or
+application claims. A `RouteAttempt` proves transport only. Application effect
+is `none | not_applied | applied | unknown` and only a generation-fenced target
+result/receipt may assert it.
+
+A routed message carries either its complete canonical immutable Message
+envelope or an authenticated content-addressed reference. The target verifies
+and persists that exact Message before creating the existing MessageDelivery.
+A routed RuntimeCommand carries the complete canonical command envelope; the
+target resolves it through the existing NodeDaemon service and derives the
+terminal effect from the canonical RuntimeCommand record. Fabric never becomes
+a second Message, Delivery, RuntimeCommand, Work or provider-session Store.
+
+Source authority is closed to `node | control_plane`; canonical bytes are
+versioned. Exact replay is fingerprint-bound. Unknown effect, stale gateway or
+NodeDaemon generation, wrong Company/Node/Execution Space, and incompatible
+schema/protocol/capability all fail closed without business or provider side
+effects. See `docs/current/architecture/remote-node-fabric.md` for the complete
+contract and `docs/current/operations/remote-fabric-operations.md` for the
+operator procedure.
+
 Server-built RoleViews project current canonical state. Browsers refetch after
 SSE invalidation; they do not fold raw ledgers or invent lifecycle truth.
 Current inboxes use canonical MessageDelivery and SubscriptionCursor. Current

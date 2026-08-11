@@ -6,14 +6,13 @@ use firm_core::agentfirm_api::{
     CanonicalWorkDelivery, ControlCommandEnvelope, DeliveryClaim, DeliveryReconcileOutcome,
     FailureAnalysis, GateEvaluation, GateRequirement, GateRequirementSource, GateVerdict,
     GateWaiver, GateWaiverState, MemberCoordinationStatus, MemberRun, MemberRuntimeStatus,
-    MemberWorkspaceBinding, Message, MessageRecipientKind, MessageRouteJournal,
-    MessageSubscription, MessageSubscriptionKind, MessageSubscriptionStatus, MutationContext,
-    ProviderInvocation, ProviderReceipt, RouteJournalStatus, RuntimeCommandKind,
-    RuntimeCommandRecord, RuntimeCommandStatus, RuntimeEffectCertainty, RuntimeRecoveryResolution,
-    SubscriptionCursor, TeamMembership, TeamMembershipStatus, TrustError, TrustErrorCode,
-    WorkDelivery, WorkDeliveryStatus, WorkExecutionBinding, WorkExecutionBindingStatus,
-    WorkFinding, WorkModuleBinding, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
-    WorkspaceOwnership, WorkspaceSafetyProof,
+    MemberWorkspaceBinding, Message, MessageRecipientKind, MessageSubscription,
+    MessageSubscriptionKind, MessageSubscriptionStatus, MutationContext, ProviderInvocation,
+    ProviderReceipt, RuntimeCommandKind, RuntimeCommandRecord, RuntimeCommandStatus,
+    RuntimeEffectCertainty, RuntimeRecoveryResolution, SubscriptionCursor, TeamMembership,
+    TeamMembershipStatus, TrustError, TrustErrorCode, WorkDelivery, WorkDeliveryStatus,
+    WorkExecutionBinding, WorkExecutionBindingStatus, WorkFinding, WorkModuleBinding, WorkReport,
+    WorkReportKind, WorkspaceLifecycle, WorkspaceMode, WorkspaceOwnership, WorkspaceSafetyProof,
 };
 use firm_core::{TeamActorKind, TeamActorRef, Work, WorkCommandContext, WorkDelegationRevision};
 use serde::{Deserialize, Serialize};
@@ -5865,53 +5864,6 @@ impl HarnessStore {
             }),
             &delivery,
             vec![serde_json::to_value(&delivery)?],
-            Vec::new(),
-        )
-    }
-
-    pub fn route_message_cross_node(
-        &self,
-        context: &MutationContext,
-        route: MessageRouteJournal,
-    ) -> StoreResult<CanonicalMutationResult<MessageRouteJournal>> {
-        self.init()?;
-        let _lock = self.acquire_write_lock()?;
-        if context.authenticated_actor.kind != ActorKind::Service
-            || route.version != 1
-            || route.status != RouteJournalStatus::Pending
-            || route.source_node_id == route.target_node_id
-        {
-            return Err(trust_error(
-                TrustErrorCode::UnauthorizedActor,
-                "cross-node route journal requires Control Plane service authority and distinct nodes",
-                "message_route_journal",
-                &route.id,
-                Some(route.version),
-            ));
-        }
-        if !self
-            .fabric_messages(&context.execution_space_id)?
-            .iter()
-            .any(|message| {
-                message.id == route.message_id && message.source_node_id == route.source_node_id
-            })
-        {
-            return Err(trust_error(
-                TrustErrorCode::InvalidStateTransition,
-                "route journal references a missing source-authored Message",
-                "message_route_journal",
-                &route.id,
-                None,
-            ));
-        }
-        self.commit_trust_projection_unlocked(
-            context,
-            "message_route_journal",
-            &route.id,
-            "prepared",
-            serde_json::to_value(&route)?,
-            &route,
-            Vec::new(),
             Vec::new(),
         )
     }

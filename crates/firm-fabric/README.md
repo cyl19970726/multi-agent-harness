@@ -72,7 +72,21 @@ cargo clippy -p firm-fabric --all-targets -- -D warnings
 node scripts/acceptance-remote-fabric.mjs
 ```
 
-The current acceptance script is the deterministic independent-foundation
-gate. The final three-process Control Plane + two NodeDaemon journey is added
-only after Wave4C merges and the existing NodeDaemon/runtime authority seams
-can be integrated deliberately.
+The acceptance script validates the closed schemas and hostile fixtures, runs
+the deterministic security/replay/recovery matrix, then starts one real
+Control Plane process and two real Node processes over TLS 1.3 mutual-auth WSS.
+It proves target persistence before application, terminal application receipt,
+source reconciliation, no Node listener, process cleanup, and secret-free
+evidence output.
+
+The source may queue while disconnected. On reconnect it first asks the
+current, generation-fenced Control Plane to reconcile the operation id. Only
+an empty result permits rebinding the pre-acceptance envelope to a successor
+gateway generation. Any accepted receipt makes FabricStore the sole route
+truth and forbids resubmission.
+
+Production Node credentials can be read directly from macOS Keychain with
+`--credential-backend macos-keychain`; CI and isolated local tests use strict
+non-symlink file credentials. See
+`docs/current/operations/remote-fabric-operations.md` for enrollment,
+credential account names, backup/restore, rotation, drain and recovery.

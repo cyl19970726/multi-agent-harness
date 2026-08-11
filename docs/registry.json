@@ -4090,6 +4090,102 @@
           "ref": "crates/firm-cli/tests/team_run_daemon.rs"
         }
       ]
+    },
+    {
+      "path": "docs/current/architecture/remote-node-fabric.md",
+      "ownerRole": "execution-foundation",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": [
+        "Remote Node Fabric trust, routing, replay and application-effect contract"
+      ],
+      "dependsOn": [
+        "docs/current/architecture/agent-runtime.md",
+        "docs/decisions/0055-remote-node-fabric.md"
+      ],
+      "machineConsumers": [
+        "firm-fabric",
+        "check-doc-governance",
+        "shared-references"
+      ],
+      "reviewAfter": "2026-11-11",
+      "lastVerifiedWith": [
+        "pnpm acceptance:remote-fabric"
+      ],
+      "reorgTrigger": "Remote Fabric authority, topology, route truth, protocol or recovery semantics change.",
+      "authorityClass": "canonical_contract",
+      "implementationState": "implemented",
+      "truthRefs": [
+        {
+          "kind": "api",
+          "ref": "crates/firm-fabric/src/protocol.rs"
+        },
+        {
+          "kind": "test",
+          "ref": "scripts/acceptance-remote-fabric.mjs"
+        }
+      ]
+    },
+    {
+      "path": "docs/current/operations/remote-fabric-operations.md",
+      "ownerRole": "operator",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": [
+        "Remote Fabric enrollment, credentials, backup, restore, drain and recovery operations"
+      ],
+      "dependsOn": [
+        "docs/current/architecture/remote-node-fabric.md"
+      ],
+      "machineConsumers": [
+        "firm-cli",
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-11-11",
+      "lastVerifiedWith": [
+        "cargo test -p firm-fabric"
+      ],
+      "reorgTrigger": "Remote Fabric CLI, credential backend, backup format or operator recovery action changes.",
+      "authorityClass": "implementation_reference",
+      "implementationState": "implemented",
+      "truthRefs": [
+        {
+          "kind": "api",
+          "ref": "crates/firm-cli/src/fabric_runtime.rs"
+        },
+        {
+          "kind": "test",
+          "ref": "crates/firm-fabric/tests/fabric_contract.rs"
+        }
+      ]
+    },
+    {
+      "path": "docs/decisions/0055-remote-node-fabric.md",
+      "ownerRole": "architecture",
+      "status": "stable",
+      "lifecycle": "stable",
+      "canonicalFor": [
+        "Remote Node Fabric source-of-truth and topology decision"
+      ],
+      "dependsOn": [
+        "docs/current/architecture/remote-node-fabric.md"
+      ],
+      "machineConsumers": [
+        "check-doc-governance"
+      ],
+      "reviewAfter": "2026-11-11",
+      "lastVerifiedWith": [
+        "pnpm acceptance:remote-fabric"
+      ],
+      "reorgTrigger": "Company Control Plane topology or cross-Node route authority changes.",
+      "authorityClass": "canonical_contract",
+      "implementationState": "implemented",
+      "truthRefs": [
+        {
+          "kind": "schema",
+          "ref": "schemas/remote-fabric/schema-bundle.v1.json"
+        }
+      ]
     }
   ]
 }

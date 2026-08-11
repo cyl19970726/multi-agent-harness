@@ -1,0 +1,19 @@
+{
+  "frame_id": "frame-artifact-request-hostile",
+  "protocol_version": 1,
+  "schema_version": "agentfirm.remote_fabric.v1",
+  "canonicalization_version": "agentfirm.canonical-json.v1",
+  "company_id": "company-test",
+  "node_id": "node-a",
+  "gateway_generation": 3,
+  "node_daemon_id": "node-daemon:node-a",
+  "node_daemon_generation": 5,
+  "control_plane_generation": 2,
+  "sent_at_unix_ms": 100,
+  "correlation_id": "artifact-capability:artifact-1",
+  "payload": {
+    "frame_kind": "artifact_capability_request",
+    "payload": { "artifact_id": "artifact-1", "purpose": "upload" }
+  },
+  "payload_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}

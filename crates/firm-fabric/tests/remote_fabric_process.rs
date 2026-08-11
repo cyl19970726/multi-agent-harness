@@ -194,13 +194,16 @@ fn parent_acceptance() {
         &json!({
             "ok":true,
             "processes":3,
+            "submitted_revision":std::env::var("FABRIC_ACCEPTANCE_REVISION").unwrap_or_else(|_| "working-revision".into()),
             "company_id":COMPANY,
             "node_ids":[NODE_A,NODE_B],
             "control_plane_generation":lease.control_plane_generation,
-            "operation_id":"process-probe-operation",
+            "gateway_generations":state.gateway_leases.values().map(|lease| json!({"node_id":lease.node_id,"gateway_generation":lease.gateway_generation,"node_daemon_generation":lease.node_daemon_generation})).collect::<Vec<_>>(),
+            "operation_ids":["process-probe-operation"],
             "effect":"applied",
             "protocol_version":FABRIC_PROTOCOL_VERSION,
             "schema_version":FABRIC_SCHEMA_VERSION,
+            "schema_bundle_digest":SCHEMA_DIGEST,
             "canonicalization_version":FABRIC_CANONICALIZATION_VERSION,
         }),
     );

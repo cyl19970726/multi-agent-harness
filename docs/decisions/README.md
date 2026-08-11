@@ -52,6 +52,7 @@ consequences, affected modules, and validation path.
 | [0052](0052-nested-agent-teams-are-the-agent-organization.md) | superseded by [mental model](../mental/agent-firm-mental-model.md) | Proposed recursive AgentTeam topology; replaced by flat Agent Teams (no nesting). See the Agent Firm Mental Model. |
 | [0053](0053-finance-contract-layer-retirement.md) | accepted; staged retirement | Finance contract layer retired; Commitment/Payment code remains dormant until decommission |
 | [0054](0054-ai-first-docs-page-model-and-storage.md) | accepted; implementation pending | AI-first Docs: closed block kind set, Markdown-first serialization, whole-page revisions, JSONL canonical store with derived SQLite read layer and content-addressed blobs |
+| [0055](0055-remote-node-fabric.md) | accepted; implemented | One Company Control Plane, outbound NodeGateway children, and FabricStore as the sole cross-Node route truth |
 
 ## Split Rule
 

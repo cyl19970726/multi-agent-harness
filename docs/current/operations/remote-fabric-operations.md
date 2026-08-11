@@ -1,0 +1,104 @@
+# Remote Fabric Operations
+
+This runbook operates one logical AgentFirm Control Plane and its outbound
+machine gateways. Stop if an expected Company, Node, NodeDaemon generation,
+certificate fingerprint, Store root or backup digest differs.
+
+## Credentials
+
+CI and isolated tests use regular non-symlink PEM/key files. Private key and
+bearer/key files must have mode `0600`. Production macOS Nodes should use:
+
+```text
+firm fabric node-gateway serve \
+  --credential-backend macos-keychain \
+  --keychain-service agentfirm.remote-fabric \
+  ...
+```
+
+For Company `<company>` and Node `<node>`, create generic-password Keychain
+items under service `agentfirm.remote-fabric` with these exact accounts:
+
+- `<company>:<node>:client-certificate`
+- `<company>:<node>:client-private-key`
+- `<company>:<node>:control-plane-ca`
+- `<company>:<node>:certificate-serial`
+- `<company>:<node>:public-key-fingerprint`
+
+The CLI reads them directly into the TLS configuration; it does not write a
+temporary private-key file. Missing, empty or unsupported credentials fail
+closed before a Fabric frame is sent.
+
+## Enrollment and rotation
+
+1. Host creates a short-lived one-use enrollment through
+   `POST /v1/fabric/enrollments`.
+2. The Node generates its private key and CSR locally.
+3. The Node consumes the token through `POST /v1/fabric/nodes/enroll`.
+4. Verify returned CompanyNode id equals the existing ExecutionNode id and the
+   certificate fingerprint equals the local key.
+5. Install the certificate material in the credential backend, start the
+   current NodeDaemon, then start NodeGateway as its exact generation child.
+
+Rotation requires proof from the current key and exact Node revision. Revoked,
+expired, wrong-Company or predecessor certificates cannot connect. Never
+delete the prior credential until the successor has connected and the current
+gateway projection is verified.
+
+## Backup
+
+Use a new destination directory:
+
+```text
+firm fabric control-plane backup \
+  --company <company> \
+  --output <new-backup-directory> \
+  --firm-home <firm-home>
+```
+
+The Store lock freezes a complete transaction boundary. The backup contains a
+hash-chained journal and a manifest binding schema version, transaction
+sequence, state digest, journal digest and byte length. Copy both together to
+durable encrypted storage. Artifact encryption keys, capability signing keys,
+CA private keys and Host bearer credentials are backed up separately in the
+credential system; they are intentionally absent from the Store backup.
+
+## Restore
+
+1. Stop the Control Plane and confirm no process owns its Store or listener.
+2. Preserve the old directory for forensic recovery; never restore over it.
+3. Select a new empty Company Remote Fabric Store root.
+4. Run:
+
+```text
+firm fabric control-plane restore \
+  --company <company> \
+  --backup <backup-directory> \
+  --firm-home <new-firm-home>
+```
+
+Restore validates every journal frame and all manifest digests, then writes
+only to the empty root. Tamper, torn data, schema mismatch, symlink paths and
+non-empty targets fail closed. Start the Control Plane as a successor
+generation, restore credential-system keys, and let every Node reconnect and
+reconcile before admitting new work.
+
+## Drain, revoke and recovery
+
+- Drain rejects new target work but lets already persisted operations settle.
+- Revoke fences new gateway connections immediately; rotate credentials only
+  through the exact current Node revision.
+- `RecoveryRequired` means effect cannot be proven. Inspect the Node-local
+  application result and provider/runtime canonical record. Resolve as applied
+  or not-applied with evidence; never blind replay.
+- If the Control Plane generation changes, old gateway frames and heartbeats
+  are stale. Nodes reconnect, reconcile accepted operations and rebind only
+  operation ids the current Control Plane proves absent.
+
+## Verification
+
+Run `pnpm acceptance:remote-fabric`. Preserve its evidence directory for the
+reviewed SHA. It must contain exactly the documented JSON evidence files, no
+private keys/tokens, a three-process result, empty Node inbound-listener list,
+terminal target effect and source reconciliation. Confirm all child processes
+have exited before declaring the gate complete.

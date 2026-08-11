@@ -187,12 +187,37 @@ where
                     now,
                 )?;
             }
+            FabricPayload::ArtifactCapabilityRequest(request) => {
+                if request.purpose != ArtifactCapabilityPurpose::Download {
+                    return Err(FabricError::none(
+                        FabricErrorCode::CapabilityInvalid,
+                        "Node gateway v1 may request only a self-bound download capability",
+                    ));
+                }
+                let mut actor = authenticated_node_actor(peer, now);
+                actor.role_bindings.insert("artifact_read".into());
+                let capability = control_plane.issue_download_capability(
+                    &actor,
+                    control_plane_generation,
+                    &request.artifact_id,
+                    &session.node_id,
+                    now,
+                )?;
+                send_payload(
+                    socket,
+                    &session,
+                    &frame.correlation_id,
+                    FabricPayload::ArtifactCapabilityResponse(capability),
+                    now,
+                )?;
+            }
             FabricPayload::Hello(_)
             | FabricPayload::Welcome(_)
             | FabricPayload::RoutedOperation(_)
             | FabricPayload::Receipt(_)
             | FabricPayload::HeartbeatAck { .. }
             | FabricPayload::ReconcileResult { .. }
+            | FabricPayload::ArtifactCapabilityResponse(_)
             | FabricPayload::LeaseFence { .. }
             | FabricPayload::Drain { .. }
             | FabricPayload::ProtocolShutdown { .. } => {
@@ -288,6 +313,8 @@ pub fn send_payload<S: Read + Write>(
         FabricPayload::HeartbeatAck { .. } => "heartbeat-ack",
         FabricPayload::ReconcileRequest { .. } => "reconcile-request",
         FabricPayload::ReconcileResult { .. } => "reconcile-result",
+        FabricPayload::ArtifactCapabilityRequest(_) => "artifact-capability-request",
+        FabricPayload::ArtifactCapabilityResponse(_) => "artifact-capability-response",
         FabricPayload::LeaseFence { .. } => "lease-fence",
         FabricPayload::Drain { .. } => "drain",
         FabricPayload::ProtocolShutdown { .. } => "protocol-shutdown",
@@ -506,6 +533,36 @@ impl NodeGatewayConnection {
             }
         }
         Ok(receipts)
+    }
+
+    pub fn request_artifact_download(
+        &mut self,
+        artifact_id: &str,
+    ) -> Result<ArtifactCapability, FabricError> {
+        let now = now_unix_ms()?;
+        send_payload(
+            &mut self.socket,
+            &self.session,
+            &format!("artifact-capability:{artifact_id}"),
+            FabricPayload::ArtifactCapabilityRequest(ArtifactCapabilityRequest {
+                artifact_id: artifact_id.into(),
+                purpose: ArtifactCapabilityPurpose::Download,
+            }),
+            now,
+        )?;
+        let frame = read_frame(&mut self.socket)?;
+        self.session.validate_frame(&frame)?;
+        match frame.payload {
+            FabricPayload::ArtifactCapabilityResponse(capability) => Ok(capability),
+            FabricPayload::LeaseFence { reason } => Err(FabricError::none(
+                FabricErrorCode::NodeStaleGeneration,
+                reason,
+            )),
+            _ => Err(FabricError::none(
+                FabricErrorCode::ProtocolIncompatible,
+                "artifact capability response was not server-authoritative",
+            )),
+        }
     }
 
     /// Process one server-routed operation completely. This method is

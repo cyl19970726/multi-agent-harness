@@ -44,6 +44,8 @@
         { "$ref": "#/$defs/heartbeat_ack" },
         { "$ref": "#/$defs/reconcile_request" },
         { "$ref": "#/$defs/reconcile_result" },
+        { "$ref": "#/$defs/artifact_capability_request" },
+        { "$ref": "#/$defs/artifact_capability_response" },
         { "$ref": "#/$defs/lease_fence" },
         { "$ref": "#/$defs/drain" },
         { "$ref": "#/$defs/protocol_shutdown" }
@@ -167,6 +169,45 @@
           "required": ["receipts"],
           "properties": { "receipts": { "type": "array", "items": { "$ref": "route-receipt.schema.json" } } }
         }
+      }
+    },
+    "artifact_capability_request": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "const": "artifact_capability_request" },
+        "payload": {
+          "type": "object", "additionalProperties": false,
+          "required": ["artifact_id", "purpose"],
+          "properties": {
+            "artifact_id": { "type": "string", "minLength": 1 },
+            "purpose": { "const": "download" }
+          }
+        }
+      }
+    },
+    "artifact_capability_response": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "const": "artifact_capability_response" },
+        "payload": { "$ref": "#/$defs/artifact_capability" }
+      }
+    },
+    "artifact_capability": {
+      "type": "object", "additionalProperties": false,
+      "required": ["token", "company_id", "node_id", "artifact_id", "artifact_digest", "purpose", "issued_to", "issued_at_unix_ms", "expires_at_unix_ms", "one_use"],
+      "properties": {
+        "token": { "type": "string", "minLength": 1 },
+        "company_id": { "type": "string", "minLength": 1 },
+        "node_id": { "type": "string", "minLength": 1 },
+        "artifact_id": { "type": "string", "minLength": 1 },
+        "artifact_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "purpose": { "const": "download" },
+        "issued_to": { "type": "string", "minLength": 1 },
+        "issued_at_unix_ms": { "type": "integer", "minimum": 0 },
+        "expires_at_unix_ms": { "type": "integer", "minimum": 1 },
+        "one_use": { "const": true }
       }
     },
     "reason_payload": {

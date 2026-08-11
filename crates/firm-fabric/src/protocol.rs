@@ -815,6 +815,13 @@ pub struct ArtifactCapability {
     pub one_use: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactCapabilityRequest {
+    pub artifact_id: String,
+    pub purpose: ArtifactCapabilityPurpose,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "frame_kind", content = "payload", rename_all = "snake_case")]
 pub enum FabricPayload {
@@ -829,6 +836,8 @@ pub enum FabricPayload {
     HeartbeatAck { observed_at_unix_ms: u64 },
     ReconcileRequest { operation_ids: BTreeSet<String> },
     ReconcileResult { receipts: Vec<RouteReceipt> },
+    ArtifactCapabilityRequest(ArtifactCapabilityRequest),
+    ArtifactCapabilityResponse(ArtifactCapability),
     LeaseFence { reason: String },
     Drain { reason: String },
     ProtocolShutdown { reason: String },

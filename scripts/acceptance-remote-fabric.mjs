@@ -77,6 +77,11 @@ for (const [schemaName, fixturePrefix] of schemas) {
 const router = readFileSync("crates/firm-fabric/src/router.rs", "utf8");
 const protocol = readFileSync("crates/firm-fabric/src/protocol.rs", "utf8");
 const enrollment = readFileSync("crates/firm-fabric/src/enrollment.rs", "utf8");
+const trustStore = readFileSync("crates/firm-store/src/trust_kernel.rs", "utf8");
+const remoteIntegration = [
+  readFileSync("crates/firm-cli/src/remote_fabric.rs", "utf8"),
+  readFileSync("crates/firm-cli/src/fabric_runtime.rs", "utf8"),
+].join("\n");
 const requiredKinds = [
   "fabric.probe.v1",
   "fabric.reconcile_probe.v1",
@@ -107,6 +112,18 @@ for (const forbidden of ["work.accept.v1", "provider.start.v1", "message.send.v1
   if (router.includes(`\"${forbidden}\"`) || protocol.includes(`\"${forbidden}\"`)) {
     failures.push(`transport registry illegally owns business mutation ${forbidden}`);
   }
+}
+if (
+  trustStore.includes("route_message_cross_node") ||
+  trustStore.includes('"message_route_journal"')
+) {
+  failures.push("Wave4C Store still exposes a writable cross-node MessageRouteJournal authority");
+}
+if (
+  !remoteIntegration.includes("persist_remote_message") ||
+  remoteIntegration.includes("route_message_cross_node")
+) {
+  failures.push("Remote Message integration must persist canonical Message truth without dual route writes");
 }
 if (
   bundle.limits.enrollment_lifetime_max_ms !== 600000 ||
@@ -145,6 +162,13 @@ if (
   console.error("FABRIC_ACCEPTANCE_OUTPUT must be an existing empty dedicated directory");
   process.exit(1);
 }
+const reviewedRevision = spawnSync("git", ["rev-parse", "HEAD"], {
+  encoding: "utf8",
+}).stdout.trim();
+if (!/^[a-f0-9]{40}$/.test(reviewedRevision)) {
+  console.error("cannot bind Remote Fabric evidence to the exact Git revision");
+  process.exit(1);
+}
 const processAcceptance = spawnSync(
   "cargo",
   [
@@ -165,6 +189,7 @@ const processAcceptance = spawnSync(
       ...process.env,
       CARGO_TERM_COLOR: "never",
       FABRIC_ACCEPTANCE_OUTPUT: processEvidenceRoot,
+      FABRIC_ACCEPTANCE_REVISION: reviewedRevision,
     },
   },
 );
@@ -198,6 +223,10 @@ const portScan = readJson(join(processEvidenceRoot, "port-scan.json"));
 if (
   processResult.ok !== true ||
   processResult.processes !== 3 ||
+  processResult.submitted_revision !== reviewedRevision ||
+  processResult.gateway_generations.length !== 2 ||
+  processResult.operation_ids.length !== 1 ||
+  processResult.schema_bundle_digest !== "process-schema-v1" ||
   processResult.effect !== "applied" ||
   reconcileResult.blind_replay !== false ||
   portScan.node_inbound_collaboration_listeners.length !== 0
