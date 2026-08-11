@@ -7,6 +7,6 @@
   "required": ["message_id", "body_digest"],
   "properties": {
     "message_id": { "type": "string", "minLength": 1 },
-    "body_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+    "body_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
   }
 }

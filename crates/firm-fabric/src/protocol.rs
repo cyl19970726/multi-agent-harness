@@ -501,13 +501,18 @@ fn validate_closed_body(
     let non_empty = |value: &str| !value.trim().is_empty();
     let digest =
         |value: &str| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit());
+    let fingerprint = |value: &str| {
+        value.strip_prefix("sha256:").is_some_and(|digest| {
+            digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+    };
     let valid = match body {
         ClosedOperationBody::Probe(body) | ClosedOperationBody::ReconcileProbe(body) => {
             non_empty(&body.probe)
         }
         ClosedOperationBody::RuntimeCommand(body) => {
             non_empty(&body.runtime_command_id)
-                && digest(&body.command_fingerprint)
+                && fingerprint(&body.command_fingerprint)
                 && non_empty(&body.target_execution_space_id)
                 && operation.target_execution_space_id.as_deref()
                     == Some(body.target_execution_space_id.as_str())
@@ -515,12 +520,12 @@ fn validate_closed_body(
                 && body.target_node_daemon_generation > 0
         }
         ClosedOperationBody::Message(body) => {
-            non_empty(&body.message_id) && digest(&body.body_digest)
+            non_empty(&body.message_id) && fingerprint(&body.body_digest)
         }
         ClosedOperationBody::DeliveryIntent(body) => {
             non_empty(&body.delivery_id)
                 && non_empty(&body.message_id)
-                && digest(&body.message_body_digest)
+                && fingerprint(&body.message_body_digest)
                 && non_empty(&body.recipient_identity_id)
                 && operation.target_execution_space_id.as_deref()
                     == Some(body.target_execution_space_id.as_str())

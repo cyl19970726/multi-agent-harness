@@ -66,6 +66,8 @@ mod native_session;
 mod pi_rpc;
 mod project;
 mod provider_adapter;
+#[cfg(unix)]
+mod remote_fabric;
 mod resident;
 mod role_actions_api;
 mod role_views_api;

@@ -1,6 +1,6 @@
 {
   "runtime_command_id": "runtime-command:remote-1",
-  "command_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "command_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "target_execution_space_id": "space-b",
   "target_node_daemon_id": "node-daemon:node-b",
   "target_node_daemon_generation": 4

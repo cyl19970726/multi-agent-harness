@@ -10,7 +10,7 @@
   ],
   "properties": {
     "runtime_command_id": { "type": "string", "minLength": 1 },
-    "command_fingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "command_fingerprint": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
     "target_execution_space_id": { "type": "string", "minLength": 1 },
     "target_node_daemon_id": { "type": "string", "minLength": 1 },
     "target_node_daemon_generation": { "type": "integer", "minimum": 1 }

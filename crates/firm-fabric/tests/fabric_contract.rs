@@ -239,7 +239,7 @@ fn operation_registry_requires_closed_kind_schema_and_body_scope() {
     request.body_schema = RUNTIME_COMMAND_REFERENCE_SCHEMA.into();
     request.body = json!({
         "runtime_command_id": "runtime-command:remote-1",
-        "command_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "command_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "target_execution_space_id": "space-b",
         "target_node_daemon_id": "node-daemon:node-b",
         "target_node_daemon_generation": 4
@@ -475,7 +475,7 @@ fn durable_route_replays_exactly_and_fences_stale_source_generation() {
     unsupported.body_schema = RUNTIME_COMMAND_REFERENCE_SCHEMA.into();
     unsupported.body = json!({
         "runtime_command_id": "runtime-command:unsupported",
-        "command_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "command_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "target_execution_space_id": "space-b",
         "target_node_daemon_id": "node-daemon:node-b",
         "target_node_daemon_generation": 1
