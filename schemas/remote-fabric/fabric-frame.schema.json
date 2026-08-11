@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentfirm.local/schemas/remote-fabric/fabric-frame.schema.json",
+  "title": "FabricFrame",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "frame_id", "protocol_version", "schema_version", "company_id", "node_id",
+    "gateway_generation", "control_plane_generation", "sent_at_unix_ms",
+    "correlation_id", "payload", "payload_digest"
+  ],
+  "properties": {
+    "frame_id": { "type": "string", "minLength": 1 },
+    "protocol_version": { "const": 1 },
+    "schema_version": { "const": "agentfirm.remote_fabric.v1" },
+    "company_id": { "type": "string", "minLength": 1 },
+    "node_id": { "type": "string", "minLength": 1 },
+    "gateway_generation": { "type": "integer", "minimum": 1 },
+    "control_plane_generation": { "type": "integer", "minimum": 1 },
+    "sent_at_unix_ms": { "type": "integer", "minimum": 0 },
+    "correlation_id": { "type": "string", "minLength": 1 },
+    "payload": { "$ref": "#/$defs/payload" },
+    "payload_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  },
+  "$defs": {
+    "payload": {
+      "oneOf": [
+        { "$ref": "#/$defs/hello" },
+        { "$ref": "#/$defs/welcome" },
+        { "$ref": "#/$defs/routed_operation" },
+        { "$ref": "#/$defs/receipt" },
+        { "$ref": "#/$defs/heartbeat" },
+        { "$ref": "#/$defs/heartbeat_ack" },
+        { "$ref": "#/$defs/reconcile_request" },
+        { "$ref": "#/$defs/reconcile_result" },
+        { "$ref": "#/$defs/lease_fence" },
+        { "$ref": "#/$defs/drain" },
+        { "$ref": "#/$defs/protocol_shutdown" }
+      ]
+    },
+    "hello": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "const": "hello" },
+        "payload": { "$ref": "node-hello.schema.json" }
+      }
+    },
+    "welcome": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "const": "welcome" },
+        "payload": { "$ref": "node-welcome.schema.json" }
+      }
+    },
+    "routed_operation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "const": "routed_operation" },
+        "payload": { "$ref": "routed-operation.schema.json" }
+      }
+    },
+    "receipt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "const": "receipt" },
+        "payload": { "$ref": "route-receipt.schema.json" }
+      }
+    },
+    "heartbeat": { "type": "object", "$ref": "#/$defs/observed_at", "properties": { "frame_kind": { "const": "heartbeat" } } },
+    "heartbeat_ack": { "type": "object", "$ref": "#/$defs/observed_at", "properties": { "frame_kind": { "const": "heartbeat_ack" } } },
+    "observed_at": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "type": "string" },
+        "payload": {
+          "type": "object", "additionalProperties": false,
+          "required": ["observed_at_unix_ms"],
+          "properties": { "observed_at_unix_ms": { "type": "integer", "minimum": 0 } }
+        }
+      }
+    },
+    "reconcile_request": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "const": "reconcile_request" },
+        "payload": {
+          "type": "object", "additionalProperties": false,
+          "required": ["operation_ids"],
+          "properties": {
+            "operation_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+          }
+        }
+      }
+    },
+    "reconcile_result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "const": "reconcile_result" },
+        "payload": {
+          "type": "object", "additionalProperties": false,
+          "required": ["receipts"],
+          "properties": { "receipts": { "type": "array", "items": { "$ref": "route-receipt.schema.json" } } }
+        }
+      }
+    },
+    "reason_payload": {
+      "type": "object", "additionalProperties": false,
+      "required": ["reason"],
+      "properties": { "reason": { "type": "string", "minLength": 1 } }
+    },
+    "lease_fence": { "type": "object", "$ref": "#/$defs/reason_frame", "properties": { "frame_kind": { "const": "lease_fence" } } },
+    "drain": { "type": "object", "$ref": "#/$defs/reason_frame", "properties": { "frame_kind": { "const": "drain" } } },
+    "protocol_shutdown": { "type": "object", "$ref": "#/$defs/reason_frame", "properties": { "frame_kind": { "const": "protocol_shutdown" } } },
+    "reason_frame": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frame_kind", "payload"],
+      "properties": {
+        "frame_kind": { "type": "string" },
+        "payload": { "$ref": "#/$defs/reason_payload" }
+      }
+    }
+  }
+}

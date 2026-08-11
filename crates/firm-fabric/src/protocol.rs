@@ -606,6 +606,18 @@ impl FabricFrame {
     }
 
     pub fn validate(&self) -> Result<(), FabricError> {
+        if self.frame_id.trim().is_empty()
+            || self.company_id.trim().is_empty()
+            || self.node_id.trim().is_empty()
+            || self.correlation_id.trim().is_empty()
+            || self.gateway_generation == 0
+            || self.control_plane_generation == 0
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::InvalidPayload,
+                "FabricFrame requires non-empty identity and non-zero authority generations",
+            ));
+        }
         if self.protocol_version != FABRIC_PROTOCOL_VERSION {
             return Err(FabricError::none(
                 FabricErrorCode::ProtocolIncompatible,

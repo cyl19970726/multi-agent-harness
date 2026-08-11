@@ -8,6 +8,7 @@ const root = "schemas/remote-fabric";
 const fixtureRoot = join(root, "fixtures");
 const schemas = [
   ["company-node.schema.json", "company-node"],
+  ["fabric-frame.schema.json", "fabric-frame"],
   ["node-enrollment.schema.json", "node-enrollment"],
   ["node-gateway-lease.schema.json", "node-gateway-lease"],
   ["node-hello.schema.json", "node-hello"],
@@ -32,9 +33,18 @@ function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
+const ajv = new Ajv2020({ allErrors: true, strict: true });
+const schemaDocuments = new Map(
+  schemas.map(([schemaName]) => [schemaName, readJson(join(root, schemaName))]),
+);
+for (const document of schemaDocuments.values()) ajv.addSchema(document);
+
 for (const [schemaName, fixturePrefix] of schemas) {
-  const ajv = new Ajv2020({ allErrors: true, strict: true });
-  const validate = ajv.compile(readJson(join(root, schemaName)));
+  const validate = ajv.getSchema(schemaDocuments.get(schemaName).$id);
+  if (!validate) {
+    failures.push(`${schemaName}: schema was not registered`);
+    continue;
+  }
   for (const kind of ["valid", "invalid"]) {
     const fixtures = readdirSync(join(fixtureRoot, kind))
       .filter((name) => name.startsWith(fixturePrefix) && name.endsWith(".json"))

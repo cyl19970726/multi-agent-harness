@@ -4,6 +4,7 @@
   "schemas": [
     "artifact-manifest.schema.json",
     "company-node.schema.json",
+    "fabric-frame.schema.json",
     "node-enrollment.schema.json",
     "node-gateway-lease.schema.json",
     "node-hello.schema.json",
