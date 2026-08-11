@@ -4152,7 +4152,7 @@ impl HarnessStore {
         if membership.membership_generation != expected_generation {
             return Err(trust_error(
                 TrustErrorCode::MemberRunGenerationFenced,
-                &format!(
+                format!(
                     "TeamMembership generation must be the exact successor generation {expected_generation}"
                 ),
                 "team_membership",
@@ -5856,7 +5856,7 @@ impl HarnessStore {
                     .map_err(|error| {
                         trust_error(
                             TrustErrorCode::InvalidStateTransition,
-                            &format!("StartSession payload is invalid: {error}"),
+                            format!("StartSession payload is invalid: {error}"),
                             "runtime_command",
                             &command.id,
                             None,

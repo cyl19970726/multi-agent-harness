@@ -220,7 +220,7 @@ mod tests {
                 ProviderControlAction::CloseSession,
             ] {
                 let plan = control_plan(provider, action).expect("known provider control plan");
-                let observed = execute_control_plan(&plan, |primitive| Ok(primitive))
+                let observed = execute_control_plan(&plan, Ok)
                     .expect("deterministic provider acknowledgement");
                 assert_eq!(observed, plan.primitive);
                 let failure = execute_control_plan::<()>(&plan, |_| Err("socket_lost".into()))
