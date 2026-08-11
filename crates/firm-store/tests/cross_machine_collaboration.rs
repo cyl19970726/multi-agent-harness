@@ -259,20 +259,16 @@ fn active_delegation(store: &HarnessStore) -> RemoteWorkRef {
     );
 
     let route = store
-        .target_work_create_operation(
-            "company-1",
-            &request.delegation_id,
-            &auth.target_host,
-            "2026-08-11T00:00:02Z",
-        )
+        .target_work_create_operation("company-1", &request.delegation_id, "2026-08-11T00:00:02Z")
         .expect("build target Work routed operation");
     assert_eq!(route.ordering_key, "delegation:delegation-1");
 
     let target = work_ref("node-b", "team-b", "work-b", 1);
+    let control_plane = actor(ActorKind::Service, "fabric-control-plane");
     let active = store
         .apply_target_work_created(
             &context(
-                actor(ActorKind::Service, "fabric-control-plane"),
+                control_plane.clone(),
                 "target_work.applied",
                 "target-applied-1",
                 2,
@@ -281,6 +277,7 @@ fn active_delegation(store: &HarnessStore) -> RemoteWorkRef {
             &target,
             &placement(13),
             &route.id,
+            &control_plane,
         )
         .expect("fold applied target Work result");
     assert_eq!(active.projection.state, DelegationState::Active);
@@ -333,20 +330,38 @@ fn faithful_fabric_replays_exact_effect_and_unknown_never_folds_business_truth()
 
     let route = test
         .store
-        .target_work_create_operation(
-            "company-1",
-            "delegation-1",
-            &auth.target_host,
-            "2026-08-11T00:00:02Z",
-        )
+        .target_work_create_operation("company-1", "delegation-1", "2026-08-11T00:00:02Z")
         .unwrap();
+    assert_eq!(route.authenticated_actor, auth.target_host);
     let fabric = FaithfulFabric::default();
     let first_receipt = fabric.dispatch(&route).unwrap();
     let replay_receipt = fabric.dispatch(&route).unwrap();
     assert_eq!(first_receipt, replay_receipt);
     assert_eq!(fabric.effect_count(), 1);
 
-    let service = CollaborationApplicationService::new(&test.store, &fabric);
+    let control_plane = actor(ActorKind::Service, "fabric-control-plane");
+    let before_hostile_fold = test.store.collaboration_operations().unwrap();
+    assert!(test
+        .store
+        .apply_target_work_created(
+            &context(
+                actor(ActorKind::Service, "forged-service"),
+                "target_work.applied",
+                "forged-fold-1",
+                2,
+            ),
+            "delegation-1",
+            &work_ref("node-b", "team-b", "work-b", 1),
+            &placement(13),
+            &route.id,
+            &control_plane,
+        )
+        .is_err());
+    assert_eq!(
+        test.store.collaboration_operations().unwrap(),
+        before_hostile_fold
+    );
+    let service = CollaborationApplicationService::new(&test.store, &fabric, &control_plane);
     let applied = service
         .provision_target_work(
             &context(
@@ -356,7 +371,6 @@ fn faithful_fabric_replays_exact_effect_and_unknown_never_folds_business_truth()
                 2,
             ),
             "delegation-1",
-            &auth.target_host,
             &placement(13),
         )
         .expect("fold faithful applied receipt");
@@ -396,7 +410,8 @@ fn faithful_fabric_replays_exact_effect_and_unknown_never_folds_business_truth()
         .unwrap();
     let before = second.store.collaboration_operations().unwrap();
     let unknown_fabric = UnknownFabric;
-    let unknown = CollaborationApplicationService::new(&second.store, &unknown_fabric);
+    let unknown =
+        CollaborationApplicationService::new(&second.store, &unknown_fabric, &control_plane);
     assert!(unknown
         .provision_target_work(
             &context(
@@ -406,7 +421,6 @@ fn faithful_fabric_replays_exact_effect_and_unknown_never_folds_business_truth()
                 2,
             ),
             "delegation-1",
-            &auth.target_host,
             &placement(13),
         )
         .is_err());
@@ -795,6 +809,18 @@ fn active_cancellation_is_only_a_source_request_and_target_host_decision() {
         Some(DelegationTerminalOutcome::Cancelled)
     );
     assert_eq!(cancelled.projection.source_work_ref.work_revision, 9);
+    let request_projection = test
+        .store
+        .collaboration_cancellation_requests("company-1", "delegation-1")
+        .unwrap()
+        .pop()
+        .expect("cancellation request projection");
+    assert_eq!(request_projection.state, CancellationRequestState::Accepted);
+    assert_eq!(request_projection.revision, 2);
+    assert_eq!(
+        request_projection.target_host_decision_ref.as_deref(),
+        Some("cancel-decision-1")
+    );
 }
 
 #[test]
@@ -1030,6 +1056,41 @@ fn message_projection_preserves_per_recipient_partial_delivery_truth() {
         Some(9),
         44,
         "2026-08-11T00:00:01Z",
+    )
+    .is_err());
+
+    let team_recipient = MessageRecipientRef {
+        kind: MessageRecipientKind::Team,
+        id: "team-b".into(),
+    };
+    let team_message = Message {
+        target_ref: team_recipient.clone(),
+        recipients: vec![team_recipient],
+        ..message.clone()
+    };
+    assert_eq!(
+        project_cross_node_deliveries(
+            &team_message,
+            &deliveries,
+            "route-team-1",
+            Some(9),
+            45,
+            "2026-08-11T00:00:02Z",
+        )
+        .expect("target Node subscription expansion remains per-recipient")
+        .len(),
+        2
+    );
+
+    let mut mixed_nodes = deliveries;
+    mixed_nodes[1].target_node_id = "node-c".into();
+    assert!(project_cross_node_deliveries(
+        &team_message,
+        &mixed_nodes,
+        "route-team-1",
+        Some(9),
+        45,
+        "2026-08-11T00:00:02Z",
     )
     .is_err());
 }

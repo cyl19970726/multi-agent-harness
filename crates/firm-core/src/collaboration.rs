@@ -100,6 +100,7 @@ pub struct WorkDelegationV1 {
     pub source_team_id: String,
     pub source_node_id: String,
     pub target_placement: TargetPlacementRef,
+    pub target_host_ref: ActorRef,
     pub requested_outcome: String,
     pub outcome_class: String,
     pub acceptance_contract: String,

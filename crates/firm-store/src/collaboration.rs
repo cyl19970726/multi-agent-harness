@@ -113,24 +113,27 @@ pub trait CollaborationFabricPort {
 pub struct CollaborationApplicationService<'a, F> {
     store: &'a HarnessStore,
     fabric: &'a F,
+    control_plane_actor: &'a ActorRef,
 }
 
 impl<'a, F: CollaborationFabricPort> CollaborationApplicationService<'a, F> {
-    pub fn new(store: &'a HarnessStore, fabric: &'a F) -> Self {
-        Self { store, fabric }
+    pub fn new(store: &'a HarnessStore, fabric: &'a F, control_plane_actor: &'a ActorRef) -> Self {
+        Self {
+            store,
+            fabric,
+            control_plane_actor,
+        }
     }
 
     pub fn provision_target_work(
         &self,
         fold_context: &CollaborationMutationContext,
         delegation_id: &str,
-        actor: &ActorRef,
         observed_target_placement: &TargetPlacementRef,
     ) -> StoreResult<CollaborationMutationResult<WorkDelegationV1>> {
         let routed = self.store.target_work_create_operation(
             &fold_context.company_id,
             delegation_id,
-            actor,
             &fold_context.occurred_at,
         )?;
         let receipt = self.fabric.dispatch(&routed).map_err(|error| {
@@ -175,6 +178,7 @@ impl<'a, F: CollaborationFabricPort> CollaborationApplicationService<'a, F> {
             &target_work_ref,
             observed_target_placement,
             &receipt.operation_id,
+            self.control_plane_actor,
         )
     }
 }
@@ -321,6 +325,68 @@ impl HarnessStore {
             }
         }
         Ok(latest)
+    }
+
+    fn latest_cancellation_request_unlocked(
+        &self,
+        company_id: &str,
+        delegation_id: &str,
+        request_id: &str,
+    ) -> StoreResult<Option<DelegationCancellationRequest>> {
+        let mut latest = None;
+        for operation in self.collaboration_operations_unlocked()? {
+            if operation.company_id != company_id
+                || operation.aggregate_kind != "work_delegation_v1"
+                || operation.aggregate_id != delegation_id
+            {
+                continue;
+            }
+            for record in operation.immutable_side_records {
+                let Ok(request) = serde_json::from_value::<DelegationCancellationRequest>(record)
+                else {
+                    continue;
+                };
+                if request.id == request_id
+                    && latest
+                        .as_ref()
+                        .is_none_or(|current: &DelegationCancellationRequest| {
+                            request.revision > current.revision
+                        })
+                {
+                    latest = Some(request);
+                }
+            }
+        }
+        Ok(latest)
+    }
+
+    pub fn collaboration_cancellation_requests(
+        &self,
+        company_id: &str,
+        delegation_id: &str,
+    ) -> StoreResult<Vec<DelegationCancellationRequest>> {
+        let mut latest = BTreeMap::<String, DelegationCancellationRequest>::new();
+        for operation in self.collaboration_operations_unlocked()? {
+            if operation.company_id != company_id
+                || operation.aggregate_kind != "work_delegation_v1"
+                || operation.aggregate_id != delegation_id
+            {
+                continue;
+            }
+            for record in operation.immutable_side_records {
+                let Ok(request) = serde_json::from_value::<DelegationCancellationRequest>(record)
+                else {
+                    continue;
+                };
+                if latest
+                    .get(&request.id)
+                    .is_none_or(|current| request.revision > current.revision)
+                {
+                    latest.insert(request.id.clone(), request);
+                }
+            }
+        }
+        Ok(latest.into_values().collect())
     }
 
     pub fn collaboration_delegations(
@@ -685,6 +751,7 @@ impl HarnessStore {
             source_team_id: request.source_work_ref.team_id.clone(),
             source_node_id: request.source_work_ref.node_id.clone(),
             target_placement: request.target_placement.clone(),
+            target_host_ref: authority.target_host.clone(),
             requested_outcome: request.requested_outcome.clone(),
             outcome_class: request.outcome_class.clone(),
             acceptance_contract: request.acceptance_contract.clone(),
@@ -870,7 +937,6 @@ impl HarnessStore {
         &self,
         company_id: &str,
         delegation_id: &str,
-        actor: &ActorRef,
         created_at: &str,
     ) -> StoreResult<RoutedBusinessOperation> {
         let delegation = self
@@ -909,7 +975,7 @@ impl HarnessStore {
             protocol_version: "agentfirm.fabric.v1".into(),
             company_id: company_id.into(),
             kind: RoutedBusinessKind::TargetWorkCreate,
-            authenticated_actor: actor.clone(),
+            authenticated_actor: delegation.target_host_ref,
             source_node_id: delegation.source_node_id,
             target_placement: delegation.target_placement,
             expected_revision: delegation.revision,
@@ -929,6 +995,7 @@ impl HarnessStore {
         target_work_ref: &RemoteWorkRef,
         observed_target_placement: &TargetPlacementRef,
         routed_operation_id: &str,
+        resolved_control_plane_actor: &ActorRef,
     ) -> StoreResult<CollaborationMutationResult<WorkDelegationV1>> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
@@ -953,6 +1020,17 @@ impl HarnessStore {
             return Err(collaboration_error(
                 FabricErrorCode::RevisionConflict,
                 "target Work result does not match current provisioning revision",
+                "work_delegation_v1",
+                delegation_id,
+                Some(delegation.revision),
+            ));
+        }
+        if resolved_control_plane_actor.kind != ActorKind::Service
+            || !exact_actor(&context.authenticated_actor, resolved_control_plane_actor)
+        {
+            return Err(collaboration_error(
+                FabricErrorCode::UnauthorizedActor,
+                "only the server-resolved Control Plane Service may fold an applied routed result",
                 "work_delegation_v1",
                 delegation_id,
                 Some(delegation.revision),
@@ -1104,6 +1182,28 @@ impl HarnessStore {
                 Some(delegation.revision),
             ));
         }
+        let mut pending_request = self
+            .latest_cancellation_request_unlocked(&context.company_id, delegation_id, request_id)?
+            .ok_or_else(|| {
+                collaboration_error(
+                    FabricErrorCode::CancellationDecisionRequired,
+                    "cancellation decision references no canonical pending request",
+                    "delegation_cancellation_request",
+                    request_id,
+                    None,
+                )
+            })?;
+        if pending_request.state != CancellationRequestState::Pending
+            || decision.expected_request_revision != pending_request.revision
+        {
+            return Err(collaboration_error(
+                FabricErrorCode::RevisionConflict,
+                "cancellation decision does not bind the exact pending request revision",
+                "delegation_cancellation_request",
+                request_id,
+                Some(pending_request.revision),
+            ));
+        }
         if !exact_actor(&context.authenticated_actor, &authority.target_host)
             || decision.decided_by_target_host != authority.target_host
         {
@@ -1133,11 +1233,16 @@ impl HarnessStore {
             CancellationDecisionKind::Accept => {
                 delegation.state = DelegationState::Terminal;
                 delegation.terminal_outcome = Some(DelegationTerminalOutcome::Cancelled);
+                pending_request.state = CancellationRequestState::Accepted;
             }
             CancellationDecisionKind::Reject => {
                 delegation.state = DelegationState::Active;
+                pending_request.state = CancellationRequestState::Rejected;
             }
         }
+        pending_request.target_host_decision_ref = Some(decision.id.clone());
+        pending_request.revision += 1;
+        pending_request.updated_at = context.occurred_at.clone();
         self.commit_collaboration_projection_unlocked(
             context,
             "work_delegation_v1",
@@ -1148,7 +1253,10 @@ impl HarnessStore {
                 "observed_target_placement": observed_target_placement,
             }),
             &delegation,
-            vec![serde_json::to_value(decision)?],
+            vec![
+                serde_json::to_value(decision)?,
+                serde_json::to_value(&pending_request)?,
+            ],
         )
     }
 
@@ -1429,7 +1537,7 @@ pub fn project_cross_node_deliveries(
     target_observed_sequence: u64,
     observed_at: &str,
 ) -> StoreResult<Vec<CrossNodeDeliveryProjection>> {
-    let expected = message
+    let expected_direct = message
         .recipients
         .iter()
         .filter(|recipient| {
@@ -1437,14 +1545,27 @@ pub fn project_cross_node_deliveries(
         })
         .map(|recipient| recipient.id.clone())
         .collect::<BTreeSet<_>>();
+    let has_team_recipient = message
+        .recipients
+        .iter()
+        .any(|recipient| recipient.kind == firm_core::agentfirm_api::MessageRecipientKind::Team);
     let actual = deliveries
         .iter()
         .map(|delivery| delivery.recipient_identity_id.clone())
         .collect::<BTreeSet<_>>();
-    if expected != actual || actual.len() != deliveries.len() {
+    let target_nodes = deliveries
+        .iter()
+        .map(|delivery| delivery.target_node_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let recipient_set_valid = if has_team_recipient {
+        !actual.is_empty() && expected_direct.is_subset(&actual)
+    } else {
+        expected_direct == actual
+    };
+    if !recipient_set_valid || actual.len() != deliveries.len() || target_nodes.len() != 1 {
         return Err(collaboration_error(
             FabricErrorCode::MessageRecipientUnauthorized,
-            "per-recipient delivery set is missing, duplicated, or outside the immutable Message",
+            "per-recipient delivery batch is missing, duplicated, cross-node mixed, or outside the immutable Message/subscription expansion",
             "message",
             &message.id,
             None,
