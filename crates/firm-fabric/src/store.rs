@@ -1,3 +1,4 @@
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -85,6 +86,7 @@ struct StoreInner {
 pub struct FabricStore {
     root: PathBuf,
     journal: PathBuf,
+    lock_path: PathBuf,
     inner: Mutex<StoreInner>,
     limits: FabricStoreLimits,
     available: AtomicBool,
@@ -115,6 +117,9 @@ impl FabricStore {
         }
         let canonical_root = fs::canonicalize(&root).map_err(store_error)?;
         let journal = canonical_root.join("fabric-transactions.jsonl");
+        let lock_path = canonical_root.join("fabric.lock");
+        let lock = open_lock(&lock_path)?;
+        lock.lock_exclusive().map_err(store_error)?;
         let (state, last_frame_digest, valid_length) = load_journal(&journal)?;
         if journal
             .metadata()
@@ -132,6 +137,7 @@ impl FabricStore {
         Ok(Self {
             root: canonical_root,
             journal,
+            lock_path,
             inner: Mutex::new(StoreInner {
                 state,
                 last_frame_digest,
@@ -157,17 +163,18 @@ impl FabricStore {
 
     pub fn snapshot(&self) -> Result<FabricState, FabricError> {
         self.require_available()?;
-        Ok(self
-            .inner
-            .lock()
-            .map_err(|_| {
-                FabricError::none(
-                    FabricErrorCode::StoreUnavailable,
-                    "FabricStore lock poisoned",
-                )
-            })?
-            .state
-            .clone())
+        let lock = open_lock(&self.lock_path)?;
+        lock.lock_exclusive().map_err(store_error)?;
+        let (state, last_frame_digest, _) = load_journal(&self.journal)?;
+        let mut inner = self.inner.lock().map_err(|_| {
+            FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                "FabricStore lock poisoned",
+            )
+        })?;
+        inner.state = state;
+        inner.last_frame_digest = last_frame_digest;
+        Ok(inner.state.clone())
     }
 
     pub fn set_available_for_test(&self, available: bool) {
@@ -187,12 +194,17 @@ impl FabricStore {
         operation: impl FnOnce(&mut FabricState) -> Result<T, FabricError>,
     ) -> Result<T, FabricError> {
         self.require_available()?;
+        let lock = open_lock(&self.lock_path)?;
+        lock.lock_exclusive().map_err(store_error)?;
         let mut inner = self.inner.lock().map_err(|_| {
             FabricError::none(
                 FabricErrorCode::StoreUnavailable,
                 "FabricStore lock poisoned",
             )
         })?;
+        let (durable_state, durable_digest, _) = load_journal(&self.journal)?;
+        inner.state = durable_state;
+        inner.last_frame_digest = durable_digest;
         let mut next = inner.state.clone();
         let result = operation(&mut next)?;
         next.revision = inner.state.revision.saturating_add(1);
@@ -236,6 +248,16 @@ impl FabricStore {
         }
         Ok(())
     }
+}
+
+fn open_lock(path: &Path) -> Result<File, FabricError> {
+    OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(store_error)
 }
 
 fn append_frame(path: &Path, frame: &JournalFrame) -> Result<(), FabricError> {

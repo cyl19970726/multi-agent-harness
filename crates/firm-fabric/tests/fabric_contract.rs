@@ -1072,6 +1072,41 @@ fn node_local_journal_recovers_lost_ack_without_duplicate_native_effect() {
 }
 
 #[test]
+fn two_process_style_node_outbox_handles_share_one_atomic_journal() {
+    let root = TestRoot::new("cross-process-node-local-lock");
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let mut joins = Vec::new();
+    for _ in 0..2 {
+        let root = root.path().to_path_buf();
+        let barrier = barrier.clone();
+        joins.push(std::thread::spawn(move || {
+            let store = NodeLocalFabricStore::open(root, COMPANY, "node-a")
+                .expect("open independent Node-local handle");
+            let request = operation(1, 1);
+            let session = fabric_session("node-a", 1, 1);
+            let source_actor = request.actor.clone();
+            barrier.wait();
+            store.prepare_outbox(&session, &source_actor, &request, 100)
+        }));
+    }
+    let results = joins
+        .into_iter()
+        .map(|join| join.join().expect("join writer").expect("prepare outbox"))
+        .collect::<Vec<_>>();
+    assert_eq!(results.iter().filter(|(_, replay)| !replay).count(), 1);
+    assert_eq!(results.iter().filter(|(_, replay)| *replay).count(), 1);
+    assert_eq!(
+        NodeLocalFabricStore::open(root.path(), COMPANY, "node-a")
+            .expect("reopen Node-local Store")
+            .snapshot()
+            .expect("snapshot")
+            .outboxes
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn node_local_store_rejects_foreign_and_stale_sessions_with_zero_delta() {
     let source_root = TestRoot::new("local-session-fence-source");
     let source =
@@ -1524,6 +1559,39 @@ fn concurrent_one_use_enrollment_has_exactly_one_winner() {
     let state = store.snapshot().expect("snapshot");
     assert_eq!(state.nodes.len(), 1);
     assert_eq!(state.certificates.len(), 1);
+}
+
+#[test]
+fn two_process_style_control_plane_stores_have_one_exclusive_generation_winner() {
+    let root = TestRoot::new("cross-process-control-plane-lock");
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let mut joins = Vec::new();
+    for instance in ["control-a", "control-b"] {
+        let root = root.path().to_path_buf();
+        let barrier = barrier.clone();
+        joins.push(std::thread::spawn(move || {
+            let store = FabricStore::open(root).expect("open independent FabricStore handle");
+            let keys = InMemoryArtifactKeyBackend::default();
+            keys.insert(COMPANY, [7; 32]);
+            let control = ControlPlane::new(COMPANY, instance, &store, &keys, [9; 32]);
+            barrier.wait();
+            control.acquire_lease(&format!("lease-{instance}"), 0, 1)
+        }));
+    }
+    let results = joins
+        .into_iter()
+        .map(|join| join.join().expect("join competitor"))
+        .collect::<Vec<_>>();
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        FabricStore::open(root.path())
+            .expect("reopen authoritative Store")
+            .snapshot()
+            .expect("snapshot")
+            .control_plane_leases
+            .len(),
+        1
+    );
 }
 
 #[test]

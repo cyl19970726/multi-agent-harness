@@ -1,3 +1,4 @@
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -62,6 +63,7 @@ pub struct NodeLocalFabricStore {
     node_id: String,
     root: PathBuf,
     journal: PathBuf,
+    lock_path: PathBuf,
     inner: Mutex<LocalInner>,
     available: AtomicBool,
     fail_next_commit: AtomicBool,
@@ -88,6 +90,9 @@ impl NodeLocalFabricStore {
         }
         let root = fs::canonicalize(root).map_err(local_store_error)?;
         let journal = root.join("node-fabric-transactions.jsonl");
+        let lock_path = root.join("node-fabric.lock");
+        let lock = open_local_lock(&lock_path)?;
+        lock.lock_exclusive().map_err(local_store_error)?;
         let (state, last_frame_digest, valid_length) = load_local_journal(&journal)?;
         let requested_company_id = company_id.into();
         let requested_node_id = node_id.into();
@@ -123,6 +128,7 @@ impl NodeLocalFabricStore {
             node_id: requested_node_id,
             root,
             journal,
+            lock_path,
             inner: Mutex::new(LocalInner {
                 state,
                 last_frame_digest,
@@ -143,17 +149,18 @@ impl NodeLocalFabricStore {
 
     pub fn snapshot(&self) -> Result<NodeLocalFabricState, FabricError> {
         self.require_available()?;
-        Ok(self
-            .inner
-            .lock()
-            .map_err(|_| {
-                FabricError::none(
-                    FabricErrorCode::StoreUnavailable,
-                    "Node local FabricStore lock poisoned",
-                )
-            })?
-            .state
-            .clone())
+        let lock = open_local_lock(&self.lock_path)?;
+        lock.lock_exclusive().map_err(local_store_error)?;
+        let (state, last_frame_digest, _) = load_local_journal(&self.journal)?;
+        let mut inner = self.inner.lock().map_err(|_| {
+            FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                "Node local FabricStore lock poisoned",
+            )
+        })?;
+        inner.state = state;
+        inner.last_frame_digest = last_frame_digest;
+        Ok(inner.state.clone())
     }
 
     pub fn fail_next_commit_for_test(&self) {
@@ -561,12 +568,17 @@ impl NodeLocalFabricStore {
         operation: impl FnOnce(&mut NodeLocalFabricState) -> Result<T, FabricError>,
     ) -> Result<T, FabricError> {
         self.require_available()?;
+        let lock = open_local_lock(&self.lock_path)?;
+        lock.lock_exclusive().map_err(local_store_error)?;
         let mut inner = self.inner.lock().map_err(|_| {
             FabricError::none(
                 FabricErrorCode::StoreUnavailable,
                 "Node local FabricStore lock poisoned",
             )
         })?;
+        let (durable_state, durable_digest, _) = load_local_journal(&self.journal)?;
+        inner.state = durable_state;
+        inner.last_frame_digest = durable_digest;
         let mut next = inner.state.clone();
         match (
             next.authority_company_id.as_deref(),
@@ -647,6 +659,16 @@ impl NodeLocalFabricStore {
         }
         Ok(())
     }
+}
+
+fn open_local_lock(path: &Path) -> Result<File, FabricError> {
+    OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(local_store_error)
 }
 
 fn append_local_frame(path: &Path, frame: &LocalJournalFrame) -> Result<(), FabricError> {
