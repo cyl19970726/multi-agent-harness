@@ -399,6 +399,46 @@ fn directory_snapshot(root: &std::path::Path) -> std::collections::BTreeMap<Stri
 }
 
 #[test]
+fn remote_fabric_mcp_surface_is_read_only_and_server_resolves_local_node() {
+    let home = TempHome::new("mcp-remote-fabric-read");
+    let project_id = init_project(&home, "mcp-remote-fabric-project");
+    let project_root = home.base().join("mcp-remote-fabric-project");
+    let node = run_firm(&home, &project_root, &["node", "init"]);
+    assert!(node.status.success(), "node init failed: {node:?}");
+    let mut mcp = McpClient::spawn(&home, &project_id, &[]);
+    let listed = mcp.request("tools/list", serde_json::json!({}));
+    let tools = listed["result"]["tools"].as_array().expect("tools array");
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "remote_fabric_status"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "remote_fabric_operation_show"));
+
+    let status = call_payload(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "remote_fabric_status",
+            "arguments": {"company_id": "company-mcp-test"}
+        }),
+    ));
+    assert_eq!(status["read_only"].as_bool(), Some(true));
+    assert_eq!(status["company_id"], "company-mcp-test");
+    assert!(status["local_node_id"].is_string());
+    assert!(status["node_local"].is_null());
+    assert!(status["control_plane"].is_null());
+
+    let error = call_error_text(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "remote_fabric_operation_show",
+            "arguments": {"company_id": "company-mcp-test", "operation_id": "operation-1"}
+        }),
+    ));
+    assert!(error.contains("Control Plane Store is unavailable"));
+}
+
+#[test]
 fn retired_mcp_team_run_message_writer_fails_closed_with_zero_store_delta() {
     let home = TempHome::new("mcp-retired-message-writer");
     let project_id = init_project(&home, "mcp-retired-message-project");
@@ -679,6 +719,8 @@ fn mcp_stdio_agent_team_tools() {
         names,
         [
             "agentfirm_member_trust_mutate",
+            "remote_fabric_status",
+            "remote_fabric_operation_show",
             "mission_create",
             "mission_update_context",
             "mission_close",
@@ -731,6 +773,18 @@ fn mcp_stdio_agent_team_tools() {
         assert!(tool["description"].is_string(), "tool description: {tool}");
         assert_eq!(tool["inputSchema"]["type"].as_str(), Some("object"));
     }
+    let remote_status = call_payload(&mcp.request(
+        "tools/call",
+        serde_json::json!({
+            "name": "remote_fabric_status",
+            "arguments": {"company_id": "company-mcp-test"}
+        }),
+    ));
+    assert_eq!(remote_status["read_only"].as_bool(), Some(true));
+    assert_eq!(remote_status["company_id"], "company-mcp-test");
+    assert!(remote_status["local_node_id"].is_string());
+    assert!(remote_status["node_local"].is_null());
+    assert!(remote_status["control_plane"].is_null());
     let assign_descriptor = tools
         .iter()
         .find(|tool| tool["name"].as_str() == Some("team_run_work_assign"))

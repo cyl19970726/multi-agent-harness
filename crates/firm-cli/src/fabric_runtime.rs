@@ -1446,7 +1446,7 @@ fn keychain_secret(_service: &str, _account: &str) -> CliResult<String> {
     ))
 }
 
-fn firm_home(resolved: &ResolvedStore, args: &[String]) -> CliResult<PathBuf> {
+pub(crate) fn firm_home(resolved: &ResolvedStore, args: &[String]) -> CliResult<PathBuf> {
     if let Some(path) = value(args, "--firm-home") {
         return Ok(PathBuf::from(path));
     }
