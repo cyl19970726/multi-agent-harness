@@ -915,6 +915,16 @@ fn checked_in_valid_schema_fixtures_match_rust_wire_types() {
     )
     .expect("NodeGatewayLease fixture matches Rust");
     assert_eq!(gateway.gateway_generation, 1);
+    let hello: NodeHello = serde_json::from_slice(
+        &std::fs::read(root.join("node-hello.json")).expect("read NodeHello fixture"),
+    )
+    .expect("NodeHello fixture matches Rust");
+    assert_eq!(hello.protocol_min, FABRIC_PROTOCOL_VERSION);
+    let welcome: NodeWelcome = serde_json::from_slice(
+        &std::fs::read(root.join("node-welcome.json")).expect("read NodeWelcome fixture"),
+    )
+    .expect("NodeWelcome fixture matches Rust");
+    assert_eq!(welcome.gateway_generation, 1);
     let operation: RoutedOperation = serde_json::from_slice(
         &std::fs::read(root.join("routed-operation.json")).expect("read operation fixture"),
     )

@@ -1,0 +1,15 @@
+{
+  "company_id": "company-test",
+  "node_id": "node-a",
+  "instance_id": "gateway-a",
+  "protocol_min": 1,
+  "protocol_max": 1,
+  "schema_bundle_digest": "schema-bundle-v1",
+  "features": ["durable-routing"],
+  "build_sha": "build-test",
+  "last_persisted_route_seq": 0,
+  "unresolved_operation_ids": [],
+  "certificate_serial": "cert-a",
+  "public_key_fingerprint": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+  "actor_id": "body-selected-host"
+}

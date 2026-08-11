@@ -10,6 +10,8 @@ const schemas = [
   ["company-node.schema.json", "company-node"],
   ["node-enrollment.schema.json", "node-enrollment"],
   ["node-gateway-lease.schema.json", "node-gateway-lease"],
+  ["node-hello.schema.json", "node-hello"],
+  ["node-welcome.schema.json", "node-welcome"],
   ["routed-operation.schema.json", "routed-operation"],
   ["route-receipt.schema.json", "route-receipt"],
   ["artifact-manifest.schema.json", "artifact-manifest"],

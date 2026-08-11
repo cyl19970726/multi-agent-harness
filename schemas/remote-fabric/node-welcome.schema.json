@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentfirm.local/schemas/remote-fabric/node-welcome.schema.json",
+  "title": "NodeWelcome",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "company_id", "node_id", "accepted_protocol_version", "lease_id",
+    "gateway_generation", "control_plane_generation", "next_route_seq",
+    "required_reconcile_ids", "schema_version"
+  ],
+  "properties": {
+    "company_id": { "type": "string", "minLength": 1 },
+    "node_id": { "type": "string", "minLength": 1 },
+    "accepted_protocol_version": { "const": 1 },
+    "lease_id": { "type": "string", "minLength": 1 },
+    "gateway_generation": { "type": "integer", "minimum": 1 },
+    "control_plane_generation": { "type": "integer", "minimum": 1 },
+    "next_route_seq": { "type": "integer", "minimum": 1 },
+    "required_reconcile_ids": {
+      "type": "array", "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "schema_version": { "const": "agentfirm.remote_fabric.v1" }
+  }
+}

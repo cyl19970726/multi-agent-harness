@@ -1,0 +1,11 @@
+{
+  "company_id": "company-test",
+  "node_id": "node-a",
+  "accepted_protocol_version": 1,
+  "lease_id": "gateway-lease:node-a:1",
+  "gateway_generation": 1,
+  "control_plane_generation": 1,
+  "next_route_seq": 1,
+  "required_reconcile_ids": [],
+  "schema_version": "agentfirm.remote_fabric.v1"
+}
