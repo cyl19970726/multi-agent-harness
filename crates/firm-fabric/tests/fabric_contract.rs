@@ -50,6 +50,13 @@ impl Drop for TestRoot {
     }
 }
 
+#[cfg(unix)]
+fn secure_private_key(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .expect("restrict private key fixture");
+}
+
 fn actor(id: &str, roles: &[&str]) -> AuthenticatedActor {
     AuthenticatedActor {
         company_id: COMPANY.into(),
@@ -1984,6 +1991,7 @@ fn outbound_mtls_identity_rejects_missing_and_symlinked_key_material_before_netw
     let ca = root.path().join("ca.pem");
     std::fs::write(&cert, b"certificate").expect("write certificate fixture");
     std::fs::write(&key, b"key").expect("write key fixture");
+    secure_private_key(&key);
     std::fs::write(&ca, b"ca").expect("write CA fixture");
     let identity = NodeTlsIdentityFiles {
         client_certificate_chain_pem: cert.clone(),
@@ -2041,8 +2049,8 @@ fn control_plane_ca_issues_exact_company_execution_node_client_identity() {
 #[test]
 fn real_loopback_wss_requires_mtls_hostname_and_frozen_subprotocol() {
     use firm_fabric::transport::{
-        accept_control_plane_mtls, connect_outbound_mtls, ControlPlaneTlsFiles, NodeFabricConfig,
-        NodeTlsIdentityFiles,
+        accept_control_plane_mtls, connect_outbound_mtls, connect_outbound_mtls_material,
+        ControlPlaneTlsFiles, NodeFabricConfig, NodeTlsIdentityFiles, NodeTlsIdentityMaterial,
     };
     let root = TestRoot::new("real-loopback-mtls");
     let company = "company-a";
@@ -2073,6 +2081,8 @@ fn real_loopback_wss_requires_mtls_hostname_and_frozen_subprotocol() {
     std::fs::write(&node_key_path, &csr.private_key_pem).unwrap();
     std::fs::write(&server_cert_path, &server_certificate.certificate_chain_pem).unwrap();
     std::fs::write(&server_key_path, &server_certificate.private_key_pem).unwrap();
+    secure_private_key(&node_key_path);
+    secure_private_key(&server_key_path);
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind Control Plane");
     let port = listener.local_addr().unwrap().port();
@@ -2082,13 +2092,17 @@ fn real_loopback_wss_requires_mtls_hostname_and_frozen_subprotocol() {
         node_ca_pem: ca_path.clone(),
     };
     let server = std::thread::spawn(move || {
-        let (tcp, _) = listener.accept().expect("accept outbound Node connection");
-        let (mut socket, identity) =
-            accept_control_plane_mtls(tcp, &server_tls).expect("accept verified mTLS WebSocket");
-        let frame = firm_fabric::transport::read_frame(&mut socket)
-            .expect("read authenticated Fabric frame");
-        socket.close(None).ok();
-        (identity, frame)
+        (0..2)
+            .map(|_| {
+                let (tcp, _) = listener.accept().expect("accept outbound Node connection");
+                let (mut socket, identity) = accept_control_plane_mtls(tcp, &server_tls)
+                    .expect("accept verified mTLS WebSocket");
+                let frame = firm_fabric::transport::read_frame(&mut socket)
+                    .expect("read authenticated Fabric frame");
+                socket.close(None).ok();
+                (identity, frame)
+            })
+            .collect::<Vec<_>>()
     });
     let config = NodeFabricConfig {
         company_id: company.into(),
@@ -2124,11 +2138,26 @@ fn real_loopback_wss_requires_mtls_hostname_and_frozen_subprotocol() {
     firm_fabric::transport::write_frame(&mut socket, &sent)
         .expect("write authenticated Fabric frame");
     socket.close(None).ok();
-    let (identity, observed) = server.join().expect("join Control Plane");
-    assert_eq!(identity.company_id, company);
-    assert_eq!(identity.node_id, node);
-    assert_eq!(identity.public_key_fingerprint, csr.public_key_fingerprint);
-    assert_eq!(observed, sent);
+    let keychain_like = NodeTlsIdentityMaterial {
+        client_certificate_chain_pem: format!(
+            "{}{}",
+            node_certificate.certificate_pem, ca.certificate_pem
+        )
+        .into_bytes(),
+        client_private_key_pem: csr.private_key_pem.as_bytes().to_vec(),
+        control_plane_ca_pem: ca.certificate_pem.as_bytes().to_vec(),
+    };
+    let mut memory_socket = connect_outbound_mtls_material(&config, &keychain_like)
+        .expect("connect using OS-credential material without a temporary private-key file");
+    firm_fabric::transport::write_frame(&mut memory_socket, &sent).unwrap();
+    memory_socket.close(None).ok();
+    let observed_sessions = server.join().expect("join Control Plane");
+    for (identity, observed) in observed_sessions {
+        assert_eq!(identity.company_id, company);
+        assert_eq!(identity.node_id, node);
+        assert_eq!(identity.public_key_fingerprint, csr.public_key_fingerprint);
+        assert_eq!(observed, sent);
+    }
 }
 
 #[test]
@@ -2156,6 +2185,7 @@ fn two_outbound_gateways_route_one_operation_through_durable_target_apply() {
     std::fs::write(&ca_path, &ca.certificate_pem).unwrap();
     std::fs::write(&server_cert_path, &server_certificate.certificate_chain_pem).unwrap();
     std::fs::write(&server_key_path, &server_certificate.private_key_pem).unwrap();
+    secure_private_key(&server_key_path);
 
     let fabric_root = root.path().join("control");
     let store = FabricStore::open(&fabric_root).expect("Control Plane Store");
@@ -2226,6 +2256,7 @@ fn two_outbound_gateways_route_one_operation_through_durable_target_apply() {
         )
         .unwrap();
         std::fs::write(&key_path, &csr.private_key_pem).unwrap();
+        secure_private_key(&key_path);
         node_materials.push((
             node_id.to_string(),
             csr,

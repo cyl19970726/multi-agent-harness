@@ -13,8 +13,8 @@ use crate::artifacts::ArtifactKeyBackend;
 use crate::control_plane::ControlPlane;
 use crate::protocol::*;
 use crate::transport::{
-    connect_outbound_mtls, set_node_gateway_read_timeout, NodeFabricConfig, NodeGatewaySocket,
-    NodeTlsIdentityFiles,
+    connect_outbound_mtls, connect_outbound_mtls_material, set_node_gateway_read_timeout,
+    NodeFabricConfig, NodeGatewaySocket, NodeTlsIdentityFiles, NodeTlsIdentityMaterial,
 };
 use crate::transport::{read_frame, write_frame, FabricSessionFence, VerifiedMtlsPeer};
 use crate::NodeLocalFabricStore;
@@ -361,13 +361,30 @@ impl NodeGatewayConnection {
         tls: &NodeTlsIdentityFiles,
         hello: NodeHello,
     ) -> Result<Self, FabricError> {
+        let socket = connect_outbound_mtls(config, tls)?;
+        Self::establish(config, socket, hello)
+    }
+
+    pub fn connect_with_material(
+        config: &NodeFabricConfig,
+        tls: &NodeTlsIdentityMaterial,
+        hello: NodeHello,
+    ) -> Result<Self, FabricError> {
+        let socket = connect_outbound_mtls_material(config, tls)?;
+        Self::establish(config, socket, hello)
+    }
+
+    fn establish(
+        config: &NodeFabricConfig,
+        mut socket: NodeGatewaySocket,
+        hello: NodeHello,
+    ) -> Result<Self, FabricError> {
         if hello.company_id != config.company_id || hello.node_id != config.node_id {
             return Err(FabricError::none(
                 FabricErrorCode::SourceMismatch,
                 "NodeHello disagrees with the outbound gateway configuration",
             ));
         }
-        let mut socket = connect_outbound_mtls(config, tls)?;
         let now = now_unix_ms()?;
         write_frame(&mut socket, &hello_frame(hello, now)?)?;
         let welcome_frame = read_frame(&mut socket)?;

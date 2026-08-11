@@ -74,6 +74,16 @@ pub struct NodeTlsIdentityFiles {
     pub control_plane_ca_pem: PathBuf,
 }
 
+/// In-memory credential material supplied by an OS credential adapter. This
+/// lets the production macOS path use Keychain without writing private keys to
+/// a temporary PEM file.
+#[derive(Clone)]
+pub struct NodeTlsIdentityMaterial {
+    pub client_certificate_chain_pem: Vec<u8>,
+    pub client_private_key_pem: Vec<u8>,
+    pub control_plane_ca_pem: Vec<u8>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlPlaneTlsFiles {
     pub server_certificate_chain_pem: PathBuf,
@@ -107,6 +117,21 @@ impl NodeTlsIdentityFiles {
                 )));
             }
         }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::symlink_metadata(&self.client_private_key_pem)
+                .map_err(|error| {
+                    transport_error(format!("client private key is unavailable: {error}"))
+                })?
+                .permissions()
+                .mode();
+            if mode & 0o077 != 0 {
+                return Err(transport_error(
+                    "client private key file must have no group/other permissions",
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -121,10 +146,37 @@ pub fn connect_outbound_mtls(
     config: &NodeFabricConfig,
     identity: &NodeTlsIdentityFiles,
 ) -> Result<NodeGatewaySocket, FabricError> {
-    config.validate()?;
     identity.validate()?;
+    connect_outbound_mtls_material(
+        config,
+        &NodeTlsIdentityMaterial {
+            client_certificate_chain_pem: std::fs::read(&identity.client_certificate_chain_pem)
+                .map_err(|error| {
+                    transport_error(format!("client certificate read failed: {error}"))
+                })?,
+            client_private_key_pem: std::fs::read(&identity.client_private_key_pem).map_err(
+                |error| transport_error(format!("client private key read failed: {error}")),
+            )?,
+            control_plane_ca_pem: std::fs::read(&identity.control_plane_ca_pem).map_err(
+                |error| transport_error(format!("Control Plane CA read failed: {error}")),
+            )?,
+        },
+    )
+}
+
+pub fn connect_outbound_mtls_material(
+    config: &NodeFabricConfig,
+    identity: &NodeTlsIdentityMaterial,
+) -> Result<NodeGatewaySocket, FabricError> {
+    use std::io::Cursor;
+
+    config.validate()?;
     let mut roots = rustls::RootCertStore::empty();
-    for certificate in read_certificates(&identity.control_plane_ca_pem)? {
+    let mut ca_reader = Cursor::new(identity.control_plane_ca_pem.as_slice());
+    for certificate in rustls_pemfile::certs(&mut ca_reader)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| transport_error(format!("Control Plane CA parse failed: {error}")))?
+    {
         roots
             .add(certificate)
             .map_err(|error| transport_error(format!("Control Plane CA is invalid: {error}")))?;
@@ -132,11 +184,17 @@ pub fn connect_outbound_mtls(
     if roots.is_empty() {
         return Err(transport_error("Control Plane CA contains no certificate"));
     }
-    let certificates = read_certificates(&identity.client_certificate_chain_pem)?;
+    let mut certificate_reader = Cursor::new(identity.client_certificate_chain_pem.as_slice());
+    let certificates = rustls_pemfile::certs(&mut certificate_reader)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| transport_error(format!("client certificate parse failed: {error}")))?;
     if certificates.is_empty() {
         return Err(transport_error("client certificate chain is empty"));
     }
-    let private_key = read_private_key(&identity.client_private_key_pem)?;
+    let mut private_key_reader = Cursor::new(identity.client_private_key_pem.as_slice());
+    let private_key = rustls_pemfile::private_key(&mut private_key_reader)
+        .map_err(|error| transport_error(format!("client private key parse failed: {error}")))?
+        .ok_or_else(|| transport_error("client private key contains no supported key"))?;
     let tls = rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .with_root_certificates(roots)
         .with_client_auth_cert(certificates, private_key)

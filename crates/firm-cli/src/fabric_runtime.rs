@@ -16,6 +16,7 @@ use harness_fabric::gateway_runtime::{
 };
 use harness_fabric::transport::{
     accept_control_plane_mtls, ControlPlaneTlsFiles, NodeFabricConfig, NodeTlsIdentityFiles,
+    NodeTlsIdentityMaterial,
 };
 use harness_fabric::{
     ArtifactClassification, AuthenticatedActor, ControlPlane, FabricError, FabricErrorCode,
@@ -462,6 +463,7 @@ fn node_gateway_command(
         .open_node_local(&company_id, &node_id)
         .map_err(fabric_error)?;
     let schema_digest = required(args, "--schema-bundle-digest")?;
+    let credentials = resolve_node_credentials(args, &company_id, &node_id)?;
     let hello = NodeHello {
         company_id: company_id.clone(),
         node_id: node_id.clone(),
@@ -488,8 +490,8 @@ fn node_gateway_command(
             .max()
             .unwrap_or(0),
         unresolved_operation_ids: local.unresolved_operation_ids().map_err(fabric_error)?,
-        certificate_serial: required(args, "--certificate-serial")?,
-        public_key_fingerprint: required(args, "--public-key-fingerprint")?,
+        certificate_serial: credentials.certificate_serial.clone(),
+        public_key_fingerprint: credentials.public_key_fingerprint.clone(),
     };
     let config = NodeFabricConfig {
         company_id,
@@ -498,12 +500,13 @@ fn node_gateway_command(
         reconnect_floor_ms: 250,
         reconnect_ceiling_ms: 10_000,
     };
-    let tls = NodeTlsIdentityFiles {
-        client_certificate_chain_pem: required_path(args, "--client-cert")?,
-        client_private_key_pem: required_path(args, "--client-key")?,
-        control_plane_ca_pem: required_path(args, "--control-plane-ca")?,
-    };
-    let mut gateway = NodeGatewayConnection::connect(&config, &tls, hello).map_err(fabric_error)?;
+    let mut gateway = match &credentials.tls {
+        ResolvedNodeTls::Files(tls) => NodeGatewayConnection::connect(&config, tls, hello),
+        ResolvedNodeTls::Material(tls) => {
+            NodeGatewayConnection::connect_with_material(&config, tls, hello)
+        }
+    }
+    .map_err(fabric_error)?;
     local
         .bind_gateway_session(&gateway.session)
         .map_err(fabric_error)?;
@@ -1291,6 +1294,105 @@ fn decode_hex(raw: &str) -> Result<Vec<u8>, FabricError> {
             })
         })
         .collect()
+}
+
+enum ResolvedNodeTls {
+    Files(NodeTlsIdentityFiles),
+    Material(NodeTlsIdentityMaterial),
+}
+
+struct ResolvedNodeCredentials {
+    tls: ResolvedNodeTls,
+    certificate_serial: String,
+    public_key_fingerprint: String,
+}
+
+fn resolve_node_credentials(
+    args: &[String],
+    company_id: &str,
+    node_id: &str,
+) -> CliResult<ResolvedNodeCredentials> {
+    match value(args, "--credential-backend")
+        .unwrap_or_else(|| "file".into())
+        .as_str()
+    {
+        "file" => Ok(ResolvedNodeCredentials {
+            tls: ResolvedNodeTls::Files(NodeTlsIdentityFiles {
+                client_certificate_chain_pem: required_path(args, "--client-cert")?,
+                client_private_key_pem: required_path(args, "--client-key")?,
+                control_plane_ca_pem: required_path(args, "--control-plane-ca")?,
+            }),
+            certificate_serial: required(args, "--certificate-serial")?,
+            public_key_fingerprint: required(args, "--public-key-fingerprint")?,
+        }),
+        "macos-keychain" => {
+            let service = required(args, "--keychain-service")?;
+            if service.trim().is_empty() || service.len() > 128 {
+                return Err(CliError::Usage(
+                    "--keychain-service must be a bounded non-empty service name".into(),
+                ));
+            }
+            let prefix = format!("{company_id}:{node_id}");
+            Ok(ResolvedNodeCredentials {
+                tls: ResolvedNodeTls::Material(NodeTlsIdentityMaterial {
+                    client_certificate_chain_pem: keychain_secret(
+                        &service,
+                        &format!("{prefix}:client-certificate"),
+                    )?
+                    .into_bytes(),
+                    client_private_key_pem: keychain_secret(
+                        &service,
+                        &format!("{prefix}:client-private-key"),
+                    )?
+                    .into_bytes(),
+                    control_plane_ca_pem: keychain_secret(
+                        &service,
+                        &format!("{prefix}:control-plane-ca"),
+                    )?
+                    .into_bytes(),
+                }),
+                certificate_serial: keychain_secret(
+                    &service,
+                    &format!("{prefix}:certificate-serial"),
+                )?,
+                public_key_fingerprint: keychain_secret(
+                    &service,
+                    &format!("{prefix}:public-key-fingerprint"),
+                )?,
+            })
+        }
+        _ => Err(CliError::Usage(
+            "--credential-backend must be file|macos-keychain".into(),
+        )),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn keychain_secret(service: &str, account: &str) -> CliResult<String> {
+    let output = std::process::Command::new("/usr/bin/security")
+        .args(["find-generic-password", "-w", "-s", service, "-a", account])
+        .output()?;
+    if !output.status.success() {
+        return Err(CliError::Usage(format!(
+            "macOS Keychain item is unavailable for service={service} account={account}"
+        )));
+    }
+    let secret = String::from_utf8(output.stdout)
+        .map_err(|_| CliError::Usage("macOS Keychain item is not valid UTF-8".into()))?;
+    let secret = secret.trim().to_string();
+    if secret.is_empty() {
+        return Err(CliError::Usage(format!(
+            "macOS Keychain item is empty for service={service} account={account}"
+        )));
+    }
+    Ok(secret)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn keychain_secret(_service: &str, _account: &str) -> CliResult<String> {
+    Err(CliError::Usage(
+        "macos-keychain credential backend is available only on macOS".into(),
+    ))
 }
 
 fn firm_home(resolved: &ResolvedStore, args: &[String]) -> CliResult<PathBuf> {
