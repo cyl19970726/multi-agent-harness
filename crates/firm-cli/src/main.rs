@@ -23244,6 +23244,10 @@ fn run_codex_app_server_turn(
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                crate::provider_adapter::settle_team_controls_without_terminal_ack(
+                    ledger,
+                    pending_native_controls.drain(..),
+                )?;
                 return Err(CliError::Usage(
                     "codex app-server ended before turn/completed".to_string(),
                 ));
@@ -24030,6 +24034,10 @@ fn run_claude_agent_sdk_team_member(
                     break;
                 }
                 "runner_error" => {
+                    crate::provider_adapter::settle_team_controls_without_terminal_ack(
+                        ledger,
+                        pending_control_effects.drain(..),
+                    )?;
                     return Err(CliError::Usage(format!(
                         "claude_agent_sdk runner error for {}: {}",
                         member.name, data
@@ -24165,6 +24173,10 @@ fn run_claude_agent_sdk_team_member(
     let _ = stdout_reader.join();
     let stderr_text = stderr_reader.join().unwrap_or_default();
     ledger.require_supervisor_lease()?;
+    crate::provider_adapter::settle_team_controls_without_terminal_ack(
+        ledger,
+        pending_control_effects.drain(..),
+    )?;
     if round == 0 {
         if closed_by_host {
             let expected = member_row.clone();
@@ -24988,6 +25000,10 @@ fn run_kimi_member(
             Ok(outcome) => {
                 if let Some(provider_error) = outcome.provider_error.as_deref() {
                     if provider_effect_started {
+                        crate::provider_adapter::settle_optional_team_control_without_terminal_ack(
+                            ledger,
+                            &mut pending_control_effect,
+                        )?;
                         settle_provider_effect(
                             ledger,
                             &effect,
@@ -25021,6 +25037,10 @@ fn run_kimi_member(
             }
             Err(error) => {
                 if provider_effect_started {
+                    crate::provider_adapter::settle_optional_team_control_without_terminal_ack(
+                        ledger,
+                        &mut pending_control_effect,
+                    )?;
                     settle_provider_effect(ledger, &effect, false, None, Some(error.to_string()))?;
                     return Err(CliError::Usage(format!(
                         "RUNTIME_COMMAND_RECOVERY_REQUIRED: Kimi transport failed after the provider accepted the turn: {error}"
@@ -25710,11 +25730,19 @@ fn run_pi_team_member(
                 turn
             }
             Err(error) => {
+                crate::provider_adapter::settle_optional_team_control_without_terminal_ack(
+                    ledger,
+                    &mut pending_control_effect,
+                )?;
                 settle_provider_effect(ledger, &effect, false, None, Some(error.to_string()))?;
                 return Err(error);
             }
         };
         if let Some(error) = control_prepare_error {
+            crate::provider_adapter::settle_optional_team_control_without_terminal_ack(
+                ledger,
+                &mut pending_control_effect,
+            )?;
             return Err(CliError::Usage(error));
         }
         if let Some(pending) = pending_control_effect.take() {
@@ -49778,6 +49806,95 @@ package:com.tencent.mm
                 .contains("RUNTIME_COMMAND_RECOVERY_REQUIRED"));
             assert_eq!(shim.native_effects, before_retry);
             std::fs::remove_dir_all(root).expect("cleanup");
+
+            // Use an independent canonical session because a RecoveryRequired
+            // command correctly blocks every later effect in the same session.
+            // This second matrix case exercises the distinct gap where native
+            // dispatch returned Ok but the terminal acknowledgement vanished.
+            let (ack_store, ack_root) =
+                temp_store(&format!("provider-control-ack-lost-{provider}"));
+            let ack_created = create_two_member_team_run_for_provider(&ack_store, provider);
+            let ack_member = ack_created.member_runs[0].clone();
+            let ack_lease = ack_store
+                .acquire_test_supervisor_lease(
+                    &ack_created.team_run.id,
+                    &format!("provider-control-ack-lost-{provider}"),
+                    std::process::id(),
+                    "test://provider-control-ack-lost",
+                    current_unix_ms_u64(),
+                    60_000,
+                )
+                .expect("acquire ack-loss provider-control Supervisor");
+            ensure_test_runtime_fabric(&ack_store, &ack_created, &ack_lease);
+            let ack_ledger = TeamRunLedger::new(
+                &ack_store,
+                &ack_created.team_run.id,
+                &ack_lease.supervisor_id,
+                ack_lease.generation,
+                Arc::new(AtomicBool::new(true)),
+            );
+            transition_provider_session_for_member(
+                &ack_ledger,
+                &ack_member,
+                AgentSessionStatus::Active,
+            )
+            .expect("activate ack-loss provider session");
+            let mut ack_shim = FaithfulProviderControlShim {
+                provider,
+                primitive,
+                native_effects: 0,
+                fail_after_dispatch: false,
+            };
+            let ack_lost_pending = match crate::provider_adapter::execute_team_control(
+                &ack_ledger,
+                &ack_member,
+                &format!("{provider}-terminal-ack-lost-source"),
+                "terminal acknowledgement loss exercise",
+                false,
+                &mut ack_shim,
+            )
+            .expect("native dispatch succeeds before terminal acknowledgement is lost")
+            {
+                crate::provider_adapter::ProviderControlDispatch::Pending(pending) => pending,
+                crate::provider_adapter::ProviderControlDispatch::Replayed => {
+                    panic!("first ack-loss dispatch cannot be replay")
+                }
+            };
+            assert_eq!(ack_shim.native_effects, 1);
+            crate::provider_adapter::settle_team_control(&ack_ledger, &ack_lost_pending, None)
+                .expect("lost terminal acknowledgement enters recovery inventory");
+            let ack_lost_command = ack_store
+                .runtime_commands(&ack_lease.execution_space_id)
+                .expect("runtime commands after terminal acknowledgement loss")
+                .into_iter()
+                .find(|command| command.id == ack_lost_pending.command_id())
+                .expect("durable ack-loss provider control command");
+            assert_eq!(
+                ack_lost_command.status,
+                RuntimeCommandStatus::RecoveryRequired
+            );
+            assert_eq!(
+                ack_lost_command.effect_certainty,
+                RuntimeEffectCertainty::Unknown
+            );
+            let effects_before_ack_lost_replay = ack_shim.native_effects;
+            let ack_lost_replay = crate::provider_adapter::execute_team_control(
+                &ack_ledger,
+                &ack_member,
+                &format!("{provider}-terminal-ack-lost-source"),
+                "terminal acknowledgement loss exercise",
+                false,
+                &mut ack_shim,
+            )
+            .expect_err("ack-loss replay requires governed recovery");
+            assert!(ack_lost_replay
+                .to_string()
+                .contains("RUNTIME_COMMAND_RECOVERY_REQUIRED"));
+            assert_eq!(
+                ack_shim.native_effects, effects_before_ack_lost_replay,
+                "ack-loss replay repeated {provider} native effect"
+            );
+            std::fs::remove_dir_all(ack_root).expect("cleanup ack-loss store");
         }
     }
 

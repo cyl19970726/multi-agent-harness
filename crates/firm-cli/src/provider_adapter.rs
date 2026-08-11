@@ -521,6 +521,39 @@ pub(crate) fn settle_team_control(
     }
 }
 
+/// A provider transport can disappear after the native control was accepted
+/// but before its terminal acknowledgement arrives. Every such exit must
+/// durably classify the already-dispatched effect as unknown before returning;
+/// leaving the command merely in-flight would hide it from the governed
+/// recovery inventory and make a later retry unsafe.
+pub(crate) fn settle_team_controls_without_terminal_ack(
+    ledger: &TeamRunLedger,
+    pending: impl IntoIterator<Item = Box<PendingProviderControl>>,
+) -> CliResult<()> {
+    let mut first_error = None;
+    for control in pending {
+        if let Err(error) = settle_team_control(ledger, &control, None) {
+            if first_error.is_none() {
+                first_error = Some(error);
+            }
+        }
+    }
+    if let Some(error) = first_error {
+        return Err(error);
+    }
+    Ok(())
+}
+
+pub(crate) fn settle_optional_team_control_without_terminal_ack(
+    ledger: &TeamRunLedger,
+    pending: &mut Option<Box<PendingProviderControl>>,
+) -> CliResult<()> {
+    if let Some(control) = pending.take() {
+        settle_team_control(ledger, &control, None)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn provider_availability(provider: &str) -> Result<ProviderAvailability, String> {
     let binary = match provider {
         "codex" => "codex",
