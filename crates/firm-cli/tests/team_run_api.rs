@@ -3562,6 +3562,11 @@ fn codex_app_server_member_interrupt_waits_for_provider_terminal_event() {
     );
 }
 
+// Historical run-addressed Codex Close/Reopen happy path. A live provider
+// callback can make the effect certainty unknowable; current RuntimeCommand
+// tests require an explicit RecoveryRequired result instead of treating that
+// race as an unconditional 200/Stopped transition.
+#[cfg(any())]
 #[test]
 fn host_can_explicitly_close_a_live_codex_member() {
     let home = TempHome::new("team-run-codex-close");
