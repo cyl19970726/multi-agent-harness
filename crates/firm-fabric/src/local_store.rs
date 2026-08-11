@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use crate::protocol::*;
@@ -59,6 +60,9 @@ pub struct NodeLocalFabricStore {
     root: PathBuf,
     journal: PathBuf,
     inner: Mutex<LocalInner>,
+    available: AtomicBool,
+    fail_next_commit: AtomicBool,
+    fail_after_append: AtomicBool,
 }
 
 impl NodeLocalFabricStore {
@@ -104,6 +108,9 @@ impl NodeLocalFabricStore {
                 state,
                 last_frame_digest,
             }),
+            available: AtomicBool::new(true),
+            fail_next_commit: AtomicBool::new(false),
+            fail_after_append: AtomicBool::new(false),
         })
     }
 
@@ -116,6 +123,7 @@ impl NodeLocalFabricStore {
     }
 
     pub fn snapshot(&self) -> Result<NodeLocalFabricState, FabricError> {
+        self.require_available()?;
         Ok(self
             .inner
             .lock()
@@ -127,6 +135,14 @@ impl NodeLocalFabricStore {
             })?
             .state
             .clone())
+    }
+
+    pub fn fail_next_commit_for_test(&self) {
+        self.fail_next_commit.store(true, Ordering::SeqCst);
+    }
+
+    pub fn fail_after_append_for_test(&self) {
+        self.fail_after_append.store(true, Ordering::SeqCst);
     }
 
     pub fn prepare_outbox(
@@ -353,6 +369,7 @@ impl NodeLocalFabricStore {
         &self,
         operation: impl FnOnce(&mut NodeLocalFabricState) -> Result<T, FabricError>,
     ) -> Result<T, FabricError> {
+        self.require_available()?;
         let mut inner = self.inner.lock().map_err(|_| {
             FabricError::none(
                 FabricErrorCode::StoreUnavailable,
@@ -362,6 +379,12 @@ impl NodeLocalFabricStore {
         let mut next = inner.state.clone();
         let result = operation(&mut next)?;
         next.revision = inner.state.revision.saturating_add(1);
+        if self.fail_next_commit.swap(false, Ordering::SeqCst) {
+            return Err(FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                "forced failure before Node-local durable transaction append",
+            ));
+        }
         let core = LocalJournalCore {
             transaction_sequence: next.revision,
             previous_digest: inner.last_frame_digest.clone(),
@@ -375,9 +398,26 @@ impl NodeLocalFabricStore {
             frame_digest: frame_digest.clone(),
         };
         append_local_frame(&self.journal, &frame)?;
+        if self.fail_after_append.swap(false, Ordering::SeqCst) {
+            self.available.store(false, Ordering::SeqCst);
+            return Err(FabricError::unknown(
+                "node-local-fabric-commit",
+                "Node-local durable append may have committed but its acknowledgement was lost; reopen and reconcile",
+            ));
+        }
         inner.state = next;
         inner.last_frame_digest = frame_digest;
         Ok(result)
+    }
+
+    fn require_available(&self) -> Result<(), FabricError> {
+        if !self.available.load(Ordering::SeqCst) {
+            return Err(FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                "Node-local FabricStore is unavailable",
+            ));
+        }
+        Ok(())
     }
 }
 
