@@ -391,6 +391,7 @@ pub struct RouteAttempt {
     pub target_gateway_generation: u64,
     pub control_plane_generation: u64,
     pub route_seq: u64,
+    pub ordering_seq: u64,
     pub state: RouteAttemptState,
     pub error_code: Option<FabricErrorCode>,
     pub effect: EffectCertainty,

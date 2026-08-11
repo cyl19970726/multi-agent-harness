@@ -134,6 +134,13 @@ pub(crate) fn accept_and_enqueue(
         .copied()
         .unwrap_or(0)
         .saturating_add(1);
+    let ordering_index = format!("{}:{}", operation.target_node_id, operation.ordering_key);
+    let ordering_seq = state
+        .ordering_sequences
+        .get(&ordering_index)
+        .copied()
+        .unwrap_or(0)
+        .saturating_add(1);
     let attempt = RouteAttempt {
         id: format!("route-attempt:{}:1", operation.id),
         company_id: company_id.into(),
@@ -143,6 +150,7 @@ pub(crate) fn accept_and_enqueue(
         target_gateway_generation: gateway.gateway_generation,
         control_plane_generation,
         route_seq,
+        ordering_seq,
         state: RouteAttemptState::Queued,
         error_code: None,
         effect: EffectCertainty::None,
@@ -177,23 +185,11 @@ pub(crate) fn accept_and_enqueue(
         .route_sequences
         .insert(operation.target_node_id.clone(), route_seq);
     state
+        .ordering_sequences
+        .insert(ordering_index, ordering_seq);
+    state
         .operations
         .insert(operation.id.clone(), operation.clone());
-    state.outboxes.insert(
-        operation.id.clone(),
-        LocalRemoteOutbox {
-            company_id: company_id.into(),
-            node_id: operation.source_node_id.clone(),
-            operation_id: operation.id.clone(),
-            request_digest,
-            local_state: LocalOutboxState::Accepted,
-            gateway_generation: operation.source_gateway_generation,
-            attempt_count: 1,
-            last_attempt_at_unix_ms: Some(now_unix_ms),
-            terminal_receipt_ref: None,
-            schema_version: FABRIC_SCHEMA_VERSION.into(),
-        },
-    );
     state.attempts.insert(attempt.id.clone(), attempt.clone());
     state.receipts.insert(receipt.id.clone(), receipt.clone());
     let window = state
@@ -216,164 +212,6 @@ pub(crate) fn accept_and_enqueue(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn persist_target_inbox(
-    state: &mut FabricState,
-    company_id: &str,
-    control_plane_generation: u64,
-    node_id: &str,
-    gateway_generation: u64,
-    operation_id: &str,
-    request_digest: &str,
-    route_seq: u64,
-    now_unix_ms: u64,
-) -> Result<(LocalRemoteInbox, RouteReceipt, bool), FabricError> {
-    require_current_gateway(
-        state,
-        company_id,
-        control_plane_generation,
-        node_id,
-        gateway_generation,
-        now_unix_ms,
-    )?;
-    let operation = state.operations.get(operation_id).cloned().ok_or_else(|| {
-        FabricError::none(
-            FabricErrorCode::OperationUnknown,
-            "routed operation does not exist",
-        )
-    })?;
-    if operation.target_node_id != node_id
-        || operation.company_id != company_id
-        || canonical_digest(&operation)? != request_digest
-    {
-        return Err(FabricError::none(
-            FabricErrorCode::SourceMismatch,
-            "target inbox request does not match the routed operation",
-        ));
-    }
-    let attempt_id = state
-        .attempts
-        .values()
-        .find(|attempt| {
-            attempt.operation_id == operation_id
-                && attempt.route_seq == route_seq
-                && attempt.target_gateway_generation == gateway_generation
-        })
-        .map(|attempt| attempt.id.clone())
-        .ok_or_else(|| {
-            FabricError::none(
-                FabricErrorCode::NodeStaleGeneration,
-                "target persistence acknowledgement has no matching route attempt",
-            )
-        })?;
-    let attempt = state.attempts.get(&attempt_id).ok_or_else(|| {
-        FabricError::none(
-            FabricErrorCode::StoreUnavailable,
-            "routed operation has no attempt",
-        )
-    })?;
-    if attempt.route_seq != route_seq
-        || attempt.target_gateway_generation != gateway_generation
-        || attempt.control_plane_generation != control_plane_generation
-    {
-        return Err(FabricError::none(
-            FabricErrorCode::NodeStaleGeneration,
-            "target persistence acknowledgement is stale",
-        ));
-    }
-    if let Some(existing) = state.inboxes.get(operation_id) {
-        if existing.request_digest != request_digest
-            || existing.route_seq != route_seq
-            || existing.gateway_generation != gateway_generation
-        {
-            return Err(FabricError::none(
-                FabricErrorCode::IdempotencyConflict,
-                "duplicate inbox persistence changed the request",
-            ));
-        }
-        let receipt = receipt_for(
-            state,
-            operation_id,
-            ReceiptKind::TargetPersisted,
-            gateway_generation,
-        )?;
-        return Ok((existing.clone(), receipt, true));
-    }
-    let last_persisted = state
-        .persisted_route_sequences
-        .get(node_id)
-        .copied()
-        .unwrap_or(0);
-    if route_seq <= last_persisted {
-        return Err(FabricError::none(
-            FabricErrorCode::IdempotencyConflict,
-            "route sequence was already passed by another persisted operation",
-        ));
-    }
-    if route_seq > last_persisted.saturating_add(1) {
-        let gap_is_proven_effect_none = (last_persisted.saturating_add(1)..route_seq).all(|gap| {
-            state.attempts.values().any(|candidate| {
-                candidate.target_node_id == node_id
-                    && candidate.route_seq == gap
-                    && candidate.state == RouteAttemptState::Ended
-                    && candidate.effect == EffectCertainty::None
-            })
-        });
-        if !gap_is_proven_effect_none {
-            return Err(FabricError::none(
-                FabricErrorCode::ExpectedRevisionConflict,
-                "target inbox cannot persist a route sequence before unresolved predecessors",
-            ));
-        }
-    }
-    let attempt = state.attempts.get_mut(&attempt_id).ok_or_else(|| {
-        FabricError::none(
-            FabricErrorCode::StoreUnavailable,
-            "routed operation attempt disappeared before persistence",
-        )
-    })?;
-    attempt.state = RouteAttemptState::TargetPersisted;
-    attempt.effect = EffectCertainty::None;
-    let inbox = LocalRemoteInbox {
-        company_id: company_id.into(),
-        node_id: node_id.into(),
-        operation_id: operation_id.into(),
-        route_seq,
-        request_digest: request_digest.into(),
-        state: LocalInboxState::Persisted,
-        gateway_generation,
-        attempt_count: 1,
-        claim_generation: None,
-        result_digest: None,
-        schema_version: FABRIC_SCHEMA_VERSION.into(),
-    };
-    let receipt = RouteReceipt {
-        id: receipt_id(
-            operation_id,
-            ReceiptKind::TargetPersisted,
-            gateway_generation,
-        ),
-        company_id: company_id.into(),
-        operation_id: operation_id.into(),
-        target_node_id: node_id.into(),
-        target_gateway_generation: gateway_generation,
-        control_plane_generation,
-        route_seq,
-        kind: ReceiptKind::TargetPersisted,
-        result_schema: None,
-        result: None,
-        result_digest: None,
-        error: None,
-        created_at_unix_ms: now_unix_ms,
-        schema_version: FABRIC_SCHEMA_VERSION.into(),
-    };
-    state.inboxes.insert(operation_id.into(), inbox.clone());
-    state
-        .persisted_route_sequences
-        .insert(node_id.into(), route_seq);
-    state.receipts.insert(receipt.id.clone(), receipt.clone());
-    Ok((inbox, receipt, false))
-}
-
 pub(crate) fn retry_operation(
     state: &mut FabricState,
     company_id: &str,
@@ -399,16 +237,21 @@ pub(crate) fn retry_operation(
             "routed operation expired before retry",
         ));
     }
-    if let Some(inbox) = state.inboxes.get(operation_id) {
-        if matches!(
-            inbox.state,
-            LocalInboxState::Applied | LocalInboxState::Rejected
-        ) {
-            return Err(FabricError::none(
-                FabricErrorCode::IdempotencyConflict,
-                "terminal operation cannot be retried",
-            ));
-        }
+    if state.receipts.values().any(|receipt| {
+        receipt.operation_id == operation_id
+            && matches!(
+                receipt.kind,
+                ReceiptKind::OperationApplied | ReceiptKind::OperationRejected
+            )
+    }) {
+        return Err(FabricError::none(
+            FabricErrorCode::IdempotencyConflict,
+            "terminal operation cannot be retried",
+        ));
+    }
+    if state.receipts.values().any(|receipt| {
+        receipt.operation_id == operation_id && receipt.kind == ReceiptKind::TargetPersisted
+    }) {
         return Err(FabricError::unknown(
             operation_id,
             "target already persisted the operation; reconcile instead of blind retry",
@@ -488,6 +331,7 @@ pub(crate) fn retry_operation(
         target_gateway_generation: gateway.gateway_generation,
         control_plane_generation,
         route_seq,
+        ordering_seq: prior.ordering_seq,
         state: RouteAttemptState::Queued,
         error_code: None,
         effect: EffectCertainty::None,
@@ -520,15 +364,113 @@ pub(crate) fn retry_operation(
         .insert(operation.target_node_id, route_seq);
     state.attempts.insert(attempt.id.clone(), attempt.clone());
     state.receipts.insert(receipt.id.clone(), receipt.clone());
-    if let Some(outbox) = state.outboxes.get_mut(operation_id) {
-        outbox.attempt_count = outbox.attempt_count.saturating_add(1);
-        outbox.last_attempt_at_unix_ms = Some(now_unix_ms);
-    }
     Ok((attempt, receipt, false))
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn record_application_result(
+pub(crate) fn record_target_persisted(
+    state: &mut FabricState,
+    company_id: &str,
+    control_plane_generation: u64,
+    node_id: &str,
+    gateway_generation: u64,
+    operation_id: &str,
+    request_digest: &str,
+    route_seq: u64,
+    now_unix_ms: u64,
+) -> Result<(RouteAttempt, RouteReceipt, bool), FabricError> {
+    require_current_gateway(
+        state,
+        company_id,
+        control_plane_generation,
+        node_id,
+        gateway_generation,
+        now_unix_ms,
+    )?;
+    let operation = state.operations.get(operation_id).ok_or_else(|| {
+        FabricError::none(
+            FabricErrorCode::OperationUnknown,
+            "target persisted receipt references an unknown operation",
+        )
+    })?;
+    if operation.company_id != company_id
+        || operation.target_node_id != node_id
+        || canonical_digest(operation)? != request_digest
+    {
+        return Err(FabricError::none(
+            FabricErrorCode::SourceMismatch,
+            "target persisted receipt does not match the routed operation",
+        ));
+    }
+    let attempt_id = state
+        .attempts
+        .values()
+        .find(|attempt| {
+            attempt.operation_id == operation_id
+                && attempt.route_seq == route_seq
+                && attempt.target_gateway_generation == gateway_generation
+                && attempt.control_plane_generation == control_plane_generation
+        })
+        .map(|attempt| attempt.id.clone())
+        .ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::NodeStaleGeneration,
+                "target persisted receipt has no matching route attempt",
+            )
+        })?;
+    let receipt_key = receipt_id(
+        operation_id,
+        ReceiptKind::TargetPersisted,
+        gateway_generation,
+    );
+    if let Some(receipt) = state.receipts.get(&receipt_key).cloned() {
+        let attempt = state.attempts.get(&attempt_id).cloned().ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                "persisted receipt has no route attempt",
+            )
+        })?;
+        return Ok((attempt, receipt, true));
+    }
+    let attempt = state.attempts.get_mut(&attempt_id).ok_or_else(|| {
+        FabricError::none(
+            FabricErrorCode::StoreUnavailable,
+            "target persisted attempt disappeared",
+        )
+    })?;
+    if !matches!(
+        attempt.state,
+        RouteAttemptState::Queued | RouteAttemptState::Sent
+    ) {
+        return Err(FabricError::none(
+            FabricErrorCode::IdempotencyConflict,
+            "target persisted receipt cannot regress route attempt state",
+        ));
+    }
+    attempt.state = RouteAttemptState::TargetPersisted;
+    let attempt = attempt.clone();
+    let receipt = RouteReceipt {
+        id: receipt_key,
+        company_id: company_id.into(),
+        operation_id: operation_id.into(),
+        target_node_id: node_id.into(),
+        target_gateway_generation: gateway_generation,
+        control_plane_generation,
+        route_seq,
+        kind: ReceiptKind::TargetPersisted,
+        result_schema: None,
+        result: None,
+        result_digest: None,
+        error: None,
+        created_at_unix_ms: now_unix_ms,
+        schema_version: FABRIC_SCHEMA_VERSION.into(),
+    };
+    state.receipts.insert(receipt.id.clone(), receipt.clone());
+    Ok((attempt, receipt, false))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn record_application_receipt(
     state: &mut FabricState,
     company_id: &str,
     control_plane_generation: u64,
@@ -539,7 +481,7 @@ pub(crate) fn record_application_result(
     result: serde_json::Value,
     applied: bool,
     now_unix_ms: u64,
-) -> Result<(LocalRemoteInbox, RouteReceipt, bool), FabricError> {
+) -> Result<(RouteAttempt, RouteReceipt, bool), FabricError> {
     require_current_gateway(
         state,
         company_id,
@@ -548,79 +490,77 @@ pub(crate) fn record_application_result(
         gateway_generation,
         now_unix_ms,
     )?;
+    let operation = state.operations.get(operation_id).ok_or_else(|| {
+        FabricError::none(
+            FabricErrorCode::OperationUnknown,
+            "application receipt references an unknown operation",
+        )
+    })?;
+    if operation.company_id != company_id || operation.target_node_id != node_id {
+        return Err(FabricError::none(
+            FabricErrorCode::SourceMismatch,
+            "application receipt does not match operation target authority",
+        ));
+    }
     let result_digest = canonical_digest(&result)?;
-    let receipt_kind = if applied {
+    let kind = if applied {
         ReceiptKind::OperationApplied
     } else {
         ReceiptKind::OperationRejected
     };
-    if let Some(existing_receipt) = state
-        .receipts
-        .get(&receipt_id(operation_id, receipt_kind, gateway_generation))
-        .cloned()
-    {
-        if existing_receipt.result_digest.as_deref() != Some(result_digest.as_str())
-            || existing_receipt.result_schema.as_deref() != Some(result_schema)
+    let receipt_key = receipt_id(operation_id, kind, gateway_generation);
+    if let Some(receipt) = state.receipts.get(&receipt_key).cloned() {
+        if receipt.result_digest.as_deref() != Some(result_digest.as_str())
+            || receipt.result_schema.as_deref() != Some(result_schema)
         {
             return Err(FabricError::none(
                 FabricErrorCode::IdempotencyConflict,
-                "application result replay changed its fingerprint",
+                "application receipt replay changed its fingerprint",
             ));
         }
-        let inbox = state.inboxes.get(operation_id).cloned().ok_or_else(|| {
-            FabricError::none(
-                FabricErrorCode::StoreUnavailable,
-                "terminal receipt has no inbox record",
-            )
-        })?;
-        return Ok((inbox, existing_receipt, true));
+        let attempt = state
+            .attempts
+            .values()
+            .find(|attempt| {
+                attempt.operation_id == operation_id
+                    && attempt.target_gateway_generation == gateway_generation
+            })
+            .cloned()
+            .ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::StoreUnavailable,
+                    "terminal receipt has no route attempt",
+                )
+            })?;
+        return Ok((attempt, receipt, true));
     }
-    let inbox = state.inboxes.get_mut(operation_id).ok_or_else(|| {
-        FabricError::none(
-            FabricErrorCode::OperationUnknown,
-            "operation was not persisted in the target inbox",
-        )
-    })?;
-    if inbox.node_id != node_id
-        || inbox.gateway_generation != gateway_generation
-        || !matches!(
-            inbox.state,
-            LocalInboxState::Persisted | LocalInboxState::Claimed
-        )
-    {
-        return Err(FabricError::none(
-            FabricErrorCode::NodeStaleGeneration,
-            "application result does not match the current persisted inbox generation",
-        ));
-    }
-    inbox.state = if applied {
-        LocalInboxState::Applied
-    } else {
-        LocalInboxState::Rejected
-    };
-    inbox.result_digest = Some(result_digest.clone());
-    let inbox = inbox.clone();
     let attempt_id = state
         .attempts
         .values()
         .find(|attempt| {
             attempt.operation_id == operation_id
-                && attempt.route_seq == inbox.route_seq
                 && attempt.target_gateway_generation == gateway_generation
+                && attempt.control_plane_generation == control_plane_generation
         })
         .map(|attempt| attempt.id.clone())
         .ok_or_else(|| {
             FabricError::none(
-                FabricErrorCode::StoreUnavailable,
-                "terminal result has no matching route attempt",
+                FabricErrorCode::NodeStaleGeneration,
+                "application receipt has no matching route attempt",
             )
         })?;
     let attempt = state.attempts.get_mut(&attempt_id).ok_or_else(|| {
         FabricError::none(
             FabricErrorCode::StoreUnavailable,
-            "terminal result has no route attempt",
+            "application receipt attempt disappeared",
         )
     })?;
+    if attempt.state != RouteAttemptState::TargetPersisted {
+        return Err(FabricError::none(
+            FabricErrorCode::ExpectedRevisionConflict,
+            "application receipt requires prior target_persisted receipt",
+        ));
+    }
     attempt.state = RouteAttemptState::Ended;
     attempt.effect = if applied {
         EffectCertainty::Applied
@@ -628,15 +568,16 @@ pub(crate) fn record_application_result(
         EffectCertainty::None
     };
     attempt.ended_at_unix_ms = Some(now_unix_ms);
+    let attempt = attempt.clone();
     let receipt = RouteReceipt {
-        id: receipt_id(operation_id, receipt_kind, gateway_generation),
+        id: receipt_key,
         company_id: company_id.into(),
         operation_id: operation_id.into(),
         target_node_id: node_id.into(),
         target_gateway_generation: gateway_generation,
         control_plane_generation,
-        route_seq: inbox.route_seq,
-        kind: receipt_kind,
+        route_seq: attempt.route_seq,
+        kind,
         result_schema: Some(result_schema.into()),
         result: Some(result),
         result_digest: Some(result_digest),
@@ -645,11 +586,7 @@ pub(crate) fn record_application_result(
         schema_version: FABRIC_SCHEMA_VERSION.into(),
     };
     state.receipts.insert(receipt.id.clone(), receipt.clone());
-    if let Some(outbox) = state.outboxes.get_mut(operation_id) {
-        outbox.local_state = LocalOutboxState::Terminal;
-        outbox.terminal_receipt_ref = Some(receipt.id.clone());
-    }
-    Ok((inbox, receipt, false))
+    Ok((attempt, receipt, false))
 }
 
 pub(crate) fn mark_unknown(
@@ -657,31 +594,46 @@ pub(crate) fn mark_unknown(
     company_id: &str,
     operation_id: &str,
 ) -> Result<(), FabricError> {
-    let inbox = state.inboxes.get_mut(operation_id).ok_or_else(|| {
+    let operation = state.operations.get(operation_id).ok_or_else(|| {
         FabricError::none(
             FabricErrorCode::OperationUnknown,
-            "operation has no target inbox",
+            "operation does not exist",
         )
     })?;
-    if inbox.company_id != company_id {
+    if operation.company_id != company_id {
         return Err(FabricError::none(
             FabricErrorCode::WrongCompany,
             "operation belongs to another Company",
         ));
     }
-    if matches!(
-        inbox.state,
-        LocalInboxState::Applied | LocalInboxState::Rejected
-    ) {
+    if state.receipts.values().any(|receipt| {
+        receipt.operation_id == operation_id
+            && matches!(
+                receipt.kind,
+                ReceiptKind::OperationApplied | ReceiptKind::OperationRejected
+            )
+    }) {
         return Ok(());
     }
-    inbox.state = LocalInboxState::RecoveryRequired;
-    if let Some(attempt) = state
+    let attempt_id = state
         .attempts
-        .get_mut(&format!("route-attempt:{operation_id}:1"))
-    {
-        attempt.effect = EffectCertainty::Unknown;
-    }
+        .values()
+        .filter(|attempt| attempt.operation_id == operation_id)
+        .max_by_key(|attempt| attempt.attempt_no)
+        .map(|attempt| attempt.id.clone())
+        .ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::OperationUnknown,
+                "operation has no route attempt",
+            )
+        })?;
+    let attempt = state.attempts.get_mut(&attempt_id).ok_or_else(|| {
+        FabricError::none(
+            FabricErrorCode::StoreUnavailable,
+            "route attempt disappeared before recovery marking",
+        )
+    })?;
+    attempt.effect = EffectCertainty::Unknown;
     Ok(())
 }
 

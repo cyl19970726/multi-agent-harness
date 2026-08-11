@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use crate::protocol::*;
 use crate::store::FabricState;
 use crate::{FabricError, FabricErrorCode, FABRIC_PROTOCOL_VERSION, FABRIC_SCHEMA_VERSION};
@@ -123,15 +121,9 @@ pub(crate) fn connect(
         node.last_seen_at_unix_ms = Some(now_unix_ms);
         node.updated_at_unix_ms = now_unix_ms;
     }
-    let required_reconcile_ids = state
-        .inboxes
-        .values()
-        .filter(|inbox| {
-            inbox.node_id == hello.node_id && inbox.state == LocalInboxState::RecoveryRequired
-        })
-        .map(|inbox| inbox.operation_id.clone())
-        .chain(hello.unresolved_operation_ids.iter().cloned())
-        .collect::<BTreeSet<_>>();
+    // The Node-local inbox is the sole source of unresolved application effects.
+    // The Control Plane must never fabricate or mirror this local recovery truth.
+    let required_reconcile_ids = hello.unresolved_operation_ids.clone();
     Ok(NodeWelcome {
         company_id: company_id.into(),
         node_id: hello.node_id.clone(),

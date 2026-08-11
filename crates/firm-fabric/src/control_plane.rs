@@ -369,7 +369,7 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn persist_target_inbox(
+    pub fn record_target_persisted(
         &self,
         generation: u64,
         node_id: &str,
@@ -378,7 +378,7 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
         request_digest: &str,
         route_seq: u64,
         now_unix_ms: u64,
-    ) -> Result<(LocalRemoteInbox, RouteReceipt, bool), FabricError> {
+    ) -> Result<(RouteAttempt, RouteReceipt, bool), FabricError> {
         self.store.transact(|state| {
             require_active_control_plane(
                 state,
@@ -387,7 +387,7 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
                 generation,
                 now_unix_ms,
             )?;
-            router::persist_target_inbox(
+            router::record_target_persisted(
                 state,
                 &self.company_id,
                 generation,
@@ -402,7 +402,7 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn record_application_result(
+    pub fn record_application_receipt(
         &self,
         generation: u64,
         node_id: &str,
@@ -412,7 +412,7 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
         result: serde_json::Value,
         applied: bool,
         now_unix_ms: u64,
-    ) -> Result<(LocalRemoteInbox, RouteReceipt, bool), FabricError> {
+    ) -> Result<(RouteAttempt, RouteReceipt, bool), FabricError> {
         self.store.transact(|state| {
             require_active_control_plane(
                 state,
@@ -421,7 +421,7 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
                 generation,
                 now_unix_ms,
             )?;
-            router::record_application_result(
+            router::record_application_receipt(
                 state,
                 &self.company_id,
                 generation,

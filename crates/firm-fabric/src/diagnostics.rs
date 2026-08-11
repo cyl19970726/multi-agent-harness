@@ -1,5 +1,5 @@
 use crate::protocol::{
-    LocalInboxState, NodeAdministrativeStatus, NodeConnectionStatus, RouteAttemptState,
+    EffectCertainty, NodeAdministrativeStatus, NodeConnectionStatus, ReceiptKind, RouteAttemptState,
 };
 use crate::{FabricError, FabricStore};
 
@@ -42,14 +42,14 @@ pub fn inspect_fabric(
         .map(|node| {
             let gateway = state.gateway_leases.get(&node.id);
             let recovery_required_operations = state
-                .inboxes
+                .attempts
                 .values()
-                .filter(|inbox| {
-                    inbox.company_id == company_id
-                        && inbox.node_id == node.id
-                        && inbox.state == LocalInboxState::RecoveryRequired
+                .filter(|attempt| {
+                    attempt.company_id == company_id
+                        && attempt.target_node_id == node.id
+                        && attempt.effect == EffectCertainty::Unknown
                 })
-                .map(|inbox| inbox.operation_id.clone())
+                .map(|attempt| attempt.operation_id.clone())
                 .collect::<Vec<_>>();
             let queued_operations = state
                 .attempts
@@ -83,9 +83,15 @@ pub fn inspect_fabric(
                     .copied()
                     .unwrap_or_default(),
                 last_persisted_route_seq: state
-                    .persisted_route_sequences
-                    .get(&node.id)
-                    .copied()
+                    .receipts
+                    .values()
+                    .filter(|receipt| {
+                        receipt.company_id == company_id
+                            && receipt.target_node_id == node.id
+                            && receipt.kind == ReceiptKind::TargetPersisted
+                    })
+                    .map(|receipt| receipt.route_seq)
+                    .max()
                     .unwrap_or_default(),
             }
         })

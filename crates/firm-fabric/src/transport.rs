@@ -1,6 +1,8 @@
 use crate::protocol::{FabricError, FabricErrorCode, FabricFrame};
 
-pub const MAX_FABRIC_FRAME_BYTES: usize = 1024 * 1024;
+pub const MAX_FABRIC_FRAME_BYTES: usize = 256 * 1024;
+pub const FABRIC_WEBSOCKET_SUBPROTOCOL: &str = "agentfirm.node.v1";
+pub const FABRIC_GATEWAY_PATH: &str = "/v1/node-gateway/connect";
 pub const GATEWAY_HEARTBEAT_INTERVAL_MS: u64 = 10_000;
 pub const GATEWAY_LEASE_DURATION_MS: u64 = 30_000;
 
@@ -39,6 +41,12 @@ impl NodeFabricConfig {
             return Err(FabricError::none(
                 FabricErrorCode::InvalidPayload,
                 "Control Plane endpoint must be an authority/path without credentials, query, or fragment",
+            ));
+        }
+        if !endpoint.ends_with(FABRIC_GATEWAY_PATH) {
+            return Err(FabricError::none(
+                FabricErrorCode::ProtocolIncompatible,
+                "Control Plane endpoint must use the frozen /v1/node-gateway/connect path",
             ));
         }
         if self.reconnect_floor_ms == 0
@@ -90,7 +98,7 @@ pub fn encode_frame(frame: &FabricFrame) -> Result<Vec<u8>, FabricError> {
     if encoded.len() > MAX_FABRIC_FRAME_BYTES {
         return Err(FabricError::none(
             FabricErrorCode::InvalidPayload,
-            "FabricFrame exceeds the 1 MiB wire limit; use an artifact capability",
+            "FabricFrame exceeds the 256 KiB wire limit; use an artifact capability",
         ));
     }
     Ok(encoded)
@@ -100,7 +108,7 @@ pub fn decode_frame(bytes: &[u8]) -> Result<FabricFrame, FabricError> {
     if bytes.is_empty() || bytes.len() > MAX_FABRIC_FRAME_BYTES {
         return Err(FabricError::none(
             FabricErrorCode::InvalidPayload,
-            "FabricFrame is empty or exceeds the 1 MiB wire limit",
+            "FabricFrame is empty or exceeds the 256 KiB wire limit",
         ));
     }
     let frame: FabricFrame = serde_json::from_slice(bytes).map_err(|error| {

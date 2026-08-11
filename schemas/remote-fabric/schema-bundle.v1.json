@@ -18,7 +18,7 @@
     "runtime_command.reference.v1"
   ],
   "limits": {
-    "max_frame_bytes": 1048576,
+    "max_frame_bytes": 262144,
     "max_artifact_bytes": 67108864,
     "max_operation_artifact_bytes": 268435456,
     "gateway_heartbeat_interval_ms": 10000,

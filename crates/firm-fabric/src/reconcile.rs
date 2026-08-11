@@ -50,8 +50,12 @@ pub(crate) fn reconcile(
             .cloned()
             .collect::<Vec<_>>();
         if terminal.is_empty() {
-            let inbox = state.inboxes.get(operation_id);
-            if inbox.is_some_and(|inbox| inbox.state == LocalInboxState::RecoveryRequired) {
+            let unknown = state.attempts.values().any(|attempt| {
+                attempt.operation_id == *operation_id
+                    && attempt.target_node_id == node_id
+                    && attempt.effect == EffectCertainty::Unknown
+            });
+            if unknown {
                 return Err(FabricError::unknown(
                     operation_id,
                     "application effect is unknown; blind replay is forbidden",

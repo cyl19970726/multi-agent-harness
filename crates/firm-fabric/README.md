@@ -20,7 +20,8 @@ cannot mutate them directly.
 - A Node proves possession of an Ed25519 key for enrollment, certificate
   rotation, and every `NodeHello`. Certificate serial, public-key fingerprint,
   Company, Node, schema bundle, and generation are checked before mutation.
-- Every frame is closed-contract JSON and carries exact Company, Node, gateway
+- Every normal frame is at most 256 KiB, uses subprotocol
+  `agentfirm.node.v1`, is closed-contract JSON, and carries exact Company, Node, gateway
   generation, Control Plane generation, protocol version, schema version, and
   payload digest. The future socket adapter must construct its session fence
   from the verified mTLS peer, never from message JSON.

@@ -1,0 +1,462 @@
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use crate::protocol::*;
+use crate::{canonical_digest, FabricError, FabricErrorCode, FABRIC_SCHEMA_VERSION};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalApplicationResult {
+    pub operation_id: String,
+    pub result_schema: String,
+    pub result: serde_json::Value,
+    pub result_digest: String,
+    pub applied: bool,
+    pub gateway_generation: u64,
+    pub completed_at_unix_ms: u64,
+    pub schema_version: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeLocalFabricState {
+    pub revision: u64,
+    pub outboxes: BTreeMap<String, LocalRemoteOutbox>,
+    pub inboxes: BTreeMap<String, LocalRemoteInbox>,
+    pub persisted_ordering_sequences: BTreeMap<String, u64>,
+    pub results: BTreeMap<String, LocalApplicationResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalJournalCore {
+    transaction_sequence: u64,
+    previous_digest: String,
+    state: NodeLocalFabricState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalJournalFrame {
+    transaction_sequence: u64,
+    previous_digest: String,
+    state: NodeLocalFabricState,
+    frame_digest: String,
+}
+
+struct LocalInner {
+    state: NodeLocalFabricState,
+    last_frame_digest: String,
+}
+
+pub struct NodeLocalFabricStore {
+    company_id: String,
+    node_id: String,
+    root: PathBuf,
+    journal: PathBuf,
+    inner: Mutex<LocalInner>,
+}
+
+impl NodeLocalFabricStore {
+    pub fn open(
+        root: impl AsRef<Path>,
+        company_id: impl Into<String>,
+        node_id: impl Into<String>,
+    ) -> Result<Self, FabricError> {
+        let root = root.as_ref().to_path_buf();
+        fs::create_dir_all(&root).map_err(local_store_error)?;
+        if fs::symlink_metadata(&root)
+            .map_err(local_store_error)?
+            .file_type()
+            .is_symlink()
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                "Node local Fabric root may not be a symlink",
+            ));
+        }
+        let root = fs::canonicalize(root).map_err(local_store_error)?;
+        let journal = root.join("node-fabric-transactions.jsonl");
+        let (state, last_frame_digest, valid_length) = load_local_journal(&journal)?;
+        if journal
+            .metadata()
+            .map(|metadata| metadata.len())
+            .unwrap_or(0)
+            > valid_length
+        {
+            let file = OpenOptions::new()
+                .write(true)
+                .open(&journal)
+                .map_err(local_store_error)?;
+            file.set_len(valid_length).map_err(local_store_error)?;
+            file.sync_all().map_err(local_store_error)?;
+        }
+        Ok(Self {
+            company_id: company_id.into(),
+            node_id: node_id.into(),
+            root,
+            journal,
+            inner: Mutex::new(LocalInner {
+                state,
+                last_frame_digest,
+            }),
+        })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn journal_path(&self) -> &Path {
+        &self.journal
+    }
+
+    pub fn snapshot(&self) -> Result<NodeLocalFabricState, FabricError> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| {
+                FabricError::none(
+                    FabricErrorCode::StoreUnavailable,
+                    "Node local FabricStore lock poisoned",
+                )
+            })?
+            .state
+            .clone())
+    }
+
+    pub fn prepare_outbox(
+        &self,
+        operation: &RoutedOperation,
+        now_unix_ms: u64,
+    ) -> Result<(LocalRemoteOutbox, bool), FabricError> {
+        if operation.company_id != self.company_id || operation.source_node_id != self.node_id {
+            return Err(FabricError::none(
+                FabricErrorCode::SourceMismatch,
+                "source outbox operation does not match this Node authority",
+            ));
+        }
+        operation.validate_digest()?;
+        let request_digest = canonical_digest(operation)?;
+        self.transact(|state| {
+            if let Some(existing) = state.outboxes.get(&operation.id) {
+                if existing.request_digest != request_digest
+                    || existing.gateway_generation != operation.source_gateway_generation
+                {
+                    return Err(FabricError::none(
+                        FabricErrorCode::IdempotencyConflict,
+                        "source outbox replay changed its operation fingerprint",
+                    ));
+                }
+                return Ok((existing.clone(), true));
+            }
+            let outbox = LocalRemoteOutbox {
+                company_id: self.company_id.clone(),
+                node_id: self.node_id.clone(),
+                operation_id: operation.id.clone(),
+                request_digest,
+                local_state: LocalOutboxState::Submitted,
+                gateway_generation: operation.source_gateway_generation,
+                attempt_count: 1,
+                last_attempt_at_unix_ms: Some(now_unix_ms),
+                terminal_receipt_ref: None,
+                schema_version: FABRIC_SCHEMA_VERSION.into(),
+            };
+            state.outboxes.insert(operation.id.clone(), outbox.clone());
+            Ok((outbox, false))
+        })
+    }
+
+    pub fn mark_outbox_receipt(
+        &self,
+        receipt: &RouteReceipt,
+    ) -> Result<LocalRemoteOutbox, FabricError> {
+        if receipt.company_id != self.company_id {
+            return Err(FabricError::none(
+                FabricErrorCode::WrongCompany,
+                "route receipt belongs to another Company",
+            ));
+        }
+        self.transact(|state| {
+            let outbox = state
+                .outboxes
+                .get(&receipt.operation_id)
+                .cloned()
+                .ok_or_else(|| {
+                    FabricError::none(
+                        FabricErrorCode::OperationUnknown,
+                        "route receipt has no source outbox",
+                    )
+                })?;
+            let mut next = outbox;
+            match receipt.kind {
+                ReceiptKind::ControlPlaneAccepted | ReceiptKind::TargetPersisted => {
+                    if next.local_state != LocalOutboxState::Terminal {
+                        next.local_state = LocalOutboxState::Accepted;
+                    }
+                }
+                ReceiptKind::OperationApplied | ReceiptKind::OperationRejected => {
+                    next.local_state = LocalOutboxState::Terminal;
+                    next.terminal_receipt_ref = Some(receipt.id.clone());
+                }
+            }
+            state
+                .outboxes
+                .insert(receipt.operation_id.clone(), next.clone());
+            Ok(next)
+        })
+    }
+
+    pub fn persist_inbox(
+        &self,
+        operation: &RoutedOperation,
+        attempt: &RouteAttempt,
+    ) -> Result<(LocalRemoteInbox, bool), FabricError> {
+        if operation.company_id != self.company_id
+            || operation.target_node_id != self.node_id
+            || attempt.company_id != self.company_id
+            || attempt.target_node_id != self.node_id
+            || attempt.operation_id != operation.id
+            || attempt.target_gateway_generation == 0
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::SourceMismatch,
+                "target inbox operation or attempt does not match this Node authority",
+            ));
+        }
+        let request_digest = canonical_digest(operation)?;
+        let ordering_index = operation.ordering_key.clone();
+        self.transact(|state| {
+            if let Some(existing) = state.inboxes.get(&operation.id) {
+                if existing.request_digest != request_digest
+                    || existing.route_seq != attempt.route_seq
+                    || existing.gateway_generation != attempt.target_gateway_generation
+                {
+                    return Err(FabricError::none(
+                        FabricErrorCode::IdempotencyConflict,
+                        "target inbox replay changed its operation fingerprint",
+                    ));
+                }
+                return Ok((existing.clone(), true));
+            }
+            let prior = state
+                .persisted_ordering_sequences
+                .get(&ordering_index)
+                .copied()
+                .unwrap_or(0);
+            if attempt.ordering_seq != prior.saturating_add(1) {
+                return Err(FabricError::none(
+                    FabricErrorCode::ExpectedRevisionConflict,
+                    "target inbox received an out-of-order operation for its ordering key",
+                ));
+            }
+            let inbox = LocalRemoteInbox {
+                company_id: self.company_id.clone(),
+                node_id: self.node_id.clone(),
+                operation_id: operation.id.clone(),
+                route_seq: attempt.route_seq,
+                request_digest,
+                state: LocalInboxState::Persisted,
+                gateway_generation: attempt.target_gateway_generation,
+                attempt_count: attempt.attempt_no,
+                claim_generation: None,
+                result_digest: None,
+                schema_version: FABRIC_SCHEMA_VERSION.into(),
+            };
+            state
+                .persisted_ordering_sequences
+                .insert(ordering_index, attempt.ordering_seq);
+            state.inboxes.insert(operation.id.clone(), inbox.clone());
+            Ok((inbox, false))
+        })
+    }
+
+    pub fn record_application_result(
+        &self,
+        operation_id: &str,
+        gateway_generation: u64,
+        result_schema: &str,
+        result: serde_json::Value,
+        applied: bool,
+        now_unix_ms: u64,
+    ) -> Result<(LocalRemoteInbox, LocalApplicationResult, bool), FabricError> {
+        let result_digest = canonical_digest(&result)?;
+        self.transact(|state| {
+            if let Some(existing) = state.results.get(operation_id) {
+                if existing.result_digest != result_digest
+                    || existing.result_schema != result_schema
+                    || existing.applied != applied
+                    || existing.gateway_generation != gateway_generation
+                {
+                    return Err(FabricError::none(
+                        FabricErrorCode::IdempotencyConflict,
+                        "application result replay changed its fingerprint",
+                    ));
+                }
+                let inbox = state.inboxes.get(operation_id).cloned().ok_or_else(|| {
+                    FabricError::none(
+                        FabricErrorCode::StoreUnavailable,
+                        "local application result has no inbox",
+                    )
+                })?;
+                return Ok((inbox, existing.clone(), true));
+            }
+            let inbox = state.inboxes.get(operation_id).cloned().ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::OperationUnknown,
+                    "operation was not durably persisted in this Node inbox",
+                )
+            })?;
+            if inbox.gateway_generation != gateway_generation
+                || !matches!(
+                    inbox.state,
+                    LocalInboxState::Persisted | LocalInboxState::Claimed
+                )
+            {
+                return Err(FabricError::none(
+                    FabricErrorCode::NodeStaleGeneration,
+                    "application result does not own the persisted inbox generation",
+                ));
+            }
+            let mut next_inbox = inbox;
+            next_inbox.state = if applied {
+                LocalInboxState::Applied
+            } else {
+                LocalInboxState::Rejected
+            };
+            next_inbox.result_digest = Some(result_digest.clone());
+            let local_result = LocalApplicationResult {
+                operation_id: operation_id.into(),
+                result_schema: result_schema.into(),
+                result,
+                result_digest,
+                applied,
+                gateway_generation,
+                completed_at_unix_ms: now_unix_ms,
+                schema_version: FABRIC_SCHEMA_VERSION.into(),
+            };
+            state
+                .inboxes
+                .insert(operation_id.into(), next_inbox.clone());
+            state
+                .results
+                .insert(operation_id.into(), local_result.clone());
+            Ok((next_inbox, local_result, false))
+        })
+    }
+
+    fn transact<T>(
+        &self,
+        operation: impl FnOnce(&mut NodeLocalFabricState) -> Result<T, FabricError>,
+    ) -> Result<T, FabricError> {
+        let mut inner = self.inner.lock().map_err(|_| {
+            FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                "Node local FabricStore lock poisoned",
+            )
+        })?;
+        let mut next = inner.state.clone();
+        let result = operation(&mut next)?;
+        next.revision = inner.state.revision.saturating_add(1);
+        let core = LocalJournalCore {
+            transaction_sequence: next.revision,
+            previous_digest: inner.last_frame_digest.clone(),
+            state: next.clone(),
+        };
+        let frame_digest = canonical_digest(&core)?;
+        let frame = LocalJournalFrame {
+            transaction_sequence: core.transaction_sequence,
+            previous_digest: core.previous_digest,
+            state: core.state,
+            frame_digest: frame_digest.clone(),
+        };
+        append_local_frame(&self.journal, &frame)?;
+        inner.state = next;
+        inner.last_frame_digest = frame_digest;
+        Ok(result)
+    }
+}
+
+fn append_local_frame(path: &Path, frame: &LocalJournalFrame) -> Result<(), FabricError> {
+    let mut encoded = serde_json::to_vec(frame).map_err(|error| {
+        FabricError::none(
+            FabricErrorCode::StoreUnavailable,
+            format!("failed to encode Node local transaction: {error}"),
+        )
+    })?;
+    encoded.push(b'\n');
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(local_store_error)?;
+    file.write_all(&encoded).map_err(local_store_error)?;
+    file.sync_all().map_err(local_store_error)?;
+    if let Some(parent) = path.parent() {
+        File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(local_store_error)?;
+    }
+    Ok(())
+}
+
+fn load_local_journal(path: &Path) -> Result<(NodeLocalFabricState, String, u64), FabricError> {
+    let mut bytes = Vec::new();
+    match File::open(path) {
+        Ok(mut file) => {
+            file.read_to_end(&mut bytes).map_err(local_store_error)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((NodeLocalFabricState::default(), String::new(), 0));
+        }
+        Err(error) => return Err(local_store_error(error)),
+    }
+    let mut state = NodeLocalFabricState::default();
+    let mut expected_previous = String::new();
+    let mut expected_sequence = 1u64;
+    let mut offset = 0usize;
+    while offset < bytes.len() {
+        let Some(relative_end) = bytes[offset..].iter().position(|byte| *byte == b'\n') else {
+            break;
+        };
+        let end = offset + relative_end;
+        let frame: LocalJournalFrame =
+            serde_json::from_slice(&bytes[offset..end]).map_err(|error| {
+                FabricError::none(
+                    FabricErrorCode::StoreUnavailable,
+                    format!("Node local committed frame is invalid: {error}"),
+                )
+            })?;
+        let core = LocalJournalCore {
+            transaction_sequence: frame.transaction_sequence,
+            previous_digest: frame.previous_digest.clone(),
+            state: frame.state.clone(),
+        };
+        if frame.transaction_sequence != expected_sequence
+            || frame.previous_digest != expected_previous
+            || frame.frame_digest != canonical_digest(&core)?
+            || frame.state.revision != frame.transaction_sequence
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                "Node local journal sequence or digest chain is corrupt",
+            ));
+        }
+        state = frame.state;
+        expected_previous = frame.frame_digest;
+        expected_sequence = expected_sequence.saturating_add(1);
+        offset = end + 1;
+    }
+    Ok((state, expected_previous, offset as u64))
+}
+
+fn local_store_error(error: std::io::Error) -> FabricError {
+    FabricError::none(
+        FabricErrorCode::StoreUnavailable,
+        format!("Node local FabricStore I/O failed: {error}"),
+    )
+}
