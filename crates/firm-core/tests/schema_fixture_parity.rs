@@ -7,9 +7,10 @@
 
 use firm_core::agentfirm_api::TeamMessage;
 use firm_core::collaboration::{
-    CrossNodeDeliveryProjection, DelegationCancellationRequest, DelegationDecision,
-    RemoteFactPublication, RemoteWorkRef, RoutedBusinessOperation, TargetPlacementRef,
-    WorkDelegationV1,
+    CollaborationScope, CrossNodeDeliveryProjection, DelegationCancellationRequest,
+    DelegationDecision, ImmutableMessageTransferPayload, RemoteFactPublication, RemoteWorkRef,
+    RoutedBusinessOperation, SourceRemoteMessageTransfer, SourceWorkAttestation,
+    TargetPlacementRef, WorkDelegationV1,
 };
 use firm_core::{
     AgentTeam, AgentTeamRun, ExecutionNode, Mission, NodeDaemonLease, NodeProjectRegistration,
@@ -152,6 +153,16 @@ fn collaboration_v1_schema_fixtures_match_closed_rust_wire_contracts() {
     );
     assert_closed_wire_fixture_contract::<RoutedBusinessOperation>(
         &root.join("routed-business-operation"),
+    );
+    assert_closed_wire_fixture_contract::<CollaborationScope>(&root.join("collaboration-scope"));
+    assert_closed_wire_fixture_contract::<SourceWorkAttestation>(
+        &root.join("source-work-attestation"),
+    );
+    assert_closed_wire_fixture_contract::<ImmutableMessageTransferPayload>(
+        &root.join("immutable-message-transfer-payload"),
+    );
+    assert_closed_wire_fixture_contract::<SourceRemoteMessageTransfer>(
+        &root.join("source-remote-message-transfer"),
     );
 }
 

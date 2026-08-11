@@ -132,12 +132,47 @@ pub struct SourceWorkAttestation {
     pub id: String,
     pub company_id: String,
     pub source_work_ref: RemoteWorkRef,
+    #[serde(deserialize_with = "deserialize_person_actor_ref")]
     pub source_owner_ref: ActorRef,
+    #[serde(deserialize_with = "deserialize_person_actor_ref")]
     pub source_host_ref: ActorRef,
+    #[serde(deserialize_with = "deserialize_service_actor_ref")]
     pub work_application_service_ref: ActorRef,
     pub source_gateway_generation: u64,
     pub attestation_digest: String,
     pub issued_at: String,
+}
+
+fn deserialize_person_actor_ref<'de, D>(deserializer: D) -> Result<ActorRef, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let actor = ActorRef::deserialize(deserializer)?;
+    if matches!(
+        actor.kind,
+        crate::agentfirm_api::ActorKind::Human | crate::agentfirm_api::ActorKind::AgentMember
+    ) && !actor.id.trim().is_empty()
+    {
+        Ok(actor)
+    } else {
+        Err(serde::de::Error::custom(
+            "source Work owner/Host must be a non-empty Human or AgentMember ActorRef",
+        ))
+    }
+}
+
+fn deserialize_service_actor_ref<'de, D>(deserializer: D) -> Result<ActorRef, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let actor = ActorRef::deserialize(deserializer)?;
+    if actor.kind == crate::agentfirm_api::ActorKind::Service && !actor.id.trim().is_empty() {
+        Ok(actor)
+    } else {
+        Err(serde::de::Error::custom(
+            "source Work attestation author must be a non-empty Service ActorRef",
+        ))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
