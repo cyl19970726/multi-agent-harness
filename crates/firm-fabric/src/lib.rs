@@ -11,6 +11,7 @@
 
 pub mod artifacts;
 pub mod control_plane;
+pub mod diagnostics;
 pub mod enrollment;
 pub mod node_gateway;
 pub mod protocol;
@@ -21,6 +22,7 @@ pub mod transport;
 
 pub use artifacts::{ArtifactKeyBackend, InMemoryArtifactKeyBackend};
 pub use control_plane::ControlPlane;
+pub use diagnostics::{inspect_fabric, FabricDiagnostics, NodeFabricDiagnostics};
 pub use protocol::*;
 pub use store::{FabricStore, FabricStoreLimits};
 
