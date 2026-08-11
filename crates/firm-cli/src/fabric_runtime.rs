@@ -331,50 +331,27 @@ impl NodeApplication for Wave4cApplication {
         match operation.closed_body()? {
             harness_fabric::ClosedOperationBody::Probe(_)
             | harness_fabric::ClosedOperationBody::ReconcileProbe(_) => self.probe.apply(operation),
-            harness_fabric::ClosedOperationBody::RuntimeCommand(reference) => {
-                let space = super::execution_space::context_for_id(
-                    &self.firm_home,
-                    &reference.target_execution_space_id,
-                )
-                .map_err(|error| {
-                    FabricError::none(
-                        FabricErrorCode::StoreUnavailable,
-                        format!("Execution Space registry failed: {error}"),
-                    )
-                })?
-                .ok_or_else(|| {
-                    FabricError::none(
-                        FabricErrorCode::TargetNotPlaced,
-                        "RuntimeCommand target Execution Space is not registered on this Node",
-                    )
-                })?;
-                let store = HarnessStore::new(space.store_root);
-                let record = store
-                    .runtime_commands(&reference.target_execution_space_id)
-                    .map_err(|error| {
-                        FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string())
-                    })?
-                    .into_iter()
-                    .find(|record| record.id == reference.runtime_command_id)
-                    .ok_or_else(|| {
-                        FabricError::none(
-                            FabricErrorCode::OperationUnknown,
-                            "canonical RuntimeCommand is absent from the target Execution Space",
-                        )
-                    })?;
-                if record.request_fingerprint != reference.command_fingerprint
-                    || record.target_node_daemon_id != reference.target_node_daemon_id
-                    || record.target_node_daemon_generation
-                        != reference.target_node_daemon_generation
+            harness_fabric::ClosedOperationBody::RuntimeCommand(_) => {
+                let envelope =
+                    super::remote_fabric::resolved_runtime_command_from_operation(operation)?;
+                if envelope.target_node_id != self.node_id
+                    || envelope.target_node_daemon_id != self.daemon_id
+                    || envelope.target_node_daemon_generation != self.daemon_generation
                 {
                     return Err(FabricError::none(
-                        FabricErrorCode::SourceMismatch,
-                        "resolved RuntimeCommand disagrees with routed reference",
+                        FabricErrorCode::NodeStaleGeneration,
+                        "RuntimeCommand is not fenced to this exact NodeGateway/NodeDaemon parent",
                     ));
                 }
-                Err(FabricError::unknown(
-                    operation.id.clone(),
-                    "RuntimeCommand record has no immutable command envelope; refusing fabricated execution",
+                let (result, effect) = super::remote_fabric::dispatch_resolved_runtime_command(
+                    &self.firm_home,
+                    operation,
+                    &envelope,
+                )?;
+                Ok((
+                    "agentfirm.remote_fabric.runtime_command_result.v1".into(),
+                    result,
+                    effect,
                 ))
             }
             harness_fabric::ClosedOperationBody::Message(_) => {

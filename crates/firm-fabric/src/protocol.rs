@@ -382,6 +382,9 @@ pub struct RuntimeCommandReference {
     pub target_execution_space_id: String,
     pub target_node_daemon_id: String,
     pub target_node_daemon_generation: u64,
+    /// Exact Wave4C command authority transported to the target. Identity and
+    /// fingerprint alone are not executable across independent Stores.
+    pub canonical_command_envelope: Value,
 }
 
 /// Wave 4C Message authority remains on the source NodeDaemon. Cross-node
@@ -550,6 +553,7 @@ fn validate_closed_body(
                     == Some(body.target_execution_space_id.as_str())
                 && non_empty(&body.target_node_daemon_id)
                 && body.target_node_daemon_generation > 0
+                && body.canonical_command_envelope.is_object()
         }
         ClosedOperationBody::Message(body) => {
             let embedded = body

@@ -3,5 +3,21 @@
   "command_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "target_execution_space_id": "space-b",
   "target_node_daemon_id": "node-daemon:node-b",
-  "target_node_daemon_generation": 4
+  "target_node_daemon_generation": 4,
+  "canonical_command_envelope": {
+    "id": "runtime-command:remote-1",
+    "execution_space_id": "space-b",
+    "target_node_id": "22222222-2222-4222-8222-222222222222",
+    "target_node_daemon_id": "node-daemon:node-b",
+    "target_node_daemon_generation": 4,
+    "authenticated_actor": {"kind": "agent_member", "id": "agent-a"},
+    "command": "resume_session",
+    "required_capability": "agent_session.resume",
+    "idempotency_key": "remote-runtime-1",
+    "expected_version": 4,
+    "expires_unix_ms": 90000,
+    "payload": {"session_id": "session-b", "session_generation": 3},
+    "payload_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "issued_at": "unix-ms:100"
+  }
 }

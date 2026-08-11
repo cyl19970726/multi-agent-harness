@@ -6,13 +6,16 @@
   "additionalProperties": false,
   "required": [
     "runtime_command_id", "command_fingerprint", "target_execution_space_id",
-    "target_node_daemon_id", "target_node_daemon_generation"
+    "target_node_daemon_id", "target_node_daemon_generation", "canonical_command_envelope"
   ],
   "properties": {
     "runtime_command_id": { "type": "string", "minLength": 1 },
     "command_fingerprint": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
     "target_execution_space_id": { "type": "string", "minLength": 1 },
     "target_node_daemon_id": { "type": "string", "minLength": 1 },
-    "target_node_daemon_generation": { "type": "integer", "minimum": 1 }
+    "target_node_daemon_generation": { "type": "integer", "minimum": 1 },
+    "canonical_command_envelope": {
+      "$ref": "https://agent-harness.local/schemas/control-command-envelope.schema.json"
+    }
   }
 }

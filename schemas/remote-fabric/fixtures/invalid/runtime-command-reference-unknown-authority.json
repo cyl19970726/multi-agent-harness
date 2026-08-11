@@ -4,5 +4,6 @@
   "target_execution_space_id": "space-b",
   "target_node_daemon_id": "node-daemon:node-b",
   "target_node_daemon_generation": 4,
+  "canonical_command_envelope": {},
   "actor_id": "browser-selected-host"
 }

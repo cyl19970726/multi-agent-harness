@@ -8,6 +8,8 @@
 #![allow(clippy::result_large_err, dead_code)]
 
 use harness_core::agentfirm_api::{ActorKind as RuntimeActorKind, ControlCommandEnvelope, Message};
+#[cfg(not(test))]
+use harness_core::agentfirm_api::{RuntimeCommandStatus, RuntimeEffectCertainty};
 use harness_core::{ExecutionNodeStatus, NodeDaemonLease, NodeDaemonLeaseStatus};
 use harness_fabric::{
     ActorKind as FabricActorKind, ClosedOperationBody, CompanyNode, FabricError, FabricErrorCode,
@@ -57,6 +59,21 @@ pub(crate) fn validate_resolved_runtime_command(
         ));
     }
     Ok(())
+}
+
+pub(crate) fn resolved_runtime_command_from_operation(
+    operation: &RoutedOperation,
+) -> Result<ControlCommandEnvelope, FabricError> {
+    let reference = runtime_reference_from_operation(operation)?;
+    let envelope: ControlCommandEnvelope =
+        serde_json::from_value(reference.canonical_command_envelope.clone()).map_err(|error| {
+            FabricError::none(
+                FabricErrorCode::InvalidPayload,
+                format!("canonical RuntimeCommand envelope is invalid: {error}"),
+            )
+        })?;
+    validate_resolved_runtime_command(operation, &envelope)?;
+    Ok(envelope)
 }
 
 /// Join the Company directory Node to the one Wave 4C machine identity and
@@ -218,24 +235,102 @@ pub(crate) fn dispatch_resolved_runtime_command(
     firm_home: &std::path::Path,
     operation: &RoutedOperation,
     envelope: &ControlCommandEnvelope,
-) -> Result<serde_json::Value, FabricError> {
+) -> Result<(serde_json::Value, harness_fabric::EffectCertainty), FabricError> {
     validate_resolved_runtime_command(operation, envelope)?;
-    crate::supervisor_daemon::runtime_command_via_socket(
+    let transport = crate::supervisor_daemon::runtime_command_via_socket(
         firm_home,
         &envelope.target_node_id,
         envelope,
-    )
-    .map_err(|error| {
-        let mut failure = FabricError::unknown(
+    );
+    let space = crate::execution_space::context_for_id(firm_home, &envelope.execution_space_id)
+        .map_err(|error| FabricError::none(FabricErrorCode::StoreUnavailable, error.to_string()))?
+        .ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::TargetNotPlaced,
+                "RuntimeCommand target Execution Space is not registered on this Node",
+            )
+        })?;
+    let record = harness_store::HarnessStore::new(space.store_root)
+        .runtime_commands(&envelope.execution_space_id)
+        .map_err(store_error)?
+        .into_iter()
+        .find(|record| record.id == envelope.id);
+    let transport_detail = match transport {
+        Ok(response) => response
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| "NodeDaemon returned a non-terminal response".into()),
+        Err(error) => format!("NodeDaemon transport ended before a response: {error}"),
+    };
+    match record {
+        Some(record)
+            if record.status == RuntimeCommandStatus::Applied
+                && record.effect_certainty == RuntimeEffectCertainty::Applied =>
+        {
+            Ok((
+                serde_json::json!({
+                    "runtime_command_id": record.id,
+                    "status": record.status,
+                    "result": record.result,
+                }),
+                harness_fabric::EffectCertainty::Applied,
+            ))
+        }
+        Some(record)
+            if record.status == RuntimeCommandStatus::Failed
+                && matches!(
+                    record.effect_certainty,
+                    RuntimeEffectCertainty::None | RuntimeEffectCertainty::NotApplied
+                ) =>
+        {
+            Err(FabricError::none(
+                FabricErrorCode::InvalidPayload,
+                record.failure_code.unwrap_or(transport_detail),
+            ))
+        }
+        Some(record)
+            if record.status == RuntimeCommandStatus::RecoveryRequired
+                || record.effect_certainty == RuntimeEffectCertainty::Unknown =>
+        {
+            let mut failure = FabricError::unknown(
+                operation.id.clone(),
+                record.failure_code.unwrap_or(transport_detail),
+            );
+            failure
+                .details
+                .insert("runtime_command_id".into(), envelope.id.clone());
+            failure.details.insert(
+                "reconciliation".into(),
+                "resolve the durable target RuntimeCommand before any retry".into(),
+            );
+            Err(failure)
+        }
+        Some(record) => Err(FabricError::unknown(
             operation.id.clone(),
-            format!("NodeDaemon transport ended without a provable RuntimeCommand result: {error}"),
-        );
-        failure.details.insert(
-            "reconciliation".into(),
-            "resolve canonical RuntimeCommand record before retry".into(),
-        );
-        failure
-    })
+            format!(
+                "RuntimeCommand remained non-terminal ({:?}/{:?}): {transport_detail}",
+                record.status, record.effect_certainty
+            ),
+        )),
+        None => Err(FabricError::unknown(
+            operation.id.clone(),
+            format!("RuntimeCommand has no durable target admission: {transport_detail}"),
+        )),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn dispatch_resolved_runtime_command(
+    _firm_home: &std::path::Path,
+    operation: &RoutedOperation,
+    envelope: &ControlCommandEnvelope,
+) -> Result<(serde_json::Value, harness_fabric::EffectCertainty), FabricError> {
+    validate_resolved_runtime_command(operation, envelope)?;
+    Err(FabricError::none(
+        FabricErrorCode::FeatureIncompatible,
+        "NodeDaemon socket execution is disabled only in the test-compiled binary",
+    ))
 }
 
 fn actor_matches(operation: &RoutedOperation, envelope: &ControlCommandEnvelope) -> bool {

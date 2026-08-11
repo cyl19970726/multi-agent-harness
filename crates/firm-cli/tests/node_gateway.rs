@@ -20,7 +20,7 @@ fn envelope() -> ControlCommandEnvelope {
     ControlCommandEnvelope {
         id: "runtime-command:remote-1".into(),
         execution_space_id: "space-b".into(),
-        target_node_id: "node-b".into(),
+        target_node_id: "22222222-2222-4222-8222-222222222222".into(),
         target_node_daemon_id: "node-daemon:node-b".into(),
         target_node_daemon_generation: 7,
         authenticated_actor: ActorRef {
@@ -47,6 +47,7 @@ fn operation(envelope: &ControlCommandEnvelope) -> RoutedOperation {
         "target_execution_space_id": envelope.execution_space_id,
         "target_node_daemon_id": envelope.target_node_daemon_id,
         "target_node_daemon_generation": envelope.target_node_daemon_generation,
+        "canonical_command_envelope": envelope,
     });
     RoutedOperation {
         id: "operation-runtime-1".into(),
@@ -95,6 +96,11 @@ fn exact_runtime_reference_resolves_to_wave4c_node_daemon_contract() {
     let operation = operation(&envelope);
     remote_fabric::validate_resolved_runtime_command(&operation, &envelope)
         .expect("exact immutable reference");
+    assert_eq!(
+        remote_fabric::resolved_runtime_command_from_operation(&operation)
+            .expect("target decodes the exact immutable envelope"),
+        envelope
+    );
 }
 
 #[test]
@@ -121,6 +127,17 @@ fn hostile_runtime_resolution_fails_before_node_daemon_effect() {
     ] {
         assert!(remote_fabric::validate_resolved_runtime_command(&operation, &hostile).is_err());
     }
+    let mut rewritten_route = operation;
+    rewritten_route.body["canonical_command_envelope"]["payload"]["session_id"] =
+        json!("session-other");
+    rewritten_route.body_digest =
+        harness_fabric::json_digest(&rewritten_route.body).expect("hostile body digest");
+    assert_eq!(
+        remote_fabric::resolved_runtime_command_from_operation(&rewritten_route)
+            .expect_err("embedded command cannot diverge from its frozen fingerprint")
+            .code,
+        harness_fabric::FabricErrorCode::SourceMismatch
+    );
 }
 
 #[test]

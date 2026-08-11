@@ -39,6 +39,8 @@ function readJson(path) {
 }
 
 const ajv = new Ajv2020({ allErrors: true, strict: true });
+ajv.addFormat("uuid", /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+ajv.addSchema(readJson("schemas/control-command-envelope.schema.json"));
 const schemaDocuments = new Map(
   schemas.map(([schemaName]) => [schemaName, readJson(join(root, schemaName))]),
 );

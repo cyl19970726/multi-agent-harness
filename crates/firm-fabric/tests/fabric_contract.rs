@@ -250,7 +250,8 @@ fn operation_registry_requires_closed_kind_schema_and_body_scope() {
         "command_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "target_execution_space_id": "space-b",
         "target_node_daemon_id": "node-daemon:node-b",
-        "target_node_daemon_generation": 4
+        "target_node_daemon_generation": 4,
+        "canonical_command_envelope": {}
     });
     request.body_digest = json_digest(&request.body).expect("body digest");
     assert!(matches!(
@@ -669,7 +670,8 @@ fn durable_route_replays_exactly_and_fences_stale_source_generation() {
         "command_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "target_execution_space_id": "space-b",
         "target_node_daemon_id": "node-daemon:node-b",
-        "target_node_daemon_generation": 1
+        "target_node_daemon_generation": 1,
+        "canonical_command_envelope": {}
     });
     unsupported.body_digest = json_digest(&unsupported.body).expect("runtime reference digest");
     let before_unsupported = store.snapshot().expect("snapshot");
