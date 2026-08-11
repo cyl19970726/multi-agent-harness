@@ -1,4 +1,14 @@
 use crate::protocol::{FabricError, FabricErrorCode, FabricFrame};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use std::fs::File;
+use std::io::BufReader;
+use std::net::{TcpStream, ToSocketAddrs};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tungstenite::client::IntoClientRequest;
+use tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
+use tungstenite::stream::MaybeTlsStream;
+use tungstenite::{Connector, WebSocket};
 
 pub const MAX_FABRIC_FRAME_BYTES: usize = 256 * 1024;
 pub const FABRIC_WEBSOCKET_SUBPROTOCOL: &str = "agentfirm.node.v1";
@@ -50,6 +60,129 @@ pub struct NodeFabricConfig {
     pub control_plane_url: String,
     pub reconnect_floor_ms: u64,
     pub reconnect_ceiling_ms: u64,
+}
+
+/// File-backed TLS material selected by the Node credential-store adapter.
+/// Production macOS code exports only short-lived PEM handles from Keychain;
+/// private key bytes are never serialized into Fabric frames or journals.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeTlsIdentityFiles {
+    pub client_certificate_chain_pem: PathBuf,
+    pub client_private_key_pem: PathBuf,
+    pub control_plane_ca_pem: PathBuf,
+}
+
+impl NodeTlsIdentityFiles {
+    pub fn validate(&self) -> Result<(), FabricError> {
+        for (label, path) in [
+            ("client certificate", &self.client_certificate_chain_pem),
+            ("client private key", &self.client_private_key_pem),
+            ("Control Plane CA", &self.control_plane_ca_pem),
+        ] {
+            let metadata = std::fs::symlink_metadata(path)
+                .map_err(|error| transport_error(format!("{label} is unavailable: {error}")))?;
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(transport_error(format!(
+                    "{label} must be a regular non-symlink file"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+pub type NodeGatewaySocket = WebSocket<MaybeTlsStream<TcpStream>>;
+
+/// Establish the only permitted collaboration connection: an outbound WSS
+/// socket authenticated with TLS 1.3, exact hostname verification, a client
+/// certificate and the frozen WebSocket subprotocol.
+pub fn connect_outbound_mtls(
+    config: &NodeFabricConfig,
+    identity: &NodeTlsIdentityFiles,
+) -> Result<NodeGatewaySocket, FabricError> {
+    config.validate()?;
+    identity.validate()?;
+    let mut roots = rustls::RootCertStore::empty();
+    for certificate in read_certificates(&identity.control_plane_ca_pem)? {
+        roots
+            .add(certificate)
+            .map_err(|error| transport_error(format!("Control Plane CA is invalid: {error}")))?;
+    }
+    if roots.is_empty() {
+        return Err(transport_error("Control Plane CA contains no certificate"));
+    }
+    let certificates = read_certificates(&identity.client_certificate_chain_pem)?;
+    if certificates.is_empty() {
+        return Err(transport_error("client certificate chain is empty"));
+    }
+    let private_key = read_private_key(&identity.client_private_key_pem)?;
+    let tls = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_client_auth_cert(certificates, private_key)
+        .map_err(|error| transport_error(format!("client TLS identity is invalid: {error}")))?;
+
+    let mut request = config
+        .control_plane_url
+        .as_str()
+        .into_client_request()
+        .map_err(|error| transport_error(format!("gateway URL is invalid: {error}")))?;
+    request.headers_mut().insert(
+        SEC_WEBSOCKET_PROTOCOL,
+        tungstenite::http::HeaderValue::from_static(FABRIC_WEBSOCKET_SUBPROTOCOL),
+    );
+    let uri = request.uri();
+    let host = uri
+        .host()
+        .ok_or_else(|| transport_error("gateway URL has no hostname"))?;
+    let port = uri.port_u16().unwrap_or(443);
+    let address = (host, port)
+        .to_socket_addrs()
+        .map_err(|error| transport_error(format!("gateway DNS failed: {error}")))?
+        .next()
+        .ok_or_else(|| transport_error("gateway DNS returned no address"))?;
+    let tcp = TcpStream::connect(address)
+        .map_err(|error| transport_error(format!("gateway TCP connect failed: {error}")))?;
+    tcp.set_nodelay(true)
+        .map_err(|error| transport_error(format!("gateway TCP setup failed: {error}")))?;
+    let (socket, response) = tungstenite::client_tls_with_config(
+        request,
+        tcp,
+        None,
+        Some(Connector::Rustls(Arc::new(tls))),
+    )
+    .map_err(|error| transport_error(format!("mutual TLS WebSocket failed: {error}")))?;
+    if response
+        .headers()
+        .get(SEC_WEBSOCKET_PROTOCOL)
+        .and_then(|value| value.to_str().ok())
+        != Some(FABRIC_WEBSOCKET_SUBPROTOCOL)
+    {
+        return Err(FabricError::none(
+            FabricErrorCode::ProtocolIncompatible,
+            "Control Plane did not negotiate agentfirm.node.v1",
+        ));
+    }
+    Ok(socket)
+}
+
+fn read_certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>, FabricError> {
+    let file = File::open(path)
+        .map_err(|error| transport_error(format!("TLS certificate open failed: {error}")))?;
+    rustls_pemfile::certs(&mut BufReader::new(file))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| transport_error(format!("TLS certificate parse failed: {error}")))
+}
+
+fn read_private_key(path: &Path) -> Result<PrivateKeyDer<'static>, FabricError> {
+    let file = File::open(path)
+        .map_err(|error| transport_error(format!("TLS private key open failed: {error}")))?;
+    rustls_pemfile::private_key(&mut BufReader::new(file))
+        .map_err(|error| transport_error(format!("TLS private key parse failed: {error}")))?
+        .ok_or_else(|| transport_error("TLS private key file contains no supported key"))
+}
+
+fn transport_error(message: impl Into<String>) -> FabricError {
+    FabricError::none(FabricErrorCode::StoreUnavailable, message)
 }
 
 impl NodeFabricConfig {

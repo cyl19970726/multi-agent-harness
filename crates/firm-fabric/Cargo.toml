@@ -9,10 +9,15 @@ repository.workspace = true
 chacha20poly1305.workspace = true
 ed25519-dalek.workspace = true
 hmac.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+rustls-pki-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+tungstenite.workspace = true
+webpki-roots.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
