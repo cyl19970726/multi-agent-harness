@@ -704,6 +704,14 @@ fn node_local_journal_recovers_lost_ack_without_duplicate_native_effect() {
             .len(),
         1
     );
+    for (company_id, node_id) in [(COMPANY, "node-b"), ("company-foreign", "node-a")] {
+        let error = match NodeLocalFabricStore::open(source_root.path(), company_id, node_id) {
+            Ok(_) => panic!("durably bound Node-local root must reject another authority"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, FabricErrorCode::WrongCompany);
+        assert_eq!(error.effect, EffectCertainty::None);
+    }
 
     let target_root = TestRoot::new("local-target-recovery");
     let target =

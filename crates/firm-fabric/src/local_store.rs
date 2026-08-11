@@ -27,6 +27,8 @@ pub struct LocalApplicationResult {
 #[serde(deny_unknown_fields)]
 pub struct NodeLocalFabricState {
     pub revision: u64,
+    pub authority_company_id: Option<String>,
+    pub authority_node_id: Option<String>,
     pub outboxes: BTreeMap<String, LocalRemoteOutbox>,
     pub inboxes: BTreeMap<String, LocalRemoteInbox>,
     pub persisted_ordering_sequences: BTreeMap<String, u64>,
@@ -87,6 +89,22 @@ impl NodeLocalFabricStore {
         let root = fs::canonicalize(root).map_err(local_store_error)?;
         let journal = root.join("node-fabric-transactions.jsonl");
         let (state, last_frame_digest, valid_length) = load_local_journal(&journal)?;
+        let requested_company_id = company_id.into();
+        let requested_node_id = node_id.into();
+        if state
+            .authority_company_id
+            .as_deref()
+            .is_some_and(|authority| authority != requested_company_id)
+            || state
+                .authority_node_id
+                .as_deref()
+                .is_some_and(|authority| authority != requested_node_id)
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::WrongCompany,
+                "Node-local FabricStore is durably bound to another Company or Node",
+            ));
+        }
         if journal
             .metadata()
             .map(|metadata| metadata.len())
@@ -101,8 +119,8 @@ impl NodeLocalFabricStore {
             file.sync_all().map_err(local_store_error)?;
         }
         Ok(Self {
-            company_id: company_id.into(),
-            node_id: node_id.into(),
+            company_id: requested_company_id,
+            node_id: requested_node_id,
             root,
             journal,
             inner: Mutex::new(LocalInner {
@@ -461,6 +479,23 @@ impl NodeLocalFabricStore {
             )
         })?;
         let mut next = inner.state.clone();
+        match (
+            next.authority_company_id.as_deref(),
+            next.authority_node_id.as_deref(),
+        ) {
+            (None, None) => {
+                next.authority_company_id = Some(self.company_id.clone());
+                next.authority_node_id = Some(self.node_id.clone());
+            }
+            (Some(company_id), Some(node_id))
+                if company_id == self.company_id && node_id == self.node_id => {}
+            _ => {
+                return Err(FabricError::none(
+                    FabricErrorCode::WrongCompany,
+                    "Node-local FabricStore authority binding is incomplete or mismatched",
+                ));
+            }
+        }
         let result = operation(&mut next)?;
         next.revision = inner.state.revision.saturating_add(1);
         if self.fail_next_commit.swap(false, Ordering::SeqCst) {
