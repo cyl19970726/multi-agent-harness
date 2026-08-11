@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use crate::protocol::*;
+use crate::transport::FabricSessionFence;
 use crate::{canonical_digest, FabricError, FabricErrorCode, FABRIC_SCHEMA_VERSION};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -147,13 +148,23 @@ impl NodeLocalFabricStore {
 
     pub fn prepare_outbox(
         &self,
+        session: &FabricSessionFence,
         operation: &RoutedOperation,
         now_unix_ms: u64,
     ) -> Result<(LocalRemoteOutbox, bool), FabricError> {
+        self.require_session(session)?;
         if operation.company_id != self.company_id || operation.source_node_id != self.node_id {
             return Err(FabricError::none(
                 FabricErrorCode::SourceMismatch,
                 "source outbox operation does not match this Node authority",
+            ));
+        }
+        if operation.source_gateway_generation != session.gateway_generation
+            || operation.control_plane_generation != session.control_plane_generation
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::NodeStaleGeneration,
+                "source outbox operation does not match the authenticated Fabric generation",
             ));
         }
         operation.validate_digest()?;
@@ -162,6 +173,7 @@ impl NodeLocalFabricStore {
             if let Some(existing) = state.outboxes.get(&operation.id) {
                 if existing.request_digest != request_digest
                     || existing.gateway_generation != operation.source_gateway_generation
+                    || existing.control_plane_generation != operation.control_plane_generation
                 {
                     return Err(FabricError::none(
                         FabricErrorCode::IdempotencyConflict,
@@ -177,6 +189,7 @@ impl NodeLocalFabricStore {
                 request_digest,
                 local_state: LocalOutboxState::Submitted,
                 gateway_generation: operation.source_gateway_generation,
+                control_plane_generation: operation.control_plane_generation,
                 attempt_count: 1,
                 last_attempt_at_unix_ms: Some(now_unix_ms),
                 terminal_receipt_ref: None,
@@ -229,19 +242,29 @@ impl NodeLocalFabricStore {
 
     pub fn persist_inbox(
         &self,
+        session: &FabricSessionFence,
         operation: &RoutedOperation,
         attempt: &RouteAttempt,
     ) -> Result<(LocalRemoteInbox, bool), FabricError> {
+        self.require_session(session)?;
         if operation.company_id != self.company_id
             || operation.target_node_id != self.node_id
             || attempt.company_id != self.company_id
             || attempt.target_node_id != self.node_id
             || attempt.operation_id != operation.id
-            || attempt.target_gateway_generation == 0
         {
             return Err(FabricError::none(
                 FabricErrorCode::SourceMismatch,
                 "target inbox operation or attempt does not match this Node authority",
+            ));
+        }
+        if operation.control_plane_generation != session.control_plane_generation
+            || attempt.target_gateway_generation != session.gateway_generation
+            || attempt.control_plane_generation != session.control_plane_generation
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::NodeStaleGeneration,
+                "target inbox operation or attempt does not match the authenticated Fabric generation",
             ));
         }
         let request_digest = canonical_digest(operation)?;
@@ -251,6 +274,7 @@ impl NodeLocalFabricStore {
                 if existing.request_digest != request_digest
                     || existing.route_seq != attempt.route_seq
                     || existing.gateway_generation != attempt.target_gateway_generation
+                    || existing.control_plane_generation != attempt.control_plane_generation
                 {
                     return Err(FabricError::none(
                         FabricErrorCode::IdempotencyConflict,
@@ -278,6 +302,7 @@ impl NodeLocalFabricStore {
                 request_digest,
                 state: LocalInboxState::Persisted,
                 gateway_generation: attempt.target_gateway_generation,
+                control_plane_generation: attempt.control_plane_generation,
                 attempt_count: attempt.attempt_no,
                 claim_generation: None,
                 result_digest: None,
@@ -293,20 +318,21 @@ impl NodeLocalFabricStore {
 
     pub fn record_application_result(
         &self,
+        session: &FabricSessionFence,
         operation_id: &str,
-        gateway_generation: u64,
         result_schema: &str,
         result: serde_json::Value,
         applied: bool,
         now_unix_ms: u64,
     ) -> Result<(LocalRemoteInbox, LocalApplicationResult, bool), FabricError> {
+        self.require_session(session)?;
         let result_digest = canonical_digest(&result)?;
         self.transact(|state| {
             if let Some(existing) = state.results.get(operation_id) {
                 if existing.result_digest != result_digest
                     || existing.result_schema != result_schema
                     || existing.applied != applied
-                    || existing.gateway_generation != gateway_generation
+                    || existing.gateway_generation != session.gateway_generation
                 {
                     return Err(FabricError::none(
                         FabricErrorCode::IdempotencyConflict,
@@ -327,7 +353,8 @@ impl NodeLocalFabricStore {
                     "operation was not durably persisted in this Node inbox",
                 )
             })?;
-            if inbox.gateway_generation != gateway_generation
+            if inbox.gateway_generation != session.gateway_generation
+                || inbox.control_plane_generation != session.control_plane_generation
                 || !matches!(
                     inbox.state,
                     LocalInboxState::Persisted | LocalInboxState::Claimed
@@ -351,7 +378,7 @@ impl NodeLocalFabricStore {
                 result,
                 result_digest,
                 applied,
-                gateway_generation,
+                gateway_generation: session.gateway_generation,
                 completed_at_unix_ms: now_unix_ms,
                 schema_version: FABRIC_SCHEMA_VERSION.into(),
             };
@@ -415,6 +442,22 @@ impl NodeLocalFabricStore {
             return Err(FabricError::none(
                 FabricErrorCode::StoreUnavailable,
                 "Node-local FabricStore is unavailable",
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_session(&self, session: &FabricSessionFence) -> Result<(), FabricError> {
+        if session.company_id != self.company_id || session.node_id != self.node_id {
+            return Err(FabricError::none(
+                FabricErrorCode::SourceMismatch,
+                "authenticated Fabric session does not own this Node-local Store",
+            ));
+        }
+        if session.gateway_generation == 0 || session.control_plane_generation == 0 {
+            return Err(FabricError::none(
+                FabricErrorCode::NodeStaleGeneration,
+                "authenticated Fabric session generations must be non-zero",
             ));
         }
         Ok(())
