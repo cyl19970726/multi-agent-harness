@@ -1,8 +1,9 @@
 import Ajv2020 from "ajv/dist/2020.js";
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
 
 const root = "schemas/remote-fabric";
 const fixtureRoot = join(root, "fixtures");
@@ -134,9 +135,80 @@ if (tests.status !== 0) {
   process.exit(tests.status ?? 1);
 }
 
+const processEvidenceRoot = process.env.FABRIC_ACCEPTANCE_OUTPUT
+  ? process.env.FABRIC_ACCEPTANCE_OUTPUT
+  : mkdtempSync(join(tmpdir(), "agentfirm-remote-fabric-"));
+if (
+  !existsSync(processEvidenceRoot) ||
+  readdirSync(processEvidenceRoot).length !== 0
+) {
+  console.error("FABRIC_ACCEPTANCE_OUTPUT must be an existing empty dedicated directory");
+  process.exit(1);
+}
+const processAcceptance = spawnSync(
+  "cargo",
+  [
+    "test",
+    "-p",
+    "firm-fabric",
+    "--test",
+    "remote_fabric_process",
+    "remote_fabric_three_process_acceptance",
+    "--",
+    "--ignored",
+    "--exact",
+    "--nocapture",
+  ],
+  {
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      CARGO_TERM_COLOR: "never",
+      FABRIC_ACCEPTANCE_OUTPUT: processEvidenceRoot,
+    },
+  },
+);
+if (processAcceptance.status !== 0) {
+  process.exit(processAcceptance.status ?? 1);
+}
+const requiredEvidence = [
+  "artifact-manifests.json",
+  "attempts.json",
+  "control-plane-leases.json",
+  "fabric-acceptance.json",
+  "gateway-leases.json",
+  "nodes.json",
+  "operations.json",
+  "port-scan.json",
+  "receipts.json",
+  "reconcile.json",
+];
+const evidenceNames = readdirSync(processEvidenceRoot).sort();
+if (JSON.stringify(evidenceNames) !== JSON.stringify(requiredEvidence.sort())) {
+  console.error(`unexpected three-process evidence inventory: ${evidenceNames.join(", ")}`);
+  process.exit(1);
+}
+if (evidenceNames.some((name) => /(?:key|secret|token|\.pem$)/i.test(name))) {
+  console.error("three-process evidence retained secret runtime material");
+  process.exit(1);
+}
+const processResult = readJson(join(processEvidenceRoot, "fabric-acceptance.json"));
+const reconcileResult = readJson(join(processEvidenceRoot, "reconcile.json"));
+const portScan = readJson(join(processEvidenceRoot, "port-scan.json"));
+if (
+  processResult.ok !== true ||
+  processResult.processes !== 3 ||
+  processResult.effect !== "applied" ||
+  reconcileResult.blind_replay !== false ||
+  portScan.node_inbound_collaboration_listeners.length !== 0
+) {
+  console.error("three-process evidence did not prove the frozen remote-fabric journey");
+  process.exit(1);
+}
+
 const bundleDigest = createHash("sha256")
   .update(JSON.stringify(bundle))
   .digest("hex");
 console.log(
-  `remote fabric foundation accepted: ${validCount} valid schemas, ${invalidCount} hostile schemas, bundle ${bundleDigest}, durable routing/security/recovery tests PASS`,
+  `remote fabric accepted: ${validCount} valid schemas, ${invalidCount} hostile schemas, bundle ${bundleDigest}, durable routing/security/recovery and three-process mTLS/WSS journey PASS; evidence ${processEvidenceRoot}`,
 );
