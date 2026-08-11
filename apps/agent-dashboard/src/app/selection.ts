@@ -85,6 +85,11 @@ export interface SelectionState {
   teamWorkId?: string;
   /** Responsibility lens inside one Team: shared workspace or Host console. */
   teamMode?: "workspace" | "host";
+  /** URL-owned War Room tab and bounded Work filters. */
+  teamTab?: "works" | "activity" | "members";
+  teamOwner?: string;
+  teamAttention?: "all" | "blocked" | "review";
+  teamQuery?: string;
   /** Machine selected in the Operator responsibility view. */
   nodeId?: string;
   /** URL-backed filters for the cross-TeamRun Team Works aggregate. */
@@ -276,6 +281,14 @@ function selectionFromSearch(search: string, pathname = "/"): SelectionState {
   if (teamWork) next.teamWorkId = teamWork;
   const teamMode = params.get("teamMode");
   if (teamMode === "workspace" || teamMode === "host") next.teamMode = teamMode;
+  const teamTab = params.get("teamTab");
+  if (teamTab === "works" || teamTab === "activity" || teamTab === "members") next.teamTab = teamTab;
+  const teamOwner = params.get("teamOwner");
+  if (teamOwner) next.teamOwner = teamOwner;
+  const teamAttention = params.get("teamAttention");
+  if (teamAttention === "all" || teamAttention === "blocked" || teamAttention === "review") next.teamAttention = teamAttention;
+  const teamQuery = params.get("teamQuery");
+  if (teamQuery) next.teamQuery = teamQuery;
   const node = params.get("node");
   if (node) { next.nodeId = node; if (!surface) next.surface = "operator"; }
   const filterParams = [
@@ -361,6 +374,10 @@ export function syncSelectionToLocation(selection: SelectionState): void {
   setOrDelete("orgExpanded", selection.orgExpanded);
   setOrDelete("teamWork", selection.teamWorkId);
   setOrDelete("teamMode", selection.teamMode);
+  setOrDelete("teamTab", selection.teamTab && selection.teamTab !== "works" ? selection.teamTab : undefined);
+  setOrDelete("teamOwner", selection.teamOwner && selection.teamOwner !== "all" ? selection.teamOwner : undefined);
+  setOrDelete("teamAttention", selection.teamAttention && selection.teamAttention !== "all" ? selection.teamAttention : undefined);
+  setOrDelete("teamQuery", selection.teamQuery);
   setOrDelete("node", selection.nodeId);
   setOrDelete("workTeam", selection.workTeamId);
   setOrDelete("workMission", selection.workMissionId);
@@ -416,6 +433,10 @@ const selectionCompareKeys = [
   "orgExpanded",
   "teamWorkId",
   "teamMode",
+  "teamTab",
+  "teamOwner",
+  "teamAttention",
+  "teamQuery",
   "nodeId",
   "workTeamId",
   "workMissionId",

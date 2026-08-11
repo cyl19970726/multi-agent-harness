@@ -342,6 +342,11 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     assert!(refreshed["data"]["runtime_recovery"].is_array());
     assert_eq!(refreshed["data"]["pressure_summary"]["ready_work"], 1);
     assert_eq!(refreshed["data"]["pressure_summary"]["total_members"], 3);
+    assert!(refreshed["data"]["all_works"]
+        .as_array()
+        .is_some_and(|items| items
+            .iter()
+            .any(|work| work["work_id"] == "work-store-live-1")));
     assert!(refreshed["data"]["work_queues"]["unassigned"]
         .as_array()
         .is_some_and(|items| items
@@ -352,6 +357,14 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         .is_some_and(|actions| actions
             .iter()
             .all(|action| action["required_version"].is_u64())));
+    let run_identity_route = format!("/v1/views/host-console/{run_id}?project={project_id}");
+    let (status, run_identity_view) =
+        serve.get_json_with_headers(&run_identity_route, &[("X-AgentFirm-Token", TOKEN)]);
+    assert_eq!(
+        status, 200,
+        "TeamRun-addressed Host RoleView: {run_identity_view}"
+    );
+    assert_eq!(run_identity_view["data"]["team_ref"], team.id);
     let message_route =
         format!("/v1/agentfirm/team-runs/{run_id}/messages/send?project={project_id}");
     let message_intent = serde_json::json!({
@@ -2018,6 +2031,53 @@ fn canonical_team_message_journey_uses_node_daemon_sessions_deliveries_and_curso
     );
     assert_eq!(status, 200, "Member message: {member_message}");
     let member_message_id = member_message["projection"]["id"].as_str().unwrap();
+    let (status, actionable_host_view) =
+        serve.get_json_with_headers(&host_view_route, &[("X-AgentFirm-Token", TOKEN)]);
+    assert_eq!(status, 200, "actionable Host inbox: {actionable_host_view}");
+    let host_inbox = actionable_host_view["data"]["host_inbox"]
+        .as_array()
+        .expect("Host inbox");
+    assert_eq!(
+        host_inbox.len(),
+        1,
+        "Host-authored broadcasts are not inbox pressure"
+    );
+    assert_eq!(host_inbox[0]["message_id"], member_message_id);
+    assert!(host_inbox
+        .iter()
+        .all(|message| message["message_id"] != host_message_id));
+    let reply_action = actionable_host_view["allowed_actions"]
+        .as_array()
+        .and_then(|actions| {
+            actions
+                .iter()
+                .find(|action| action["kind"] == "reply_message")
+        })
+        .expect("Host reply action");
+    let reply_version = reply_action["required_version"]
+        .as_u64()
+        .unwrap()
+        .to_string();
+    let correlation_id = host_inbox[0]["correlation_id"].as_str().unwrap();
+    let (status, host_reply) = serve.post_json_with_headers(
+        &format!("/v1/agentfirm/team-runs/{run_id}/messages/reply?project={project_id}"),
+        &serde_json::json!({
+            "action":"reply_message",
+            "recipient_ids":[member_id],
+            "body":"Host resolved the canonical decision request",
+            "correlation_id":correlation_id,
+            "causation_id":member_message_id
+        }),
+        &action_headers(TOKEN, "host-member-canonical-reply", &reply_version),
+    );
+    assert_eq!(status, 200, "Host reply: {host_reply}");
+    let (status, resolved_host_view) =
+        serve.get_json_with_headers(&host_view_route, &[("X-AgentFirm-Token", TOKEN)]);
+    assert_eq!(status, 200, "resolved Host inbox: {resolved_host_view}");
+    assert_eq!(
+        resolved_host_view["data"]["host_inbox"],
+        serde_json::json!([])
+    );
 
     let messages = store
         .fabric_messages(&space_id)

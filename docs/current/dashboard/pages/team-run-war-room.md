@@ -1,7 +1,7 @@
 # Agent Team Workbench Page Spec
 
 ```text
-status: authenticated RoleView authority implemented; mature composition restoration tracked by issue #444
+status: authenticated RoleView authority and mature composition implemented by issue #444
 owner_role: product-design
 canonical_for: one Mission-owned AgentTeamRun
 route_or_surface: Agent Teams -> TeamRun
@@ -67,6 +67,14 @@ surface, Activity conversation, Members capacity, and flexible context modules.
 The active page composes authenticated `TeamWorkspace` shared truth with
 authenticated `HostConsole` Host-only truth. It never reconstructs this page
 from the global snapshot.
+
+The implementation deliberately reuses the mature visual primitives that are
+still valid under the current model: canonical member avatars, capacity rows,
+the shared Works board and Work sheet, conversation/activity rows, composer,
+authorized action panels, and the exact-self Member home. It does not restore
+Wave-as-executor/gate UI, Assignment Message or legacy ACK paths, browser-side
+authority joins/writers, provider transcript mirrors, parent/child Team
+topology, or any second Team/Message/Delivery/Work model.
 
 ```text
 +----------------------+--------------------------------------+------------------+

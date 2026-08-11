@@ -663,6 +663,13 @@ fn message_summary(value: &Value, deliveries: &[Value]) -> Value {
     })
 }
 
+fn delivery_requires_team_reconcile(delivery: &Value, team_work_ids: &BTreeSet<&str>) -> bool {
+    matches!(delivery["status"].as_str(), Some("failed" | "expired"))
+        && delivery["work_id"]
+            .as_str()
+            .is_some_and(|id| team_work_ids.contains(id))
+}
+
 fn latest_record_ref(facts: &Facts, work_id: &str, kind: &str) -> Option<String> {
     records(facts, |value| {
         value.get("work_id").and_then(Value::as_str) == Some(work_id)
@@ -1244,11 +1251,15 @@ fn team_view(
 ) -> ViewResult {
     let facts = Facts::read(space_id, store)
         .map_err(|e| ("500 Internal Server Error", "ROLE_VIEW_BUILD_FAILED", e))?;
-    let team = facts.teams.iter().find(|team| team.id == team_id).ok_or((
-        "404 Not Found",
-        "TEAM_NOT_FOUND",
-        team_id.to_string(),
-    ))?;
+    let route_run = facts.runs.iter().find(|run| run.id == team_id);
+    let resolved_team_id = route_run
+        .map(|run| run.agent_team_id.as_str())
+        .unwrap_or(team_id);
+    let team = facts
+        .teams
+        .iter()
+        .find(|team| team.id == resolved_team_id)
+        .ok_or(("404 Not Found", "TEAM_NOT_FOUND", team_id.to_string()))?;
     let exact_host_identity = identity.is_some_and(|identity| {
         (identity.actor.kind == ActorKind::AgentMember && identity.actor.id == team.host_agent_id)
             || identity
@@ -1273,12 +1284,14 @@ fn team_view(
             .into(),
         ));
     }
-    let run = facts.latest_run(team_id);
+    let run = route_run.or_else(|| facts.latest_run(resolved_team_id));
     let run_id = run.map(|r| r.id.as_str());
     let works = facts
         .works
         .iter()
-        .filter(|w| w.team_id.as_deref() == Some(team_id) || run_id == Some(w.team_run_id.as_str()))
+        .filter(|w| {
+            w.team_id.as_deref() == Some(resolved_team_id) || run_id == Some(w.team_run_id.as_str())
+        })
         .map(|w| work_summary(&facts, team, w))
         .collect::<Vec<_>>();
     let team_work_ids = works
@@ -1711,11 +1724,25 @@ fn team_view(
         let current = enum_string(&lease.status) == "active" && lease.expires_unix_ms > SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
         json!({"team_run_id":lease.team_run_id,"supervisor_id":lease.supervisor_id,"generation":lease.generation,"current":current,"heartbeat_unix_ms":lease.heartbeat_unix_ms,"expires_unix_ms":lease.expires_unix_ms,"owner_locator":lease.owner_locator,"node_daemon_generation":lease.node_daemon_generation,"status":enum_string(&lease.status)})
     });
+    let host_reply_correlations = facts
+        .messages
+        .iter()
+        .filter(|message| {
+            run_id.is_some_and(|id| message["team_run_id"] == id)
+                && message["sender_actor_ref"]["id"] == team.host_agent_id
+        })
+        .filter_map(|message| message["correlation_id"].as_str())
+        .collect::<BTreeSet<_>>();
     let mut host_inbox = facts
         .messages
         .iter()
         .filter(|message| {
             run_id.is_some_and(|id| message["team_run_id"] == id)
+                && message["sender_actor_ref"]["id"] != team.host_agent_id
+                && message["response_intent"] == "response_required"
+                && !message["correlation_id"]
+                    .as_str()
+                    .is_some_and(|id| host_reply_correlations.contains(id))
                 && (message["recipients"].as_array().is_some_and(|recipients| {
                     recipients
                         .iter()
@@ -1758,7 +1785,7 @@ fn team_view(
     Ok(envelope(
         "host_console",
         &facts,
-        json!({"team_ref":team.id,"mission_ref":team.mission_id,"mission_context":mission_context,"team_supervisor":supervisor,"host_inbox":host_inbox,"member_runtime":members,"runtime_recovery":runtime_recovery,"pressure_summary":pressure_summary,"work_queues":{"ready":works.iter().filter(|w|w["phase"]=="open"&&w["condition"]=="normal").cloned().collect::<Vec<_>>(),"unassigned":works.iter().filter(|w|w["owner_actor_ref"].is_null()).cloned().collect::<Vec<_>>(),"blocked":works.iter().filter(|w|w["condition"]=="blocked").cloned().collect::<Vec<_>>(),"review":by_phase("review"),"integration":works.iter().filter(|w|w["module_refs"].as_array().is_some_and(|a|a.iter().any(|m|m=="integration-plan"))).cloned().collect::<Vec<_>>()},"member_capacity":members,"convergence_plans":[],"reusable_findings":findings,"workspace_conflicts":record_summaries("workspace_binding",raw_workspace_attention),"provider_capacity_attention":[{"state":"not_modeled","reason":"Provider account quota is not modeled in this RoleView."}],"deliveries_requiring_reconcile":record_summaries("work_delivery",facts.work_deliveries.iter().filter(|d|matches!(d["status"].as_str(),Some("failed"|"expired"))).cloned().collect()),"gate_attention":requirements,"daemon_summary":{"node_id":team.node_id,"lease_status":store.latest_node_daemon_lease(&team.node_id).ok().flatten().map(|lease|enum_string(&lease.status)),"generation":store.latest_node_daemon_lease(&team.node_id).ok().flatten().map(|lease|lease.generation)}}),
+        json!({"team_ref":team.id,"mission_ref":team.mission_id,"mission_context":mission_context,"team_supervisor":supervisor,"host_inbox":host_inbox,"member_runtime":members,"runtime_recovery":runtime_recovery,"pressure_summary":pressure_summary,"all_works":works,"work_queues":{"ready":works.iter().filter(|w|w["phase"]=="open"&&w["condition"]=="normal").cloned().collect::<Vec<_>>(),"unassigned":works.iter().filter(|w|w["owner_actor_ref"].is_null()).cloned().collect::<Vec<_>>(),"blocked":works.iter().filter(|w|w["condition"]=="blocked").cloned().collect::<Vec<_>>(),"review":by_phase("review"),"integration":works.iter().filter(|w|w["module_refs"].as_array().is_some_and(|a|a.iter().any(|m|m=="integration-plan"))).cloned().collect::<Vec<_>>()},"member_capacity":members,"convergence_plans":[],"reusable_findings":findings,"workspace_conflicts":record_summaries("workspace_binding",raw_workspace_attention),"provider_capacity_attention":[{"state":"not_modeled","reason":"Provider account quota is not modeled in this RoleView."}],"deliveries_requiring_reconcile":record_summaries("work_delivery",facts.work_deliveries.iter().filter(|delivery|delivery_requires_team_reconcile(delivery,&team_work_ids)).cloned().collect()),"gate_attention":requirements,"daemon_summary":{"node_id":team.node_id,"lease_status":store.latest_node_daemon_lease(&team.node_id).ok().flatten().map(|lease|enum_string(&lease.status)),"generation":store.latest_node_daemon_lease(&team.node_id).ok().flatten().map(|lease|lease.generation)}}),
         identity_attention,
         actions,
     ))
@@ -2245,5 +2272,20 @@ mod tests {
         let error = ensure_active_membership_cardinality(&duplicate)
             .expect_err("ambiguous historical authority must fail closed");
         assert!(error.contains("IDENTITY_CONFLICT"));
+    }
+
+    #[test]
+    fn host_delivery_reconcile_projection_is_team_scoped() {
+        let team_work_ids = BTreeSet::from(["work-team-a"]);
+        let team_delivery = json!({"id":"delivery-a","work_id":"work-team-a","status":"failed"});
+        let sibling_delivery = json!({"id":"delivery-b","work_id":"work-team-b","status":"failed"});
+        assert!(delivery_requires_team_reconcile(
+            &team_delivery,
+            &team_work_ids
+        ));
+        assert!(!delivery_requires_team_reconcile(
+            &sibling_delivery,
+            &team_work_ids
+        ));
     }
 }

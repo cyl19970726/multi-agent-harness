@@ -27,10 +27,16 @@ assert.equal(/catch\s*\([^)]*\)\s*=>\s*\(\s*\{\s*ok\s*:\s*true/.test(active), fa
 assert.equal(/sender(_actor_ref|_runtime_id)?\s*:/.test(sources["src/model/roleViews.ts"].split("prepareRoleAction")[1].split("export function roleActionRoute")[0]), false, "browser action payload authors sender identity");
 assert.match(sources["src/surfaces/TeamWorkspace.tsx"], /"works" \| "activity" \| "members"/, "semantic Team tabs are missing");
 assert.match(sources["src/components/workbench/team/TeamWorksBoard.tsx"], /data-testid="role-view-work-sheet"/, "responsive selected Work sheet is missing");
+assert.match(sources["src/components/workbench/team/TeamWorksBoard.tsx"], /event\.key !== "Tab"/, "Work sheet focus trap is missing");
 assert.match(sources["src/surfaces/HostConsole.tsx"], /view\.data\.team_supervisor/, "Host-only supervisor truth is not rendered");
 assert.match(sources["src/surfaces/HostConsole.tsx"], /view\.data\.host_inbox/, "Host-only Lead Inbox is not rendered");
 assert.match(sources["src/surfaces/TeamWorkspace.tsx"], /team\.viewer_role === "host"/, "member Team views expose an unscoped Host Console entry");
 assert.match(workbenchShell, /selection\.teamId && selection\.teamMode/, "selected Team member context is routed into exact-self MemberWorkbench");
+const teamRouteSource=workbenchShell.split('case "team":')[1].split('case "operator":')[0];
+assert.doesNotMatch(teamRouteSource,/model\.snapshot\.team_runs/,"active Team route still joins global snapshot TeamRun rows");
+assert.doesNotMatch(teamRouteSource,/TeamWorkspace key=/,"snapshot generation remounts and destroys last-good TeamWorkspace state");
+assert.match(sources["src/surfaces/TeamWorkspace.tsx"],/<HostConsole\s+embedded/,"Host-only truth replaces instead of composing the shared War Room");
+assert.match(sources["src/components/workbench/team/TeamMembersCapacity.tsx"],/<Avatar /,"mature member portraits are not reused");
 assert.match(sources["src/components/workbench/team/TeamMessageComposer.tsx"], /prepareRoleAction/, "compact composer bypasses closed Role Actions");
 assert.match(sources["src/surfaces/TeamWorkspace.tsx"], /Last authoritative view|last authoritative view|last-good truth|Showing the last authoritative view/, "last-good refresh state is missing");
 assert.match(sources["src/model/roleViews.ts"], /runtime_fabric:RuntimeFabricSummary/g, "RoleView runtime fabric types are missing");

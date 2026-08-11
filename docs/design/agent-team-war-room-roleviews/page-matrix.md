@@ -38,11 +38,14 @@ captures, comparisons and two iterations.
 
 ## Implemented evidence
 
-The deterministic authenticated fixture covers a populated Team and a useful
-empty Team. It negotiates the RoleView protocol, supplies a memory-only
-capability, exercises SSE invalidation/refetch, performs one prepared
-`send_message` action with exact CAS and idempotency headers, and records zero
-console or HTTP errors and no horizontal overflow at every viewport. Durable
-selected captures live under
+The deterministic authenticated fixture covers a populated Team, its shared
+Works/Activity/Members views, embedded Host tools, and a useful empty Team. It
+negotiates the RoleView protocol, supplies a memory-only capability, exercises
+SSE invalidation/refetch, proves Browser Back and URL-owned Team filters,
+performs one prepared `send_message` action with exact CAS and idempotency
+headers, proves keyboard focus containment/restoration for the Work sheet, and
+records zero unexpected console or HTTP errors and no horizontal overflow at
+every normal viewport. A separate deliberate initial-503 case records the
+recoverable initial error state. Durable selected captures live under
 `docs/design/agent-team-war-room-roleviews/implemented/`; raw runs remain under
 `.visual-evidence/agent-team-war-room-roleviews/final-exact/`.

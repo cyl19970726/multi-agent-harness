@@ -1,10 +1,11 @@
 import { AlertTriangle, ArrowRight, CircleDot, ShieldAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import type { RoleView, WorkSummary } from "../model/roleViews";
 
-export function ViewState({loading,error,children}:{loading:boolean;error:string|null;children:React.ReactNode}){
-  if(loading)return <div className="grid min-h-64 place-items-center text-sm text-muted-foreground" role="status">Loading canonical view…</div>;
-  if(error)return <div className="m-6 rounded-xl border border-destructive/30 bg-destructive/10 p-5 text-sm text-destructive" role="alert"><ShieldAlert className="mb-2 size-5"/>{error}</div>;
+export function ViewState({loading,error,children,identityLabel="Canonical workspace",onRetry}:{loading:boolean;error:string|null;children:React.ReactNode;identityLabel?:string;onRetry?:()=>void}){
+  if(loading)return <div className="m-3 space-y-4 sm:m-5" role="status" aria-label={`Loading ${identityLabel}`}><div className="rounded-xl border border-border bg-card p-4"><div className="h-3 w-32 animate-pulse rounded bg-muted"/><div className="mt-3 h-7 max-w-80 animate-pulse rounded bg-muted"/><p className="mt-3 text-xs text-muted-foreground">Loading {identityLabel} from the authenticated RoleView…</p></div><div className="grid grid-cols-2 gap-2 sm:grid-cols-5">{Array.from({length:5},(_,index)=><div key={index} className="h-16 animate-pulse rounded-xl border border-border bg-muted/35"/>)}</div><div className="h-56 animate-pulse rounded-xl border border-border bg-muted/25"/></div>;
+  if(error)return <div className="m-6 rounded-xl border border-destructive/30 bg-destructive/10 p-5 text-sm" role="alert"><ShieldAlert className="mb-2 size-5 text-destructive"/><h2 className="font-semibold text-foreground">{identityLabel} is unavailable</h2><p className="mt-2 break-words text-destructive">{error}</p>{onRetry&&<Button className="mt-4" size="sm" variant="secondary" onClick={onRetry}>Retry authenticated view</Button>}</div>;
   return <>{children}</>;
 }
 export function ViewProvenance({view}:{view:RoleView<unknown>}){return <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground"><Badge>{view.freshness}</Badge><span>{view.schema_version}</span><span>seq {view.as_of_event_sequence}</span><span className="max-w-72 truncate" title={view.source_store_identity}>{view.source_execution_space_id}</span></div>}

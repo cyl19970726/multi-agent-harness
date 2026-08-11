@@ -1034,11 +1034,11 @@ function SurfaceSwitch({
       );
     case "team":
       return selection.teamId && selection.teamMode ? (
-        <TeamWorkspace key={model.snapshot.generated_at} apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} teamId={(model.snapshot.team_runs ?? []).find((run) => run.id === selection.teamId)?.agent_team_id ?? selection.teamId} teamRunId={(model.snapshot.team_runs ?? []).find((run) => run.id === selection.teamId)?.id ?? (model.snapshot.team_runs ?? []).find((run) => run.agent_team_id === selection.teamId)?.id} refreshKey={model.snapshot.generated_at} selection={selection} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} onSelectionChange={onSelectionChange} />
+        <TeamWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} teamId={selection.teamId} refreshKey={model.snapshot.generated_at} selection={selection} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} onSelectionChange={onSelectionChange} />
       ) : selection.memberRunId ? (
-        <MemberWorkbench key={model.snapshot.generated_at} apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} memberRunId={selection.memberRunId} teamRunId={(model.snapshot.member_runs ?? []).find((run) => run.id === selection.memberRunId)?.team_run_id} teamId={(model.snapshot.team_runs ?? []).find((run) => run.id === (model.snapshot.member_runs ?? []).find((memberRun) => memberRun.id === selection.memberRunId)?.team_run_id)?.agent_team_id} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} />
+        <MemberWorkbench apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} memberRunId={selection.memberRunId} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} />
       ) : selection.teamId ? (
-        <TeamWorkspace key={model.snapshot.generated_at} apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} teamId={(model.snapshot.team_runs ?? []).find((run) => run.id === selection.teamId)?.agent_team_id ?? selection.teamId} teamRunId={(model.snapshot.team_runs ?? []).find((run) => run.id === selection.teamId)?.id ?? (model.snapshot.team_runs ?? []).find((run) => run.agent_team_id === selection.teamId)?.id} refreshKey={model.snapshot.generated_at} selection={selection} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} onSelectionChange={onSelectionChange} />
+        <TeamWorkspace apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} teamId={selection.teamId} refreshKey={model.snapshot.generated_at} selection={selection} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} onSelectionChange={onSelectionChange} />
       ) : (
         <AgentTeamsHome {...shared} />
       );

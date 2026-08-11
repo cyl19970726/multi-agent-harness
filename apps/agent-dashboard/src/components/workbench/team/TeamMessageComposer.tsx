@@ -36,7 +36,8 @@ export function TeamMessageComposer({ actions, members, works, replyTo, teamId, 
   if (!available.length) return null;
   const execute = async () => {
     if (!action || !actionsCurrent) return;
-    const prepared = prepareRoleAction(action,{teamId,teamRunId},{recipient_ids:recipientIds,body,work_id:workId,response_required:String(responseRequired),correlation_id:replyTo?.correlation_id ?? "",causation_id:replyTo?.message_id ?? ""},false);
+    const resolvedTeamRunId = action.target_ref.kind === "team_run" ? action.target_ref.id : teamRunId;
+    const prepared = prepareRoleAction(action,{teamId,teamRunId:resolvedTeamRunId},{recipient_ids:recipientIds,body,work_id:workId,response_required:String(responseRequired),correlation_id:replyTo?.correlation_id ?? "",causation_id:replyTo?.message_id ?? ""},false);
     if ("error" in prepared) { setStatus(prepared.error); return; }
     setBusy(true);
     const result = await onAction(prepared.path,prepared.body,{headers:prepared.headers});
