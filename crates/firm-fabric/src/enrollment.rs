@@ -58,6 +58,7 @@ pub(crate) fn create_enrollment(
         consumed_at_unix_ms: None,
         consumed_by_node_id: None,
         status: EnrollmentStatus::Pending,
+        revision: 1,
         schema_version: FABRIC_SCHEMA_VERSION.into(),
         created_at_unix_ms: now_unix_ms,
         updated_at_unix_ms: now_unix_ms,
@@ -183,6 +184,7 @@ pub(crate) fn consume_enrollment(
         ));
     }
     enrollment.status = EnrollmentStatus::Consumed;
+    enrollment.revision = enrollment.revision.saturating_add(1);
     enrollment.consumed_at_unix_ms = Some(now_unix_ms);
     enrollment.consumed_by_node_id = Some(node_id.into());
     enrollment.updated_at_unix_ms = now_unix_ms;
@@ -223,6 +225,52 @@ pub(crate) fn consume_enrollment(
         .certificates
         .insert(certificate.serial.clone(), certificate.clone());
     Ok((node, certificate))
+}
+
+pub(crate) fn revoke_enrollment(
+    state: &mut FabricState,
+    actor: &AuthenticatedActor,
+    company_id: &str,
+    enrollment_id: &str,
+    expected_revision: u64,
+    now_unix_ms: u64,
+) -> Result<NodeEnrollment, FabricError> {
+    actor.require_company_and_role(company_id, "company_host", now_unix_ms)?;
+    let enrollment = state
+        .enrollments
+        .get(enrollment_id)
+        .cloned()
+        .ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::EnrollmentInvalid,
+                "enrollment does not exist",
+            )
+        })?;
+    if enrollment.company_id != company_id {
+        return Err(FabricError::none(
+            FabricErrorCode::WrongCompany,
+            "enrollment belongs to another Company",
+        ));
+    }
+    if enrollment.revision != expected_revision {
+        return Err(crate::control_plane::revision_conflict(
+            "enrollment revision mismatch",
+            expected_revision,
+            enrollment.revision,
+        ));
+    }
+    if enrollment.status != EnrollmentStatus::Pending {
+        return Err(FabricError::none(
+            FabricErrorCode::EnrollmentInvalid,
+            "only a pending enrollment can be revoked",
+        ));
+    }
+    let mut next = enrollment;
+    next.status = EnrollmentStatus::Revoked;
+    next.revision = next.revision.saturating_add(1);
+    next.updated_at_unix_ms = now_unix_ms;
+    state.enrollments.insert(enrollment_id.into(), next.clone());
+    Ok(next)
 }
 
 pub fn enrollment_challenge(

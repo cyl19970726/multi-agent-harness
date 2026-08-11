@@ -194,6 +194,33 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
         })
     }
 
+    pub fn revoke_enrollment(
+        &self,
+        actor: &AuthenticatedActor,
+        generation: u64,
+        enrollment_id: &str,
+        expected_revision: u64,
+        now_unix_ms: u64,
+    ) -> Result<NodeEnrollment, FabricError> {
+        self.store.transact(|state| {
+            require_active_control_plane(
+                state,
+                &self.company_id,
+                &self.instance_id,
+                generation,
+                now_unix_ms,
+            )?;
+            enrollment::revoke_enrollment(
+                state,
+                actor,
+                &self.company_id,
+                enrollment_id,
+                expected_revision,
+                now_unix_ms,
+            )
+        })
+    }
+
     pub fn connect_gateway(
         &self,
         generation: u64,

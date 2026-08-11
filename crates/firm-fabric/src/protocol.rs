@@ -215,6 +215,7 @@ pub struct NodeEnrollment {
     pub consumed_at_unix_ms: Option<u64>,
     pub consumed_by_node_id: Option<String>,
     pub status: EnrollmentStatus,
+    pub revision: u64,
     pub schema_version: String,
     pub created_at_unix_ms: u64,
     pub updated_at_unix_ms: u64,
