@@ -8,14 +8,13 @@
 use harness_core::agentfirm_api::{
     ActorKind, ActorRef, CandidateKind, CandidateRef, Confidence, DeliveryReconcileOutcome,
     FailureAnalysis, GateEvaluation, GateRequirement, GateRequirementSource, GateVerdict,
-    GateWaiver, GateWaiverState, MemberCoordinationStatus, MemberWorkspaceBinding,
-    PrimaryCauseStatus, ResponseIntent, RetrySafety, TeamMessage, TeamMessageKind, WorkFinding,
-    WorkFindingKind, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
-    WorkspaceOwnership, WorkspaceSafetyProof,
+    GateWaiver, GateWaiverState, MemberCoordinationStatus, MemberWorkspaceBinding, MessageKind,
+    MutationContext, PrimaryCauseStatus, RetrySafety, WorkFinding, WorkFindingKind, WorkReport,
+    WorkReportKind, WorkspaceLifecycle, WorkspaceMode, WorkspaceOwnership, WorkspaceSafetyProof,
 };
 use harness_core::{
-    TeamActorKind, TeamActorRef, Work, WorkCausationRef, WorkClaimMode, WorkCommandContext,
-    WorkCondition, WorkPhase, WorkPriority,
+    NodeDaemonLeaseStatus, TeamActorKind, TeamActorRef, Work, WorkCausationRef, WorkClaimMode,
+    WorkCommandContext, WorkCondition, WorkPhase, WorkPriority,
 };
 use harness_store::{canonical_json_fingerprint, HarnessStore, StoreError};
 use serde::{Deserialize, Serialize};
@@ -880,6 +879,25 @@ fn trust_result(result: crate::agentfirm_api::TrustCommandResult) -> RoleActionR
     }
 }
 
+fn canonical_mutation_result<T: Serialize>(
+    result: harness_store::CanonicalMutationResult<T>,
+) -> Result<RoleActionResult, StoreError> {
+    let projection = serde_json::to_value(result.projection)?;
+    let resulting_version = projection
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(result.event.resulting_version);
+    Ok(RoleActionResult {
+        ok: true,
+        action_protocol_version: "agentfirm.role_actions.v1",
+        projection,
+        event_id: result.event.id,
+        resulting_version,
+        store_sequence: result.event.store_sequence,
+        replayed: result.replayed,
+    })
+}
+
 fn deterministic_id(kind: &str, auth: &AuthenticatedMutation) -> String {
     format!("{kind}:{}", auth.idempotency_key)
 }
@@ -1213,14 +1231,6 @@ fn execute_canonical_role_action(
                     None,
                 ));
             }
-            if let Some(replay) = canonical_replay(
-                store,
-                &auth,
-                "team_message",
-                &deterministic_id("team-message", &auth),
-            )? {
-                return Ok(replay);
-            }
             let team_revision = store
                 .teams()?
                 .into_iter()
@@ -1243,6 +1253,7 @@ fn execute_canonical_role_action(
                 response_required,
                 correlation_id,
                 causation_id,
+                message_kind,
             ) = match (operation, intent) {
                 (
                     "send",
@@ -1261,6 +1272,7 @@ fn execute_canonical_role_action(
                     response_required,
                     deterministic_id("correlation", &auth),
                     None,
+                    MessageKind::Message,
                 ),
                 (
                     "reply",
@@ -1281,6 +1293,7 @@ fn execute_canonical_role_action(
                     response_required,
                     correlation_id,
                     Some(causation_id),
+                    MessageKind::Reply,
                 ),
                 (
                     "request-decision",
@@ -1297,6 +1310,7 @@ fn execute_canonical_role_action(
                     true,
                     deterministic_id("decision", &auth),
                     None,
+                    MessageKind::RequestDecision,
                 ),
                 _ => {
                     return Err(encoded_error(
@@ -1337,39 +1351,181 @@ fn execute_canonical_role_action(
                     None,
                 ));
             }
-            let message = TeamMessage {
-                id: deterministic_id("team-message", &auth),
+            let memberships = store.fabric_team_memberships(&auth.execution_space_id)?;
+            let subscriptions = store.fabric_message_subscriptions(&auth.execution_space_id)?;
+            for recipient_id in &recipient_ids {
+                let matching = memberships
+                    .iter()
+                    .filter(|membership| {
+                        membership.team_id == team.id
+                            && membership.agent_identity_id == *recipient_id
+                            && membership.state
+                                == harness_core::agentfirm_api::TeamMembershipStatus::Active
+                    })
+                    .collect::<Vec<_>>();
+                if matching.len() != 1
+                    || !subscriptions.iter().any(|subscription| {
+                        subscription.subscriber_agent_id == *recipient_id
+                            && subscription.membership_ref.as_deref()
+                                == Some(matching[0].id.as_str())
+                            && subscription.status
+                                == harness_core::agentfirm_api::MessageSubscriptionStatus::Active
+                    })
+                {
+                    return Err(encoded_error(
+                        "MESSAGE_ROUTE_UNAVAILABLE",
+                        "recipient requires one active canonical TeamMembership and MessageSubscription",
+                        "agent_identity",
+                        recipient_id,
+                        None,
+                    ));
+                }
+            }
+            let member_runs = store
+                .trust_member_runs(&auth.execution_space_id)?
+                .into_iter()
+                .filter(|run| run.team_run_id == team_run_id)
+                .collect::<Vec<_>>();
+            let recipient_runtime_ids = recipient_ids
+                .into_iter()
+                .map(|identity_id| {
+                    if identity_id == team.host_agent_id {
+                        Ok("host".to_string())
+                    } else {
+                        let matching = member_runs
+                            .iter()
+                            .filter(|run| {
+                                run.agent_member_id == identity_id
+                                    && run.coordination_status == MemberCoordinationStatus::Active
+                            })
+                            .collect::<Vec<_>>();
+                        match matching.as_slice() {
+                            [run] => Ok(run.id.clone()),
+                            _ => Err(encoded_error(
+                                "AGENT_SESSION_AMBIGUOUS",
+                                "message recipient requires exactly one active Team Member",
+                                "agent_identity",
+                                &identity_id,
+                                None,
+                            )),
+                        }
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let sender = TeamActorRef {
+                kind: if actor_is_host {
+                    TeamActorKind::Host
+                } else {
+                    TeamActorKind::AgentMember
+                },
+                id: if actor_is_host {
+                    team.host_agent_id.clone()
+                } else {
+                    auth.actor.id.clone()
+                },
+                display_name: None,
+                authn_source: Some("agentfirm_http_credential".into()),
+            };
+            let compatibility_id = format!(
+                "role-message:{}",
+                canonical_json_fingerprint(&json!({
+                    "actor": &auth.actor,
+                    "idempotency_key": &auth.idempotency_key,
+                }))
+            );
+            let message = harness_core::TeamMessageProjection {
+                id: compatibility_id.clone(),
                 team_run_id: team_run_id.to_string(),
                 work_id,
-                sender: auth.actor.clone(),
-                recipients: recipient_ids
-                    .into_iter()
-                    .map(|id| ActorRef {
-                        kind: ActorKind::AgentMember,
-                        id,
+                source_plan_ref: None,
+                sender: Some(sender.clone()),
+                sender_runtime_id: if actor_is_host {
+                    "host".into()
+                } else {
+                    actor_member_run
+                        .as_ref()
+                        .cloned()
+                        .unwrap_or_else(|| auth.actor.id.clone())
+                },
+                recipients: recipient_runtime_ids
+                    .iter()
+                    .map(|id| harness_core::TeamRecipientRef {
+                        kind: harness_core::TeamRecipientKind::ProviderRuntimeProjection,
+                        id: id.clone(),
                     })
                     .collect(),
-                kind: TeamMessageKind::Message,
+                recipient_runtime_ids,
+                kind: match message_kind {
+                    MessageKind::RequestDecision => harness_core::ProviderDispatchIntent::Control,
+                    _ => harness_core::ProviderDispatchIntent::Message,
+                },
                 body: message_body,
                 correlation_id,
                 causation_id,
-                response_intent: if response_required {
-                    ResponseIntent::ResponseRequired
+                response_intent: Some(if response_required {
+                    harness_core::ProviderResponseIntent::ResponseRequired
                 } else {
-                    ResponseIntent::Informational
-                },
+                    harness_core::ProviderResponseIntent::Informational
+                }),
                 evidence_refs,
+                deliveries: Vec::new(),
                 created_at: now_string(),
             };
-            auth.expected_version = 0;
-            Ok(trust_result(crate::agentfirm_api::execute(
-                store,
-                auth,
-                crate::agentfirm_api::TrustCommand::CreateTeamMessage {
-                    message,
-                    updated_at: now_string(),
-                },
-            )?))
+            let canonical_id = format!("message:{compatibility_id}");
+            let replayed = store
+                .fabric_messages(&auth.execution_space_id)?
+                .iter()
+                .any(|message| message.id == canonical_id);
+            let published =
+                crate::publish_team_message(store, &sender, message).map_err(|error| {
+                    encoded_error(
+                        "RUNTIME_COMMAND_REJECTED",
+                        error.to_string(),
+                        "message",
+                        &canonical_id,
+                        None,
+                    )
+                })?;
+            let canonical = store
+                .fabric_messages(&auth.execution_space_id)?
+                .into_iter()
+                .find(|message| message.id == published.id)
+                .ok_or_else(|| {
+                    encoded_error(
+                        "RUNTIME_COMMAND_RECOVERY_REQUIRED",
+                        "NodeDaemon returned without a canonical Message",
+                        "message",
+                        &canonical_id,
+                        None,
+                    )
+                })?;
+            let event = store
+                .canonical_operations_for_space(&auth.execution_space_id)?
+                .into_iter()
+                .filter(|operation| {
+                    operation.event.aggregate_kind == "message"
+                        && operation.event.aggregate_id == canonical.id
+                })
+                .max_by_key(|operation| operation.event.sequence)
+                .ok_or_else(|| {
+                    encoded_error(
+                        "RUNTIME_COMMAND_RECOVERY_REQUIRED",
+                        "canonical Message event is missing",
+                        "message",
+                        &canonical.id,
+                        None,
+                    )
+                })?
+                .event;
+            Ok(RoleActionResult {
+                ok: true,
+                action_protocol_version: "agentfirm.role_actions.v1",
+                projection: serde_json::to_value(canonical)?,
+                event_id: event.id,
+                resulting_version: event.resulting_version,
+                store_sequence: event.store_sequence,
+                replayed,
+            })
         }
         CanonicalRoute::MemberRun {
             member_run_id,
@@ -1771,19 +1927,47 @@ fn execute_canonical_role_action(
                     None,
                 ));
             }
-            if let Some(replay) = canonical_replay(store, &auth, "message_delivery", delivery_id)? {
-                return Ok(replay);
-            }
-            Ok(trust_result(crate::agentfirm_api::execute(
-                store,
-                auth,
-                crate::agentfirm_api::TrustCommand::ReconcileMessageDelivery {
-                    delivery_id: delivery_id.into(),
-                    outcome,
-                    evidence_ref,
-                    updated_at: now_string(),
-                },
-            )?))
+            let lease = store
+                .latest_node_daemon_lease(node_id)?
+                .filter(|lease| {
+                    lease.status == NodeDaemonLeaseStatus::Active
+                        && lease.expires_unix_ms > crate::current_unix_ms_u64()
+                })
+                .ok_or_else(|| {
+                    encoded_error(
+                        "NODE_DAEMON_GENERATION_FENCED",
+                        "MessageDelivery reconcile requires the exact current NodeDaemon",
+                        "execution_node",
+                        node_id,
+                        None,
+                    )
+                })?;
+            let daemon_actor = ActorRef {
+                kind: ActorKind::Service,
+                id: lease.daemon_id.clone(),
+            };
+            let context = MutationContext {
+                execution_space_id: auth.execution_space_id,
+                authenticated_actor: daemon_actor,
+                authority_actor: Some(auth.actor.clone()),
+                command_name: "node_daemon.message_delivery.reconcile".into(),
+                idempotency_key: format!(
+                    "role-message-reconcile:{}:{}",
+                    auth.actor.id, auth.idempotency_key
+                ),
+                expected_version: auth.expected_version,
+                request_fingerprint: auth.request_fingerprint,
+            };
+            canonical_mutation_result(store.reconcile_canonical_message_delivery(
+                &context,
+                delivery_id,
+                node_id,
+                &lease.daemon_id,
+                lease.generation,
+                outcome,
+                &evidence_ref,
+                &now_string(),
+            )?)
         }
         CanonicalRoute::Operator { node_id, operation } => {
             execute_operator_action(store, auth, node_id, operation, body, confirmed_action)

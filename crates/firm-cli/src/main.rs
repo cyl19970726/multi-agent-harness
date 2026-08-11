@@ -29,8 +29,8 @@ use harness_core::{
     ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
     ProviderCompatibilityAdmissionPolicy, ProviderCompatibilityBlockBoundary,
     ProviderCompatibilityBlockCause, ProviderCompatibilityBlockSource, ProviderCompatibilityStatus,
-    ProviderControlValue, ProviderDispatchAttempt, ProviderDispatchEvent, ProviderDispatchIntent,
-    ProviderEventFidelity, ProviderExecutionControls, ProviderExecutionStatus, ProviderFeatureMode,
+    ProviderControlValue, ProviderDispatchAttempt, ProviderDispatchIntent, ProviderEventFidelity,
+    ProviderExecutionControls, ProviderExecutionStatus, ProviderFeatureMode,
     ProviderIntegrationProfile, ProviderInteractionMessageOption, ProviderInteractionMode,
     ProviderInteractionRequestBody, ProviderInteractionResponseBody, ProviderInteractionType,
     ProviderLaunchConfig, ProviderLaunchProfile, ProviderLaunchStatus, ProviderProcess,
@@ -12617,12 +12617,14 @@ fn publish_team_message(
         .map(|recipient| {
             if recipient == "host" {
                 Ok(MessageRecipientRef {
-                    kind: MessageRecipientKind::ControlPlaneActor,
-                    id: run
-                        .host_actor
-                        .as_ref()
-                        .map(|actor| actor.id.clone())
-                        .unwrap_or_else(|| "host".into()),
+                    kind: MessageRecipientKind::AgentIdentity,
+                    id: store
+                        .latest_teams()?
+                        .remove(&run.agent_team_id)
+                        .map(|team| team.host_agent_id)
+                        .ok_or_else(|| {
+                            CliError::Usage("TeamRun references a missing AgentTeam".into())
+                        })?,
                 })
             } else {
                 let stable = member_runs
@@ -12789,155 +12791,224 @@ pub(crate) fn team_run_inbox(
             return Ok(Vec::new());
         }
     }
-    let mut messages = latest_team_messages_in_append_order(store)?
+    let mut messages = canonical_team_messages_for_run(store, team_run_id)?
         .into_iter()
-        .filter(|message| message.team_run_id == team_run_id)
         .filter(|message| {
             message
                 .recipient_runtime_ids
                 .iter()
-                .any(|recipient| recipient == member_run_id)
-                && message.deliveries.iter().any(|delivery| {
+                .any(|id| id == member_run_id)
+        })
+        .filter(|message| {
+            include_all
+                || message.deliveries.iter().any(|delivery| {
                     delivery.member_id == member_run_id
-                        && (include_all
-                            || matches!(
-                                delivery.status,
-                                TeamDeliveryStatus::Queued | TeamDeliveryStatus::Delivered
-                            ))
+                        && matches!(
+                            delivery.status,
+                            TeamDeliveryStatus::Queued | TeamDeliveryStatus::Delivered
+                        )
                 })
         })
         .collect::<Vec<_>>();
-
-    // The member-trust kernel is the canonical message authority. Project its
-    // immutable TeamMessageProjection + RegistryDeliveryAttempt rows into the existing
-    // read shape while callers migrate; never require a retired shadow append
-    // merely to make a canonical message visible in an inbox.
-    if member_run_id != "host" {
-        if let Some(execution_space_id) = store.trust_member_run_scope(member_run_id)? {
-            let canonical_messages = store
-                .trust_team_messages(&execution_space_id)?
-                .into_iter()
-                .filter(|message| message.team_run_id == team_run_id)
-                .map(|message| (message.id.clone(), message))
-                .collect::<BTreeMap<_, _>>();
-            for delivery in store
-                .trust_message_deliveries(&execution_space_id)?
-                .into_iter()
-                .filter(|delivery| delivery.recipient_member_run_id == member_run_id)
-                .filter(|delivery| {
-                    include_all
-                        || delivery.status
-                            == harness_core::agentfirm_api::MessageDeliveryStatus::Queued
-                })
-            {
-                let Some(message) = canonical_messages.get(&delivery.message_id) else {
-                    continue;
-                };
-                let status = match delivery.status {
-                    harness_core::agentfirm_api::MessageDeliveryStatus::Queued => {
-                        TeamDeliveryStatus::Queued
-                    }
-                    harness_core::agentfirm_api::MessageDeliveryStatus::Claimed => {
-                        TeamDeliveryStatus::Claimed
-                    }
-                    harness_core::agentfirm_api::MessageDeliveryStatus::ProviderReceived => {
-                        TeamDeliveryStatus::Delivered
-                    }
-                    harness_core::agentfirm_api::MessageDeliveryStatus::Acknowledged => {
-                        TeamDeliveryStatus::Acknowledged
-                    }
-                    harness_core::agentfirm_api::MessageDeliveryStatus::Failed
-                    | harness_core::agentfirm_api::MessageDeliveryStatus::Invalidated => {
-                        TeamDeliveryStatus::Failed
-                    }
-                    harness_core::agentfirm_api::MessageDeliveryStatus::Expired => {
-                        TeamDeliveryStatus::Expired
-                    }
-                };
-                let sender = match message.sender.kind {
-                    harness_core::agentfirm_api::ActorKind::AgentMember => TeamActorRef {
-                        kind: TeamActorKind::AgentMember,
-                        id: message.sender.id.clone(),
-                        display_name: None,
-                        authn_source: Some("canonical_trust_kernel".into()),
-                    },
-                    harness_core::agentfirm_api::ActorKind::Human
-                    | harness_core::agentfirm_api::ActorKind::External => TeamActorRef {
-                        kind: TeamActorKind::Operator,
-                        id: message.sender.id.clone(),
-                        display_name: None,
-                        authn_source: Some("canonical_trust_kernel".into()),
-                    },
-                    harness_core::agentfirm_api::ActorKind::Service => TeamActorRef {
-                        kind: TeamActorKind::Service,
-                        id: message.sender.id.clone(),
-                        display_name: None,
-                        authn_source: Some("canonical_trust_kernel".into()),
-                    },
-                };
-                messages.push(TeamMessageProjection {
-                    id: message.id.clone(),
-                    team_run_id: message.team_run_id.clone(),
-                    work_id: message.work_id.clone(),
-                    source_plan_ref: None,
-                    sender: Some(sender),
-                    sender_runtime_id: message.sender.id.clone(),
-                    recipients: vec![TeamRecipientRef {
-                        kind: TeamRecipientKind::ProviderRuntimeProjection,
-                        id: member_run_id.to_string(),
-                    }],
-                    recipient_runtime_ids: vec![member_run_id.to_string()],
-                    kind: match message.kind {
-                        harness_core::agentfirm_api::TeamMessageKind::Control => {
-                            ProviderDispatchIntent::Control
-                        }
-                        harness_core::agentfirm_api::TeamMessageKind::ProviderInteractionRequest => {
-                            ProviderDispatchIntent::ProviderInteractionRequest
-                        }
-                        harness_core::agentfirm_api::TeamMessageKind::ProviderInteractionResponse => {
-                            ProviderDispatchIntent::ProviderInteractionResponse
-                        }
-                        harness_core::agentfirm_api::TeamMessageKind::Message => {
-                            ProviderDispatchIntent::Message
-                        }
-                    },
-                    body: message.body.clone(),
-                    correlation_id: message.correlation_id.clone(),
-                    causation_id: message.causation_id.clone(),
-                    response_intent: Some(match message.response_intent {
-                        harness_core::agentfirm_api::ResponseIntent::Informational => {
-                            ProviderResponseIntent::Informational
-                        }
-                        harness_core::agentfirm_api::ResponseIntent::ResponseRequired => {
-                            ProviderResponseIntent::ResponseRequired
-                        }
-                    }),
-                    evidence_refs: message.evidence_refs.clone(),
-                    deliveries: vec![ProviderDispatchAttempt {
-                        member_id: member_run_id.to_string(),
-                        policy: TeamDeliveryPolicy::Queue,
-                        status,
-                        attempt: delivery.attempt,
-                        claim_id: delivery.claim_id.clone(),
-                        claimed_by_supervisor_id: None,
-                        claimed_generation: delivery.claimed_supervisor_generation,
-                        claimed_unix_ms: None,
-                        claim_expires_unix_ms: None,
-                        provider_receipt_id: delivery.provider_receipt_id.clone(),
-                        failure_reason: delivery.failure_detail.clone(),
-                        updated_at: delivery.updated_at.clone(),
-                    }],
-                    created_at: message.created_at.clone(),
-                });
-            }
-        }
-    }
     messages.sort_by(|left, right| {
         left.created_at
             .cmp(&right.created_at)
             .then_with(|| left.id.cmp(&right.id))
     });
     Ok(messages)
+}
+
+fn canonical_team_messages_for_run(
+    store: &HarnessStore,
+    team_run_id: &str,
+) -> CliResult<Vec<TeamMessageProjection>> {
+    let run = latest_team_run(store, team_run_id)?;
+    let member_runs = latest_member_runs_in_append_order(store)?;
+    let identity_to_runtime = member_runs
+        .iter()
+        .filter(|member| member.team_run_id == team_run_id)
+        .map(|member| (member.agent_member_id.clone(), member.id.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let host_identity = latest_teams(store)?
+        .remove(&run.agent_team_id)
+        .map(|team| team.host_agent_id)
+        .ok_or_else(|| CliError::Usage("TeamRun references a missing AgentTeam".into()))?;
+    let mut projected = Vec::new();
+    for execution_space_id in store.canonical_execution_space_ids()? {
+        let deliveries = store.fabric_message_deliveries(&execution_space_id)?;
+        for message in store
+            .fabric_messages(&execution_space_id)?
+            .into_iter()
+            .filter(|message| message.team_run_id.as_deref() == Some(team_run_id))
+        {
+            let recipient_rows = deliveries
+                .iter()
+                .filter(|delivery| delivery.message_id == message.id)
+                .filter_map(|delivery| {
+                    let runtime_id = if delivery.recipient_identity_id == host_identity {
+                        "host".to_string()
+                    } else {
+                        identity_to_runtime
+                            .get(&delivery.recipient_identity_id)
+                            .cloned()?
+                    };
+                    Some((runtime_id, delivery))
+                })
+                .collect::<Vec<_>>();
+            if recipient_rows.is_empty()
+                && message.recipients.iter().any(|recipient| {
+                    recipient.kind
+                        == harness_core::agentfirm_api::MessageRecipientKind::ControlPlaneActor
+                        && recipient.id == host_identity
+                })
+            {
+                projected.push(project_canonical_inbox_message(&message, "host", None));
+                continue;
+            }
+            let Some((first_runtime, first_delivery)) = recipient_rows.first() else {
+                continue;
+            };
+            let mut row =
+                project_canonical_inbox_message(&message, first_runtime, Some(first_delivery));
+            row.recipient_runtime_ids = recipient_rows
+                .iter()
+                .map(|(runtime_id, _)| runtime_id.clone())
+                .collect();
+            row.recipients = row
+                .recipient_runtime_ids
+                .iter()
+                .map(|id| TeamRecipientRef {
+                    kind: TeamRecipientKind::ProviderRuntimeProjection,
+                    id: id.clone(),
+                })
+                .collect();
+            row.deliveries = recipient_rows
+                .iter()
+                .filter_map(|(runtime_id, delivery)| {
+                    project_canonical_inbox_message(&message, runtime_id, Some(delivery))
+                        .deliveries
+                        .into_iter()
+                        .next()
+                })
+                .collect();
+            projected.push(row);
+        }
+    }
+    projected.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(projected)
+}
+
+fn project_canonical_inbox_message(
+    message: &harness_core::agentfirm_api::Message,
+    member_run_id: &str,
+    delivery: Option<&harness_core::agentfirm_api::CanonicalMessageDelivery>,
+) -> TeamMessageProjection {
+    let sender_kind = match message.sender_actor_ref.kind {
+        harness_core::agentfirm_api::ActorKind::AgentMember => TeamActorKind::AgentMember,
+        harness_core::agentfirm_api::ActorKind::Service => TeamActorKind::Service,
+        harness_core::agentfirm_api::ActorKind::Human
+        | harness_core::agentfirm_api::ActorKind::External => TeamActorKind::Operator,
+    };
+    let delivery_projection = delivery.map(|delivery| ProviderDispatchAttempt {
+        member_id: member_run_id.to_string(),
+        policy: TeamDeliveryPolicy::Queue,
+        status: match delivery.status {
+            harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Queued
+            | harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Routed => {
+                TeamDeliveryStatus::Queued
+            }
+            harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Claimed => {
+                TeamDeliveryStatus::Claimed
+            }
+            harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::ProviderReceived => {
+                TeamDeliveryStatus::Delivered
+            }
+            harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Acknowledged => {
+                TeamDeliveryStatus::Acknowledged
+            }
+            harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Failed
+            | harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Invalidated => {
+                TeamDeliveryStatus::Failed
+            }
+            harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Expired => {
+                TeamDeliveryStatus::Expired
+            }
+        },
+        attempt: delivery.attempt,
+        claim_id: delivery.claim_id.clone(),
+        claimed_by_supervisor_id: None,
+        claimed_generation: delivery.claimed_node_daemon_generation,
+        claimed_unix_ms: None,
+        claim_expires_unix_ms: None,
+        provider_receipt_id: delivery.provider_receipt_id.clone(),
+        failure_reason: delivery.failure_detail.clone(),
+        updated_at: delivery.updated_at.clone(),
+    });
+    let deliveries = delivery_projection.into_iter().chain(
+        (delivery.is_none() && member_run_id == "host").then(|| ProviderDispatchAttempt {
+            member_id: "host".into(),
+            policy: TeamDeliveryPolicy::Queue,
+            status: TeamDeliveryStatus::Delivered,
+            attempt: 1,
+            claim_id: None,
+            claimed_by_supervisor_id: None,
+            claimed_generation: Some(message.source_authority_generation),
+            claimed_unix_ms: None,
+            claim_expires_unix_ms: None,
+            provider_receipt_id: Some("control-plane-visible".into()),
+            failure_reason: None,
+            updated_at: message.created_at.clone(),
+        }),
+    );
+    TeamMessageProjection {
+        id: message.id.clone(),
+        team_run_id: message.team_run_id.clone().unwrap_or_default(),
+        work_id: message.work_id.clone(),
+        source_plan_ref: None,
+        sender: Some(TeamActorRef {
+            kind: sender_kind,
+            id: message.sender_actor_ref.id.clone(),
+            display_name: None,
+            authn_source: Some("canonical_message_fabric".into()),
+        }),
+        sender_runtime_id: message.sender_actor_ref.id.clone(),
+        recipients: vec![TeamRecipientRef {
+            kind: TeamRecipientKind::ProviderRuntimeProjection,
+            id: member_run_id.to_string(),
+        }],
+        recipient_runtime_ids: vec![member_run_id.to_string()],
+        kind: match message.kind {
+            harness_core::agentfirm_api::MessageKind::Message
+            | harness_core::agentfirm_api::MessageKind::Reply => ProviderDispatchIntent::Message,
+            harness_core::agentfirm_api::MessageKind::RequestDecision => {
+                ProviderDispatchIntent::Control
+            }
+            harness_core::agentfirm_api::MessageKind::ProviderInteractionRequest => {
+                ProviderDispatchIntent::ProviderInteractionRequest
+            }
+            harness_core::agentfirm_api::MessageKind::ProviderInteractionResponse => {
+                ProviderDispatchIntent::ProviderInteractionResponse
+            }
+        },
+        body: message.body.clone(),
+        correlation_id: message.correlation_id.clone(),
+        causation_id: message.causation_id.clone(),
+        response_intent: Some(match message.response_intent {
+            harness_core::agentfirm_api::ResponseIntent::Informational => {
+                ProviderResponseIntent::Informational
+            }
+            harness_core::agentfirm_api::ResponseIntent::ResponseRequired => {
+                ProviderResponseIntent::ResponseRequired
+            }
+        }),
+        evidence_refs: message.evidence_refs.clone(),
+        deliveries: deliveries.collect(),
+        created_at: message.created_at.clone(),
+    }
 }
 
 /// Aggregate Host mail for the exact provider-native Host thread bound to each
@@ -17455,15 +17526,17 @@ struct ProviderEffectAdmission {
 /// machine-local AgentSession and NodeDaemon generation are resolved from the
 /// canonical store, and a replayed or ambiguous command never re-enters the
 /// provider transport.
-fn prepare_provider_effect(
+fn prepare_provider_effect_kind(
     ledger: &TeamRunLedger,
     member: &ProviderRuntimeProjection,
     source_record_id: &str,
     content: &str,
+    command_kind: harness_core::agentfirm_api::RuntimeCommandKind,
+    required_capability: &str,
 ) -> CliResult<ProviderEffectAdmission> {
     use harness_core::agentfirm_api::{
-        ActorKind, ActorRef, AgentSessionStatus, ControlCommandEnvelope, RuntimeCommandKind,
-        RuntimeCommandStatus, RuntimeEffectCertainty,
+        ActorKind, ActorRef, AgentSessionStatus, ControlCommandEnvelope, RuntimeCommandStatus,
+        RuntimeEffectCertainty,
     };
 
     let mut matches = Vec::new();
@@ -17488,10 +17561,25 @@ fn prepare_provider_effect(
         )));
     }
     let (execution_space_id, session) = matches.pop().unwrap();
-    if session.lifecycle != AgentSessionStatus::Active {
+    let lifecycle_is_eligible = match command_kind {
+        harness_core::agentfirm_api::RuntimeCommandKind::DispatchProvider
+        | harness_core::agentfirm_api::RuntimeCommandKind::CancelProviderTurn => {
+            session.lifecycle == AgentSessionStatus::Active
+        }
+        harness_core::agentfirm_api::RuntimeCommandKind::StopSession => matches!(
+            session.lifecycle,
+            AgentSessionStatus::Cold
+                | AgentSessionStatus::Active
+                | AgentSessionStatus::Idle
+                | AgentSessionStatus::Waiting
+                | AgentSessionStatus::Interrupted
+        ),
+        _ => false,
+    };
+    if !lifecycle_is_eligible {
         return Err(CliError::Usage(format!(
-            "AGENT_SESSION_NOT_ACTIVE: provider effect requires Active session {}, found {:?}",
-            session.id, session.lifecycle
+            "AGENT_SESSION_CONTROL_NOT_ELIGIBLE: {:?} cannot target session {} in {:?}",
+            command_kind, session.id, session.lifecycle
         )));
     }
     let lease = ledger
@@ -17518,6 +17606,8 @@ fn prepare_provider_effect(
         "delivery_id": source_record_id,
         "provider": session.provider_kind,
         "permission_ceiling": session.effective_permission_ceiling,
+        "session_lifecycle": session.lifecycle,
+        "current_turn_id": session.current_turn_id,
         "content_fingerprint": content_fingerprint,
     });
     let payload_fingerprint = harness_store::canonical_json_fingerprint(&payload);
@@ -17537,8 +17627,8 @@ fn prepare_provider_effect(
         target_node_daemon_id: lease.daemon_id.clone(),
         target_node_daemon_generation: lease.generation,
         authenticated_actor: daemon_actor.clone(),
-        command: RuntimeCommandKind::DispatchProvider,
-        required_capability: "provider.effect".into(),
+        command: command_kind,
+        required_capability: required_capability.into(),
         idempotency_key: idempotency_key.clone(),
         expected_version: 0,
         expires_unix_ms: current_unix_ms_u64().saturating_add(30_000),
@@ -17594,6 +17684,83 @@ fn prepare_provider_effect(
             request_fingerprint: None,
         },
     })
+}
+
+fn prepare_provider_effect(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+    source_record_id: &str,
+    content: &str,
+) -> CliResult<ProviderEffectAdmission> {
+    prepare_provider_effect_kind(
+        ledger,
+        member,
+        source_record_id,
+        content,
+        harness_core::agentfirm_api::RuntimeCommandKind::DispatchProvider,
+        "provider.effect",
+    )
+}
+
+fn prepare_provider_control_effect(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+    source_record_id: &str,
+    reason: &str,
+    close: bool,
+) -> CliResult<ProviderEffectAdmission> {
+    prepare_provider_effect_kind(
+        ledger,
+        member,
+        source_record_id,
+        reason,
+        if close {
+            harness_core::agentfirm_api::RuntimeCommandKind::StopSession
+        } else {
+            harness_core::agentfirm_api::RuntimeCommandKind::CancelProviderTurn
+        },
+        if close {
+            "agent_session.stop"
+        } else {
+            "provider.cancel"
+        },
+    )
+}
+
+fn execute_provider_control_effect(
+    ledger: &TeamRunLedger,
+    member: &ProviderRuntimeProjection,
+    source_record_id: &str,
+    reason: &str,
+    close: bool,
+    effect: impl FnOnce() -> CliResult<()>,
+) -> CliResult<()> {
+    let admission =
+        match prepare_provider_control_effect(ledger, member, source_record_id, reason, close) {
+            Ok(admission) => admission,
+            Err(CliError::Usage(detail))
+                if detail.starts_with("RUNTIME_COMMAND_REPLAY_APPLIED:") =>
+            {
+                return Ok(())
+            }
+            Err(error) => return Err(error),
+        };
+    match effect() {
+        Ok(()) => settle_provider_effect(
+            ledger,
+            &admission,
+            true,
+            Some(serde_json::json!({
+                "control": if close { "close" } else { "interrupt" },
+                "provider_ack": "accepted",
+            })),
+            None,
+        ),
+        Err(error) => {
+            settle_provider_effect(ledger, &admission, false, None, Some(error.to_string()))?;
+            Err(error)
+        }
+    }
 }
 
 fn settle_provider_effect(
@@ -17847,6 +18014,13 @@ fn transition_provider_session_for_member(
         (AgentSessionStatus::Waiting, AgentSessionStatus::Active) => {
             vec![AgentSessionStatus::Active]
         }
+        (AgentSessionStatus::Active, AgentSessionStatus::Closed) => {
+            vec![AgentSessionStatus::Interrupted, AgentSessionStatus::Closed]
+        }
+        (AgentSessionStatus::Cold, AgentSessionStatus::Closed)
+        | (AgentSessionStatus::Idle, AgentSessionStatus::Closed)
+        | (AgentSessionStatus::Waiting, AgentSessionStatus::Closed)
+        | (AgentSessionStatus::Interrupted, AgentSessionStatus::Closed) => vec![desired],
         (AgentSessionStatus::Active, AgentSessionStatus::Idle)
         | (AgentSessionStatus::Cold, AgentSessionStatus::Idle)
         | (AgentSessionStatus::Waiting, AgentSessionStatus::Idle)
@@ -19480,10 +19654,7 @@ impl TeamRunLedger {
 
     /// Latest-wins messages of this run, in append order.
     fn team_messages(&self) -> CliResult<Vec<TeamMessageProjection>> {
-        Ok(latest_team_messages_in_append_order(&self.store)?
-            .into_iter()
-            .filter(|message| message.team_run_id == self.run_id)
-            .collect())
+        canonical_team_messages_for_run(&self.store, &self.run_id)
     }
 
     fn queued_works_for(&self, member_id: &str) -> CliResult<Vec<(Work, ProviderWorkDispatch)>> {
@@ -19740,34 +19911,70 @@ impl TeamRunLedger {
     /// belongs to the current Supervisor generation.
     fn fail_team_messages_for(&self, member_id: &str, reason: &str) -> CliResult<()> {
         self.require_supervisor_lease()?;
-        if let Some(execution_space_id) = self.store.trust_member_run_scope(member_id)? {
-            for delivery in self
+        let member = self
+            .latest_member_run(member_id)?
+            .ok_or_else(|| CliError::Usage(format!("member run not found: {member_id}")))?;
+        let mut placements = Vec::new();
+        for execution_space_id in self.store.canonical_execution_space_ids()? {
+            for session in self
                 .store
-                .trust_message_deliveries(&execution_space_id)?
+                .fabric_agent_sessions(&execution_space_id)?
                 .into_iter()
-                .filter(|delivery| {
-                    delivery.recipient_member_run_id == member_id
-                        && delivery.status
-                            == harness_core::agentfirm_api::MessageDeliveryStatus::Claimed
-                        && delivery.claimed_supervisor_generation
-                            == Some(self.supervisor_generation)
-                        && delivery.provider_receipt_id.is_none()
+                .filter(|session| {
+                    session.agent_identity_id == member.agent_member_id
+                        && session.lifecycle
+                            != harness_core::agentfirm_api::AgentSessionStatus::Closed
                 })
             {
-                self.store.reconcile_trust_message_delivery(
-                    &canonical_delivery_context(
-                        &execution_space_id,
-                        &self.supervisor_id,
-                        "node_daemon.message_delivery.negative_ack",
-                        format!("{}:negative-ack", delivery.id),
-                        delivery.version.saturating_sub(1),
-                    ),
-                    &delivery.id,
-                    harness_core::agentfirm_api::DeliveryReconcileOutcome::RetrySafeFailure,
-                    &format!("provider-negative-ack:{reason}"),
-                    &now_string(),
-                )?;
+                placements.push((execution_space_id.clone(), session));
             }
+        }
+        if placements.len() != 1 {
+            return Err(CliError::Usage(format!(
+                "AGENT_SESSION_AMBIGUOUS: message recovery for {} found {} current sessions",
+                member.agent_member_id,
+                placements.len()
+            )));
+        }
+        let (execution_space_id, session) = placements.pop().unwrap();
+        let daemon = self
+            .store
+            .latest_node_daemon_lease(&session.node_id)?
+            .filter(|lease| {
+                lease.daemon_id == session.node_daemon_id
+                    && lease.generation == session.node_daemon_generation
+                    && lease.status == NodeDaemonLeaseStatus::Active
+                    && lease.expires_unix_ms > current_unix_ms_u64()
+            })
+            .ok_or_else(|| CliError::Usage("NODE_DAEMON_GENERATION_FENCED".into()))?;
+        for delivery in self
+            .store
+            .fabric_message_deliveries(&execution_space_id)?
+            .into_iter()
+            .filter(|delivery| {
+                delivery.recipient_identity_id == member.agent_member_id
+                    && delivery.status
+                        == harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Claimed
+                    && delivery.claimed_node_daemon_generation == Some(daemon.generation)
+                    && delivery.provider_receipt_id.is_none()
+            })
+        {
+            self.store.reconcile_canonical_message_delivery(
+                &canonical_delivery_context(
+                    &execution_space_id,
+                    &daemon.daemon_id,
+                    "node_daemon.message_delivery.negative_ack",
+                    format!("{}:negative-ack", delivery.id),
+                    delivery.version,
+                ),
+                &delivery.id,
+                &session.node_id,
+                &daemon.daemon_id,
+                daemon.generation,
+                harness_core::agentfirm_api::DeliveryReconcileOutcome::RetrySafeFailure,
+                &format!("provider-negative-ack:{reason}"),
+                &now_string(),
+            )?;
         }
         Ok(())
     }
@@ -20051,6 +20258,60 @@ fn stop_member_for_latched_close(
             member_row.id, close.team_run_id, ledger.run_id
         )));
     }
+    let mut closed_sessions = Vec::new();
+    for space_id in ledger.store.canonical_execution_space_ids()? {
+        for session in ledger
+            .store
+            .fabric_agent_sessions(&space_id)?
+            .into_iter()
+            .filter(|session| {
+                session.agent_identity_id == member_row.agent_member_id
+                    && session.runtime_generation == member_row.runtime_generation
+                    && session.lifecycle == harness_core::agentfirm_api::AgentSessionStatus::Closed
+            })
+        {
+            closed_sessions.push((space_id.clone(), session));
+        }
+    }
+    let already_applied = match closed_sessions.as_slice() {
+        [] => false,
+        [(space_id, session)] => {
+            ledger
+                .store
+                .runtime_commands(space_id)?
+                .into_iter()
+                .any(|command| {
+                    command.command == harness_core::agentfirm_api::RuntimeCommandKind::StopSession
+                        && command.target_session_id.as_deref() == Some(session.id.as_str())
+                        && command.target_session_generation == Some(session.runtime_generation)
+                        && command.status
+                            == harness_core::agentfirm_api::RuntimeCommandStatus::Applied
+                        && command.effect_certainty
+                            == harness_core::agentfirm_api::RuntimeEffectCertainty::Applied
+                })
+        }
+        _ => {
+            return Err(CliError::Usage(
+                "AGENT_SESSION_AMBIGUOUS: close recovery found multiple closed session projections"
+                    .into(),
+            ))
+        }
+    };
+    if !already_applied {
+        execute_provider_control_effect(
+            ledger,
+            member_row,
+            &format!("latched-close:{}", close.id),
+            &close.reason,
+            true,
+            || Ok(()),
+        )?;
+        transition_provider_session_for_member(
+            ledger,
+            member_row,
+            harness_core::agentfirm_api::AgentSessionStatus::Closed,
+        )?;
+    }
     // Close ends this runtime generation: a delivery claimed by this member
     // and Supervisor generation but never provider-received can never be
     // received now. Fail those claims (same rule as the transport-disconnect
@@ -20135,41 +20396,36 @@ fn wait_for_idle_member_wake(
                     requested_by,
                     reply,
                 } => {
-                    ledger.append_action(
-                        &member_row.id,
-                        "closed",
-                        MemberActionStatus::Succeeded,
-                        "member runtime closed while idle",
-                        &format!("{requested_by}: {reason}"),
-                    )?;
-                    let expected = member_row.clone();
-                    member_row.coordination_status = MemberCoordinationStatus::Closed;
-                    member_row.status = MemberRunStatus::Stopped;
-                    member_row.finished_at = Some(now_string());
-                    member_row.last_event_at = Some(now_string());
-                    ledger.save_member_run(&expected, member_row)?;
-                    ledger.fold_event(
-                        TeamRunEventSourceKind::Member,
-                        Some(member_row.id.clone()),
-                        "member_run",
-                        &member_row.id,
-                        "updated",
-                        &format!("member {} closed by Host while idle", member_row.name),
-                    )?;
-                    if let Some(close) = pending_member_close(&ledger.store, &member_row.id)? {
-                        store_conflict_as_usage(ledger.store.complete_team_member_close(
-                            &ledger.run_id,
-                            &member_row.id,
-                            &close.id,
-                            &now_string(),
-                        ))?;
+                    let result = pending_member_close(&ledger.store, &member_row.id)?
+                        .ok_or_else(|| {
+                            CliError::Usage(
+                                "RUNTIME_COMMAND_RECOVERY_REQUIRED: live close has no durable close latch"
+                                    .into(),
+                            )
+                        })
+                        .and_then(|close| {
+                            if close.reason != reason || close.requested_by != requested_by {
+                                return Err(CliError::Usage(
+                                    "RUNTIME_COMMAND_RECOVERY_REQUIRED: live close differs from durable close latch"
+                                        .into(),
+                                ));
+                            }
+                            stop_member_for_latched_close(ledger, member_row, &close)
+                        });
+                    match result {
+                        Ok(()) => {
+                            let _ = reply.send(Ok(serde_json::json!({
+                                "member_run_id": member_row.id,
+                                "status": "closed",
+                                "provider_ack": "runtime_command_applied",
+                            })));
+                            return Ok(IdleMemberWake::Closed);
+                        }
+                        Err(error) => {
+                            let _ = reply.send(Err(CliError::Usage(error.to_string())));
+                            return Err(error);
+                        }
                     }
-                    let _ = reply.send(Ok(serde_json::json!({
-                        "member_run_id": member_row.id,
-                        "status": "closed",
-                        "provider_ack": "idle_transport_shutdown",
-                    })));
-                    return Ok(IdleMemberWake::Closed);
                 }
                 MemberControlCommand::Interrupt { reply, .. } => {
                     let _ = reply.send(Ok(serde_json::json!({
@@ -20610,6 +20866,10 @@ pub(crate) fn ensure_team_runtime_fabric(
     let canonical_members = store
         .trust_agent_members(execution_space_id)
         .map_err(CliError::Store)?;
+    let team = store
+        .latest_teams()?
+        .remove(&body.run.agent_team_id)
+        .ok_or_else(|| CliError::Usage("TeamRun references a missing AgentTeam".into()))?;
     for member in &body.members {
         let durable = canonical_members
             .iter()
@@ -20783,6 +21043,76 @@ pub(crate) fn ensure_team_runtime_fabric(
                 },
             )?;
         }
+    }
+    let host = canonical_members
+        .iter()
+        .find(|candidate| candidate.id == team.host_agent_id)
+        .ok_or_else(|| {
+            CliError::Usage(format!(
+                "AGENT_IDENTITY_NOT_FOUND: TeamRun {} references missing canonical Host {}",
+                body.run.id, team.host_agent_id
+            ))
+        })?;
+    if !store
+        .fabric_agent_identities(execution_space_id)?
+        .iter()
+        .any(|identity| identity.id == host.id)
+    {
+        store.create_agent_identity(
+            &MutationContext {
+                execution_space_id: execution_space_id.to_string(),
+                authenticated_actor: daemon_actor.clone(),
+                authority_actor: Some(host.created_by.clone()),
+                command_name: "runtime_fabric.host_identity.materialize".into(),
+                idempotency_key: format!("identity:{}", host.id),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            AgentIdentity {
+                id: host.id.clone(),
+                display_name: host.name.clone(),
+                organization_status: host.organization_status,
+                permission_ceiling: host.permission_ceiling,
+                version: 1,
+                created_at: timestamp.clone(),
+                updated_at: timestamp.clone(),
+            },
+        )?;
+    }
+    let host_membership_id = format!(
+        "team-membership:{}:{}",
+        body.run.agent_team_id, team.host_agent_id
+    );
+    if !store
+        .fabric_team_memberships(execution_space_id)?
+        .iter()
+        .any(|membership| membership.id == host_membership_id)
+    {
+        store.join_team_membership(
+            &MutationContext {
+                execution_space_id: execution_space_id.to_string(),
+                authenticated_actor: daemon_actor.clone(),
+                authority_actor: None,
+                command_name: "runtime_fabric.host_membership.join".into(),
+                idempotency_key: host_membership_id.clone(),
+                expected_version: 0,
+                request_fingerprint: None,
+            },
+            TeamMembership {
+                id: host_membership_id,
+                team_id: body.run.agent_team_id.clone(),
+                agent_identity_id: host.id.clone(),
+                node_id: body.run.execution_node_id.clone(),
+                role: TeamMembershipRole::Host,
+                state: TeamMembershipStatus::Active,
+                membership_generation: 1,
+                default_subscription_refs: Vec::new(),
+                created_by: daemon_actor,
+                revision: 1,
+                joined_at: timestamp,
+                left_at: None,
+            },
+        )?;
     }
     Ok(())
 }
@@ -22283,6 +22613,11 @@ fn run_codex_member(
                 "Codex reported the active turn as interrupted without a Harness control request; inspect the provider-native session for the source."
             };
             if turn.close_requested_by_harness {
+                transition_provider_session_for_member(
+                    ledger,
+                    &member_row,
+                    harness_core::agentfirm_api::AgentSessionStatus::Closed,
+                )?;
                 member_row.coordination_status = MemberCoordinationStatus::Closed;
             }
             member_row.status = if turn.close_requested_by_harness {
@@ -22675,25 +23010,29 @@ fn run_codex_app_server_turn(
                     requested_by,
                     reply,
                 } => {
-                    let result =
-                        require_provider_session_authority(ledger, &member.agent_member_id, true)
-                            .map(|_| ())
-                            .and_then(|()| client.interrupt(&turn_id))
-                            .and_then(|()| {
-                                interrupt_requested = true;
-                                ledger.append_action(
-                                    &member.id,
-                                    "interrupt_requested",
-                                    MemberActionStatus::Progress,
-                                    "Codex interruption requested",
-                                    &format!("{requested_by}: {reason}"),
-                                )?;
-                                Ok(serde_json::json!({
-                                    "member_run_id": member.id,
-                                    "turn_id": turn_id,
-                                    "status": "interrupt_requested",
-                                }))
-                            });
+                    let result = execute_provider_control_effect(
+                        ledger,
+                        member,
+                        &format!("codex-interrupt:{turn_id}"),
+                        &reason,
+                        false,
+                        || client.interrupt(&turn_id),
+                    )
+                    .and_then(|()| {
+                        interrupt_requested = true;
+                        ledger.append_action(
+                            &member.id,
+                            "interrupt_requested",
+                            MemberActionStatus::Progress,
+                            "Codex interruption requested",
+                            &format!("{requested_by}: {reason}"),
+                        )?;
+                        Ok(serde_json::json!({
+                            "member_run_id": member.id,
+                            "turn_id": turn_id,
+                            "status": "interrupt_requested",
+                        }))
+                    });
                     let _ = reply.send(result);
                 }
                 MemberControlCommand::Close {
@@ -22701,27 +23040,31 @@ fn run_codex_app_server_turn(
                     requested_by,
                     reply,
                 } => {
-                    let result =
-                        require_provider_session_authority(ledger, &member.agent_member_id, true)
-                            .map(|_| ())
-                            .and_then(|()| client.interrupt(&turn_id))
-                            .and_then(|()| {
-                                interrupt_requested = true;
-                                close_requested = true;
-                                ledger.append_action(
-                                    &member.id,
-                                    "close_requested",
-                                    MemberActionStatus::Progress,
-                                    "Codex member close requested",
-                                    &format!("{requested_by}: {reason}"),
-                                )?;
-                                Ok(serde_json::json!({
-                                    "member_run_id": member.id,
-                                    "turn_id": turn_id,
-                                    "status": "close_requested",
-                                    "provider_ack": "turn_interrupt_accepted",
-                                }))
-                            });
+                    let result = execute_provider_control_effect(
+                        ledger,
+                        member,
+                        &format!("codex-close:{turn_id}"),
+                        &reason,
+                        true,
+                        || client.interrupt(&turn_id),
+                    )
+                    .and_then(|()| {
+                        interrupt_requested = true;
+                        close_requested = true;
+                        ledger.append_action(
+                            &member.id,
+                            "close_requested",
+                            MemberActionStatus::Progress,
+                            "Codex member close requested",
+                            &format!("{requested_by}: {reason}"),
+                        )?;
+                        Ok(serde_json::json!({
+                            "member_run_id": member.id,
+                            "turn_id": turn_id,
+                            "status": "close_requested",
+                            "provider_ack": "turn_interrupt_accepted",
+                        }))
+                    });
                     let _ = reply.send(result);
                 }
             }
@@ -22859,8 +23202,14 @@ fn run_codex_app_server_turn(
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 if last_activity.elapsed() >= idle_timeout {
-                    require_provider_session_authority(ledger, &member.agent_member_id, true)?;
-                    client.interrupt(&turn_id)?;
+                    execute_provider_control_effect(
+                        ledger,
+                        member,
+                        &format!("codex-timeout:{turn_id}"),
+                        "provider turn idle timeout",
+                        false,
+                        || client.interrupt(&turn_id),
+                    )?;
                     interrupt_requested = true;
                     last_activity = Instant::now();
                 }
@@ -23091,6 +23440,7 @@ fn run_claude_agent_sdk_team_member(
     let mut delivered_messages = HashMap::<String, TeamMessageProjection>::new();
     let mut handoffs_before_by_message = HashMap::<String, HashSet<String>>::new();
     let mut inflight_effects = HashMap::<String, ProviderEffectAdmission>::new();
+    let mut pending_control_effects = Vec::<(ProviderEffectAdmission, bool)>::new();
 
     send(serde_json::json!({
         "command": "start",
@@ -23268,24 +23618,45 @@ fn run_claude_agent_sdk_team_member(
                         })));
                         continue;
                     }
-                    let result = send(serde_json::json!({
-                        "command": "interrupt",
-                        "payload": {}
-                    }))
-                    .and_then(|()| {
-                        ledger.append_action(
-                            &member.id,
-                            "interrupt_requested",
-                            MemberActionStatus::Progress,
-                            "Claude turn interruption requested",
-                            &format!("{requested_by}: {reason}"),
-                        )?;
-                        Ok(serde_json::json!({
-                            "member_run_id": member.id,
-                            "status": "interrupt_requested",
-                            "provider_ack": "agent_sdk_interrupt_dispatched",
-                        }))
-                    });
+                    let control_effect = prepare_provider_control_effect(
+                        ledger,
+                        &member_row,
+                        &format!("claude-interrupt:{}:{}", member.id, round),
+                        &reason,
+                        false,
+                    );
+                    let result = control_effect
+                        .and_then(|control_effect| {
+                            if let Err(error) = send(serde_json::json!({
+                                "command": "interrupt",
+                                "payload": {}
+                            })) {
+                                settle_provider_effect(
+                                    ledger,
+                                    &control_effect,
+                                    false,
+                                    None,
+                                    Some(error.to_string()),
+                                )?;
+                                return Err(error);
+                            }
+                            pending_control_effects.push((control_effect, false));
+                            Ok(())
+                        })
+                        .and_then(|()| {
+                            ledger.append_action(
+                                &member.id,
+                                "interrupt_requested",
+                                MemberActionStatus::Progress,
+                                "Claude turn interruption requested",
+                                &format!("{requested_by}: {reason}"),
+                            )?;
+                            Ok(serde_json::json!({
+                                "member_run_id": member.id,
+                                "status": "interrupt_requested",
+                                "provider_ack": "agent_sdk_interrupt_dispatched",
+                            }))
+                        });
                     let _ = reply.send(result);
                 }
                 MemberControlCommand::Close {
@@ -23293,26 +23664,47 @@ fn run_claude_agent_sdk_team_member(
                     requested_by,
                     reply,
                 } => {
-                    let result = send(serde_json::json!({
-                        "command": "close",
-                        "payload": { "reason": reason }
-                    }))
-                    .and_then(|()| {
-                        ledger.append_action(
-                            &member.id,
-                            "close_requested",
-                            MemberActionStatus::Progress,
-                            "Claude member close requested",
-                            &format!("{requested_by}: explicit Host close"),
-                        )?;
-                        closing = true;
-                        closed_by_host = true;
-                        Ok(serde_json::json!({
-                            "member_run_id": member.id,
-                            "status": "close_requested",
-                            "provider_ack": "agent_sdk_close_dispatched",
-                        }))
-                    });
+                    let control_effect = prepare_provider_control_effect(
+                        ledger,
+                        &member_row,
+                        &format!("claude-close:{}:{}", member.id, round),
+                        &reason,
+                        true,
+                    );
+                    let result = control_effect
+                        .and_then(|control_effect| {
+                            if let Err(error) = send(serde_json::json!({
+                                "command": "close",
+                                "payload": { "reason": reason }
+                            })) {
+                                settle_provider_effect(
+                                    ledger,
+                                    &control_effect,
+                                    false,
+                                    None,
+                                    Some(error.to_string()),
+                                )?;
+                                return Err(error);
+                            }
+                            pending_control_effects.push((control_effect, true));
+                            Ok(())
+                        })
+                        .and_then(|()| {
+                            ledger.append_action(
+                                &member.id,
+                                "close_requested",
+                                MemberActionStatus::Progress,
+                                "Claude member close requested",
+                                &format!("{requested_by}: explicit Host close"),
+                            )?;
+                            closing = true;
+                            closed_by_host = true;
+                            Ok(serde_json::json!({
+                                "member_run_id": member.id,
+                                "status": "close_requested",
+                                "provider_ack": "agent_sdk_close_dispatched",
+                            }))
+                        });
                     let _ = reply.send(result);
                 }
                 MemberControlCommand::Steer { reply, .. } => {
@@ -23556,6 +23948,25 @@ fn run_claude_agent_sdk_team_member(
                     turn_lease.take();
                 }
                 "interrupted" => {
+                    let mut retained = Vec::new();
+                    for (effect, close) in pending_control_effects.drain(..) {
+                        if close {
+                            retained.push((effect, close));
+                        } else {
+                            settle_provider_effect(
+                                ledger,
+                                &effect,
+                                true,
+                                Some(serde_json::json!({
+                                    "provider": "claude",
+                                    "control": "interrupt",
+                                    "provider_ack": "interrupted",
+                                })),
+                                None,
+                            )?;
+                        }
+                    }
+                    pending_control_effects = retained;
                     // A provider interrupt has no semantic handoff. Any
                     // messages already consumed by that turn remain delivered,
                     // but must not be reused as causation for a resumed turn.
@@ -23578,6 +23989,28 @@ fn run_claude_agent_sdk_team_member(
                     turn_lease.take();
                 }
                 "member_closed" => {
+                    for (effect, close) in pending_control_effects.drain(..) {
+                        settle_provider_effect(
+                            ledger,
+                            &effect,
+                            close,
+                            close.then(|| {
+                                serde_json::json!({
+                                    "provider": "claude",
+                                    "control": "close",
+                                    "provider_ack": "member_closed",
+                                })
+                            }),
+                            (!close).then(|| {
+                                "member closed before interrupt acknowledgement".to_string()
+                            }),
+                        )?;
+                    }
+                    transition_provider_session_for_member(
+                        ledger,
+                        &member_row,
+                        harness_core::agentfirm_api::AgentSessionStatus::Closed,
+                    )?;
                     ledger.append_action(
                         &member.id,
                         "closed",
@@ -24398,6 +24831,7 @@ fn run_kimi_member(
             active_assignment_for_round(active_assignment.as_ref(), &accepted_messages);
         let handoffs_before_round = member_handoff_ids(ledger, &member.id)?;
         let mut close_requested = false;
+        let mut pending_control_effect: Option<(ProviderEffectAdmission, bool)> = None;
         let expected_round = member_row.clone();
         let mut mapper = MemberUpdateMapper::new(ledger, member_row.clone(), live_sink.clone());
         let source_record_id = active_work
@@ -24462,6 +24896,14 @@ fn run_kimi_member(
                                 requested_by,
                                 reply,
                             } => {
+                                let control_effect = prepare_provider_control_effect(
+                                    ledger,
+                                    &member_row,
+                                    &format!("kimi-interrupt:{}:{round}", member.id),
+                                    &reason,
+                                    false,
+                                )?;
+                                pending_control_effect = Some((control_effect, false));
                                 ledger.append_action(
                                     &member.id,
                                     "interrupt_requested",
@@ -24485,6 +24927,14 @@ fn run_kimi_member(
                                 requested_by,
                                 reply,
                             } => {
+                                let control_effect = prepare_provider_control_effect(
+                                    ledger,
+                                    &member_row,
+                                    &format!("kimi-close:{}:{round}", member.id),
+                                    &reason,
+                                    true,
+                                )?;
+                                pending_control_effect = Some((control_effect, true));
                                 ledger.append_action(
                                     &member.id,
                                     "close_requested",
@@ -24526,6 +24976,34 @@ fn run_kimi_member(
                 return Err(error);
             }
         };
+        if let Some((control_effect, close)) = pending_control_effect.take() {
+            let acknowledged = if close {
+                matches!(
+                    outcome.stop_reason.as_str(),
+                    "harness_runtime_closed" | "cancelled" | "canceled"
+                )
+            } else {
+                matches!(outcome.stop_reason.as_str(), "cancelled" | "canceled")
+            };
+            settle_provider_effect(
+                ledger,
+                &control_effect,
+                acknowledged,
+                acknowledged.then(|| {
+                    serde_json::json!({
+                        "provider": "kimi",
+                        "control": if close { "close" } else { "interrupt" },
+                        "provider_ack": outcome.stop_reason,
+                    })
+                }),
+                (!acknowledged).then(|| {
+                    format!(
+                        "provider control returned without a terminal acknowledgement: {}",
+                        outcome.stop_reason
+                    )
+                }),
+            )?;
+        }
         // `prompt` owns its blocking receive loop. Its terminal result can
         // arrive after the last control callback, so barrier then fence before
         // consuming the result or writing any semantic state.
@@ -24542,6 +25020,11 @@ fn run_kimi_member(
         let _mapper_member = mapper.into_member();
         member_row = refresh_member_after_provider_callbacks(ledger, &expected_round)?;
         if outcome.stop_reason == "harness_runtime_closed" && close_requested {
+            transition_provider_session_for_member(
+                ledger,
+                &member_row,
+                harness_core::agentfirm_api::AgentSessionStatus::Closed,
+            )?;
             let expected = member_row.clone();
             member_row.coordination_status = MemberCoordinationStatus::Closed;
             member_row.status = MemberRunStatus::Stopped;
@@ -24563,6 +25046,11 @@ fn run_kimi_member(
         } else if matches!(outcome.stop_reason.as_str(), "cancelled" | "canceled") {
             let expected = member_row.clone();
             if close_requested {
+                transition_provider_session_for_member(
+                    ledger,
+                    &member_row,
+                    harness_core::agentfirm_api::AgentSessionStatus::Closed,
+                )?;
                 member_row.coordination_status = MemberCoordinationStatus::Closed;
             }
             member_row.status = if close_requested {
@@ -25081,6 +25569,8 @@ fn run_pi_team_member(
             .map(str::to_string)
             .unwrap_or_else(|| format!("continuation:{}:{round}", member_row.id));
         let effect = prepare_provider_effect(ledger, &member_row, &source_record_id, &prompt)?;
+        let mut pending_control_effect: Option<(ProviderEffectAdmission, bool)> = None;
+        let mut control_prepare_error: Option<String> = None;
 
         let turn_result = {
             let _turn_lease = turn_leases.acquire();
@@ -25102,8 +25592,36 @@ fn run_pi_team_member(
                 || {
                     while let Ok(command) = live_control.try_recv() {
                         match command {
-                            MemberControlCommand::Close { .. } => return (true, true),
-                            MemberControlCommand::Interrupt { .. } => return (false, true),
+                            MemberControlCommand::Close { reason, .. } => {
+                                match prepare_provider_control_effect(
+                                    ledger,
+                                    &member_row,
+                                    &format!("pi-close:{}:{round}", member.id),
+                                    &reason,
+                                    true,
+                                ) {
+                                    Ok(admission) => {
+                                        pending_control_effect = Some((admission, true))
+                                    }
+                                    Err(error) => control_prepare_error = Some(error.to_string()),
+                                }
+                                return (true, true);
+                            }
+                            MemberControlCommand::Interrupt { reason, .. } => {
+                                match prepare_provider_control_effect(
+                                    ledger,
+                                    &member_row,
+                                    &format!("pi-interrupt:{}:{round}", member.id),
+                                    &reason,
+                                    false,
+                                ) {
+                                    Ok(admission) => {
+                                        pending_control_effect = Some((admission, false))
+                                    }
+                                    Err(error) => control_prepare_error = Some(error.to_string()),
+                                }
+                                return (false, true);
+                            }
                             _ => {}
                         }
                     }
@@ -25131,6 +25649,25 @@ fn run_pi_team_member(
                 return Err(error);
             }
         };
+        if let Some(error) = control_prepare_error {
+            return Err(CliError::Usage(error));
+        }
+        if let Some((control_effect, close)) = pending_control_effect.take() {
+            settle_provider_effect(
+                ledger,
+                &control_effect,
+                turn.interrupted,
+                turn.interrupted.then(|| {
+                    serde_json::json!({
+                        "provider": "pi",
+                        "control": if close { "close" } else { "interrupt" },
+                        "provider_ack": "interrupted",
+                    })
+                }),
+                (!turn.interrupted)
+                    .then(|| "Pi returned without interrupt acknowledgement".to_string()),
+            )?;
+        }
 
         require_provider_session_authority(ledger, &member.agent_member_id, true)?;
         // Update native session ref with current session file.
@@ -25160,6 +25697,11 @@ fn run_pi_team_member(
                 "The operator or Lead interrupted the active Pi turn."
             };
             if turn.close_requested_by_harness {
+                transition_provider_session_for_member(
+                    ledger,
+                    &member_row,
+                    harness_core::agentfirm_api::AgentSessionStatus::Closed,
+                )?;
                 member_row.coordination_status = MemberCoordinationStatus::Closed;
             }
             member_row.status = if turn.close_requested_by_harness {
@@ -26817,29 +27359,10 @@ fn dashboard_doctor_command(store: &HarnessStore, args: &[String]) -> CliResult<
     }
 
     let member_runs = latest_member_runs_in_append_order(store)?;
-    let mut message_ids = latest_team_messages_in_append_order(store)?
+    let message_ids = canonical_team_messages_for_run(store, &team_run_id)?
         .into_iter()
-        .filter(|message| message.team_run_id == team_run_id)
         .map(|message| message.id)
         .collect::<BTreeSet<_>>();
-    let mut trust_scopes = BTreeSet::new();
-    for member in member_runs
-        .iter()
-        .filter(|member| member.team_run_id == team_run_id)
-    {
-        if let Some(scope) = store.trust_member_run_scope(&member.id)? {
-            trust_scopes.insert(scope);
-        }
-    }
-    for scope in trust_scopes {
-        message_ids.extend(
-            store
-                .trust_team_messages(&scope)?
-                .into_iter()
-                .filter(|message| message.team_run_id == team_run_id)
-                .map(|message| message.id),
-        );
-    }
     let store_counts = DoctorStoreCounts {
         works: store
             .latest_works()?
@@ -27265,7 +27788,6 @@ fn handle_sse_stream(
     // Send initial snapshot
     // Initial snapshot sent to client for sync
     let _snapshot = sse::SseEventFrame::Snapshot {
-        agent_events: Vec::new(),
         messages: Vec::new(),
         generated_at: now_string(),
     };
@@ -27301,13 +27823,6 @@ fn handle_sse_stream(
                 match frame {
                     sse::SseEventFrame::Snapshot { .. } => {
                         // Don't re-send snapshots after initial
-                    }
-                    sse::SseEventFrame::ProviderDispatchEvent(event) => {
-                        if let Ok(json) = serde_json::to_value(&event) {
-                            if sse::write_sse_frame(&mut stream, "agent_event", &json).is_err() {
-                                break; // Client disconnected
-                            }
-                        }
                     }
                     sse::SseEventFrame::RegistryMessage(msg) => {
                         if let Ok(json) = serde_json::to_value(&msg) {
@@ -27364,13 +27879,6 @@ fn handle_sse_stream(
                     sse::SseEventFrame::ProviderRuntimeProjection(member) => {
                         if let Ok(json) = serde_json::to_value(&member) {
                             if sse::write_sse_frame(&mut stream, "member_run", &json).is_err() {
-                                break;
-                            }
-                        }
-                    }
-                    sse::SseEventFrame::TeamMessageProjection(message) => {
-                        if let Ok(json) = serde_json::to_value(&message) {
-                            if sse::write_sse_frame(&mut stream, "team_message", &json).is_err() {
                                 break;
                             }
                         }
@@ -30032,57 +30540,31 @@ fn close_team_member_value(
         }));
     }
 
-    let close_candidate = pending_close_request(team_run_id, member_run_id, &requested_by, &reason);
     let close = if member.is_external_interactive() {
         latch_member_close(store, team_run_id, member_run_id, &requested_by, &reason)?
     } else {
-        loop {
-            let live_lease = store
-                .latest_team_supervisor_lease(team_run_id)?
-                .filter(is_supervisor_current);
-            if live_lease.is_some() {
-                return dispatch_live_member_control(
-                    store,
-                    LiveMemberControlRequest::Close {
-                        team_run_id: team_run_id.to_string(),
-                        member_run_id: member_run_id.to_string(),
-                        reason,
-                        requested_by,
-                    },
-                );
-            }
-
-            match store.latch_team_member_close_without_current_supervisor(
-                &close_candidate,
-                current_unix_ms_u64(),
-            ) {
-                Ok(close) => break close,
-                Err(StoreError::Conflict(message))
-                    if message.starts_with("TEAM_SUPERVISOR_LEASE_CURRENT:") =>
-                {
-                    // A successor generation won the Store lock after our
-                    // optimistic read. Re-read once through the loop and route
-                    // the Close to that exact live owner instead of reaping a
-                    // runtime under newly-acquired authority.
-                    continue;
-                }
-                Err(error) => return store_conflict_as_usage(Err(error)),
-            }
+        if store
+            .latest_team_supervisor_lease(team_run_id)?
+            .filter(is_supervisor_current)
+            .is_some()
+        {
+            return dispatch_live_member_control(
+                store,
+                LiveMemberControlRequest::Close {
+                    team_run_id: team_run_id.to_string(),
+                    member_run_id: member_run_id.to_string(),
+                    reason,
+                    requested_by,
+                },
+            );
         }
+        return Err(CliError::Usage(
+            "RUNTIME_COMMAND_RECOVERY_REQUIRED: managed AgentSession has no current provider-loop authority; reconcile its RuntimeCommand/session state before Close"
+                .into(),
+        ));
     };
     cancel_pending_member_interactions(store, team_run_id, member_run_id, &requested_by, &reason)?;
     let member = mark_member_coordination_closed(store, team_run_id, member_run_id)?;
-    // Past this point no live Supervisor lease exists (the live case was
-    // dispatched above) and the durable lease is the sole cross-process
-    // control authority, revalidated before every drive. A Starting/Running
-    // row here is therefore a crashed driver's leftover, not a live runtime:
-    // reap it like every other non-terminal status so the Close completes
-    // and Reopen stays possible, instead of wedging on a latch no Supervisor
-    // generation will ever apply (closed members are filtered from rosters).
-    let reaped_stale_runtime = matches!(
-        member.status,
-        MemberRunStatus::Starting | MemberRunStatus::Running
-    );
     let mut member = member;
     let expected = member.clone();
     member.status = MemberRunStatus::Stopped;
@@ -30100,13 +30582,7 @@ fn close_team_member_value(
         &member.id,
         "closed",
         MemberActionStatus::Succeeded,
-        if external_interactive {
-            "external member coordination closed"
-        } else if reaped_stale_runtime {
-            "member coordination closed; stale runtime reaped without a live Supervisor lease"
-        } else {
-            "member coordination closed before runtime start"
-        },
+        "external member coordination closed",
         &format!("{requested_by}: {reason}"),
     )?;
     ledger.fold_event(
@@ -30121,8 +30597,8 @@ fn close_team_member_value(
         "member_run_id": member.id,
         "status": "stopped",
         "coordination_status": "closed",
-        "runtime": if external_interactive { "external_unmanaged" } else if reaped_stale_runtime { "stale_runtime_reaped" } else { "not_started" },
-        "runtime_effect": if external_interactive { "none" } else if reaped_stale_runtime { "stale_runtime_reaped" } else { "not_started" },
+        "runtime": "external_unmanaged",
+        "runtime_effect": "none",
         "coordination_effect": "member_closed",
         "idempotent": false,
     }))
@@ -36976,7 +37452,6 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     let teams = latest_teams(store)?;
     let runtimes = latest_runtimes(store)?;
     let messages = latest_messages_in_append_order(store)?;
-    let events = store.events()?;
     let evidence = store.evidence()?;
     let provider_child_threads = store.provider_child_threads()?;
     let workflow_runs = latest_workflow_runs_in_append_order(store)?;
@@ -36993,7 +37468,11 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
     // event log is capped per run so a chatty run cannot bloat the snapshot.
     let team_runs = latest_team_runs_in_append_order(store)?;
     let member_runs = latest_member_runs_in_append_order(store)?;
-    let mut team_messages = latest_team_messages_in_append_order(store)?;
+    // Current inbox truth is projected only from the Wave 4C canonical
+    // Message + per-recipient MessageDelivery plane. Retired
+    // team_messages/provider_dispatch ledgers remain export-only history and
+    // are never folded into a current Dashboard snapshot.
+    let mut team_messages = Vec::new();
     let mut trust_scopes = BTreeSet::new();
     for member_run in &member_runs {
         if let Some(scope) = store.trust_member_run_scope(&member_run.id)? {
@@ -37012,41 +37491,51 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         agent_sessions.extend(store.fabric_agent_sessions(&execution_space_id)?);
         team_memberships.extend(store.fabric_team_memberships(&execution_space_id)?);
         work_execution_bindings.extend(store.fabric_work_execution_bindings(&execution_space_id)?);
-        canonical_messages.extend(store.fabric_messages(&execution_space_id)?);
-        canonical_message_deliveries.extend(store.fabric_message_deliveries(&execution_space_id)?);
-        let deliveries = store.trust_message_deliveries(&execution_space_id)?;
-        for message in store.trust_team_messages(&execution_space_id)? {
+        let space_messages = store.fabric_messages(&execution_space_id)?;
+        let deliveries = store.fabric_message_deliveries(&execution_space_id)?;
+        canonical_messages.extend(space_messages.iter().cloned());
+        canonical_message_deliveries.extend(deliveries.iter().cloned());
+        for message in space_messages {
             let message_deliveries = deliveries
                 .iter()
                 .filter(|delivery| delivery.message_id == message.id)
                 .map(|delivery| ProviderDispatchAttempt {
-                    member_id: delivery.recipient_member_run_id.clone(),
+                    member_id: member_runs
+                        .iter()
+                        .find(|member| {
+                            member.agent_member_id == delivery.recipient_identity_id
+                                && message.team_run_id.as_deref()
+                                    == Some(member.team_run_id.as_str())
+                        })
+                        .map(|member| member.id.clone())
+                        .unwrap_or_else(|| delivery.recipient_identity_id.clone()),
                     policy: TeamDeliveryPolicy::Queue,
                     status: match delivery.status {
-                        harness_core::agentfirm_api::MessageDeliveryStatus::Queued => {
+                        harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Queued
+                        | harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Routed => {
                             TeamDeliveryStatus::Queued
                         }
-                        harness_core::agentfirm_api::MessageDeliveryStatus::Claimed => {
+                        harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Claimed => {
                             TeamDeliveryStatus::Claimed
                         }
-                        harness_core::agentfirm_api::MessageDeliveryStatus::ProviderReceived => {
+                        harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::ProviderReceived => {
                             TeamDeliveryStatus::Delivered
                         }
-                        harness_core::agentfirm_api::MessageDeliveryStatus::Acknowledged => {
+                        harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Acknowledged => {
                             TeamDeliveryStatus::Acknowledged
                         }
-                        harness_core::agentfirm_api::MessageDeliveryStatus::Failed
-                        | harness_core::agentfirm_api::MessageDeliveryStatus::Invalidated => {
+                        harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Failed
+                        | harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Invalidated => {
                             TeamDeliveryStatus::Failed
                         }
-                        harness_core::agentfirm_api::MessageDeliveryStatus::Expired => {
+                        harness_core::agentfirm_api::CanonicalMessageDeliveryStatus::Expired => {
                             TeamDeliveryStatus::Expired
                         }
                     },
                     attempt: delivery.attempt,
                     claim_id: delivery.claim_id.clone(),
                     claimed_by_supervisor_id: None,
-                    claimed_generation: delivery.claimed_supervisor_generation,
+                    claimed_generation: delivery.claimed_node_daemon_generation,
                     claimed_unix_ms: None,
                     claim_expires_unix_ms: None,
                     provider_receipt_id: delivery.provider_receipt_id.clone(),
@@ -37060,11 +37549,11 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
                 .collect::<Vec<_>>();
             team_messages.push(TeamMessageProjection {
                 id: message.id.clone(),
-                team_run_id: message.team_run_id.clone(),
+                team_run_id: message.team_run_id.clone().unwrap_or_default(),
                 work_id: message.work_id.clone(),
                 source_plan_ref: None,
                 sender: Some(TeamActorRef {
-                    kind: match message.sender.kind {
+                    kind: match message.sender_actor_ref.kind {
                         harness_core::agentfirm_api::ActorKind::AgentMember => {
                             TeamActorKind::AgentMember
                         }
@@ -37074,11 +37563,24 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
                             TeamActorKind::Operator
                         }
                     },
-                    id: message.sender.id.clone(),
+                    id: message.sender_actor_ref.id.clone(),
                     display_name: None,
                     authn_source: Some("canonical_trust_kernel".into()),
                 }),
-                sender_runtime_id: message.sender.id.clone(),
+                sender_runtime_id: message
+                    .sender_agent_id
+                    .as_ref()
+                    .and_then(|identity_id| {
+                        member_runs
+                            .iter()
+                            .find(|member| {
+                                member.agent_member_id == *identity_id
+                                    && message.team_run_id.as_deref()
+                                        == Some(member.team_run_id.as_str())
+                            })
+                            .map(|member| member.id.clone())
+                    })
+                    .unwrap_or_else(|| message.sender_actor_ref.id.clone()),
                 recipients: recipient_runtime_ids
                     .iter()
                     .map(|id| TeamRecipientRef {
@@ -37088,16 +37590,17 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
                     .collect(),
                 recipient_runtime_ids,
                 kind: match message.kind {
-                    harness_core::agentfirm_api::TeamMessageKind::Message => {
+                    harness_core::agentfirm_api::MessageKind::Message
+                    | harness_core::agentfirm_api::MessageKind::Reply => {
                         ProviderDispatchIntent::Message
                     }
-                    harness_core::agentfirm_api::TeamMessageKind::Control => {
+                    harness_core::agentfirm_api::MessageKind::RequestDecision => {
                         ProviderDispatchIntent::Control
                     }
-                    harness_core::agentfirm_api::TeamMessageKind::ProviderInteractionRequest => {
+                    harness_core::agentfirm_api::MessageKind::ProviderInteractionRequest => {
                         ProviderDispatchIntent::ProviderInteractionRequest
                     }
-                    harness_core::agentfirm_api::TeamMessageKind::ProviderInteractionResponse => {
+                    harness_core::agentfirm_api::MessageKind::ProviderInteractionResponse => {
                         ProviderDispatchIntent::ProviderInteractionResponse
                     }
                 },
@@ -37210,7 +37713,6 @@ fn dashboard_snapshot(store: &HarnessStore) -> CliResult<serde_json::Value> {
         "teams": teams.into_values().filter(|team| team.status == AgentTeamStatus::Active).collect::<Vec<_>>(),
         "members": member_cards,
         "messages": messages,
-        "events": events,
         "evidence": evidence,
         "provider_child_threads": provider_child_threads,
         "workflow_runs": workflow_runs,
@@ -40240,21 +40742,26 @@ fn record_provider_hook_event(
     let provider_turn_id =
         json_str(&payload, "turn_id").or_else(|| turn_id_from_container(&payload));
     let now = now_string();
-    let event = ProviderDispatchEvent {
+    let event = Evidence {
         id: generated_id("event"),
-        agent_member_id: agent_id.clone(),
-        provider_runtime_id: runtime_id.clone(),
         task_id: task_id.clone(),
-        provider: provider.into(),
-        provider_thread_id: provider_thread_id.clone(),
-        provider_turn_id: provider_turn_id.clone(),
-        provider_child_thread_id: json_str(&payload, "agent_id"),
-        event_type: format!("{provider}_hook.{hook_event_name}"),
+        source_type: "provider_hook_observation".into(),
+        source_ref: serde_json::json!({
+            "agent_identity_id": &agent_id,
+            "provider_runtime_id": &runtime_id,
+            "provider": provider,
+            "provider_thread_id": &provider_thread_id,
+            "provider_turn_id": &provider_turn_id,
+            "provider_child_thread_id": json_str(&payload, "agent_id"),
+            "hook_event": &hook_event_name,
+        })
+        .to_string(),
         summary: provider_hook_summary(provider, &hook_event_name, &payload),
-        payload_ref: None,
         created_at: now.clone(),
+        evidence_kind: Some("provider_runtime_observation".into()),
+        goal_id: None,
     };
-    store.append_event(&event)?;
+    store.append_evidence(&event)?;
     if let Ok(mut member) = latest_member(store, &agent_id) {
         member.last_seen_at = Some(now.clone());
         member.status = if hook_event_name.eq_ignore_ascii_case("stop") {
@@ -40293,21 +40800,24 @@ fn append_agent_event(
     summary: &str,
     payload_ref: Option<&str>,
 ) -> CliResult<()> {
-    let event = ProviderDispatchEvent {
+    let event = Evidence {
         id: generated_id("event"),
-        agent_member_id: agent_member_id.into(),
-        provider_runtime_id: runtime_id.map(str::to_string),
         task_id: task_id.map(str::to_string),
-        provider: "codex".into(),
-        provider_thread_id: None,
-        provider_turn_id: None,
-        provider_child_thread_id: None,
-        event_type: event_type.into(),
+        source_type: "provider_runtime_observation".into(),
+        source_ref: serde_json::json!({
+            "agent_identity_id": agent_member_id,
+            "provider_runtime_id": runtime_id,
+            "provider": "codex",
+            "event_type": event_type,
+            "payload_ref": payload_ref,
+        })
+        .to_string(),
         summary: summary.into(),
-        payload_ref: payload_ref.map(str::to_string),
         created_at: now_string(),
+        evidence_kind: Some("provider_runtime_observation".into()),
+        goal_id: None,
     };
-    store.append_event(&event)?;
+    store.append_evidence(&event)?;
     Ok(())
 }
 
@@ -50133,11 +50643,10 @@ package:com.tencent.mm
     }
 
     #[test]
-    fn close_without_live_supervisor_reaps_stale_running_row_and_allows_reopen() {
-        // Wedge regression: a crashed Supervisor leaves a Running ProviderRuntimeProjection
-        // behind and its lease expires. Close must reap the stale row
-        // immediately (no live Supervisor can ever apply a latch), and Reopen
-        // must stay possible afterwards.
+    fn close_without_live_supervisor_requires_runtime_command_recovery_without_side_effects() {
+        // A missing Supervisor does not prove the provider effect is absent.
+        // The lifecycle API must not invent a second stop authority by reaping
+        // a Running projection outside the RuntimeCommand ledger.
         let (store, root) = temp_store("durable-close-reap");
         let created = create_two_member_team_run(&store);
         let initial_run = created.team_run;
@@ -50155,7 +50664,11 @@ package:com.tencent.mm
             .compare_and_append_member_run(&initial_member, &member)
             .expect("mark member running");
 
-        let result = close_team_member_value(
+        let member_rows_before = store.member_runs().expect("member rows before");
+        let close_rows_before = store
+            .team_member_close_requests()
+            .expect("close rows before");
+        let error = close_team_member_value(
             &store,
             &run.id,
             &member.id,
@@ -50164,160 +50677,20 @@ package:com.tencent.mm
                 "reason": "lane accepted"
             }),
         )
-        .expect("close reaps the stale runtime");
-        assert_eq!(result["status"].as_str(), Some("stopped"));
+        .expect_err("ambiguous runtime must require recovery");
+        assert!(error
+            .to_string()
+            .contains("RUNTIME_COMMAND_RECOVERY_REQUIRED"));
         assert_eq!(
-            result["runtime_effect"].as_str(),
-            Some("stale_runtime_reaped")
+            store.member_runs().expect("member rows after"),
+            member_rows_before
         );
-        let stopped = latest_member_runs_in_append_order(&store)
-            .expect("read ProviderRuntimeProjection")
-            .into_iter()
-            .find(|row| row.id == member.id)
-            .expect("ProviderRuntimeProjection");
-        assert_eq!(stopped.status, MemberRunStatus::Stopped);
-        assert!(stopped.coordination_is_closed());
         assert_eq!(
             store
-                .latest_team_member_close_request(&member.id)
-                .expect("read Close")
-                .expect("Close row")
-                .status,
-            TeamMemberCloseStatus::Applied
+                .team_member_close_requests()
+                .expect("close rows after"),
+            close_rows_before
         );
-
-        // The wedge would reject this Reopen with "close is not complete".
-        let reopened = reopen_team_member_value(
-            &store,
-            &run.id,
-            &member.id,
-            &serde_json::json!({
-                "reopened_by": "host",
-                "reason": "resume the same member identity"
-            }),
-        )
-        .expect("reopen after reap succeeds");
-        assert_eq!(
-            reopened["member_run"]["coordination_status"].as_str(),
-            Some("active"),
-            "reopen response: {reopened}"
-        );
-        assert_eq!(
-            reopened["member_run"]["runtime_generation"].as_u64(),
-            Some(member.runtime_generation + 1)
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn latched_close_fails_unreceived_same_generation_work_claims() {
-        // Gap regression: a delivery Claimed by this member and Supervisor
-        // generation but never provider-received used to stay Claimed forever
-        // after Close. Applying the latched Close must fail it with an honest
-        // reason so the Work becomes reassignable; no receipt is fabricated.
-        let (store, root) = temp_store("close-fails-unreceived-claims");
-        let created = create_two_member_team_run(&store);
-        let run = created.team_run;
-        let member = created.member_runs[0].clone();
-        create_team_work_value(
-            &store,
-            &run.id,
-            &serde_json::json!({
-                "id": "work-close-mid-claim",
-                "title": "Close lands mid-claim",
-                "completion_criteria_markdown": "Delivery becomes re-claimable",
-                "owner_member_run_id": member.id,
-            }),
-        )
-        .expect("create owned Work");
-        let lease = store
-            .acquire_test_supervisor_lease(
-                &run.id,
-                "supervisor-close-test",
-                std::process::id(),
-                "loopback:test",
-                current_unix_ms_u64(),
-                60_000,
-            )
-            .expect("acquire Supervisor lease");
-        let ledger = TeamRunLedger::new(
-            &store,
-            &run.id,
-            &lease.supervisor_id,
-            lease.generation,
-            Arc::new(AtomicBool::new(true)),
-        );
-        let claimed = ledger
-            .claim_canonical_work_for(&member.id)
-            .expect("claim scan")
-            .expect("queued delivery for the member");
-        assert_eq!(
-            claimed.delivery.status,
-            harness_core::agentfirm_api::WorkDeliveryStatus::Claimed
-        );
-        assert!(claimed.delivery.provider_receipt_id.is_none());
-
-        let close = latch_member_close(&store, &run.id, &member.id, "host", "lane accepted")
-            .expect("latch Close");
-        let mut member_row = member.clone();
-        stop_member_for_latched_close(&ledger, &mut member_row, &close)
-            .expect("apply latched Close");
-
-        let delivery = store
-            .latest_work_deliveries()
-            .expect("latest deliveries")
-            .into_iter()
-            .find(|delivery| delivery.id == claimed.delivery.id)
-            .expect("delivery row");
-        assert_eq!(delivery.status, ProviderWorkDispatchStatus::Failed);
-        assert!(delivery.provider_receipt_id.is_none());
-        assert!(
-            delivery
-                .failure_reason
-                .as_deref()
-                .unwrap_or_default()
-                .contains("member closed before provider acceptance"),
-            "failure reason: {:?}",
-            delivery.failure_reason
-        );
-        // A failed delivery no longer blocks Host reassignment: release the
-        // Work and assign it to the second member.
-        let work = store
-            .latest_works()
-            .expect("latest works")
-            .into_iter()
-            .find(|work| work.id == claimed.work.id)
-            .expect("work row");
-        let host_context = |event_id: &str, key: &str| WorkCommandContext {
-            event_id: event_id.into(),
-            performed_by_actor: TeamActorRef {
-                kind: TeamActorKind::Host,
-                id: "host".into(),
-                display_name: None,
-                authn_source: Some("test".into()),
-            },
-            authority_actor: None,
-            causation_ref: None,
-            idempotency_key: key.into(),
-            created_at: "unix-ms:9".into(),
-            duplicate_ok: false,
-        };
-        let released = store
-            .release_work_as_host(
-                &work.id,
-                work.version,
-                host_context("we-release", "release-after-close"),
-            )
-            .expect("failed claim no longer fences release");
-        let other_member = created.member_runs[1].clone();
-        store
-            .assign_work(
-                &work.id,
-                released.version,
-                &other_member.id,
-                host_context("we-reassign", "reassign-after-close"),
-            )
-            .expect("failed claim no longer fences reassignment");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -52455,30 +52828,20 @@ mod sse_tests {
         let manager = sse::SseManager::new();
         let rx = manager.subscribe("_test");
 
-        let event = sse::SseEventFrame::ProviderDispatchEvent(ProviderDispatchEvent {
-            id: "evt-test".into(),
-            agent_member_id: "mem-test".into(),
-            provider_runtime_id: None,
-            task_id: None,
-            provider: "claude".into(),
-            provider_thread_id: None,
-            provider_turn_id: None,
-            provider_child_thread_id: None,
-            event_type: "test_event".into(),
-            summary: "Test Event".into(),
-            payload_ref: None,
-            created_at: "2025-01-01T00:00:00Z".into(),
-        });
+        let event = sse::SseEventFrame::Snapshot {
+            messages: Vec::new(),
+            generated_at: "2025-01-01T00:00:00Z".into(),
+        };
 
         manager.broadcast("_test", event.clone());
 
         // Verify the event is received
         match rx.recv_timeout(std::time::Duration::from_secs(1)) {
             Ok(received) => {
-                if let sse::SseEventFrame::ProviderDispatchEvent(evt) = received {
-                    assert_eq!(evt.id, "evt-test");
+                if let sse::SseEventFrame::Snapshot { generated_at, .. } = received {
+                    assert_eq!(generated_at, "2025-01-01T00:00:00Z");
                 } else {
-                    panic!("Expected ProviderDispatchEvent");
+                    panic!("Expected snapshot marker");
                 }
             }
             Err(_) => panic!("Did not receive event in time"),
@@ -52647,20 +53010,10 @@ mod sse_tests {
         let rx1 = manager.subscribe("_test");
         let rx2 = manager.subscribe("_test");
 
-        let event = sse::SseEventFrame::ProviderDispatchEvent(ProviderDispatchEvent {
-            id: "evt-multi".into(),
-            agent_member_id: "mem-test".into(),
-            provider_runtime_id: None,
-            task_id: None,
-            provider: "claude".into(),
-            provider_thread_id: None,
-            provider_turn_id: None,
-            provider_child_thread_id: None,
-            event_type: "test_event".into(),
-            summary: "Multi Test".into(),
-            payload_ref: None,
-            created_at: "2025-01-01T00:00:00Z".into(),
-        });
+        let event = sse::SseEventFrame::Snapshot {
+            messages: Vec::new(),
+            generated_at: "2025-01-01T00:00:00Z".into(),
+        };
 
         manager.broadcast("_test", event);
 

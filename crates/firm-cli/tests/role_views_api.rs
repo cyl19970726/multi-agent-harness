@@ -369,15 +369,29 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         .and_then(|action| action["required_version"].as_u64())
         .expect("Team revision from send_message action")
         .to_string();
+    assert!(
+        refreshed["allowed_actions"]
+            .as_array()
+            .and_then(|actions| actions
+                .iter()
+                .find(|action| action["kind"] == "send_message"))
+            .is_some_and(|action| action["disabled_reason"].as_str().is_some()),
+        "Message action must fail closed until canonical membership/subscription fabric exists"
+    );
     let message_headers = action_headers(TOKEN, "message-current-team-revision", &team_revision);
-    let (status, sent_message) =
+    let before_unroutable_message = ledger_digest(serve.fixture_store_root());
+    let (status, unroutable_message) =
         serve.post_json_with_headers(&message_route, &message_intent, &message_headers);
-    assert_eq!(status, 200, "current Team Message CAS: {sent_message}");
-    let (status, replayed_message) =
-        serve.post_json_with_headers(&message_route, &message_intent, &message_headers);
-    assert_eq!(status, 200, "Team Message replay: {replayed_message}");
-    assert_eq!(replayed_message["replayed"], true);
-    assert_eq!(replayed_message["event_id"], sent_message["event_id"]);
+    assert_eq!(status, 409, "unroutable Team Message: {unroutable_message}");
+    assert_eq!(
+        unroutable_message["error"]["code"],
+        "MESSAGE_ROUTE_UNAVAILABLE"
+    );
+    assert_eq!(
+        ledger_digest(serve.fixture_store_root()),
+        before_unroutable_message,
+        "unroutable Team Message changed durable state"
+    );
 
     let member_runs = created_run["result"]["member_runs"]
         .as_array()
@@ -488,6 +502,13 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
     let decision_route =
         format!("/v1/agentfirm/team-runs/{run_id}/messages/request-decision?project={project_id}");
     let decision_headers = action_headers(MEMBER_TOKEN, "request-host-decision", &team_revision);
+    assert!(member_view["allowed_actions"]
+        .as_array()
+        .and_then(|actions| actions
+            .iter()
+            .find(|action| action["kind"] == "request_decision"))
+        .is_some_and(|action| action["disabled_reason"].as_str().is_some()));
+    let before_unroutable_decision = ledger_digest(serve.fixture_store_root());
     let (status, decision) = serve.post_json_with_headers(
         &decision_route,
         &serde_json::json!({
@@ -497,7 +518,16 @@ fn role_action_loop_is_authenticated_cas_bound_and_legacy_writers_are_gone() {
         }),
         &decision_headers,
     );
-    assert_eq!(status, 200, "Member request-decision to Host: {decision}");
+    assert_eq!(
+        status, 409,
+        "unroutable Member request-decision: {decision}"
+    );
+    assert_eq!(decision["error"]["code"], "MESSAGE_ROUTE_UNAVAILABLE");
+    assert_eq!(
+        ledger_digest(serve.fixture_store_root()),
+        before_unroutable_decision,
+        "unroutable request-decision changed durable state"
+    );
     let claim_route = format!(
         "/v1/agentfirm/team-runs/{run_id}/works/work-store-live-1/claim?project={project_id}"
     );

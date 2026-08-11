@@ -10,9 +10,9 @@ use std::time::Duration;
 
 use crossbeam::channel::{bounded, Receiver, Sender};
 use harness_core::{
-    AgentTeamRun, MemberAction, Mission, PendingInteraction, ProviderDispatchEvent,
-    ProviderRuntimeProjection, RegistryMessage, TeamMemberCloseRequest, TeamMessageProjection,
-    TeamRunEvent, TeamSupervisorLease, Wave, WorkflowRun, WorkflowStep,
+    AgentTeamRun, MemberAction, Mission, PendingInteraction, ProviderRuntimeProjection,
+    RegistryMessage, TeamMemberCloseRequest, TeamRunEvent, TeamSupervisorLease, Wave, WorkflowRun,
+    WorkflowStep,
 };
 
 /// An event frame sent to SSE clients. Durable frames are reconstructed by tailing
@@ -23,12 +23,9 @@ use harness_core::{
 pub enum SseEventFrame {
     /// Snapshot of all current events (sent on initial connection)
     Snapshot {
-        agent_events: Vec<ProviderDispatchEvent>,
         messages: Vec<RegistryMessage>,
         generated_at: String,
     },
-    /// A new agent event was recorded
-    ProviderDispatchEvent(ProviderDispatchEvent),
     /// A message was created or delivery status changed
     RegistryMessage(RegistryMessage),
     /// A workflow run status changed (WP2)
@@ -45,8 +42,6 @@ pub enum SseEventFrame {
     AgentTeamRun(AgentTeamRun),
     /// An Agent Team member's durable run state changed.
     ProviderRuntimeProjection(Box<ProviderRuntimeProjection>),
-    /// A routed Agent Team message was created or its delivery state changed.
-    TeamMessageProjection(TeamMessageProjection),
     /// Durable ownership of one TeamRun's provider-native controls.
     TeamSupervisorLease(TeamSupervisorLease),
     /// Durable Host Close latch for one ProviderRuntimeProjection.
@@ -392,7 +387,6 @@ fn seed_offsets_at_eof(
 /// The JSONL files tailed in every Execution Space or compatibility
 /// coordination store.
 const WATCHED_FILES: &[&str] = &[
-    "provider_dispatch_events.jsonl",
     "messages.jsonl",
     "workflow_runs.jsonl",
     "workflow_steps.jsonl",
@@ -401,7 +395,6 @@ const WATCHED_FILES: &[&str] = &[
     "waves.jsonl",
     "team_runs.jsonl",
     "member_runs.jsonl",
-    "team_messages.jsonl",
     "team_supervisor_leases.jsonl",
     "team_member_close_requests.jsonl",
     "member_actions.jsonl",
@@ -689,21 +682,6 @@ fn poll_project(
     consumed_offsets: &mut HashMap<(String, String), u64>,
     manager: &SseManager,
 ) {
-    check_and_broadcast_appends(
-        project_id,
-        store_root,
-        "provider_dispatch_events.jsonl",
-        consumed_offsets,
-        |line| {
-            if let Ok(event) = serde_json::from_str::<ProviderDispatchEvent>(line) {
-                vec![SseEventFrame::ProviderDispatchEvent(event)]
-            } else {
-                Vec::new()
-            }
-        },
-        manager,
-    );
-
     // Native Mission/Wave contract: these ledgers are the durable source for
     // the live console's incremental read model. They remain project-scoped by
     // the common `(project_id, filename)` offsets and manager subscription.
@@ -761,21 +739,6 @@ fn poll_project(
             serde_json::from_str::<ProviderRuntimeProjection>(line)
                 .ok()
                 .map(|member| SseEventFrame::ProviderRuntimeProjection(Box::new(member)))
-                .into_iter()
-                .collect()
-        },
-        manager,
-    );
-
-    check_and_broadcast_appends(
-        project_id,
-        store_root,
-        "team_messages.jsonl",
-        consumed_offsets,
-        |line| {
-            serde_json::from_str::<TeamMessageProjection>(line)
-                .ok()
-                .map(SseEventFrame::TeamMessageProjection)
                 .into_iter()
                 .collect()
         },

@@ -8,9 +8,9 @@ use firm_core::agentfirm_api::{
     GateWaiver, GateWaiverState, MemberCoordinationStatus, MemberRun, MemberRuntimeStatus,
     MemberWorkspaceBinding, Message, MessageDelivery, MessageDeliveryStatus, MessageRecipientKind,
     MessageRouteJournal, MessageSubscription, MessageSubscriptionKind, MessageSubscriptionStatus,
-    MutationContext, ProviderInvocation, ProviderReceipt, RouteJournalStatus, RuntimeCommandRecord,
-    RuntimeCommandStatus, RuntimeEffectCertainty, SubscriptionCursor, TeamMembership,
-    TeamMembershipStatus, TeamMessage, TrustError, TrustErrorCode, WorkDelivery,
+    MutationContext, ProviderInvocation, ProviderReceipt, RouteJournalStatus, RuntimeCommandKind,
+    RuntimeCommandRecord, RuntimeCommandStatus, RuntimeEffectCertainty, SubscriptionCursor,
+    TeamMembership, TeamMembershipStatus, TeamMessage, TrustError, TrustErrorCode, WorkDelivery,
     WorkDeliveryStatus, WorkExecutionBinding, WorkExecutionBindingStatus, WorkFinding,
     WorkModuleBinding, WorkReport, WorkReportKind, WorkspaceLifecycle, WorkspaceMode,
     WorkspaceOwnership, WorkspaceSafetyProof,
@@ -4307,6 +4307,34 @@ impl HarnessStore {
             "agent_session",
             session_id,
         )?;
+        let executing_runtime_key = context.idempotency_key.strip_suffix(":effect");
+        let runtime_commands = self.runtime_commands(&context.execution_space_id)?;
+        let authorized_stop = executing_runtime_key.is_some_and(|key| {
+            runtime_commands.iter().any(|command| {
+                command.idempotency_key == key
+                    && command.command == RuntimeCommandKind::StopSession
+                    && command.target_session_id.as_deref() == Some(session.id.as_str())
+                    && command.target_session_generation == Some(session.runtime_generation)
+                    && command.target_node_daemon_id == session.node_daemon_id
+                    && command.target_node_daemon_generation == session.node_daemon_generation
+                    && matches!(
+                        (command.status, command.effect_certainty),
+                        (
+                            RuntimeCommandStatus::Accepted,
+                            RuntimeEffectCertainty::Unknown
+                        ) | (
+                            RuntimeCommandStatus::Applied,
+                            RuntimeEffectCertainty::Applied
+                        )
+                    )
+            })
+        });
+        let executing_stop = authorized_stop
+            && runtime_commands.iter().any(|command| {
+                executing_runtime_key == Some(command.idempotency_key.as_str())
+                    && command.status == RuntimeCommandStatus::Accepted
+                    && command.effect_certainty == RuntimeEffectCertainty::Unknown
+            });
         let allowed = matches!(
             (session.lifecycle, next_status),
             (AgentSessionStatus::Cold, AgentSessionStatus::Idle)
@@ -4328,7 +4356,11 @@ impl HarnessStore {
                 | (AgentSessionStatus::Waiting, AgentSessionStatus::Closed)
                 | (AgentSessionStatus::Interrupted, AgentSessionStatus::Cold)
                 | (AgentSessionStatus::Interrupted, AgentSessionStatus::Closed)
-        );
+        ) || (matches!(
+            session.lifecycle,
+            AgentSessionStatus::Cold | AgentSessionStatus::Active
+        ) && next_status == AgentSessionStatus::Closed
+            && authorized_stop);
         if !allowed {
             return Err(trust_error(
                 TrustErrorCode::InvalidStateTransition,
@@ -4353,20 +4385,19 @@ impl HarnessStore {
                         && binding.agent_session_generation == session.runtime_generation
                         && binding.status == WorkExecutionBindingStatus::Active
                 });
-            let uncertain_command = self
-                .runtime_commands(&context.execution_space_id)?
-                .into_iter()
-                .any(|command| {
-                    command.target_session_id.as_deref() == Some(session.id.as_str())
-                        && command.target_session_generation == Some(session.runtime_generation)
-                        && matches!(
-                            command.status,
-                            RuntimeCommandStatus::Accepted
-                                | RuntimeCommandStatus::Quiesced
-                                | RuntimeCommandStatus::RecoveryRequired
-                        )
-                        && command.effect_certainty == RuntimeEffectCertainty::Unknown
-                });
+            let uncertain_command = runtime_commands.into_iter().any(|command| {
+                command.target_session_id.as_deref() == Some(session.id.as_str())
+                    && command.target_session_generation == Some(session.runtime_generation)
+                    && matches!(
+                        command.status,
+                        RuntimeCommandStatus::Accepted
+                            | RuntimeCommandStatus::Quiesced
+                            | RuntimeCommandStatus::RecoveryRequired
+                    )
+                    && command.effect_certainty == RuntimeEffectCertainty::Unknown
+                    && !(executing_stop
+                        && executing_runtime_key == Some(command.idempotency_key.as_str()))
+            });
             if active_work || uncertain_command {
                 return Err(trust_error(
                     TrustErrorCode::InvalidStateTransition,
@@ -5172,7 +5203,7 @@ impl HarnessStore {
         delivery.version += 1;
         delivery.updated_at = updated_at.to_string();
         let dispatch = ProviderInvocation {
-            id: format!("provider-dispatch:{}:{}", delivery.id, delivery.attempt),
+            id: format!("provider-invocation:{}:{}", delivery.id, delivery.attempt),
             source_plane: "message".into(),
             source_record_id: message.id,
             recipient_identity_id: delivery.recipient_identity_id.clone(),
@@ -5190,7 +5221,7 @@ impl HarnessStore {
         };
         self.commit_trust_projection_unlocked(
             context,
-            "provider_dispatch",
+            "provider_invocation",
             &dispatch.id,
             "prepared",
             serde_json::json!({
@@ -5386,6 +5417,159 @@ impl HarnessStore {
         )
     }
 
+    /// Operator-requested recovery is executed by the exact current target
+    /// NodeDaemon. Replay is resolved before mutable delivery state, and an
+    /// acknowledged provider receipt can never be converted into a retry.
+    pub fn reconcile_canonical_message_delivery(
+        &self,
+        context: &MutationContext,
+        delivery_id: &str,
+        node_id: &str,
+        daemon_id: &str,
+        daemon_generation: u64,
+        outcome: DeliveryReconcileOutcome,
+        evidence_ref: &str,
+        updated_at: &str,
+    ) -> StoreResult<CanonicalMutationResult<CanonicalMessageDelivery>> {
+        self.init()?;
+        let _lock = self.acquire_write_lock()?;
+        required(evidence_ref, "MessageDelivery reconciliation evidence_ref")?;
+        let fingerprint = canonical_json_fingerprint(&serde_json::json!({
+            "transport_request_fingerprint": context.request_fingerprint,
+            "delivery_id": delivery_id,
+            "node_id": node_id,
+            "daemon_id": daemon_id,
+            "daemon_generation": daemon_generation,
+            "outcome": outcome,
+            "evidence_ref": evidence_ref,
+        }));
+        let existing = self.trust_operation_envelopes_unlocked()?;
+        if let Some(replay) = existing.iter().find(|envelope| {
+            envelope.execution_space_id == context.execution_space_id
+                && envelope.authenticated_actor_kind == context.authenticated_actor.kind
+                && envelope.authenticated_actor_id == context.authenticated_actor.id
+                && envelope.command_name == context.command_name
+                && envelope.operation.event.idempotency_key == context.idempotency_key
+        }) {
+            if replay.operation.event.canonical_request_fingerprint != fingerprint
+                || replay.operation.event.aggregate_kind != "canonical_message_delivery"
+                || replay.operation.event.aggregate_id != delivery_id
+            {
+                return Err(trust_error(
+                    TrustErrorCode::IdempotencyKeyReused,
+                    "MessageDelivery reconciliation key was reused with different semantics",
+                    "canonical_message_delivery",
+                    delivery_id,
+                    Some(replay.operation.event.resulting_version),
+                ));
+            }
+            return Ok(CanonicalMutationResult {
+                projection: event_projection(replay)?,
+                event: replay.operation.event.clone(),
+                replayed: true,
+            });
+        }
+        self.require_current_node_daemon_unlocked(
+            &context.execution_space_id,
+            node_id,
+            daemon_id,
+            daemon_generation,
+            &context.authenticated_actor,
+            "canonical_message_delivery",
+            delivery_id,
+        )?;
+        let mut delivery = self
+            .latest_fabric_side_records_unlocked(
+                &context.execution_space_id,
+                |row: &CanonicalMessageDelivery| row.id.clone(),
+            )?
+            .remove(delivery_id)
+            .ok_or_else(|| {
+                trust_error(
+                    TrustErrorCode::InvalidStateTransition,
+                    "canonical MessageDelivery not found",
+                    "canonical_message_delivery",
+                    delivery_id,
+                    None,
+                )
+            })?;
+        if delivery.target_node_id != node_id || context.expected_version != delivery.version {
+            return Err(trust_error(
+                TrustErrorCode::VersionConflict,
+                "MessageDelivery recovery requires its exact target Node and revision",
+                "canonical_message_delivery",
+                delivery_id,
+                Some(delivery.version),
+            ));
+        }
+        match outcome {
+            DeliveryReconcileOutcome::Acknowledged => {
+                if delivery.status != CanonicalMessageDeliveryStatus::ProviderReceived
+                    || delivery.provider_receipt_id.is_none()
+                {
+                    return Err(trust_error(
+                        TrustErrorCode::InvalidStateTransition,
+                        "acknowledged recovery requires a durable provider receipt",
+                        "canonical_message_delivery",
+                        delivery_id,
+                        Some(delivery.version),
+                    ));
+                }
+                delivery.status = CanonicalMessageDeliveryStatus::Acknowledged;
+            }
+            DeliveryReconcileOutcome::RetrySafeFailure => {
+                if delivery.status != CanonicalMessageDeliveryStatus::Claimed
+                    || delivery.provider_receipt_id.is_some()
+                {
+                    return Err(trust_error(
+                        TrustErrorCode::InvalidStateTransition,
+                        "retry requires a claimed delivery with proven no provider receipt",
+                        "canonical_message_delivery",
+                        delivery_id,
+                        Some(delivery.version),
+                    ));
+                }
+                delivery.status = CanonicalMessageDeliveryStatus::Queued;
+                delivery.attempt += 1;
+                delivery.claim_id = None;
+                delivery.claimed_node_daemon_generation = None;
+                delivery.recipient_session_id = None;
+                delivery.recipient_session_generation = None;
+                delivery.failure_code = Some("RETRY_SAFE_FAILURE".into());
+                delivery.failure_detail = Some(evidence_ref.to_string());
+            }
+        }
+        delivery.version += 1;
+        delivery.updated_at = updated_at.to_string();
+        let aggregate_version = existing
+            .iter()
+            .filter(|envelope| {
+                envelope.execution_space_id == context.execution_space_id
+                    && envelope.operation.event.aggregate_kind == "canonical_message_delivery"
+                    && envelope.operation.event.aggregate_id == delivery_id
+            })
+            .map(|envelope| envelope.operation.event.resulting_version)
+            .max()
+            .unwrap_or(0);
+        let mut commit_context = context.clone();
+        commit_context.expected_version = aggregate_version;
+        commit_context.request_fingerprint = Some(fingerprint);
+        self.commit_trust_projection_unlocked(
+            &commit_context,
+            "canonical_message_delivery",
+            delivery_id,
+            "reconciled",
+            serde_json::json!({
+                "outcome": outcome,
+                "evidence_ref": evidence_ref,
+                "daemon_generation": daemon_generation,
+            }),
+            &delivery,
+            vec![serde_json::to_value(&delivery)?],
+            Vec::new(),
+        )
+    }
+
     pub fn route_message_cross_node(
         &self,
         context: &MutationContext,
@@ -5546,9 +5730,19 @@ impl HarnessStore {
                     Some(replay.operation.event.resulting_version),
                 ));
             }
+            let latest = self
+                .trust_operation_envelopes_unlocked()?
+                .into_iter()
+                .filter(|envelope| {
+                    envelope.execution_space_id == context.execution_space_id
+                        && envelope.operation.event.aggregate_kind == "runtime_command"
+                        && envelope.operation.event.aggregate_id == command.id
+                })
+                .max_by_key(|envelope| envelope.operation.event.sequence)
+                .unwrap_or(replay);
             return Ok(CanonicalMutationResult {
-                projection: event_projection(&replay)?,
-                event: replay.operation.event,
+                projection: event_projection(&latest)?,
+                event: latest.operation.event,
                 replayed: true,
             });
         }
@@ -5596,6 +5790,66 @@ impl HarnessStore {
                     &command.id,
                     Some(session.version),
                 ));
+            }
+            let active_work = self
+                .fabric_work_execution_bindings(&context.execution_space_id)?
+                .into_iter()
+                .any(|binding| {
+                    binding.agent_session_id == session.id
+                        && binding.agent_session_generation == session.runtime_generation
+                        && binding.status == WorkExecutionBindingStatus::Active
+                });
+            match command.command {
+                RuntimeCommandKind::DispatchProvider => {
+                    if session.lifecycle != AgentSessionStatus::Active {
+                        return Err(trust_error(
+                            TrustErrorCode::InvalidStateTransition,
+                            "provider dispatch requires the exact active AgentSession",
+                            "runtime_command",
+                            &command.id,
+                            Some(session.version),
+                        ));
+                    }
+                }
+                RuntimeCommandKind::CancelProviderTurn => {
+                    if session.lifecycle != AgentSessionStatus::Active
+                        || session.current_turn_id.is_none()
+                    {
+                        return Err(trust_error(
+                            TrustErrorCode::InvalidStateTransition,
+                            "provider cancel requires an exact active provider turn",
+                            "runtime_command",
+                            &command.id,
+                            Some(session.version),
+                        ));
+                    }
+                }
+                RuntimeCommandKind::StopSession => {
+                    if !matches!(
+                        session.lifecycle,
+                        AgentSessionStatus::Cold
+                            | AgentSessionStatus::Active
+                            | AgentSessionStatus::Idle
+                            | AgentSessionStatus::Waiting
+                            | AgentSessionStatus::Interrupted
+                    ) || active_work
+                    {
+                        return Err(trust_error(
+                            TrustErrorCode::InvalidStateTransition,
+                            if active_work {
+                                "AgentSession stop requires the active WorkExecutionBinding to be released or atomically handed off first"
+                            } else {
+                                "AgentSession stop cannot target a terminal session"
+                            },
+                            "runtime_command",
+                            &command.id,
+                            Some(session.version),
+                        ));
+                    }
+                }
+                RuntimeCommandKind::AuthorMessage
+                | RuntimeCommandKind::StartSession
+                | RuntimeCommandKind::ResumeSession => {}
             }
             let ambiguous = self
                 .runtime_commands(&context.execution_space_id)?
@@ -6128,6 +6382,42 @@ mod tests {
             store.canonical_operations().unwrap().len(),
             operations_before
         );
+
+        let mut reconcile_context =
+            service_context("node_daemon.message_delivery.reconcile", "reconcile-1", 2);
+        reconcile_context.request_fingerprint = Some(canonical_json_fingerprint(
+            &serde_json::json!({"outcome":"retry_safe_failure","evidence_ref":"audit:no-provider-receipt"}),
+        ));
+        let reconciled = store
+            .reconcile_canonical_message_delivery(
+                &reconcile_context,
+                &delivery[0].id,
+                "11111111-1111-4111-8111-111111111111",
+                "daemon-1",
+                1,
+                DeliveryReconcileOutcome::RetrySafeFailure,
+                "audit:no-provider-receipt",
+                "t5",
+            )
+            .unwrap();
+        assert_eq!(
+            reconciled.projection.status,
+            CanonicalMessageDeliveryStatus::Queued
+        );
+        assert_eq!(reconciled.projection.attempt, 2);
+        let replay = store
+            .reconcile_canonical_message_delivery(
+                &reconcile_context,
+                &delivery[0].id,
+                "11111111-1111-4111-8111-111111111111",
+                "daemon-1",
+                1,
+                DeliveryReconcileOutcome::RetrySafeFailure,
+                "audit:no-provider-receipt",
+                "t5",
+            )
+            .unwrap();
+        assert!(replay.replayed);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -6245,6 +6535,14 @@ mod tests {
                 session("session-runtime-fence", "runtime-fence"),
             )
             .unwrap();
+        store
+            .transition_agent_session(
+                &service_context("session.activate", "runtime-session-fence-active", 1),
+                "session-runtime-fence",
+                AgentSessionStatus::Active,
+                "t2",
+            )
+            .unwrap();
         let payload = serde_json::json!({
             "session_id": "session-runtime-fence",
             "session_generation": 1,
@@ -6315,6 +6613,237 @@ mod tests {
             .expect_err("superseded daemon cannot settle an effect");
         assert!(error.to_string().contains("SUPERVISOR_GENERATION_FENCED"));
         assert_eq!(store.canonical_operations().unwrap(), operations_before);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn runtime_control_rejects_missing_turn_and_active_work_without_side_effects() {
+        let (store, root) = fabric_store();
+        store
+            .create_agent_identity(
+                &context("host", "identity.create", "identity-runtime-control", 0),
+                identity("runtime-control"),
+            )
+            .unwrap();
+        store
+            .create_agent_session(
+                &service_context("session.create", "runtime-control-session", 0),
+                session("session-runtime-control", "runtime-control"),
+            )
+            .unwrap();
+
+        let daemon = ActorRef {
+            kind: ActorKind::Service,
+            id: "daemon-1".into(),
+        };
+        let cancel_payload = serde_json::json!({
+            "session_id": "session-runtime-control",
+            "session_generation": 1,
+            "delivery_id": "control-cancel",
+        });
+        let cancel = ControlCommandEnvelope {
+            id: "runtime-control-cancel".into(),
+            execution_space_id: "space-test".into(),
+            target_node_id: "11111111-1111-4111-8111-111111111111".into(),
+            target_node_daemon_id: "daemon-1".into(),
+            target_node_daemon_generation: 1,
+            authenticated_actor: daemon.clone(),
+            command: RuntimeCommandKind::CancelProviderTurn,
+            required_capability: "provider.cancel".into(),
+            idempotency_key: "runtime-control-cancel".into(),
+            expected_version: 0,
+            expires_unix_ms: current_unix_ms() + 60_000,
+            payload_fingerprint: canonical_json_fingerprint(&cancel_payload),
+            payload: cancel_payload,
+            issued_at: "t2".into(),
+        };
+        let mut cancel_context = service_context(
+            "node_daemon.provider_effect.prepare",
+            "runtime-control-cancel",
+            0,
+        );
+        cancel_context.authority_actor = Some(daemon.clone());
+        cancel_context.request_fingerprint = Some(canonical_json_fingerprint(
+            &serde_json::to_value(&cancel).unwrap(),
+        ));
+        let operations_before_cancel = store.canonical_operations().unwrap();
+        let error = store
+            .prepare_runtime_command(&cancel_context, &cancel, current_unix_ms(), "t2")
+            .expect_err("an idle session has no provider turn to cancel");
+        assert!(error.to_string().contains("exact active provider turn"));
+        assert_eq!(
+            store.canonical_operations().unwrap(),
+            operations_before_cancel
+        );
+
+        let binding = WorkExecutionBinding {
+            id: "binding-runtime-control".into(),
+            work_id: "work-runtime-control".into(),
+            work_revision: 1,
+            team_id: "team-runtime-control".into(),
+            team_membership_id: "membership-runtime-control".into(),
+            agent_identity_id: "runtime-control".into(),
+            agent_session_id: "session-runtime-control".into(),
+            agent_session_generation: 1,
+            delivery_id: "work-delivery-runtime-control".into(),
+            binding_generation: 1,
+            status: WorkExecutionBindingStatus::Active,
+            version: 1,
+            created_by: actor("host"),
+            bound_at: "t2".into(),
+            ended_at: None,
+        };
+        {
+            let _lock = store.acquire_write_lock().unwrap();
+            store
+                .commit_trust_projection_unlocked(
+                    &context("host", "binding.test_fixture", "binding-runtime-control", 0),
+                    "work_execution_binding",
+                    &binding.id,
+                    "bound",
+                    serde_json::to_value(&binding).unwrap(),
+                    &binding,
+                    Vec::new(),
+                    Vec::new(),
+                )
+                .unwrap();
+        }
+        let stop_payload = serde_json::json!({
+            "session_id": "session-runtime-control",
+            "session_generation": 1,
+            "delivery_id": "control-stop",
+        });
+        let stop = ControlCommandEnvelope {
+            id: "runtime-control-stop".into(),
+            execution_space_id: "space-test".into(),
+            target_node_id: "11111111-1111-4111-8111-111111111111".into(),
+            target_node_daemon_id: "daemon-1".into(),
+            target_node_daemon_generation: 1,
+            authenticated_actor: daemon.clone(),
+            command: RuntimeCommandKind::StopSession,
+            required_capability: "agent_session.stop".into(),
+            idempotency_key: "runtime-control-stop".into(),
+            expected_version: 0,
+            expires_unix_ms: current_unix_ms() + 60_000,
+            payload_fingerprint: canonical_json_fingerprint(&stop_payload),
+            payload: stop_payload,
+            issued_at: "t3".into(),
+        };
+        let mut stop_context = service_context(
+            "node_daemon.provider_effect.prepare",
+            "runtime-control-stop",
+            0,
+        );
+        stop_context.authority_actor = Some(daemon);
+        stop_context.request_fingerprint = Some(canonical_json_fingerprint(
+            &serde_json::to_value(&stop).unwrap(),
+        ));
+        let operations_before_stop = store.canonical_operations().unwrap();
+        let error = store
+            .prepare_runtime_command(&stop_context, &stop, current_unix_ms(), "t3")
+            .expect_err("active Work must fence Session stop");
+        assert!(error.to_string().contains("active WorkExecutionBinding"));
+        assert_eq!(
+            store.canonical_operations().unwrap(),
+            operations_before_stop
+        );
+        assert!(store.runtime_commands("space-test").unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn admitted_stop_closes_exact_session_once_and_replays_after_terminal_state() {
+        let (store, root) = fabric_store();
+        store
+            .create_agent_identity(
+                &context("host", "identity.create", "identity-runtime-stop", 0),
+                identity("runtime-stop"),
+            )
+            .unwrap();
+        store
+            .create_agent_session(
+                &service_context("session.create", "runtime-stop-session", 0),
+                session("session-runtime-stop", "runtime-stop"),
+            )
+            .unwrap();
+        store
+            .transition_agent_session(
+                &service_context("session.activate", "runtime-stop-active", 1),
+                "session-runtime-stop",
+                AgentSessionStatus::Active,
+                "t2",
+            )
+            .unwrap();
+        let daemon = ActorRef {
+            kind: ActorKind::Service,
+            id: "daemon-1".into(),
+        };
+        let payload = serde_json::json!({
+            "session_id": "session-runtime-stop",
+            "session_generation": 1,
+            "delivery_id": "stop-control",
+        });
+        let command = ControlCommandEnvelope {
+            id: "runtime-stop-command".into(),
+            execution_space_id: "space-test".into(),
+            target_node_id: "11111111-1111-4111-8111-111111111111".into(),
+            target_node_daemon_id: "daemon-1".into(),
+            target_node_daemon_generation: 1,
+            authenticated_actor: daemon.clone(),
+            command: RuntimeCommandKind::StopSession,
+            required_capability: "agent_session.stop".into(),
+            idempotency_key: "runtime-stop-once".into(),
+            expected_version: 0,
+            expires_unix_ms: current_unix_ms() + 60_000,
+            payload_fingerprint: canonical_json_fingerprint(&payload),
+            payload,
+            issued_at: "t2".into(),
+        };
+        let mut admission_context = service_context("runtime.stopsession", "runtime-stop-once", 0);
+        admission_context.authority_actor = Some(daemon);
+        admission_context.request_fingerprint = Some(canonical_json_fingerprint(
+            &serde_json::to_value(&command).unwrap(),
+        ));
+        let admitted = store
+            .prepare_runtime_command(&admission_context, &command, current_unix_ms(), "t2")
+            .unwrap();
+        store
+            .transition_agent_session(
+                &service_context("runtime.stopsession.effect", "runtime-stop-once:effect", 2),
+                "session-runtime-stop",
+                AgentSessionStatus::Closed,
+                "t3",
+            )
+            .unwrap();
+        store
+            .settle_runtime_command(
+                &service_context(
+                    "runtime.stopsession.settle",
+                    "runtime-stop-once:settle",
+                    admitted.projection.version,
+                ),
+                &command.id,
+                RuntimeCommandStatus::Applied,
+                RuntimeEffectCertainty::Applied,
+                Some(serde_json::json!({"closed": true})),
+                None,
+                "t3",
+            )
+            .unwrap();
+        let operations_before_replay = store.canonical_operations().unwrap();
+        let replay = store
+            .prepare_runtime_command(&admission_context, &command, current_unix_ms(), "t4")
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.projection.status, RuntimeCommandStatus::Applied);
+        assert_eq!(
+            store.canonical_operations().unwrap(),
+            operations_before_replay
+        );
+        assert_eq!(
+            store.fabric_agent_sessions("space-test").unwrap()[0].lifecycle,
+            AgentSessionStatus::Closed
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }

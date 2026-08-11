@@ -14,19 +14,18 @@ use firm_core::{
     NodeProjectRegistration, NodeProjectRegistrationStatus, PendingInteraction, Proposal,
     ProviderChildThread, ProviderCompatibilityAdmission, ProviderCompatibilityAdmissionLifecycle,
     ProviderCompatibilityBlockBoundary, ProviderCompatibilityBlockCause,
-    ProviderCompatibilityStatus, ProviderDispatchEvent, ProviderDispatchIntent,
-    ProviderExecutionStatus, ProviderIntegrationProfile, ProviderInteractionRequestBody,
-    ProviderInteractionResponseBody, ProviderLaunchProfile, ProviderProcess,
-    ProviderRuntimeProjection, ProviderWorkDispatch, ProviderWorkDispatchStatus,
-    ProviderWorkDispatchUpdate, RegistryDeliveryAttempt, RegistryDeliveryStatus, RegistryMessage,
-    Review, TeamActorKind, TeamDeliveryPolicy, TeamDeliveryStatus, TeamMemberCloseRequest,
-    TeamMemberCloseStatus, TeamMessageProjection, TeamRunEvent, TeamRunStatus, TeamSupervisorLease,
-    TeamSupervisorLeaseStatus, Validate, Vision, Wave, WaveGateStatus, WaveStatus, Work,
-    WorkClaimMode, WorkCommandContext, WorkCondition, WorkConditionRecord, WorkDelegation,
-    WorkDelegationEvent, WorkDelegationRevision, WorkDelegationState, WorkDelegationTransition,
-    WorkEvent, WorkEventKind, WorkEvidence, WorkOperation, WorkOperationalDecision, WorkPhase,
-    WorkRef, WorkReport, WorkResolution, WorkflowArtifactManifest, WorkflowPatch, WorkflowRun,
-    WorkflowStep,
+    ProviderCompatibilityStatus, ProviderDispatchIntent, ProviderExecutionStatus,
+    ProviderIntegrationProfile, ProviderInteractionRequestBody, ProviderInteractionResponseBody,
+    ProviderLaunchProfile, ProviderProcess, ProviderRuntimeProjection, ProviderWorkDispatch,
+    ProviderWorkDispatchStatus, ProviderWorkDispatchUpdate, RegistryDeliveryAttempt,
+    RegistryDeliveryStatus, RegistryMessage, Review, TeamActorKind, TeamDeliveryPolicy,
+    TeamDeliveryStatus, TeamMemberCloseRequest, TeamMemberCloseStatus, TeamMessageProjection,
+    TeamRunEvent, TeamRunStatus, TeamSupervisorLease, TeamSupervisorLeaseStatus, Validate, Vision,
+    Wave, WaveGateStatus, WaveStatus, Work, WorkClaimMode, WorkCommandContext, WorkCondition,
+    WorkConditionRecord, WorkDelegation, WorkDelegationEvent, WorkDelegationRevision,
+    WorkDelegationState, WorkDelegationTransition, WorkEvent, WorkEventKind, WorkEvidence,
+    WorkOperation, WorkOperationalDecision, WorkPhase, WorkRef, WorkReport, WorkResolution,
+    WorkflowArtifactManifest, WorkflowPatch, WorkflowRun, WorkflowStep,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
@@ -1064,10 +1063,6 @@ impl HarnessStore {
 
     pub fn append_runtime(&self, value: &ProviderProcess) -> StoreResult<()> {
         self.append_jsonl("provider_processes.jsonl", value)
-    }
-
-    pub fn append_event(&self, value: &ProviderDispatchEvent) -> StoreResult<()> {
-        self.append_jsonl("provider_dispatch_events.jsonl", value)
     }
 
     pub fn append_proposal(&self, value: &Proposal) -> StoreResult<()> {
@@ -7320,10 +7315,6 @@ impl HarnessStore {
 
     pub fn runtimes(&self) -> StoreResult<Vec<ProviderProcess>> {
         self.read_jsonl("provider_processes.jsonl")
-    }
-
-    pub fn events(&self) -> StoreResult<Vec<ProviderDispatchEvent>> {
-        self.read_jsonl("provider_dispatch_events.jsonl")
     }
 
     pub fn proposals(&self) -> StoreResult<Vec<Proposal>> {
