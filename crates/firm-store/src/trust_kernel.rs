@@ -87,6 +87,21 @@ fn current_unix_ms() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
+/// Fingerprint every command-authority and effect field while excluding the
+/// server observation timestamp. The timestamp is metadata generated anew at
+/// the HTTP boundary, so including it would turn an otherwise exact retry into
+/// an idempotency conflict. Expiry, actor, target generations, capability and
+/// payload remain bound and any change still conflicts.
+pub fn runtime_command_envelope_fingerprint(
+    command: &ControlCommandEnvelope,
+) -> StoreResult<String> {
+    let mut value = serde_json::to_value(command)?;
+    if let Some(object) = value.as_object_mut() {
+        object.remove("issued_at");
+    }
+    Ok(crate::canonical_json_fingerprint(&value))
+}
+
 #[derive(Debug)]
 struct ObservedWorkspaceSafety {
     canonical_root: PathBuf,
@@ -5763,7 +5778,7 @@ impl HarnessStore {
     ) -> StoreResult<CanonicalMutationResult<RuntimeCommandRecord>> {
         self.init()?;
         let _lock = self.acquire_write_lock()?;
-        let command_fingerprint = canonical_json_fingerprint(&serde_json::to_value(command)?);
+        let command_fingerprint = runtime_command_envelope_fingerprint(command)?;
         if context.request_fingerprint.as_deref() != Some(command_fingerprint.as_str()) {
             return Err(trust_error(
                 TrustErrorCode::UnauthorizedActor,
@@ -5880,7 +5895,6 @@ impl HarnessStore {
                     .as_ref()
                     .map(|session| session.runtime_generation)
             });
-        let mut atomic_side_records = Vec::new();
         if command.command != RuntimeCommandKind::AuthorMessage {
             let session = if let Some(session) = requested_start_session.as_ref() {
                 session.clone()
@@ -5925,26 +5939,10 @@ impl HarnessStore {
                 actor.kind == ActorKind::AgentMember && actor.id == session.agent_identity_id;
             let exact_operator = actor.kind == ActorKind::Service
                 && (actor.id == session.node_id || actor.id == session.node_daemon_id);
-            let memberships = self.fabric_team_memberships(&context.execution_space_id)?;
-            let target_teams = memberships
-                .iter()
-                .filter(|membership| {
-                    membership.agent_identity_id == session.agent_identity_id
-                        && membership.state == TeamMembershipStatus::Active
-                })
-                .map(|membership| membership.team_id.as_str())
-                .collect::<BTreeSet<_>>();
-            let exact_owning_host = matches!(actor.kind, ActorKind::AgentMember | ActorKind::Human)
-                && memberships.iter().any(|membership| {
-                    membership.agent_identity_id == actor.id
-                        && membership.role == firm_core::agentfirm_api::TeamMembershipRole::Host
-                        && membership.state == TeamMembershipStatus::Active
-                        && target_teams.contains(membership.team_id.as_str())
-                });
-            if !exact_self && !exact_operator && !exact_owning_host {
+            if !exact_self && !exact_operator {
                 return Err(trust_error(
                     TrustErrorCode::UnauthorizedActor,
-                    "RuntimeCommand requires exact self, owning Host, or exact machine Operator authority",
+                    "AgentSession RuntimeCommand requires exact self or exact machine NodeDaemon/Operator authority; Team Host authority is Team-scoped only",
                     "runtime_command",
                     &command.id,
                     None,
@@ -5968,30 +5966,6 @@ impl HarnessStore {
                     return Err(trust_error(
                         TrustErrorCode::UnauthorizedActor,
                         "StartSession cannot widen the frozen AgentIdentity permission ceiling",
-                        "runtime_command",
-                        &command.id,
-                        None,
-                    ));
-                }
-                let active_team_ids = self
-                    .fabric_team_memberships(&context.execution_space_id)?
-                    .into_iter()
-                    .filter(|membership| {
-                        membership.agent_identity_id == requested.agent_identity_id
-                            && membership.state == TeamMembershipStatus::Active
-                    })
-                    .map(|membership| membership.team_id)
-                    .collect::<BTreeSet<_>>();
-                let placed_nodes = self
-                    .team_runs()?
-                    .into_iter()
-                    .filter(|run| active_team_ids.contains(&run.agent_team_id))
-                    .map(|run| run.execution_node_id)
-                    .collect::<BTreeSet<_>>();
-                if placed_nodes.len() != 1 || !placed_nodes.contains(&requested.node_id) {
-                    return Err(trust_error(
-                        TrustErrorCode::UnauthorizedActor,
-                        "StartSession must use the one server-resolved active Team placement",
                         "runtime_command",
                         &command.id,
                         None,
@@ -6049,11 +6023,21 @@ impl HarnessStore {
                             Some(session.version),
                         ));
                     }
-                    for mut binding in active_bindings.clone() {
-                        binding.status = WorkExecutionBindingStatus::Released;
-                        binding.version += 1;
-                        binding.ended_at = Some(now.to_string());
-                        atomic_side_records.push(serde_json::to_value(binding)?);
+                    if !active_bindings.is_empty() {
+                        return Err(trust_error(
+                            TrustErrorCode::WorkExecutionBindingActive,
+                            format!(
+                                "AgentSession stop requires explicit release, rebind, or quiesce of active WorkExecutionBindings first: {}",
+                                active_bindings
+                                    .iter()
+                                    .map(|binding| binding.id.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            ),
+                            "agent_session",
+                            &session.id,
+                            Some(session.version),
+                        ));
                     }
                 }
                 RuntimeCommandKind::StartSession | RuntimeCommandKind::ResumeSession => {
@@ -6133,7 +6117,7 @@ impl HarnessStore {
             "accepted",
             serde_json::to_value(command)?,
             &record,
-            atomic_side_records,
+            Vec::new(),
             Vec::new(),
         )
     }
@@ -6608,9 +6592,7 @@ mod tests {
         };
         let mut context = service_context("node_daemon.runtime.prepare", id, 0);
         context.authority_actor = Some(command.authenticated_actor.clone());
-        context.request_fingerprint = Some(canonical_json_fingerprint(
-            &serde_json::to_value(&command).unwrap(),
-        ));
+        context.request_fingerprint = Some(runtime_command_envelope_fingerprint(&command).unwrap());
         (command, context)
     }
 
@@ -6674,6 +6656,119 @@ mod tests {
             joined_at: format!("t-join-{generation}"),
             left_at: None,
         }
+    }
+
+    fn append_runtime_team(store: &HarnessStore, team_id: &str, run_id: &str) {
+        store
+            .append_team_run(&firm_core::AgentTeamRun {
+                id: run_id.into(),
+                agent_team_id: team_id.into(),
+                execution_node_id: "11111111-1111-4111-8111-111111111111".into(),
+                project_binding_id: "project-1".into(),
+                previous_run_id: None,
+                host_surface: "test".into(),
+                host_thread_id: None,
+                host_actor: None,
+                host_control_mode: firm_core::HostControlMode::External,
+                objective: format!("runtime authority for {team_id}"),
+                execution_root: None,
+                status: firm_core::TeamRunStatus::Running,
+                member_run_ids: Vec::new(),
+                budget_limit_usd: None,
+                created_at: "t1".into(),
+                updated_at: "t1".into(),
+                completed_at: None,
+            })
+            .unwrap();
+    }
+
+    fn join_runtime_membership(
+        store: &HarnessStore,
+        id: &str,
+        team_id: &str,
+        identity_id: &str,
+        role: firm_core::agentfirm_api::TeamMembershipRole,
+    ) -> TeamMembership {
+        let membership = TeamMembership {
+            id: id.into(),
+            team_id: team_id.into(),
+            agent_identity_id: identity_id.into(),
+            node_id: "11111111-1111-4111-8111-111111111111".into(),
+            role,
+            state: TeamMembershipStatus::Active,
+            membership_generation: 1,
+            default_subscription_refs: Vec::new(),
+            created_by: actor("fixture-host"),
+            revision: 1,
+            joined_at: "t-join".into(),
+            left_at: None,
+        };
+        store
+            .join_team_membership(
+                &context("fixture-host", "membership.join", id, 0),
+                membership.clone(),
+            )
+            .unwrap();
+        membership
+    }
+
+    fn insert_runtime_work(
+        store: &HarnessStore,
+        id: &str,
+        team_id: &str,
+        team_run_id: &str,
+    ) -> firm_core::Work {
+        store
+            .insert_work(
+                firm_core::Work {
+                    id: id.into(),
+                    team_run_id: team_run_id.into(),
+                    team_id: Some(team_id.into()),
+                    parent_work_id: None,
+                    title: format!("runtime binding {id}"),
+                    context_markdown: "runtime authority test".into(),
+                    completion_criteria_markdown: "binding is exact".into(),
+                    phase: firm_core::WorkPhase::Open,
+                    condition: firm_core::WorkCondition::Normal,
+                    resolution: None,
+                    owner_member_id: None,
+                    active_member_run_id: None,
+                    claim_mode: firm_core::WorkClaimMode::TeamClaim,
+                    eligible_member_ids: Vec::new(),
+                    prerequisite_work_ids: Vec::new(),
+                    priority: firm_core::WorkPriority::Normal,
+                    created_by_actor: firm_core::TeamActorRef {
+                        kind: firm_core::TeamActorKind::Host,
+                        id: "fixture-host".into(),
+                        display_name: None,
+                        authn_source: Some("test".into()),
+                    },
+                    created_by_member_id: None,
+                    result_summary: None,
+                    blocker_reason: None,
+                    artifact_refs: Vec::new(),
+                    check_refs: Vec::new(),
+                    github_links: Vec::new(),
+                    version: 0,
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                },
+                firm_core::WorkCommandContext {
+                    event_id: format!("event-{id}"),
+                    performed_by_actor: firm_core::TeamActorRef {
+                        kind: firm_core::TeamActorKind::Host,
+                        id: "fixture-host".into(),
+                        display_name: None,
+                        authn_source: Some("test".into()),
+                    },
+                    authority_actor: None,
+                    causation_ref: None,
+                    idempotency_key: format!("work-{id}"),
+                    created_at: "t-work".into(),
+                    duplicate_ok: false,
+                },
+            )
+            .unwrap()
     }
 
     fn seed_membership_scope(store: &HarnessStore) {
@@ -7064,8 +7159,7 @@ mod tests {
             payload_fingerprint: fingerprint.clone(),
             issued_at: "t2".into(),
         };
-        let command_fingerprint =
-            canonical_json_fingerprint(&serde_json::to_value(&command).unwrap());
+        let command_fingerprint = runtime_command_envelope_fingerprint(&command).unwrap();
         let admission_context = MutationContext {
             execution_space_id: "space-test".into(),
             authenticated_actor: ActorRef {
@@ -7100,9 +7194,8 @@ mod tests {
         let before = store.canonical_operations().unwrap().len();
         let mut second_context = admission_context.clone();
         second_context.idempotency_key = "runtime-command-2".into();
-        second_context.request_fingerprint = Some(canonical_json_fingerprint(
-            &serde_json::to_value(&second).unwrap(),
-        ));
+        second_context.request_fingerprint =
+            Some(runtime_command_envelope_fingerprint(&second).unwrap());
         let error = store
             .prepare_runtime_command(&second_context, &second, current_unix_ms(), "t3")
             .expect_err("ambiguous accepted command fences a successor");
@@ -7186,9 +7279,8 @@ mod tests {
             kind: ActorKind::Service,
             id: "daemon-1".into(),
         });
-        admission_context.request_fingerprint = Some(canonical_json_fingerprint(
-            &serde_json::to_value(&command).unwrap(),
-        ));
+        admission_context.request_fingerprint =
+            Some(runtime_command_envelope_fingerprint(&command).unwrap());
         store
             .prepare_runtime_command(&admission_context, &command, current_unix_ms(), "t2")
             .unwrap();
@@ -7233,7 +7325,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_control_rejects_missing_turn_and_atomically_quiesces_work_on_stop() {
+    fn runtime_control_rejects_missing_turn_and_requires_explicit_binding_release_before_stop() {
         let (store, root) = fabric_store();
         store
             .create_agent_identity(
@@ -7279,9 +7371,8 @@ mod tests {
             0,
         );
         cancel_context.authority_actor = Some(daemon.clone());
-        cancel_context.request_fingerprint = Some(canonical_json_fingerprint(
-            &serde_json::to_value(&cancel).unwrap(),
-        ));
+        cancel_context.request_fingerprint =
+            Some(runtime_command_envelope_fingerprint(&cancel).unwrap());
         let operations_before_cancel = store.canonical_operations().unwrap();
         let error = store
             .prepare_runtime_command(&cancel_context, &cancel, current_unix_ms(), "t2")
@@ -7351,17 +7442,43 @@ mod tests {
             0,
         );
         stop_context.authority_actor = Some(daemon);
-        stop_context.request_fingerprint = Some(canonical_json_fingerprint(
-            &serde_json::to_value(&stop).unwrap(),
-        ));
-        let stopped = store
+        stop_context.request_fingerprint =
+            Some(runtime_command_envelope_fingerprint(&stop).unwrap());
+        let operations_before_stop = store.canonical_operations().unwrap();
+        let stop_error = store
             .prepare_runtime_command(&stop_context, &stop, current_unix_ms(), "t3")
-            .expect("StopSession atomically quiesces the exact active binding");
+            .expect_err("StopSession cannot silently rewrite an active Work binding");
+        assert!(stop_error
+            .to_string()
+            .contains("WORK_EXECUTION_BINDING_ACTIVE"));
+        assert_eq!(
+            store.canonical_operations().unwrap(),
+            operations_before_stop
+        );
+        let active = store.fabric_work_execution_bindings("space-test").unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].status, WorkExecutionBindingStatus::Active);
+
+        store
+            .release_work_execution_binding(
+                &context(
+                    "runtime-control",
+                    "work_binding.release",
+                    "binding-runtime-control-release",
+                    1,
+                ),
+                &binding.id,
+                "t-release",
+            )
+            .expect("exact owner explicitly releases the binding");
+        let stopped = store
+            .prepare_runtime_command(&stop_context, &stop, current_unix_ms(), "t4")
+            .expect("StopSession is admitted after explicit release");
         assert_eq!(stopped.projection.status, RuntimeCommandStatus::Accepted);
         let released = store.fabric_work_execution_bindings("space-test").unwrap();
         assert_eq!(released.len(), 1);
         assert_eq!(released[0].status, WorkExecutionBindingStatus::Released);
-        assert_eq!(released[0].ended_at.as_deref(), Some("t3"));
+        assert_eq!(released[0].ended_at.as_deref(), Some("t-release"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -7415,9 +7532,8 @@ mod tests {
         };
         let mut admission_context = service_context("runtime.stopsession", "runtime-stop-once", 0);
         admission_context.authority_actor = Some(daemon);
-        admission_context.request_fingerprint = Some(canonical_json_fingerprint(
-            &serde_json::to_value(&command).unwrap(),
-        ));
+        admission_context.request_fingerprint =
+            Some(runtime_command_envelope_fingerprint(&command).unwrap());
         let admitted = store
             .prepare_runtime_command(&admission_context, &command, current_unix_ms(), "t2")
             .unwrap();
@@ -7544,9 +7660,8 @@ mod tests {
             drifted.payload["operation"] = serde_json::json!(format!("{operation}-drift"));
             drifted.payload_fingerprint = canonical_json_fingerprint(&drifted.payload);
             let mut drifted_context = admission_context.clone();
-            drifted_context.request_fingerprint = Some(canonical_json_fingerprint(
-                &serde_json::to_value(&drifted).unwrap(),
-            ));
+            drifted_context.request_fingerprint =
+                Some(runtime_command_envelope_fingerprint(&drifted).unwrap());
             let conflict = store
                 .prepare_runtime_command(&drifted_context, &drifted, current_unix_ms(), "t-drift")
                 .expect_err("changed full fingerprint must conflict");
@@ -7874,9 +7989,8 @@ mod tests {
         };
         hostile_context.authenticated_actor = hostile_command.authenticated_actor.clone();
         hostile_context.authority_actor = Some(hostile_command.authenticated_actor.clone());
-        hostile_context.request_fingerprint = Some(canonical_json_fingerprint(
-            &serde_json::to_value(&hostile_command).unwrap(),
-        ));
+        hostile_context.request_fingerprint =
+            Some(runtime_command_envelope_fingerprint(&hostile_command).unwrap());
         let operations_before_hostile = store.canonical_operations().unwrap();
         let sessions_before_hostile = store.fabric_agent_sessions("space-test").unwrap();
         let commands_before_hostile = store.runtime_commands("space-test").unwrap();
@@ -7888,7 +8002,7 @@ mod tests {
                 "t-hostile",
             )
             .expect_err("an ordinary sibling Member cannot control this AgentSession");
-        assert!(error.to_string().contains("exact self, owning Host"));
+        assert!(error.to_string().contains("exact self or exact machine"));
         assert_eq!(
             store.canonical_operations().unwrap(),
             operations_before_hostile
@@ -7930,9 +8044,8 @@ mod tests {
             0,
         );
         widening_context.authority_actor = Some(widening_command.authenticated_actor.clone());
-        widening_context.request_fingerprint = Some(canonical_json_fingerprint(
-            &serde_json::to_value(&widening_command).unwrap(),
-        ));
+        widening_context.request_fingerprint =
+            Some(runtime_command_envelope_fingerprint(&widening_command).unwrap());
         let operations_before_widening = store.canonical_operations().unwrap();
         let sessions_before_widening = store.fabric_agent_sessions("space-test").unwrap();
         let commands_before_widening = store.runtime_commands("space-test").unwrap();
@@ -7957,6 +8070,290 @@ mod tests {
             store.runtime_commands("space-test").unwrap(),
             commands_before_widening
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn standalone_session_is_machine_owned_and_team_membership_is_only_an_overlay() {
+        let (store, root) = fabric_store();
+        store
+            .create_agent_identity(
+                &context("operator", "identity.create", "standalone-identity", 0),
+                identity("standalone-agent"),
+            )
+            .unwrap();
+        assert!(store
+            .fabric_team_memberships("space-test")
+            .unwrap()
+            .is_empty());
+
+        let standalone = session("session-standalone", "standalone-agent");
+        let payload = serde_json::json!({
+            "session_id": standalone.id,
+            "session_generation": standalone.runtime_generation,
+            "session": standalone,
+        });
+        let command = ControlCommandEnvelope {
+            id: "runtime-start-standalone".into(),
+            execution_space_id: "space-test".into(),
+            target_node_id: "11111111-1111-4111-8111-111111111111".into(),
+            target_node_daemon_id: "daemon-1".into(),
+            target_node_daemon_generation: 1,
+            authenticated_actor: ActorRef {
+                kind: ActorKind::Service,
+                id: "daemon-1".into(),
+            },
+            command: RuntimeCommandKind::StartSession,
+            required_capability: "agent_session.start".into(),
+            idempotency_key: "runtime-start-standalone".into(),
+            expected_version: 0,
+            expires_unix_ms: current_unix_ms() + 60_000,
+            payload_fingerprint: canonical_json_fingerprint(&payload),
+            payload,
+            issued_at: "t-start".into(),
+        };
+        let mut start_context =
+            service_context("node_daemon.runtime.prepare", "runtime-start-standalone", 0);
+        start_context.authority_actor = Some(command.authenticated_actor.clone());
+        start_context.request_fingerprint =
+            Some(runtime_command_envelope_fingerprint(&command).unwrap());
+        store
+            .prepare_runtime_command(&start_context, &command, current_unix_ms(), "t-start")
+            .expect("standalone StartSession admission does not require TeamMembership");
+        store
+            .create_agent_session(
+                &service_context("session.create", "session-standalone", 0),
+                session("session-standalone", "standalone-agent"),
+            )
+            .unwrap();
+
+        append_runtime_team(&store, "team-a", "team-run-a");
+        append_runtime_team(&store, "team-b", "team-run-b");
+        let membership_a = join_runtime_membership(
+            &store,
+            "membership-standalone-a",
+            "team-a",
+            "standalone-agent",
+            firm_core::agentfirm_api::TeamMembershipRole::Member,
+        );
+        join_runtime_membership(
+            &store,
+            "membership-standalone-b",
+            "team-b",
+            "standalone-agent",
+            firm_core::agentfirm_api::TeamMembershipRole::Member,
+        );
+        let sessions_before_leave = store.fabric_agent_sessions("space-test").unwrap();
+        let mut leave_context = context(
+            "standalone-agent",
+            "membership.leave",
+            "membership-standalone-a:leave",
+            1,
+        );
+        leave_context.authenticated_actor.kind = ActorKind::AgentMember;
+        store
+            .leave_team_membership(&leave_context, &membership_a.id, "t-leave-a")
+            .unwrap();
+        assert_eq!(
+            store.fabric_agent_sessions("space-test").unwrap(),
+            sessions_before_leave,
+            "joining or leaving Team overlays must not create, close, or rewrite the machine AgentSession"
+        );
+        assert!(store
+            .fabric_team_memberships("space-test")
+            .unwrap()
+            .iter()
+            .any(|membership| {
+                membership.team_id == "team-b"
+                    && membership.agent_identity_id == "standalone-agent"
+                    && membership.state == TeamMembershipStatus::Active
+            }));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn team_host_cannot_stop_shared_session_and_active_bindings_require_explicit_release() {
+        let (store, root) = fabric_store();
+        for identity_id in ["shared-agent", "host-a", "host-b"] {
+            store
+                .create_agent_identity(
+                    &context(
+                        "operator",
+                        "identity.create",
+                        &format!("identity-{identity_id}"),
+                        0,
+                    ),
+                    identity(identity_id),
+                )
+                .unwrap();
+        }
+        let shared_session = session("session-shared", "shared-agent");
+        store
+            .create_agent_session(
+                &service_context("session.create", "session-shared", 0),
+                shared_session.clone(),
+            )
+            .unwrap();
+        append_runtime_team(&store, "team-a", "team-run-a");
+        append_runtime_team(&store, "team-b", "team-run-b");
+        let shared_a = join_runtime_membership(
+            &store,
+            "membership-shared-a",
+            "team-a",
+            "shared-agent",
+            firm_core::agentfirm_api::TeamMembershipRole::Member,
+        );
+        let shared_b = join_runtime_membership(
+            &store,
+            "membership-shared-b",
+            "team-b",
+            "shared-agent",
+            firm_core::agentfirm_api::TeamMembershipRole::Member,
+        );
+        join_runtime_membership(
+            &store,
+            "membership-host-a",
+            "team-a",
+            "host-a",
+            firm_core::agentfirm_api::TeamMembershipRole::Host,
+        );
+        join_runtime_membership(
+            &store,
+            "membership-host-b",
+            "team-b",
+            "host-b",
+            firm_core::agentfirm_api::TeamMembershipRole::Host,
+        );
+        let work_a = insert_runtime_work(&store, "work-a", "team-a", "team-run-a");
+        let work_b = insert_runtime_work(&store, "work-b", "team-b", "team-run-b");
+        for (id, work, membership) in [
+            ("binding-a", &work_a, &shared_a),
+            ("binding-b", &work_b, &shared_b),
+        ] {
+            store
+                .bind_work_execution(
+                    &context("fixture-host", "work.bind", id, 0),
+                    WorkExecutionBinding {
+                        id: id.into(),
+                        work_id: work.id.clone(),
+                        work_revision: work.version,
+                        team_id: membership.team_id.clone(),
+                        team_membership_id: membership.id.clone(),
+                        agent_identity_id: "shared-agent".into(),
+                        agent_session_id: shared_session.id.clone(),
+                        agent_session_generation: shared_session.runtime_generation,
+                        delivery_id: format!("delivery-{id}"),
+                        binding_generation: 1,
+                        status: WorkExecutionBindingStatus::Active,
+                        version: 1,
+                        created_by: actor("fixture-host"),
+                        bound_at: "t-bound".into(),
+                        ended_at: None,
+                    },
+                )
+                .unwrap();
+        }
+
+        let (mut host_command, mut host_context) = runtime_command_fixture(
+            "runtime-host-a-stop-shared",
+            RuntimeCommandKind::StopSession,
+            &shared_session,
+            "stop_session",
+        );
+        host_command.authenticated_actor = ActorRef {
+            kind: ActorKind::AgentMember,
+            id: "host-a".into(),
+        };
+        host_context.authenticated_actor = host_command.authenticated_actor.clone();
+        host_context.authority_actor = Some(host_command.authenticated_actor.clone());
+        host_context.request_fingerprint =
+            Some(runtime_command_envelope_fingerprint(&host_command).unwrap());
+        let before_host = (
+            store.canonical_operations().unwrap(),
+            store.fabric_agent_sessions("space-test").unwrap(),
+            store.fabric_work_execution_bindings("space-test").unwrap(),
+            store.runtime_commands("space-test").unwrap(),
+        );
+        let host_error = store
+            .prepare_runtime_command(&host_context, &host_command, current_unix_ms(), "t-host-a")
+            .expect_err("Team A Host has no authority over the shared machine Session");
+        assert!(host_error
+            .to_string()
+            .contains("Team Host authority is Team-scoped"));
+        assert_eq!(
+            (
+                store.canonical_operations().unwrap(),
+                store.fabric_agent_sessions("space-test").unwrap(),
+                store.fabric_work_execution_bindings("space-test").unwrap(),
+                store.runtime_commands("space-test").unwrap(),
+            ),
+            before_host,
+            "cross-Team Host rejection must have zero canonical/session/binding/command side effects"
+        );
+
+        let (operator_command, operator_context) = runtime_command_fixture(
+            "runtime-operator-stop-bound",
+            RuntimeCommandKind::StopSession,
+            &shared_session,
+            "stop_session",
+        );
+        let before_bound_stop = (
+            store.canonical_operations().unwrap(),
+            store.fabric_agent_sessions("space-test").unwrap(),
+            store.fabric_work_execution_bindings("space-test").unwrap(),
+            store.runtime_commands("space-test").unwrap(),
+        );
+        let bound_error = store
+            .prepare_runtime_command(
+                &operator_context,
+                &operator_command,
+                current_unix_ms(),
+                "t-bound-stop",
+            )
+            .expect_err("StopSession must not auto-release cross-Team Work bindings");
+        assert!(bound_error
+            .to_string()
+            .contains("WORK_EXECUTION_BINDING_ACTIVE"));
+        assert!(bound_error
+            .to_string()
+            .contains("explicit release, rebind, or quiesce"));
+        assert_eq!(
+            (
+                store.canonical_operations().unwrap(),
+                store.fabric_agent_sessions("space-test").unwrap(),
+                store.fabric_work_execution_bindings("space-test").unwrap(),
+                store.runtime_commands("space-test").unwrap(),
+            ),
+            before_bound_stop,
+            "binding-fenced StopSession must have zero side effects"
+        );
+
+        for binding_id in ["binding-a", "binding-b"] {
+            let mut release_context = context(
+                "shared-agent",
+                "work_binding.release",
+                &format!("release-{binding_id}"),
+                1,
+            );
+            release_context.authenticated_actor.kind = ActorKind::AgentMember;
+            store
+                .release_work_execution_binding(&release_context, binding_id, "t-release")
+                .unwrap();
+        }
+        let accepted = store
+            .prepare_runtime_command(
+                &operator_context,
+                &operator_command,
+                current_unix_ms(),
+                "t-stop-after-release",
+            )
+            .expect("explicit release makes the exact StopSession admissible");
+        assert_eq!(accepted.projection.status, RuntimeCommandStatus::Accepted);
+        assert!(store
+            .fabric_work_execution_bindings("space-test")
+            .unwrap()
+            .iter()
+            .all(|binding| binding.status == WorkExecutionBindingStatus::Released));
         fs::remove_dir_all(root).unwrap();
     }
 

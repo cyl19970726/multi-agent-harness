@@ -111,10 +111,16 @@ and delivery side effects.
 The public runtime-command route accepts only closed semantic intents. It does
 not accept caller-selected capabilities, permission envelopes, provider
 profiles, or complete AgentSession payloads. For session control, the server
-resolves exact self, the active owning Host in the same Team, or the exact
-machine Operator. StartSession additionally derives the one active Team
-placement and enforces the frozen AgentIdentity permission ceiling under the
-same Store lock before any session, command, process, or provider side effect.
+resolves exact self or the exact machine Operator/NodeDaemon. Team Host
+authority is Team-scoped coordination authority and never controls the global
+machine Session. StartSession derives the local Node and active project
+registration independently of TeamMembership and enforces the frozen
+AgentIdentity permission ceiling under the same Store lock before any session,
+command, process, or provider side effect. Team join/leave does not create,
+resume, or close a Session. Likewise, Team `close-member` closes only that
+MemberRun generation and cancels its current provider turn; it leaves the
+machine-owned AgentSession available and never releases or rewrites Work
+bindings from this or another Team.
 
 ## Effect certainty and recovery
 
@@ -128,8 +134,10 @@ same Store lock before any session, command, process, or provider side effect.
 Canonical operation rows are recovered atomically. A torn prepared or settled
 tail must yield the last complete operation, never an unreadable ledger or a
 fabricated completion. A successor NodeDaemon or AgentSession cannot settle an
-older generation's command. An active WorkExecutionBinding must be explicitly
-released or atomically rebound before Session close/replacement.
+older generation's command. Every active WorkExecutionBinding that references
+a Session must be explicitly released, rebound, or quiesced before StopSession;
+rejection changes neither the Session, binding, command journal, nor provider
+process.
 
 `RecoveryRequired / Unknown` is visible in the exact Node Operator RoleView.
 Resolution is a critical confirmed action bound to command version, Node,
@@ -139,7 +147,7 @@ or remains unknown; resolution never blindly repeats the native effect.
 
 ## Provider conformance
 
-Codex, Claude, Kimi, and Pi map the same closed contracts:
+Codex, Claude, Kimi, and Pi expose separate, closed capability tuples:
 
 - requested permission must fit both the AgentIdentity ceiling and provider
   adapter capability;
@@ -150,8 +158,14 @@ Codex, Claude, Kimi, and Pi map the same closed contracts:
 - every interrupt/close path freezes an executable provider-native control
   plan before RuntimeCommand admission and settles only from the observed
   provider acknowledgement;
-- provider binary/version availability is probed explicitly; an unavailable or
-  unprovable provider is disabled and cannot be reported as conformance PASS;
+- Codex has a proven NodeDaemon-owned app-server start/resume/stop path;
+  standalone cancel remains disabled until a native turn is bound;
+- Claude, Kimi, and Pi remain disabled for standalone AgentSession lifecycle
+  until their NodeDaemon-owned handles are executable; their existing Team
+  transports do not imply global Session conformance;
+- provider binary/version availability is probed explicitly; installation alone
+  does not grant a capability, and an unavailable or unprovable provider is
+  disabled rather than reported as conformance PASS;
 - the browser cannot declare provider compatibility, permission, current turn,
   or effect success;
 - provider transcripts, tool calls, commands, files, reasoning, and child

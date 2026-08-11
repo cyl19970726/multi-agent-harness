@@ -1243,6 +1243,7 @@ pub enum TrustErrorCode {
     DeliveryReceiptMissing,
     DeliveryRecoveryUncertain,
     WorkRevisionStale,
+    WorkExecutionBindingActive,
     WorkspacePathUnsafe,
     WorkspaceRepositoryMismatch,
     WorkspaceLinkEscape,

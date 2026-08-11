@@ -99,7 +99,7 @@ if (!server.includes("target_node_daemon_generation: lease.generation")) failure
 for (const token of [
   "RuntimeStartSessionIntent",
   "runtime_control_actor_is_authorized",
-  "caller-selected StartSession Node does not match the server-resolved Team placement",
+  "caller-selected StartSession Node does not match the server-resolved local machine Node",
   "provider_availability(provider_kind)",
 ]) {
   if (!server.includes(token)) failures.push(`runtime HTTP authority is missing: ${token}`);
@@ -108,14 +108,20 @@ for (const token of [
   "ProviderControlAction",
   "NativeControlPrimitive",
   "control_plan",
-  "execute_control_plan",
+  "execute_codex_team_control",
   "provider_availability",
   "PROVIDER_CONTROL_FAILED",
 ]) {
   if (!providerAdapter.includes(token)) failures.push(`provider conformance is not executable: ${token}`);
 }
-if (!store.includes("StartSession must use the one server-resolved active Team placement")) {
-  failures.push("Store does not enforce server-resolved StartSession placement under lock");
+if (providerAdapter.includes("execute_control_plan")) {
+  failures.push("provider conformance must use concrete adapters, not an injected control closure");
+}
+if (!store.includes("AgentSession RuntimeCommand requires exact self or exact machine NodeDaemon/Operator authority; Team Host authority is Team-scoped only")) {
+  failures.push("Store does not enforce machine-scoped AgentSession control authority under lock");
+}
+if (!store.includes("AgentSession stop requires explicit release, rebind, or quiesce of active WorkExecutionBindings first")) {
+  failures.push("Store does not fence StopSession from active WorkExecutionBindings");
 }
 if (!store.includes("StartSession cannot widen the frozen AgentIdentity permission ceiling")) {
   failures.push("Store does not enforce the AgentIdentity permission ceiling");
@@ -249,6 +255,9 @@ for (const token of [
   "RecoveryRequired",
 ]) {
   if (!runtimeDoc.includes(token)) failures.push(`canonical runtime doc missing ${token}`);
+}
+if (!runtimeDoc.includes("Team `close-member` closes only that")) {
+  failures.push("canonical runtime doc does not separate Team close from machine Session stop");
 }
 for (const token of [
   "AgentIdentity -> AgentSession",

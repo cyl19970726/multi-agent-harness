@@ -275,9 +275,14 @@ Steer only when the selected Provider mode acknowledges current-turn injection;
 otherwise send a queued Message for the next safe boundary.
 
 Provider runtime controls are server-built actions, not free-form commands.
-The server binds exact self/owning Host/machine Operator authority, active Team
-placement, AgentSession and NodeDaemon generations, and the AgentIdentity
-permission ceiling. An unavailable provider is disabled. An unknown native
+The server binds exact self or exact machine Operator/NodeDaemon authority,
+machine placement, AgentSession and NodeDaemon generations, and the
+AgentIdentity permission ceiling. Team Hosts coordinate Team membership and
+Work but cannot control the global Session. Active WorkExecutionBindings must
+be explicitly released/rebound/quiesced before StopSession. An unavailable
+provider is disabled. `close-member` cancels only that Team's current provider
+turn and closes its MemberRun; it never closes the machine Session or rewrites
+bindings. An unknown native
 effect is visible as `RecoveryRequired` in the Operator view and must be
 resolved with evidence; never blindly replay it or treat a static capability
 claim as four-provider conformance.

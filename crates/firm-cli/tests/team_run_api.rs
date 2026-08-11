@@ -5545,6 +5545,32 @@ fn close_cancels_kimi_provider_request_without_resuming_member() {
         .expect("closed member remains visible");
     assert_eq!(latest["coordination_status"].as_str(), Some("closed"));
     assert_eq!(latest["status"].as_str(), Some("stopped"));
+    let agent_identity_id = latest["agent_member_id"]
+        .as_str()
+        .expect("member carries canonical AgentIdentity")
+        .to_string();
+    let session = snapshot["agent_sessions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|session| session["agent_identity_id"].as_str() == Some(agent_identity_id.as_str()))
+        .expect("Team close preserves the machine-owned AgentSession");
+    assert_eq!(
+        session["lifecycle"].as_str(),
+        Some("idle"),
+        "Team close quiesces only its provider turn"
+    );
+    assert!(
+        snapshot["work_execution_bindings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|binding| {
+                binding["agent_identity_id"].as_str() == Some(agent_identity_id.as_str())
+                    && binding["status"].as_str() == Some("active")
+            }),
+        "Team close must not silently release a WorkExecutionBinding"
+    );
     assert!(snapshot["pending_interactions"]
         .as_array()
         .is_some_and(Vec::is_empty));
@@ -5576,6 +5602,7 @@ fn close_cancels_kimi_provider_request_without_resuming_member() {
         "pending_interactions.jsonl",
         "member_actions.jsonl",
         "team_run_events.jsonl",
+        "canonical_operations.jsonl",
     ];
     let ledger_bytes = |name: &str| std::fs::read(store_root.join(name)).unwrap_or_default();
     let before_replay = ledgers

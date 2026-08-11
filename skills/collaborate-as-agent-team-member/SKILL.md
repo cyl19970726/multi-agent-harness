@@ -333,15 +333,19 @@ destructive external actions without the applicable authority.
 - Steer changes a current turn only when the Provider acknowledges it.
 - Queued Message affects the next safe boundary, not the current turn.
 - Interrupt stops one current turn; it does not close the Member.
-- Close freezes coordination and releases the managed runtime.
+- Close freezes this Team's MemberRun and cancels its current provider turn;
+  it does not close the machine-owned AgentSession or release Work bindings.
 - Reopen resumes the exact compatible native session under a new runtime
   generation after delivery reconciliation.
 - Retire is permanent; unfinished Work must be reassigned or cancelled.
 
 Runtime control never accepts a Member-authored capability, permission
 envelope, provider profile, AgentSession object, or target placement. The
-server resolves exact self/owning Host/machine Operator authority and the
-AgentIdentity ceiling. If a provider is unavailable or cannot prove the native
+server resolves exact self or exact machine Operator/NodeDaemon authority and
+the AgentIdentity ceiling. A Team Host cannot control the global Session;
+TeamMembership join/leave also cannot create or close it. StopSession fails
+closed while any active WorkExecutionBinding references the Session. If a
+provider is unavailable or cannot prove the native
 interrupt/close acknowledgement, the command fails closed or remains
 `RecoveryRequired`; never report it as completed or retry an unknown effect.
 

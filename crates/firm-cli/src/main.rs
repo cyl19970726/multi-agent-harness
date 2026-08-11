@@ -17474,9 +17474,7 @@ fn prepare_provider_effect_kind(
         payload_fingerprint: payload_fingerprint.clone(),
         issued_at: now_string(),
     };
-    let command_fingerprint = harness_store::canonical_json_fingerprint(
-        &serde_json::to_value(&command).map_err(CliError::Json)?,
-    );
+    let command_fingerprint = harness_store::runtime_command_envelope_fingerprint(&command)?;
     let admission_context = harness_core::agentfirm_api::MutationContext {
         execution_space_id: execution_space_id.clone(),
         authenticated_actor: daemon_actor.clone(),
@@ -17539,86 +17537,6 @@ fn prepare_provider_effect(
         harness_core::agentfirm_api::RuntimeCommandKind::DispatchProvider,
         "provider.dispatch",
     )
-}
-
-fn prepare_provider_control_effect(
-    ledger: &TeamRunLedger,
-    member: &ProviderRuntimeProjection,
-    source_record_id: &str,
-    reason: &str,
-    close: bool,
-) -> CliResult<ProviderEffectAdmission> {
-    // Freeze a provider-native executable control plan before durable
-    // admission. Unknown or unproved adapters fail closed and cannot create a
-    // RuntimeCommand that no provider loop can truthfully execute.
-    let control_plan = crate::provider_adapter::control_plan(
-        &member.provider,
-        if close {
-            crate::provider_adapter::ProviderControlAction::CloseSession
-        } else {
-            crate::provider_adapter::ProviderControlAction::CancelProviderTurn
-        },
-    )
-    .map_err(CliError::Usage)?;
-    let mut admission = prepare_provider_effect_kind(
-        ledger,
-        member,
-        source_record_id,
-        reason,
-        if close {
-            harness_core::agentfirm_api::RuntimeCommandKind::StopSession
-        } else {
-            harness_core::agentfirm_api::RuntimeCommandKind::CancelProviderTurn
-        },
-        if close {
-            "agent_session.stop"
-        } else {
-            "provider.cancel"
-        },
-    )?;
-    admission.control_plan = Some(control_plan);
-    Ok(admission)
-}
-
-fn execute_provider_control_effect(
-    ledger: &TeamRunLedger,
-    member: &ProviderRuntimeProjection,
-    source_record_id: &str,
-    reason: &str,
-    close: bool,
-    effect: impl FnOnce() -> CliResult<()>,
-) -> CliResult<()> {
-    let admission =
-        match prepare_provider_control_effect(ledger, member, source_record_id, reason, close) {
-            Ok(admission) => admission,
-            Err(CliError::Usage(detail))
-                if detail.starts_with("RUNTIME_COMMAND_REPLAY_APPLIED:") =>
-            {
-                return Ok(())
-            }
-            Err(error) => return Err(error),
-        };
-    let plan = admission.control_plan.as_ref().ok_or_else(|| {
-        CliError::Usage("PROVIDER_CONTROL_UNPROVEN: missing frozen control plan".into())
-    })?;
-    match crate::provider_adapter::execute_control_plan(plan, |_| {
-        effect().map_err(|error| error.to_string())
-    }) {
-        Ok(()) => settle_provider_effect(
-            ledger,
-            &admission,
-            true,
-            Some(serde_json::json!({
-                "control": if close { "close" } else { "interrupt" },
-                "provider_ack": "accepted",
-            })),
-            None,
-        ),
-        Err(error) => {
-            settle_provider_effect(ledger, &admission, false, None, Some(error.clone()))?;
-            Err(CliError::Usage(error))
-        }
-    }
 }
 
 fn settle_provider_effect(
@@ -17753,9 +17671,7 @@ fn prepare_provider_process_effect(
         payload_fingerprint: fingerprint.clone(),
         issued_at: now_string(),
     };
-    let command_fingerprint = harness_store::canonical_json_fingerprint(
-        &serde_json::to_value(&command).map_err(CliError::Json)?,
-    );
+    let command_fingerprint = harness_store::runtime_command_envelope_fingerprint(&command)?;
     let context = harness_core::agentfirm_api::MutationContext {
         execution_space_id,
         authenticated_actor: daemon_actor.clone(),
@@ -17884,6 +17800,7 @@ fn transition_provider_session_for_member(
         (AgentSessionStatus::Active, AgentSessionStatus::Idle)
         | (AgentSessionStatus::Cold, AgentSessionStatus::Idle)
         | (AgentSessionStatus::Waiting, AgentSessionStatus::Idle)
+        | (AgentSessionStatus::Interrupted, AgentSessionStatus::Idle)
         | (AgentSessionStatus::Idle, AgentSessionStatus::Active) => vec![desired],
         _ => {
             return Err(CliError::Usage(format!(
@@ -20212,58 +20129,24 @@ fn stop_member_for_latched_close(
             member_row.id, close.team_run_id, ledger.run_id
         )));
     }
-    let mut closed_sessions = Vec::new();
-    for space_id in ledger.store.canonical_execution_space_ids()? {
-        for session in ledger
-            .store
-            .fabric_agent_sessions(&space_id)?
-            .into_iter()
-            .filter(|session| {
-                session.agent_identity_id == member_row.agent_member_id
-                    && session.runtime_generation == member_row.runtime_generation
-                    && session.lifecycle == harness_core::agentfirm_api::AgentSessionStatus::Closed
-            })
-        {
-            closed_sessions.push((space_id.clone(), session));
-        }
+    let session = require_provider_session_authority(ledger, &member_row.agent_member_id, false)?;
+    if session.lifecycle == harness_core::agentfirm_api::AgentSessionStatus::Active
+        && session.current_turn_id.is_some()
+    {
+        return Err(CliError::Usage(format!(
+            "RUNTIME_COMMAND_RECOVERY_REQUIRED: latched Team close {} found an active provider turn without its owning live adapter",
+            close.id
+        )));
     }
-    let already_applied = match closed_sessions.as_slice() {
-        [] => false,
-        [(space_id, session)] => {
-            ledger
-                .store
-                .runtime_commands(space_id)?
-                .into_iter()
-                .any(|command| {
-                    command.command == harness_core::agentfirm_api::RuntimeCommandKind::StopSession
-                        && command.target_session_id.as_deref() == Some(session.id.as_str())
-                        && command.target_session_generation == Some(session.runtime_generation)
-                        && command.status
-                            == harness_core::agentfirm_api::RuntimeCommandStatus::Applied
-                        && command.effect_certainty
-                            == harness_core::agentfirm_api::RuntimeEffectCertainty::Applied
-                })
-        }
-        _ => {
-            return Err(CliError::Usage(
-                "AGENT_SESSION_AMBIGUOUS: close recovery found multiple closed session projections"
-                    .into(),
-            ))
-        }
-    };
-    if !already_applied {
-        execute_provider_control_effect(
-            ledger,
-            member_row,
-            &format!("latched-close:{}", close.id),
-            &close.reason,
-            true,
-            || Ok(()),
-        )?;
+    // A pre-spawn/capacity close has no provider effect to journal. A close
+    // racing an active turn is admitted above as CancelProviderTurn. In both
+    // cases the Team lifecycle may only quiesce the machine-owned Session; it
+    // cannot stop it or rewrite another Team's bindings.
+    if session.lifecycle != harness_core::agentfirm_api::AgentSessionStatus::Idle {
         transition_provider_session_for_member(
             ledger,
             member_row,
-            harness_core::agentfirm_api::AgentSessionStatus::Closed,
+            harness_core::agentfirm_api::AgentSessionStatus::Idle,
         )?;
     }
     // Close ends this runtime generation: a delivery claimed by this member
@@ -22433,6 +22316,8 @@ fn run_codex_member(
             member_name: &member.name,
             collaboration_env: &collaboration_env,
             plan_mode: false,
+            sandbox: None,
+            approval_policy: None,
         },
     );
     let mut app_server = match app_server_result {
@@ -22720,7 +22605,7 @@ fn run_codex_member(
                 transition_provider_session_for_member(
                     ledger,
                     &member_row,
-                    harness_core::agentfirm_api::AgentSessionStatus::Closed,
+                    harness_core::agentfirm_api::AgentSessionStatus::Idle,
                 )?;
                 member_row.coordination_status = MemberCoordinationStatus::Closed;
             }
@@ -23114,13 +22999,14 @@ fn run_codex_app_server_turn(
                     requested_by,
                     reply,
                 } => {
-                    let result = execute_provider_control_effect(
+                    let result = crate::provider_adapter::execute_codex_team_control(
                         ledger,
                         member,
                         &format!("codex-interrupt:{turn_id}"),
                         &reason,
                         false,
-                        || client.interrupt(&turn_id),
+                        client,
+                        &turn_id,
                     )
                     .and_then(|()| {
                         interrupt_requested = true;
@@ -23144,13 +23030,14 @@ fn run_codex_app_server_turn(
                     requested_by,
                     reply,
                 } => {
-                    let result = execute_provider_control_effect(
+                    let result = crate::provider_adapter::execute_codex_team_control(
                         ledger,
                         member,
                         &format!("codex-close:{turn_id}"),
                         &reason,
                         true,
-                        || client.interrupt(&turn_id),
+                        client,
+                        &turn_id,
                     )
                     .and_then(|()| {
                         interrupt_requested = true;
@@ -23306,13 +23193,14 @@ fn run_codex_app_server_turn(
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 if last_activity.elapsed() >= idle_timeout {
-                    execute_provider_control_effect(
+                    crate::provider_adapter::execute_codex_team_control(
                         ledger,
                         member,
                         &format!("codex-timeout:{turn_id}"),
                         "provider turn idle timeout",
                         false,
-                        || client.interrupt(&turn_id),
+                        client,
+                        &turn_id,
                     )?;
                     interrupt_requested = true;
                     last_activity = Instant::now();
@@ -23722,7 +23610,7 @@ fn run_claude_agent_sdk_team_member(
                         })));
                         continue;
                     }
-                    let control_effect = prepare_provider_control_effect(
+                    let control_effect = crate::provider_adapter::prepare_team_control_effect(
                         ledger,
                         &member_row,
                         &format!("claude-interrupt:{}:{}", member.id, round),
@@ -23768,7 +23656,7 @@ fn run_claude_agent_sdk_team_member(
                     requested_by,
                     reply,
                 } => {
-                    let control_effect = prepare_provider_control_effect(
+                    let control_effect = crate::provider_adapter::prepare_team_control_effect(
                         ledger,
                         &member_row,
                         &format!("claude-close:{}:{}", member.id, round),
@@ -24113,7 +24001,7 @@ fn run_claude_agent_sdk_team_member(
                     transition_provider_session_for_member(
                         ledger,
                         &member_row,
-                        harness_core::agentfirm_api::AgentSessionStatus::Closed,
+                        harness_core::agentfirm_api::AgentSessionStatus::Idle,
                     )?;
                     ledger.append_action(
                         &member.id,
@@ -25003,13 +24891,14 @@ fn run_kimi_member(
                                 requested_by,
                                 reply,
                             } => {
-                                let control_effect = prepare_provider_control_effect(
-                                    ledger,
-                                    &member_row,
-                                    &format!("kimi-interrupt:{}:{round}", member.id),
-                                    &reason,
-                                    false,
-                                )?;
+                                let control_effect =
+                                    crate::provider_adapter::prepare_team_control_effect(
+                                        ledger,
+                                        &member_row,
+                                        &format!("kimi-interrupt:{}:{round}", member.id),
+                                        &reason,
+                                        false,
+                                    )?;
                                 pending_control_effect = Some((control_effect, false));
                                 ledger.append_action(
                                     &member.id,
@@ -25034,13 +24923,14 @@ fn run_kimi_member(
                                 requested_by,
                                 reply,
                             } => {
-                                let control_effect = prepare_provider_control_effect(
-                                    ledger,
-                                    &member_row,
-                                    &format!("kimi-close:{}:{round}", member.id),
-                                    &reason,
-                                    true,
-                                )?;
+                                let control_effect =
+                                    crate::provider_adapter::prepare_team_control_effect(
+                                        ledger,
+                                        &member_row,
+                                        &format!("kimi-close:{}:{round}", member.id),
+                                        &reason,
+                                        true,
+                                    )?;
                                 pending_control_effect = Some((control_effect, true));
                                 ledger.append_action(
                                     &member.id,
@@ -25160,7 +25050,7 @@ fn run_kimi_member(
             transition_provider_session_for_member(
                 ledger,
                 &member_row,
-                harness_core::agentfirm_api::AgentSessionStatus::Closed,
+                harness_core::agentfirm_api::AgentSessionStatus::Idle,
             )?;
             let expected = member_row.clone();
             member_row.coordination_status = MemberCoordinationStatus::Closed;
@@ -25186,7 +25076,7 @@ fn run_kimi_member(
                 transition_provider_session_for_member(
                     ledger,
                     &member_row,
-                    harness_core::agentfirm_api::AgentSessionStatus::Closed,
+                    harness_core::agentfirm_api::AgentSessionStatus::Idle,
                 )?;
                 member_row.coordination_status = MemberCoordinationStatus::Closed;
             }
@@ -25731,7 +25621,7 @@ fn run_pi_team_member(
                     while let Ok(command) = live_control.try_recv() {
                         match command {
                             MemberControlCommand::Close { reason, .. } => {
-                                match prepare_provider_control_effect(
+                                match crate::provider_adapter::prepare_team_control_effect(
                                     ledger,
                                     &member_row,
                                     &format!("pi-close:{}:{round}", member.id),
@@ -25746,7 +25636,7 @@ fn run_pi_team_member(
                                 return (true, true);
                             }
                             MemberControlCommand::Interrupt { reason, .. } => {
-                                match prepare_provider_control_effect(
+                                match crate::provider_adapter::prepare_team_control_effect(
                                     ledger,
                                     &member_row,
                                     &format!("pi-interrupt:{}:{round}", member.id),
@@ -25838,7 +25728,7 @@ fn run_pi_team_member(
                 transition_provider_session_for_member(
                     ledger,
                     &member_row,
-                    harness_core::agentfirm_api::AgentSessionStatus::Closed,
+                    harness_core::agentfirm_api::AgentSessionStatus::Idle,
                 )?;
                 member_row.coordination_status = MemberCoordinationStatus::Closed;
             }
@@ -28738,14 +28628,12 @@ fn runtime_command_capability(
 }
 
 fn runtime_control_actor_is_authorized(
-    store: &HarnessStore,
-    execution_space_id: &str,
     actor: &harness_core::agentfirm_api::ActorRef,
     target_identity_id: &str,
     target_node_id: &str,
     target_daemon_id: &str,
 ) -> Result<bool, StoreError> {
-    use harness_core::agentfirm_api::{ActorKind, TeamMembershipRole, TeamMembershipStatus};
+    use harness_core::agentfirm_api::ActorKind;
     if actor.kind == ActorKind::AgentMember && actor.id == target_identity_id {
         return Ok(true);
     }
@@ -28754,24 +28642,7 @@ fn runtime_control_actor_is_authorized(
     {
         return Ok(true);
     }
-    if !matches!(actor.kind, ActorKind::AgentMember | ActorKind::Human) {
-        return Ok(false);
-    }
-    let memberships = store.fabric_team_memberships(execution_space_id)?;
-    let target_teams = memberships
-        .iter()
-        .filter(|membership| {
-            membership.agent_identity_id == target_identity_id
-                && membership.state == TeamMembershipStatus::Active
-        })
-        .map(|membership| membership.team_id.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    Ok(memberships.iter().any(|membership| {
-        membership.agent_identity_id == actor.id
-            && membership.role == TeamMembershipRole::Host
-            && membership.state == TeamMembershipStatus::Active
-            && target_teams.contains(membership.team_id.as_str())
-    }))
+    Ok(false)
 }
 
 fn resolve_agentfirm_http_credential(
@@ -29082,32 +28953,11 @@ fn handle_http_connection(
                     .into_iter()
                     .find(|identity| identity.id == intent.agent_identity_id)
                     .ok_or_else(|| CliError::Usage("AGENT_IDENTITY_NOT_FOUND".into()))?;
-                let membership_team_ids = store_owned
-                    .fabric_team_memberships(&project_id)?
-                    .into_iter()
-                    .filter(|membership| {
-                        membership.agent_identity_id == identity.id
-                            && membership.state
-                                == harness_core::agentfirm_api::TeamMembershipStatus::Active
-                    })
-                    .map(|membership| membership.team_id)
-                    .collect::<std::collections::BTreeSet<_>>();
-                let target_nodes = store_owned
-                    .team_runs()?
-                    .into_iter()
-                    .filter(|run| membership_team_ids.contains(&run.agent_team_id))
-                    .map(|run| run.execution_node_id)
-                    .collect::<std::collections::BTreeSet<_>>();
-                let target_node_id = if target_nodes.len() == 1 {
-                    target_nodes.into_iter().next().expect("one target Node")
-                } else {
-                    write_http_json(
-                        &mut stream,
-                        "409 Conflict",
-                        &serde_json::json!({"ok":false,"error":{"code":"IDENTITY_CONFLICT","message":format!("StartSession requires one server-resolved active Team placement; found {} Nodes",target_nodes.len())}}),
-                    )?;
-                    return Ok(());
-                };
+                // AgentSession placement is machine runtime truth, independent
+                // of TeamMembership. This machine's immutable Node identity
+                // and active project registration are the server-resolved
+                // placement; Team joins/leaves never create or close it.
+                let target_node_id = read_local_node_id()?;
                 if request
                     .target_node_id
                     .as_deref()
@@ -29116,7 +28966,7 @@ fn handle_http_connection(
                     write_http_json(
                         &mut stream,
                         "403 Forbidden",
-                        &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":"caller-selected StartSession Node does not match the server-resolved Team placement"}}),
+                        &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":"caller-selected StartSession Node does not match the server-resolved local machine Node"}}),
                     )?;
                     return Ok(());
                 }
@@ -29162,6 +29012,11 @@ fn handle_http_connection(
                         "key":idempotency_key,
                     }))
                 );
+                // Session identity and its replay fingerprint must not depend
+                // on a newly sampled HTTP wall clock. The durable command
+                // record carries real accepted/settled timestamps; these
+                // projection fields bind the immutable start request.
+                let session_observed_at = format!("runtime-command:{}", idempotency_key);
                 let session = AgentSession {
                     id: session_id.clone(),
                     agent_identity_id: identity.id.clone(),
@@ -29182,8 +29037,8 @@ fn handle_http_connection(
                     current_turn_id: None,
                     queued_input_count: 0,
                     version: 1,
-                    opened_at: now.clone(),
-                    last_active_at: now.clone(),
+                    opened_at: session_observed_at.clone(),
+                    last_active_at: session_observed_at,
                     closed_at: None,
                 };
                 (
@@ -29282,8 +29137,6 @@ fn handle_http_connection(
             let mut resolved = None;
             for actor in authority_candidates {
                 if runtime_control_actor_is_authorized(
-                    &store_owned,
-                    &project_id,
                     &actor,
                     identity_id,
                     &target_node_id,
@@ -29297,7 +29150,7 @@ fn handle_http_connection(
                 write_http_json(
                     &mut stream,
                     "403 Forbidden",
-                    &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":"credential is not exact self, owning Host, or exact machine Operator for the target AgentSession"}}),
+                    &serde_json::json!({"ok":false,"error":{"code":"UNAUTHORIZED_ACTOR","message":"credential is not exact self or exact machine Operator/NodeDaemon for the target AgentSession; Team Host authority is Team-scoped"}}),
                 )?;
                 return Ok(());
             };
