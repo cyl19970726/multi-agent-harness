@@ -17,6 +17,7 @@ pub mod protocol;
 pub mod reconcile;
 pub mod router;
 pub mod store;
+pub mod transport;
 
 pub use artifacts::{ArtifactKeyBackend, InMemoryArtifactKeyBackend};
 pub use control_plane::ControlPlane;
