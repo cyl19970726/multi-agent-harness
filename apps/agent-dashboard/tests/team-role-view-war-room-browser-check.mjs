@@ -94,8 +94,11 @@ try {
     await page.getByText("completed",{exact:true}).waitFor();
     await page.locator('[data-member-capacity="member-roleview-1"]').getByText(/^running/).waitFor();
     await page.getByRole("button",{name:"Open Host Console"}).click();
-    await page.getByRole("button",{name:"close member run"}).waitFor();
-    await page.screenshot({path:join(evidenceDir,"war-room-completed-live-runtime--1440x1000.png"),animations:"disabled",fullPage:true});
+    const closeMember=page.getByRole("button",{name:"close member run"});
+    await closeMember.waitFor();
+    await page.screenshot({path:join(evidenceDir,"war-room-completed-live-runtime--1440x1000.png"),animations:"disabled"});
+    await closeMember.scrollIntoViewIfNeeded();
+    await page.screenshot({path:join(evidenceDir,"war-room-completed-live-runtime-close--1440x1000.png"),animations:"disabled"});
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth),true,"completed/live runtime view overflows");
     await page.close();
   }

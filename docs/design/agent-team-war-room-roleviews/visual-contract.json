@@ -29,6 +29,7 @@
     {"id":"work-details-desktop","viewport":{"width":1440,"height":1000},"artifact":"docs/design/agent-team-war-room-roleviews/implemented/war-room-work-details--1440x1000.png","status":"captured"},
     {"id":"contextual-work-actions-desktop","viewport":{"width":1440,"height":1000},"artifact":"docs/design/agent-team-war-room-roleviews/implemented/war-room-contextual-work-actions--1440x1000.png","status":"captured"},
     {"id":"completed-run-live-runtime-desktop","viewport":{"width":1440,"height":1000},"artifact":"docs/design/agent-team-war-room-roleviews/implemented/war-room-completed-live-runtime--1440x1000.png","status":"captured"},
+    {"id":"completed-run-live-runtime-close-desktop","viewport":{"width":1440,"height":1000},"artifact":"docs/design/agent-team-war-room-roleviews/implemented/war-room-completed-live-runtime-close--1440x1000.png","status":"captured"},
     {"id":"useful-empty-desktop","viewport":{"width":1440,"height":1000},"artifact":"docs/design/agent-team-war-room-roleviews/implemented/war-room-empty--1440x1000.png","status":"captured"},
     {"id":"useful-empty-mobile","viewport":{"width":390,"height":844},"artifact":"docs/design/agent-team-war-room-roleviews/implemented/war-room-empty--390x844.png","status":"captured"},
     {"id":"useful-empty-overflow-320","viewport":{"width":320,"height":844},"artifact":"docs/design/agent-team-war-room-roleviews/implemented/war-room-empty--320x844.png","status":"captured"},
