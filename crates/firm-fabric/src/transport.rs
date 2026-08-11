@@ -1,5 +1,7 @@
 use crate::protocol::{FabricError, FabricErrorCode, FabricFrame};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::server::WebPkiClientVerifier;
+use rustls::{ServerConnection, StreamOwned};
 use std::fs::File;
 use std::io::BufReader;
 use std::net::{TcpStream, ToSocketAddrs};
@@ -72,6 +74,24 @@ pub struct NodeTlsIdentityFiles {
     pub control_plane_ca_pem: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlPlaneTlsFiles {
+    pub server_certificate_chain_pem: PathBuf,
+    pub server_private_key_pem: PathBuf,
+    pub node_ca_pem: PathBuf,
+}
+
+impl ControlPlaneTlsFiles {
+    pub fn validate(&self) -> Result<(), FabricError> {
+        NodeTlsIdentityFiles {
+            client_certificate_chain_pem: self.server_certificate_chain_pem.clone(),
+            client_private_key_pem: self.server_private_key_pem.clone(),
+            control_plane_ca_pem: self.node_ca_pem.clone(),
+        }
+        .validate()
+    }
+}
+
 impl NodeTlsIdentityFiles {
     pub fn validate(&self) -> Result<(), FabricError> {
         for (label, path) in [
@@ -92,6 +112,7 @@ impl NodeTlsIdentityFiles {
 }
 
 pub type NodeGatewaySocket = WebSocket<MaybeTlsStream<TcpStream>>;
+pub type ControlPlaneGatewaySocket = WebSocket<StreamOwned<ServerConnection, TcpStream>>;
 
 /// Establish the only permitted collaboration connection: an outbound WSS
 /// socket authenticated with TLS 1.3, exact hostname verification, a client
@@ -135,13 +156,32 @@ pub fn connect_outbound_mtls(
         .host()
         .ok_or_else(|| transport_error("gateway URL has no hostname"))?;
     let port = uri.port_u16().unwrap_or(443);
-    let address = (host, port)
+    let addresses = (host, port)
         .to_socket_addrs()
         .map_err(|error| transport_error(format!("gateway DNS failed: {error}")))?
-        .next()
-        .ok_or_else(|| transport_error("gateway DNS returned no address"))?;
-    let tcp = TcpStream::connect(address)
-        .map_err(|error| transport_error(format!("gateway TCP connect failed: {error}")))?;
+        .collect::<Vec<_>>();
+    if addresses.is_empty() {
+        return Err(transport_error("gateway DNS returned no address"));
+    }
+    let mut last_error = None;
+    let mut connected = None;
+    for address in addresses {
+        match TcpStream::connect(address) {
+            Ok(stream) => {
+                connected = Some(stream);
+                break;
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    let tcp = connected.ok_or_else(|| {
+        transport_error(format!(
+            "gateway TCP connect failed: {}",
+            last_error
+                .map(|error| error.to_string())
+                .unwrap_or_else(|| "no reachable address".into())
+        ))
+    })?;
     tcp.set_nodelay(true)
         .map_err(|error| transport_error(format!("gateway TCP setup failed: {error}")))?;
     let (socket, response) = tungstenite::client_tls_with_config(
@@ -163,6 +203,73 @@ pub fn connect_outbound_mtls(
         ));
     }
     Ok(socket)
+}
+
+/// Accept one Control Plane-side WSS connection. TLS client authentication is
+/// completed before the HTTP upgrade; the returned peer identity comes only
+/// from the verified certificate, never from NodeHello JSON.
+pub fn accept_control_plane_mtls(
+    tcp: TcpStream,
+    identity: &ControlPlaneTlsFiles,
+) -> Result<(ControlPlaneGatewaySocket, crate::pki::PeerNodeIdentity), FabricError> {
+    identity.validate()?;
+    let mut roots = rustls::RootCertStore::empty();
+    for certificate in read_certificates(&identity.node_ca_pem)? {
+        roots
+            .add(certificate)
+            .map_err(|error| transport_error(format!("Node client CA is invalid: {error}")))?;
+    }
+    if roots.is_empty() {
+        return Err(transport_error("Node client CA contains no certificate"));
+    }
+    let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
+        .build()
+        .map_err(|error| transport_error(format!("Node client verifier is invalid: {error}")))?;
+    let server = rustls::ServerConfig::builder()
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(
+            read_certificates(&identity.server_certificate_chain_pem)?,
+            read_private_key(&identity.server_private_key_pem)?,
+        )
+        .map_err(|error| {
+            transport_error(format!("Control Plane TLS identity is invalid: {error}"))
+        })?;
+    let connection = ServerConnection::new(Arc::new(server))
+        .map_err(|error| transport_error(format!("Control Plane TLS setup failed: {error}")))?;
+    let tls = StreamOwned::new(connection, tcp);
+    let socket = tungstenite::accept_hdr(
+        tls,
+        |request: &tungstenite::handshake::server::Request,
+         mut response: tungstenite::handshake::server::Response| {
+            if request.uri().path() != FABRIC_GATEWAY_PATH
+                || request
+                    .headers()
+                    .get(SEC_WEBSOCKET_PROTOCOL)
+                    .and_then(|value| value.to_str().ok())
+                    != Some(FABRIC_WEBSOCKET_SUBPROTOCOL)
+            {
+                let rejection = tungstenite::http::Response::builder()
+                    .status(tungstenite::http::StatusCode::BAD_REQUEST)
+                    .body(Some("Remote Fabric path/subprotocol mismatch".into()))
+                    .expect("static rejection response");
+                return Err(rejection);
+            }
+            response.headers_mut().insert(
+                SEC_WEBSOCKET_PROTOCOL,
+                tungstenite::http::HeaderValue::from_static(FABRIC_WEBSOCKET_SUBPROTOCOL),
+            );
+            Ok(response)
+        },
+    )
+    .map_err(|error| transport_error(format!("Control Plane WebSocket upgrade failed: {error}")))?;
+    let certificate = socket
+        .get_ref()
+        .conn
+        .peer_certificates()
+        .and_then(|certificates| certificates.first())
+        .ok_or_else(|| transport_error("verified Node client certificate is unavailable"))?;
+    let peer = crate::pki::parse_peer_node_identity(certificate)?;
+    Ok((socket, peer))
 }
 
 fn read_certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>, FabricError> {
@@ -293,4 +400,44 @@ pub fn decode_frame(bytes: &[u8]) -> Result<FabricFrame, FabricError> {
     })?;
     frame.validate()?;
     Ok(frame)
+}
+
+pub fn write_frame<S: std::io::Read + std::io::Write>(
+    socket: &mut WebSocket<S>,
+    frame: &FabricFrame,
+) -> Result<(), FabricError> {
+    let encoded = encode_frame(frame)?;
+    socket
+        .send(tungstenite::Message::Binary(encoded.into()))
+        .map_err(|error| transport_error(format!("Fabric frame send failed: {error}")))
+}
+
+pub fn read_frame<S: std::io::Read + std::io::Write>(
+    socket: &mut WebSocket<S>,
+) -> Result<FabricFrame, FabricError> {
+    loop {
+        let message = socket
+            .read()
+            .map_err(|error| transport_error(format!("Fabric frame read failed: {error}")))?;
+        match message {
+            tungstenite::Message::Binary(bytes) => return decode_frame(&bytes),
+            tungstenite::Message::Text(text) => return decode_frame(text.as_bytes()),
+            tungstenite::Message::Ping(payload) => socket
+                .send(tungstenite::Message::Pong(payload))
+                .map_err(|error| transport_error(format!("Fabric pong failed: {error}")))?,
+            tungstenite::Message::Pong(_) => {}
+            tungstenite::Message::Close(_) => {
+                return Err(FabricError::none(
+                    FabricErrorCode::TargetOffline,
+                    "Fabric peer closed before the next frame",
+                ))
+            }
+            tungstenite::Message::Frame(_) => {
+                return Err(FabricError::none(
+                    FabricErrorCode::ProtocolIncompatible,
+                    "raw WebSocket frames are not an application message",
+                ))
+            }
+        }
+    }
 }

@@ -19,6 +19,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "1"
+time = "0.3"
 chacha20poly1305 = "0.10"
 ed25519-dalek = "2"
 fs2 = "0.4"
@@ -26,5 +27,7 @@ hmac = "0.12"
 rustls = "0.23"
 rustls-pemfile = "2"
 rustls-pki-types = "1"
+rcgen = { version = "0.14", features = ["pem", "x509-parser"] }
 tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 webpki-roots = "1"
+x509-parser = "0.18"

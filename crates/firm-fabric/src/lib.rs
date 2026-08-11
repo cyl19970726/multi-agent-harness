@@ -15,6 +15,7 @@ pub mod diagnostics;
 pub mod enrollment;
 pub mod local_store;
 pub mod node_gateway;
+pub mod pki;
 pub mod protocol;
 pub mod reconcile;
 pub mod router;
