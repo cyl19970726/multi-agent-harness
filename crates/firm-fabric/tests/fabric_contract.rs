@@ -2199,7 +2199,11 @@ fn two_outbound_gateways_route_one_operation_through_durable_target_apply() {
         company_id: company.into(),
         actor_id: "host-live".into(),
         actor_kind: ActorKind::Human,
-        role_bindings: BTreeSet::from(["company_host".into()]),
+        role_bindings: BTreeSet::from([
+            "company_host".into(),
+            "artifact_write".into(),
+            "artifact_read".into(),
+        ]),
         session_id: "host-live-session".into(),
         issued_at_unix_ms: now,
         expires_at_unix_ms: now + 60_000,
@@ -2220,7 +2224,7 @@ fn two_outbound_gateways_route_one_operation_through_durable_target_apply() {
                 &enrollment_id,
                 &token,
                 node_id,
-                BTreeSet::from(["durable-routing".into()]),
+                BTreeSet::from(["durable-routing".into(), "artifact-transfer".into()]),
                 now + 60_000,
                 now + index as u64,
             )
@@ -2268,6 +2272,31 @@ fn two_outbound_gateways_route_one_operation_through_durable_target_apply() {
             },
         ));
     }
+
+    let artifact_bytes = b"live-artifact-capability";
+    let (artifact, upload) = control
+        .initiate_artifact(
+            &host,
+            lease.control_plane_generation,
+            "artifact-live",
+            "node-a",
+            None,
+            "application/json",
+            artifact_bytes.len() as u64,
+            &sha256_hex(artifact_bytes),
+            ArtifactClassification::CompanyInternal,
+            BTreeSet::from(["node-b".into()]),
+            now + 20,
+        )
+        .expect("Host initiates bounded artifact");
+    control
+        .complete_artifact(
+            lease.control_plane_generation,
+            &upload,
+            artifact_bytes,
+            now + 21,
+        )
+        .expect("complete bounded artifact");
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind gateway");
     let port = listener.local_addr().unwrap().port();
@@ -2344,6 +2373,12 @@ fn two_outbound_gateways_route_one_operation_through_durable_target_apply() {
     };
     let mut node_b = connect_node(&node_materials[1]);
     let mut node_a = connect_node(&node_materials[0]);
+    let download = node_b
+        .request_artifact_download(&artifact.id)
+        .expect("mTLS Node requests a server-built self-bound download capability");
+    assert_eq!(download.node_id, "node-b");
+    assert_eq!(download.artifact_id, artifact.id);
+    assert_eq!(download.purpose, ArtifactCapabilityPurpose::Download);
     let local_a = NodeLocalFabricStore::open(root.path().join("node-a"), company, "node-a")
         .expect("Node A local Store");
     let local_b = NodeLocalFabricStore::open(root.path().join("node-b"), company, "node-b")
