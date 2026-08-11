@@ -870,6 +870,7 @@ name = "firm-store"
 version = "0.1.0"
 dependencies = [
  "firm-core",
+ "firm-fabric",
  "serde",
  "serde_json",
  "sha2",
