@@ -1043,7 +1043,7 @@ function SurfaceSwitch({
     case "operator": {
       const nodeId = selection.nodeId ?? model.snapshot.execution_nodes?.[0]?.id;
       return nodeId
-        ? <OperatorView key={model.snapshot.generated_at} apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} nodeId={nodeId} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} />
+        ? <OperatorView key={model.snapshot.generated_at} apiUrl={apiUrl} space={executionSpaceId} project={projectBindingId} company={companyId} nodeId={nodeId} onAction={onRoleAction} actionsCurrent={roleActionsCurrent} />
         : <div className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">No Execution Node is registered.</div>;
     }
     case "debug":

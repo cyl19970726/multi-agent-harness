@@ -224,6 +224,11 @@ export interface OperatorViewData {
   node:{node_id:string;node_revision:number;daemon_generation:number|null;status:string}; build:{build_sha:string;protocol_version:string;schema_version:string};
   projects:RoleRecordSummary[]; team_supervisors:RoleRecordSummary[]; delivery_backlog:{depth:number;oldest_age_ms:number|null;recovery_required:boolean};
   runtime_recovery:RoleRecordSummary[]; provider_admission:RoleRecordSummary[]; workspace_safety:RoleRecordSummary[]; diagnostics:Array<{kind:string;state:string}>;
+  remote_fabric:null|{
+    company_id:string;node_id:string;state:"observed"|"unavailable";reason?:string;
+    gateway_session?:{gateway_generation:number;control_plane_generation:number;node_daemon_generation:number}|null;
+    outbox_depth?:number;inbox_depth?:number;recovery_required?:string[];store_revision?:number;
+  };
 }
 
 export async function fetchRoleView<T>(apiUrl:string,path:string,scope:{project?:string;space?:string;company?:string}={}):Promise<RoleView<T>>{

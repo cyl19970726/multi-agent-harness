@@ -30,6 +30,7 @@ struct Query {
     delegated: Option<bool>,
     limit: usize,
     cursor: Option<String>,
+    company: Option<String>,
 }
 
 impl Query {
@@ -82,7 +83,8 @@ impl Query {
                             _ => return Err("delegated must be true or false".into()),
                         })
                     }
-                    "project" | "space" | "company" => {}
+                    "company" => parsed.company = Some(value.to_string()),
+                    "project" | "space" => {}
                     _ => parsed
                         .values
                         .entry(key.to_string())
@@ -841,7 +843,14 @@ pub(crate) fn handle_get(
     } else if let Some(member_run_id) = path.strip_prefix("/v1/views/member-workbench/") {
         member_view(current_space_id, current, member_run_id, identity)
     } else if let Some(node_id) = path.strip_prefix("/v1/views/operator/") {
-        operator_view(current_space_id, current, node_id, build_sha, identity)
+        operator_view(
+            current_space_id,
+            current,
+            node_id,
+            build_sha,
+            identity,
+            query.company.as_deref(),
+        )
     } else {
         return Some(error(
             "404 Not Found",
@@ -1748,6 +1757,7 @@ fn operator_view(
     node_id: &str,
     build_sha: &str,
     identity: Option<&ReadIdentity>,
+    company_id: Option<&str>,
 ) -> ViewResult {
     let facts = Facts::read(space_id, store)
         .map_err(|e| ("500 Internal Server Error", "ROLE_VIEW_BUILD_FAILED", e))?;
@@ -1956,6 +1966,62 @@ fn operator_view(
             serde_json::to_value(binding).expect("provider admission action binding serializes");
         operator_actions.push(admission_action);
     }
+    let remote_fabric = company_id.map(|company_id| {
+        let result = (|| -> Result<Value, String> {
+            let home = crate::execution_space::firm_home().map_err(|error| error.to_string())?;
+            let layout = harness_store::remote_fabric_store::RemoteFabricStoreLayout::open(&home)
+                .map_err(|error| error.to_string())?;
+            let root = layout
+                .node_local_root(company_id, node_id)
+                .map_err(|error| error.to_string())?;
+            if !root.exists() {
+                return Ok(json!({
+                    "company_id":company_id,
+                    "node_id":node_id,
+                    "state":"unavailable",
+                    "reason":"no Node-local Remote Fabric journal exists",
+                }));
+            }
+            let local = layout
+                .open_node_local(company_id, node_id)
+                .map_err(|error| error.to_string())?;
+            let snapshot = local.snapshot().map_err(|error| error.to_string())?;
+            let queued = snapshot
+                .outboxes
+                .values()
+                .filter(|outbox| {
+                    !matches!(
+                        outbox.local_state,
+                        harness_fabric::LocalOutboxState::Terminal
+                    )
+                })
+                .count();
+            let recovery_required = snapshot
+                .inboxes
+                .values()
+                .filter(|inbox| inbox.state == harness_fabric::LocalInboxState::RecoveryRequired)
+                .map(|inbox| inbox.operation_id.clone())
+                .collect::<Vec<_>>();
+            Ok(json!({
+                "company_id":company_id,
+                "node_id":node_id,
+                "state":"observed",
+                "gateway_session":snapshot.active_session,
+                "outbox_depth":queued,
+                "inbox_depth":snapshot.inboxes.len(),
+                "recovery_required":recovery_required,
+                "store_revision":snapshot.revision,
+            }))
+        })();
+        result.unwrap_or_else(|error| {
+            json!({
+                "company_id":company_id,
+                "node_id":node_id,
+                "state":"unavailable",
+                "reason":error,
+            })
+        })
+    });
     Ok(envelope(
         "operator",
         &facts,
@@ -1968,7 +2034,8 @@ fn operator_view(
             "runtime_recovery":record_summaries("runtime_command",runtime_recovery),
             "provider_admission":record_summaries("provider_compatibility_admission",store.latest_provider_compatibility_admissions().unwrap_or_default().into_iter().filter_map(|value|serde_json::to_value(value).ok()).collect()),
             "workspace_safety":record_summaries("workspace_binding",node_member_run_ids.iter().filter_map(|id|current_workspace(&facts,id)).cloned().collect()),
-            "diagnostics":[{"kind":"daemon_lease","state":lease.as_ref().map(|l|enum_string(&l.status)).unwrap_or_else(||"unavailable".into())}]
+            "diagnostics":[{"kind":"daemon_lease","state":lease.as_ref().map(|l|enum_string(&l.status)).unwrap_or_else(||"unavailable".into())}],
+            "remote_fabric":remote_fabric,
         }),
         vec![],
         operator_actions,
