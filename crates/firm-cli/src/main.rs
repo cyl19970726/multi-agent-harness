@@ -17772,6 +17772,7 @@ fn prepare_provider_process_effect(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn send_claude_provider_input(
     ledger: &TeamRunLedger,
     member: &ProviderRuntimeProjection,
@@ -20130,7 +20131,7 @@ fn refresh_member_after_provider_callbacks(
         // generation, native-session, controls, provenance, Work progress, and
         // every other authority field remain frozen.
         let mut normalized = latest.clone();
-        normalized.coordination_status = round_start.coordination_status.clone();
+        normalized.coordination_status = round_start.coordination_status;
         validate_provider_callback_drift(round_start, &normalized)?;
     } else {
         validate_provider_callback_drift(round_start, &latest)?;

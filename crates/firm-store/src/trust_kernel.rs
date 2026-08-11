@@ -3860,6 +3860,7 @@ impl HarnessStore {
         Ok(rows)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn require_current_node_daemon_unlocked(
         &self,
         execution_space_id: &str,
@@ -5117,6 +5118,7 @@ impl HarnessStore {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn claim_message_for_provider(
         &self,
         context: &MutationContext,
@@ -5243,6 +5245,7 @@ impl HarnessStore {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn record_message_provider_receipt(
         &self,
         context: &MutationContext,
@@ -5428,6 +5431,7 @@ impl HarnessStore {
     /// Operator-requested recovery is executed by the exact current target
     /// NodeDaemon. Replay is resolved before mutable delivery state, and an
     /// acknowledged provider receipt can never be converted into a retry.
+    #[allow(clippy::too_many_arguments)]
     pub fn reconcile_canonical_message_delivery(
         &self,
         context: &MutationContext,
