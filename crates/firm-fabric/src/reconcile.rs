@@ -42,7 +42,6 @@ pub(crate) fn reconcile(
             .values()
             .filter(|receipt| {
                 receipt.operation_id == *operation_id
-                    && receipt.target_gateway_generation == gateway_generation
                     && matches!(
                         receipt.kind,
                         ReceiptKind::OperationApplied | ReceiptKind::OperationRejected

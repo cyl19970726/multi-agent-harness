@@ -317,6 +317,30 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
         })
     }
 
+    pub fn retry_operation(
+        &self,
+        generation: u64,
+        operation_id: &str,
+        now_unix_ms: u64,
+    ) -> Result<(RouteAttempt, RouteReceipt, bool), FabricError> {
+        self.store.transact(|state| {
+            require_active_control_plane(
+                state,
+                &self.company_id,
+                &self.instance_id,
+                generation,
+                now_unix_ms,
+            )?;
+            router::retry_operation(
+                state,
+                &self.company_id,
+                generation,
+                operation_id,
+                now_unix_ms,
+            )
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn persist_target_inbox(
         &self,

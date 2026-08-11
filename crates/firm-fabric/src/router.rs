@@ -216,7 +216,21 @@ pub(crate) fn persist_target_inbox(
             "target inbox request does not match the routed operation",
         ));
     }
-    let attempt_id = format!("route-attempt:{operation_id}:1");
+    let attempt_id = state
+        .attempts
+        .values()
+        .find(|attempt| {
+            attempt.operation_id == operation_id
+                && attempt.route_seq == route_seq
+                && attempt.target_gateway_generation == gateway_generation
+        })
+        .map(|attempt| attempt.id.clone())
+        .ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::NodeStaleGeneration,
+                "target persistence acknowledgement has no matching route attempt",
+            )
+        })?;
     let attempt = state.attempts.get_mut(&attempt_id).ok_or_else(|| {
         FabricError::none(
             FabricErrorCode::StoreUnavailable,
@@ -288,6 +302,159 @@ pub(crate) fn persist_target_inbox(
     state.inboxes.insert(operation_id.into(), inbox.clone());
     state.receipts.insert(receipt.id.clone(), receipt.clone());
     Ok((inbox, receipt, false))
+}
+
+pub(crate) fn retry_operation(
+    state: &mut FabricState,
+    company_id: &str,
+    control_plane_generation: u64,
+    operation_id: &str,
+    now_unix_ms: u64,
+) -> Result<(RouteAttempt, RouteReceipt, bool), FabricError> {
+    let operation = state.operations.get(operation_id).cloned().ok_or_else(|| {
+        FabricError::none(
+            FabricErrorCode::OperationUnknown,
+            "routed operation does not exist",
+        )
+    })?;
+    if operation.company_id != company_id {
+        return Err(FabricError::none(
+            FabricErrorCode::WrongCompany,
+            "routed operation belongs to another Company",
+        ));
+    }
+    if operation.expires_at_unix_ms <= now_unix_ms {
+        return Err(FabricError::none(
+            FabricErrorCode::OperationExpired,
+            "routed operation expired before retry",
+        ));
+    }
+    if let Some(inbox) = state.inboxes.get(operation_id) {
+        if matches!(
+            inbox.state,
+            LocalInboxState::Applied | LocalInboxState::Rejected
+        ) {
+            return Err(FabricError::none(
+                FabricErrorCode::IdempotencyConflict,
+                "terminal operation cannot be retried",
+            ));
+        }
+        return Err(FabricError::unknown(
+            operation_id,
+            "target already persisted the operation; reconcile instead of blind retry",
+        ));
+    }
+    let gateway = state
+        .gateway_leases
+        .get(&operation.target_node_id)
+        .cloned()
+        .ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::TargetOffline,
+                "target Node has no gateway lease",
+            )
+        })?;
+    if gateway.company_id != company_id
+        || gateway.control_plane_generation != control_plane_generation
+        || gateway.expires_at_unix_ms <= now_unix_ms
+    {
+        return Err(FabricError::none(
+            FabricErrorCode::TargetOffline,
+            "target Node gateway is offline or stale",
+        ));
+    }
+    let mut attempts = state
+        .attempts
+        .values()
+        .filter(|attempt| attempt.operation_id == operation_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    attempts.sort_by_key(|attempt| attempt.attempt_no);
+    let prior = attempts.last().ok_or_else(|| {
+        FabricError::none(
+            FabricErrorCode::StoreUnavailable,
+            "routed operation has no prior attempt",
+        )
+    })?;
+    if prior.target_gateway_generation == gateway.gateway_generation {
+        let receipt = receipt_for(
+            state,
+            operation_id,
+            ReceiptKind::ControlPlaneAccepted,
+            gateway.gateway_generation,
+        )?;
+        return Ok((prior.clone(), receipt, true));
+    }
+    if prior.effect != EffectCertainty::None
+        || !matches!(
+            prior.state,
+            RouteAttemptState::Queued | RouteAttemptState::Sent
+        )
+    {
+        return Err(FabricError::unknown(
+            operation_id,
+            "prior route attempt may have produced an effect; reconcile is required",
+        ));
+    }
+    let prior_id = prior.id.clone();
+    if let Some(prior_mut) = state.attempts.get_mut(&prior_id) {
+        prior_mut.state = RouteAttemptState::Ended;
+        prior_mut.error_code = Some(FabricErrorCode::NodeStaleGeneration);
+        prior_mut.ended_at_unix_ms = Some(now_unix_ms);
+    }
+    let route_seq = state
+        .route_sequences
+        .get(&operation.target_node_id)
+        .copied()
+        .unwrap_or(0)
+        .saturating_add(1);
+    let attempt_no = prior.attempt_no.saturating_add(1);
+    let attempt = RouteAttempt {
+        id: format!("route-attempt:{operation_id}:{attempt_no}"),
+        company_id: company_id.into(),
+        operation_id: operation_id.into(),
+        attempt_no,
+        target_node_id: operation.target_node_id.clone(),
+        target_gateway_generation: gateway.gateway_generation,
+        control_plane_generation,
+        route_seq,
+        state: RouteAttemptState::Queued,
+        error_code: None,
+        effect: EffectCertainty::None,
+        started_at_unix_ms: now_unix_ms,
+        ended_at_unix_ms: None,
+        schema_version: FABRIC_SCHEMA_VERSION.into(),
+    };
+    let receipt = RouteReceipt {
+        id: receipt_id(
+            operation_id,
+            ReceiptKind::ControlPlaneAccepted,
+            gateway.gateway_generation,
+        ),
+        company_id: company_id.into(),
+        operation_id: operation_id.into(),
+        target_node_id: operation.target_node_id.clone(),
+        target_gateway_generation: gateway.gateway_generation,
+        control_plane_generation,
+        route_seq,
+        kind: ReceiptKind::ControlPlaneAccepted,
+        result_schema: None,
+        result: None,
+        result_digest: None,
+        error: None,
+        created_at_unix_ms: now_unix_ms,
+        schema_version: FABRIC_SCHEMA_VERSION.into(),
+    };
+    state
+        .route_sequences
+        .insert(operation.target_node_id, route_seq);
+    state.attempts.insert(attempt.id.clone(), attempt.clone());
+    state.receipts.insert(receipt.id.clone(), receipt.clone());
+    if let Some(outbox) = state.outboxes.get_mut(operation_id) {
+        outbox.attempt_count = outbox.attempt_count.saturating_add(1);
+        outbox.last_attempt_at_unix_ms = Some(now_unix_ms);
+    }
+    Ok((attempt, receipt, false))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -363,7 +530,21 @@ pub(crate) fn record_application_result(
     };
     inbox.result_digest = Some(result_digest.clone());
     let inbox = inbox.clone();
-    let attempt_id = format!("route-attempt:{operation_id}:1");
+    let attempt_id = state
+        .attempts
+        .values()
+        .find(|attempt| {
+            attempt.operation_id == operation_id
+                && attempt.route_seq == inbox.route_seq
+                && attempt.target_gateway_generation == gateway_generation
+        })
+        .map(|attempt| attempt.id.clone())
+        .ok_or_else(|| {
+            FabricError::none(
+                FabricErrorCode::StoreUnavailable,
+                "terminal result has no matching route attempt",
+            )
+        })?;
     let attempt = state.attempts.get_mut(&attempt_id).ok_or_else(|| {
         FabricError::none(
             FabricErrorCode::StoreUnavailable,

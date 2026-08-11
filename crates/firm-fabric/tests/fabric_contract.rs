@@ -780,3 +780,128 @@ fn concurrent_one_use_enrollment_has_exactly_one_winner() {
     assert_eq!(state.nodes.len(), 1);
     assert_eq!(state.certificates.len(), 1);
 }
+
+#[test]
+fn retry_requires_a_new_target_generation_and_reconcile_never_blind_replays() {
+    let root = TestRoot::new("retry-reconcile");
+    let store = FabricStore::open(root.path()).expect("open store");
+    let keys = InMemoryArtifactKeyBackend::default();
+    keys.insert(COMPANY, [7; 32]);
+    let control = ControlPlane::new(COMPANY, "control-1", &store, &keys, [9; 32]);
+    let lease = control.acquire_lease("cp-lease", 0, 1).expect("lease");
+    enroll_nodes(&control, lease.control_plane_generation);
+    let source_hello = hello("node-a", "gateway-a-1", "cert-a", &fingerprint("node-a"));
+    let source = connect_node(
+        &control,
+        lease.control_plane_generation,
+        &source_hello,
+        &signing_key("node-a"),
+        30,
+    )
+    .expect("source connect");
+    let target_hello = hello("node-b", "gateway-b-1", "cert-b", &fingerprint("node-b"));
+    let target = connect_node(
+        &control,
+        lease.control_plane_generation,
+        &target_hello,
+        &signing_key("node-b"),
+        30,
+    )
+    .expect("target connect");
+    let request = operation(source.gateway_generation, lease.control_plane_generation);
+    let request_digest = json_digest(&request).expect("request digest");
+    let (_, first_attempt, _, _) = control
+        .accept_operation(lease.control_plane_generation, request.clone(), 100)
+        .expect("accept operation");
+    let same_generation = control
+        .retry_operation(lease.control_plane_generation, &request.id, 101)
+        .expect("same target generation is exact replay");
+    assert!(same_generation.2);
+    assert_eq!(same_generation.0, first_attempt);
+
+    let cp_second = control
+        .heartbeat_lease(lease.control_plane_generation, lease.revision, 29_000)
+        .expect("keep Control Plane alive");
+    let successor_hello = hello("node-b", "gateway-b-2", "cert-b", &fingerprint("node-b"));
+    let successor = connect_node(
+        &control,
+        lease.control_plane_generation,
+        &successor_hello,
+        &signing_key("node-b"),
+        30_031,
+    )
+    .expect("target successor");
+    let (second_attempt, _, replayed) = control
+        .retry_operation(lease.control_plane_generation, &request.id, 30_032)
+        .expect("retry effect-none operation on successor");
+    assert!(!replayed);
+    assert_eq!(second_attempt.attempt_no, 2);
+    assert_eq!(
+        second_attempt.target_gateway_generation,
+        successor.gateway_generation
+    );
+    let before_stale = store.snapshot().expect("snapshot");
+    let stale = control
+        .persist_target_inbox(
+            lease.control_plane_generation,
+            "node-b",
+            target.gateway_generation,
+            &request.id,
+            &request_digest,
+            first_attempt.route_seq,
+            30_033,
+        )
+        .expect_err("expired predecessor cannot persist after successor takeover");
+    assert_eq!(stale.code, FabricErrorCode::NodeStaleGeneration);
+    assert_eq!(store.snapshot().expect("snapshot"), before_stale);
+    control
+        .persist_target_inbox(
+            lease.control_plane_generation,
+            "node-b",
+            successor.gateway_generation,
+            &request.id,
+            &request_digest,
+            second_attempt.route_seq,
+            30_034,
+        )
+        .expect("successor persists inbox");
+    let (_, terminal, _) = control
+        .record_application_result(
+            lease.control_plane_generation,
+            "node-b",
+            successor.gateway_generation,
+            &request.id,
+            "agentfirm.remote_fabric.probe_result.v1",
+            json!({"reachable": true}),
+            true,
+            30_035,
+        )
+        .expect("successor records terminal result");
+
+    let cp_third = control
+        .heartbeat_lease(lease.control_plane_generation, cp_second.revision, 58_000)
+        .expect("keep Control Plane alive for reconciliation");
+    assert_eq!(
+        cp_third.control_plane_generation,
+        lease.control_plane_generation
+    );
+    let third_hello = hello("node-b", "gateway-b-3", "cert-b", &fingerprint("node-b"));
+    let third = connect_node(
+        &control,
+        lease.control_plane_generation,
+        &third_hello,
+        &signing_key("node-b"),
+        60_032,
+    )
+    .expect("next target generation");
+    let reconciled = control
+        .reconcile(
+            lease.control_plane_generation,
+            "node-b",
+            third.gateway_generation,
+            &BTreeSet::from([request.id]),
+            60_033,
+        )
+        .expect("successor reconciles durable prior-generation terminal receipt");
+    assert_eq!(reconciled, vec![terminal]);
+}
