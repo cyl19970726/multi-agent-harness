@@ -6,6 +6,7 @@ use crate::node_gateway;
 use crate::protocol::*;
 use crate::router;
 use crate::store::{FabricState, FabricStore};
+use crate::transport::FabricSessionFence;
 use crate::{FabricError, FabricErrorCode, FABRIC_SCHEMA_VERSION};
 
 pub struct ControlPlane<'a, K: ArtifactKeyBackend> {
@@ -321,9 +322,31 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
     pub fn accept_operation(
         &self,
         generation: u64,
-        operation: RoutedOperation,
+        source_session: &FabricSessionFence,
+        authenticated_actor: &AuthenticatedActor,
+        mut operation: RoutedOperation,
         now_unix_ms: u64,
     ) -> Result<(RoutedOperation, RouteAttempt, RouteReceipt, bool), FabricError> {
+        if source_session.company_id != self.company_id
+            || source_session.node_id != operation.source_node_id
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::SourceMismatch,
+                "authenticated source session does not own the routed operation source",
+            ));
+        }
+        if source_session.gateway_generation != operation.source_gateway_generation
+            || source_session.control_plane_generation != generation
+            || operation.control_plane_generation != generation
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::NodeStaleGeneration,
+                "routed operation does not match the authenticated source generation",
+            ));
+        }
+        // The credential boundary resolves identity and permissions. The wire
+        // operation body cannot select the actor persisted in the route journal.
+        operation.actor = authenticated_actor.clone();
         let limits = self.store.limits();
         self.store.transact(|state| {
             require_active_control_plane(

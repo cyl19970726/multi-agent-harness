@@ -215,6 +215,26 @@ fn fabric_session(
     }
 }
 
+fn accept_fabric_operation<K: ArtifactKeyBackend>(
+    control: &ControlPlane<'_, K>,
+    control_plane_generation: u64,
+    source_gateway_generation: u64,
+    operation: RoutedOperation,
+    now_unix_ms: u64,
+) -> Result<(RoutedOperation, RouteAttempt, RouteReceipt, bool), FabricError> {
+    control.accept_operation(
+        control_plane_generation,
+        &fabric_session(
+            "node-a",
+            source_gateway_generation,
+            control_plane_generation,
+        ),
+        &actor("fabric-client", &["fabric_submit"]),
+        operation,
+        now_unix_ms,
+    )
+}
+
 #[test]
 fn one_use_enrollment_and_stale_control_plane_have_zero_side_effects() {
     let root = TestRoot::new("enrollment");
@@ -320,25 +340,94 @@ fn durable_route_replays_exactly_and_fences_stale_source_generation() {
         target.gateway_generation,
         lease.control_plane_generation,
     );
-    let request = operation(source.gateway_generation, lease.control_plane_generation);
-    let request_digest = json_digest(&request).expect("request digest");
+    let mut request = operation(source.gateway_generation, lease.control_plane_generation);
+    request.actor = actor("body-selected-admin", &["fabric_submit", "company_host"]);
+    let before_hostile = store.snapshot().expect("snapshot");
+    let hostile_session = fabric_session(
+        "node-b",
+        source.gateway_generation,
+        lease.control_plane_generation,
+    );
+    let wrong_source = control
+        .accept_operation(
+            lease.control_plane_generation,
+            &hostile_session,
+            &actor("fabric-client", &["fabric_submit"]),
+            request.clone(),
+            98,
+        )
+        .expect_err("wire body cannot select another source Node");
+    assert_eq!(wrong_source.code, FabricErrorCode::SourceMismatch);
+    assert_eq!(store.snapshot().expect("snapshot"), before_hostile);
+    let mut forged_actor = request.clone();
+    forged_actor.id = "operation-forged-actor".into();
+    forged_actor.idempotency_key = "idempotency-forged-actor".into();
+    forged_actor.actor = actor("fabric-admin", &["fabric_submit", "company_host"]);
+    let permission_widening = control
+        .accept_operation(
+            lease.control_plane_generation,
+            &fabric_session(
+                "node-a",
+                source.gateway_generation,
+                lease.control_plane_generation,
+            ),
+            &actor("unprivileged", &["company_viewer"]),
+            forged_actor,
+            98,
+        )
+        .expect_err("wire actor cannot widen authenticated permissions");
+    assert_eq!(permission_widening.code, FabricErrorCode::UnauthorizedActor);
+    assert_eq!(store.snapshot().expect("snapshot"), before_hostile);
     let mut unsupported = request.clone();
     unsupported.id = "operation-unsupported-capability".into();
     unsupported.idempotency_key = "idempotency-unsupported-capability".into();
     unsupported.kind = "runtime_command.reference.v1".into();
     let before_unsupported = store.snapshot().expect("snapshot");
     let unavailable = control
-        .accept_operation(lease.control_plane_generation, unsupported, 99)
+        .accept_operation(
+            lease.control_plane_generation,
+            &fabric_session(
+                "node-a",
+                source.gateway_generation,
+                lease.control_plane_generation,
+            ),
+            &actor("fabric-client", &["fabric_submit"]),
+            unsupported,
+            99,
+        )
         .expect_err("operation capability must be authorized on both Nodes");
     assert_eq!(unavailable.code, FabricErrorCode::FeatureIncompatible);
     assert_eq!(store.snapshot().expect("snapshot"), before_unsupported);
-    let (_, attempt, accepted, replayed) = control
-        .accept_operation(lease.control_plane_generation, request.clone(), 100)
+    let (canonical_request, attempt, accepted, replayed) = control
+        .accept_operation(
+            lease.control_plane_generation,
+            &fabric_session(
+                "node-a",
+                source.gateway_generation,
+                lease.control_plane_generation,
+            ),
+            &actor("fabric-client", &["fabric_submit"]),
+            request.clone(),
+            100,
+        )
         .expect("accept operation");
+    assert_eq!(canonical_request.actor.actor_id, "fabric-client");
+    let request = canonical_request;
+    let request_digest = json_digest(&request).expect("request digest");
     assert!(!replayed);
     assert_eq!(accepted.kind, ReceiptKind::ControlPlaneAccepted);
     let (_, _, replay_receipt, replayed) = control
-        .accept_operation(lease.control_plane_generation, request.clone(), 101)
+        .accept_operation(
+            lease.control_plane_generation,
+            &fabric_session(
+                "node-a",
+                source.gateway_generation,
+                lease.control_plane_generation,
+            ),
+            &actor("fabric-client", &["fabric_submit"]),
+            request.clone(),
+            101,
+        )
         .expect("exact replay");
     assert!(replayed);
     assert_eq!(accepted, replay_receipt);
@@ -348,7 +437,17 @@ fn durable_route_replays_exactly_and_fences_stale_source_generation() {
     changed.body = json!({"probe": "different"});
     changed.body_digest = json_digest(&changed.body).expect("digest changed body");
     let conflict = control
-        .accept_operation(lease.control_plane_generation, changed, 101)
+        .accept_operation(
+            lease.control_plane_generation,
+            &fabric_session(
+                "node-a",
+                source.gateway_generation,
+                lease.control_plane_generation,
+            ),
+            &actor("fabric-client", &["fabric_submit"]),
+            changed,
+            101,
+        )
         .expect_err("same key with another fingerprint must fail closed");
     assert_eq!(conflict.code, FabricErrorCode::IdempotencyConflict);
     assert_eq!(store.snapshot().expect("snapshot"), before_conflict);
@@ -435,7 +534,17 @@ fn durable_route_replays_exactly_and_fences_stale_source_generation() {
     stale.id = "operation-stale".into();
     stale.idempotency_key = "idempotency-stale".into();
     let error = control
-        .accept_operation(lease.control_plane_generation, stale, 30_032)
+        .accept_operation(
+            lease.control_plane_generation,
+            &fabric_session(
+                "node-a",
+                source.gateway_generation,
+                lease.control_plane_generation,
+            ),
+            &actor("fabric-client", &["fabric_submit"]),
+            stale,
+            30_032,
+        )
         .expect_err("stale source generation must fail");
     assert_eq!(error.code, FabricErrorCode::NodeStaleGeneration);
     assert_eq!(store.snapshot().expect("snapshot"), before);
@@ -1038,9 +1147,14 @@ fn retry_requires_a_new_target_generation_and_reconcile_never_blind_replays() {
     .expect("target connect");
     let request = operation(source.gateway_generation, lease.control_plane_generation);
     let request_digest = json_digest(&request).expect("request digest");
-    let (_, first_attempt, _, _) = control
-        .accept_operation(lease.control_plane_generation, request.clone(), 100)
-        .expect("accept operation");
+    let (_, first_attempt, _, _) = accept_fabric_operation(
+        &control,
+        lease.control_plane_generation,
+        source.gateway_generation,
+        request.clone(),
+        100,
+    )
+    .expect("accept operation");
     let same_generation = control
         .retry_operation(lease.control_plane_generation, &request.id, 101)
         .expect("same target generation is exact replay");
@@ -1261,22 +1375,37 @@ fn durable_rate_limit_rejects_new_work_but_preserves_exact_replay() {
     )
     .expect("target connect");
     let first = operation(source.gateway_generation, lease.control_plane_generation);
-    control
-        .accept_operation(lease.control_plane_generation, first.clone(), 100)
-        .expect("first operation is within limit");
+    accept_fabric_operation(
+        &control,
+        lease.control_plane_generation,
+        source.gateway_generation,
+        first.clone(),
+        100,
+    )
+    .expect("first operation is within limit");
     assert!(
-        control
-            .accept_operation(lease.control_plane_generation, first.clone(), 101)
-            .expect("exact replay bypasses new-work rate accounting")
-            .3
+        accept_fabric_operation(
+            &control,
+            lease.control_plane_generation,
+            source.gateway_generation,
+            first.clone(),
+            101,
+        )
+        .expect("exact replay bypasses new-work rate accounting")
+        .3
     );
     let before = store.snapshot().expect("snapshot");
     let mut second = first;
     second.id = "operation-rate-limited".into();
     second.idempotency_key = "idempotency-rate-limited".into();
-    let limited = control
-        .accept_operation(lease.control_plane_generation, second, 102)
-        .expect_err("new operation exceeds durable rate limit");
+    let limited = accept_fabric_operation(
+        &control,
+        lease.control_plane_generation,
+        source.gateway_generation,
+        second,
+        102,
+    )
+    .expect_err("new operation exceeds durable rate limit");
     assert_eq!(limited.code, FabricErrorCode::RateLimited);
     assert!(limited.retryable);
     assert_eq!(limited.effect, EffectCertainty::None);
@@ -1439,9 +1568,14 @@ fn draining_rejects_new_target_work_but_preserves_inflight_completion() {
     );
     let first = operation(source.gateway_generation, lease.control_plane_generation);
     let first_digest = json_digest(&first).expect("request digest");
-    let (_, attempt, _, _) = control
-        .accept_operation(lease.control_plane_generation, first.clone(), 100)
-        .expect("accept inflight operation before drain");
+    let (_, attempt, _, _) = accept_fabric_operation(
+        &control,
+        lease.control_plane_generation,
+        source.gateway_generation,
+        first.clone(),
+        100,
+    )
+    .expect("accept inflight operation before drain");
     let host = actor("host", &["company_host"]);
     let drained = control
         .set_node_administrative_status(
@@ -1461,9 +1595,14 @@ fn draining_rejects_new_target_work_but_preserves_inflight_completion() {
     let mut second = first.clone();
     second.id = "operation-after-drain".into();
     second.idempotency_key = "idempotency-after-drain".into();
-    let rejected = control
-        .accept_operation(lease.control_plane_generation, second, 102)
-        .expect_err("draining target rejects new operation");
+    let rejected = accept_fabric_operation(
+        &control,
+        lease.control_plane_generation,
+        source.gateway_generation,
+        second,
+        102,
+    )
+    .expect_err("draining target rejects new operation");
     assert_eq!(rejected.code, FabricErrorCode::TargetNotPlaced);
     assert_eq!(store.snapshot().expect("snapshot"), before_new);
     target_local
@@ -1540,15 +1679,25 @@ fn target_persistence_rejects_unresolved_route_sequence_gaps() {
         lease.control_plane_generation,
     );
     let first = operation(source.gateway_generation, lease.control_plane_generation);
-    let (_, first_attempt, _, _) = control
-        .accept_operation(lease.control_plane_generation, first.clone(), 100)
-        .expect("first route");
+    let (_, first_attempt, _, _) = accept_fabric_operation(
+        &control,
+        lease.control_plane_generation,
+        source.gateway_generation,
+        first.clone(),
+        100,
+    )
+    .expect("first route");
     let mut second = first.clone();
     second.id = "operation-2".into();
     second.idempotency_key = "idempotency-2".into();
-    let (_, second_attempt, _, _) = control
-        .accept_operation(lease.control_plane_generation, second.clone(), 101)
-        .expect("second route");
+    let (_, second_attempt, _, _) = accept_fabric_operation(
+        &control,
+        lease.control_plane_generation,
+        source.gateway_generation,
+        second.clone(),
+        101,
+    )
+    .expect("second route");
     assert_eq!(second_attempt.route_seq, first_attempt.route_seq + 1);
     let before = target_local.snapshot().expect("snapshot");
     let gap = target_local
@@ -1608,9 +1757,14 @@ fn diagnostics_derive_connection_and_recovery_truth_without_mutation() {
     );
     let request = operation(source.gateway_generation, lease.control_plane_generation);
     let request_digest = json_digest(&request).expect("request digest");
-    let (_, attempt, _, _) = control
-        .accept_operation(lease.control_plane_generation, request.clone(), 100)
-        .expect("route operation");
+    let (_, attempt, _, _) = accept_fabric_operation(
+        &control,
+        lease.control_plane_generation,
+        source.gateway_generation,
+        request.clone(),
+        100,
+    )
+    .expect("route operation");
     target_local
         .persist_inbox(&target_session, &request, &attempt)
         .expect("persist local target inbox");
@@ -1697,9 +1851,14 @@ fn three_independent_store_roots_preserve_control_plane_and_node_authority() {
         .expect("source durably prepares before submission");
     assert!(!replayed);
     assert_eq!(source_outbox.local_state, LocalOutboxState::Submitted);
-    let (_, attempt, accepted, _) = control
-        .accept_operation(lease.control_plane_generation, request.clone(), 100)
-        .expect("Control Plane accepts and journals route");
+    let (_, attempt, accepted, _) = accept_fabric_operation(
+        &control,
+        lease.control_plane_generation,
+        source.gateway_generation,
+        request.clone(),
+        100,
+    )
+    .expect("Control Plane accepts and journals route");
     source_local
         .mark_outbox_receipt(&accepted)
         .expect("source records Control Plane acceptance");
