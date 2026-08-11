@@ -5,13 +5,13 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "id", "company_id", "kind", "source_node_id", "target_node_id",
-    "source_gateway_generation", "control_plane_generation",
+    "id", "company_id", "kind", "source_authority", "source_node_id", "target_node_id",
+    "source_gateway_generation", "source_node_daemon_id", "source_node_daemon_generation", "control_plane_generation",
     "source_execution_space_id", "target_execution_space_id", "actor",
     "actor_runtime_generation", "authorization_context", "idempotency_key",
     "ordering_key", "correlation_id", "causation_id", "expected_target_revision",
     "body_schema", "body", "body_digest", "priority", "created_at_unix_ms",
-    "expires_at_unix_ms", "protocol_version", "schema_version"
+    "expires_at_unix_ms", "protocol_version", "schema_version", "canonicalization_version"
   ],
   "properties": {
     "id": { "type": "string", "minLength": 1 },
@@ -23,9 +23,12 @@
         "delivery_intent.reference.v1", "artifact.reference.v1"
       ]
     },
-    "source_node_id": { "type": "string", "minLength": 1 },
+    "source_authority": { "enum": ["node", "control_plane"] },
+    "source_node_id": { "type": ["string", "null"], "minLength": 1 },
     "target_node_id": { "type": "string", "minLength": 1 },
-    "source_gateway_generation": { "type": "integer", "minimum": 1 },
+    "source_gateway_generation": { "type": ["integer", "null"], "minimum": 1 },
+    "source_node_daemon_id": { "type": ["string", "null"], "minLength": 1 },
+    "source_node_daemon_generation": { "type": ["integer", "null"], "minimum": 1 },
     "control_plane_generation": { "type": "integer", "minimum": 1 },
     "source_execution_space_id": { "type": ["string", "null"] },
     "target_execution_space_id": { "type": ["string", "null"] },
@@ -47,8 +50,32 @@
     "created_at_unix_ms": { "type": "integer", "minimum": 0 },
     "expires_at_unix_ms": { "type": "integer", "minimum": 1 },
     "protocol_version": { "const": 1 },
-    "schema_version": { "const": "agentfirm.remote_fabric.v1" }
+    "schema_version": { "const": "agentfirm.remote_fabric.v1" },
+    "canonicalization_version": { "const": "agentfirm.canonical-json.v1" }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "source_authority": { "const": "node" } } },
+      "then": {
+        "properties": {
+          "source_node_id": { "type": "string", "minLength": 1 },
+          "source_gateway_generation": { "type": "integer", "minimum": 1 },
+          "source_node_daemon_id": { "type": "string", "minLength": 1 },
+          "source_node_daemon_generation": { "type": "integer", "minimum": 1 },
+          "source_execution_space_id": { "type": "string", "minLength": 1 }
+        }
+      },
+      "else": {
+        "properties": {
+          "source_node_id": { "type": "null" },
+          "source_gateway_generation": { "type": "null" },
+          "source_node_daemon_id": { "type": "null" },
+          "source_node_daemon_generation": { "type": "null" },
+          "source_execution_space_id": { "type": "null" }
+        }
+      }
+    }
+  ],
   "$defs": {
     "actor": {
       "type": "object",

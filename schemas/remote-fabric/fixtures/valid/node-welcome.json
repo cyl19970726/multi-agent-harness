@@ -4,6 +4,8 @@
   "accepted_protocol_version": 1,
   "lease_id": "gateway-lease:node-a:1",
   "gateway_generation": 1,
+  "node_daemon_id": "node-daemon:node-a",
+  "node_daemon_generation": 3,
   "control_plane_generation": 1,
   "next_route_seq": 1,
   "required_reconcile_ids": [],

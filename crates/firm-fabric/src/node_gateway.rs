@@ -20,6 +20,12 @@ pub(crate) fn connect(
             "NodeHello belongs to another Company",
         ));
     }
+    if hello.node_daemon_id.trim().is_empty() || hello.node_daemon_generation == 0 {
+        return Err(FabricError::none(
+            FabricErrorCode::NodeStaleGeneration,
+            "NodeGateway requires an exact current NodeDaemon parent generation",
+        ));
+    }
     if hello.protocol_min > FABRIC_PROTOCOL_VERSION || hello.protocol_max < FABRIC_PROTOCOL_VERSION
     {
         return Err(FabricError::none(
@@ -105,6 +111,8 @@ pub(crate) fn connect(
         lease_id: format!("gateway-lease:{}:{}", hello.node_id, gateway_generation),
         gateway_generation,
         instance_id: hello.instance_id.clone(),
+        node_daemon_id: hello.node_daemon_id.clone(),
+        node_daemon_generation: hello.node_daemon_generation,
         revision: prior
             .as_ref()
             .map_or(1, |lease| lease.revision.saturating_add(1)),
@@ -133,6 +141,8 @@ pub(crate) fn connect(
         accepted_protocol_version: FABRIC_PROTOCOL_VERSION,
         lease_id: lease.lease_id,
         gateway_generation,
+        node_daemon_id: hello.node_daemon_id.clone(),
+        node_daemon_generation: hello.node_daemon_generation,
         control_plane_generation,
         next_route_seq: state
             .route_sequences
@@ -204,6 +214,8 @@ pub(crate) fn heartbeat(
     control_plane_generation: u64,
     node_id: &str,
     gateway_generation: u64,
+    node_daemon_id: &str,
+    node_daemon_generation: u64,
     expected_revision: u64,
     now_unix_ms: u64,
 ) -> Result<NodeGatewayLease, FabricError> {
@@ -216,6 +228,8 @@ pub(crate) fn heartbeat(
     if lease.company_id != company_id
         || lease.control_plane_generation != control_plane_generation
         || lease.gateway_generation != gateway_generation
+        || lease.node_daemon_id != node_daemon_id
+        || lease.node_daemon_generation != node_daemon_generation
         || lease.expires_at_unix_ms <= now_unix_ms
     {
         return Err(FabricError::none(
@@ -252,12 +266,15 @@ pub(crate) fn heartbeat(
     Ok(next)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn require_current_gateway<'a>(
     state: &'a FabricState,
     company_id: &str,
     control_plane_generation: u64,
     node_id: &str,
     gateway_generation: u64,
+    node_daemon_id: &str,
+    node_daemon_generation: u64,
     now_unix_ms: u64,
 ) -> Result<&'a NodeGatewayLease, FabricError> {
     let lease = state.gateway_leases.get(node_id).ok_or_else(|| {
@@ -269,6 +286,8 @@ pub(crate) fn require_current_gateway<'a>(
     if lease.company_id != company_id
         || lease.control_plane_generation != control_plane_generation
         || lease.gateway_generation != gateway_generation
+        || lease.node_daemon_id != node_daemon_id
+        || lease.node_daemon_generation != node_daemon_generation
         || lease.expires_at_unix_ms <= now_unix_ms
     {
         return Err(FabricError::none(

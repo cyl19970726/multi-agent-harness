@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": [
     "id", "company_id", "operation_id", "target_node_id",
-    "target_gateway_generation", "control_plane_generation", "route_seq", "kind",
+    "target_gateway_generation", "control_plane_generation", "route_seq", "kind", "application_effect",
     "result_schema", "result", "result_digest", "error", "created_at_unix_ms",
     "schema_version"
   ],
@@ -19,6 +19,7 @@
     "control_plane_generation": { "type": "integer", "minimum": 1 },
     "route_seq": { "type": "integer", "minimum": 1 },
     "kind": { "enum": ["control_plane_accepted", "target_persisted", "operation_applied", "operation_rejected"] },
+    "application_effect": { "type": ["string", "null"], "enum": ["none", "not_applied", "applied", "unknown", null] },
     "result_schema": { "type": ["string", "null"] },
     "result": {},
     "result_digest": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },

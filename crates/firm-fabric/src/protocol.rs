@@ -2,14 +2,25 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{canonical_digest, FABRIC_PROTOCOL_VERSION, FABRIC_SCHEMA_VERSION};
+use crate::{
+    canonical_digest, FABRIC_CANONICALIZATION_VERSION, FABRIC_PROTOCOL_VERSION,
+    FABRIC_SCHEMA_VERSION,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectCertainty {
     None,
+    NotApplied,
     Unknown,
     Applied,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationSourceAuthority {
+    Node,
+    ControlPlane,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -249,6 +260,8 @@ pub struct NodeGatewayLease {
     pub lease_id: String,
     pub gateway_generation: u64,
     pub instance_id: String,
+    pub node_daemon_id: String,
+    pub node_daemon_generation: u64,
     pub revision: u64,
     pub control_plane_generation: u64,
     pub acquired_at_unix_ms: u64,
@@ -288,6 +301,8 @@ pub struct NodeHello {
     pub company_id: String,
     pub node_id: String,
     pub instance_id: String,
+    pub node_daemon_id: String,
+    pub node_daemon_generation: u64,
     pub protocol_min: u32,
     pub protocol_max: u32,
     pub schema_bundle_digest: String,
@@ -315,6 +330,8 @@ pub struct NodeWelcome {
     pub accepted_protocol_version: u32,
     pub lease_id: String,
     pub gateway_generation: u64,
+    pub node_daemon_id: String,
+    pub node_daemon_generation: u64,
     pub control_plane_generation: u64,
     pub next_route_seq: u64,
     pub required_reconcile_ids: BTreeSet<String>,
@@ -368,12 +385,23 @@ pub struct RuntimeCommandReference {
 }
 
 /// Wave 4C Message authority remains on the source NodeDaemon. Cross-node
-/// routing therefore carries only this immutable identity + content digest.
+/// routing carries the immutable envelope itself or an authenticated,
+/// content-addressed reference; identity + digest alone is never routable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MessageReference {
     pub message_id: String,
     pub body_digest: String,
+    pub canonical_message_envelope: Option<Value>,
+    pub message_object_ref: Option<MessageObjectReference>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessageObjectReference {
+    pub artifact_id: String,
+    pub object_digest: String,
+    pub read_capability: ArtifactCapability,
 }
 
 /// Per-recipient routing intent. The target NodeDaemon remains the only
@@ -411,9 +439,12 @@ pub struct RoutedOperation {
     pub id: String,
     pub company_id: String,
     pub kind: String,
-    pub source_node_id: String,
+    pub source_authority: OperationSourceAuthority,
+    pub source_node_id: Option<String>,
     pub target_node_id: String,
-    pub source_gateway_generation: u64,
+    pub source_gateway_generation: Option<u64>,
+    pub source_node_daemon_id: Option<String>,
+    pub source_node_daemon_generation: Option<u64>,
     pub control_plane_generation: u64,
     pub source_execution_space_id: Option<String>,
     pub target_execution_space_id: Option<String>,
@@ -433,6 +464,7 @@ pub struct RoutedOperation {
     pub expires_at_unix_ms: u64,
     pub protocol_version: u32,
     pub schema_version: String,
+    pub canonicalization_version: String,
 }
 
 impl RoutedOperation {
@@ -520,7 +552,32 @@ fn validate_closed_body(
                 && body.target_node_daemon_generation > 0
         }
         ClosedOperationBody::Message(body) => {
-            non_empty(&body.message_id) && fingerprint(&body.body_digest)
+            let embedded = body
+                .canonical_message_envelope
+                .as_ref()
+                .is_some_and(|envelope| {
+                    let body_value = envelope.get("body").and_then(Value::as_str);
+                    let computed_body_digest = body_value.and_then(|message_body| {
+                        crate::canonical_digest(&serde_json::json!({"body": message_body}))
+                            .ok()
+                            .map(|digest| format!("sha256:{digest}"))
+                    });
+                    envelope.get("id").and_then(Value::as_str) == Some(body.message_id.as_str())
+                        && envelope.get("body_digest").and_then(Value::as_str)
+                            == Some(body.body_digest.as_str())
+                        && computed_body_digest.as_deref() == Some(body.body_digest.as_str())
+                });
+            let referenced = body.message_object_ref.as_ref().is_some_and(|reference| {
+                non_empty(&reference.artifact_id)
+                    && digest(&reference.object_digest)
+                    && reference.read_capability.artifact_id == reference.artifact_id
+                    && reference.read_capability.artifact_digest == reference.object_digest
+                    && reference.read_capability.company_id == operation.company_id
+                    && reference.read_capability.node_id == operation.target_node_id
+                    && reference.read_capability.purpose == ArtifactCapabilityPurpose::Download
+                    && reference.read_capability.expires_at_unix_ms > operation.created_at_unix_ms
+            });
+            non_empty(&body.message_id) && fingerprint(&body.body_digest) && (embedded ^ referenced)
         }
         ClosedOperationBody::DeliveryIntent(body) => {
             non_empty(&body.delivery_id)
@@ -576,7 +633,7 @@ pub struct RouteAttempt {
 #[serde(deny_unknown_fields)]
 pub struct FabricRateWindow {
     pub company_id: String,
-    pub source_node_id: String,
+    pub source_authority_key: String,
     pub actor_id: String,
     pub window_started_at_unix_ms: u64,
     pub accepted_count: u32,
@@ -603,6 +660,9 @@ pub struct RouteReceipt {
     pub control_plane_generation: u64,
     pub route_seq: u64,
     pub kind: ReceiptKind,
+    /// Application effect asserted by the generation-fenced target result.
+    /// Transport-only receipts leave this unset.
+    pub application_effect: Option<EffectCertainty>,
     pub result_schema: Option<String>,
     pub result: Option<Value>,
     pub result_digest: Option<String>,
@@ -740,9 +800,12 @@ pub struct FabricFrame {
     pub frame_id: String,
     pub protocol_version: u32,
     pub schema_version: String,
+    pub canonicalization_version: String,
     pub company_id: String,
     pub node_id: String,
     pub gateway_generation: u64,
+    pub node_daemon_id: String,
+    pub node_daemon_generation: u64,
     pub control_plane_generation: u64,
     pub sent_at_unix_ms: u64,
     pub correlation_id: String,
@@ -757,6 +820,8 @@ impl FabricFrame {
         company_id: impl Into<String>,
         node_id: impl Into<String>,
         gateway_generation: u64,
+        node_daemon_id: impl Into<String>,
+        node_daemon_generation: u64,
         control_plane_generation: u64,
         sent_at_unix_ms: u64,
         correlation_id: impl Into<String>,
@@ -767,9 +832,12 @@ impl FabricFrame {
             frame_id: frame_id.into(),
             protocol_version: FABRIC_PROTOCOL_VERSION,
             schema_version: FABRIC_SCHEMA_VERSION.into(),
+            canonicalization_version: FABRIC_CANONICALIZATION_VERSION.into(),
             company_id: company_id.into(),
             node_id: node_id.into(),
             gateway_generation,
+            node_daemon_id: node_daemon_id.into(),
+            node_daemon_generation,
             control_plane_generation,
             sent_at_unix_ms,
             correlation_id: correlation_id.into(),
@@ -784,6 +852,8 @@ impl FabricFrame {
             || self.node_id.trim().is_empty()
             || self.correlation_id.trim().is_empty()
             || self.gateway_generation == 0
+            || self.node_daemon_id.trim().is_empty()
+            || self.node_daemon_generation == 0
             || self.control_plane_generation == 0
         {
             return Err(FabricError::none(
@@ -801,6 +871,12 @@ impl FabricFrame {
             return Err(FabricError::none(
                 FabricErrorCode::SchemaIncompatible,
                 "fabric schema version mismatch",
+            ));
+        }
+        if self.canonicalization_version != FABRIC_CANONICALIZATION_VERSION {
+            return Err(FabricError::none(
+                FabricErrorCode::SchemaIncompatible,
+                "Fabric canonicalization version mismatch",
             ));
         }
         if canonical_digest(&self.payload)? != self.payload_digest {

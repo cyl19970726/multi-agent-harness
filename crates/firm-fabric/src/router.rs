@@ -2,8 +2,19 @@ use crate::node_gateway::require_current_gateway;
 use crate::protocol::*;
 use crate::store::{FabricState, FabricStoreLimits};
 use crate::{
-    canonical_digest, FabricError, FabricErrorCode, FABRIC_PROTOCOL_VERSION, FABRIC_SCHEMA_VERSION,
+    canonical_digest, FabricError, FabricErrorCode, FABRIC_CANONICALIZATION_VERSION,
+    FABRIC_PROTOCOL_VERSION, FABRIC_SCHEMA_VERSION,
 };
+
+fn operation_source_key(operation: &RoutedOperation) -> String {
+    match operation.source_authority {
+        OperationSourceAuthority::Node => format!(
+            "node:{}",
+            operation.source_node_id.as_deref().unwrap_or("missing")
+        ),
+        OperationSourceAuthority::ControlPlane => "control_plane".into(),
+    }
+}
 
 #[allow(clippy::type_complexity)]
 pub(crate) fn accept_and_enqueue(
@@ -16,9 +27,10 @@ pub(crate) fn accept_and_enqueue(
 ) -> Result<(RoutedOperation, RouteAttempt, RouteReceipt, bool), FabricError> {
     validate_operation(state, company_id, &operation, now_unix_ms)?;
     let request_digest = canonical_digest(&operation)?;
+    let source_authority_key = operation_source_key(&operation);
     let idempotency_index = format!(
         "{}:{}:{}",
-        company_id, operation.source_node_id, operation.idempotency_key
+        company_id, source_authority_key, operation.idempotency_key
     );
     if let Some(existing_id) = state.operation_idempotency.get(&idempotency_index) {
         let existing = state.operations.get(existing_id).ok_or_else(|| {
@@ -60,7 +72,7 @@ pub(crate) fn accept_and_enqueue(
     }
     let rate_key = format!(
         "{}:{}:{}",
-        company_id, operation.source_node_id, operation.actor.actor_id
+        company_id, source_authority_key, operation.actor.actor_id
     );
     let window_start = now_unix_ms - (now_unix_ms % 60_000);
     if let Some(window) = state.rate_windows.get(&rate_key) {
@@ -171,6 +183,7 @@ pub(crate) fn accept_and_enqueue(
         control_plane_generation,
         route_seq,
         kind: ReceiptKind::ControlPlaneAccepted,
+        application_effect: None,
         result_schema: None,
         result: None,
         result_digest: None,
@@ -197,7 +210,7 @@ pub(crate) fn accept_and_enqueue(
         .entry(rate_key)
         .or_insert(FabricRateWindow {
             company_id: company_id.into(),
-            source_node_id: operation.source_node_id.clone(),
+            source_authority_key,
             actor_id: operation.actor.actor_id.clone(),
             window_started_at_unix_ms: window_start,
             accepted_count: 0,
@@ -352,6 +365,7 @@ pub(crate) fn retry_operation(
         control_plane_generation,
         route_seq,
         kind: ReceiptKind::ControlPlaneAccepted,
+        application_effect: None,
         result_schema: None,
         result: None,
         result_digest: None,
@@ -374,6 +388,8 @@ pub(crate) fn record_target_persisted(
     control_plane_generation: u64,
     node_id: &str,
     gateway_generation: u64,
+    node_daemon_id: &str,
+    node_daemon_generation: u64,
     operation_id: &str,
     request_digest: &str,
     route_seq: u64,
@@ -385,6 +401,8 @@ pub(crate) fn record_target_persisted(
         control_plane_generation,
         node_id,
         gateway_generation,
+        node_daemon_id,
+        node_daemon_generation,
         now_unix_ms,
     )?;
     let operation = state.operations.get(operation_id).ok_or_else(|| {
@@ -458,6 +476,7 @@ pub(crate) fn record_target_persisted(
         control_plane_generation,
         route_seq,
         kind: ReceiptKind::TargetPersisted,
+        application_effect: None,
         result_schema: None,
         result: None,
         result_digest: None,
@@ -476,10 +495,12 @@ pub(crate) fn record_application_receipt(
     control_plane_generation: u64,
     node_id: &str,
     gateway_generation: u64,
+    node_daemon_id: &str,
+    node_daemon_generation: u64,
     operation_id: &str,
     result_schema: &str,
     result: serde_json::Value,
-    applied: bool,
+    effect: EffectCertainty,
     now_unix_ms: u64,
 ) -> Result<(RouteAttempt, RouteReceipt, bool), FabricError> {
     require_current_gateway(
@@ -488,6 +509,8 @@ pub(crate) fn record_application_receipt(
         control_plane_generation,
         node_id,
         gateway_generation,
+        node_daemon_id,
+        node_daemon_generation,
         now_unix_ms,
     )?;
     let operation = state.operations.get(operation_id).ok_or_else(|| {
@@ -503,15 +526,21 @@ pub(crate) fn record_application_receipt(
         ));
     }
     let result_digest = canonical_digest(&result)?;
-    let kind = if applied {
-        ReceiptKind::OperationApplied
-    } else {
-        ReceiptKind::OperationRejected
+    let kind = match effect {
+        EffectCertainty::Applied => ReceiptKind::OperationApplied,
+        EffectCertainty::NotApplied | EffectCertainty::Unknown => ReceiptKind::OperationRejected,
+        EffectCertainty::None => {
+            return Err(FabricError::none(
+                FabricErrorCode::InvalidPayload,
+                "target result must prove applied, not_applied, or unknown",
+            ));
+        }
     };
     let receipt_key = receipt_id(operation_id, kind, gateway_generation);
     if let Some(receipt) = state.receipts.get(&receipt_key).cloned() {
         if receipt.result_digest.as_deref() != Some(result_digest.as_str())
             || receipt.result_schema.as_deref() != Some(result_schema)
+            || receipt.application_effect != Some(effect)
         {
             return Err(FabricError::none(
                 FabricErrorCode::IdempotencyConflict,
@@ -562,11 +591,9 @@ pub(crate) fn record_application_receipt(
         ));
     }
     attempt.state = RouteAttemptState::Ended;
-    attempt.effect = if applied {
-        EffectCertainty::Applied
-    } else {
-        EffectCertainty::None
-    };
+    // RouteAttempt records transport progress only. Application truth belongs
+    // exclusively to the generation-fenced target receipt below.
+    attempt.effect = EffectCertainty::None;
     attempt.ended_at_unix_ms = Some(now_unix_ms);
     let attempt = attempt.clone();
     let receipt = RouteReceipt {
@@ -578,6 +605,7 @@ pub(crate) fn record_application_receipt(
         control_plane_generation,
         route_seq: attempt.route_seq,
         kind,
+        application_effect: Some(effect),
         result_schema: Some(result_schema.into()),
         result: Some(result),
         result_digest: Some(result_digest),
@@ -654,6 +682,7 @@ fn validate_operation(
         .require_company_and_role(company_id, "fabric_submit", now_unix_ms)?;
     if operation.protocol_version != FABRIC_PROTOCOL_VERSION
         || operation.schema_version != FABRIC_SCHEMA_VERSION
+        || operation.canonicalization_version != FABRIC_CANONICALIZATION_VERSION
     {
         return Err(FabricError::none(
             FabricErrorCode::ProtocolIncompatible,
@@ -701,7 +730,46 @@ fn validate_operation(
         ARTIFACT_REFERENCE_KIND => "artifact-transfer",
         _ => unreachable!("closed operation registry was checked above"),
     };
-    for node_id in [&operation.source_node_id, &operation.target_node_id] {
+    let mut node_ids = vec![operation.target_node_id.as_str()];
+    match operation.source_authority {
+        OperationSourceAuthority::Node => {
+            let source_node_id = operation.source_node_id.as_deref().ok_or_else(|| {
+                FabricError::none(
+                    FabricErrorCode::SourceMismatch,
+                    "node-authority operation requires source_node_id",
+                )
+            })?;
+            if operation.source_gateway_generation.is_none() {
+                return Err(FabricError::none(
+                    FabricErrorCode::SourceMismatch,
+                    "node-authority operation requires source gateway generation",
+                ));
+            }
+            if operation.source_node_daemon_id.is_none()
+                || operation.source_node_daemon_generation.is_none()
+            {
+                return Err(FabricError::none(
+                    FabricErrorCode::SourceMismatch,
+                    "node-authority operation requires exact NodeDaemon id and generation",
+                ));
+            }
+            node_ids.push(source_node_id);
+        }
+        OperationSourceAuthority::ControlPlane => {
+            if operation.source_node_id.is_some()
+                || operation.source_gateway_generation.is_some()
+                || operation.source_node_daemon_id.is_some()
+                || operation.source_node_daemon_generation.is_some()
+                || operation.source_execution_space_id.is_some()
+            {
+                return Err(FabricError::none(
+                    FabricErrorCode::SourceMismatch,
+                    "Control Plane operation cannot claim Node source authority",
+                ));
+            }
+        }
+    }
+    for node_id in node_ids {
         let node = state.nodes.get(node_id).ok_or_else(|| {
             FabricError::none(
                 FabricErrorCode::TargetNotPlaced,
@@ -733,14 +801,28 @@ fn validate_operation(
             "draining Node does not accept new routed operations",
         ));
     }
-    require_current_gateway(
-        state,
-        company_id,
-        operation.control_plane_generation,
-        &operation.source_node_id,
-        operation.source_gateway_generation,
-        now_unix_ms,
-    )?;
+    if operation.source_authority == OperationSourceAuthority::Node {
+        require_current_gateway(
+            state,
+            company_id,
+            operation.control_plane_generation,
+            operation
+                .source_node_id
+                .as_deref()
+                .expect("validated Node source id"),
+            operation
+                .source_gateway_generation
+                .expect("validated Node gateway generation"),
+            operation
+                .source_node_daemon_id
+                .as_deref()
+                .expect("validated NodeDaemon id"),
+            operation
+                .source_node_daemon_generation
+                .expect("validated NodeDaemon generation"),
+            now_unix_ms,
+        )?;
+    }
     Ok(())
 }
 

@@ -5,7 +5,7 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "company_id", "node_id", "instance_id", "protocol_min", "protocol_max",
+    "company_id", "node_id", "instance_id", "node_daemon_id", "node_daemon_generation", "protocol_min", "protocol_max",
     "schema_bundle_digest", "features", "build_sha", "last_persisted_route_seq",
     "unresolved_operation_ids", "certificate_serial", "public_key_fingerprint"
   ],
@@ -13,6 +13,8 @@
     "company_id": { "type": "string", "minLength": 1 },
     "node_id": { "type": "string", "minLength": 1 },
     "instance_id": { "type": "string", "minLength": 1 },
+    "node_daemon_id": { "type": "string", "minLength": 1 },
+    "node_daemon_generation": { "type": "integer", "minimum": 1 },
     "protocol_min": { "type": "integer", "minimum": 1 },
     "protocol_max": { "type": "integer", "minimum": 1 },
     "schema_bundle_digest": { "type": "string", "minLength": 1 },

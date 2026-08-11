@@ -261,11 +261,14 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn heartbeat_gateway(
         &self,
         generation: u64,
         node_id: &str,
         gateway_generation: u64,
+        node_daemon_id: &str,
+        node_daemon_generation: u64,
         expected_revision: u64,
         now_unix_ms: u64,
     ) -> Result<NodeGatewayLease, FabricError> {
@@ -283,6 +286,8 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
                 generation,
                 node_id,
                 gateway_generation,
+                node_daemon_id,
+                node_daemon_generation,
                 expected_revision,
                 now_unix_ms,
             )
@@ -295,6 +300,8 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
         generation: u64,
         node_id: &str,
         gateway_generation: u64,
+        node_daemon_id: &str,
+        node_daemon_generation: u64,
         current_certificate_serial: &str,
         next_certificate_serial: &str,
         expected_node_revision: u64,
@@ -316,6 +323,8 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
                 generation,
                 node_id,
                 gateway_generation,
+                node_daemon_id,
+                node_daemon_generation,
                 now_unix_ms,
             )?;
             enrollment::rotate_certificate(
@@ -340,15 +349,25 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
         mut operation: RoutedOperation,
         now_unix_ms: u64,
     ) -> Result<(RoutedOperation, RouteAttempt, RouteReceipt, bool), FabricError> {
+        if operation.source_authority != OperationSourceAuthority::Node {
+            return Err(FabricError::none(
+                FabricErrorCode::SourceMismatch,
+                "Node gateway may submit only node-authority operations",
+            ));
+        }
         if source_session.company_id != self.company_id
-            || source_session.node_id != operation.source_node_id
+            || operation.source_node_id.as_deref() != Some(source_session.node_id.as_str())
         {
             return Err(FabricError::none(
                 FabricErrorCode::SourceMismatch,
                 "authenticated source session does not own the routed operation source",
             ));
         }
-        if source_session.gateway_generation != operation.source_gateway_generation
+        if operation.source_gateway_generation != Some(source_session.gateway_generation)
+            || operation.source_node_daemon_id.as_deref()
+                != Some(source_session.node_daemon_id.as_str())
+            || operation.source_node_daemon_generation
+                != Some(source_session.node_daemon_generation)
             || source_session.control_plane_generation != generation
             || operation.control_plane_generation != generation
         {
@@ -359,6 +378,55 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
         }
         // The credential boundary resolves identity and permissions. The wire
         // operation body cannot select the actor persisted in the route journal.
+        operation.actor = authenticated_actor.clone();
+        let limits = self.store.limits();
+        self.store.transact(|state| {
+            require_active_control_plane(
+                state,
+                &self.company_id,
+                &self.instance_id,
+                generation,
+                now_unix_ms,
+            )?;
+            router::accept_and_enqueue(
+                state,
+                &self.company_id,
+                generation,
+                operation,
+                limits,
+                now_unix_ms,
+            )
+        })
+    }
+
+    /// Accept an operation issued directly by the current Control Plane.
+    /// Node source fields are forbidden and the authenticated boundary, not
+    /// the caller's JSON, supplies the durable actor identity.
+    pub fn accept_control_plane_operation(
+        &self,
+        generation: u64,
+        authenticated_actor: &AuthenticatedActor,
+        mut operation: RoutedOperation,
+        now_unix_ms: u64,
+    ) -> Result<(RoutedOperation, RouteAttempt, RouteReceipt, bool), FabricError> {
+        if operation.source_authority != OperationSourceAuthority::ControlPlane
+            || operation.source_node_id.is_some()
+            || operation.source_gateway_generation.is_some()
+            || operation.source_node_daemon_id.is_some()
+            || operation.source_node_daemon_generation.is_some()
+            || operation.source_execution_space_id.is_some()
+        {
+            return Err(FabricError::none(
+                FabricErrorCode::SourceMismatch,
+                "Control Plane operation must not claim Node source authority",
+            ));
+        }
+        if operation.control_plane_generation != generation {
+            return Err(FabricError::none(
+                FabricErrorCode::ControlPlaneStaleGeneration,
+                "Control Plane operation was built for another generation",
+            ));
+        }
         operation.actor = authenticated_actor.clone();
         let limits = self.store.limits();
         self.store.transact(|state| {
@@ -410,6 +478,8 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
         generation: u64,
         node_id: &str,
         gateway_generation: u64,
+        node_daemon_id: &str,
+        node_daemon_generation: u64,
         operation_id: &str,
         request_digest: &str,
         route_seq: u64,
@@ -429,6 +499,8 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
                 generation,
                 node_id,
                 gateway_generation,
+                node_daemon_id,
+                node_daemon_generation,
                 operation_id,
                 request_digest,
                 route_seq,
@@ -443,10 +515,12 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
         generation: u64,
         node_id: &str,
         gateway_generation: u64,
+        node_daemon_id: &str,
+        node_daemon_generation: u64,
         operation_id: &str,
         result_schema: &str,
         result: serde_json::Value,
-        applied: bool,
+        effect: EffectCertainty,
         now_unix_ms: u64,
     ) -> Result<(RouteAttempt, RouteReceipt, bool), FabricError> {
         self.store.transact(|state| {
@@ -463,10 +537,12 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
                 generation,
                 node_id,
                 gateway_generation,
+                node_daemon_id,
+                node_daemon_generation,
                 operation_id,
                 result_schema,
                 result,
-                applied,
+                effect,
                 now_unix_ms,
             )
         })
@@ -490,11 +566,14 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn reconcile(
         &self,
         generation: u64,
         node_id: &str,
         gateway_generation: u64,
+        node_daemon_id: &str,
+        node_daemon_generation: u64,
         operation_ids: &BTreeSet<String>,
         now_unix_ms: u64,
     ) -> Result<Vec<RouteReceipt>, FabricError> {
@@ -512,6 +591,8 @@ impl<'a, K: ArtifactKeyBackend> ControlPlane<'a, K> {
                 generation,
                 node_id,
                 gateway_generation,
+                node_daemon_id,
+                node_daemon_generation,
                 operation_ids,
                 now_unix_ms,
             )

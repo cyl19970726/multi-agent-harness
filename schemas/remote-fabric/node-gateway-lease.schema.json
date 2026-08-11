@@ -6,6 +6,7 @@
   "additionalProperties": false,
   "required": [
     "company_id", "node_id", "lease_id", "gateway_generation", "instance_id",
+    "node_daemon_id", "node_daemon_generation",
     "revision", "control_plane_generation", "acquired_at_unix_ms",
     "expires_at_unix_ms", "last_heartbeat_at_unix_ms", "protocol_version",
     "build_sha", "schema_bundle_digest", "schema_version"
@@ -16,6 +17,8 @@
     "lease_id": { "type": "string", "minLength": 1 },
     "gateway_generation": { "type": "integer", "minimum": 1 },
     "instance_id": { "type": "string", "minLength": 1 },
+    "node_daemon_id": { "type": "string", "minLength": 1 },
+    "node_daemon_generation": { "type": "integer", "minimum": 1 },
     "revision": { "type": "integer", "minimum": 1 },
     "control_plane_generation": { "type": "integer", "minimum": 1 },
     "acquired_at_unix_ms": { "type": "integer", "minimum": 0 },

@@ -2,6 +2,8 @@
   "company_id": "company-test",
   "node_id": "node-a",
   "instance_id": "gateway-a",
+  "node_daemon_id": "node-daemon:node-a",
+  "node_daemon_generation": 3,
   "protocol_min": 1,
   "protocol_max": 1,
   "schema_bundle_digest": "schema-bundle-v1",

@@ -12,6 +12,8 @@ pub(crate) fn reconcile(
     control_plane_generation: u64,
     node_id: &str,
     gateway_generation: u64,
+    node_daemon_id: &str,
+    node_daemon_generation: u64,
     operation_ids: &BTreeSet<String>,
     now_unix_ms: u64,
 ) -> Result<Vec<RouteReceipt>, FabricError> {
@@ -21,6 +23,8 @@ pub(crate) fn reconcile(
         control_plane_generation,
         node_id,
         gateway_generation,
+        node_daemon_id,
+        node_daemon_generation,
         now_unix_ms,
     )?;
     let mut results = Vec::new();

@@ -5,17 +5,20 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "frame_id", "protocol_version", "schema_version", "company_id", "node_id",
-    "gateway_generation", "control_plane_generation", "sent_at_unix_ms",
+    "frame_id", "protocol_version", "schema_version", "canonicalization_version", "company_id", "node_id",
+    "gateway_generation", "node_daemon_id", "node_daemon_generation", "control_plane_generation", "sent_at_unix_ms",
     "correlation_id", "payload", "payload_digest"
   ],
   "properties": {
     "frame_id": { "type": "string", "minLength": 1 },
     "protocol_version": { "const": 1 },
     "schema_version": { "const": "agentfirm.remote_fabric.v1" },
+    "canonicalization_version": { "const": "agentfirm.canonical-json.v1" },
     "company_id": { "type": "string", "minLength": 1 },
     "node_id": { "type": "string", "minLength": 1 },
     "gateway_generation": { "type": "integer", "minimum": 1 },
+    "node_daemon_id": { "type": "string", "minLength": 1 },
+    "node_daemon_generation": { "type": "integer", "minimum": 1 },
     "control_plane_generation": { "type": "integer", "minimum": 1 },
     "sent_at_unix_ms": { "type": "integer", "minimum": 0 },
     "correlation_id": { "type": "string", "minLength": 1 },

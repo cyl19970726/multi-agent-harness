@@ -32,6 +32,7 @@ use sha2::{Digest, Sha256};
 
 pub const FABRIC_PROTOCOL_VERSION: u32 = 1;
 pub const FABRIC_SCHEMA_VERSION: &str = "agentfirm.remote_fabric.v1";
+pub const FABRIC_CANONICALIZATION_VERSION: &str = "agentfirm.canonical-json.v1";
 
 pub fn sha256_hex(bytes: impl AsRef<[u8]>) -> String {
     bytes_to_hex(&Sha256::digest(bytes.as_ref()))
@@ -39,6 +40,22 @@ pub fn sha256_hex(bytes: impl AsRef<[u8]>) -> String {
 
 pub fn json_digest<T: serde::Serialize>(value: &T) -> Result<String, FabricError> {
     canonical_digest(value)
+}
+
+pub fn canonical_json_bytes<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, FabricError> {
+    let value = serde_json::to_value(value).map_err(|error| {
+        FabricError::none(
+            FabricErrorCode::InvalidPayload,
+            format!("canonical JSON conversion failed: {error}"),
+        )
+    })?;
+    let canonical = canonicalize_json(value)?;
+    serde_json::to_vec(&canonical).map_err(|error| {
+        FabricError::none(
+            FabricErrorCode::InvalidPayload,
+            format!("canonical JSON encoding failed: {error}"),
+        )
+    })
 }
 
 pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
@@ -51,11 +68,30 @@ pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
 }
 
 pub(crate) fn canonical_digest<T: serde::Serialize>(value: &T) -> Result<String, FabricError> {
-    let bytes = serde_json::to_vec(value).map_err(|error| {
-        FabricError::none(
-            FabricErrorCode::InvalidPayload,
-            format!("canonical JSON serialization failed: {error}"),
-        )
-    })?;
+    let bytes = canonical_json_bytes(value)?;
     Ok(sha256_hex(bytes))
+}
+
+fn canonicalize_json(value: serde_json::Value) -> Result<serde_json::Value, FabricError> {
+    match value {
+        serde_json::Value::Object(object) => {
+            let mut keys = object.keys().cloned().collect::<Vec<_>>();
+            keys.sort();
+            let mut canonical = serde_json::Map::new();
+            for key in keys {
+                canonical.insert(key.clone(), canonicalize_json(object[&key].clone())?);
+            }
+            Ok(serde_json::Value::Object(canonical))
+        }
+        serde_json::Value::Array(values) => values
+            .into_iter()
+            .map(canonicalize_json)
+            .collect::<Result<Vec<_>, _>>()
+            .map(serde_json::Value::Array),
+        serde_json::Value::Number(number) if number.is_f64() => Err(FabricError::none(
+            FabricErrorCode::InvalidPayload,
+            "canonical Fabric JSON forbids floating-point numbers",
+        )),
+        scalar => Ok(scalar),
+    }
 }

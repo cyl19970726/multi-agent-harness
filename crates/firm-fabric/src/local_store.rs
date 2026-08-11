@@ -17,7 +17,7 @@ pub struct LocalApplicationResult {
     pub result_schema: String,
     pub result: serde_json::Value,
     pub result_digest: String,
-    pub applied: bool,
+    pub effect: EffectCertainty,
     pub gateway_generation: u64,
     pub completed_at_unix_ms: u64,
     pub schema_version: String,
@@ -172,7 +172,10 @@ impl NodeLocalFabricStore {
         _now_unix_ms: u64,
     ) -> Result<(LocalRemoteOutbox, bool), FabricError> {
         self.require_session(session)?;
-        if operation.company_id != self.company_id || operation.source_node_id != self.node_id {
+        if operation.source_authority != OperationSourceAuthority::Node
+            || operation.company_id != self.company_id
+            || operation.source_node_id.as_deref() != Some(self.node_id.as_str())
+        {
             return Err(FabricError::none(
                 FabricErrorCode::SourceMismatch,
                 "source outbox operation does not match this Node authority",
@@ -186,7 +189,9 @@ impl NodeLocalFabricStore {
                 "source outbox actor must be resolved by the authenticated Node session",
             ));
         }
-        if operation.source_gateway_generation != session.gateway_generation
+        if operation.source_gateway_generation != Some(session.gateway_generation)
+            || operation.source_node_daemon_id.as_deref() != Some(session.node_daemon_id.as_str())
+            || operation.source_node_daemon_generation != Some(session.node_daemon_generation)
             || operation.control_plane_generation != session.control_plane_generation
         {
             return Err(FabricError::none(
@@ -200,7 +205,7 @@ impl NodeLocalFabricStore {
         self.transact(|state| {
             if let Some(existing) = state.outboxes.get(&operation.id) {
                 if existing.request_digest != request_digest
-                    || existing.gateway_generation != operation.source_gateway_generation
+                    || Some(existing.gateway_generation) != operation.source_gateway_generation
                     || existing.control_plane_generation != operation.control_plane_generation
                 {
                     return Err(FabricError::none(
@@ -216,7 +221,9 @@ impl NodeLocalFabricStore {
                 operation_id: operation.id.clone(),
                 request_digest,
                 local_state: LocalOutboxState::QueuedForControlPlane,
-                gateway_generation: operation.source_gateway_generation,
+                gateway_generation: operation
+                    .source_gateway_generation
+                    .expect("validated Node source has a gateway generation"),
                 control_plane_generation: operation.control_plane_generation,
                 attempt_count: 0,
                 last_attempt_at_unix_ms: None,
@@ -248,8 +255,11 @@ impl NodeLocalFabricStore {
             ));
         }
         if operation.company_id != self.company_id
-            || operation.source_node_id != self.node_id
-            || operation.source_gateway_generation != session.gateway_generation
+            || operation.source_authority != OperationSourceAuthority::Node
+            || operation.source_node_id.as_deref() != Some(self.node_id.as_str())
+            || operation.source_gateway_generation != Some(session.gateway_generation)
+            || operation.source_node_daemon_id.as_deref() != Some(session.node_daemon_id.as_str())
+            || operation.source_node_daemon_generation != Some(session.node_daemon_generation)
             || operation.control_plane_generation != session.control_plane_generation
         {
             return Err(FabricError::none(
@@ -473,7 +483,7 @@ impl NodeLocalFabricStore {
         operation_id: &str,
         result_schema: &str,
         result: serde_json::Value,
-        applied: bool,
+        effect: EffectCertainty,
         now_unix_ms: u64,
     ) -> Result<(LocalRemoteInbox, LocalApplicationResult, bool), FabricError> {
         self.require_session(session)?;
@@ -482,7 +492,7 @@ impl NodeLocalFabricStore {
             if let Some(existing) = state.results.get(operation_id) {
                 if existing.result_digest != result_digest
                     || existing.result_schema != result_schema
-                    || existing.applied != applied
+                    || existing.effect != effect
                     || existing.gateway_generation != session.gateway_generation
                 {
                     return Err(FabricError::none(
@@ -514,10 +524,16 @@ impl NodeLocalFabricStore {
                 ));
             }
             let mut next_inbox = inbox;
-            next_inbox.state = if applied {
-                LocalInboxState::Applied
-            } else {
-                LocalInboxState::Rejected
+            next_inbox.state = match effect {
+                EffectCertainty::Applied => LocalInboxState::Applied,
+                EffectCertainty::NotApplied => LocalInboxState::Rejected,
+                EffectCertainty::Unknown => LocalInboxState::RecoveryRequired,
+                EffectCertainty::None => {
+                    return Err(FabricError::none(
+                        FabricErrorCode::InvalidPayload,
+                        "a terminal application result must prove applied, not_applied, or unknown",
+                    ));
+                }
             };
             next_inbox.result_digest = Some(result_digest.clone());
             let local_result = LocalApplicationResult {
@@ -525,7 +541,7 @@ impl NodeLocalFabricStore {
                 result_schema: result_schema.into(),
                 result,
                 result_digest,
-                applied,
+                effect,
                 gateway_generation: session.gateway_generation,
                 completed_at_unix_ms: now_unix_ms,
                 schema_version: FABRIC_SCHEMA_VERSION.into(),
@@ -619,7 +635,11 @@ impl NodeLocalFabricStore {
                 "authenticated Fabric session does not own this Node-local Store",
             ));
         }
-        if session.gateway_generation == 0 || session.control_plane_generation == 0 {
+        if session.gateway_generation == 0
+            || session.node_daemon_id.trim().is_empty()
+            || session.node_daemon_generation == 0
+            || session.control_plane_generation == 0
+        {
             return Err(FabricError::none(
                 FabricErrorCode::NodeStaleGeneration,
                 "authenticated Fabric session generations must be non-zero",

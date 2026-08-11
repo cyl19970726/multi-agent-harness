@@ -1,4 +1,10 @@
 {
   "message_id": "message:remote-1",
-  "body_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  "body_digest": "sha256:1da63ae1d1c64f4549cece58555b23ef253aa7bb2c5ca6c48c12918863cff51a",
+  "canonical_message_envelope": {
+    "id": "message:remote-1",
+    "body": "hello",
+    "body_digest": "sha256:1da63ae1d1c64f4549cece58555b23ef253aa7bb2c5ca6c48c12918863cff51a"
+  },
+  "message_object_ref": null
 }

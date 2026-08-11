@@ -104,6 +104,8 @@ pub struct FabricSessionFence {
     pub company_id: String,
     pub node_id: String,
     pub gateway_generation: u64,
+    pub node_daemon_id: String,
+    pub node_daemon_generation: u64,
     pub control_plane_generation: u64,
 }
 
@@ -113,6 +115,8 @@ impl FabricSessionFence {
         if frame.company_id != self.company_id
             || frame.node_id != self.node_id
             || frame.gateway_generation != self.gateway_generation
+            || frame.node_daemon_id != self.node_daemon_id
+            || frame.node_daemon_generation != self.node_daemon_generation
             || frame.control_plane_generation != self.control_plane_generation
         {
             return Err(FabricError::none(

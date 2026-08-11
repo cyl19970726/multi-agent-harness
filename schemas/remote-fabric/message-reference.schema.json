@@ -4,9 +4,43 @@
   "title": "MessageReference",
   "type": "object",
   "additionalProperties": false,
-  "required": ["message_id", "body_digest"],
+  "required": ["message_id", "body_digest", "canonical_message_envelope", "message_object_ref"],
   "properties": {
     "message_id": { "type": "string", "minLength": 1 },
-    "body_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
-  }
+    "body_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "canonical_message_envelope": { "type": ["object", "null"] },
+    "message_object_ref": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["artifact_id", "object_digest", "read_capability"],
+      "properties": {
+        "artifact_id": { "type": "string", "minLength": 1 },
+        "object_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "read_capability": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "token", "company_id", "node_id", "artifact_id", "artifact_digest",
+            "purpose", "issued_to", "issued_at_unix_ms", "expires_at_unix_ms", "one_use"
+          ],
+          "properties": {
+            "token": { "type": "string", "minLength": 1 },
+            "company_id": { "type": "string", "minLength": 1 },
+            "node_id": { "type": "string", "minLength": 1 },
+            "artifact_id": { "type": "string", "minLength": 1 },
+            "artifact_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "purpose": { "const": "download" },
+            "issued_to": { "type": "string", "minLength": 1 },
+            "issued_at_unix_ms": { "type": "integer", "minimum": 0 },
+            "expires_at_unix_ms": { "type": "integer", "minimum": 1 },
+            "one_use": { "type": "boolean" }
+          }
+        }
+      }
+    }
+  },
+  "oneOf": [
+    { "properties": { "canonical_message_envelope": { "type": "object" }, "message_object_ref": { "type": "null" } } },
+    { "properties": { "canonical_message_envelope": { "type": "null" }, "message_object_ref": { "type": "object" } } }
+  ]
 }

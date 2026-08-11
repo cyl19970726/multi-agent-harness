@@ -67,6 +67,8 @@ fn hello(node: &str, instance: &str, cert: &str, fingerprint: &str) -> NodeHello
         company_id: COMPANY.into(),
         node_id: node.into(),
         instance_id: instance.into(),
+        node_daemon_id: format!("node-daemon:{node}"),
+        node_daemon_generation: 1,
         protocol_min: FABRIC_PROTOCOL_VERSION,
         protocol_max: FABRIC_PROTOCOL_VERSION,
         schema_bundle_digest: SCHEMA_DIGEST.into(),
@@ -189,9 +191,12 @@ fn operation(source_generation: u64, control_generation: u64) -> RoutedOperation
         id: "operation-1".into(),
         company_id: COMPANY.into(),
         kind: "fabric.probe.v1".into(),
-        source_node_id: "node-a".into(),
+        source_authority: OperationSourceAuthority::Node,
+        source_node_id: Some("node-a".into()),
         target_node_id: "node-b".into(),
-        source_gateway_generation: source_generation,
+        source_gateway_generation: Some(source_generation),
+        source_node_daemon_id: Some("node-daemon:node-a".into()),
+        source_node_daemon_generation: Some(1),
         control_plane_generation: control_generation,
         source_execution_space_id: Some("space-a".into()),
         target_execution_space_id: Some("space-b".into()),
@@ -211,6 +216,7 @@ fn operation(source_generation: u64, control_generation: u64) -> RoutedOperation
         expires_at_unix_ms: 50_000,
         protocol_version: FABRIC_PROTOCOL_VERSION,
         schema_version: FABRIC_SCHEMA_VERSION.into(),
+        canonicalization_version: FABRIC_CANONICALIZATION_VERSION.into(),
     }
 }
 
@@ -223,6 +229,8 @@ fn fabric_session(
         company_id: COMPANY.into(),
         node_id: node_id.into(),
         gateway_generation,
+        node_daemon_id: format!("node-daemon:{node_id}"),
+        node_daemon_generation: 1,
         control_plane_generation,
     }
 }
@@ -282,6 +290,162 @@ fn operation_registry_requires_closed_kind_schema_and_body_scope() {
             .code,
         FabricErrorCode::SchemaIncompatible
     );
+}
+
+#[test]
+fn canonical_json_v1_is_key_order_independent_and_rejects_floats() {
+    let left = json!({"z": [3, {"b": 2, "a": 1}], "a": "value"});
+    let right = json!({"a": "value", "z": [3, {"a": 1, "b": 2}]});
+    assert_eq!(
+        canonical_json_bytes(&left).expect("canonical left"),
+        br#"{"a":"value","z":[3,{"a":1,"b":2}]}"#
+    );
+    assert_eq!(json_digest(&left).unwrap(), json_digest(&right).unwrap());
+    assert_eq!(
+        json_digest(&json!({"unsafe": 1.5}))
+            .expect_err("wire canonicalization must reject floats")
+            .code,
+        FabricErrorCode::InvalidPayload
+    );
+}
+
+#[test]
+fn message_route_requires_verified_immutable_payload_not_identity_only() {
+    let message_body_digest = format!(
+        "sha256:{}",
+        json_digest(&json!({"body": "hello"})).expect("message body digest")
+    );
+    let mut request = operation(1, 1);
+    request.kind = MESSAGE_REFERENCE_KIND.into();
+    request.body_schema = MESSAGE_REFERENCE_SCHEMA.into();
+    request.body = json!({
+        "message_id": "message:remote-1",
+        "body_digest": message_body_digest,
+        "canonical_message_envelope": {
+            "id": "message:remote-1",
+            "body": "hello",
+            "body_digest": message_body_digest,
+        },
+        "message_object_ref": null,
+    });
+    request.body_digest = json_digest(&request.body).expect("route body digest");
+    assert!(matches!(
+        request.closed_body().expect("immutable embedded message"),
+        ClosedOperationBody::Message(_)
+    ));
+
+    let mut identity_only = request.clone();
+    identity_only.body["canonical_message_envelope"] = serde_json::Value::Null;
+    identity_only.body_digest = json_digest(&identity_only.body).unwrap();
+    assert_eq!(
+        identity_only
+            .closed_body()
+            .expect_err("message identity and digest alone are not a payload")
+            .code,
+        FabricErrorCode::InvalidPayload
+    );
+
+    let mut tampered = request;
+    tampered.body["canonical_message_envelope"]["body"] = json!("tampered");
+    tampered.body_digest = json_digest(&tampered.body).unwrap();
+    assert_eq!(
+        tampered
+            .closed_body()
+            .expect_err("target must verify the immutable message body digest")
+            .code,
+        FabricErrorCode::InvalidPayload
+    );
+}
+
+#[test]
+fn control_plane_source_is_closed_and_node_daemon_parent_fences_successors() {
+    let root = TestRoot::new("source-authority-and-daemon-parent");
+    let store = FabricStore::open(root.path()).expect("open store");
+    let keys = InMemoryArtifactKeyBackend::default();
+    keys.insert(COMPANY, [7; 32]);
+    let control = ControlPlane::new(COMPANY, "control", &store, &keys, [9; 32]);
+    let lease = control.acquire_lease("cp-lease", 0, 1).expect("lease");
+    enroll_nodes(&control, lease.control_plane_generation);
+    let target_hello = hello("node-b", "gateway-b", "cert-b", &fingerprint("node-b"));
+    connect_node(
+        &control,
+        lease.control_plane_generation,
+        &target_hello,
+        &signing_key("node-b"),
+        30,
+    )
+    .expect("connect target");
+
+    let mut control_operation = operation(1, lease.control_plane_generation);
+    control_operation.id = "operation-control-plane".into();
+    control_operation.idempotency_key = "idempotency-control-plane".into();
+    control_operation.source_authority = OperationSourceAuthority::ControlPlane;
+    control_operation.source_node_id = None;
+    control_operation.source_gateway_generation = None;
+    control_operation.source_node_daemon_id = None;
+    control_operation.source_node_daemon_generation = None;
+    control_operation.source_execution_space_id = None;
+    let (_, _, _, replayed) = control
+        .accept_control_plane_operation(
+            lease.control_plane_generation,
+            &actor("control-service", &["fabric_submit"]),
+            control_operation.clone(),
+            100,
+        )
+        .expect("Control Plane source routes without a fabricated Node");
+    assert!(!replayed);
+
+    let before_forged = store.snapshot().expect("snapshot");
+    let mut forged = control_operation;
+    forged.id = "operation-forged-control-source".into();
+    forged.idempotency_key = "idempotency-forged-control-source".into();
+    forged.source_node_daemon_id = Some("node-daemon:forged".into());
+    assert_eq!(
+        control
+            .accept_control_plane_operation(
+                lease.control_plane_generation,
+                &actor("control-service", &["fabric_submit"]),
+                forged,
+                101,
+            )
+            .expect_err("Control Plane source cannot claim Node authority")
+            .code,
+        FabricErrorCode::SourceMismatch
+    );
+    assert_eq!(store.snapshot().expect("snapshot"), before_forged);
+
+    let source_hello = hello("node-a", "gateway-a", "cert-a", &fingerprint("node-a"));
+    let source = connect_node(
+        &control,
+        lease.control_plane_generation,
+        &source_hello,
+        &signing_key("node-a"),
+        102,
+    )
+    .expect("connect source");
+    let mut stale_daemon = operation(source.gateway_generation, lease.control_plane_generation);
+    stale_daemon.id = "operation-stale-daemon".into();
+    stale_daemon.idempotency_key = "idempotency-stale-daemon".into();
+    stale_daemon.source_node_daemon_generation = Some(source.node_daemon_generation + 1);
+    let before_stale = store.snapshot().expect("snapshot");
+    assert_eq!(
+        control
+            .accept_operation(
+                lease.control_plane_generation,
+                &fabric_session(
+                    "node-a",
+                    source.gateway_generation,
+                    lease.control_plane_generation,
+                ),
+                &actor("fabric-client", &["fabric_submit"]),
+                stale_daemon,
+                103,
+            )
+            .expect_err("gateway lease is a child of exact NodeDaemon generation")
+            .code,
+        FabricErrorCode::NodeStaleGeneration
+    );
+    assert_eq!(store.snapshot().expect("snapshot"), before_stale);
 }
 
 fn accept_fabric_operation<K: ArtifactKeyBackend>(
@@ -588,7 +752,7 @@ fn durable_route_replays_exactly_and_fences_stale_source_generation() {
             &request.id,
             "agentfirm.remote_fabric.probe_result.v1",
             json!({"reachable": true}),
-            true,
+            EffectCertainty::Applied,
             101,
         )
         .expect_err("application cannot precede durable target inbox");
@@ -606,6 +770,8 @@ fn durable_route_replays_exactly_and_fences_stale_source_generation() {
             lease.control_plane_generation,
             "node-b",
             target.gateway_generation,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
             &request.id,
             &request_digest,
             attempt.route_seq,
@@ -623,7 +789,7 @@ fn durable_route_replays_exactly_and_fences_stale_source_generation() {
             &request.id,
             "agentfirm.remote_fabric.probe_result.v1",
             json!({"reachable": true}),
-            true,
+            EffectCertainty::Applied,
             103,
         )
         .expect("record result");
@@ -633,15 +799,19 @@ fn durable_route_replays_exactly_and_fences_stale_source_generation() {
             lease.control_plane_generation,
             "node-b",
             target.gateway_generation,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
             &request.id,
             &local_result.result_schema,
             local_result.result,
-            local_result.applied,
+            local_result.effect,
             103,
         )
         .expect("record application receipt");
     assert!(!replayed);
     assert_eq!(terminal.kind, ReceiptKind::OperationApplied);
+    assert_eq!(terminal.application_effect, Some(EffectCertainty::Applied));
+    assert_eq!(attempt.effect, EffectCertainty::None);
     assert_eq!(terminal_inbox.state, LocalInboxState::Applied);
     let state = store.snapshot().expect("snapshot");
     assert_eq!(state.operations.len(), 1);
@@ -866,7 +1036,7 @@ fn node_local_journal_recovers_lost_ack_without_duplicate_native_effect() {
             &request.id,
             "agentfirm.remote_fabric.probe_result.v1",
             json!({"reachable": true}),
-            true,
+            EffectCertainty::Applied,
             103,
         )
         .expect_err("native result append acknowledgement is unknown");
@@ -880,13 +1050,13 @@ fn node_local_journal_recovers_lost_ack_without_duplicate_native_effect() {
             &request.id,
             "agentfirm.remote_fabric.probe_result.v1",
             json!({"reachable": true}),
-            true,
+            EffectCertainty::Applied,
             104,
         )
         .expect("exact native result replay after reopen");
     assert!(replayed);
     assert_eq!(inbox.state, LocalInboxState::Applied);
-    assert!(result.applied);
+    assert_eq!(result.effect, EffectCertainty::Applied);
     assert!(recovered_target
         .unresolved_operation_ids()
         .expect("unresolved ids")
@@ -1222,6 +1392,8 @@ fn enrollment_proof_and_certificate_rotation_are_cryptographic_and_generation_fe
             lease.control_plane_generation,
             "node-a",
             welcome.gateway_generation,
+            &welcome.node_daemon_id,
+            welcome.node_daemon_generation,
             "cert-a",
             "cert-a-rotated",
             1,
@@ -1239,6 +1411,8 @@ fn enrollment_proof_and_certificate_rotation_are_cryptographic_and_generation_fe
             lease.control_plane_generation,
             "node-a",
             welcome.gateway_generation,
+            &welcome.node_daemon_id,
+            welcome.node_daemon_generation,
             "cert-a",
             "cert-a-rotated",
             1,
@@ -1430,6 +1604,8 @@ fn retry_requires_a_new_target_generation_and_reconcile_never_blind_replays() {
             lease.control_plane_generation,
             "node-b",
             target.gateway_generation,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
             &request.id,
             &request_digest,
             first_attempt.route_seq,
@@ -1446,6 +1622,8 @@ fn retry_requires_a_new_target_generation_and_reconcile_never_blind_replays() {
             lease.control_plane_generation,
             "node-b",
             successor.gateway_generation,
+            &successor.node_daemon_id,
+            successor.node_daemon_generation,
             &request.id,
             &request_digest,
             second_attempt.route_seq,
@@ -1461,7 +1639,7 @@ fn retry_requires_a_new_target_generation_and_reconcile_never_blind_replays() {
             &request.id,
             "agentfirm.remote_fabric.probe_result.v1",
             json!({"reachable": true}),
-            true,
+            EffectCertainty::Applied,
             30_035,
         )
         .expect("successor records terminal result");
@@ -1470,10 +1648,12 @@ fn retry_requires_a_new_target_generation_and_reconcile_never_blind_replays() {
             lease.control_plane_generation,
             "node-b",
             successor.gateway_generation,
+            &successor.node_daemon_id,
+            successor.node_daemon_generation,
             &request.id,
             &local_result.result_schema,
             local_result.result,
-            local_result.applied,
+            local_result.effect,
             30_035,
         )
         .expect("Control Plane records terminal receipt");
@@ -1499,6 +1679,8 @@ fn retry_requires_a_new_target_generation_and_reconcile_never_blind_replays() {
             lease.control_plane_generation,
             "node-b",
             third.gateway_generation,
+            &third.node_daemon_id,
+            third.node_daemon_generation,
             &BTreeSet::from([request.id]),
             60_033,
         )
@@ -1535,6 +1717,8 @@ fn wire_config_and_frame_codec_are_closed_and_generation_fenced() {
         COMPANY,
         "node-a",
         3,
+        "node-daemon:node-a",
+        5,
         2,
         100,
         "correlation-1",
@@ -1547,6 +1731,8 @@ fn wire_config_and_frame_codec_are_closed_and_generation_fenced() {
         company_id: COMPANY.into(),
         node_id: "node-a".into(),
         gateway_generation: 3,
+        node_daemon_id: "node-daemon:node-a".into(),
+        node_daemon_generation: 5,
         control_plane_generation: 2,
     }
     .validate_frame(&frame)
@@ -1556,6 +1742,8 @@ fn wire_config_and_frame_codec_are_closed_and_generation_fenced() {
         company_id: COMPANY.into(),
         node_id: "node-a".into(),
         gateway_generation: 4,
+        node_daemon_id: "node-daemon:node-a".into(),
+        node_daemon_generation: 5,
         control_plane_generation: 2,
     }
     .validate_frame(&frame)
@@ -1736,6 +1924,8 @@ fn control_plane_successor_immediately_fences_prior_live_gateway_generation() {
         first.control_plane_generation,
         "node-a",
         gateway_one.gateway_generation,
+        &gateway_one.node_daemon_id,
+        gateway_one.node_daemon_generation,
         1,
         29_000,
     )
@@ -1763,6 +1953,8 @@ fn control_plane_successor_immediately_fences_prior_live_gateway_generation() {
             first.control_plane_generation,
             "node-a",
             gateway_one.gateway_generation,
+            &gateway_one.node_daemon_id,
+            gateway_one.node_daemon_generation,
             2,
             30_003,
         )
@@ -1853,6 +2045,8 @@ fn draining_rejects_new_target_work_but_preserves_inflight_completion() {
             lease.control_plane_generation,
             "node-b",
             target.gateway_generation,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
             &first.id,
             &first_digest,
             attempt.route_seq,
@@ -1868,7 +2062,7 @@ fn draining_rejects_new_target_work_but_preserves_inflight_completion() {
             &first.id,
             "agentfirm.remote_fabric.probe_result.v1",
             json!({"reachable": true}),
-            true,
+            EffectCertainty::Applied,
             104,
         )
         .expect("inflight operation reaches terminal state during drain");
@@ -1877,10 +2071,12 @@ fn draining_rejects_new_target_work_but_preserves_inflight_completion() {
             lease.control_plane_generation,
             "node-b",
             target.gateway_generation,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
             &first.id,
             &local_result.result_schema,
             local_result.result,
-            local_result.applied,
+            local_result.effect,
             104,
         )
         .expect("Control Plane records terminal result during drain");
@@ -2016,6 +2212,8 @@ fn diagnostics_derive_connection_and_recovery_truth_without_mutation() {
             lease.control_plane_generation,
             "node-b",
             target.gateway_generation,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
             &request.id,
             &request_digest,
             attempt.route_seq,
@@ -2132,6 +2330,8 @@ fn three_independent_store_roots_preserve_control_plane_and_node_authority() {
             lease.control_plane_generation,
             "node-b",
             target.gateway_generation,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
             &request.id,
             &request_digest,
             attempt.route_seq,
@@ -2150,7 +2350,7 @@ fn three_independent_store_roots_preserve_control_plane_and_node_authority() {
             &request.id,
             "agentfirm.remote_fabric.probe_result.v1",
             json!({"reachable": true}),
-            true,
+            EffectCertainty::Applied,
             102,
         )
         .expect("target application result is local authority");
@@ -2159,10 +2359,12 @@ fn three_independent_store_roots_preserve_control_plane_and_node_authority() {
             lease.control_plane_generation,
             "node-b",
             target.gateway_generation,
+            &target.node_daemon_id,
+            target.node_daemon_generation,
             &request.id,
             &local_result.result_schema,
             local_result.result.clone(),
-            local_result.applied,
+            local_result.effect,
             103,
         )
         .expect("Control Plane records terminal receipt");

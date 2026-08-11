@@ -1,7 +1,8 @@
 {
   "id": "operation-1", "company_id": "company-a", "kind": "fabric.probe.v1",
-  "source_node_id": "node-a", "target_node_id": "node-b",
-  "source_gateway_generation": 1, "control_plane_generation": 2,
+  "source_authority": "node", "source_node_id": "node-a", "target_node_id": "node-b",
+  "source_gateway_generation": 1, "source_node_daemon_id": "node-daemon:node-a",
+  "source_node_daemon_generation": 1, "control_plane_generation": 2,
   "source_execution_space_id": "space-a", "target_execution_space_id": "space-b",
   "actor": {
     "company_id": "company-a", "actor_id": "service-a", "actor_kind": "service",
@@ -14,5 +15,6 @@
   "body_schema": "agentfirm.remote_fabric.probe.v1", "body": { "probe": "reachable" },
   "body_digest": "b00d49a32ed1df418f763a9f7f067d93a05730c25c9fc515ebaf320c529625a0",
   "priority": "normal", "created_at_unix_ms": 10, "expires_at_unix_ms": 1000,
-  "protocol_version": 1, "schema_version": "agentfirm.remote_fabric.v1"
+  "protocol_version": 1, "schema_version": "agentfirm.remote_fabric.v1",
+  "canonicalization_version": "agentfirm.canonical-json.v1"
 }

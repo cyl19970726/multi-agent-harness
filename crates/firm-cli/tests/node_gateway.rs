@@ -50,9 +50,12 @@ fn operation(envelope: &ControlCommandEnvelope) -> RoutedOperation {
         id: "operation-runtime-1".into(),
         company_id: "company-a".into(),
         kind: RUNTIME_COMMAND_REFERENCE_KIND.into(),
-        source_node_id: "node-a".into(),
+        source_authority: harness_fabric::OperationSourceAuthority::Node,
+        source_node_id: Some("node-a".into()),
         target_node_id: envelope.target_node_id.clone(),
-        source_gateway_generation: 2,
+        source_gateway_generation: Some(2),
+        source_node_daemon_id: Some("node-daemon:node-a".into()),
+        source_node_daemon_generation: Some(2),
         control_plane_generation: 3,
         source_execution_space_id: Some("space-a".into()),
         target_execution_space_id: Some(envelope.execution_space_id.clone()),
@@ -80,6 +83,7 @@ fn operation(envelope: &ControlCommandEnvelope) -> RoutedOperation {
         expires_at_unix_ms: envelope.expires_unix_ms,
         protocol_version: 1,
         schema_version: "agentfirm.remote_fabric.v1".into(),
+        canonicalization_version: harness_fabric::FABRIC_CANONICALIZATION_VERSION.into(),
     }
 }
 
