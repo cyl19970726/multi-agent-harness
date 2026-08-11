@@ -15,9 +15,12 @@ and Report/Finding/Failure/Gate history; private execution mechanics are not
 product Work.
 
 Own one shared-board Work end to end. This skill is a procedural capability, not
-product authority. You are a durable MemberRun with a Workspace, Provider-native
-session, mailbox, permission ceiling, and review responsibility. Your
-Provider-native subagents are implementation details.
+product authority. You are a durable AgentIdentity participating through one
+exact active TeamMembership. The machine-local NodeDaemon owns your current
+AgentSession and provider thread; Work responsibility is frozen separately in
+WorkExecutionBinding. MemberRun and Workspace rows are coordination/history
+projections, not provider runtime authority. Your Provider-native subagents are
+implementation details.
 
 Use the exact `HARNESS_BIN` and identifiers supplied by the collaboration
 envelope. Do not substitute another binary from `PATH` or infer identity from a
@@ -133,8 +136,9 @@ A successful self-claim is already responsibility possession inside this
 bound MemberRun/native turn. It records the `claimed` WorkEvent and returns the
 new Work version; it does not send a WorkDelivery back to yourself. After a
 runtime restart, continue the same `in_progress` Work only through the same
-MemberRun and verified provider-native session, inspect native history and the
-Workspace first, and never invent a provider receipt. Host assignment,
+stable AgentIdentity, active TeamMembership, exact WorkExecutionBinding, and
+current AgentSession generation. Inspect native history and the Workspace first,
+and never invent a provider receipt. Host assignment,
 resume, request-changes, and rebind are external changes and still arrive as
 WorkDelivery.
 

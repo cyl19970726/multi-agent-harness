@@ -27288,7 +27288,7 @@ fn work_contract_prompt(
          \n\
          CURRENT WORK (the Works board is the sole ownership authority)\n\
          - TeamRun: {team_run_id}\n\
-         - ProviderRuntimeProjection: {member_run_id}\n\
+         - Member coordination record (not provider runtime authority): {member_run_id}\n\
          - Work: {work_id} version {work_version}\n\
          - Title: {title}\n\
          - Context:\n{work_context}\n\
@@ -27303,7 +27303,7 @@ fn work_contract_prompt(
            \"$HARNESS_BIN\" team-run work start --team-run-id {team_run_id} --work-id {work_id} --member-run-id {member_run_id} --expected-version {work_version}\n\
          - Read the board: \"$HARNESS_BIN\" team-run work list --team-run-id {team_run_id}\n\
          - Inspect the latest version before every transition: \"$HARNESS_BIN\" team-run work show --work-id {work_id}\n\
-         - Ordinary TeamMessageProjection is conversation only. Link discussion with --work-id {work_id}; never create or transfer ownership through chat.\n\
+         - Ordinary canonical Message is conversation only. Link discussion to Work {work_id}; never create or transfer ownership through chat.\n\
          - Send or reply through an authenticated Member Role Action from the current server-built RoleView. The server resolves your AgentIdentity, AgentSession generation, TeamMembership, Work/Team scope, NodeDaemon generation, and subscription cursor; never select a sender identity in a legacy command.\n\
          - Ask the Host with the exact Work id, decision needed, options, and recommendation. Coordinate with a peer by addressing its stable AgentIdentity in the same Team; conversation never transfers Work.\n\
          - If blocked, run team-run work block with team/member/work ids, the latest expected version, and a reason; then send a concise Work-linked message explaining the decision needed.\n\
