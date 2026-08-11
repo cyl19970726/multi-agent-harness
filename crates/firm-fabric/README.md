@@ -23,8 +23,11 @@ cannot mutate them directly.
 - Every normal frame is at most 256 KiB, uses subprotocol
   `agentfirm.node.v1`, is closed-contract JSON, and carries exact Company, Node, gateway
   generation, Control Plane generation, protocol version, schema version, and
-  payload digest. The future socket adapter must construct its session fence
-  from the verified mTLS peer, never from message JSON.
+  payload digest. Gateway admission requires a `VerifiedMtlsPeer` proving TLS
+  1.3, the frozen WebSocket subprotocol, certificate serial, key fingerprint,
+  Company and Node before `NodeHello` can mutate Store state. The socket adapter
+  must construct this peer and its session fence from the verified TLS channel,
+  never from message JSON.
 - Application actors must be resolved by the existing AgentFirm credential
   authority at the HTTP/MCP/CLI boundary before a routed operation reaches
   this crate. The NodeDaemon integration intentionally waits for the Wave4C
@@ -33,14 +36,21 @@ cannot mutate them directly.
 ## Delivery state machine
 
 ```text
-source outbox accepted
+source Node-local outbox persisted
   -> ControlPlaneAccepted
-  -> target inbox persisted
+  -> target Node-local inbox persisted
   -> TargetPersisted
+  -> target inbox durably claimed
   -> application applied/rejected
   -> terminal receipt
   -> source outbox terminal
 ```
+
+The Control Plane Store owns only operations, attempts and receipts. Each Node
+has a separately rooted, durably authority-bound Store that is the sole owner
+of its local inbox/outbox and application result. A claimed inbox without a
+terminal result is reported as unresolved after restart; a duplicate claim is
+`RecoveryRequired`, never permission to repeat the native effect.
 
 Delivery is at least once; application is idempotent. A retry can move to a
 successor gateway generation only while the previous attempt is unpersisted
